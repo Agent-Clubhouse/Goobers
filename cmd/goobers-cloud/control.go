@@ -29,6 +29,7 @@ Serve API and the single-active, fenced cloud controller. Never executes stages.
 Database options are the same as for the api role.
 
 Options:
+  --check-assembly              Print compiled plane wiring and exit (offline)
   --listen ADDRESS              API/probes address (default 127.0.0.1:8080)
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
@@ -42,9 +43,13 @@ Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.
 `
 
-type controlOptions struct{ listen, cert, key, podKey, selfExecution, host, namespace, queue string }
+type controlOptions struct {
+	listen, cert, key, podKey, selfExecution, host, namespace, queue string
+	checkAssembly                                                    bool
+}
 
 func (o *controlOptions) flags(f *flag.FlagSet) {
+	f.BoolVar(&o.checkAssembly, "check-assembly", false, "check compiled plane wiring without dependencies")
 	f.StringVar(&o.listen, "listen", "127.0.0.1:8080", "API/probe address")
 	f.StringVar(&o.cert, "tls-cert", "", "TLS certificate")
 	f.StringVar(&o.key, "tls-key", "", "TLS private key")
@@ -58,7 +63,12 @@ func runControlRole(args []string, stdout, stderr io.Writer) int {
 	var options controlOptions
 	return runDatabaseRoleConfigured("control", controlHelp, args, stdout, stderr, func(ctx context.Context, db databaseServices) error {
 		return serveControl(ctx, db, options, log.New(stderr, "goobers-cloud control: ", log.LstdFlags))
-	}, options.flags, func() error { return control.ValidateBoot(options.selfExecution, nil) })
+	}, options.flags, func() error { return control.ValidateBoot(options.selfExecution, nil) }, func() (int, bool) {
+		if !options.checkAssembly {
+			return 0, false
+		}
+		return checkControlAssembly(stdout), true
+	})
 }
 
 // controlPlanes is the composition seam for independently landing PG backends.
@@ -75,7 +85,7 @@ type controlPlanes struct {
 }
 
 func (p controlPlanes) complete() bool {
-	return p.Reader != nil && p.Claims != nil && p.Triggers != nil && p.Journal != nil && p.RunJournal != nil && p.Resolve != nil && p.Epoch != nil
+	return len(p.missing()) == 0
 }
 
 // The assembly receives all auth surfaces, including the verifier required by
@@ -87,9 +97,7 @@ type controlAuth struct {
 	Revocations           planes.GrantRevocations
 }
 
-var assembleControlPlanes = func(context.Context, databaseServices, controlAuth, func() *lease.Handle) (controlPlanes, error) {
-	return controlPlanes{}, nil
-}
+var assembleControlPlanes = composeControlPlanes
 
 func serveControl(ctx context.Context, db databaseServices, o controlOptions, logger *log.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -213,8 +221,5 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 }
 
 func (p controlPlanes) validate() error {
-	if !p.complete() {
-		return errors.New("cloud PG plane and recovery assembly incomplete")
-	}
-	return nil
+	return validateControlAssembly(p)
 }

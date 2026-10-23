@@ -195,7 +195,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	return runDatabaseRoleConfigured(role, help, args, stdout, stderr, serve, nil, nil)
 }
 
-func runDatabaseRoleConfigured(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole, register func(*flag.FlagSet), validate func() error) int {
+func runDatabaseRoleConfigured(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole, register func(*flag.FlagSet), validate func() error, offline ...func() (int, bool)) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		write(stdout, help)
 		return 0
@@ -222,6 +222,13 @@ func runDatabaseRoleConfigured(role, help string, args []string, stdout, stderr 
 	if flags.NArg() != 0 {
 		flags.Usage()
 		return 2
+	}
+	// Offline inspection runs after syntax validation but before environment,
+	// credential, database or role-runtime dependencies are touched.
+	for _, inspect := range offline {
+		if code, handled := inspect(); handled {
+			return code
+		}
 	}
 	if validate != nil {
 		if err := validate(); err != nil {
