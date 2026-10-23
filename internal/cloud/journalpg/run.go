@@ -110,16 +110,11 @@ func prepareIdentity(r *runOwner, request journal.CreateRunRequest) (journal.Run
 // RecoverRun acquires a new writer incarnation and returns its exact committed
 // history. Same-epoch live owners contend; a newer controller epoch may take over.
 func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options journal.RunWriterOptions) (journal.RunHandle, journal.OwnerToken, journal.RecoverReport, error) {
-	b.mu.Lock()
-	owned := false
-	for _, r := range b.runs {
-		if r.key == key {
-			owned = true
-			break
-		}
+	h, err := b.liveOwner()
+	if err != nil {
+		return "", "", journal.RecoverReport{}, err
 	}
-	b.mu.Unlock()
-	if owned {
+	if b.ownsRun(key, h.Epoch) {
 		return "", "", journal.RecoverReport{}, journal.ErrRunOwned
 	}
 	if err := ctx.Err(); err != nil {
@@ -145,6 +140,23 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 		}
 	}
 }
+
+// ownsRun forgets only incarnations from strictly older controller epochs.
+// Handles already handed to callers retain their old epoch and cannot write.
+func (b *Backend) ownsRun(key journal.RunKey, epoch int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	owned := false
+	for handle, r := range b.runs {
+		if r.epoch < epoch {
+			delete(b.runs, handle)
+		} else if r.key == key {
+			owned = true
+		}
+	}
+	return owned
+}
+
 func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options journal.RunWriterOptions) (*runOwner, journal.RecoverReport, error) {
 	h, err := b.liveOwner()
 	if err != nil {
