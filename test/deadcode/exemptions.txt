@@ -468,7 +468,6 @@ github.com/goobers/goobers/internal/cloud/config.NewConfiguration # Engine-only 
 github.com/goobers/goobers/internal/cloud/config.Configuration.Admit # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/config.Configuration.Reload # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/config.Configuration.Status # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/childworkflow.EngineFreezer.Freeze # Production engine child freezer (#7758): its only caller is the childengine.Service Freezer composed with the cloud api role's assembleControlPlanes in the #7879 composition PR after #7850; until then only the freeze, golden and engine-load tests call it. expires=2026-11-20
 
 
 
