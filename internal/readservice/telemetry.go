@@ -183,9 +183,9 @@ func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributi
 	}
 	records := req.Observations
 	if len(records) == 0 && s.sources.ReadModel != nil {
-		stored, err := storedAttributionObservations(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
+		stored, err := storedAttributionObservationsLimit(ctx, s.sources.Layout.Root, s.sources.ReadModel, StoredAttributionQuery{
 			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
-		})
+		}, 0, s.journalReader())
 		if err != nil {
 			return TelemetryAttributionResult{}, err
 		}

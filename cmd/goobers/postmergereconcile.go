@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
@@ -21,7 +22,7 @@ import (
 
 const (
 	postMergeReconcileLedgerFile = stateclient.KeyPostMergeReconcileLedger
-	postMergeReconcileLockFile   = "post-merge-reconcile.lock"
+	postMergeReconcileLockFile   = scheduling.PostMergeReconcileLockFile
 	postMergeReconcileVersion    = 1
 	postMergeReconcilePending    = "pending"
 	postMergeReconcileCompleted  = "completed"

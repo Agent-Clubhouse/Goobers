@@ -157,7 +157,7 @@ func (s *Local) AddressableAgents(ctx context.Context, runID string) ([]Addressa
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (s *Local) ResolveAgentAddress(ctx context.Context, selectedRunID, raw stri
 			Detail:  fmt.Sprintf("address names run %q, selected run is %q", address.RunID, selectedRunID),
 		}, nil
 	}
-	run, err := s.openRun(selectedRunID)
+	run, err := s.openRun(ctx, selectedRunID)
 	if err != nil {
 		return AgentResolution{}, err
 	}
