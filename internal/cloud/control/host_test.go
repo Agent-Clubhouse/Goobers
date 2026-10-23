@@ -213,3 +213,56 @@ func TestPrepareFailuresBackOffBeforeReacquiring(t *testing.T) {
 		}
 	})
 }
+
+// Rebuild-before-reap publishes the applied configuration under the epoch's
+// handle, so the epoch handle must exist while Owner (readiness-gated) does not.
+func TestEpochHandleIsAvailableDuringRecoveryButOwnerIsNot(t *testing.T) {
+	leader := &fakeLeadership{}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var host *Host
+	type view struct {
+		epoch, owner *lease.Handle
+		ready        bool
+	}
+	seen := make(chan view, 1)
+	config := testConfig(leader, func(context.Context, *lease.Handle) (EpochServices, error) {
+		services := testServices()
+		services.RebuildBeforeReap = func(context.Context) error {
+			select {
+			case seen <- view{host.EpochHandle(), host.Owner(), host.Ready()}:
+			default:
+			}
+			return nil
+		}
+		return services, nil
+	})
+	host, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.EpochHandle() != nil {
+		t.Fatal("epoch handle without a lease")
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Run(ctx) }()
+	select {
+	case got := <-seen:
+		if got.epoch == nil || got.epoch.Epoch != 1 || got.owner != nil || got.ready {
+			t.Fatalf("during rebuild: epoch=%v owner=%v ready=%v, want the epoch handle and no readiness", got.epoch, got.owner, got.ready)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rebuild never ran")
+	}
+	leader.fenced.Store(true)
+	if host.EpochHandle() != nil {
+		t.Fatal("a self-fenced lease still handed out its epoch handle")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if host.EpochHandle() != nil {
+		t.Fatal("shutdown retained the epoch handle")
+	}
+}
