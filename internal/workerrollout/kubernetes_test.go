@@ -8,8 +8,10 @@ import (
 
 func TestDeploymentStatusReadsBlockedTarget(t *testing.T) {
 	object := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"generation": int64(7)},
 		"status": map[string]any{
-			"versionCount": int64(3),
+			"versionCount":       int64(3),
+			"observedGeneration": int64(7),
 			"targetVersion": map[string]any{
 				"buildID": "v4",
 			},
@@ -28,6 +30,7 @@ func TestDeploymentStatusReadsBlockedTarget(t *testing.T) {
 	}
 	if status.TargetBuildID != "v4" || status.TargetHasDeployment ||
 		status.CurrentBuildID != "v3" || status.VersionCount != 3 ||
+		status.Generation != 7 || status.ObservedGeneration != 7 ||
 		len(status.Deprecated) != 2 || status.Deprecated[0].BuildID != "v1" ||
 		!status.Deprecated[1].EligibleForDeletion {
 		t.Fatalf("status = %+v", status)

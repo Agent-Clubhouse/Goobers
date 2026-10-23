@@ -29,6 +29,8 @@ type DeploymentStatus struct {
 	TargetHasDeployment bool
 	CurrentBuildID      string
 	VersionCount        int
+	Generation          int64
+	ObservedGeneration  int64
 	Deprecated          []DeprecatedVersion
 }
 
@@ -93,7 +95,9 @@ func Reconcile(ctx context.Context, source StatusSource, temporal TemporalClient
 }
 
 func targetBlocked(status DeploymentStatus, limit int) bool {
-	return status.VersionCount >= limit &&
+	return status.Generation > 0 &&
+		status.Generation == status.ObservedGeneration &&
+		status.VersionCount >= limit &&
 		status.TargetBuildID != "" &&
 		status.TargetBuildID != status.CurrentBuildID &&
 		!status.TargetHasDeployment

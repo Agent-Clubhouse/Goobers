@@ -60,6 +60,7 @@ func (f *fakeTemporal) SetAutoUpgrade(_ context.Context, execution Execution) er
 func blockedStatus() DeploymentStatus {
 	return DeploymentStatus{
 		TargetBuildID: "v4", CurrentBuildID: "v3", VersionCount: 3,
+		Generation: 7, ObservedGeneration: 7,
 		Deprecated: []DeprecatedVersion{
 			{BuildID: "v2", Status: versionStatusDraining},
 			{BuildID: "v1", Status: versionStatusDraining},
@@ -103,6 +104,7 @@ func TestRetentionDoesNothingUntilControllerBlocksTarget(t *testing.T) {
 		{name: "no target", mutate: func(s *DeploymentStatus) { s.TargetBuildID = "" }},
 		{name: "target is current", mutate: func(s *DeploymentStatus) { s.TargetBuildID = s.CurrentBuildID }},
 		{name: "target deployment exists", mutate: func(s *DeploymentStatus) { s.TargetHasDeployment = true }},
+		{name: "controller has not observed spec", mutate: func(s *DeploymentStatus) { s.ObservedGeneration-- }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

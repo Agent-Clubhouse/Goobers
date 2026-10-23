@@ -405,9 +405,11 @@ func TestIntegrationUpgradeHITLResumesNMinus3OnCurrentVersion(t *testing.T) {
 	waitForCurrentVersion(t, ctx, deployment, "build-n")
 
 	source := integrationRolloutStatus{status: workerrollout.DeploymentStatus{
-		TargetBuildID:  "build-n-plus-1",
-		CurrentBuildID: "build-n",
-		VersionCount:   3,
+		TargetBuildID:      "build-n-plus-1",
+		CurrentBuildID:     "build-n",
+		VersionCount:       3,
+		Generation:         7,
+		ObservedGeneration: 7,
 		Deprecated: []workerrollout.DeprecatedVersion{{
 			BuildID: "build-n-minus-3",
 			Status:  "Draining",

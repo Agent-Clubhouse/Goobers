@@ -54,6 +54,8 @@ func deploymentStatus(object *unstructured.Unstructured) (DeploymentStatus, erro
 		return DeploymentStatus{}, errors.New("WorkerDeployment response is empty")
 	}
 	status := DeploymentStatus{}
+	status.Generation, _, _ = unstructured.NestedInt64(object.Object, "metadata", "generation")
+	status.ObservedGeneration, _, _ = unstructured.NestedInt64(object.Object, "status", "observedGeneration")
 	status.TargetBuildID, _, _ = unstructured.NestedString(object.Object, "status", "targetVersion", "buildID")
 	status.CurrentBuildID, _, _ = unstructured.NestedString(object.Object, "status", "currentVersion", "buildID")
 	count, _, err := unstructured.NestedInt64(object.Object, "status", "versionCount")
