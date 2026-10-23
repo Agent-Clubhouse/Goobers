@@ -22,10 +22,11 @@ this base.
 
 | Input | Kind | Notes |
 |---|---|---|
-| `goobers-cloud-database` | Secret | keys `url` (PgBouncer) and `direct-url`; mounted as files for `control`, `secretKeyRef` for migrate. Never in argv. |
+| `goobers-cloud-db-owner` | Secret | key `direct-url` as role `goobers_owner` (DDL); used only by the migrate Job via `secretKeyRef`. |
+| `goobers-cloud-db-api`, `goobers-cloud-db-controller` | Secrets | keys `url` (PgBouncer) and `direct-url` as roles `goobers_api` / `goobers_controller`; both mounted as files into `control`, which holds two pools. Never in argv. |
 | `goobers-cloud-control-tls` | Secret (`kubernetes.io/tls`) | the `control` role requires TLS off loopback; workers and stage pods must trust the issuer. |
 | `goobers-cloud-pod-key` | Secret | key `keyring.json`: `{"current":{"id":"k1","key":"<base64, >=32 bytes>"}}`. |
-| `goobers-cloud`, `goobers-cloud-migration` | ConfigMaps | shipped in `prereqs/configmaps.yaml` (`instance-id`, `database-auth`, `backup-ref`); patch the values in your overlay. `instance-id` is shared by migrate and control. |
+| `goobers-cloud`, `goobers-cloud-migration` | ConfigMaps | shipped in `prereqs/configmaps.yaml` (`instance-id`, `database-auth`, `backup-ref`); patch the values in your overlay. Set `instance-id` once (no default; it also names the database `goobers_<instance-id>`). |
 
 `database-auth` is `entra` in the base and applies to both migrate and control;
 the migrate Job and the NetworkPolicy `allow-migrate-identity` assume it.
@@ -43,7 +44,8 @@ which is why they are not part of the same Application's sync.
 
 ```sh
 kubectl apply -k deploy/reference/goobers-cloud/prereqs
-# create the three Secrets above in the goobers-cloud namespace, then:
+# provision the database and roles (goobers-cloud bootstrap, or your own
+# provisioning), create the Secrets above in the goobers-cloud namespace, then:
 kubectl kustomize deploy/reference/goobers-cloud/workload > /tmp/cloud.yaml
 kubectl apply -f /tmp/cloud.yaml -l app.kubernetes.io/name=goobers-cloud-migrate
 kubectl -n goobers-cloud wait --for=condition=complete job/goobers-cloud-migrate --timeout=30m

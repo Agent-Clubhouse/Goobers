@@ -71,8 +71,13 @@ spec:
             # CHANGE-ME: your Temporal frontend and namespace.
             - --temporal-hostport=temporal-frontend.goobers-temporal.svc:7233
             - --temporal-namespace=default
-            - --database-url-file=/var/run/secrets/goobers/database/url
-            - --database-direct-url-file=/var/run/secrets/goobers/database/direct-url
+            # Two pools, two roles: the API pool connects as goobers_api (DML,
+            # no leader-only writes) and the controller pool as goobers_controller.
+            # The owner credential (DDL) is mounted only into the migrate Job.
+            - --api-database-url-file=/var/run/secrets/goobers/db-api/url
+            - --api-database-direct-url-file=/var/run/secrets/goobers/db-api/direct-url
+            - --controller-database-url-file=/var/run/secrets/goobers/db-controller/url
+            - --controller-database-direct-url-file=/var/run/secrets/goobers/db-controller/direct-url
             # Expanded by Kubernetes from the env below; the role has no env fallback.
             - --database-auth=$(GOOBERS_DATABASE_AUTH)
           env:
@@ -124,8 +129,11 @@ spec:
               drop: ["ALL"]
           volumeMounts:
             # Credentials are mounted files, never argv or inline env values.
-            - name: database
-              mountPath: /var/run/secrets/goobers/database
+            - name: db-api
+              mountPath: /var/run/secrets/goobers/db-api
+              readOnly: true
+            - name: db-controller
+              mountPath: /var/run/secrets/goobers/db-controller
               readOnly: true
             - name: tls
               mountPath: /var/run/secrets/goobers/tls
@@ -142,9 +150,18 @@ spec:
             limits:
               memory: 1Gi
       volumes:
-        - name: database
+        - name: db-api
           secret:
-            secretName: goobers-cloud-database
+            secretName: goobers-cloud-db-api
+            defaultMode: 0440
+            items:
+              - key: url
+                path: url
+              - key: direct-url
+                path: direct-url
+        - name: db-controller
+          secret:
+            secretName: goobers-cloud-db-controller
             defaultMode: 0440
             items:
               - key: url

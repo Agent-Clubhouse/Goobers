@@ -87,7 +87,8 @@ func TestDeployReferenceCloudControlShape(t *testing.T) {
 		t.Fatal("the control role ships no sleep subcommand; rely on SIGTERM lease release, not a preStop exec")
 	}
 	args := strings.Join(c.Args, " ")
-	for _, want := range []string{"control", "--listen=0.0.0.0:8080", "--tls-cert=", "--tls-key=", "--pod-key-file=", "--temporal-hostport=", "--database-auth=$(GOOBERS_DATABASE_AUTH)"} {
+	for _, want := range []string{"control", "--listen=0.0.0.0:8080", "--tls-cert=", "--tls-key=", "--pod-key-file=", "--temporal-hostport=", "--database-auth=$(GOOBERS_DATABASE_AUTH)",
+		"--api-database-url-file=", "--api-database-direct-url-file=", "--controller-database-url-file=", "--controller-database-direct-url-file="} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("control args missing %q: %s", want, args)
 		}
@@ -349,6 +350,9 @@ func TestDeployReferenceCloudShipsReferencedConfigMaps(t *testing.T) {
 			}
 		}
 	}
+	if id := have["goobers-cloud"]["instance-id"]; id == "" || id == "default" {
+		t.Fatalf("instance-id must be set explicitly once, not defaulted (got %q)", id)
+	}
 	if have["goobers-cloud"]["database-auth"] != "entra" {
 		t.Fatal("reference database-auth must be entra")
 	}
@@ -414,5 +418,39 @@ func TestDeployReferenceTemporalHAValuesRender(t *testing.T) {
 	}
 	if pdbs != 5 {
 		t.Fatalf("rendered %d PDBs, want 5", pdbs)
+	}
+}
+
+// Least privilege: control holds the API and controller roles (two pools) and
+// never the owner (DDL) credential, which only the migrate Job may use.
+func TestDeployReferenceCloudDatabaseRolesAreSeparated(t *testing.T) {
+	var d appsv1.Deployment
+	cloudDoc(t, "workload/control-deployment.yaml", "Deployment", &d)
+	secrets := map[string]bool{}
+	for _, v := range d.Spec.Template.Spec.Volumes {
+		if v.Secret != nil {
+			secrets[v.Secret.SecretName] = true
+		}
+	}
+	for _, want := range []string{"goobers-cloud-db-api", "goobers-cloud-db-controller"} {
+		if !secrets[want] {
+			t.Fatalf("control must mount %s, has %v", want, secrets)
+		}
+	}
+	for name := range secrets {
+		if strings.Contains(name, "owner") || name == "goobers-cloud-database" {
+			t.Fatalf("control must not mount %s", name)
+		}
+	}
+	var j batchv1.Job
+	cloudDoc(t, "workload/migrate-job.yaml", "Job", &j)
+	var owner bool
+	for _, e := range j.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "GOOBERS_DATABASE_DIRECT_URL" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			owner = e.ValueFrom.SecretKeyRef.Name == "goobers-cloud-db-owner"
+		}
+	}
+	if !owner {
+		t.Fatal("migrate must connect with the goobers-cloud-db-owner Secret")
 	}
 }

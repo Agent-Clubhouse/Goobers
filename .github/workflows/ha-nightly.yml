@@ -132,21 +132,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kubectl -n goobers-temporal exec temporal-postgres-1 -c postgres -- \
-            psql -v ON_ERROR_STOP=1 -c 'CREATE DATABASE goobers_cloud OWNER temporal'
+          instance=nightly # must match instance-id in test/ha/kind/cloud-reference
+          database="goobers_${instance}"
           secrets="$(mktemp -d)"
           trap 'rm -rf "$secrets"' EXIT
           chmod 700 "$secrets"
-          pw="$(kubectl -n goobers-temporal get secret temporal-postgres-app -o jsonpath='{.data.password}' | base64 -d)"
-          printf 'postgres://temporal:%s@temporal-postgres-rw.goobers-temporal.svc:5432/goobers_cloud?sslmode=require' "$pw" > "$secrets/url"
-          cp "$secrets/url" "$secrets/direct-url"
+          # Provision the database and the three roles BEFORE migrate, as the
+          # CNPG superuser (the pgroles contract: goobers_<instance> owned by
+          # goobers_owner; goobers_api and goobers_controller are grant targets).
+          # Replace with `goobers-cloud bootstrap` once it no longer refuses on
+          # unshipped steps (#7869). Passwords go over stdin, never argv.
+          for role in owner api controller; do
+            openssl rand -hex 24 | tr -d '\n' > "$secrets/pw-$role"
+          done
+          {
+            for role in owner api controller; do
+              printf "CREATE ROLE goobers_%s LOGIN PASSWORD '%s';\n" "$role" "$(cat "$secrets/pw-$role")"
+            done
+            printf 'CREATE DATABASE %s OWNER goobers_owner;\n' "$database"
+          } | kubectl -n goobers-temporal exec -i temporal-postgres-1 -c postgres -- psql -v ON_ERROR_STOP=1
+          for role in owner api controller; do
+            url="postgres://goobers_${role}:$(cat "$secrets/pw-$role")@temporal-postgres-rw.goobers-temporal.svc:5432/${database}?sslmode=require"
+            printf '%s' "$url" > "$secrets/$role-url"
+          done
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=goobers-control" \
             -addext "subjectAltName=DNS:goobers-control,DNS:goobers-control.goobers-cloud.svc" \
             -keyout "$secrets/tls.key" -out "$secrets/tls.crt"
           printf '{"current":{"id":"nightly","key":"%s"}}' "$(openssl rand -base64 48 | tr -d '\n')" > "$secrets/keyring.json"
           kubectl apply -k deploy/reference/goobers-cloud/prereqs
-          kubectl -n goobers-cloud create secret generic goobers-cloud-database \
-            --from-file=url="$secrets/url" --from-file=direct-url="$secrets/direct-url"
+          kubectl -n goobers-cloud create secret generic goobers-cloud-db-owner \
+            --from-file=direct-url="$secrets/owner-url"
+          for role in api controller; do
+            kubectl -n goobers-cloud create secret generic "goobers-cloud-db-$role" \
+              --from-file=url="$secrets/$role-url" --from-file=direct-url="$secrets/$role-url"
+          done
           kubectl -n goobers-cloud create secret tls goobers-cloud-control-tls \
             --cert="$secrets/tls.crt" --key="$secrets/tls.key"
           kubectl -n goobers-cloud create secret generic goobers-cloud-pod-key \

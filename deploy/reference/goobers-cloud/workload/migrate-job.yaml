@@ -39,7 +39,8 @@ spec:
             - name: GOOBERS_DATABASE_DIRECT_URL
               valueFrom:
                 secretKeyRef:
-                  name: goobers-cloud-database
+                  # goobers_owner: the only workload holding the DDL role.
+                  name: goobers-cloud-db-owner
                   key: direct-url
             - name: GOOBERS_DATABASE_AUTH
               valueFrom:
