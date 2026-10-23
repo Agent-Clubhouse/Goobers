@@ -405,32 +405,12 @@ func (s Store) Release(ctx context.Context, handle *lease.Handle, d Delivery, no
 	})
 }
 
-// Adopt moves a predecessor's undelivered rows to the live epoch and voids
-// their delivery leases, so the predecessor can no longer acknowledge them.
-// The predecessor epoch must match exactly and be older than the live one.
-func (s Store) Adopt(ctx context.Context, handle *lease.Handle, predecessorEpoch int64) (int64, error) {
-	var adopted int64
-	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			UPDATE control.terminal_report
-			SET owner_epoch=$2, lease_token=NULL, lease_until=NULL
-			WHERE instance_id=$1 AND owner_epoch=$3 AND $3 < $2 AND delivered_at IS NULL`,
-			handle.InstanceID, handle.Epoch, predecessorEpoch,
-		)
-		if err != nil {
-			return fmt.Errorf("adopt terminal reports: %w", err)
-		}
-		adopted = tag.RowsAffected()
-		return nil
-	})
-	return adopted, err
-}
-
 // AdoptAll moves the undelivered rows of EVERY older epoch to the live epoch in
 // one fenced statement and voids their delivery leases, so no predecessor can
 // acknowledge them. Adopt only takes the exact predecessor; after two or more
 // takeovers between uses (a successor that crashed before adopting) the older
-// epochs' rows would otherwise be stranded.
+// epochs' rows would otherwise be stranded. It is the only adoption: an
+// exact-predecessor variant would strand rows after a skipped epoch.
 func (s Store) AdoptAll(ctx context.Context, handle *lease.Handle) (int64, error) {
 	var adopted int64
 	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {

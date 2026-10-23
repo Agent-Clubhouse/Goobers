@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -25,6 +26,28 @@ func effect(item string, count int) terminalreport.Effect {
 		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Name: "app"},
 		ItemID:     item, RunID: "run-1", Stage: "ci", Count: count,
 	}
+}
+
+// controllerPool connects as goobers_controller (SET ROLE), the role the
+// control process holds, so adoption exercises the reviewed column grants on
+// owner_epoch, lease_token and lease_until rather than the owner's privileges.
+func controllerPool(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := owner.Config()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	var current string
+	if err := pool.QueryRow(t.Context(), "SELECT current_user").Scan(&current); err != nil || current != "goobers_controller" {
+		t.Fatalf("current_user = %q, %v; want goobers_controller", current, err)
+	}
+	return pool
 }
 
 func claimOne(t *testing.T, store terminalreportpg.Store, handle *lease.Handle) terminalreportpg.Delivery {
@@ -59,7 +82,8 @@ func deliveredGeneration(t *testing.T, pool *pgxpool.Pool, key string) (int64, b
 // can no longer acknowledge after the takeover.
 func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	pool := pgtest.Pool(t, "trpg")
-	oldManager := pgtest.Manager(t, pool, "old", 0)
+	controller := controllerPool(t, pool)
+	oldManager := pgtest.Manager(t, controller, "old", 0)
 	old := pgtest.Acquire(t, oldManager)
 	oldStore := terminalreportpg.Store{Fence: oldManager}
 	e := effect("42", 1)
@@ -68,7 +92,7 @@ func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	}
 	inFlight := claimOne(t, oldStore, old)
 
-	newManager := pgtest.Manager(t, pool, "new", time.Hour)
+	newManager := pgtest.Manager(t, controller, "new", time.Hour)
 	successor := pgtest.Takeover(t, pool, newManager)
 	newStore := terminalreportpg.Store{Fence: newManager}
 	if deliveries, err := newStore.Claim(t.Context(), successor, 10); err != nil || len(deliveries) != 0 {
@@ -77,11 +101,11 @@ func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	if err := oldStore.Delivered(t.Context(), old, inFlight); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("stale owner acknowledgement = %v, want ErrStale", err)
 	}
-	if adopted, err := newStore.Adopt(t.Context(), successor, successor.Epoch); err != nil || adopted != 0 {
-		t.Fatalf("adopting the live epoch moved %d rows, err %v", adopted, err)
-	}
-	if adopted, err := newStore.Adopt(t.Context(), successor, old.Epoch); err != nil || adopted != 1 {
+	if adopted, err := newStore.AdoptAll(t.Context(), successor); err != nil || adopted != 1 {
 		t.Fatalf("adopt predecessor = %d, %v; want 1", adopted, err)
+	}
+	if adopted, err := newStore.AdoptAll(t.Context(), successor); err != nil || adopted != 0 {
+		t.Fatalf("adopting again moved %d rows, err %v; want 0", adopted, err)
 	}
 	// Even a fence-passing acknowledgement of the voided lease is refused.
 	inFlight.OwnerEpoch = successor.Epoch
@@ -309,12 +333,13 @@ func TestIdempotencyKeyIsNeverReusedAfterPrune(t *testing.T) {
 }
 
 // TestAdoptAllReachesEveryOlderEpoch makes two consecutive takeovers with rows
-// stranded at epoch 1 and epoch 2: the exact-predecessor Adopt moves only the
-// latter, AdoptAll moves both, voids the delivery lease of the claimed row and
+// stranded at epoch 1 and epoch 2, as goobers_controller: AdoptAll moves both,
+// voids the delivery lease of the claimed row and
 // leaves delivered rows alone.
 func TestAdoptAllReachesEveryOlderEpoch(t *testing.T) {
 	pool := pgtest.Pool(t, "trpgall")
-	firstManager := pgtest.Manager(t, pool, "first", 0)
+	controller := controllerPool(t, pool)
+	firstManager := pgtest.Manager(t, controller, "first", 0)
 	first := pgtest.Acquire(t, firstManager)
 	firstStore := terminalreportpg.Store{Fence: firstManager}
 	if _, err := firstStore.Publish(t.Context(), first, effect("1", 1)); err != nil {
@@ -329,7 +354,7 @@ func TestAdoptAllReachesEveryOlderEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secondManager := pgtest.Manager(t, pool, "second", 0)
+	secondManager := pgtest.Manager(t, controller, "second", 0)
 	second := pgtest.Takeover(t, pool, secondManager)
 	secondStore := terminalreportpg.Store{Fence: secondManager}
 	if _, err := secondStore.Publish(t.Context(), second, effect("3", 1)); err != nil {
@@ -337,14 +362,11 @@ func TestAdoptAllReachesEveryOlderEpoch(t *testing.T) {
 	}
 	// The second holder crashes before adopting anything.
 
-	thirdManager := pgtest.Manager(t, pool, "third", 0)
+	thirdManager := pgtest.Manager(t, controller, "third", 0)
 	third := pgtest.Takeover(t, pool, thirdManager)
 	thirdStore := terminalreportpg.Store{Fence: thirdManager}
-	if adopted, err := thirdStore.Adopt(t.Context(), third, second.Epoch); err != nil || adopted != 1 {
-		t.Fatalf("exact-predecessor Adopt = %d, %v; want only the epoch-2 row", adopted, err)
-	}
-	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 1 {
-		t.Fatalf("AdoptAll = %d, %v; want the stranded epoch-1 row", adopted, err)
+	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 2 {
+		t.Fatalf("AdoptAll = %d, %v; want the epoch-1 and epoch-2 rows", adopted, err)
 	}
 	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 0 {
 		t.Fatalf("repeated AdoptAll = %d, %v; want 0", adopted, err)
