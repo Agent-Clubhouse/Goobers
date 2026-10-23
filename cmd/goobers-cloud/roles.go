@@ -192,7 +192,7 @@ type databaseServices struct {
 type databaseRole func(context.Context, databaseServices) error
 
 func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
-	return runDatabaseRole("migrate status", operatorcli.Help("migrate status"), args, stdout, stderr, func(ctx context.Context, services databaseServices) error {
+	return runReadOnlyDatabaseRole("migrate status", operatorcli.Help("migrate status"), args, stdout, stderr, func(ctx context.Context, services databaseServices) error {
 		status, err := loadMigrationStatus(ctx, services.Pools.Transaction, version.Get().Version)
 		if err != nil {
 			return err
@@ -202,7 +202,7 @@ func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func runLeaseStatus(args []string, stdout, stderr io.Writer) int {
-	return runDatabaseRole("lease status", operatorcli.Help("lease status"), args, stdout, stderr, func(ctx context.Context, services databaseServices) error {
+	return runReadOnlyDatabaseRole("lease status", operatorcli.Help("lease status"), args, stdout, stderr, func(ctx context.Context, services databaseServices) error {
 		status, err := loadLeaseStatus(ctx, services.Pools.Transaction)
 		if err != nil {
 			return err
@@ -216,6 +216,14 @@ var errRoleUnavailable = errors.New("role wiring is not available yet")
 func unavailableDatabaseRole(context.Context, databaseServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
+	return runDatabaseRoleMode(role, help, args, stdout, stderr, serve, true)
+}
+
+func runReadOnlyDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
+	return runDatabaseRoleMode(role, help, args, stdout, stderr, serve, false)
+}
+
+func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole, initializeServices bool) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		write(stdout, help)
 		return 0
@@ -274,6 +282,14 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
+	services := databaseServices{Pools: pools, SchemaCompatibility: compatibilityErr}
+	if !initializeServices {
+		if err := serve(ctx, services); err != nil {
+			writef(stderr, "goobers-cloud %s: %v\n", role, err)
+			return 1
+		}
+		return 0
+	}
 	acceptances, err := newAcceptanceStore(
 		pools.Transaction,
 		environmentOr("GOOBERS_INSTANCE_ID", "default"),
@@ -282,15 +298,13 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
 		return 1
 	}
-	services := databaseServices{
-		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
-		NewClaims: func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
-			return cloudclaims.New(
-				pools.Transaction,
-				environmentOr("GOOBERS_INSTANCE_ID", "default"),
-				manager, handle,
-			)
-		},
+	services.Acceptances = acceptances
+	services.NewClaims = func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
+		return cloudclaims.New(
+			pools.Transaction,
+			environmentOr("GOOBERS_INSTANCE_ID", "default"),
+			manager, handle,
+		)
 	}
 	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
