@@ -179,6 +179,11 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return canonicalReader(t, scenario, reader)
+}
+
+func canonicalReader(t *testing.T, scenario corpusScenario, reader journal.RunReader) canonicalRun {
+	t.Helper()
 	identity, err := reader.Identity()
 	if err != nil {
 		t.Fatal(err)
