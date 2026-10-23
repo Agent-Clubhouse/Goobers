@@ -73,16 +73,22 @@ func (s *Store) SourceOccurrences(ctx context.Context, scope, revision string, c
 	if !validText(scope, 256, true) || !validText(revision, 128, true) || count < 1 || count > 1000 {
 		return nil, false, errors.New("cloud acceptance: invalid occurrence cursor")
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var positions []time.Time
+	var pending bool
+	err := s.withFence(ctx, func(ctx context.Context, tx pgx.Tx, _ int64) error {
+		var err error
+		positions, pending, err = s.sourceOccurrences(ctx, tx, scope, revision, count)
+		return err
+	})
+	return positions, pending, err
+}
+
+func (s *Store) sourceOccurrences(ctx context.Context, tx pgx.Tx, scope, revision string, count int) ([]time.Time, bool, error) {
 	var currentRevision string
 	var cursor time.Time
 	var pending bool
 	var positions []time.Time
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT revision, cursor_at, legacy_pending, occurrence_cursors
 		FROM control.source_cursor
 		WHERE instance_id=$1 AND scope=$2
@@ -99,7 +105,7 @@ func (s *Store) SourceOccurrences(ctx context.Context, scope, revision string, c
 		return nil, false, triggerqueue.ErrTransition
 	}
 	if pending {
-		return nil, true, tx.Commit(ctx)
+		return nil, true, nil
 	}
 	if positions == nil {
 		positions = make([]time.Time, count)
@@ -117,7 +123,7 @@ func (s *Store) SourceOccurrences(ctx context.Context, scope, revision string, c
 	if err != nil {
 		return nil, false, err
 	}
-	return positions, false, tx.Commit(ctx)
+	return positions, false, nil
 }
 
 // ResetExistingSourceRevision fences a removed schedule without creating one.

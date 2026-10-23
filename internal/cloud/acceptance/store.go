@@ -55,11 +55,25 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 		return triggerqueue.Record{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Serialize capacity accounting and replay resolution for this instance.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('accept:' || $1, 0))", s.instanceID); err != nil {
+		return triggerqueue.Record{}, false, err
+	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM control.acceptance
 		WHERE instance_id=$1 AND finished_at IS NOT NULL AND accepted_at < $2`,
 		s.instanceID, now.Add(-triggerqueue.ReplayRetention),
 	); err != nil {
+		return triggerqueue.Record{}, false, err
+	}
+	prior, err := s.byKey(ctx, tx, key)
+	if err == nil {
+		if prior.Actor != actor || !bytes.Equal(prior.Payload, payload) {
+			return triggerqueue.Record{}, false, triggerqueue.ErrConflict
+		}
+		return prior, true, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return triggerqueue.Record{}, false, err
 	}
 	var count int
@@ -256,7 +270,7 @@ func (s *Store) Uncertain(ctx context.Context, liveEpochs []int64, limit int) ([
 }
 
 func (s *Store) withFence(ctx context.Context, action func(context.Context, pgx.Tx, int64) error) error {
-	if s.manager == nil || s.handle == nil {
+	if s.manager == nil || s.handle == nil || s.handle.InstanceID != s.instanceID {
 		return triggerqueue.ErrTransition
 	}
 	return s.manager.WithFence(ctx, s.handle, func(txCtx context.Context, tx pgx.Tx) error {

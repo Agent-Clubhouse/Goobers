@@ -43,11 +43,17 @@ func (s *Store) AcceptSource(
 		len(batch.Starts) > triggerqueue.MaxSourceStarts {
 		return triggerqueue.SourceReceipt{}, false, errors.New("cloud acceptance: invalid source batch")
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return triggerqueue.SourceReceipt{}, false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var receipt triggerqueue.SourceReceipt
+	var repeated bool
+	err := s.withFence(ctx, func(ctx context.Context, tx pgx.Tx, _ int64) error {
+		var err error
+		receipt, repeated, err = s.acceptSource(ctx, tx, batch, now)
+		return err
+	})
+	return receipt, repeated, err
+}
+
+func (s *Store) acceptSource(ctx context.Context, tx pgx.Tx, batch triggerqueue.SourceBatch, now time.Time) (triggerqueue.SourceReceipt, bool, error) {
 	if _, err := tx.Exec(ctx, `
 		SELECT pg_advisory_xact_lock(hashtextextended('source-accept:' || $1, 0))`,
 		batch.Key,
@@ -113,7 +119,7 @@ func (s *Store) AcceptSource(
 	if err := transferDemand(ctx, tx, s.instanceID, batch.Demand, len(batch.Starts)); err != nil {
 		return triggerqueue.SourceReceipt{}, false, err
 	}
-	return receipt, false, tx.Commit(ctx)
+	return receipt, false, nil
 }
 
 // PendingWorkflowStarts counts queued starts for one workflow.
@@ -176,13 +182,14 @@ func (s *Store) CaptureScheduleDemand(ctx context.Context, capture triggerqueue.
 	if err != nil {
 		return err
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return s.withFence(ctx, func(ctx context.Context, tx pgx.Tx, _ int64) error {
+		return s.captureScheduleDemand(ctx, tx, capture, fingerprint)
+	})
+}
+
+func (s *Store) captureScheduleDemand(ctx context.Context, tx pgx.Tx, capture triggerqueue.ScheduleDemandCapture, fingerprint string) error {
 	var prior string
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT fingerprint FROM control.schedule_demand
 		WHERE instance_id=$1 AND id=$2`,
 		s.instanceID, capture.ID,
@@ -211,7 +218,7 @@ func (s *Store) CaptureScheduleDemand(ctx context.Context, capture triggerqueue.
 			if err := advanceCursor(ctx, tx, s.instanceID, &capture.Advance); err != nil {
 				return err
 			}
-			return tx.Commit(ctx)
+			return nil
 		}
 	}
 	if _, err := tx.Exec(ctx, `
@@ -226,7 +233,7 @@ func (s *Store) CaptureScheduleDemand(ctx context.Context, capture triggerqueue.
 	if err := advanceCursor(ctx, tx, s.instanceID, &capture.Advance); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // ScheduleDemand reads the oldest obligation for a scope.
@@ -289,13 +296,14 @@ func (s *Store) ObserveScheduleDemand(ctx context.Context, id string, count int)
 	if count < 0 || count > triggerqueue.MaxRecords {
 		return errors.New("cloud acceptance: invalid demand count")
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return s.withFence(ctx, func(ctx context.Context, tx pgx.Tx, _ int64) error {
+		return s.observeScheduleDemand(ctx, tx, id, count)
+	})
+}
+
+func (s *Store) observeScheduleDemand(ctx context.Context, tx pgx.Tx, id string, count int) error {
 	var prior int
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT observed_count FROM control.schedule_demand
 		WHERE instance_id=$1 AND id=$2 FOR UPDATE`,
 		s.instanceID, id,
@@ -321,7 +329,7 @@ func (s *Store) ObserveScheduleDemand(ctx context.Context, id string, count int)
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func transferDemand(ctx context.Context, tx pgx.Tx, instanceID string, transfer *triggerqueue.DemandTransfer, starts int) error {
