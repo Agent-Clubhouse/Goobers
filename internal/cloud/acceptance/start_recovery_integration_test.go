@@ -175,6 +175,17 @@ func TestPGFreshPredecessorRetriesOncePerLeaseThenBacksOff(t *testing.T) {
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("same epoch bypassed backoff: %v %v", rows, err)
 	}
+	status, err := second.StartStatusPage(t.Context(), "", 100)
+	if err != nil || len(status) != 1 {
+		t.Fatalf("fresh quarantined start missing from status: %v %v", status, err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE control.acceptance SET start_retry_at=clock_timestamp()-interval '1 second' WHERE id=$1", record.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = second.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("elapsed backoff still waited for initial grace: %v %v", rows, err)
+	}
 	if err := second.manager.Release(t.Context(), second.handle); err != nil {
 		t.Fatal(err)
 	}
