@@ -62,10 +62,11 @@ type TelemetryImplementationOutcomesResult struct {
 }
 
 // TelemetryImplementationOutcome is one terminal implementation run and the
-// backlog item it claimed. Field-for-field the rollup's own projection: the
-// wire shape is restated here rather than aliased so the read contract does
-// not become a re-export of the rollup schema.
+// backlog item it claimed. TerminalSummary composes the canonical read-model
+// facts when available; the remaining fields retain the rollup projection.
 type TelemetryImplementationOutcome struct {
+	TerminalSummary *readmodel.TerminalSummary `json:"terminalSummary,omitempty"`
+
 	RunID        string    `json:"runId"`
 	ItemID       string    `json:"itemId"`
 	Status       string    `json:"status"`
@@ -907,6 +908,8 @@ func (s *Telemetry) TelemetryImplementationOutcomes(ctx context.Context, req Tel
 	result := TelemetryImplementationOutcomesResult{Items: make([]TelemetryImplementationOutcome, 0, len(outcomes))}
 	for _, outcome := range outcomes {
 		result.Items = append(result.Items, TelemetryImplementationOutcome{
+			TerminalSummary: unavailableTerminalSummary(outcome.Status),
+
 			RunID:        outcome.RunID,
 			ItemID:       outcome.ItemID,
 			Status:       outcome.Status,
@@ -1464,7 +1467,11 @@ func (s *Local) TelemetryImplementationOutcomes(ctx context.Context, req Telemet
 	if s.telemetry == nil {
 		return TelemetryImplementationOutcomesResult{}, ErrTelemetryUnavailable
 	}
-	return s.telemetry.TelemetryImplementationOutcomes(ctx, req)
+	result, err := s.telemetry.TelemetryImplementationOutcomes(ctx, req)
+	if err != nil {
+		return result, err
+	}
+	return s.withTerminalSummaries(ctx, result)
 }
 
 func validateWindow(since, until time.Time) error {

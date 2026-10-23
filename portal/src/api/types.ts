@@ -1058,6 +1058,8 @@ export interface RunSummary {
   noWork: boolean;
   /** Projected cause of a non-completed terminal run — failed and aborted as well as escalated (#4246). */
   terminalReason?: string;
+  /** Shared terminal evidence; absent while active or on older daemons. */
+  terminalSummary?: TerminalSummary;
   operator?: OperatorRunSummary;
 }
 
@@ -1237,6 +1239,32 @@ export interface RunOutcome {
   gate?: string;
   verdict?: string;
   target?: string;
+  causalEventSeq?: number;
+}
+
+export interface TerminalSummary {
+  phase: RunPhase;
+  outcome?: RunOutcome;
+  workDisposition: "produced" | "no-work" | "unknown";
+  reason?: {
+    source: string;
+    classification?: string;
+    code?: string;
+    message?: string;
+    causalEventSeq?: number;
+  };
+  causalEventSeq?: number;
+  primaryExternalResult?: TerminalExternalResult;
+  relatedExternalRefs?: TerminalExternalResult[];
+  refsTruncated?: boolean;
+  status: "complete" | "partial" | "unavailable";
+  legacy: boolean;
+}
+
+export interface TerminalExternalResult {
+  ref: ExternalRef;
+  operation?: string;
+  confirmedMerge?: boolean;
   causalEventSeq?: number;
 }
 
@@ -1497,6 +1525,7 @@ export interface ExternalRef {
   kind: string;
   id: string;
   url?: string;
+  commitSha?: string;
 }
 
 export interface ErrorDetail {
