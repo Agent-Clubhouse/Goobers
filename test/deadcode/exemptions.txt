@@ -592,3 +592,20 @@ github.com/goobers/goobers/internal/enginechildplane.planeError # Engine child-a
 
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunRecorded # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenRunReader # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
+
+# HA-P3-16 stall sweep awaits controller composition; no package-pattern exemptions supported.
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.StallCandidates # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.Terminalize # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.NewStallSweeper # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.Sweep # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.beginTermination # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.claim # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.claimTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.due # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.finishTermination # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.processCandidate # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.recordFailure # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.retryTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.transition # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.withFence # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.changed # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
