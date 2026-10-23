@@ -27,6 +27,7 @@
       ".github/workflows/ci.yml#checks/fmt \u00b7 tidy \u00b7 no-phone-home \u00b7 vet \u00b7 build \u00b7 portal:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke[2]:go-modules",
+      ".github/workflows/ci.yml#cloud-pg/Run PostgreSQL journal conformance:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Record CI diagnostics:go-modules",
       ".github/workflows/ci.yml#cmdgoobers-growth/Enforce cmd/goobers growth ratchet:go-modules",
       ".github/workflows/ci.yml#darwin-build/Download modules:go-modules",
@@ -60,6 +61,7 @@
       ".github/workflows/ci.yml#unit/Prime module cache for latest release tag:go-modules",
       ".github/workflows/ci.yml#unit/Unit suite (-race, shard ${{ matrix.shard }}):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Build Windows validation binary:go-modules",
+      ".github/workflows/ha-nightly.yml#journal-throughput/Report PostgreSQL journal throughput:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Collect evidence:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run kind environment smoke:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Freeze smoke (CgroupFreeze on kind):go-modules",
@@ -93,6 +95,7 @@
       ".github/workflows/ci.yml#windows-smoke/Windows offline diagnostic evidence:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows operator options:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows platform runtime:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows rainbow worker contracts:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows read model and stores:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows recovery publication custody:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows release packaging:go-modules",
@@ -122,6 +125,7 @@
       "Makefile#cover-gate::go-modules",
       "Makefile#deadcode::go-modules",
       "Makefile#deploy-validate::go-modules",
+      "Makefile#deploy-validate:[2]:go-modules",
       "Makefile#docs::go-modules",
       "Makefile#docs:[2]:go-modules",
       "Makefile#docs:[3]:go-modules",
@@ -363,6 +367,9 @@
       ".github/workflows/ci.yml#windows-smoke/Set up Go:github-actions",
       ".github/workflows/ci.yml#windows-smoke/Upload Windows validation evidence:github-actions",
       ".github/workflows/ci.yml#checks/Upload CI diagnostics:github-actions",
+      ".github/workflows/ha-nightly.yml#journal-throughput/Checkout:github-actions",
+      ".github/workflows/ha-nightly.yml#journal-throughput/Set up Go:github-actions",
+      ".github/workflows/ha-nightly.yml#journal-throughput/Upload journal throughput:github-actions",
       ".github/workflows/ha-nightly.yml#smoke/Checkout:github-actions",
       ".github/workflows/ha-nightly.yml#smoke/Set up Go:github-actions",
       ".github/workflows/ha-nightly.yml#smoke/Upload evidence:github-actions",
@@ -396,7 +403,8 @@
     "sites": [
       ".github/workflows/ci.yml#cloud-pg/service azurite:service-containers",
       ".github/workflows/ci.yml#cloud-pg/service postgres:service-containers",
-      ".github/workflows/ha-nightly.yml#control-restart/service postgres:service-containers"
+      ".github/workflows/ha-nightly.yml#control-restart/service postgres:service-containers",
+      ".github/workflows/ha-nightly.yml#journal-throughput/service postgres:service-containers"
     ]
   },
   {
@@ -492,7 +500,8 @@
       "Makefile#deploy-validate:[5]:kubernetes-schemas",
       "Makefile#deploy-validate:[6]:kubernetes-schemas",
       "Makefile#deploy-validate:[7]:kubernetes-schemas",
-      "Makefile#deploy-validate:[8]:kubernetes-schemas"
+      "Makefile#deploy-validate:[8]:kubernetes-schemas",
+      "Makefile#deploy-validate:[9]:kubernetes-schemas"
     ]
   },
   {

@@ -12,9 +12,8 @@ metadata:
     goobers.dev/role: worker
 spec:
   replicas: 2
-  # HA-P2-07 replaces this with per-build rainbow Deployments. Until then,
-  # Recreate avoids mixing builds while still allowing multiple replicas of
-  # one build to poll the same queues.
+  # The ../workers overlay replaces this compatibility Deployment with a
+  # WorkerDeployment that owns one Recreate Deployment per build ID.
   strategy:
     type: Recreate
   selector:

@@ -860,6 +860,218 @@ tables:
     - observed_at
     - owner_epoch
     delete: true
+- schema: journal
+  table: run
+  provisioned: true
+  fence: epoch
+  rationale: CreateRun inserts the run identity from the live control.lease row; claim and retire change its retirement mark under the controller-lease fence. The controller pool also serves run snapshots and listing.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - gaggle
+    - run_yaml
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - gaggle
+    - workflow
+    - run_yaml
+    - created_at
+    update:
+    - retired_at
+- schema: journal
+  table: run_seq
+  provisioned: true
+  fence: owner_token
+  rationale: The per-run counter allocates sequences and carries the writer token and epoch; every change is predicated on both under the controller-lease fence. withRun locks it FOR UPDATE.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - last_seq
+    - owner_epoch
+    - owner_token
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - owner_token
+    - owner_epoch
+    update:
+    - last_seq
+    - last_append_at
+    - owner_epoch
+    - owner_token
+- schema: journal
+  table: run_checkpoint
+  provisioned: true
+  fence: owner_token
+  rationale: Derived checkpoints are upserted only by the current writer token under the controller-lease fence. ON CONFLICT DO UPDATE needs SELECT on every column it sets; RunStatus reads the phase.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - phase
+    - terminal
+    - state
+    - at_seq
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - phase
+    - terminal
+    - state
+    - at_seq
+    update:
+    - phase
+    - terminal
+    - state
+    - at_seq
+- schema: journal
+  table: run_event
+  provisioned: true
+  fence: owner_token
+  rationale: Events are appended once at a counter-allocated seq by the current writer token. Dedup, atomic-occurrence, notification, operator and progress-window checks read the indexed keys; replay and readers page bodies.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - seq
+    - branch
+    - type
+    - stage
+    - emit_key
+    - operator_key
+    - notification_key
+    - notification_sink
+    - notification_attempt
+    - agent_id
+    - agent_run
+    - agent_stage
+    - agent_attempt
+    - at
+    - at_submicro
+    - body
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - seq
+    - branch
+    - type
+    - stage
+    - attempt
+    - emit_key
+    - operator_key
+    - notification_key
+    - notification_sink
+    - notification_attempt
+    - agent_id
+    - agent_run
+    - agent_stage
+    - agent_attempt
+    - at_submicro
+    - at
+    - body
+- schema: journal
+  table: blob
+  provisioned: true
+  fence: owner_token
+  rationale: Content blobs are inserted once by the current writer token and re-read to verify the digest. Transcript recovery deletes private partials under the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - path
+    - digest
+    - body
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - path
+    - digest
+    - body
+    delete: true
+- schema: journal
+  table: run_artifact
+  provisioned: true
+  fence: owner_token
+  rationale: Artifact index rows are appended with their event by the current writer token. The controller reads digest only through the SECURITY INVOKER blob reference probe.
+  readers:
+  - role: goobers_controller
+    columns:
+    - digest
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - seq
+    - digest
+    - kind
+- schema: journal
+  table: instance_seq
+  provisioned: true
+  fence: owner_token
+  rationale: The instance-stream counter is claimed from the live control.lease row and advanced by its incarnation token under the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - stream
+    - last_seq
+    - owner_epoch
+    - owner_token
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - owner_epoch
+    - owner_token
+    update:
+    - last_seq
+    - owner_epoch
+    - owner_token
+- schema: journal
+  table: instance_event
+  provisioned: true
+  fence: owner_token
+  rationale: Instance events are appended by the current stream token under the controller-lease fence and paged by cursor. Partitions inherit the parent's policy.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - stream
+    - seq
+    - emit_key
+    - body
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - type
+    - run_id
+    - emit_key
+    - epoch
+    - body
 sequences:
 - schema: control
   sequence: terminal_report_generation
@@ -874,7 +1086,8 @@ functions:
   arguments: table_name text, column_name text, candidate_digest text
   rationale: SECURITY INVOKER reference probe used by blob_is_referenced; it runs SELECT on the probed column as the caller, so
     the controller holds SELECT on each probed column that exists (config_generation.blob_digest,
-    recovery_record.patch_digest and archive_digest). It returns true for a table that does not exist yet.
+    recovery_record.patch_digest and archive_digest, journal.run_artifact.digest). It returns true for a table that does not
+    exist yet.
   security_definer: false
   execute:
   - goobers_controller

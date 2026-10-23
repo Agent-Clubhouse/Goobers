@@ -44,7 +44,9 @@ func TestPlacedDefinitionRefusalsPropagateAndAggregate(t *testing.T) {
 	}
 }
 
-func TestRefusePlacedDefinitionAggregatesFeatureAndHumanGate(t *testing.T) {
+// Human gates (#7760), remote limits (#7835) and outbox (#7847) run on the
+// engine: they add no refusal, while the feature still refused is reported.
+func TestRefusePlacedDefinitionAggregatesRefusedFeaturesNotHumanGates(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Tasks: []apiv1.Task{{
 			Name: "agent", Type: apiv1.TaskAgentic,
@@ -55,18 +57,15 @@ func TestRefusePlacedDefinitionAggregatesFeatureAndHumanGate(t *testing.T) {
 	}
 	err := RefusePlacedDefinition("flow", spec, nil)
 	var refused *UnsupportedFeaturesError
-	if !errors.As(err, &refused) || len(refused.Refusals) != 2 {
-		t.Fatalf("refusal = %#v, want experiment and human gate only", err)
+	if !errors.As(err, &refused) || len(refused.Refusals) != 1 {
+		t.Fatalf("refusal = %#v, want experiment only", err)
 	}
-	want := []string{"task.experiment", "gate.evaluator.human"}
-	for i, r := range refused.Refusals {
-		if r.Feature != want[i] {
-			t.Fatalf("refusal[%d] = %q, want %q", i, r.Feature, want[i])
-		}
+	if refused.Refusals[0].Feature != "task.experiment" {
+		t.Fatalf("refusal[0] = %q, want task.experiment", refused.Refusals[0].Feature)
 	}
 	for _, r := range refused.Refusals {
-		if r.Feature == "task.outbox" {
-			t.Fatalf("task.outbox is supported on the engine but was refused: %#v", r)
+		if r.Feature == "gate.evaluator.human" || r.Feature == "task.outbox" {
+			t.Fatalf("%s is supported on the engine but was refused: %#v", r.Feature, r)
 		}
 	}
 }

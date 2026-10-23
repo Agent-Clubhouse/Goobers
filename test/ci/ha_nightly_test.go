@@ -107,3 +107,16 @@ func TestControlRestartNightlyMeasuresProductionLeaseTimings(t *testing.T) {
 		}
 	}
 }
+
+func TestHANightlyReportsPostgresJournalThroughput(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "workflows", "ha-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := workflowJob(string(data), "journal-throughput")
+	for _, want := range []string{"postgres:16@sha256:", "BenchmarkPostgresJournalAppend", "-tags=cloudintegration", "GITHUB_STEP_SUMMARY", "Upload journal throughput", "actions/upload-artifact@"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("nightly journal report missing %q", want)
+		}
+	}
+}

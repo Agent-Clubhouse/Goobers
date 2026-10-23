@@ -8,11 +8,10 @@ import (
 // merge retains root state and adds each branch's products in declaration
 // order. The branch frames contain frozen root prefixes; those prefixes must
 // not overwrite a prior branch's newly completed stages or duplicate pointers.
-// Branch-qualified scalar/artifact bindings are still a separate seam;
-// static visit admission explicitly refuses unsupported scalar bindings.
+// Branch-qualified scalars resolve separately against settled visit products,
+// so inherited root entries cannot masquerade as a branch result.
 func (p *staticParallelWalk) merge() {
-	rootPointers := len(p.seed.pointers)
-	for i, out := range p.outcomes {
+	for _, out := range p.outcomes {
 		frame := out.frame
 		for _, stage := range slices.Sorted(maps.Keys(frame.upstream)) {
 			if _, exists := p.seed.upstream[stage]; !exists {
@@ -24,6 +23,14 @@ func (p *staticParallelWalk) merge() {
 				p.seed.completed[stage] = frame.completed[stage]
 			}
 		}
+	}
+	p.mergeMetadata()
+}
+
+func (p *staticParallelWalk) mergeMetadata() {
+	rootPointers := len(p.seed.pointers)
+	for i, out := range p.outcomes {
+		frame := out.frame
 		for _, gate := range slices.Sorted(maps.Keys(frame.evaluatedGates)) {
 			p.seed.evaluatedGates[gate] = frame.evaluatedGates[gate]
 		}

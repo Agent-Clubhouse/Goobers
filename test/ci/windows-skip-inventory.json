@@ -55,12 +55,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "deploy/reference/workers",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Kubernetes manifest semantic tests run on Linux; hosted kind validates the rendered worker resources."
-    },
-    {
       "package": "internal/adoauth",
       "coverage": "none",
       "category": "not-selected",
@@ -233,6 +227,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud bootstrap and cutover-check tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/journalpg",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud PostgreSQL journal tests run in Linux unit and local PG16 cloudintegration jobs; the cloud control plane has no Windows deployment target."
     },
     {
       "package": "internal/cloud/lease",
@@ -461,6 +461,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/enginedecision",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Temporal Update routing for engine human-gate decisions (#7760) over a fake client; no Windows-specific seam identified, runs on the Linux unit shards only."
     },
     {
       "package": "internal/ephemeraltmp",

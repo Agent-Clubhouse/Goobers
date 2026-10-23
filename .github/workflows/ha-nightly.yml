@@ -312,3 +312,44 @@ jobs:
           path: ${{ runner.temp }}/control-restart.log
           if-no-files-found: error
           retention-days: 30
+
+  journal-throughput:
+    name: PostgreSQL journal throughput report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-interval 5s --health-timeout 5s --health-start-period 60s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Report PostgreSQL journal throughput
+        shell: bash
+        env:
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=cloudintegration -timeout 5m -run '^$' -bench '^BenchmarkPostgresJournalAppend$' -benchtime=5s -count=3 ./internal/journal | tee "$RUNNER_TEMP/journal-throughput.txt"
+          cat "$RUNNER_TEMP/journal-throughput.txt" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload journal throughput
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pg-journal-throughput-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/journal-throughput.txt
+          if-no-files-found: error
+          retention-days: 30
