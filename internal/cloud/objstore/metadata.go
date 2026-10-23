@@ -81,7 +81,7 @@ func (m *Metadata) RecordGeneration(ctx context.Context, instanceID, digest stri
 		return err
 	}
 	defer m.releaseBlobLock(connection, digest)
-	if err := m.blobs.Touch(ctx, digest, archive); err != nil {
+	if err := m.blobs.Put(ctx, digest, archive); err != nil {
 		return fmt.Errorf("publish config generation blob: %w", err)
 	}
 	tx, err := connection.Begin(ctx)
@@ -102,6 +102,9 @@ func (m *Metadata) RecordGeneration(ctx context.Context, instanceID, digest stri
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit config generation publication: %w", err)
+	}
+	if err := m.blobs.Touch(ctx, digest, archive); err != nil {
+		return fmt.Errorf("touch published config generation: %w", err)
 	}
 	return nil
 }
@@ -130,9 +133,6 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 		return err
 	}
 	defer m.releaseBlobLock(connection, digest)
-	if err := m.blobs.Touch(ctx, digest, nil); err != nil {
-		return fmt.Errorf("touch pinned config generation: %w", err)
-	}
 	tx, err := connection.Begin(ctx)
 	if err != nil {
 		return err
@@ -148,7 +148,24 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 	if _, err := tx.Exec(ctx, "DELETE FROM control.blob_gc_candidate WHERE digest=$1", digest); err != nil {
 		return fmt.Errorf("cancel pinned blob GC: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if err := m.blobs.Touch(ctx, digest, nil); err != nil {
+		_, compensateErr := connection.Exec(context.WithoutCancel(ctx), `
+			DELETE FROM control.config_generation_pin
+			WHERE instance_id=$1 AND digest=$2 AND owner=$3`,
+			instanceID, digest, owner,
+		)
+		if compensateErr != nil {
+			return errors.Join(
+				fmt.Errorf("touch pinned config generation: %w", err),
+				fmt.Errorf("compensate pin: %w", compensateErr),
+			)
+		}
+		return fmt.Errorf("touch pinned config generation: %w", err)
+	}
+	return nil
 }
 
 // PruneGeneration removes an unpinned pointer and marks newly unreferenced
@@ -290,6 +307,21 @@ func (m *Metadata) sweepCandidate(
 			} else {
 				return err
 			}
+		}
+		if err := tx.QueryRow(txCtx, `
+			SELECT EXISTS (
+				SELECT 1 FROM control.config_generation WHERE blob_digest=$1
+			)`,
+			digest,
+		).Scan(&referenced); err != nil {
+			return err
+		}
+		if referenced {
+			_, err := tx.Exec(txCtx, "DELETE FROM control.blob_gc_candidate WHERE digest=$1", digest)
+			if touchErr := m.blobs.Touch(txCtx, digest, nil); touchErr != nil && !errors.Is(touchErr, blobstore.ErrNotFound) {
+				return touchErr
+			}
+			return err
 		}
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.blob_gc_candidate

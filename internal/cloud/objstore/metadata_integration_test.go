@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
 )
@@ -121,6 +122,7 @@ func TestGCSweepRepublishRaceKeepsPinnedBlob(t *testing.T) {
 	if err := metadata.RecordGeneration(t.Context(), "old-instance", digest, archive); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := metadata.PruneGeneration(t.Context(), "old-instance", digest); err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +195,87 @@ func TestGCSweepRepublishRaceKeepsPinnedBlob(t *testing.T) {
 	}
 }
 
+func TestGCAfterPublicationTouchCannotDeleteCommittedRow(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-gc-recheck")
+	archive := []byte("double checked config archive")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "old-instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PruneGeneration(t.Context(), "old-instance", digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE control.blob_gc_candidate
+		SET unreferenced_at=clock_timestamp()-interval '2 hours'
+		WHERE digest=$1`,
+		digest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	pausing := &pausingStampStore{
+		Azure: store, stamping: make(chan struct{}), resume: make(chan struct{}),
+	}
+	metadata.blobs = pausing
+	manager, handle := gcLease(t, pool)
+	sweepResult := make(chan struct {
+		deleted int
+		err     error
+	}, 1)
+	go func() {
+		deleted, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
+		sweepResult <- struct {
+			deleted int
+			err     error
+		}{deleted, err}
+	}()
+	<-pausing.stamping
+	terminateBlobLockBackend(t, pool)
+	if err := metadata.RecordGeneration(t.Context(), "new-instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PinGeneration(t.Context(), "new-instance", digest, "active-run"); err != nil {
+		t.Fatal(err)
+	}
+	close(pausing.resume)
+	result := <-sweepResult
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.deleted != 0 {
+		t.Fatalf("GC deleted %d blobs after publication committed", result.deleted)
+	}
+	if has, err := store.Has(t.Context(), digest); err != nil || !has {
+		t.Fatalf("committed pinned blob Has=%v err=%v", has, err)
+	}
+}
+
+func TestPinMissingBlobCompensatesRow(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-pin-missing")
+	archive := []byte("missing pin config archive")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(t.Context(), digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PinGeneration(t.Context(), "instance", digest, "run"); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("Pin error = %v, want ErrNotFound", err)
+	}
+	var pins int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM control.config_generation_pin
+		WHERE instance_id='instance' AND digest=$1 AND owner='run'`,
+		digest,
+	).Scan(&pins); err != nil {
+		t.Fatal(err)
+	}
+	if pins != 0 {
+		t.Fatalf("missing blob retained %d pin rows", pins)
+	}
+}
+
 func gcLease(t *testing.T, pool *pgxpool.Pool) (*cloudlease.Manager, *cloudlease.Handle) {
 	t.Helper()
 	manager, err := cloudlease.New(cloudlease.Config{
@@ -214,6 +297,22 @@ type pausingStore struct {
 	resume   chan struct{}
 }
 
+type pausingStampStore struct {
+	*Azure
+	stamping chan struct{}
+	resume   chan struct{}
+}
+
+func (s *pausingStampStore) StampGCIntent(ctx context.Context, digest, intentID string) (string, error) {
+	close(s.stamping)
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-s.resume:
+	}
+	return s.Azure.StampGCIntent(ctx, digest, intentID)
+}
+
 func (s *pausingStore) Remove(ctx context.Context, digest string) error {
 	close(s.removing)
 	select {
@@ -232,6 +331,22 @@ func (s *pausingStore) RemoveIfMatch(ctx context.Context, digest, etag string) (
 	case <-s.resume:
 	}
 	return s.Azure.RemoveIfMatch(ctx, digest, etag)
+}
+
+func terminateBlobLockBackend(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var backendPID int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT pid FROM pg_stat_activity
+		WHERE datname=current_database()
+		  AND state='idle'
+		  AND query LIKE '%pg_advisory_lock(hashtextextended%'
+		ORDER BY query_start DESC LIMIT 1`).Scan(&backendPID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), "SELECT pg_terminate_backend($1)", backendPID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Azure) {
