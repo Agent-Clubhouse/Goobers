@@ -18,21 +18,21 @@ import (
 // configgeneration builder, assessed for engine-only eligibility, and published
 // to the object-store generation pointer under the live controller lease. A
 // refused candidate leaves the running generation applied.
-func constructConfiguration(_ context.Context, db databaseServices, _ controlAuth, manager *lease.Manager, owner func() *lease.Handle, p *controlPlanes) error {
+func constructConfiguration(_ context.Context, db databaseServices, _ controlAuth, manager *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
 	if db.ConfigDir == "" {
 		return errors.New("control configuration requires --config-dir (or GOOBERS_CONFIG_DIR)")
 	}
 	if db.Objects == nil || db.InstanceID == "" {
 		return errors.New("control configuration requires the object store (--object-store-url) and instance")
 	}
-	if manager == nil || owner == nil {
+	if manager == nil || db.EpochHandle == nil {
 		return errors.New("control configuration requires the controller lease")
 	}
 	activator, err := generationpg.NewActivator(db.Objects, db.InstanceID)
 	if err != nil {
 		return err
 	}
-	configuration, err := cloudconfig.NewDirConfiguration(readiness.Assess, leasedActivator{inner: activator, manager: manager, owner: owner}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID})
+	configuration, err := cloudconfig.NewDirConfiguration(readiness.Assess, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID})
 	if err != nil {
 		return err
 	}
@@ -41,13 +41,15 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 		return err
 	}
 	p.Configuration = configuration
-	p.generations = leasedGenerations{inner: source, owner: owner}
+	p.generations = leasedGenerations{inner: source, owner: db.EpochHandle}
 	return nil
 }
 
-// leasedActivator binds the activator's fence to the lease handle that is live
-// at the moment of the apply. Reload runs inside an acquired epoch, so a
-// missing handle means authority was lost and nothing may be published.
+// leasedActivator binds the activator's fence to the epoch handle that is live
+// at the moment of the apply. Reload runs inside an acquired epoch, during
+// rebuild-before-reap, before the readiness-gated owner exists, so it takes the
+// epoch handle. A missing handle means authority was lost and nothing may be
+// published.
 type leasedActivator struct {
 	inner   *generationpg.Activator
 	manager *lease.Manager

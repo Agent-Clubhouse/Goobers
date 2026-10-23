@@ -173,6 +173,13 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	db.Controller.EpochHandle = func() *lease.Handle {
+		host := activeHost.Load()
+		if host == nil {
+			return nil
+		}
+		return host.EpochHandle()
+	}
 	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err

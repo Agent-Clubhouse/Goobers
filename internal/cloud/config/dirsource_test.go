@@ -237,3 +237,112 @@ func TestDirConfigurationReportsAnInvalidDirectoryAndKeepsTheRunningGeneration(t
 		t.Fatalf("applied=%q activations=%d reported=%d, want the good generation kept and the problem re-reported each poll", cfg.Status().Applied, activator.count(), len(reported))
 	}
 }
+
+// projectedVolume lays root out the way kubelet publishes a ConfigMap or
+// projected volume: real files in a timestamped directory, ..data pointing at
+// it, and every top-level entry a symlink through ..data.
+func projectedVolume(t *testing.T, source, stamp string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "mount")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	publishProjected(t, root, source, stamp)
+	return root
+}
+
+func publishProjected(t *testing.T, root, source, stamp string) {
+	t.Helper()
+	dir := filepath.Join(root, "..2026_"+stamp)
+	if err := os.CopyFS(dir, os.DirFS(source)); err != nil {
+		t.Fatal(err)
+	}
+	next := filepath.Join(root, "..data_tmp")
+	if err := os.Symlink("..2026_"+stamp, next); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, filepath.Join(root, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		link := filepath.Join(root, entry.Name())
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		if err := os.Symlink(filepath.Join("..data", entry.Name()), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDirSourceReadsAKubernetesProjectedVolumeAndFollowsAtomicSwaps(t *testing.T) {
+	t.Parallel()
+	plain := demoDir(t)
+	mount := projectedVolume(t, plain, "01")
+	want, err := (DirSource{Root: plain, InstanceID: "instance-a"}).Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := DirSource{Root: mount, InstanceID: "instance-a"}
+	got, err := source.Load(t.Context())
+	if err != nil {
+		t.Fatalf("a projected volume was refused: %v", err)
+	}
+	if got.Digest != want.Digest || got.Config == nil || got.Set == nil {
+		t.Fatalf("projected digest %q != plain directory digest %q", got.Digest, want.Digest)
+	}
+	before, err := source.Fingerprint(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The kubelet updates by publishing a new timestamped directory and swapping
+	// ..data; the old directory is removed afterwards.
+	touchDefinition(t, plain)
+	publishProjected(t, mount, plain, "02")
+	if err := os.RemoveAll(filepath.Join(mount, "..2026_01")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := source.Fingerprint(t.Context())
+	if err != nil || after == before {
+		t.Fatalf("an atomic swap was not seen: %q -> %q (%v)", before, after, err)
+	}
+	next, err := source.Load(t.Context())
+	if err != nil || next.Digest == got.Digest {
+		t.Fatalf("swapped content not loaded: %q (%v)", next.Digest, err)
+	}
+}
+
+func TestDirConfigurationReportsAnUnreadableDirectoryWithoutFailingTheTick(t *testing.T) {
+	t.Parallel()
+	root := demoDir(t)
+	cfg, err := NewDirConfiguration(acceptAll, &countingActivator{}, DirSource{Root: root, InstanceID: "instance-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cfg.now = func() time.Time { return clock }
+	var reported []error
+	cfg.SetReporter(func(err error) { reported = append(reported, err) })
+	moved := root + ".away"
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Reload(t.Context()); err != nil || len(reported) != 1 {
+		t.Fatalf("an unreadable directory: err=%v reported=%d, want a reported problem and no tick failure", err, len(reported))
+	}
+	// Throttled until the interval passes, then retried; recovery applies.
+	if err := cfg.Reload(t.Context()); err != nil || len(reported) != 1 {
+		t.Fatalf("re-read inside the interval: err=%v reported=%d", err, len(reported))
+	}
+	if err := os.Rename(moved, root); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(DefaultPollInterval + time.Second)
+	if err := cfg.Reload(t.Context()); err != nil || cfg.Status().Applied == "" {
+		t.Fatalf("recovery after the directory returned: err=%v applied=%q", err, cfg.Status().Applied)
+	}
+}

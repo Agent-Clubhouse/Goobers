@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,33 @@ type DirSource struct {
 	InstanceID string
 }
 
-func (s DirSource) layout() instance.Layout { return instance.NewLayout(s.Root) }
+// resolved is one view of the mounted directory with every symlink followed.
+// A Kubernetes ConfigMap or projected volume publishes ..data -> ..<timestamp>
+// and symlinks each top-level entry through it, and swaps ..data atomically on
+// update. The generation builder and the definition walker refuse symlinked
+// roots (and the sibling goobers/ tree must stay beside config/), so each
+// operation works on the resolved real directories of one swap.
+type resolved struct {
+	configDir    string
+	instanceFile string
+}
+
+func (s DirSource) resolve() (resolved, error) {
+	root, err := filepath.EvalSymlinks(s.Root)
+	if err != nil {
+		return resolved{}, fmt.Errorf("resolve config directory: %w", err)
+	}
+	l := instance.NewLayout(root)
+	configDir, err := filepath.EvalSymlinks(l.ConfigDir())
+	if err != nil {
+		return resolved{}, fmt.Errorf("resolve config definitions: %w", err)
+	}
+	instanceFile, err := filepath.EvalSymlinks(l.ConfigFile())
+	if err != nil {
+		return resolved{}, fmt.Errorf("resolve instance config: %w", err)
+	}
+	return resolved{configDir: configDir, instanceFile: instanceFile}, nil
+}
 
 // Fingerprint is the cheap steady-state change signal: it covers everything a
 // candidate is built from, instance.yaml included (the archive excludes it, but
@@ -44,12 +71,15 @@ func (s DirSource) Fingerprint(ctx context.Context) (string, error) {
 }
 
 func (s DirSource) capture(ctx context.Context) (archive []byte, fingerprint string, err error) {
-	l := s.layout()
-	archive, digest, err := configgeneration.CaptureForInstance(ctx, l.ConfigDir(), s.InstanceID)
+	view, err := s.resolve()
+	if err != nil {
+		return nil, "", err
+	}
+	archive, digest, err := configgeneration.CaptureForInstance(ctx, view.configDir, s.InstanceID)
 	if err != nil {
 		return nil, "", fmt.Errorf("capture config generation: %w", err)
 	}
-	cfg, err := os.ReadFile(l.ConfigFile())
+	cfg, err := os.ReadFile(view.instanceFile)
 	if err != nil {
 		return nil, "", fmt.Errorf("read instance config: %w", err)
 	}
@@ -64,16 +94,19 @@ func (s DirSource) Load(ctx context.Context) (Candidate, error) {
 	if s.Root == "" || s.InstanceID == "" {
 		return Candidate{}, errors.New("cloud config source requires a directory and an instance")
 	}
-	l := s.layout()
+	view, err := s.resolve()
+	if err != nil {
+		return Candidate{}, err
+	}
 	archive, before, err := s.capture(ctx)
 	if err != nil {
 		return Candidate{}, err
 	}
-	cfg, err := instance.LoadConfig(l.ConfigFile())
+	cfg, err := instance.LoadConfig(view.instanceFile)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load instance config: %w", err)
 	}
-	set, report, err := instance.LoadConfigDir(l.ConfigDir())
+	set, report, err := instance.LoadConfigDir(view.configDir)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load config definitions: %w%s", err, issueSummary(report))
 	}
@@ -178,14 +211,18 @@ func (d *DirConfiguration) SetReporter(report func(error)) {
 func (d *DirConfiguration) Reload(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.seen != "" && d.now().Sub(d.checked) < d.interval {
+	if !d.checked.IsZero() && d.now().Sub(d.checked) < d.interval {
 		return nil
 	}
+	d.checked = d.now()
 	digest, err := d.source.Fingerprint(ctx)
 	if err != nil {
-		return fmt.Errorf("digest config directory: %w", err)
+		// Unreadable is the same class as invalid: the running generation stays,
+		// the problem is reported, and the next poll re-reads. A read failure must
+		// not fail the controller tick.
+		d.report(fmt.Errorf("digest config directory: %w", err))
+		return nil
 	}
-	d.checked = d.now()
 	if digest == d.seen {
 		return nil
 	}
