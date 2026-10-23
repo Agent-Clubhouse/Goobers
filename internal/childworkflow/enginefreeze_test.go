@@ -157,8 +157,11 @@ func TestEngineFreezeRefusesDrift(t *testing.T) {
 		"narrowed policy": func(f *freezeFixture) {
 			f.pinned.Admission.ParentTask.ChildWorkflows.AllowedCapabilities = []string{"agent:model"}
 		},
+		// A valid capability the parent stage declares, so the request passes
+		// validation and only the PolicyDigest check can refuse it.
 		"broadened policy": func(f *freezeFixture) {
-			f.pinned.Admission.GrantedCapabilities = append(f.pinned.Admission.GrantedCapabilities, "provider:repo:write")
+			f.pinned.Admission.ParentTask.Capabilities = append(f.pinned.Admission.ParentTask.Capabilities, "repo:push")
+			f.pinned.Admission.GrantedCapabilities = append(f.pinned.Admission.GrantedCapabilities, "repo:push")
 		},
 		"broadened publication": func(f *freezeFixture) { f.pinned.Admission.AllowPRPublication = !f.pinned.Admission.AllowPRPublication },
 		// The child runs only against the generation its parent was accepted under.
