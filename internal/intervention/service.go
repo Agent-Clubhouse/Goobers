@@ -1,8 +1,6 @@
 // Package intervention is the daemon's human-in-the-loop intervention
-// service: approve, override, rerun-stage and deny-escalation on a run that a
-// gate paused or escalated (#3066). Runner-driven runs resume through the
-// in-process runner; engine-driven runs are answered by the workflow that owns
-// them over the versioned HITL protocol (hitl.go).
+// service: approve, override, rerun-stage and deny-escalation on a local run
+// that a gate paused or escalated (#3066).
 //
 // The daemon's own collaborators (run location, the live runner registry,
 // pinned execution generations and the claim ledger) are supplied through
@@ -102,14 +100,10 @@ type Service struct {
 	claims              ClaimStore
 	engineDrivenRefusal func(runID, action string) error
 	errorLog            *log.Logger
-	// hitl delivers operator intents to engine-driven runs (#3883). When it
-	// is nil — a daemon with no engine client — engine-driven runs keep the
-	// #3847 refusal exactly as they had it.
-	hitl      atomic.Pointer[HITLDeliverer]
-	scheduler atomic.Pointer[localscheduler.Scheduler]
-	wg        *sync.WaitGroup
-	activeMu  sync.Mutex
-	active    map[string]struct{}
+	scheduler           atomic.Pointer[localscheduler.Scheduler]
+	wg                  *sync.WaitGroup
+	activeMu            sync.Mutex
+	active              map[string]struct{}
 }
 
 type resolvedInterventionRun struct {
@@ -124,15 +118,6 @@ type resolvedInterventionRun struct {
 	phase        journal.RunPhase
 	events       []journal.Event
 	terminalSeq  uint64
-	// engineDriven marks a run the Temporal engine owns. Its runner and
-	// machine fields are deliberately nil: nothing on the runner path is
-	// legitimate for it, and leaving them nil makes that unmistakable.
-	engineDriven bool
-	// generation is the engine's compare-and-set token — the number of
-	// terminals the run has produced. It is the ExpectedTerminalGeneration an
-	// operator intent must quote, and plays the role terminalSeq plays for
-	// runner-driven runs.
-	generation uint64
 }
 
 // New builds the intervention service over the daemon's collaborators.
@@ -147,30 +132,6 @@ func New(cfg Config) *Service {
 		errorLog:            cfg.ErrorLog,
 		wg:                  cfg.WaitGroup,
 	}
-}
-
-// AttachHITLDeliverer hands the service the engine-run delivery seam. It is
-// attached after boot, once the engine client and its workflow-id resolver
-// exist, for the same reason the scheduler is: the intervention service is
-// constructed before either.
-func (s *Service) AttachHITLDeliverer(deliverer HITLDeliverer) {
-	if s == nil || deliverer == nil {
-		return
-	}
-	s.hitl.Store(&deliverer)
-}
-
-// hitlDelivery returns the attached deliverer, or nil when this daemon has no
-// engine client and engine-driven runs must keep the #3847 refusal.
-func (s *Service) hitlDelivery() HITLDeliverer {
-	if s == nil {
-		return nil
-	}
-	deliverer := s.hitl.Load()
-	if deliverer == nil {
-		return nil
-	}
-	return *deliverer
 }
 
 // AttachScheduler hands the service the scheduler that admits resumed runs.
@@ -192,8 +153,6 @@ func (s *Service) AcceptApprove(admission, execution context.Context, input http
 }
 
 func (s *Service) prepareIntervention(
-	admission context.Context,
-	action hitlAction,
 	replayAction string,
 	input httpapi.InterventionRequest,
 ) (resolvedInterventionRun, *httpapi.InterventionResult, bool, error) {
@@ -201,12 +160,6 @@ func (s *Service) prepareIntervention(
 	if err != nil {
 		result := httpapi.InterventionResult{}
 		return resolvedInterventionRun{}, &result, true, err
-	}
-	// Engine runs deduplicate inside the workflow; they must never scan the
-	// daemon snapshot for runner-written replay markers.
-	if resolved.engineDriven {
-		result, err := s.deliverHITL(admission, action, resolved, input)
-		return resolved, &result, true, err
 	}
 	if result, replayed, err := replayIntervention(resolved, replayAction, input); replayed || err != nil {
 		return resolved, &result, true, err
@@ -222,7 +175,7 @@ func finishIntervention(action string, resolved resolvedInterventionRun, err err
 }
 
 func (s *Service) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
-	resolved, result, done, err := s.prepareIntervention(admission, hitlActionApprove, "approve", input)
+	resolved, result, done, err := s.prepareIntervention("approve", input)
 	if done {
 		return *result, err
 	}
@@ -315,7 +268,7 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 	if decision == "" {
 		decision = "pass"
 	}
-	resolved, result, done, err := s.prepareIntervention(admission, hitlActionOverride, "override", input)
+	resolved, result, done, err := s.prepareIntervention("override", input)
 	if done {
 		return *result, err
 	}
@@ -370,7 +323,7 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 	if addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
 	}
-	resolved, result, done, err := s.prepareIntervention(admission, hitlActionRerun, "rerun", input)
+	resolved, result, done, err := s.prepareIntervention("rerun", input)
 	if done {
 		return *result, err
 	}
@@ -460,9 +413,6 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 	resolved, err := s.resolve(input.RunID)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
-	}
-	if resolved.engineDriven {
-		return s.deliverHITL(admission, hitlActionDeny, resolved, input)
 	}
 	return s.denyEscalation(resolved, input)
 }
@@ -597,26 +547,12 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 	// Every intervention this service performs — approve, override, rerun,
 	// deny — either calls Runner.Resume/ResumeFromTerminal or appends to the
 	// run's journal directly. All four are wrong for a run the engine drives:
-	// the runner resolved below has never executed a stage of it, and its
-	// journal has a live writer on the other side of a Temporal workflow.
-	//
-	// #3883 gives those four verbs a second destination. An engine-driven run
-	// resolves HERE and returns early, carrying only the facts an operator
-	// intent needs — the run's identity and the terminal generation it is
-	// being issued against. It deliberately does NOT resolve a runner, a
-	// machine, or a goober digest: none of them may be touched for this run,
-	// and a nil field is a louder guarantee of that than a comment.
-	//
-	// A daemon with no deliverer attached (no engine client configured) keeps
-	// the #3847 refusal verbatim, so its behaviour is unchanged.
 	if identity.EngineDriven() {
-		if s.hitlDelivery() == nil {
-			return resolvedInterventionRun{}, interventionConflict(
-				"run_engine_driven",
-				s.engineDrivenRefusal(identity.RunID, "an operator intervention").Error(),
-			)
+		refusal := errors.New("engine-driven runs are managed by goobers-cloud")
+		if s.engineDrivenRefusal != nil {
+			refusal = s.engineDrivenRefusal(identity.RunID, "an operator intervention")
 		}
-		return s.resolveEngineDriven(runID, foundDir, identity.Gaggle, identity.Workflow, reader)
+		return resolvedInterventionRun{}, interventionConflict("run_engine_driven", refusal.Error())
 	}
 	execution, err := s.interventionExecution(identity, definitions, fallbackRunner)
 	if err != nil {
@@ -679,36 +615,6 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 		phase:        phase,
 		events:       events,
 		terminalSeq:  terminalSeq,
-	}, nil
-}
-
-// resolveEngineDriven builds the resolved run an operator intent is issued
-// against. It reads phase and events for the SAME reason the runner path does
-// — to report the run back to the operator and to compute the compare-and-set
-// token — and for no other: every decision about whether the intent may land
-// is the workflow's to make.
-func (s *Service) resolveEngineDriven(runID, runDir, gaggle, workflowName string, reader *journal.Reader) (resolvedInterventionRun, error) {
-	phase, err := reader.Phase()
-	if err != nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(
-			http.StatusInternalServerError, "run_read_failed", "run phase could not be read", err,
-		)
-	}
-	events, err := reader.Events()
-	if err != nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(
-			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
-		)
-	}
-	return resolvedInterventionRun{
-		runID:        runID,
-		runDir:       runDir,
-		gaggle:       gaggle,
-		workflow:     workflowName,
-		phase:        phase,
-		events:       events,
-		engineDriven: true,
-		generation:   terminalGeneration(events),
 	}, nil
 }
 

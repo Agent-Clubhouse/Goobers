@@ -2,10 +2,8 @@ package main
 
 import (
 	"slices"
-	"time"
 
 	"github.com/goobers/goobers/internal/blobstore"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -14,15 +12,13 @@ import (
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
 
-const engineTopologyRestartMessage = "adding or removing a gaggle requires a daemon restart while the engine is enabled (the live journal writer and projection reconciler are pinned to the boot-time gaggle set)"
+const engineTopologyRestartMessage = "adding or removing a gaggle requires a daemon restart while distributed journal writing is enabled"
 
 // engineTopologyChanged reports whether next's gaggle set differs from
-// current's (#3642). buildLiveJournalWriter's runsDirs and
-// launchEngineProjection's runsDirs (engineprojection.go) are each computed
-// once from configuredGaggleNames(set) at boot and never rebuilt on config
-// reload, so a gaggle added or removed after boot would otherwise run with
-// no journal or projection support until a restart, silently — a reload
-// that changes the engine-visible gaggle set must instead be rejected the
+// current's (#3642). buildLiveJournalWriter's runsDirs are computed once from
+// configuredGaggleNames(set) at boot and never rebuilt on config reload, so a
+// gaggle added or removed after boot would otherwise run with no journal
+// support until a restart. A reload that changes the visible gaggle set is rejected the
 // same way webhookListenerTopologyChanged already rejects a webhook
 // listener topology change. A nil/disabled engine has no such boot-pinned
 // consumer, so only matters while EngineProjectionEnabled.
@@ -34,34 +30,15 @@ func engineTopologyChanged(current, next *instance.ConfigSet, cfg *instance.Conf
 }
 
 // journalplane.go wires the daemon side of the write API's journal plane
-// (distributed-state-and-coordination.md §7/§8, DS4/DS5): the live journal
-// writer that authors engine-run journals from emitted events, the HTTP
-// service in front of it, and the divergence channel the demoted repair
-// projection files into.
+// (distributed-state-and-coordination.md §7/§8, DS4): the live journal writer
+// that authors distributed journals from emitted events and its HTTP service.
 
-// liveJournalDivergenceCode is the stable instance-journal error code a
-// live-vs-projected divergence (DS5) is filed under — the named channel the
-// #2871 parity ledger reads.
-const liveJournalDivergenceCode = "live_journal_divergence"
-
-// liveJournalIdleClose is how long a live run's journal handle may sit
-// without an emission before the writer releases it (the run-dir lock
-// included), so the stalled-run sweep — whose default silence threshold is
-// 45 minutes and never shorter than this — can terminalize a wedged run
-// instead of timing out against the writer's lock. A later emission
-// transparently reopens.
-const liveJournalIdleClose = 10 * time.Minute
-
-// newLiveJournalWriter is buildLiveJournalWriter behind a var, so up.go's
-// call — and specifically that it hands over the SAME blob store it hands
-// startEngineProjection — is assertable at the call site rather than one
-// level below it (#3805 is a bug that lived in an unexercised call site).
+// newLiveJournalWriter is buildLiveJournalWriter behind a var so up.go's
+// construction remains assertable at the call site.
 var newLiveJournalWriter = buildLiveJournalWriter
 
-// buildLiveJournalWriter builds the daemon's live journal writer when the
-// engine is configured — the same gate as the projection loop, because the
-// writer and the demoted reconciler are two halves of one authority story
-// (DS4/DS5). Returns nil (not an error) for an instance with no engine.
+// buildLiveJournalWriter builds the daemon's stage-pod journal writer when
+// distributed execution is configured. Returns nil for a local-only instance.
 //
 // blobs is the span source (#3805): the daemon's own blob store, which is
 // also what a mode-3 stage pod PUTs its scrubbed transcript into over the
@@ -69,11 +46,6 @@ var newLiveJournalWriter = buildLiveJournalWriter
 // every pod-executed agentic stage records an error.code=span_unavailable
 // event in place of its span.recorded — measured on five live runs. nil is
 // accepted and keeps the old degrade-softly behaviour.
-//
-// The SAME store must reach the reconciler (startEngineProjection ->
-// CompletedRunReconciler.WithSpanSource), or DS5's verification re-projection
-// will disagree with this writer by exactly one normative event per
-// transcript-carrying run.
 func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store, providerQuota *localscheduler.ProviderQuotaState) (*livejournal.Writer, error) {
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
 		return nil, nil
@@ -99,13 +71,6 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 		// queues Backprop stage checkpoints for stage-granular workflows.
 		opts = append(opts, livejournal.WithContextObserver(observer))
 	}
-	// #3876 (decision 005 D1): an engine-driven stage's rate-limited failure
-	// reaches this daemon only as a journal append, and the scheduler's quota
-	// state has to learn about it MID-RUN or it keeps admitting runs that are
-	// all going to fail the same way. See engineRateLimitObserver.
-	if opt := engineRateLimitOption(providerQuota); opt != nil {
-		opts = append(opts, opt)
-	}
 	if instanceLog != nil {
 		// The destination of a pod's OpInstanceAnnotation (Goobers#3898): the
 		// scheduler's cross-run narration belongs in THIS file, on the
@@ -120,21 +85,4 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 		dir, ok := runsDirs[gaggle]
 		return dir, ok
 	}, opts...)
-}
-
-// liveJournalDivergenceReporter files one DS5 divergence (or a visible
-// backfill annotation) into the instance journal under the stable code.
-// Best-effort like the claims plane's own annotations: the reconcile outcome
-// is already decided by the caller.
-func liveJournalDivergenceReporter(log *journal.InstanceLog) engine.DivergenceReporter {
-	if log == nil {
-		return nil
-	}
-	return func(runID, detail string) {
-		log.AppendBestEffort(journal.Event{
-			Type:  journal.EventError,
-			RunID: runID,
-			Error: &journal.ErrorDetail{Code: liveJournalDivergenceCode, Message: detail},
-		})
-	}
 }

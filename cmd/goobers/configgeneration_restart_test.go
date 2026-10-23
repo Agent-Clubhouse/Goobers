@@ -79,11 +79,11 @@ func TestUpPinsExecutionGenerationAcrossReloadAndRestart(t *testing.T) {
 			}
 			t.Cleanup(func() { newAgenticAdapter = previous })
 			stop := startGenerationTestDaemon(t, root)
-			requestID, err := writeTriggerRequestContext(t.Context(), l.SchedulerDir(), "example", "acceptance")
+			requestID, err := writeTriggerRequestContextOptions(t.Context(), l.SchedulerDir(), "example", "acceptance", false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			runID, err := pollTriggerResponse(t.Context(), l.SchedulerDir(), requestID, 10*time.Second)
+			runID, err := pollTriggerResponseForTest(t.Context(), l.SchedulerDir(), requestID, 10*time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}

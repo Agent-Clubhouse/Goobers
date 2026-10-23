@@ -316,15 +316,9 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
 	}
-	hooks := &engineTerminalHooks{
-		finalize: func(id string, _ journal.RunPhase) error {
-			return releaseClaimsForRun(layout, nil, id)
-		},
+	if err := releaseClaimsForRun(layout, nil, runID); err != nil {
+		t.Fatal(err)
 	}
-	hooks.run(context.Background(), engineTerminalOutcome{
-		RunID: runID, Gaggle: "goobers", Workflow: "implementation",
-		Phase: journal.PhaseFailed, Err: env.GetWorkflowError(),
-	})
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)

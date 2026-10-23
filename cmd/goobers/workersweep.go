@@ -18,12 +18,8 @@ package main
 // execution. An unreachable frontend, a timed-out describe, an ambiguous
 // answer: all leave the pod. Its always-on activeDeadlineSeconds eventually
 // stops the container, but the Pod object remains until an explicit deletion.
-// That direction is the whole point. Decision 003
-// rejected the in-process-dispatcher option partly because the pre-existing
-// sweep was fail-closed toward DELETION and "would delete the worker's
-// engine-start pods"; deleting a pod whose stage is still running destroys
-// in-flight work, and for a mutating stage (open-pr, push-branch, merge-pr)
-// does it where nobody sees.
+// Deleting a pod whose stage is still running destroys in-flight work, and
+// for a mutating stage does it where nobody sees.
 
 import (
 	"context"

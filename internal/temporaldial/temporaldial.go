@@ -1,8 +1,6 @@
 // Package temporaldial is the one place a goobers process builds the options
-// it dials a Temporal frontend with (#5289). Every dial site — the daemon's
-// shared engine client, the worker host and its orphan sweep, the
-// engine-start/-project/-queues commands and the k8s preflight — goes through
-// Options, so transport security is configured once rather than five times.
+// it dials a Temporal frontend with (#5289). Worker hosts, orphan sweeps and
+// Kubernetes preflight use Options so transport security is configured once.
 //
 // TLS is opt-in. A nil *TLS keeps the plaintext transport a local dev Temporal
 // expects; every dial also carries heartbeat transport diagnostics. There is

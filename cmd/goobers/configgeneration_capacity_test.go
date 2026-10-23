@@ -193,11 +193,11 @@ func testUpAtProtectedGenerationCapacity(t *testing.T, legacy, compact bool) {
 	if code := runDiagnosticsBundle([]string{"--json", "--run", "retained-63", root}, &diagnostics, &diagnosticErrors); code != 0 || !json.Valid(diagnostics.Bytes()) {
 		t.Fatalf("diagnostics unavailable at capacity: code=%d stderr=%s", code, diagnosticErrors.String())
 	}
-	requestID, err := writeTriggerRequestContext(t.Context(), layout.SchedulerDir(), "example", "default-implement")
+	requestID, err := writeTriggerRequestContextOptions(t.Context(), layout.SchedulerDir(), "example", "default-implement", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID, err := pollTriggerResponse(t.Context(), layout.SchedulerDir(), requestID, 15*time.Second)
+	runID, err := pollTriggerResponseForTest(t.Context(), layout.SchedulerDir(), requestID, 15*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

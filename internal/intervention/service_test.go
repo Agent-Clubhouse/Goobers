@@ -574,25 +574,21 @@ func TestRunInterventionIdempotencyReplaysCompletedAction(t *testing.T) {
 func TestPrepareInterventionReplaysCompletedActions(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
-		action     hitlAction
 		completion journal.Event
 		input      httpapi.InterventionRequest
 	}{
 		{
 			name:       "approve",
-			action:     hitlActionApprove,
 			completion: journal.Event{Type: journal.EventGateEvaluated, Gate: "review"},
 			input:      httpapi.InterventionRequest{Stage: "review", Decision: "pass"},
 		},
 		{
 			name:       "override",
-			action:     hitlActionOverride,
 			completion: journal.Event{Type: journal.EventRunResumed, Action: "override", Gate: "review"},
 			input:      httpapi.InterventionRequest{Stage: "review", Decision: "pass", Rationale: "manual review"},
 		},
 		{
 			name:       "rerun",
-			action:     hitlActionRerun,
 			completion: journal.Event{Type: journal.EventStageRerunRequested, Stage: "implement"},
 			input:      httpapi.InterventionRequest{Stage: "implement", InstructionAddendum: "try again"},
 		},
@@ -619,7 +615,7 @@ func TestPrepareInterventionReplaysCompletedActions(t *testing.T) {
 				{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
 			})
 
-			_, result, done, err := service.prepareIntervention(context.Background(), tc.action, tc.name, input)
+			_, result, done, err := service.prepareIntervention(tc.name, input)
 			if err != nil {
 				t.Fatalf("prepareIntervention: %v", err)
 			}

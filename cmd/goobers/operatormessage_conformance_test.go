@@ -7,26 +7,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/livejournal"
 )
 
-// The operator-message conformance suite runs identical request vectors against
-// the local-runner and Temporal-engine daemon fixtures and compares the
-// normalized journal-visible request, mode, acknowledgement, and terminal
-// outcome semantics. A vector may declare an intentional adapter divergence
-// (documented in docs/reference/engine-parity.md); such a vector must actually
-// diverge and is pinned by per-adapter assertions, so neither an undeclared
-// divergence nor a stale declaration can pass silently.
+// The operator-message conformance suite runs request vectors against the
+// local-runner daemon fixture.
 
 const (
 	omConformanceRunID = "conformance-run"
@@ -34,13 +26,11 @@ const (
 )
 
 type omConformanceAdapter struct {
-	name   string
-	engine bool
+	name string
 }
 
 var omConformanceAdapters = []omConformanceAdapter{
 	{name: "local"},
-	{name: "temporal", engine: true},
 }
 
 type omConformanceTarget struct {
@@ -108,7 +98,6 @@ type omConformanceFixture struct {
 	service      *daemonRunJournalService
 	addresses    map[string]string
 	targets      map[string]*fakeOperatorMessageTarget
-	receipts     *operatorReceiptSink
 }
 
 func omConformanceSubmit(agent string, mutate func(*httpapi.OperatorMessageSubmissionRequest)) func(func(string) string) httpapi.OperatorMessageSubmissionRequest {
@@ -291,11 +280,7 @@ func omConformanceVectors() []omConformanceVector {
 			agents:      []string{"agent-a"},
 			submissions: []func(func(string) string) httpapi.OperatorMessageSubmissionRequest{omConformanceSubmit("agent-a", nil)},
 			divergence:  "local records next-attempt without an outcome; Temporal rejects live_delivery_unsupported",
-			check: func(t *testing.T, adapter omConformanceAdapter, obs omConformanceObservation) {
-				if adapter.engine {
-					omConformanceWantOutcome(t, obs, apiv1.OperatorMessageRejected, "live_delivery_unsupported")
-					return
-				}
+			check: func(t *testing.T, _ omConformanceAdapter, obs omConformanceObservation) {
 				omConformanceWantPendingNextAttempt(t, obs)
 			},
 		},
@@ -304,11 +289,7 @@ func omConformanceVectors() []omConformanceVector {
 			agents:      []string{"agent-a"},
 			submissions: []func(func(string) string) httpapi.OperatorMessageSubmissionRequest{omConformanceSubmit("agent-gone", nil)},
 			divergence:  "local records next-attempt without an outcome; Temporal rejects target_unavailable",
-			check: func(t *testing.T, adapter omConformanceAdapter, obs omConformanceObservation) {
-				if adapter.engine {
-					omConformanceWantOutcome(t, obs, apiv1.OperatorMessageRejected, "target_unavailable")
-					return
-				}
+			check: func(t *testing.T, _ omConformanceAdapter, obs omConformanceObservation) {
 				omConformanceWantPendingNextAttempt(t, obs)
 			},
 		},
@@ -318,11 +299,7 @@ func omConformanceVectors() []omConformanceVector {
 			restartStage: true,
 			submissions:  []func(func(string) string) httpapi.OperatorMessageSubmissionRequest{omConformanceSubmit("agent-a", nil)},
 			divergence:   "local records next-attempt without an outcome; Temporal rejects target_unavailable",
-			check: func(t *testing.T, adapter omConformanceAdapter, obs omConformanceObservation) {
-				if adapter.engine {
-					omConformanceWantOutcome(t, obs, apiv1.OperatorMessageRejected, "target_unavailable")
-					return
-				}
+			check: func(t *testing.T, _ omConformanceAdapter, obs omConformanceObservation) {
 				omConformanceWantPendingNextAttempt(t, obs)
 			},
 		},
@@ -332,11 +309,7 @@ func omConformanceVectors() []omConformanceVector {
 			terminal:    true,
 			submissions: []func(func(string) string) httpapi.OperatorMessageSubmissionRequest{omConformanceSubmit("agent-a", nil)},
 			divergence:  "local records next-attempt without an outcome; Temporal rejects target_terminal",
-			check: func(t *testing.T, adapter omConformanceAdapter, obs omConformanceObservation) {
-				if adapter.engine {
-					omConformanceWantOutcome(t, obs, apiv1.OperatorMessageRejected, "target_terminal")
-					return
-				}
+			check: func(t *testing.T, _ omConformanceAdapter, obs omConformanceObservation) {
 				omConformanceWantPendingNextAttempt(t, obs)
 			},
 		},
@@ -346,27 +319,11 @@ func omConformanceVectors() []omConformanceVector {
 func TestOperatorMessageLocalTemporalConformance(t *testing.T) {
 	for _, vector := range omConformanceVectors() {
 		t.Run(vector.name, func(t *testing.T) {
-			observations := make(map[string]omConformanceObservation, len(omConformanceAdapters))
 			for _, adapter := range omConformanceAdapters {
 				t.Run(adapter.name, func(t *testing.T) {
 					obs := runOMConformanceVector(t, adapter, vector)
 					vector.check(t, adapter, obs)
-					observations[adapter.name] = obs
 				})
-			}
-			if t.Failed() {
-				return
-			}
-			local, temporal := observations["local"], observations["temporal"]
-			equivalent := reflect.DeepEqual(local.Responses, temporal.Responses) &&
-				reflect.DeepEqual(local.Records, temporal.Records) &&
-				reflect.DeepEqual(local.Deliveries, temporal.Deliveries)
-			switch {
-			case vector.divergence == "" && !equivalent:
-				t.Fatalf("undeclared adapter divergence:\nlocal    = %+v %+v %v\ntemporal = %+v %+v %v",
-					local.Responses, local.Records, local.Deliveries, temporal.Responses, temporal.Records, temporal.Deliveries)
-			case vector.divergence != "" && equivalent:
-				t.Fatalf("declared divergence %q no longer diverges; remove the declaration and its documentation", vector.divergence)
 			}
 		})
 	}
@@ -418,21 +375,15 @@ func runOMConformanceVector(t *testing.T, adapter omConformanceAdapter, vector o
 		obs.Records = append(obs.Records, normalizeOMConformanceRecord(record, reverse))
 	}
 	obs.persisted = readOMConformanceRunDir(t, fixture.layoutRunDir)
-	if adapter.engine {
-		assertOMConformanceReceipts(t, fixture.receipts, records, obs.Responses, vector.terminal)
-	}
 	return obs
 }
 
-func newOMConformanceFixture(t *testing.T, adapter omConformanceAdapter, vector omConformanceVector) *omConformanceFixture {
+func newOMConformanceFixture(t *testing.T, _ omConformanceAdapter, vector omConformanceVector) *omConformanceFixture {
 	t.Helper()
 	layout := crossRunTestLayout(t)
 	identity := journal.RunIdentity{
 		RunID: omConformanceRunID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: crossRunTestGaggle,
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-	}
-	if adapter.engine {
-		identity.Driver = journal.DriverEngine
 	}
 	run, err := journal.Create(layout.ForGaggle(crossRunTestGaggle).RunsDir(), identity, nil)
 	if err != nil {
@@ -457,18 +408,6 @@ func newOMConformanceFixture(t *testing.T, adapter omConformanceAdapter, vector 
 		fixture.targets[agent] = registerOperatorMessageTarget(t, fixture.addresses[agent], spec.modes, spec.err)
 	}
 	fixture.service = newDaemonRunJournalService(layout, nil)
-	if adapter.engine {
-		writer, err := livejournal.NewWriter(func(gaggle string) (string, bool) {
-			return layout.ForGaggle(gaggle).RunsDir(), gaggle == crossRunTestGaggle
-		}, livejournal.WithScrubber(journal.NewPatternScrubber()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(writer.Close)
-		fixture.receipts = &operatorReceiptSink{}
-		fixture.service.operatorMessages.Writer = writer
-		fixture.service.operatorMessages.Deliverer = fixture.receipts
-	}
 	return fixture
 }
 
@@ -588,39 +527,6 @@ func readOMConformanceRunDir(t *testing.T, dir string) []byte {
 		t.Fatal(err)
 	}
 	return persisted
-}
-
-// assertOMConformanceReceipts pins the Temporal-only receipt surface: every
-// open-run submission that succeeded commits exactly one receipt carrying the
-// replayed terminal disposition by content-free reference, and terminal runs
-// never attempt a workflow update.
-func assertOMConformanceReceipts(t *testing.T, sink *operatorReceiptSink, records []apiv1.OperatorMessageRecord, responses []omConformanceResponse, terminal bool) {
-	t.Helper()
-	if terminal {
-		if len(sink.receipts) != 0 {
-			t.Fatalf("terminal run produced workflow receipts: %+v", sink.receipts)
-		}
-		return
-	}
-	succeeded := 0
-	for _, response := range responses {
-		if response.Status == 0 {
-			succeeded++
-		}
-	}
-	if len(sink.receipts) != succeeded {
-		t.Fatalf("workflow receipts = %d, want one per successful open-run submission (%d)", len(sink.receipts), succeeded)
-	}
-	byReference := make(map[string]apiv1.OperatorMessageRecord, len(records))
-	for _, record := range records {
-		byReference[engine.OperatorMessageReference(omConformanceRunID, record.Request.IdempotencyKey)] = record
-	}
-	for _, receipt := range sink.receipts {
-		record, ok := byReference[receipt.Reference]
-		if !ok || record.Outcome == nil || receipt.State != record.State || receipt.Code != record.Outcome.Code {
-			t.Fatalf("receipt %+v does not match journal record %+v", receipt, record)
-		}
-	}
 }
 
 func omConformanceWantOutcome(t *testing.T, obs omConformanceObservation, status apiv1.OperatorMessageOutcomeStatus, code string) {

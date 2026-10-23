@@ -92,8 +92,6 @@ func TestAuthoringCommandsRefuseHistoricalRoot(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"signal", "test", root},
-		{"engine-start", "default-implement", root},
-		{"engine-project", "--gaggle=example", "run-1", root},
 		{"self-update", root},
 		{"fix", "--to=2.0", "--write", root},
 		{"connect", "acme/web", "--token-env=GOOBERS_UNUSED_AUTHORING_TEST_TOKEN", root},
