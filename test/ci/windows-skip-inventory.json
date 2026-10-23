@@ -199,6 +199,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/clidocs",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/cloud/acceptance",
       "coverage": "none",
       "category": "not-selected",
@@ -223,16 +229,16 @@
       "reason": "Cloud PostgreSQL configuration tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/podauth",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud grant-revocation and auth assembly tests run in Linux unit and cloud-pg jobs; shared key-ring portability is covered in internal/podauth, and the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/startfence",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud control-plane policy has no Windows-specific seam; unit and PostgreSQL integration tests run on Linux."
-    },
-    {
-      "package": "internal/clidocs",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
       "package": "internal/clustercheck",
@@ -355,6 +361,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/diagnostics",
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Only ^TestOperational runs, in the 'Windows offline diagnostic evidence' step."
+    },
+    {
       "package": "internal/diagnostics/executiondeadline",
       "coverage": "none",
       "category": "not-selected",
@@ -365,12 +377,6 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
-    },
-    {
-      "package": "internal/diagnostics",
-      "coverage": "partial",
-      "category": "seam-selection",
-      "reason": "Only ^TestOperational runs, in the 'Windows offline diagnostic evidence' step."
     },
     {
       "package": "internal/dispatcher",
@@ -415,13 +421,13 @@
       "reason": "Extracted from cmd/goobers (#3054), whose Windows steps never selected the terminal-handler tests; the notification policy runs against in-memory fakes on the Linux unit shards only."
     },
     {
-      "package": "internal/externaltelemetry/adx",
+      "package": "internal/externaltelemetry",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/externaltelemetry",
+      "package": "internal/externaltelemetry/adx",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -685,6 +691,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/planehttp",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/platform/cgroupfs",
       "coverage": "none",
       "category": "not-selected",
@@ -725,12 +737,6 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Child admission tests cover durable custody, signed stage authority, or workspace-contained source transport on Windows; the remaining package suite runs on Linux."
-    },
-    {
-      "package": "internal/planehttp",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
       "package": "internal/portalassets",
@@ -949,6 +955,18 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/sweepreport",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Sweep error reporting extracted from cmd/goobers; the Windows CLI test selection did not run its rate-limit unit test. Runs on the Linux unit shards."
+    },
+    {
+      "package": "internal/telemetry",
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Only the journal OTLP and Azure Monitor replay tests run, in the 'Windows journal OTLP export' step."
+    },
+    {
       "package": "internal/telemetry/ingest",
       "coverage": "none",
       "category": "not-selected",
@@ -965,18 +983,6 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the two runtime-alias dedup tests run ('Windows rollup migration alias dedup'); the rest of the ~15s suite is not Windows-sensitive."
-    },
-    {
-      "package": "internal/sweepreport",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Sweep error reporting extracted from cmd/goobers; the Windows CLI test selection did not run its rate-limit unit test. Runs on the Linux unit shards."
-    },
-    {
-      "package": "internal/telemetry",
-      "coverage": "partial",
-      "category": "seam-selection",
-      "reason": "Only the journal OTLP and Azure Monitor replay tests run, in the 'Windows journal OTLP export' step."
     },
     {
       "package": "internal/telemetryclient",
@@ -1087,6 +1093,12 @@
       "reason": "Portable Temporal routing assessment over a fake deployment client; no Windows-specific seam. Runs on the Linux unit shards only."
     },
     {
+      "package": "internal/workflow",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/workflow/internal/model",
       "coverage": "none",
       "category": "not-selected",
@@ -1106,12 +1118,6 @@
     },
     {
       "package": "internal/workflow/v_3_0",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
-    },
-    {
-      "package": "internal/workflow",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -1165,25 +1171,25 @@
       "reason": "Only the integration-tagged Azure CLI credential tests run; default-tag tests do not."
     },
     {
-      "package": "release/notes",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
-    },
-    {
       "package": "release",
       "coverage": "partial",
       "category": "cost",
       "reason": "Whole package ~2.75min on Windows. Toolkit and install-script tests are named in the 'Windows release packaging' step."
     },
     {
-      "package": "telemetryconnector/v1alpha1/contracttest",
+      "package": "release/notes",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
       "package": "telemetryconnector/v1alpha1",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "telemetryconnector/v1alpha1/contracttest",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -1231,6 +1237,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/complexitygate",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
       "package": "test/componentizationbaseline/inventory",
       "coverage": "none",
       "category": "not-selected",
@@ -1238,12 +1250,6 @@
     },
     {
       "package": "test/componentizationbaseline/timing",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
-    },
-    {
-      "package": "test/complexitygate",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
