@@ -81,6 +81,12 @@ func (c *capturingDeterministic) captured() []apiv1.InvocationEnvelope {
 	return append([]apiv1.InvocationEnvelope(nil), c.envs...)
 }
 
+func (c *capturingDeterministic) capturedRuns() []apiv1.DeterministicRun {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]apiv1.DeterministicRun(nil), c.runs...)
+}
+
 // TestBuildInvocationCompleteEnvelope is #621's headline acceptance: the
 // engine-built envelope carries workspace, limits, capabilities, and the rest
 // of the closed invocation schema's fields, and the JSON it serializes to
