@@ -61,6 +61,15 @@ func ReconcileGrants(ctx context.Context, tx pgx.Tx, inventory Inventory) error 
 	if err != nil {
 		return err
 	}
+	functions, err := loadFunctions(ctx, tx)
+	if err != nil {
+		return err
+	}
+	functionGrants, err := functionStatements(inventory, functions)
+	if err != nil {
+		return err
+	}
+	statements = append(statements, functionGrants...)
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("reconcile cloud grants: %s: %w", statement, err)
@@ -240,7 +249,8 @@ func tableGrants(table Table) []string {
 func ident(name string) string { return pgx.Identifier{name}.Sanitize() }
 
 // Privilege is one effective privilege of a runtime role. Column is "*" for a
-// whole-relation privilege and Object is empty for a schema privilege.
+// whole-relation privilege, the identity arguments for a function, and Object
+// is empty for a schema privilege.
 type Privilege struct {
 	Role, Schema, Object, Column, Operation string
 }
@@ -286,6 +296,11 @@ func (inventory Inventory) ExpectedPrivileges() map[Privilege]bool {
 			expected[Privilege{role, schema, "", "", "USAGE"}] = true
 		}
 	}
+	for _, function := range inventory.Functions {
+		for _, role := range function.Execute {
+			expected[Privilege{role, function.Schema, function.Name, function.Arguments, "EXECUTE"}] = true
+		}
+	}
 	return expected
 }
 
@@ -320,7 +335,7 @@ WHERE ` + systemSchemas + ` AND has_schema_privilege(r.role, n.oid, p.op)`
 func EffectivePrivileges(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }) (map[Privilege]bool, error) {
-	rows, err := q.Query(ctx, effectivePrivileges, RuntimeRoles)
+	rows, err := q.Query(ctx, effectivePrivileges+"\nUNION ALL"+effectiveFunctionPrivileges, RuntimeRoles)
 	if err != nil {
 		return nil, fmt.Errorf("read effective cloud privileges: %w", err)
 	}

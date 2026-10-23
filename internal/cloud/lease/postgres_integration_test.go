@@ -18,7 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
-	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 )
 
 func TestLeaseRenewNotBlockedByFencedTx(t *testing.T) {
@@ -547,7 +547,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(t.Context(), "DROP SCHEMA IF EXISTS control CASCADE"); err != nil {
 		t.Fatal(err)
 	}
-	ensureRuntimeRoles(t, pool)
+	pgtest.EnsureRoles(t, pool)
 	catalog, err := migrate.Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -615,19 +615,5 @@ func waitForTakeoverLock(t *testing.T, observer *pgxpool.Conn) {
 			t.Fatal("no contender reached the authority-row lock")
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// ensureRuntimeRoles stands in for goobers-cloud bootstrap's role
-// provisioning, which migrate requires. Roles are cluster-wide, so concurrent
-// test packages may race to create them.
-func ensureRuntimeRoles(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	for _, role := range cloudschema.RuntimeRoles {
-		if _, err := pool.Exec(t.Context(), fmt.Sprintf(`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN CREATE ROLE %s NOLOGIN; END IF;
-			EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`, role, role)); err != nil {
-			t.Fatal(err)
-		}
 	}
 }

@@ -89,3 +89,36 @@ func TestExpectedPrivilegesIncludeSequencesAndSchemas(t *testing.T) {
 		t.Error("goobers_api gets USAGE on a schema where the inventory grants it nothing")
 	}
 }
+
+func TestFunctionStatementsRevokeAndRefuseDefiners(t *testing.T) {
+	inventory := Inventory{Functions: []Function{
+		{Schema: "control", Name: "allowed", Arguments: "integer", Rationale: "test", Execute: []string{"goobers_controller"}},
+		{Schema: "control", Name: "definer", Arguments: "", Rationale: "test", SecurityDefiner: true},
+	}}
+	statements, err := functionStatements(inventory, []function{
+		{schema: "control", name: "allowed", arguments: "integer", owner: "goobers_owner"},
+		{schema: "control", name: "guard", arguments: "", owner: "goobers_owner"},
+		{schema: "control", name: "definer", arguments: "", owner: "goobers_owner", securityDefiner: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`REVOKE ALL ON FUNCTION "control"."allowed"(integer) FROM PUBLIC, goobers_api, goobers_controller`,
+		`GRANT EXECUTE ON FUNCTION "control"."allowed"(integer) TO goobers_controller`,
+		`REVOKE ALL ON FUNCTION "control"."guard"() FROM PUBLIC, goobers_api, goobers_controller`,
+		`REVOKE ALL ON FUNCTION "control"."definer"() FROM PUBLIC, goobers_api, goobers_controller`,
+	}
+	if !slices.Equal(statements, want) {
+		t.Fatalf("statements:\n%s\nwant:\n%s", strings.Join(statements, "\n"), strings.Join(want, "\n"))
+	}
+	for name, f := range map[string]function{
+		"undeclared definer":          {schema: "control", name: "sneaky", owner: "goobers_owner", securityDefiner: true},
+		"definer declared as invoker": {schema: "control", name: "allowed", arguments: "integer", owner: "goobers_owner", securityDefiner: true},
+		"runtime-role owner":          {schema: "control", name: "guard", owner: "goobers_controller"},
+	} {
+		if _, err := functionStatements(inventory, []function{f}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

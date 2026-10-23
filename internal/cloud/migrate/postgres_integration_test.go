@@ -4,7 +4,6 @@ package migrate
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -12,12 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 )
 
 func TestPostgresMigrationApply(t *testing.T) {
 	pool := privatePool(t)
-	ensureRuntimeRoles(t, pool)
+	pgtest.EnsureRoles(t, pool)
 	catalog, err := Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -93,20 +92,6 @@ func TestPartitionIndexRetryRepairsInvalidAndReapplies(t *testing.T) {
 	}
 	if !valid || !attached {
 		t.Fatalf("repaired index valid=%v attached=%v", valid, attached)
-	}
-}
-
-// ensureRuntimeRoles stands in for goobers-cloud bootstrap's role
-// provisioning, which migrate requires. Roles are cluster-wide, so concurrent
-// test packages may race to create them.
-func ensureRuntimeRoles(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	for _, role := range cloudschema.RuntimeRoles {
-		if _, err := pool.Exec(t.Context(), fmt.Sprintf(`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN CREATE ROLE %s NOLOGIN; END IF;
-			EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`, role, role)); err != nil {
-			t.Fatal(err)
-		}
 	}
 }
 
