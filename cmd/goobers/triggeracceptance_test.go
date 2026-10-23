@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,41 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
+
+type dispatchContextRecorder struct {
+	mu          sync.Mutex
+	requestCtx  context.Context
+	dispatchCtx context.Context
+	calls       int
+}
+
+func (r *dispatchContextRecorder) record(ctx, dispatchCtx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requestCtx, r.dispatchCtx = ctx, dispatchCtx
+	r.calls++
+}
+
+func (r *dispatchContextRecorder) TriggerWithDispatchContextOptions(ctx, dispatchCtx context.Context, _ string, _ time.Time, _ localscheduler.ManualTriggerOptions) (string, error) {
+	r.record(ctx, dispatchCtx)
+	return "run-1", nil
+}
+
+func (r *dispatchContextRecorder) TriggerExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, _ localscheduler.WorkflowIdentity, _ time.Time, _ localscheduler.ManualTriggerOptions) (string, error) {
+	r.record(ctx, dispatchCtx)
+	return "run-1", nil
+}
+
+func (r *dispatchContextRecorder) TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, _ localscheduler.WorkflowIdentity, _ string, _ time.Time) (string, error) {
+	r.record(ctx, dispatchCtx)
+	return "run-1", nil
+}
+
+func (r *dispatchContextRecorder) snapshot() (context.Context, context.Context, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.requestCtx, r.dispatchCtx, r.calls
+}
 
 func acceptedService(t *testing.T, path string, dispatch *daemonTriggerService) *durableTriggerService {
 	t.Helper()

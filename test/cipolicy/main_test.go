@@ -62,6 +62,29 @@ func TestClassifyDiff(t *testing.T) {
 			if got != tc.want || (err != nil) != tc.wantErr {
 				t.Fatalf("profile=%q error=%v, want %q error=%v", got, err, tc.want, tc.wantErr)
 			}
+
+		})
+	}
+}
+
+func TestCloudScopeProfile(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"internal/cloud/store/postgres.go", true},
+		{"cmd/goobers-cloud/main.go", true},
+		{"deploy/cloud/api.yaml", true},
+		{"migrations/001.sql", true},
+		{"internal/journal/store.go", true},
+		{"cmd/goobers/main.go", false},
+		{"portal/src/App.tsx", false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			got, err := classifyCloudDiff(rawChange("M", "100644", "100644", tc.path))
+			if err != nil || got != tc.want {
+				t.Fatalf("cloud=%v error=%v, want %v", got, err, tc.want)
+			}
 		})
 	}
 }
@@ -139,7 +162,7 @@ func TestClassificationErrorsRetainFullCIWithWarning(t *testing.T) {
 			env := map[string]string{"CI_EVENT_NAME": "pull_request", "BASE_SHA": tc.base, "HEAD_SHA": headSHA}
 			var stdout, stderr bytes.Buffer
 			code := run([]string{"classify"}, func(key string) string { return env[key] }, tc.git, &stdout, &stderr)
-			if code != 0 || stdout.String() != "profile=full\n" || !strings.Contains(stderr.String(), "::warning::") {
+			if code != 0 || stdout.String() != "profile=full\ncloud=true\n" || !strings.Contains(stderr.String(), "::warning::") {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
@@ -155,7 +178,10 @@ func gateResults(profile string) map[string]jobResult {
 		}
 		needs[name] = jobResult{Result: result}
 	}
-	needs["scope"] = jobResult{Result: "success", Outputs: map[string]string{"profile": profile}}
+	needs["scope"] = jobResult{Result: "success", Outputs: map[string]string{
+		"profile": profile,
+		"cloud":   fmt.Sprint(profile == fullProfile),
+	}}
 	return needs
 }
 
@@ -173,6 +199,12 @@ func TestGateProfiles(t *testing.T) {
 	if err := validateGate("push", gateResults(fullProfile)); err == nil {
 		t.Fatal("required gate must reject unsupported events")
 	}
+	nonCloud := gateResults(fullProfile)
+	nonCloud["scope"] = jobResult{Result: "success", Outputs: map[string]string{"profile": fullProfile, "cloud": "false"}}
+	nonCloud["cloud-pg"] = jobResult{Result: "skipped"}
+	if err := validateGate("pull_request", nonCloud); err != nil {
+		t.Fatalf("non-cloud full profile: %v", err)
+	}
 }
 
 func TestGateRejectsUnexpectedJobResults(t *testing.T) {
@@ -185,7 +217,9 @@ func TestGateRejectsUnexpectedJobResults(t *testing.T) {
 					job := needs[name]
 					job.Result = result
 					needs[name] = job
-					allowed := profile == portalProfile && slices.Contains(backendJobs, name) && result == "skipped"
+					allowed := result == "skipped" &&
+						((profile == portalProfile && slices.Contains(backendJobs, name)) ||
+							(profile == portalProfile && slices.Contains(cloudJobs, name)))
 					if err := validateGate("pull_request", needs); (err == nil) != allowed {
 						t.Fatalf("allowed=%v error=%v", allowed, err)
 					}
@@ -296,8 +330,14 @@ func TestPolicyMatchesWorkflow(t *testing.T) {
 			t.Errorf("%s must retain coverage in both profiles", name)
 		}
 	}
-	if workflow.Jobs["scope"].Outputs["profile"] != "${{ steps.classify.outputs.profile }}" {
-		t.Fatal("scope must expose the classifier's profile")
+	cloud := workflow.Jobs["cloud-pg"]
+	if !slices.Contains(cloud.Needs, "scope") || !slices.Contains(cloud.Needs, "temporal-cli") ||
+		!strings.Contains(cloud.If, "needs.scope.outputs.cloud == 'true'") {
+		t.Error("cloud-pg must require the cloud scope and cached Temporal CLI")
+	}
+	if workflow.Jobs["scope"].Outputs["profile"] != "${{ steps.classify.outputs.profile }}" ||
+		workflow.Jobs["scope"].Outputs["cloud"] != "${{ steps.classify.outputs.cloud }}" {
+		t.Fatal("scope must expose the classifier outputs")
 	}
 }
 
@@ -318,14 +358,14 @@ func TestClassifierWritesProfileAndSummary(t *testing.T) {
 	if code := run([]string{"classify"}, func(key string) string { return env[key] }, git, &stdout, &stderr); code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
-	if stdout.String() != "profile=portal-only\n" {
+	if stdout.String() != "profile=portal-only\ncloud=false\n" {
 		t.Fatalf("unexpected output %q", stdout.String())
 	}
 	data, err := os.ReadFile(summary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range backendJobs {
+	for _, name := range slices.Concat(backendJobs, cloudJobs) {
 		if !strings.Contains(string(data), "`"+name+"`") {
 			t.Errorf("summary omits excluded job %s", name)
 		}

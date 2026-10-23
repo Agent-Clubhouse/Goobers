@@ -336,6 +336,7 @@ func simulateCIJobsWithProfile(t *testing.T, w ciWorkflow, ctx map[string]any, p
 			outputs := map[string]any{}
 			if dep == "scope" && result == "success" {
 				outputs["profile"] = profile
+				outputs["cloud"] = fmt.Sprint(profile == "full")
 			}
 			needs[dep] = map[string]any{"result": result, "outputs": outputs}
 		}
@@ -408,8 +409,8 @@ func TestCIScopeUsesCompleteDiffAndDoesNotSavePartialCaches(t *testing.T) {
 	step := scope.step(t, "Classify validation scope")
 	if step.Run != `go run ./test/cipolicy classify >> "$GITHUB_OUTPUT"` ||
 		step.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" ||
-		step.Env["BASE_SHA"] != "${{ github.event.pull_request.base.sha }}" ||
-		step.Env["HEAD_SHA"] != "${{ github.event.pull_request.head.sha }}" ||
+		step.Env["BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before || github.event.merge_group.base_sha || inputs.base_sha }}" ||
+		step.Env["HEAD_SHA"] != "${{ github.event.pull_request.head.sha || github.sha || github.event.merge_group.head_sha || inputs.head_sha }}" ||
 		step.If != "" || step.ContinueOnError {
 		t.Fatal("scope must invoke the classifier with exact event/base/head inputs")
 	}

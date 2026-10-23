@@ -127,7 +127,11 @@ func TestMainEscalationRetainsLatestCommitSignal(t *testing.T) {
 		for _, result := range []string{"success", "failure", "cancelled"} {
 			needs := map[string]any{}
 			for _, id := range job.Needs {
-				needs[id] = map[string]any{"result": result}
+				outputs := map[string]any{}
+				if id == "scope" {
+					outputs["cloud"] = "true"
+				}
+				needs[id] = map[string]any{"result": result, "outputs": outputs}
 			}
 			isLatest := "false"
 			if latest {

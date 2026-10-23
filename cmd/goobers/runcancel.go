@@ -188,12 +188,10 @@ func executeCancelRequest(
 	}
 }
 
-// daemonCancelService preserves the local Runner/file-drop cancellation path
-// and routes retained engine runs through the engine's own cancellation guard.
+// daemonCancelService preserves the local Runner/file-drop cancellation path.
 type daemonCancelService struct {
 	fenceChildren func(context.Context, httpapi.CancelRunRequest) error
 	runners       *daemonRunnerRegistry
-	engine        *daemonEngineCancelService
 	auditLog      *journal.InstanceLog
 	receipts      *cancelreceipt.Store
 
@@ -233,12 +231,6 @@ func (s *daemonCancelService) cancelOnce(ctx context.Context, input httpapi.Canc
 	s.mu.RLock()
 	release := s.release
 	s.mu.RUnlock()
-
-	if _, local := s.runners.Resolve(input.RunID, input.Gaggle, nil); !local && s.engine != nil {
-		if result, handled, err := s.engine.cancel(ctx, input); handled {
-			return result, err
-		}
-	}
 
 	workflow := strings.TrimSpace(input.Workflow)
 	if workflow == "" {

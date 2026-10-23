@@ -249,32 +249,6 @@ func WithContextObserver(observer func(context.Context, string, uint64)) Option 
 	return func(w *Writer) { w.contextObserver = observer }
 }
 
-// WithEventObserver reports each durable APPEND op with the event body the
-// writer just committed, in the same order it committed them.
-//
-// It exists because a sequence-only watermark observer
-// delivers only (runID, seq). That is everything the read-model intake needs
-// (it re-reads the journal at seq anyway) and nothing a mid-run policy
-// consumer needs: decision 005 D1's RateLimited observer has to see the
-// stage's own error code and its rateLimitReset output as they land, without
-// re-parsing the whole journal on every append. Re-reading the run journal at
-// seq inside the existing observer was the alternative and was rejected: it
-// costs an O(N) parse per append on a path that already holds the run's lock.
-//
-// Contract, and the reason this is deliberately narrow:
-//
-//   - Called with the event EXACTLY as appended (the emit key is already in
-//     ev.Runner), while the run's lock is held. An observer must therefore be
-//     cheap and non-blocking, must never call back into the writer, and must
-//     never retain the event's maps beyond the call.
-//   - APPEND ops only. Artifact and span ops record content, not decisions;
-//     the error event an unavailable span degrades to IS an append and is
-//     delivered.
-//   - Best-effort side channel: it never affects whether the op was applied.
-func WithEventObserver(observer func(runID string, ev journal.Event)) Option {
-	return func(w *Writer) { w.eventObserver = observer }
-}
-
 // WithScrubber sets the boundary scrubber handed to the journal writer.
 func WithScrubber(s journal.Scrubber) Option {
 	return func(w *Writer) { w.scrubber = s }
@@ -1442,17 +1416,4 @@ func (w *Writer) Close() {
 		}
 		run.mu.Unlock()
 	}
-}
-
-// Authored reports whether events belong to a live-authored journal: any
-// event carrying an emit key under Runner. A projection-written journal never
-// carries one, which is what lets the demoted reconciler distinguish "verify
-// this live record against history" from "project as before" (DS5).
-func Authored(events []journal.Event) bool {
-	for _, ev := range events {
-		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
-			return true
-		}
-	}
-	return false
 }

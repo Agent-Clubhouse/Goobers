@@ -534,6 +534,7 @@ func TestLauncherWithoutHandshakeUsesVerifiedAdapterManagedFallback(t *testing.T
 	var contractProbes int
 	adapter := &CopilotAdapter{
 		Command:                     []string{program, "forwarding-launcher"},
+		ModelCredential:             func(context.Context) (string, error) { return "fixture-model-token", nil },
 		RequireLauncherContract:     true,
 		AllowAdapterManagedFallback: true,
 		VerifyAdapterManagedSession: true,

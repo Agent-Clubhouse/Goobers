@@ -54,17 +54,6 @@ type stalledSweepDeps struct {
 	// (#5891). maxRunDuration counts active execution time, and silence while
 	// the host slept is not a stall, so both checks exclude these intervals.
 	HostSuspensions *hostsuspend.Ledger
-	// CloseEngineRun writes the terminal of an engine run whose workflow the
-	// sweep terminated (#5407) through the live journal plane. nil leaves such
-	// a run unterminated and reported, since nothing else will close it.
-	CloseEngineRun func(ctx context.Context, identity journal.RunIdentity, cause string, at time.Time) error
-}
-
-func (d *stalledSweepDeps) closeEngineRun() func(context.Context, journal.RunIdentity, string, time.Time) error {
-	if d == nil {
-		return nil
-	}
-	return d.CloseEngineRun
 }
 
 func (d *stalledSweepDeps) hostSuspensions() []hostsuspend.Window {
@@ -368,28 +357,14 @@ func newStalledTerminalizer(
 // sweepStalledRuns terminalizes runs whose journals have gone quiet past
 // their pinned stalledRunTimeout (or past maxRunDuration).
 //
-// An engine-driven run (journal.RunIdentity.EngineDriven) is cancelled on the
-// engine instead, through guards. Terminalizing its journal file would settle
-// nothing: the workflow keeps executing, keeps placing stages and keeps
-// emitting into a journal this sweep just declared finished — nothing in the
-// tree called CancelWorkflow before this change, so a stalled engine run's
-// only outcome was a lie on disk. When no engine client exists the sweep
-// refuses both options and reports it, because terminalizing is the failure
-// mode, not the fallback.
-//
-// A cancel that itself fails is reported and retried on the next tick; it is
-// NOT downgraded to terminalizing the file. That includes NotFound, which is
-// not proof the run is over: a scheduled engine run's RunID is a hash of its
-// claim workflow's id (internal/engine's RunScheduled), so NotFound is the
-// normal answer for one that is executing perfectly well. Repeated identical
-// failures are collapsed by up.go's sweepErrorReporter rather than journaled
-// every tick.
+// A legacy engine-driven run is left untouched on disk because goobers no
+// longer owns its workflow. Its reconstructed local concurrency slot is
+// released so it cannot block local scheduling after an upgrade.
 func sweepStalledRuns(
 	ctx context.Context,
 	l instance.Layout,
 	runners *daemonRunnerRegistry,
 	fallback *runner.Runner,
-	guards *engineRunGuards,
 	log *journal.InstanceLog,
 	deps *stalledSweepDeps,
 	notify runner.TerminalNotifier,
@@ -410,7 +385,6 @@ func sweepStalledRuns(
 	// scheduler journal when persisted (#1166, #1414).
 	var sweepErrs []error
 	terminalizers := make(map[string]*runner.Runner)
-	cancels := &engineCancelHistory{log: log}
 	suspended := deps.hostSuspensions()
 	for _, runDir := range candidates {
 		runsDir := filepath.Dir(runDir)
@@ -495,9 +469,7 @@ func sweepStalledRuns(
 		// server-side terminate one stall timeout after it was first
 		// requested; see settleStalledEngineRun.
 		if identity.EngineDriven() {
-			if err := settleStalledEngineRun(ctx, guards, log, deps, cancels, release, identity, events, now, suspended, runTimeout, runMaxDuration, durationExceeded); err != nil {
-				sweepErrs = append(sweepErrs, err)
-			}
+			releaseLegacyEngineRun(nil, identity, release)
 			continue
 		}
 
