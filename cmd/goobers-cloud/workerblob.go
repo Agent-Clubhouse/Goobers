@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/blobstore"
-	"github.com/goobers/goobers/internal/childadmissionclient"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/workerblob"
@@ -51,15 +49,4 @@ func workerSurrenderPlane(directory, daemonAPI, owner string, signer *podauth.Si
 		return dispatcher.NewSurrenderDir(filepath.Join(directory, "surrender"))
 	}
 	return &dispatcher.SurrenderReadClient{BaseURL: daemonAPI, TokenSource: func() (string, error) { return signer.MintWorkerSurrender(owner, 2*time.Minute) }}, nil
-}
-
-// workerChildAdmissions is the engine worker's generated-child custody client.
-// It mints a fresh instance-wide child-admission bearer per call from the
-// supervisor-loaded signing key; neither the key nor a bearer enters the
-// worker environment, which stage processes inherit.
-func workerChildAdmissions(daemonAPI, owner string, signer *podauth.SignedKey) engine.ChildService {
-	if signer == nil || daemonAPI == "" {
-		return nil
-	}
-	return &childadmissionclient.Client{BaseURL: daemonAPI, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission(owner, 2*time.Minute) }}
 }

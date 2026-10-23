@@ -170,3 +170,34 @@ func TestStatusClassLeavesCredentialAndServerFaultsUnclassified(t *testing.T) {
 		}
 	}
 }
+
+func TestForWorkerMintsOnlyTheChildAdmissionBearer(t *testing.T) {
+	signer, err := podauth.NewSignedKey([]byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ForWorker("http://control", "worker-0", nil); got != nil {
+		t.Fatalf("no signing key produced %#v, want an untyped nil", got)
+	}
+	if got := ForWorker("", "worker-0", signer); got != nil {
+		t.Fatalf("no plane endpoint produced %#v, want an untyped nil", got)
+	}
+	client, ok := ForWorker("http://control", "worker-0", signer).(*Client)
+	if !ok || client.BaseURL != "http://control" {
+		t.Fatalf("client = %#v", client)
+	}
+	token, err := client.TokenSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := podauth.NewAuthenticator(signer, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	principal, err := auth.Authenticate(request)
+	if err != nil || principal.Issuer != httpapi.WorkerChildAdmissionPrincipalIssuer {
+		t.Fatalf("minted bearer authenticated as %+v (%v), want the child-admission issuer", principal, err)
+	}
+}

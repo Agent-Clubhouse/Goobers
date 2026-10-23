@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/podauth"
 )
 
 const (
@@ -40,6 +41,21 @@ type Client struct {
 }
 
 var _ engine.ChildService = (*Client)(nil)
+
+// workerTokenTTL is each call's bearer lifetime.
+const workerTokenTTL = 2 * time.Minute
+
+// ForWorker is the engine worker's generated-child custody client. It mints a
+// fresh instance-wide child-admission bearer per call from the
+// supervisor-loaded signing key; neither the key nor a bearer enters the
+// worker environment, which stage processes inherit. It returns an untyped nil
+// without a key or endpoint, so the engine refuses child custody.
+func ForWorker(baseURL, owner string, signer *podauth.SignedKey) engine.ChildService {
+	if signer == nil || baseURL == "" {
+		return nil
+	}
+	return &Client{BaseURL: baseURL, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission(owner, workerTokenTTL) }}
+}
 
 // Admit records one idempotent child start intent.
 func (c *Client) Admit(ctx context.Context, in engine.ChildAdmissionInput) (engine.ChildRunBinding, error) {
