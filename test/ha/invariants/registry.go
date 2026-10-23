@@ -153,7 +153,7 @@ WHERE NOT EXISTS (
 	{
 		Name:        "no-notmine-side-effects",
 		Description: "a start answered NotMine wrote no claim, slot or journal row",
-		Pending:     "pending #7840",
+		Pending:     "pending #7850",
 	},
 	{
 		Name:        "no-stage-executed-by-control-plane",
