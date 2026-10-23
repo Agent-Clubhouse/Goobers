@@ -459,6 +459,11 @@ Cloud implementations live under `internal/cloud/*` and are injected into shared
 - **Corpus.** A fixed corpus of deterministic DSL 3.x workflows covering every emit-plane event kind the engine supports: retries (policy, infra), automated and agentic gates, artifacts, inputs, HITL markers, cancellation. Each P4 item adds entries for its feature (parallels, selection, maps, children, human gates, outbox, limits, experiment).
 - **Assertion.** Run (a) by the local runner on the file backend and (b) by `goobers-cloud` on the engine and PG backend. Canonical journals (scrubbed event bytes, ignoring only timestamps, run ID, host identity and durations), artifact digests and the A2 conformance projection must be equal.
 - **Where it runs.** The local leg runs in required shards (P1). The cloud leg runs in `cloud-pg` (P3). It compares cloud to **local**, which is also the runner↔engine parity check end to end.
+- **P1 baseline (HA-P1-14).** `test/journalequivalence` runs the checked-in
+  DSL 3.0 corpus three times through the local runner and file journal. Its
+  recorded digest covers canonical event bytes, artifact digests and the A2
+  read-model projection. Canonicalization masks only timestamps, run identity,
+  host identity and durations; semantic fields remain byte-significant.
 
 ### 9.5 Features that diverge between local and cloud
 
