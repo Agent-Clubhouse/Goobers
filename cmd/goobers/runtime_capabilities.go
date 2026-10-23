@@ -234,6 +234,10 @@ func advisoryPRCLICommands() []cliCommand {
 	}
 }
 
+func runCompletionCandidatesCLI(args []string, stdout, _ io.Writer) int {
+	return runCompletionCandidates(args, stdout)
+}
+
 func init() {
 	cliCommands = append([]cliCommand{
 		groupCommand("roots", runRoots,
@@ -726,10 +730,9 @@ func init() {
 			withSynopsis(synopsisByID["completion"]).
 			withHelp("generate a shell completion script", completionHelp).
 			withExamples("goobers completion bash", "goobers completion zsh", "goobers completion powershell"),
-		command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
-			return runCompletionCandidates(args, stdout)
-		}),
+		command("__complete", apicontract.ActionConfigTime, runCompletionCandidatesCLI),
 		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
+		command("__claude-host-safety", apicontract.ActionReadOnlyNavigation, runClaudeHostSafety),
 		telemetryCLICommand(),
 		groupCommand(
 			"journal",

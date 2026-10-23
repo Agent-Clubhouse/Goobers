@@ -852,6 +852,11 @@ func preflightSchedulerHarnessesWithProgress(
 	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
 	started := time.Now()
 	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
+	for name, info := range harnessInfo {
+		for _, warning := range info.Warnings {
+			reportStartupProgress(startupProgress, fmt.Sprintf("HARNESS %s WARNING: %s", name, warning))
+		}
+	}
 	reportStartupProgress(startupProgress, harnessPreflightCompletionMessage(err, time.Since(started)))
 	return harnessInfo, harnessRefusals, err
 }
