@@ -4,9 +4,10 @@ package acceptance
 
 import (
 	"errors"
-	"github.com/goobers/goobers/internal/triggerqueue"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 func TestPGFullStoreStillReplays(t *testing.T) {
