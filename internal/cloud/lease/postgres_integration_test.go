@@ -315,11 +315,49 @@ func TestTakeoverExpiryStartsAfterLockWait(t *testing.T) {
 
 func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 	pool := testPool(t)
+	if _, err := pool.Exec(t.Context(), `
+		CREATE TABLE control.fence_commit (
+			epoch bigint PRIMARY KEY,
+			holder text NOT NULL,
+			started_at timestamptz NOT NULL,
+			finished_at timestamptz NOT NULL
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	observer, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Release()
+
 	paused := testManager(t, pool, "paused-holder")
 	stale, err := paused.Acquire(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	pausedDone := make(chan error, 1)
+	go func() {
+		pausedDone <- paused.WithFence(t.Context(), stale, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO control.fence_commit (epoch, holder, started_at, finished_at)
+				VALUES ($1, $2, clock_timestamp(), 'infinity')`,
+				stale.Epoch, stale.Holder,
+			); err != nil {
+				return err
+			}
+			close(entered)
+			<-resume
+			_, err := tx.Exec(ctx, `
+				UPDATE control.fence_commit SET finished_at=clock_timestamp()
+				WHERE epoch=$1`,
+				stale.Epoch,
+			)
+			return err
+		})
+	}()
+	<-entered
 	expireHeartbeat(t, pool)
 
 	const contenders = 8
@@ -353,6 +391,11 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 			}
 		}(i)
 	}
+	waitForTakeoverLock(t, observer)
+	close(resume)
+	if err := <-pausedDone; err != nil {
+		t.Fatalf("paused holder commit: %v", err)
+	}
 	wg.Wait()
 	close(results)
 	var winners []acquisition
@@ -362,33 +405,44 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 	if len(winners) != 1 {
 		t.Fatalf("winners = %d, want 1", len(winners))
 	}
-	if _, err := pool.Exec(t.Context(), `
-		CREATE TABLE control.fence_commit (
-			epoch bigint PRIMARY KEY,
-			holder text NOT NULL
-		)`); err != nil {
-		t.Fatal(err)
-	}
 	winner := winners[0]
 	if err := winner.manager.WithFence(t.Context(), winner.handle, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO control.fence_commit (epoch, holder) VALUES ($1, $2)", winner.handle.Epoch, winner.handle.Holder)
+		_, err := tx.Exec(ctx, `
+			INSERT INTO control.fence_commit (epoch, holder, started_at, finished_at)
+			VALUES ($1, $2, clock_timestamp(), clock_timestamp())`,
+			winner.handle.Epoch, winner.handle.Holder,
+		)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err = paused.WithFence(t.Context(), stale, func(context.Context, pgx.Tx) error {
-		t.Fatal("paused stale holder committed after takeover")
-		return nil
-	})
-	if !errors.Is(err, lease.ErrStale) {
-		t.Fatalf("paused holder error = %v, want ErrStale", err)
-	}
-	var commits int
-	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM control.fence_commit").Scan(&commits); err != nil {
+	rows, err := pool.Query(t.Context(), `
+		SELECT epoch, started_at, finished_at
+		FROM control.fence_commit ORDER BY epoch`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if commits != 1 {
-		t.Fatalf("fenced commits = %d, want 1", commits)
+	defer rows.Close()
+	type commit struct {
+		epoch           int64
+		started, finish time.Time
+	}
+	var commits []commit
+	for rows.Next() {
+		var current commit
+		if err := rows.Scan(&current.epoch, &current.started, &current.finish); err != nil {
+			t.Fatal(err)
+		}
+		commits = append(commits, current)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("fenced commits = %d, want paused and successor epochs", len(commits))
+	}
+	if commits[0].epoch >= commits[1].epoch || commits[0].finish.After(commits[1].started) {
+		t.Fatalf("overlapping fenced commits: %+v", commits)
 	}
 }
 
@@ -491,4 +545,28 @@ func expireHeartbeat(t *testing.T, pool *pgxpool.Pool) {
 func isDeadlock(err error) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) && postgresError.Code == "40P01"
+}
+
+func waitForTakeoverLock(t *testing.T, observer *pgxpool.Conn) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		var waiting bool
+		if err := observer.QueryRow(t.Context(), `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE pid <> pg_backend_pid()
+				  AND wait_event_type='Lock'
+				  AND query LIKE '%UPDATE control.lease%'
+			)`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no contender reached the authority-row lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
