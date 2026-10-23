@@ -98,7 +98,10 @@ func (b *Backend) InstanceAppend(ctx context.Context, handle journal.InstanceHan
 				return err
 			}
 		}
-		clean.Seq = uint64(seq + 1)
+		if err := tx.QueryRow(ctx, `UPDATE journal.instance_seq SET last_seq=last_seq+1 WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4 RETURNING last_seq`, b.config.InstanceID, instanceStream, owner.token, owner.epoch).Scan(&seq); err != nil {
+			return err
+		}
+		clean.Seq = uint64(seq)
 		if clean.Progress != nil {
 			clean.Progress.Sequence = clean.Seq
 		}
@@ -107,12 +110,11 @@ func (b *Backend) InstanceAppend(ctx context.Context, handle journal.InstanceHan
 			return err
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO journal.instance_event(instance_id,stream,seq,at,type,emit_key,epoch,body,run_id)
-  SELECT instance_id,stream,$5,$6,$7,$8,owner_epoch,$9,$10 FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, instanceStream, owner.token, owner.epoch, seq+1, clean.Time, string(clean.Type), emitKey(clean), raw, clean.RunID)
+  SELECT instance_id,stream,$5,$6,$7,$8,owner_epoch,$9,$10 FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, instanceStream, owner.token, owner.epoch, seq, clean.Time, string(clean.Type), emitKey(clean), raw, clean.RunID)
 		if err = requireWrite(tag.RowsAffected(), err); err != nil {
 			return err
 		}
-		tag, err = tx.Exec(ctx, `UPDATE journal.instance_seq SET last_seq=$5 WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, instanceStream, owner.token, owner.epoch, seq+1)
-		return requireWrite(tag.RowsAffected(), err)
+		return nil
 	})
 }
 

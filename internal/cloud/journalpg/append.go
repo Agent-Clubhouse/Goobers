@@ -113,7 +113,11 @@ func (b *Backend) appendClean(ctx context.Context, tx pgx.Tx, r *runOwner, seq i
 			return seq, journal.Event{}, err
 		}
 	}
-	event.Seq = uint64(seq + 1)
+	var allocated int64
+	if err := tx.QueryRow(ctx, `UPDATE journal.run_seq SET last_seq=last_seq+1,last_append_at=$5 WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4 RETURNING last_seq`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, event.Time).Scan(&allocated); err != nil {
+		return seq, journal.Event{}, err
+	}
+	event.Seq = uint64(allocated)
 	if event.Progress != nil {
 		event.Progress.Sequence = event.Seq
 	}
@@ -130,10 +134,7 @@ func (b *Backend) appendClean(ctx context.Context, tx pgx.Tx, r *runOwner, seq i
 	if err = requireWrite(tag.RowsAffected(), err); err != nil {
 		return seq, journal.Event{}, err
 	}
-	tag, err = tx.Exec(ctx, `UPDATE journal.run_seq SET last_seq=$5,last_append_at=$6 WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Time)
-	if err = requireWrite(tag.RowsAffected(), err); err != nil {
-		return seq, journal.Event{}, err
-	}
+
 	if err = b.indexArtifact(ctx, tx, r, event); err != nil {
 		return seq, journal.Event{}, err
 	}

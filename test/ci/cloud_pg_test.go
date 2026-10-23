@@ -57,6 +57,13 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		upload.With["path"] != "${{ runner.temp }}/cloud-pg-test.json" {
 		t.Fatalf("cloud integration events are not always uploaded: %+v", upload)
 	}
+	journal := job.step(t, "Run PostgreSQL journal conformance")
+	if !strings.Contains(journal.Run, "go test -race -tags=cloudintegration") ||
+		!strings.Contains(journal.Run, "./internal/journal") ||
+		!strings.Contains(journal.Run, "Journal.*Postgres") ||
+		journal.Env["GOOBERS_TEST_POSTGRES_URL"] == "" {
+		t.Fatalf("journal conformance is not gated against PG16: %+v", journal)
+	}
 	restart := job.step(t, "Restart Azurite with telemetry disabled")
 	if !strings.Contains(restart.Run, "--disableTelemetry --skipApiVersionCheck") ||
 		!strings.Contains(restart.Run, azurite.Image) {

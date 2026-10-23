@@ -125,8 +125,10 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 	if err := ctx.Err(); err != nil {
 		return "", "", journal.RecoverReport{}, errors.Join(journal.ErrRunOwned, err)
 	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	for {
-		r, report, err := b.tryRecover(ctx, key, options)
+		r, report, err := b.tryRecover(waitCtx, key, options)
 		if err == nil {
 			return b.keepRun(r), r.token, report, nil
 		}
@@ -134,9 +136,12 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 			return "", "", report, err
 		}
 		select {
-		case <-ctx.Done():
-			return "", "", report, errors.Join(journal.ErrRunOwned, ctx.Err())
-		case <-time.After(10 * time.Millisecond):
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return "", "", report, errors.Join(journal.ErrRunOwned, ctx.Err())
+			}
+			return "", "", report, errors.Join(journal.ErrRunOwned, journal.ErrLockTimeout)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
@@ -169,6 +174,10 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 		}
 		tag, err := tx.Exec(ctx, `UPDATE journal.run_seq s SET owner_epoch=$4,owner_token=$6 WHERE s.instance_id=$1 AND s.run_id=$5 AND (s.owner_token IS NULL OR s.owner_epoch<$4) AND s.owner_epoch<=$4
   AND EXISTS(SELECT 1 FROM control.lease l WHERE l.instance_id=$1 AND l.name=$2 AND l.holder=$3 AND l.epoch=$4)`, h.InstanceID, h.Name, h.Holder, h.Epoch, key.RunID, r.token)
+		if err = requireWrite(tag.RowsAffected(), err); err != nil {
+			return err
+		}
+		tag, err = tx.Exec(ctx, `UPDATE journal.run SET retired_at=NULL WHERE instance_id=$1 AND run_id=$2 AND EXISTS(SELECT 1 FROM journal.run_seq s WHERE s.instance_id=$1 AND s.run_id=$2 AND s.owner_token=$3 AND s.owner_epoch=$4)`, b.config.InstanceID, key.RunID, r.token, r.epoch)
 		if err = requireWrite(tag.RowsAffected(), err); err != nil {
 			return err
 		}
