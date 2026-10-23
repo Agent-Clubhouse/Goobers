@@ -282,7 +282,7 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 		return *result, err
 	}
 	if resolved.engine {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("override", resolved)
+		return s.engineTerminal(admission, "override", resolved, input)
 	}
 	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -340,7 +340,7 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 		return *result, err
 	}
 	if resolved.engine {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("rerun", resolved)
+		return s.engineTerminal(admission, "rerun", resolved, input)
 	}
 	if resolved.phase != journal.PhaseEscalated {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -430,7 +430,7 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engine {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("deny", resolved)
+		return s.engineTerminal(admission, "deny", resolved, input)
 	}
 	return s.denyEscalation(resolved, input)
 }

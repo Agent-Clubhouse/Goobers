@@ -1139,6 +1139,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		return outcome, nil, GateReviewResult{}, nil
 
 	case apiv1.EvaluatorAgentic:
+		rec.prepareHumanGateRerun(g.Name, &ev, &priorDiffDigest)
 		// The reviewer runs a real goober subprocess, so — unlike an
 		// automated/human gate — it needs its capability-scoped credentials
 		// (#294). AgenticGate carries no stage-level capabilities, so they are

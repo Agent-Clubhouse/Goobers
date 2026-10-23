@@ -83,8 +83,8 @@ func TestApproveRoutesToEngineForEngineRun(t *testing.T) {
 	}
 }
 
-// Terminal interventions would reopen an engine run after run.finished, which
-// its live journal refuses; they are refused by name, and nothing is sent.
+// N-1 histories have no fenced terminal capability and must be refused before
+// any Update is sent.
 func TestTerminalInterventionsOnEngineRunsAreRefused(t *testing.T) {
 	cases := map[string]func(*Service) error{
 		"approve past a terminal": func(s *Service) error {
@@ -130,5 +130,52 @@ func TestEngineRefusalKeepsItsCodeAndUnconfiguredEngineStillRefuses(t *testing.T
 	_, err = engineRunService(t, nil).Approve(t.Context(), httpapi.InterventionRequest{RunID: "engine-run", Stage: "approve-release", Actor: "alice", IdempotencyKey: "k"})
 	if !errors.As(err, &intervention) || intervention.Code != "run_engine_driven" {
 		t.Fatalf("engine run without a router = %v", err)
+	}
+}
+
+func TestTerminalInterventionsRequireCapabilityAndDurableAcknowledgement(t *testing.T) {
+	cases := map[string]func(*Service, httpapi.InterventionRequest) (httpapi.InterventionResult, error){
+		"approve": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+			return s.Approve(t.Context(), r)
+		},
+		"override": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+			return s.Override(t.Context(), r)
+		},
+		"rerun": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+			return s.RerunStage(t.Context(), r)
+		},
+		"deny": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+			return s.AcceptDenyEscalation(t.Context(), t.Context(), r)
+		},
+	}
+	for action, call := range cases {
+		t.Run(action, func(t *testing.T) {
+			decisions := &recordingEngine{hitl: engine.HITLState{LiveTerminalInterventions: true, Enabled: true, TerminalGeneration: 3}}
+			service := engineRunService(t, decisions)
+			request := httpapi.InterventionRequest{RunID: "engine-run", Stage: "review", Actor: "alice", IdempotencyKey: "key-1", Rationale: "reviewed", InstructionAddendum: "retry"}
+			if _, err := call(service, request); err != nil {
+				t.Fatal(err)
+			}
+			if len(decisions.intents) != 1 {
+				t.Fatalf("intents=%+v", decisions.intents)
+			}
+			intent := decisions.intents[0]
+			if intent.ExpectedTerminalGeneration != 3 || intent.RequestID != "key-1" || intent.Actor != "alice" || intent.Decision != "" {
+				t.Fatalf("intent lost raw identity: %+v", intent)
+			}
+			if action == "rerun" {
+				if intent.Kind != engine.HITLRerunStage || intent.Stage != "review" {
+					t.Fatalf("rerun=%+v", intent)
+				}
+			} else if intent.Resolution != action || intent.Gate != "review" {
+				t.Fatalf("resolution=%+v", intent)
+			}
+			decisions.refusal = errors.New("journal delivery is uncertain")
+			result, err := call(service, request)
+			var failure *httpapi.InterventionError
+			if !errors.As(err, &failure) || failure.Status != http.StatusBadGateway || result.JournalSeq != 0 {
+				t.Fatalf("uncertain delivery acknowledged: %+v %v", result, err)
+			}
+		})
 	}
 }

@@ -80,6 +80,9 @@ func (s *hitlSession) terminalIntent(intent HITLIntent, plan *hitlResumePlan) (j
 	if plan != nil {
 		event := s.resumedEvent(intent, *plan)
 		event.Runner = nil
+		if intent.Kind == HITLResolveEscalation && event.Decision == "" {
+			event.Decision = gateDefaultDecision
+		}
 		req.Events = append(req.Events, event)
 	}
 	return req, nil
@@ -199,4 +202,28 @@ func (s *hitlSession) cancelTerminalDelivery(ctx workflow.Context) (bool, error)
 	s.pending = nil
 	s.noteTerminal()
 	return true, nil
+}
+
+// takeHumanRerun keeps attempt identity separate from retry budget accounting:
+// the human attempt may be number 12 but still starts a fresh policy budget.
+func (r *runJournal) takeHumanRerun(stage string) (int32, journal.AttemptClass) {
+	if attempt, ok := r.humanReruns[stage]; ok {
+		delete(r.humanReruns, stage)
+		return int32(attempt), journal.AttemptHuman
+	}
+	return 1, ""
+}
+
+// Local runGate clears empty-diff short circuits for an explicit reviewer
+// addendum, and resetRerunGateSeeds clears its prior diff. Keep that intent
+// authoritative after the versioned terminal commit on the cloud path too.
+func (r *runJournal) prepareHumanGateRerun(stage string, evidence *gateEvidence, priorDiff *string) {
+	if _, ok := r.humanReruns[stage]; !ok {
+		return
+	}
+	delete(r.humanReruns, stage)
+	evidence.CachedVerdict = nil
+	evidence.CacheHit = false
+	evidence.RequireDiff = false
+	*priorDiff = ""
 }

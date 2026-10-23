@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -33,6 +32,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/testgit"
+	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -175,11 +175,15 @@ func localFixtureRepo(t *testing.T) string {
 	return bare
 }
 
-type updateOutcome struct{ err error }
+type updateOutcome struct {
+	err       error
+	completed bool
+}
 
 func (u *updateOutcome) Accept()          {}
 func (u *updateOutcome) Reject(err error) { u.err = err }
 func (u *updateOutcome) Complete(_ any, err error) {
+	u.completed = true
 	if err != nil {
 		u.err = err
 	}
@@ -200,17 +204,13 @@ func engineSide(t *testing.T, intent engine.HITLIntent) []journal.Event {
 		t.Fatal(err)
 	}
 	t.Cleanup(writer.Close)
-	env.RegisterActivity((&engine.Activities{Journal: writer}).EmitJournal)
-	reviewer := &scriptedReviewer{}
-	env.RegisterActivityWithOptions(func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun, string, string) (engine.DispatchStageResult, error) {
-		return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "done"}}, nil
-	}, activity.RegisterOptions{Name: engine.ActRunDeterministic})
-	env.RegisterActivityWithOptions(func(context.Context, apiv1.InvocationEnvelope, string, string, apiv1.WorkspaceMode, string) (engine.DispatchStageResult, error) {
-		return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil
-	}, activity.RegisterOptions{Name: engine.ActInvokeGoober})
-	env.RegisterActivityWithOptions(func(context.Context, apiv1.InvocationEnvelope, string, string, apiv1.WorkspaceMode, string, bool) (engine.GateReviewResult, error) {
-		return engine.GateReviewResult{Verdict: reviewer.verdict()}, nil
-	}, activity.RegisterOptions{Name: engine.ActReviewGoober})
+	manager, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := localFixtureRepo(t)
+	env.RegisterActivity(&engine.Activities{Journal: writer, Det: succeedingDeterministic{}, Goober: &scriptedReviewer{},
+		Workspaces: &workerhost.WorktreeWorkspaces{Manager: manager, ScratchDir: t.TempDir(), CloneURL: func(apiv1.RepoRef) (string, error) { return repository, nil }}})
 	preview := true
 	in := engine.RunInput{RunID: parityRunID, Gaggle: "example", WorkflowName: machine.Def.Name, Version: 1, DSLVersion: "3.1", WorkflowDigest: machine.Digest(),
 		Spec: machine.Def.Spec, PreviewFeaturesEnabled: &preview, TriggerKind: string(journal.TriggerManual),
@@ -222,8 +222,11 @@ func engineSide(t *testing.T, intent engine.HITLIntent) []journal.Event {
 		env.UpdateWorkflow(engine.HITLUpdateName, engine.HITLIntentUpdateID(intent), outcome, intent)
 	}, time.Minute)
 	env.ExecuteWorkflow(engine.Run, in)
-	if outcome.err != nil {
-		t.Fatalf("engine refused the routed intent: %v", outcome.err)
+	if outcome.err != nil || !outcome.completed {
+		t.Fatalf("engine did not complete routed intent: completed=%v error=%v workflow=%v", outcome.completed, outcome.err, env.GetWorkflowError())
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
 	}
 	reader, err := journal.OpenRead(filepath.Join(runsDir, parityRunID))
 	if err != nil {
@@ -240,7 +243,7 @@ func engineSide(t *testing.T, intent engine.HITLIntent) []journal.Event {
 // production mapping, captured instead of delivered.
 func routedIntent(t *testing.T, act func(*Service, string) error) engine.HITLIntent {
 	t.Helper()
-	decisions := &recordingEngine{hitl: engine.HITLState{Enabled: true, Phase: "awaiting-operator", TerminalGeneration: 1}}
+	decisions := &recordingEngine{hitl: engine.HITLState{Enabled: true, LiveTerminalInterventions: true, Phase: "awaiting-operator", TerminalGeneration: 1}}
 	if err := act(engineRunService(t, decisions), "engine-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +255,14 @@ func routedIntent(t *testing.T, act func(*Service, string) error) engine.HITLInt
 
 func TestParityRowHITLIntentsJournalTheSameRecord(t *testing.T) {
 	cases := map[string]func(*Service, string) error{
+		"approve default decision": func(s *Service, run string) error {
+			_, err := s.Approve(t.Context(), httpapi.InterventionRequest{RunID: run, Stage: "review", Actor: "ops@example.com", IdempotencyKey: "key-approve"})
+			return err
+		},
+		"rerun reviewer": func(s *Service, run string) error {
+			_, err := s.RerunStage(t.Context(), httpapi.InterventionRequest{RunID: run, Stage: "review", Actor: "ops@example.com", IdempotencyKey: "key-rerun-review", InstructionAddendum: "review again"})
+			return err
+		},
 		"override": func(s *Service, run string) error {
 			_, err := s.Override(t.Context(), httpapi.InterventionRequest{RunID: run, Stage: "review", Actor: "ops@example.com", IdempotencyKey: "key-override", Decision: "pass", Rationale: "false positive"})
 			return err

@@ -18,6 +18,8 @@ type InterventionContent struct {
 	InstructionAddendum string `json:"instructionAddendum"`
 }
 
+// InterventionFingerprint binds the complete domain request, independent of
+// transport metadata, identically for the local and cloud journal producers.
 func InterventionFingerprint(content InterventionContent) (string, error) {
 	encoded, err := json.Marshal(content)
 	if err != nil {

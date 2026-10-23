@@ -1056,10 +1056,12 @@ func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) error 
 		if err := s.confirmTerminalBoundary(ctx); err != nil {
 			return err
 		}
+		s.generation++
 	} else {
+		// Preserve the N-1 query-visible ordering while emission is in flight.
+		s.generation++
 		s.rec.emitTerminal(ctx)
 	}
-	s.generation++
 	return nil
 }
 

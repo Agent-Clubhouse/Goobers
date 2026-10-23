@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
+// ActCommitTerminalIntervention names the trusted worker journal activity.
 const ActCommitTerminalIntervention = "CommitTerminalIntervention"
 
 // TerminalInterventionCommitter is available only to a resident trusted worker.
@@ -21,6 +22,8 @@ type TerminalInterventionCommitter interface {
 	CommitTerminalIntervention(context.Context, livejournal.TerminalInterventionRequest) (journal.TerminalInterventionReceipt, error)
 }
 
+// CommitTerminalIntervention classifies definitive refusals separately from
+// uncertain delivery, which Temporal retries with the same keyed payload.
 func (a *Activities) CommitTerminalIntervention(ctx context.Context, req livejournal.TerminalInterventionRequest) (journal.TerminalInterventionReceipt, error) {
 	committer, ok := a.Journal.(TerminalInterventionCommitter)
 	if !ok {

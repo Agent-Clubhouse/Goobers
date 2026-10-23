@@ -44,18 +44,14 @@ func engineRefusal(action string, err error) error {
 	return httpapi.NewInterventionError(http.StatusBadGateway, "engine_unreachable", fmt.Sprintf("the engine did not accept the %s", action), err)
 }
 
-// EngineTerminalInterventionUnsupported refuses an intervention that would
-// reopen an engine run's terminal. The live journal refuses every op after
-// run.finished, so the resumed segment could not be journaled; the run's
-// record would silently stop at its escalation.
+// EngineTerminalInterventionUnsupported protects histories whose workflow
+// has not advertised the fenced terminal-journal capability.
 const EngineTerminalInterventionUnsupported = "engine_terminal_intervention_unsupported"
 
-// engineTerminalRefusal keeps approve-past-terminal, override, rerun and deny
-// refused on engine runs until the live journal accepts post-terminal HITL
-// segments. Mid-run human-gate decisions are routed (engineApprove).
+// engineTerminalRefusal keeps N-1 histories and unwired workers fail-closed.
 func engineTerminalRefusal(action string, resolved resolvedInterventionRun) error {
 	return interventionConflict(EngineTerminalInterventionUnsupported, fmt.Sprintf(
-		"%s would reopen engine run %q after its terminal, which its live journal cannot record yet", action, resolved.runID))
+		"%s would reopen engine run %q after its terminal, which its workflow cannot durably journal", action, resolved.runID))
 }
 
 // engineApprove decides the pending human gate when the run holds one, and
@@ -66,13 +62,49 @@ func (s *Service) engineApprove(ctx context.Context, resolved resolvedInterventi
 		return httpapi.InterventionResult{}, engineRefusal("approve", err)
 	}
 	if !gate.Pending || gate.Gate != input.Stage {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("approve", resolved)
+		return s.engineTerminal(ctx, "approve", resolved, input)
 	}
 	request := engine.GateDecisionRequest{Protocol: engine.GateDecisionProtocol, Version: engine.GateDecisionProtocolVersion, RunID: resolved.runID,
 		RequestID: engineRequestID("approve", input), Actor: input.Actor, Gate: input.Stage, GateOccurrence: gate.GateOccurrence,
 		ExpectedTerminalGeneration: gate.TerminalGeneration, Decision: decision}
 	if _, err := s.engineDecisions.DecideGate(ctx, request); err != nil {
 		return httpapi.InterventionResult{}, engineRefusal("approve", err)
+	}
+	return currentInterventionResult(resolved)
+}
+
+// terminalDecisions is deliberately optional: an older gate-only composition
+// cannot admit terminal interventions until it advertises the new capability.
+type terminalDecisions interface {
+	HITLState(context.Context, string) (engine.HITLState, error)
+	Intend(context.Context, engine.HITLIntent) (engine.HITLAck, error)
+}
+
+func (s *Service) engineTerminal(ctx context.Context, action string, resolved resolvedInterventionRun, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	router, ok := s.engineDecisions.(terminalDecisions)
+	if !ok {
+		return httpapi.InterventionResult{}, engineTerminalRefusal(action, resolved)
+	}
+	state, err := router.HITLState(ctx, resolved.runID)
+	if err != nil {
+		return httpapi.InterventionResult{}, engineRefusal(action, err)
+	}
+	if !state.LiveTerminalInterventions {
+		return httpapi.InterventionResult{}, engineTerminalRefusal(action, resolved)
+	}
+	intent := engine.HITLIntent{Protocol: engine.HITLProtocol, Version: engine.HITLProtocolVersion,
+		RunID: resolved.runID, RequestID: engineRequestID(action, input), Actor: input.Actor,
+		ExpectedTerminalGeneration: state.TerminalGeneration, Kind: engine.HITLResolveEscalation,
+		Gate: input.Stage, Resolution: action, Decision: input.Decision, Rationale: input.Rationale,
+		InstructionAddendum: input.InstructionAddendum}
+	if action == "rerun" {
+		intent.Kind, intent.Stage, intent.Gate, intent.Resolution = engine.HITLRerunStage, input.Stage, "", ""
+	}
+	// Keep the caller's raw fields in the payload-bound identity. The workflow
+	// defaults an absent decision to pass when choosing the branch and recording
+	// run.resumed, just as the local runner does after hashing the request.
+	if _, err := router.Intend(ctx, intent); err != nil {
+		return httpapi.InterventionResult{}, engineRefusal(action, err)
 	}
 	return currentInterventionResult(resolved)
 }
