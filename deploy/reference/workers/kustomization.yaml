@@ -11,5 +11,8 @@ resources:
   - networkpolicy-apiserver.yaml
   - worker-deployment.yaml
 
+components:
+  - worker-ha
+
 patches:
   - path: delete-legacy-worker.yaml

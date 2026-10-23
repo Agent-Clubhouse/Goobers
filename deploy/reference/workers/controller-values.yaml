@@ -27,3 +27,12 @@ containerSecurityContext:
 extraEnv:
   - name: CONTROLLER_MAX_DEPLOYMENT_VERSIONS_INELIGIBLE_FOR_DELETION
     value: "2"
+
+workerResourceTemplate:
+  allowedResources:
+    - kinds: ["HorizontalPodAutoscaler"]
+      apiGroups: ["autoscaling"]
+      resources: ["horizontalpodautoscalers"]
+    - kinds: ["PodDisruptionBudget"]
+      apiGroups: ["policy"]
+      resources: ["poddisruptionbudgets"]
