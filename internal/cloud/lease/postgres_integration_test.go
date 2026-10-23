@@ -58,6 +58,9 @@ func TestFencedWriteRejectsStaleEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := manager.Acquire(t.Context()); !errors.Is(err, lease.ErrHeld) {
+		t.Fatalf("duplicate acquisition error = %v, want ErrHeld", err)
+	}
 	if err := manager.Release(t.Context(), handle); err != nil {
 		t.Fatal(err)
 	}
