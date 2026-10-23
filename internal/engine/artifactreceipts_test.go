@@ -232,3 +232,49 @@ func TestAgenticActivityCarriesRecorderReceipts(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectedEventsAcceptsCanonicalRecorderReceipt(t *testing.T) {
+	receipt := fixtureArtifactReceipt(t)
+	ref := journalRefFrom(receipt.Ref)
+	for _, test := range []struct {
+		name    string
+		change  func(*JournalArtifactOp)
+		wantErr bool
+	}{
+		{name: "canonical receipt"},
+		{name: "outbox", change: func(a *JournalArtifactOp) {
+			a.Stage = "work"
+			a.Attempt = 1
+			a.OutboxRelPath = "result.json"
+			a.OutboxOccurrence = 2
+		}},
+		{name: "wrong CAS path", change: func(a *JournalArtifactOp) { a.Ref.Path = "result.json" }, wantErr: true},
+		{name: "negative size", change: func(a *JournalArtifactOp) { a.Ref.Size = -1 }, wantErr: true},
+		{name: "partial outbox", change: func(a *JournalArtifactOp) { a.OutboxOccurrence = 2 }, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			copyRef := ref
+			op := JournalArtifactOp{Name: receipt.Name, Ref: &copyRef, Integrity: copyRef.Integrity}
+			if test.change != nil {
+				test.change(&op)
+			}
+			events, resolve, err := projectedEvents(JournalProjection{Ops: []JournalOp{{Kind: opArtifact, Artifact: &op}}})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("projectedEvents err=%v wantErr=%v", err, test.wantErr)
+			}
+			if test.wantErr {
+				return
+			}
+			want := ref
+			if test.name == "outbox" {
+				want.Path = "artifacts/outbox/work/attempt-1/occurrence-2/result.json"
+			}
+			if len(events) != 1 || events[0].Ref == nil || *events[0].Ref != want || events[0].Name != receipt.Name {
+				t.Fatalf("projected receipt=%+v", events)
+			}
+			if _, err := resolve(*events[0].Ref); err == nil {
+				t.Fatal("reference invented inline bytes")
+			}
+		})
+	}
+}
