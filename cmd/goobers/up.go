@@ -145,7 +145,7 @@ func daemonReadHandlerOptions(root string, setup *schedulerSetup) []httpapi.Hand
 		httpapi.WithTelemetryReadAvailability(setup.RollupDB != nil),
 	}
 	if setup.ReadModel != nil {
-		options = append(options, httpapi.WithChangeFeedStream(setup.ReadModel))
+		options = append(options, httpapi.WithChangeFeedStream(setup.ReadModel, setup.ReadModel.Feed()))
 	}
 	return options
 }

@@ -746,9 +746,12 @@ func WithTrustedProxies(proxies []string) HandlerOption {
 //
 // A topology with no read model registers no stream at all rather than falling
 // back to a second detector; the freshness surface reports that as degraded.
-func WithChangeFeedStream(store *readmodel.Store) HandlerOption {
+func WithChangeFeedStream(store readmodel.Backend, feed readmodel.Feed) HandlerOption {
 	return func(h *handlerConfig) error {
-		h.events = newFeedStream(store)
+		if store == nil || feed == nil {
+			return errors.New("http API change feed backend and feed are required")
+		}
+		h.events = newFeedStream(store, feed)
 		return nil
 	}
 }

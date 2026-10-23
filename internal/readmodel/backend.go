@@ -121,6 +121,10 @@ type Writer interface {
 	// backwards would let a client resume from a position whose changes are
 	// already gone.
 	PruneChanges(ctx context.Context, keepFrom uint64) (int64, error)
+
+	// PublishDefinitionsChanged records a configuration transition in the
+	// ordered feed even though no run projection changed.
+	PublishDefinitionsChanged(ctx context.Context) error
 }
 
 // Intake is the source-watermark surface (#1922, §3.1).

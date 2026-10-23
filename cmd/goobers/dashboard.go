@@ -832,7 +832,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		errorLog.Printf("dashboard API discovery unavailable: root has no readable durable identity; inspection does not adopt it")
 	}
 	if readStore != nil {
-		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore))
+		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore, readStore.Feed()))
 	}
 	if loopback {
 		// The reveal action shells out on this process's own machine (#2306);

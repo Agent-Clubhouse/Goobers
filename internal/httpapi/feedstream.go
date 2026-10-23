@@ -59,8 +59,8 @@ type eventSource interface {
 
 // feedStream serves SSE from the read model's change feed.
 type feedStream struct {
-	feed  *readmodel.Feed
-	store *readmodel.Store
+	feed  readmodel.Feed
+	store readmodel.Backend
 
 	mu     sync.Mutex
 	closed bool
@@ -71,13 +71,10 @@ type feedStream struct {
 }
 
 // newFeedStream constructs a change-feed-backed event source.
-func newFeedStream(store *readmodel.Store) *feedStream {
+func newFeedStream(store readmodel.Backend, feed readmodel.Feed) *feedStream {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &feedStream{
-		// The store's one feed, not a second one over the same store: a feed
-		// built here would give commits and subscribers different rendezvous
-		// points, and the wakeup would be lost (#2458).
-		feed: store.Feed(), store: store, done: make(chan struct{}),
+		feed: feed, store: store, done: make(chan struct{}),
 		ctx: ctx, cancel: cancel,
 	}
 }

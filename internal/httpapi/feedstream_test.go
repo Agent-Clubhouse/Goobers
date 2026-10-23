@@ -47,7 +47,7 @@ func TestFeedStreamOpensWithASnapshotAtHead(t *testing.T) {
 		commitRun(t, store, i)
 	}
 
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 
 	initial, _, cancel, err := stream.Subscribe("")
@@ -90,7 +90,7 @@ func TestFeedStreamOpensWithASnapshotAtHead(t *testing.T) {
 // TestFeedStreamDeliversCommittedChanges is the basic liveness property.
 func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 	store := feedTestStore(t)
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 
 	_, events, cancel, err := stream.Subscribe("")
@@ -101,7 +101,7 @@ func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 	defer cancel()
 
 	commitRun(t, store, 1)
-	stream.feed.Notify()
+	store.Feed().Notify()
 
 	select {
 	case event := <-events:
@@ -118,7 +118,7 @@ func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 
 func TestFeedStreamCloseJoinsSubscriptionPump(t *testing.T) {
 	store := feedTestStore(t)
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	_, events, cancel, err := stream.Subscribe("")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -147,7 +147,7 @@ func TestFeedStreamNamesEachRefusalCondition(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		commitRun(t, store, i)
 	}
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 
 	head, err := readmodel.NewFeed(store).Head(context.Background())
@@ -186,7 +186,7 @@ func TestFeedStreamNamesEachRefusalCondition(t *testing.T) {
 // reconnect, and the client would keep sending the same malformed value.
 func TestFeedStreamRejectsAMalformedCursor(t *testing.T) {
 	store := feedTestStore(t)
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 
 	_, _, _, err := stream.Subscribe("not-a-cursor")
@@ -275,7 +275,7 @@ func TestFeedStreamResumeNeedsNoInMemoryHistory(t *testing.T) {
 
 	// A stream that has never seen this cursor, standing in for a different
 	// process after a restart.
-	fresh := newFeedStream(store)
+	fresh := newFeedStream(store, store.Feed())
 	defer fresh.Close()
 	_, events, cancel, err := fresh.Subscribe(head.String())
 	if err != nil {

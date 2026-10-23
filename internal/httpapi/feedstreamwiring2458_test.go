@@ -22,11 +22,31 @@ func TestFeedStreamUsesTheStoreFeed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	stream := newFeedStream(store)
+	backend := struct{ readmodel.Backend }{Backend: store}
+	stream := newFeedStream(backend, store.Feed())
 	t.Cleanup(stream.Close)
 
 	if stream.feed != store.Feed() {
 		t.Fatal("the SSE stream holds a different feed from the store's: a projector commit notifies " +
 			"the store's feed while Since waits here, so the wakeup is lost and the Portal stays stale")
+	}
+}
+
+func TestWithChangeFeedStreamRequiresBothCapabilities(t *testing.T) {
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), "read.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for name, option := range map[string]HandlerOption{
+		"backend": WithChangeFeedStream(nil, store.Feed()),
+		"feed":    WithChangeFeedStream(store, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := option(&handlerConfig{}); err == nil {
+				t.Fatal("incomplete change-feed capabilities accepted")
+			}
+		})
 	}
 }

@@ -68,7 +68,7 @@ func feedTestStoreAt(t *testing.T, dir string) *readmodel.Store {
 func TestDefinitionInvalidationFollowsExplicitReadModelCommit(t *testing.T) {
 	ctx := context.Background()
 	store := feedTestStoreAt(t, t.TempDir())
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 
 	_, events, cancel, err := stream.Subscribe("")
@@ -80,7 +80,7 @@ func TestDefinitionInvalidationFollowsExplicitReadModelCommit(t *testing.T) {
 	if err := stream.PublishDefinitionsChanged(); err != nil {
 		t.Fatalf("publish definitions change: %v", err)
 	}
-	stream.feed.Notify()
+	store.Feed().Notify()
 
 	select {
 	case event := <-events:
@@ -121,7 +121,7 @@ func TestDefinitionInvalidationFollowsExplicitReadModelCommit(t *testing.T) {
 // failure #1711's liveness watchdog exists to catch on the other side.
 func TestServerShutdownClosesActiveEventStreams(t *testing.T) {
 	store := feedTestStoreAt(t, t.TempDir())
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 
 	_, events, cancel, err := stream.Subscribe("")
 	if err != nil {
@@ -151,7 +151,7 @@ func TestServerShutdownClosesActiveEventStreams(t *testing.T) {
 // every client's watchdog fire on a healthy stream.
 func TestHeartbeatIntervalIsContractual(t *testing.T) {
 	store := feedTestStoreAt(t, t.TempDir())
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 
 	if got := stream.Heartbeat(); got != readmodel.HeartbeatInterval {
@@ -177,7 +177,7 @@ func TestCursorIsReportedForHeartbeatFraming(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream := newFeedStream(store)
+	stream := newFeedStream(store, store.Feed())
 	defer stream.Close()
 	if cursor := stream.Cursor(); cursor == "" {
 		t.Error("no cursor for heartbeat framing; an idle client cannot learn where the " +
