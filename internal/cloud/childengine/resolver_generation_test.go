@@ -2,6 +2,8 @@ package childengine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/workflow"
@@ -166,7 +169,10 @@ func TestPinnedResolverLoadsPinsFromTheRetainedGenerationNotLiveConfig(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wrong(t.Context(), e); err == nil {
-		t.Fatal("resolved a retained generation's pins from live config")
+	if _, err := wrong(t.Context(), e); !errors.Is(err, childworkflow.ErrFrozenChildDrift) {
+		t.Fatalf("resolving from live config = %v, want frozen-child drift", err)
+	}
+	if !errors.Is(classify(fmt.Errorf("childengine: freeze accepted child: %w", func() error { _, err := wrong(t.Context(), e); return err }())), engine.ErrChildCustodyRefused) {
+		t.Fatal("a digest mismatch is not a permanent refusal")
 	}
 }
