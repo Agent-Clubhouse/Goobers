@@ -404,6 +404,32 @@ func telemetryPlanePath(path string) bool {
 	}
 }
 
+// authorizeIssuerBoundRoute decides routes that exactly one issuer may call,
+// before any role or scope rule runs. handled is false for every other route.
+func authorizeIssuerBoundRoute(request *http.Request, principal Principal) (handled bool, err error) {
+	switch {
+	case engineChildPlanePath(request.URL.Path):
+		// Defence in depth: no role, scope or other issuer reaches the engine
+		// child-admission plane, whatever later rules would grant.
+		if principal.Issuer != WorkerChildAdmissionPrincipalIssuer {
+			return true, errors.New("only the engine worker child-admission credential may call the child-admission plane")
+		}
+		return false, nil
+	case request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath:
+		if principal.Issuer == WorkerPrincipalIssuer {
+			return true, nil
+		}
+		return true, errors.New("only an authenticated worker may report config divergence")
+	case request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigSnapshotPath:
+		if principal.Issuer == WorkerPrincipalIssuer {
+			return true, nil
+		}
+		return true, errors.New("only an authenticated worker may fetch configuration")
+	default:
+		return false, nil
+	}
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
@@ -435,22 +461,8 @@ func RequireRoles() Authorizer {
 		if !ok {
 			return errors.New("no authenticated principal")
 		}
-		// Defence in depth: no role, scope or other issuer reaches the engine
-		// child-admission plane, whatever later rules would grant.
-		if engineChildPlanePath(request.URL.Path) && principal.Issuer != WorkerChildAdmissionPrincipalIssuer {
-			return errors.New("only the engine worker child-admission credential may call the child-admission plane")
-		}
-		if request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
-			if principal.Issuer == WorkerPrincipalIssuer {
-				return nil
-			}
-			return errors.New("only an authenticated worker may report config divergence")
-		}
-		if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigSnapshotPath {
-			if principal.Issuer == WorkerPrincipalIssuer {
-				return nil
-			}
-			return errors.New("only an authenticated worker may fetch configuration")
+		if handled, err := authorizeIssuerBoundRoute(request, principal); handled {
+			return err
 		}
 		if principal.Issuer == WorkflowParentPrincipalIssuer {
 			return authorizeWorkflowParent(request, principal)
