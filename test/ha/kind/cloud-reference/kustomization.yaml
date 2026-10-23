@@ -23,7 +23,30 @@ patches:
         database-auth: password
         object-store-url: http://azurite.goobers-cloud.svc:10000/devstoreaccount1
         object-store-container: goobers
-        object-store-account-name: devstoreaccount1
+  - target: {kind: Deployment, name: goobers-control}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --object-store-account-name=devstoreaccount1
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --object-store-account-key-file=/var/run/secrets/goobers/object-store/account-key
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: object-store
+          mountPath: /var/run/secrets/goobers/object-store
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: object-store
+          secret:
+            secretName: goobers-cloud-object-store
+            defaultMode: 288
+            items:
+              - key: account-key
+                path: account-key
   - target: {kind: ConfigMap, name: goobers-cloud-migration}
     patch: |-
       apiVersion: v1

@@ -82,8 +82,6 @@ spec:
             - --database-auth=$(GOOBERS_DATABASE_AUTH)
             - --object-store-url=$(GOOBERS_OBJECT_STORE_URL)
             - --object-store-container=$(GOOBERS_OBJECT_STORE_CONTAINER)
-            - --object-store-account-name=$(GOOBERS_OBJECT_STORE_ACCOUNT_NAME)
-            - --object-store-account-key-file=/var/run/secrets/goobers/object-store/account-key
             - --config-dir=/etc/goobers/config
           env:
             - name: GOOBERS_INSTANCE_ID
@@ -106,11 +104,6 @@ spec:
                 configMapKeyRef:
                   name: goobers-cloud
                   key: object-store-container
-            - name: GOOBERS_OBJECT_STORE_ACCOUNT_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: goobers-cloud
-                  key: object-store-account-name
             # The lease holder identity: unique per pod incarnation.
             - name: GOOBERS_REPLICA_ID
               valueFrom:
@@ -161,9 +154,6 @@ spec:
             - name: pod-key
               mountPath: /var/run/secrets/goobers/pod-key
               readOnly: true
-            - name: object-store
-              mountPath: /var/run/secrets/goobers/object-store
-              readOnly: true
             - name: instance-config
               mountPath: /etc/goobers/config
               readOnly: true
@@ -206,18 +196,15 @@ spec:
           secret:
             secretName: goobers-cloud-pod-key
             defaultMode: 0440
-        # Shared-key Secret for private endpoints and local emulators. A
-        # production Entra-only overlay may remove these arg/mount fields.
-        - name: object-store
-          secret:
-            secretName: goobers-cloud-object-store
-            defaultMode: 0440
-            items:
-              - key: account-key
-                path: account-key
         - name: instance-config
-          configMap:
-            name: goobers-cloud-instance
+          projected:
+            sources:
+              - configMap:
+                  name: goobers-cloud-instance
+                  items:
+                    - {key: instance.yaml, path: instance.yaml}
+                    - {key: manifest.yaml, path: config/manifest.yaml}
+                    - {key: gaggle.yaml, path: config/gaggles/reference/gaggle.yaml}
         - name: tmp
           emptyDir:
             medium: Memory

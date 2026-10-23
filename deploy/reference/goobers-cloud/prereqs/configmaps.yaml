@@ -14,7 +14,6 @@ data:
   # CHANGE-ME: Azure Blob endpoint, container, and account identity.
   object-store-url: https://CHANGE-ME.blob.core.windows.net
   object-store-container: goobers
-  object-store-account-name: CHANGE-ME
 ---
 apiVersion: v1
 kind: ConfigMap

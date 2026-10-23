@@ -14,5 +14,7 @@ configMapGenerator:
   - name: goobers-cloud-instance
     files:
       - instance.yaml=config/instance.yaml
+      - manifest.yaml=config/manifest.yaml
+      - gaggle.yaml=config/gaggle.yaml
 generatorOptions:
   disableNameSuffixHash: true
