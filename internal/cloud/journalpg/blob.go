@@ -68,19 +68,19 @@ func (b *Backend) recordBlob(ctx context.Context, r *runOwner, event journal.Eve
 	}
 	var committed journal.Event
 	var seq int64
-	err = b.withAppend(ctx, r, []journal.Event{clean}, func(ctx context.Context, tx pgx.Tx, last int64) error {
+	err = b.withAppend(ctx, r, []journal.Event{clean}, func(ctx context.Context, tx pgx.Tx, last int64) ([]journal.Event, error) {
 		if err := b.putBlob(ctx, tx, r, blob); err != nil {
-			return err
+			return nil, err
 		}
 		var err error
 		seq, committed, err = b.appendClean(ctx, tx, r, last, clean)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if committed.Ref == nil || committed.Ref.Digest != blob.ref.Digest {
-			return errors.New("journalpg: emit key content mismatch")
+			return nil, errors.New("journalpg: emit key content mismatch")
 		}
-		return nil
+		return []journal.Event{committed}, nil
 	})
 	if err != nil {
 		return journal.Ref{}, err

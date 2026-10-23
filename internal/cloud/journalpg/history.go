@@ -12,8 +12,6 @@ import (
 
 var errHistoryChanged = errors.New("journalpg: history advanced during preparation")
 
-type runWrite func(context.Context, pgx.Tx, int64) error
-
 type historySnapshot struct {
 	seq    int64
 	events []journal.Event
@@ -51,52 +49,61 @@ func decodeEvents(rows pgx.Rows) ([]journal.Event, error) {
 	return events, rows.Err()
 }
 
-// withHistory evaluates arbitrary replay/predicate work before WithFence. A
-// counter comparison under the writer lock makes that decision atomic with its
-// writes. Retried preparation must have no side effects. No history is decoded
-// or scanned in the fenced callback, even when the run has millions of events.
-func (b *Backend) withHistory(ctx context.Context, r *runOwner, prepare func(historySnapshot) (runWrite, error)) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		snapshot, err := b.snapshot(ctx, r.key.RunID)
-		if err != nil {
-			return err
-		}
-		write, err := prepare(snapshot)
-		if err != nil {
-			return err
-		}
-		err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
-			if seq != snapshot.seq {
-				return errHistoryChanged
-			}
-			return write(ctx, tx, seq)
-		})
-		if !errors.Is(err, errHistoryChanged) {
-			return err
-		}
+type tailWrite func(context.Context, pgx.Tx, int64, []journal.Event) error
+
+// withHistory reads the prefix once before the fence. Under the counter lock,
+// only the newly committed tail is read/folded. A steady sibling appender cannot
+// force full replay retries or starve a lifecycle event.
+func (b *Backend) withHistory(ctx context.Context, r *runOwner, prepare func(historySnapshot) (tailWrite, error)) error {
+	snapshot, err := b.snapshot(ctx, r.key.RunID)
+	if err != nil {
+		return err
 	}
+	write, err := prepare(snapshot)
+	if err != nil {
+		return err
+	}
+	observed := snapshot.seq
+	return b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
+		var tail []journal.Event
+		if seq > observed {
+			rows, err := tx.Query(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND seq>$3 AND seq<=$4 ORDER BY seq`, b.config.InstanceID, r.key.RunID, observed, seq)
+			if err != nil {
+				return err
+			}
+			tail, err = decodeEvents(rows)
+			if err != nil {
+				return err
+			}
+		}
+		return write(ctx, tx, seq, tail)
+	})
 }
 
-// withAppend only replays history for events that actually need it. Ordinary
-// telemetry, blobs and receipts keep the constant-size indexed append path.
-func (b *Backend) withAppend(ctx context.Context, r *runOwner, clean []journal.Event, write runWrite) error {
+type runAppend func(context.Context, pgx.Tx, int64) ([]journal.Event, error)
+
+// Ordinary telemetry keeps the constant-size append path. Lifecycle writes
+// derive the prefix outside the fence, then fold only the tail and committed
+// events (not duplicate emit keys) into their checkpoint under the lock.
+func (b *Backend) withAppend(ctx context.Context, r *runOwner, clean []journal.Event, write runAppend) error {
 	needsHistory := false
 	for _, event := range clean {
 		needsHistory = needsHistory || lifecycle(event)
 	}
 	if !needsHistory {
-		return b.withRun(ctx, r, write)
+		return b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error { _, err := write(ctx, tx, seq); return err })
 	}
-	return b.withHistory(ctx, r, func(s historySnapshot) (runWrite, error) {
-		checkpoint, err := prepareAppendCheckpoint(r.key.RunID, s, clean)
-		if err != nil {
-			return nil, err
-		}
-		return func(ctx context.Context, tx pgx.Tx, seq int64) error {
-			if err := write(ctx, tx, seq); err != nil {
+	return b.withHistory(ctx, r, func(s historySnapshot) (tailWrite, error) {
+		replay := newReplayState(r.key.RunID, s.events)
+		return func(ctx context.Context, tx pgx.Tx, seq int64, tail []journal.Event) error {
+			replay.fold(tail)
+			committed, err := write(ctx, tx, seq)
+			if err != nil {
+				return err
+			}
+			replay.fold(committed)
+			checkpoint, err := replay.checkpoint()
+			if err != nil {
 				return err
 			}
 			return b.storeCheckpoint(ctx, tx, r, checkpoint)
@@ -113,36 +120,6 @@ func prepareCheckpoint(runID string, events []journal.Event) (*preparedCheckpoin
 	state := stateForEvents(runID, events)
 	raw, err := json.Marshal(state)
 	return &preparedCheckpoint{state: state, raw: raw}, err
-}
-
-// Simulate only allocation/dedup for the snapshot's next batch. The counter is
-// rechecked before use; appendClean still allocates each real sequence in SQL.
-func prepareAppendCheckpoint(runID string, s historySnapshot, clean []journal.Event) (*preparedCheckpoint, error) {
-	keys := map[any]bool{}
-	for _, event := range s.events {
-		if key := emitKey(event); key != nil {
-			keys[key] = true
-		}
-	}
-	events := s.events
-	checkpoint := false
-	for _, event := range clean {
-		key := emitKey(event)
-		if key != nil && keys[key] {
-			continue
-		}
-		if key != nil {
-			keys[key] = true
-		}
-		s.seq++
-		event.Seq = uint64(s.seq)
-		events = append(events, event)
-		checkpoint = checkpoint || lifecycle(event)
-	}
-	if !checkpoint {
-		return nil, nil
-	}
-	return prepareCheckpoint(runID, events)
 }
 
 func (b *Backend) storeCheckpoint(ctx context.Context, tx pgx.Tx, r *runOwner, checkpoint *preparedCheckpoint) error {

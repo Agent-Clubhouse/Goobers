@@ -22,8 +22,9 @@ reuse that key when retrying an uncertain commit; a two-second admission deadlin
 can refuse saturated writers before they acquire a connection or row lock.
 
 History-dependent replay and arbitrary append predicates run before the fence.
-The observed counter is compared under the append lock; a concurrent append
-retries preparation against a newer snapshot. Lifecycle/checkpoint replay remains
+Under the append lock, only events newer than that snapshot are read and
+folded into the prepared state or predicate. Steady concurrent telemetry cannot
+force a full replay retry or starve a gate/terminal append. Lifecycle/checkpoint replay remains
 O(history) outside the write budget, while fenced work is O(batch). Progress-rate
 checks use a bounded indexed window count; operator keys, notification claims and
 child continuations use dedicated indexes. Recovery prepares its report before

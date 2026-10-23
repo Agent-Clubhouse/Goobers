@@ -111,7 +111,7 @@ func TestPostgresPredicateOutsideFenceRechecksConcurrentAppend(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("predicate retry did not finish")
+		t.Fatal("predicate tail fold did not finish")
 	}
 	records, err := backend.ReadEvents(t.Context(), journal.RunRef{ID: "run-guard"}, 0, 0)
 	if err != nil || len(records) != 2 {

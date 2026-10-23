@@ -71,16 +71,19 @@ func (b *Backend) AppendBatch(ctx context.Context, handle journal.RunHandle, tok
 		}
 	}
 	var last int64
-	err = b.withAppend(ctx, r, clean, func(ctx context.Context, tx pgx.Tx, seq int64) error {
+	err = b.withAppend(ctx, r, clean, func(ctx context.Context, tx pgx.Tx, seq int64) ([]journal.Event, error) {
 		last = seq
+		committed := make([]journal.Event, 0, len(clean))
 		for _, event := range clean {
 			var err error
-			last, _, err = b.appendClean(ctx, tx, r, last, event)
+			var stored journal.Event
+			last, stored, err = b.appendClean(ctx, tx, r, last, event)
 			if err != nil {
-				return err
+				return nil, err
 			}
+			committed = append(committed, stored)
 		}
-		return nil
+		return committed, nil
 	})
 	if err != nil {
 		return 0, err
@@ -155,9 +158,8 @@ func (b *Backend) indexArtifact(ctx context.Context, tx pgx.Tx, r *runOwner, eve
 	return requireWrite(tag.RowsAffected(), err)
 }
 
-// AppendIfAbsent evaluates the predicate outside the fence, then atomically
-// compares the observed counter and appends. The predicate must be pure: a
-// concurrent append can require evaluation against a newer snapshot.
+// AppendIfAbsent evaluates a pure predicate over the snapshot outside the
+// fence, then over only the concurrent tail while holding the append lock.
 func (b *Backend) AppendIfAbsent(ctx context.Context, h journal.RunHandle, o journal.OwnerToken, event journal.Event, match func(journal.Event) bool) (bool, error) {
 	r, err := b.writeRun(h, o)
 	if err != nil {
@@ -172,23 +174,32 @@ func (b *Backend) AppendIfAbsent(ctx context.Context, h journal.RunHandle, o jou
 	}
 	appended := false
 	var last int64
-	err = b.withHistory(ctx, r, func(s historySnapshot) (runWrite, error) {
-		for _, prior := range s.events {
-			if match(prior) {
-				return func(context.Context, pgx.Tx, int64) error { return nil }, nil
+	err = b.withHistory(ctx, r, func(s historySnapshot) (tailWrite, error) {
+		matched := matchesHistory(s.events, match)
+		var replay *replayState
+		if lifecycle(clean) {
+			replay = newReplayState(r.key.RunID, s.events)
+		}
+		return func(ctx context.Context, tx pgx.Tx, seq int64, tail []journal.Event) error {
+			if matched || matchesHistory(tail, match) {
+				return nil
 			}
-		}
-		checkpoint, err := prepareAppendCheckpoint(r.key.RunID, s, []journal.Event{clean})
-		if err != nil {
-			return nil, err
-		}
-		return func(ctx context.Context, tx pgx.Tx, seq int64) error {
+			var stored journal.Event
 			var err error
-			last, _, err = b.appendClean(ctx, tx, r, seq, clean)
+			last, stored, err = b.appendClean(ctx, tx, r, seq, clean)
 			if err != nil {
 				return err
 			}
 			appended = true
+			if replay == nil {
+				return nil
+			}
+			replay.fold(tail)
+			replay.fold([]journal.Event{stored})
+			checkpoint, err := replay.checkpoint()
+			if err != nil {
+				return err
+			}
 			return b.storeCheckpoint(ctx, tx, r, checkpoint)
 		}, nil
 	})
@@ -207,12 +218,16 @@ func (b *Backend) Checkpoint(ctx context.Context, h journal.RunHandle, o journal
 	if err != nil {
 		return err
 	}
-	return b.withHistory(ctx, r, func(s historySnapshot) (runWrite, error) {
-		checkpoint, err := prepareCheckpoint(r.key.RunID, s.events)
-		if err != nil {
-			return nil, err
-		}
-		return func(ctx context.Context, tx pgx.Tx, _ int64) error { return b.storeCheckpoint(ctx, tx, r, checkpoint) }, nil
+	return b.withHistory(ctx, r, func(s historySnapshot) (tailWrite, error) {
+		replay := newReplayState(r.key.RunID, s.events)
+		return func(ctx context.Context, tx pgx.Tx, _ int64, tail []journal.Event) error {
+			replay.fold(tail)
+			checkpoint, err := replay.checkpoint()
+			if err != nil {
+				return err
+			}
+			return b.storeCheckpoint(ctx, tx, r, checkpoint)
+		}, nil
 	})
 }
 
@@ -251,4 +266,13 @@ func (b *Backend) RunNotifications(ctx context.Context, conn *pgx.Conn) error {
 			}
 		}
 	}
+}
+
+func matchesHistory(events []journal.Event, match func(journal.Event) bool) bool {
+	for _, event := range events {
+		if match(event) {
+			return true
+		}
+	}
+	return false
 }
