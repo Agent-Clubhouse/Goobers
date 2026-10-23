@@ -4,11 +4,13 @@ package journal_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/cloud/journalpg"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -18,6 +20,31 @@ type stallEngine struct {
 	cancelled  []string
 	terminated []string
 	cancelErr  error
+}
+
+type scriptedStallEngine struct {
+	mu         sync.Mutex
+	cancel     func(string) error
+	cancelled  []string
+	terminated []string
+}
+
+func (e *scriptedStallEngine) Cancel(_ context.Context, runID string) error {
+	e.mu.Lock()
+	e.cancelled = append(e.cancelled, runID)
+	fn := e.cancel
+	e.mu.Unlock()
+	if fn != nil {
+		return fn(runID)
+	}
+	return nil
+}
+
+func (e *scriptedStallEngine) Terminate(_ context.Context, runID, _ string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.terminated = append(e.terminated, runID)
+	return nil
 }
 
 func (e *stallEngine) Cancel(_ context.Context, runID string) error {
@@ -74,6 +101,13 @@ func TestCloudMaxRunDurationIgnoresControllerDowntime(t *testing.T) {
 	now := databaseClock(t, config)
 	runID := "00000000000000000000000000017816"
 	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
+	if _, err := config.Pool.Exec(t.Context(), `
+		UPDATE journal.run SET created_at=clock_timestamp()-interval '2 hours'
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID,
+	); err != nil {
+		t.Fatal(err)
+	}
 	engine := &stallEngine{}
 	// A newly constructed controller has no downtime ledger. Cloud execution
 	// still spent the two hours on workers, so maxRunDuration expires.
@@ -107,6 +141,160 @@ func TestCloudStallTerminatesWhenNoWorkerServes(t *testing.T) {
 	if len(engine.terminated) != 1 || engine.terminated[0] != runID {
 		t.Fatalf("terminated = %v", engine.terminated)
 	}
+	reader, err := backend.OpenRun(t.Context(), journal.RunRef{ID: runID, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, err := reader.Phase()
+	if err != nil || phase != journal.PhaseEscalated {
+		t.Fatalf("terminated journal phase = %q %v", phase, err)
+	}
+}
+
+func TestCloudStallUsesDatabaseClockForActivity(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	runID := "00000000000000000000000000037816"
+	skewed := func() time.Time { return time.Now().Add(-2 * time.Hour) }
+	handle, owner, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{
+		Identity: journal.RunIdentity{
+			RunID: runID, Gaggle: "g", Workflow: "implementation",
+			Driver: journal.DriverEngine, StartedAt: skewed(),
+		},
+		Options: journal.RunWriterOptions{Clock: skewed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.AppendBatch(t.Context(), handle, owner,
+		[]journal.Event{{Type: journal.EventRunnerAnnotation}}); err != nil {
+		t.Fatal(err)
+	}
+	engine := &stallEngine{}
+	sweeper := cloudSweeper(t, config, backend, engine, 30*time.Minute, 0)
+	result, err := sweeper.Sweep(t.Context())
+	if err != nil || result.Cancelled != 0 {
+		t.Fatalf("skewed writer looked stale: %+v %v", result, err)
+	}
+}
+
+func TestCloudStaleSweeperCannotTerminateAfterTakeover(t *testing.T) {
+	config := postgresJournalConfigRenew(t, false)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	runID := "00000000000000000000000000047816"
+	createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
+	if _, err := config.Pool.Exec(t.Context(), `
+		UPDATE journal.run_seq
+		SET last_append_at=clock_timestamp()-interval '1 hour'
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	engine := &scriptedStallEngine{}
+	engine.cancel = func(string) error {
+		select {
+		case entered <- struct{}{}:
+			<-release
+			return scheduling.ErrNoWorker
+		default:
+			return nil
+		}
+	}
+	old := cloudSweeper(t, config, backend, engine, 30*time.Minute, 0)
+	oldDone := make(chan error, 1)
+	go func() {
+		_, err := old.Sweep(context.Background())
+		oldDone <- err
+	}()
+	<-entered
+	if _, err := config.Pool.Exec(t.Context(), `
+		UPDATE control.lease_heartbeat
+		SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1 AND name='controller'`,
+		config.InstanceID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	successorManager, err := cloudlease.New(cloudlease.Config{
+		Pool: config.Pool, InstanceID: config.InstanceID,
+		Name: "controller", Holder: "successor",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorHandle, err := successorManager.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorBackend, err := journalpg.New(journalpg.Config{
+		Pool: config.Pool, InstanceID: config.InstanceID,
+		Lease:     successorManager,
+		LiveOwner: func() *cloudlease.Handle { return successorHandle },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor, err := scheduling.NewStallSweeper(scheduling.StallConfig{
+		Pool: config.Pool, InstanceID: config.InstanceID,
+		Manager: successorManager, Handle: successorHandle,
+		Source: backend, Engine: engine, Terminalizer: successorBackend,
+		StalledTimeout: 30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := successor.Sweep(t.Context()); err != nil || result.Cancelled != 1 {
+		t.Fatalf("successor sweep = %+v %v", result, err)
+	}
+	close(release)
+	_ = <-oldDone
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if len(engine.terminated) != 0 {
+		t.Fatalf("stale sweeper terminated after takeover: %v", engine.terminated)
+	}
+}
+
+func TestCloudFailingRunDoesNotBlockFollowingRun(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	first := "00000000000000000000000000057816"
+	second := "00000000000000000000000000067816"
+	for _, runID := range []string{first, second} {
+		createEngineRun(t, backend, runID, now.Add(-2*time.Hour), now)
+	}
+	if _, err := config.Pool.Exec(t.Context(), `
+		UPDATE journal.run_seq
+		SET last_append_at=clock_timestamp()-interval '1 hour'
+		WHERE instance_id=$1`,
+		config.InstanceID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	engine := &scriptedStallEngine{cancel: func(runID string) error {
+		if runID == first {
+			return errors.New("workflow execution not found")
+		}
+		return nil
+	}}
+	sweeper := cloudSweeper(t, config, backend, engine, 30*time.Minute, 0)
+	result, err := sweeper.Sweep(t.Context())
+	if err == nil || result.Cancelled != 1 {
+		t.Fatalf("isolated sweep = %+v %v", result, err)
+	}
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	found := false
+	for _, runID := range engine.cancelled {
+		found = found || runID == second
+	}
+	if !found {
+		t.Fatalf("failing first run blocked second: %v", engine.cancelled)
+	}
 }
 
 func cloudSweeper(
@@ -121,7 +309,7 @@ func cloudSweeper(
 	sweeper, err := scheduling.NewStallSweeper(scheduling.StallConfig{
 		Pool: config.Pool, InstanceID: config.InstanceID,
 		Manager: config.Lease, Handle: config.LiveOwner(),
-		Source: backend, Engine: engine,
+		Source: backend, Engine: engine, Terminalizer: backend,
 		StalledTimeout: stallTimeout, MaxRunDuration: maxDuration,
 	})
 	if err != nil {

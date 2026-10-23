@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/boundedagg"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -19,7 +20,10 @@ const defaultStallBatch = 100
 
 // ErrNoWorker means cancellation cannot be delivered because no worker serves
 // the run. The sweep escalates that run to a server-side termination.
-var ErrNoWorker = errors.New("stall sweep: no worker serves run")
+var (
+	ErrNoWorker     = errors.New("stall sweep: no worker serves run")
+	ErrEngineClosed = errors.New("stall sweep: engine workflow already closed")
+)
 
 // StallActivity is the journal backend's durable activity-clock observation.
 type StallActivity = journal.StallActivity
@@ -33,6 +37,12 @@ type EngineControl interface {
 	Terminate(context.Context, string, string) error
 }
 
+// RunTerminalizer durably closes the journal/read-model cleanup path after a
+// server-side engine termination.
+type RunTerminalizer interface {
+	Terminalize(context.Context, journal.RunIdentity, string) error
+}
+
 // StallConfig binds one cloud instance to its control lease.
 type StallConfig struct {
 	Pool           *pgxpool.Pool
@@ -41,6 +51,7 @@ type StallConfig struct {
 	Handle         *cloudlease.Handle
 	Source         StallSource
 	Engine         EngineControl
+	Terminalizer   RunTerminalizer
 	StalledTimeout time.Duration
 	MaxRunDuration time.Duration
 	BatchSize      int
@@ -54,7 +65,7 @@ func NewStallSweeper(config StallConfig) (*StallSweeper, error) {
 	if config.Pool == nil || config.InstanceID == "" ||
 		config.Manager == nil || config.Handle == nil ||
 		config.Handle.InstanceID != config.InstanceID ||
-		config.Source == nil || config.Engine == nil ||
+		config.Source == nil || config.Engine == nil || config.Terminalizer == nil ||
 		config.StalledTimeout <= 0 || config.MaxRunDuration < 0 {
 		return nil, errors.New("stall sweep: invalid cloud configuration")
 	}
@@ -78,6 +89,7 @@ type StallSweepResult struct {
 func (s *StallSweeper) Sweep(ctx context.Context) (StallSweepResult, error) {
 	var result StallSweepResult
 	var after string
+	var sweepErrs []error
 	for {
 		candidates, err := s.config.Source.StallCandidates(
 			ctx, after, s.config.BatchSize)
@@ -89,52 +101,99 @@ func (s *StallSweeper) Sweep(ctx context.Context) (StallSweepResult, error) {
 			if !candidate.Identity.EngineDriven() {
 				continue
 			}
-			reason, timeout, due, err := s.due(candidate)
+			cancelled, terminated, err := s.processCandidate(ctx, candidate)
+			result.Cancelled += cancelled
+			result.Terminated += terminated
 			if err != nil {
-				return result, err
-			}
-			if !due {
-				continue
-			}
-			action, err := s.claim(ctx, candidate.Identity.RunID, reason)
-			if err != nil {
-				return result, err
-			}
-			switch action.state {
-			case "pending_cancel":
-				err := s.config.Engine.Cancel(ctx, candidate.Identity.RunID)
-				if errors.Is(err, ErrNoWorker) {
-					if err := s.terminate(ctx, candidate.Identity.RunID, reason); err != nil {
-						return result, err
-					}
-					result.Terminated++
-					continue
-				}
-				if err != nil {
-					return result, fmt.Errorf(
-						"stall sweep: cancel %s: %w", candidate.Identity.RunID, err)
-				}
-				if err := s.markCancelled(ctx, candidate.Identity.RunID); err != nil {
-					return result, err
-				}
-				result.Cancelled++
-			case "cancel_requested":
-				if action.cancelRequestedAt != nil &&
-					!candidate.DatabaseNow.Before(action.cancelRequestedAt.Add(timeout)) {
-					if err := s.terminate(ctx, candidate.Identity.RunID, reason); err != nil {
-						return result, err
-					}
-					result.Terminated++
-				}
-			case "terminated":
-			default:
-				return result, fmt.Errorf("stall sweep: invalid action state %q", action.state)
+				sweepErrs = append(sweepErrs, fmt.Errorf(
+					"stall sweep: run %s: %w", candidate.Identity.RunID, err))
 			}
 		}
 		if len(candidates) < s.config.BatchSize {
-			return result, nil
+			return result, boundedagg.Join(sweepErrs...)
 		}
 	}
+}
+
+func (s *StallSweeper) processCandidate(
+	ctx context.Context,
+	candidate StallActivity,
+) (cancelled int, terminated int, err error) {
+	reason, timeout, due, err := s.due(candidate)
+	if err != nil || !due {
+		return 0, 0, err
+	}
+	action, err := s.claim(ctx, candidate.Identity.RunID, reason)
+	if err != nil {
+		return 0, 0, err
+	}
+	if action.retryAt != nil && candidate.DatabaseNow.Before(*action.retryAt) {
+		return 0, 0, nil
+	}
+	switch action.state {
+	case "pending_cancel", "cancelling":
+		if action.state == "pending_cancel" {
+			if err := s.transition(ctx, candidate.Identity.RunID,
+				"pending_cancel", "cancelling"); err != nil {
+				return 0, 0, err
+			}
+		}
+		cancelErr := s.config.Engine.Cancel(ctx, candidate.Identity.RunID)
+		switch {
+		case errors.Is(cancelErr, ErrNoWorker):
+			terminated, err := s.beginTermination(
+				ctx, candidate, reason, "cancelling", true)
+			return 0, terminated, err
+		case errors.Is(cancelErr, ErrEngineClosed):
+			terminated, err := s.beginTermination(
+				ctx, candidate, reason, "cancelling", false)
+			return 0, terminated, err
+		case cancelErr != nil:
+			recordErr := s.recordFailure(ctx, candidate.Identity.RunID,
+				"cancelling", "pending_cancel", cancelErr)
+			return 0, 0, errors.Join(cancelErr, recordErr)
+		default:
+			if err := s.transition(ctx, candidate.Identity.RunID,
+				"cancelling", "cancel_requested"); err != nil {
+				return 0, 0, err
+			}
+			return 1, 0, nil
+		}
+	case "cancel_requested":
+		if action.cancelRequestedAt != nil &&
+			!candidate.DatabaseNow.Before(action.cancelRequestedAt.Add(timeout)) {
+			terminated, err := s.beginTermination(
+				ctx, candidate, reason, "cancel_requested", true)
+			return 0, terminated, err
+		}
+		return 0, 0, nil
+	case "terminating":
+		if err := s.finishTermination(ctx, candidate, reason, true); err != nil {
+			return 0, 0, err
+		}
+		return 0, 1, nil
+	case "terminated":
+		return 0, 0, nil
+	default:
+		return 0, 0, fmt.Errorf("invalid action state %q", action.state)
+	}
+}
+
+func (s *StallSweeper) beginTermination(
+	ctx context.Context,
+	candidate StallActivity,
+	reason string,
+	from string,
+	callEngine bool,
+) (int, error) {
+	if err := s.transition(
+		ctx, candidate.Identity.RunID, from, "terminating"); err != nil {
+		return 0, err
+	}
+	if err := s.finishTermination(ctx, candidate, reason, callEngine); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
 
 func (s *StallSweeper) due(
@@ -167,6 +226,7 @@ func (s *StallSweeper) due(
 type stallAction struct {
 	state             string
 	cancelRequestedAt *time.Time
+	retryAt           *time.Time
 }
 
 func (s *StallSweeper) claim(
@@ -187,45 +247,81 @@ func (s *StallSweeper) claim(
 			      THEN excluded.reason ELSE control.stall_action.reason END
 			WHERE control.stall_action.instance_id=$1
 			  AND control.stall_action.owner_epoch<=$4
-			RETURNING state,cancel_requested_at`,
+			RETURNING state,cancel_requested_at,retry_at`,
 			s.config.InstanceID, runID, reason, epoch,
-		).Scan(&action.state, &action.cancelRequestedAt)
+		).Scan(&action.state, &action.cancelRequestedAt, &action.retryAt)
 	})
 	return action, err
 }
 
-func (s *StallSweeper) markCancelled(ctx context.Context, runID string) error {
+func (s *StallSweeper) transition(
+	ctx context.Context,
+	runID string,
+	from string,
+	to string,
+) error {
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.stall_action
-			SET state='cancel_requested',cancel_requested_at=clock_timestamp(),
-			    owner_epoch=$3
+			SET state=$4,
+			    cancel_requested_at=CASE
+			      WHEN $4='cancel_requested' THEN clock_timestamp()
+			      ELSE cancel_requested_at END,
+			    terminated_at=CASE
+			      WHEN $4='terminated' THEN clock_timestamp()
+			      ELSE terminated_at END,
+			    last_error='',retry_at=NULL,owner_epoch=$3
 			WHERE instance_id=$1 AND run_id=$2
-			  AND state='pending_cancel' AND owner_epoch=$3`,
-			s.config.InstanceID, runID, epoch,
+			  AND state=$5 AND owner_epoch=$3`,
+			s.config.InstanceID, runID, epoch, to, from,
 		)
 		return changed(tag.RowsAffected(), err)
 	})
 }
 
-func (s *StallSweeper) terminate(
+func (s *StallSweeper) recordFailure(
 	ctx context.Context,
 	runID string,
-	reason string,
+	from string,
+	to string,
+	failure error,
 ) error {
-	if err := s.config.Engine.Terminate(ctx, runID, reason); err != nil {
-		return fmt.Errorf("stall sweep: terminate %s: %w", runID, err)
-	}
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.stall_action
-			SET state='terminated',terminated_at=clock_timestamp(),owner_epoch=$3
+			SET state=$4,last_error=left($6,1024),
+			    retry_at=clock_timestamp()+interval '30 seconds',owner_epoch=$3
 			WHERE instance_id=$1 AND run_id=$2
-			  AND state IN ('pending_cancel','cancel_requested') AND owner_epoch=$3`,
-			s.config.InstanceID, runID, epoch,
+			  AND state=$5 AND owner_epoch=$3`,
+			s.config.InstanceID, runID, epoch, to, from, failure.Error(),
 		)
 		return changed(tag.RowsAffected(), err)
 	})
+}
+
+func (s *StallSweeper) finishTermination(
+	ctx context.Context,
+	candidate StallActivity,
+	reason string,
+	callEngine bool,
+) error {
+	if callEngine {
+		if err := s.config.Engine.Terminate(
+			ctx, candidate.Identity.RunID, reason); err != nil &&
+			!errors.Is(err, ErrEngineClosed) {
+			recordErr := s.recordFailure(ctx, candidate.Identity.RunID,
+				"terminating", "terminating", err)
+			return errors.Join(err, recordErr)
+		}
+	}
+	if err := s.config.Terminalizer.Terminalize(
+		ctx, candidate.Identity, reason); err != nil {
+		recordErr := s.recordFailure(ctx, candidate.Identity.RunID,
+			"terminating", "terminating", err)
+		return errors.Join(err, recordErr)
+	}
+	return s.transition(
+		ctx, candidate.Identity.RunID, "terminating", "terminated")
 }
 
 func (s *StallSweeper) withFence(

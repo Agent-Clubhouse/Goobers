@@ -3,6 +3,7 @@ package journalpg
 import (
 	"context"
 	"errors"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -19,7 +20,8 @@ func (b *Backend) StallCandidates(
 		return nil, errors.New("journalpg: stall batch limit must be 1..100")
 	}
 	rows, err := b.config.Pool.Query(ctx, `
-		SELECT r.run_yaml,COALESCE(s.last_append_at,r.created_at),clock_timestamp()
+		SELECT r.run_yaml,r.created_at,
+		       COALESCE(s.last_append_at,r.created_at),clock_timestamp()
 		FROM journal.run AS r
 		JOIN journal.run_seq AS s USING (instance_id,run_id)
 		JOIN journal.run_checkpoint AS c USING (instance_id,run_id)
@@ -34,15 +36,17 @@ func (b *Backend) StallCandidates(
 	result := make([]journal.StallActivity, 0, limit)
 	for rows.Next() {
 		var raw []byte
+		var startedAt time.Time
 		var activity journal.StallActivity
 		if err := rows.Scan(
-			&raw, &activity.LastAppendAt, &activity.DatabaseNow,
+			&raw, &startedAt, &activity.LastAppendAt, &activity.DatabaseNow,
 		); err != nil {
 			return nil, err
 		}
 		if err := yaml.Unmarshal(raw, &activity.Identity); err != nil {
 			return nil, err
 		}
+		activity.Identity.StartedAt = startedAt.UTC()
 		activity.LastAppendAt = activity.LastAppendAt.UTC()
 		activity.DatabaseNow = activity.DatabaseNow.UTC()
 		result = append(result, activity)

@@ -25,6 +25,9 @@ type Config struct {
 	InstanceID string
 	Lease      *lease.Manager
 	LiveOwner  func() *lease.Handle
+	// TerminalCleanup performs idempotent forge/claim cleanup after a fenced
+	// watchdog terminal is durable.
+	TerminalCleanup func(context.Context, journal.RunIdentity, string) error
 }
 
 // Backend is safe for concurrent use. Each recovered writer gets a new token;

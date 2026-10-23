@@ -458,8 +458,10 @@ topology. Local mode uses the journal's in-memory `LastActivity` and excludes
 recorded graceful-drain downtime and host suspension. Cloud mode reads
 `journal.run_seq.last_append_at` with the PostgreSQL clock and subtracts no
 controller downtime. Cloud runs are stopped through the engine (cancel first,
-then server-side terminate if cancellation cannot be served), never by forging
-a terminal journal event from the controller.
+then server-side terminate if cancellation cannot be served). After a
+server-side termination, the live fenced controller records `run.finished` and
+runs idempotent terminal cleanup, because no workflow worker remains to close
+the journal itself.
 
 `maxRunDuration` requires daemon-backed execution. Without a live daemon,
 `goobers run` rejects the selected workflow before dispatch if its effective
