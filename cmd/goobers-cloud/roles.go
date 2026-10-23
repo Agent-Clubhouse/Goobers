@@ -176,10 +176,10 @@ var (
 )
 
 type cloudServices struct {
-	Pools              *cloudpg.Pools
-	Blobs              blobstore.Store
-	Surrenders         dispatcher.SurrenderPlane
-	Objects            *objstore.Metadata
+	Pools               *cloudpg.Pools
+	Blobs               blobstore.Store
+	Surrenders          dispatcher.SurrenderPlane
+	Objects             *objstore.Metadata
 	SchemaCompatibility error
 }
 
