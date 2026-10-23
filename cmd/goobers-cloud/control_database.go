@@ -130,9 +130,6 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 	}
 	defer controller.Close()
 	databases, err := newControlDatabases(ctx, api, controller, db.instanceID)
-	if err == nil && o.objectStoreURL != "" {
-		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer)
-	}
 	if err == nil {
 		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer)
 	}
