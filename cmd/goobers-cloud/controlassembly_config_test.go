@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,7 @@ func TestConfigurationConstructorFailsClosedWithoutItsDependencies(t *testing.T)
 
 func TestLeasedActivatorRefusesToPublishWithoutALiveHandle(t *testing.T) {
 	activator := leasedActivator{manager: &lease.Manager{}, owner: func() *lease.Handle { return nil }}
-	if err := activator.Activate(t.Context(), cloudconfig.Candidate{Digest: "sha256:x"}); err != lease.ErrStale {
+	if err := activator.Activate(t.Context(), cloudconfig.Candidate{Digest: "sha256:x"}); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("Activate without a live handle = %v, want ErrStale", err)
 	}
 }
@@ -81,7 +82,7 @@ func TestControlCommandRequiresAConfigDirectory(t *testing.T) {
 
 func TestLeasedGenerationsRefuseToPinWithoutALiveHandle(t *testing.T) {
 	source := leasedGenerations{owner: func() *lease.Handle { return nil }}
-	if _, err := source.Acquire(t.Context(), "sha256:x"); err != lease.ErrStale {
+	if _, err := source.Acquire(t.Context(), "sha256:x"); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("Acquire without a live handle = %v, want ErrStale", err)
 	}
 }
