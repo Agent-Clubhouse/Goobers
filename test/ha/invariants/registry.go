@@ -158,6 +158,6 @@ WHERE NOT EXISTS (
 	{
 		Name:        "no-stage-executed-by-control-plane",
 		Description: "stages only ever execute in worker or stage pods",
-		Pending:     "pending #7823",
+		Pending:     "pending #7870",
 	},
 }
