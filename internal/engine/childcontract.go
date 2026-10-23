@@ -181,6 +181,9 @@ func (a *Activities) AdmitEngineChild(ctx context.Context, in ChildAdmissionInpu
 	if err = out.validate(); err != nil {
 		return ChildRunBinding{}, temporal.NewNonRetryableApplicationError(err.Error(), "child_admission_invalid", nil)
 	}
+	if out.restartedParent(in) {
+		return ChildRunBinding{}, temporal.NewNonRetryableApplicationError(errSealedChildRestart.Error(), "child_restart_unsupported", nil)
+	}
 	if !out.sameParent(in) {
 		return ChildRunBinding{}, temporal.NewNonRetryableApplicationError("engine: admission changed parent binding", "child_admission_invalid", nil)
 	}

@@ -40,6 +40,7 @@ type Store struct {
 	schema  string
 	version int
 	fence   Fence
+	feed    *readmodel.ChangeFeed
 }
 
 var _ readmodel.Backend = (*Store)(nil)
@@ -80,7 +81,9 @@ func openVersion(ctx context.Context, pool *pgxpool.Pool, version int, fence Fen
 	if !ready {
 		return nil, fmt.Errorf("readmodelpg: %s is not ready", schema)
 	}
-	return &Store{pool: pool, schema: schema, version: version, fence: fence}, nil
+	store := &Store{pool: pool, schema: schema, version: version, fence: fence}
+	store.feed = readmodel.NewFeedWithWakeup(NewActiveFeedStore(pool), nil)
+	return store, nil
 }
 
 func versionSchema(version int) (string, error) {
@@ -97,6 +100,9 @@ func versionSchema(version int) (string, error) {
 func (s *Store) table(name string) string {
 	return pgx.Identifier{s.schema, name}.Sanitize()
 }
+
+// ChangeFeed returns the store's singleton active-version feed.
+func (s *Store) ChangeFeed() readmodel.Feed { return s.feed }
 
 // State reports the active version's opaque identity and change floor.
 func (s *Store) State(ctx context.Context) (readmodel.State, error) {
@@ -129,6 +135,20 @@ func (s *Store) GetRun(ctx context.Context, runID string) (readmodel.RunRow, boo
 		return readmodel.RunRow{}, false, fmt.Errorf("readmodelpg: decode run: %w", err)
 	}
 	return projection.Run, true, nil
+}
+
+// PublishDefinitionsChanged appends one globally scoped change under the fence.
+func (s *Store) PublishDefinitionsChanged(ctx context.Context) error {
+	return s.fence.WithFence(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		if err := s.checkActive(ctx, tx, epoch); err != nil {
+			return err
+		}
+		if err := s.bumpOwner(ctx, tx, epoch); err != nil {
+			return err
+		}
+		return s.insertChange(
+			ctx, tx, epoch, readmodel.ChangeDefinitionsChanged, readmodel.RunRow{})
+	})
 }
 
 // UpsertRun applies a source-monotonic projection and its intake watermark in

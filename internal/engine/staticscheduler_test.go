@@ -33,8 +33,8 @@ type staticSchedulerResult struct {
 	Projection JournalProjection
 }
 
-// No production entry constructs a staticWalkSession or a shared budget.
-// The version gate also preserves unmarked refusal histories in this fixture.
+// This fixture keeps its historical assembly separate from the production Run
+// entry point. Its version gate preserves unmarked refusal histories.
 func staticScheduler(ctx workflow.Context, input staticSchedulerInput) (staticSchedulerResult, error) {
 	if workflow.GetVersion(ctx, staticSchedulerVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 		return staticSchedulerResult{}, fmt.Errorf("engine: static parallel execution is refused")

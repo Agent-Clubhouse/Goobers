@@ -1405,6 +1405,12 @@
       "reason": "HA chaos harness: Linux-only (kubectl/kind, PostgreSQL 16 integration); unit tests run on the Linux unit shards only."
     },
     {
+      "package": "test/ha/childscenarios",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Hosted kind owns child-family worker eviction; contract checks run on Linux."
+    },
+    {
       "package": "test/ha/invariants",
       "coverage": "none",
       "category": "not-selected",
