@@ -211,6 +211,12 @@
       "reason": "Cloud engine-only admission tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/cutover",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud bootstrap and cutover-check tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",
