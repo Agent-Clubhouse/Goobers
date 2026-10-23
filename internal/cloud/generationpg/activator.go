@@ -1,3 +1,4 @@
+// Package generationpg applies retained cloud config generations.
 package generationpg
 
 import (

@@ -66,7 +66,7 @@ func (s *Source) Acquire(
 	archive, err := configgeneration.Decode(archiveData, generation)
 	if err != nil {
 		return childworkflow.Generation{}, fmt.Errorf(
-			"%w: decode archive: %v", ErrGenerationInvalid, err)
+			"%w: decode archive: %w", ErrGenerationInvalid, err)
 	}
 	if archive.InstanceID != s.instanceID {
 		return childworkflow.Generation{}, fmt.Errorf(
@@ -104,14 +104,14 @@ func (s *Source) Acquire(
 	if err := archive.Extract(ctx, directory); err != nil {
 		_ = cleanup()
 		return childworkflow.Generation{}, fmt.Errorf(
-			"%w: extract archive: %v", ErrGenerationInvalid, err)
+			"%w: extract archive: %w", ErrGenerationInvalid, err)
 	}
 	configDir := filepath.Join(directory, "config")
 	set, report, err := instance.LoadConfigDir(configDir)
 	if err != nil {
 		_ = cleanup()
 		return childworkflow.Generation{}, fmt.Errorf(
-			"%w: load retained config: %v (%s)",
+			"%w: load retained config: %w (%s)",
 			ErrGenerationInvalid, err,
 			runtimewiring.ValidationIssueSummary(report))
 	}
