@@ -417,7 +417,7 @@ func TestIntegrationUpgradeHITLResumesNMinus3OnCurrentVersion(t *testing.T) {
 	}}
 	var retention workerrollout.Result
 	waitForVersioning(t, func() bool {
-		retention, err = workerrollout.Reconcile(ctx, source, workerrollout.SDKClient{Client: server.Client()}, workerrollout.DefaultVersionLimit)
+		retention, err = workerrollout.Reconcile(ctx, source, workerrollout.SDKClient{Client: server.Client()}, workerrollout.DefaultVersionLimit, "build-n")
 		return err == nil && retention.Updated == 1
 	})
 	if retention.RetiredBuild != "build-n-minus-3" {

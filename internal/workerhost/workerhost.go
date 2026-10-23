@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,8 +97,9 @@ type Config struct {
 	RolloutNamespace string
 	// AutoUpgradeRetention permits the retention reconciler to move pinned
 	// workflows across builds. It requires operator replay-compatibility
-	// evidence and is disabled by default.
-	AutoUpgradeRetention bool
+	// evidence attested for this exact BuildVersion and is disabled by default.
+	AutoUpgradeRetention         bool
+	autoUpgradeRetentionMismatch string
 	// Logf receives the non-fatal deployment-routing health reports (#5950).
 	// Nil writes them to the process's stderr.
 	Logf func(format string, args ...any)
@@ -123,16 +123,18 @@ type Host struct {
 	dial      func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error)
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 	// describeRouting and its cadence back the #5950 routing health check.
-	describeRouting        func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
-	newRolloutStatus       func() (workerrollout.StatusSource, error)
-	reconcileRollout       func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int) (workerrollout.Result, error)
-	routingDelay           time.Duration
-	routingInterval        time.Duration
-	rolloutInterval        time.Duration
-	childSettlementTimeout time.Duration
-	pollersStarted         atomic.Bool
-	routed                 atomic.Bool
-	draining               atomic.Bool
+	describeRouting             func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
+	newRolloutStatus            func() (workerrollout.StatusSource, error)
+	reconcileRollout            func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int, string) (workerrollout.Result, error)
+	routingDelay                time.Duration
+	routingInterval             time.Duration
+	routingRegistrationInterval time.Duration
+	rolloutInterval             time.Duration
+	childSettlementTimeout      time.Duration
+	pollersStarted              atomic.Bool
+	routed                      atomic.Bool
+	draining                    atomic.Bool
+	routingDescribeFailed       atomic.Bool
 }
 
 // New validates cfg and builds a Host.
@@ -187,12 +189,17 @@ func New(cfg Config) (*Host, error) {
 	h.reconcileRollout = workerrollout.Reconcile
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
+	h.routingRegistrationInterval = routingRegistrationCheckInterval
 	h.rolloutInterval = time.Minute
 	h.childSettlementTimeout = ChildSettlementTimeout
+	if cfg.autoUpgradeRetentionMismatch != "" {
+		h.logf("goobers-cloud worker: error: %s", cfg.autoUpgradeRetentionMismatch)
+	}
 	return h, nil
 }
 
 func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) (Config, error) {
+	binaryVersion := strings.TrimSpace(cfg.BuildVersion)
 	deployment, hasDeployment := lookup(temporalDeploymentNameEnv)
 	buildID, hasBuildID := lookup(temporalWorkerBuildIDEnv)
 	if !hasDeployment && !hasBuildID {
@@ -206,8 +213,18 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 	if deployment != DeploymentName {
 		return Config{}, fmt.Errorf("workerhost: %s=%q, want %q", temporalDeploymentNameEnv, deployment, DeploymentName)
 	}
+	if isPlaceholder(buildID) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; set a distinct immutable ID for this release", temporalWorkerBuildIDEnv, buildID)
+	}
+	if !developmentBuild(binaryVersion) && !buildIDContainsVersion(buildID, binaryVersion) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q does not contain release binary version %q; refuse an in-place code update under a reused build ID",
+			temporalWorkerBuildIDEnv, buildID, binaryVersion)
+	}
 	cfg.BuildVersion = buildID
 	cfg.Versioning = true
+	// Controller-managed retention is enabled only by an attestation for this
+	// exact injected build, never by a value carried in a shared config.
+	cfg.AutoUpgradeRetention = false
 	if cfg.VersionRetention == 0 {
 		cfg.VersionRetention = workerrollout.DefaultVersionLimit
 	}
@@ -216,13 +233,43 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 		cfg.RolloutNamespace = strings.TrimSpace(namespace)
 	}
 	if raw, ok := lookup(autoUpgradeRetentionEnv); ok {
-		enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
-		if err != nil {
-			return Config{}, fmt.Errorf("workerhost: parse %s: %w", autoUpgradeRetentionEnv, err)
+		attestedBuild := strings.TrimSpace(raw)
+		if isPlaceholder(attestedBuild) {
+			return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; omit it until replay qualification passes", autoUpgradeRetentionEnv, attestedBuild)
 		}
-		cfg.AutoUpgradeRetention = enabled
+		if attestedBuild == buildID {
+			cfg.AutoUpgradeRetention = true
+		} else {
+			cfg.AutoUpgradeRetention = false
+			cfg.autoUpgradeRetentionMismatch = fmt.Sprintf(
+				"%s=%q does not match %s=%q; AUTO_UPGRADE retention is disabled",
+				autoUpgradeRetentionEnv, attestedBuild, temporalWorkerBuildIDEnv, buildID)
+		}
 	}
 	return cfg, nil
+}
+
+func developmentBuild(version string) bool {
+	return version == "" || version == "dev"
+}
+
+func buildIDContainsVersion(buildID, binaryVersion string) bool {
+	if strings.Contains(buildID, binaryVersion) {
+		return true
+	}
+	normalized := strings.TrimPrefix(binaryVersion, "v")
+	return normalized != binaryVersion && strings.Contains(buildID, normalized)
+}
+
+func isPlaceholder(value string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(upper, "CHANGE-ME") ||
+		strings.Contains(upper, "CHANGE_ME") ||
+		strings.Contains(upper, "CHANGEME") ||
+		strings.Contains(upper, "PLACEHOLDER") ||
+		strings.Contains(upper, "REPLACE-ME") ||
+		strings.Contains(upper, "REPLACE_ME") ||
+		(strings.HasPrefix(upper, "<") && strings.HasSuffix(upper, ">"))
 }
 
 // Identity is the versioned Temporal worker identity (#632): build version,

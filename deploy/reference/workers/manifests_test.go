@@ -78,6 +78,20 @@ func TestRainbowManifestUsesHealthGatedAllAtOnce(t *testing.T) {
 			t.Fatalf("%s does not gate controller health: path=%q found=%v err=%v", probe, path, found, err)
 		}
 	}
+	buildID, found, err := unstructured.NestedString(object, "spec", "workerOptions", "unsafeCustomBuildID")
+	if err != nil || !found || buildID == "" {
+		t.Fatalf("unsafeCustomBuildID = %q, found=%v err=%v", buildID, found, err)
+	}
+	env, found, err := unstructured.NestedSlice(container, "env")
+	if err != nil || !found {
+		t.Fatalf("worker env missing: %v", err)
+	}
+	for _, raw := range env {
+		entry := raw.(map[string]any)
+		if entry["name"] == "GOOBERS_AUTO_UPGRADE_RETENTION" {
+			t.Fatal("reference manifest enables retention without replay qualification")
+		}
+	}
 }
 
 func TestWorkerControllerVersionCapAndDrainPolicy(t *testing.T) {

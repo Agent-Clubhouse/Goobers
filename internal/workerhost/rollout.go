@@ -16,7 +16,7 @@ func (h *Host) checkRolloutLoop(ctx context.Context, status workerrollout.Status
 			return
 		case <-timer.C:
 		}
-		result, err := h.reconcileRollout(ctx, status, temporal, h.cfg.VersionRetention)
+		result, err := h.reconcileRolloutOnce(ctx, status, temporal)
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -28,4 +28,15 @@ func (h *Host) checkRolloutLoop(ctx context.Context, status workerrollout.Status
 		}
 		timer.Reset(h.rolloutInterval)
 	}
+}
+
+func (h *Host) reconcileRolloutOnce(ctx context.Context, status workerrollout.StatusSource, temporal workerrollout.TemporalClient) (workerrollout.Result, error) {
+	observed, err := status.Status(ctx)
+	if err != nil {
+		return workerrollout.Result{}, err
+	}
+	if observed.CurrentBuildID != h.cfg.BuildVersion {
+		return workerrollout.Result{}, nil
+	}
+	return h.reconcileRollout(ctx, status, temporal, h.cfg.VersionRetention, h.cfg.BuildVersion)
 }

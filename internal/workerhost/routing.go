@@ -21,8 +21,9 @@ const (
 	routingCheckDelay = 30 * time.Second
 	// routingCheckInterval re-checks for the life of the process: the current
 	// version is changed out-of-band by operators, not by this worker.
-	routingCheckInterval = 5 * time.Minute
-	routingCheckTimeout  = 10 * time.Second
+	routingCheckInterval             = 5 * time.Minute
+	routingRegistrationCheckInterval = 5 * time.Second
+	routingCheckTimeout              = 10 * time.Second
 )
 
 // checkRoutingLoop reports routing problems until ctx ends. It never fails the
@@ -32,6 +33,7 @@ func (h *Host) checkRoutingLoop(ctx context.Context, c client.Client) {
 	timer := time.NewTimer(h.routingDelay)
 	defer timer.Stop()
 	reported := ""
+	describeFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -39,8 +41,30 @@ func (h *Host) checkRoutingLoop(ctx context.Context, c client.Client) {
 		case <-timer.C:
 		}
 		reported = h.checkRoutingOnce(ctx, c, reported)
-		timer.Reset(h.routingInterval)
+		if h.routingDescribeFailed.Load() {
+			describeFailures++
+		} else {
+			describeFailures = 0
+		}
+		timer.Reset(h.nextRoutingCheckInterval(describeFailures))
 	}
+}
+
+func (h *Host) nextRoutingCheckInterval(describeFailures int) time.Duration {
+	if describeFailures > 0 {
+		interval := h.routingRegistrationInterval
+		for range describeFailures - 1 {
+			if interval >= h.routingInterval/2 {
+				return h.routingInterval
+			}
+			interval *= 2
+		}
+		return interval
+	}
+	if h.cfg.VersionRetention > 0 && !h.routed.Load() {
+		return h.routingRegistrationInterval
+	}
+	return h.routingInterval
 }
 
 // checkRoutingOnce logs a current problem on every check, so it stays visible
@@ -56,6 +80,7 @@ func (h *Host) checkRoutingOnce(ctx context.Context, c client.Client, reported s
 		return reported
 	}
 	finding := workerrouting.Check(h.versioned(), h.cfg.BuildVersion, routing, err)
+	h.routingDescribeFailed.Store(err != nil)
 	ready := finding.Problem == ""
 	if h.cfg.VersionRetention > 0 {
 		// Worker Controller cannot promote an inactive target until its

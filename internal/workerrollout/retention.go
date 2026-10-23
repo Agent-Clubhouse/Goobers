@@ -68,13 +68,16 @@ type Result struct {
 // Reconcile makes room for a blocked target by changing workflows pinned to
 // the oldest draining version to AUTO_UPGRADE. Their next workflow task runs
 // on the current version, allowing the old version to become drained.
-func Reconcile(ctx context.Context, source StatusSource, temporal TemporalClient, limit int) (Result, error) {
+func Reconcile(ctx context.Context, source StatusSource, temporal TemporalClient, limit int, currentBuild string) (Result, error) {
 	if limit < 2 {
 		return Result{}, fmt.Errorf("worker rollout: version limit %d must be at least 2", limit)
 	}
 	status, err := source.Status(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("worker rollout: read WorkerDeployment status: %w", err)
+	}
+	if status.CurrentBuildID != currentBuild {
+		return Result{}, nil
 	}
 	if !targetBlocked(status, limit) {
 		return Result{}, nil

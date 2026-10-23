@@ -182,6 +182,7 @@ tables:
     - state
     - run_id
     - accepted_at
+    - owner_epoch
     update:
     - state
     - owner_epoch
@@ -837,29 +838,6 @@ tables:
     - owner_epoch
     - delivered_at
     delete: true
-- schema: control
-  table: provider_observation
-  provisioned: true
-  fence: owner_epoch
-  rationale: Controller snapshots provider observations under its live lease fence and restores them before admission
-    after restart.
-  readers:
-  - role: goobers_controller
-    columns:
-    - instance_id
-    - observation_key
-    - payload
-    - observed_at
-    - owner_epoch
-  writers:
-  - role: goobers_controller
-    insert:
-    - instance_id
-    - observation_key
-    - payload
-    - observed_at
-    - owner_epoch
-    delete: true
 - schema: journal
   table: run
   provisioned: true
@@ -1072,6 +1050,348 @@ tables:
     - emit_key
     - epoch
     - body
+- schema: control
+  table: child_parent
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - cancelled_at
+    - settled_at
+    - cancel_actor
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - owner_epoch
+    update:
+    - cancelled_at
+    - settled_at
+    - cancel_actor
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_occurrence
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - occurrence
+    - accepted_count
+    - max_children
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - occurrence
+    - accepted_count
+    - max_children
+    - owner_epoch
+    update:
+    - accepted_count
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_lineage
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe. The API permanently reads only instance_id/acceptance_id
+    to exclude children from generic start status. Acceptance retention is controller-only. The worker has no custody privileges.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - occurrence
+    - invocation_key
+    - sequence
+    - child_id
+    - acceptance_id
+    - start_key
+    - actor_digest
+    - payload_digest
+    - proposal_digest
+    - snapshot_receipt_digest
+    - snapshot_bundle_digest
+    - result_receipt_digest
+    - result_bundle_digest
+    - state
+    - result_ref
+    - workspace_ref
+    - accepted_at
+    - updated_at
+    - terminal_at
+    - acknowledged_at
+    - tombstoned_at
+    - owner_epoch
+  - role: goobers_api
+    columns:
+    - instance_id
+    - acceptance_id
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - occurrence
+    - invocation_key
+    - sequence
+    - child_id
+    - acceptance_id
+    - start_key
+    - actor_digest
+    - payload_digest
+    - proposal_digest
+    - state
+    - accepted_at
+    - updated_at
+    - owner_epoch
+    update:
+    - snapshot_receipt_digest
+    - snapshot_bundle_digest
+    - result_receipt_digest
+    - result_bundle_digest
+    - state
+    - result_ref
+    - workspace_ref
+    - updated_at
+    - terminal_at
+    - acknowledged_at
+    - tombstoned_at
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_authority
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - occurrence
+    - grant_id
+    - attempt_id
+    - config_digest
+    - policy_digest
+    - expires_at
+    - revoked
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - parent_run_id
+    - occurrence
+    - grant_id
+    - attempt_id
+    - config_digest
+    - policy_digest
+    - expires_at
+    - revoked
+    - owner_epoch
+    update:
+    - grant_id
+    - attempt_id
+    - config_digest
+    - policy_digest
+    - expires_at
+    - revoked
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_blob
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - child_id
+    - digest
+    - kind
+    - size_bytes
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - digest
+    - kind
+    - size_bytes
+    - owner_epoch
+    update:
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_blob_read
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - child_id
+    - contract_digest
+    - digest
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - contract_digest
+    - digest
+    - owner_epoch
+    update:
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_publication
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - child_id
+    - action
+    - execution_run_id
+    - intent_digest
+    - state
+    - receipt_digest
+    - created_at
+    - updated_at
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - action
+    - execution_run_id
+    - intent_digest
+    - state
+    - owner_epoch
+    update:
+    - state
+    - receipt_digest
+    - updated_at
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_disposition
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - child_id
+    - request_digest
+    - previous_digest
+    - action
+    - result_ref
+    - attempt_id
+    - requested_at
+    - plan_digest
+    - applied_at
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - request_digest
+    - action
+    - result_ref
+    - attempt_id
+    - requested_at
+    - owner_epoch
+    update:
+    - request_digest
+    - plan_digest
+    - applied_at
+    - owner_epoch
+    delete: true
+- schema: control
+  table: child_disposition_history
+  provisioned: true
+  fence: owner_epoch
+  rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
+    Controller reads also cover every blob reference probe; API and worker paths do not own this custody.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - child_id
+    - request_digest
+    - previous_digest
+    - plan_digest
+    - result_ref
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    update:
+    - owner_epoch
+    delete: true
+- schema: control
+  table: provider_observation
+  provisioned: true
+  fence: owner_epoch
+  rationale: Controller snapshots provider observations under its live lease fence and restores them before admission
+    after restart.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - observation_key
+    - payload
+    - observed_at
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - observation_key
+    - payload
+    - observed_at
+    - owner_epoch
+    delete: true
 sequences:
 - schema: control
   sequence: terminal_report_generation
@@ -1086,8 +1406,8 @@ functions:
   arguments: table_name text, column_name text, candidate_digest text
   rationale: SECURITY INVOKER reference probe used by blob_is_referenced; it runs SELECT on the probed column as the caller, so
     the controller holds SELECT on each probed column that exists (config_generation.blob_digest,
-    recovery_record.patch_digest and archive_digest, journal.run_artifact.digest). It returns true for a table that does not
-    exist yet.
+    recovery_record.patch_digest and archive_digest, journal.run_artifact.digest, and every child custody digest/reference
+    column from 0012). It returns true for a table that does not exist yet.
   security_definer: false
   execute:
   - goobers_controller

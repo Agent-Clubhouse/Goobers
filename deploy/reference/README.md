@@ -824,12 +824,29 @@ block a target that would exceed three live versions. While blocked, workers
 leave the target blocked by default. `AUTO_UPGRADE` replays each pinned
 workflow's complete history on the current build, so enable automatic retention
 only after captured histories from every retained build replay successfully
-against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION=true` on the
-worker pod template to attest to that evidence; the worker then changes
+against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION` on the
+worker pod template to that release's exact `TEMPORAL_WORKER_BUILD_ID` to attest
+to the evidence. A stale build ID or the legacy value `true` logs an error and
+leaves retention disabled. The worker then changes
 workflows pinned to the oldest draining build to `AUTO_UPGRADE`. Their next
 workflow task replays on the current build, including a HITL run that resumes
 after the old Deployment has scaled down. At the cap, budget for at least six
 worker pods and keep all three images pullable until their versions drain.
+
+Release tooling must replace `workerOptions.unsafeCustomBuildID` with a
+distinct, immutable identifier containing the binary version for **every**
+image or workflow-code release, whether replay qualification passes or not.
+Use the version itself or `<version>-<workflow-source-hash>` and inject it from
+the release pipeline. Reusing that ID makes Worker Controller roll changed
+code in place under pinned workflows, so the worker rejects both the shipped
+`CHANGE-ME` placeholder and a release ID that does not contain its binary
+version. Plain `dev` builds are exempt for local development.
+
+The reference omits `GOOBERS_AUTO_UPGRADE_RETENTION`. After replay qualification
+for that release, add it to the worker environment with a value exactly equal
+to the already-selected `unsafeCustomBuildID`. This same-release template
+update may roll in place because the workflow code and build ID are unchanged;
+it only enables retention. Placeholder values are rejected at startup.
 
 Terminating one replica does not consume a stage attempt. The replacement
 worker adopts the exact live stage pod by UID, preserving the attempt number
