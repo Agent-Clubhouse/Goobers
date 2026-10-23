@@ -11,15 +11,23 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-// Compute returns the pins of every workflow in set, keyed "gaggle/workflow",
-// reading goober instructions and skill packages from configDir (the generation's
-// read-only tree). A workflow that does not compile fails the whole generation:
-// admitting against a partial pin set would let an unpinned workflow start.
-func Compute(configDir string, cfg *instance.Config, set *instance.ConfigSet) (map[string]cloudconfig.Pins, error) {
+// Compiled is a generation's workflows compiled with their goober digests.
+type Compiled struct {
+	Machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
+	GooberDigests map[localscheduler.WorkflowIdentity]string
+}
+
+// Compile compiles every workflow of set and computes its goober digest,
+// reading goober instructions and skill packages from configDir (the
+// generation's read-only tree). A workflow that does not compile fails the
+// whole generation: admitting against a partial set would let an unpinned
+// workflow start.
+func Compile(configDir string, cfg *instance.Config, set *instance.ConfigSet) (*Compiled, error) {
 	if cfg == nil || set == nil {
 		return nil, fmt.Errorf("startpin: a loaded configuration is required")
 	}
@@ -50,9 +58,18 @@ func Compute(configDir string, cfg *instance.Config, set *instance.ConfigSet) (m
 	if err != nil {
 		return nil, fmt.Errorf("startpin: compile generation: %w", err)
 	}
-	out := make(map[string]cloudconfig.Pins, len(machines))
-	for identity, machine := range machines {
-		digest, ok := gooberDigests[identity]
+	return &Compiled{Machines: machines, GooberDigests: gooberDigests}, nil
+}
+
+// Compute returns the pins of every workflow in set, keyed "gaggle/workflow".
+func Compute(configDir string, cfg *instance.Config, set *instance.ConfigSet) (map[string]cloudconfig.Pins, error) {
+	compiled, err := Compile(configDir, cfg, set)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]cloudconfig.Pins, len(compiled.Machines))
+	for identity, machine := range compiled.Machines {
+		digest, ok := compiled.GooberDigests[identity]
 		if !ok {
 			return nil, fmt.Errorf("startpin: no goober digest for %s/%s", identity.Gaggle, identity.Workflow)
 		}

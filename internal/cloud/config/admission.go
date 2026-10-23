@@ -97,6 +97,7 @@ type Generation struct {
 	eligible map[string]struct{}
 	refusal  *Refusal
 	pins     map[string]Pins
+	cfg      *instance.Config
 }
 
 // Digest identifies the generation the assessment was computed for.
