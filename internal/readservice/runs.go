@@ -3065,6 +3065,8 @@ func applyStageAttemptEvent(
 	case journal.EventStageStarted, journal.EventReviewerStarted:
 		if event.Type == journal.EventReviewerStarted {
 			closeInterruptedReviewerAttempts(attempts, event)
+		} else {
+			closeInterruptedStageAttempts(attempts, event)
 		}
 		attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 	case journal.EventRunnerPlacement:
