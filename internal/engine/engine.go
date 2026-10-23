@@ -65,6 +65,10 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	// childLineage is derived only from a verified frozen binding during workflow execution.
+	childLineage *journal.ChildLineage
+	// FrozenChild is internal protocol data; the production Run entry refuses it.
+	FrozenChild *ChildRunBinding `json:"frozenChild,omitempty"`
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
 	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
 	InstanceID             string             `json:"instanceId,omitempty"`
@@ -247,6 +251,9 @@ func HumanGateSignal(gateName string) string {
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
+	if in.FrozenChild != nil {
+		return runFrozenChild(ctx, in)
+	}
 	return run(ctx, in)
 }
 

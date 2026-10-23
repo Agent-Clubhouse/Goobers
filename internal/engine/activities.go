@@ -48,8 +48,8 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
-	// EngineChildren is the durable generated-child admission boundary.
-	EngineChildren ChildAdmissions
+	// EngineChildren is the durable generated-child custody boundary.
+	EngineChildren ChildService
 	// ChildDispatchCompletion commits a stopped worker's final custody report
 	// through its existing Temporal connection before the activity returns.
 	ChildDispatchCompletion ChildDispatchCompletion
