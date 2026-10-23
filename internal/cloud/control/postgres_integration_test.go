@@ -113,7 +113,7 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	var active, restored atomic.Int32
 	var unsafeOverlap atomic.Bool
 	makeReplica := func(holder string) (*Host, *lease.Manager) {
-		leaseConfig := lease.Config{Pool: pool, InstanceID: "control-test", Name: "controller", Holder: holder, TTL: leaseTTL, RenewInterval: renew, SelfFenceAfter: selfFence}
+		leaseConfig := lease.Config{Pool: pool, InstanceID: "control-test", Name: lease.ControllerName, Holder: holder, TTL: leaseTTL, RenewInterval: renew, SelfFenceAfter: selfFence}
 		manager, err := lease.New(leaseConfig)
 		if err != nil {
 			t.Fatal(err)
@@ -234,7 +234,7 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 			t.Fatalf("involuntary handoff kind=%q", kind)
 		}
 		var successorAcquiredAt time.Time
-		if err := pool.QueryRow(ctx, `SELECT acquired_at FROM control.lease_history WHERE instance_id='control-test' AND name='controller' AND epoch=$1`, second.Owner().Epoch).Scan(&successorAcquiredAt); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT acquired_at FROM control.lease_history WHERE instance_id='control-test' AND name=$2 AND epoch=$1`, second.Owner().Epoch, lease.ControllerName).Scan(&successorAcquiredAt); err != nil {
 			t.Fatal(err)
 		}
 		if successorAcquiredAt.Before(holderExpiresAt) {
@@ -301,7 +301,7 @@ func failFirstHolderRenewals(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	// CREATE TRIGGER retains its table lock until commit, so capture the last
 	// successful heartbeat before a successor can replace the row.
 	var expiresAt time.Time
-	if err := tx.QueryRow(ctx, `SELECT expires_at FROM control.lease_heartbeat WHERE instance_id='control-test' AND name='controller' AND holder='first'`).Scan(&expiresAt); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT expires_at FROM control.lease_heartbeat WHERE instance_id='control-test' AND name=$1 AND holder='first'`, lease.ControllerName).Scan(&expiresAt); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -326,7 +326,7 @@ func waitControl(t *testing.T, ctx context.Context, predicate func() bool) {
 func TestPGControllerStopsAtSelfFenceDeadline(t *testing.T) {
 	pool := controlTestPool(t)
 	clock := newLeaseDeadlineClock()
-	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: "controller", Holder: "old", TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond, SelfFenceAfter: 800 * time.Millisecond, Now: clock.Now, After: clock.After})
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: lease.ControllerName, Holder: "old", TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond, SelfFenceAfter: 800 * time.Millisecond, Now: clock.Now, After: clock.After})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestPGControllerStopsAtSelfFenceDeadline(t *testing.T) {
 		t.Fatalf("deadline fence=%v", err)
 	}
 	var holder string
-	if err := pool.QueryRow(ctx, `SELECT holder FROM control.lease WHERE instance_id='loss' AND name='controller'`).Scan(&holder); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT holder FROM control.lease WHERE instance_id='loss' AND name=$1`, lease.ControllerName).Scan(&holder); err != nil {
 		t.Fatal(err)
 	}
 	if holder != "old" {

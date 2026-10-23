@@ -95,7 +95,7 @@ func serveControl(ctx context.Context, db databaseServices, o controlOptions, lo
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	instanceID := environmentOr("GOOBERS_INSTANCE_ID", "default")
-	manager, err := lease.New(lease.Config{Pool: db.Pools.Direct, InstanceID: instanceID, Name: "controller", Holder: environmentOr("GOOBERS_REPLICA_ID", defaultMigrationHolder())})
+	manager, err := lease.New(lease.Config{Pool: db.Pools.Direct, InstanceID: instanceID, Name: lease.ControllerName, Holder: environmentOr("GOOBERS_REPLICA_ID", defaultMigrationHolder())})
 	if err != nil {
 		return err
 	}

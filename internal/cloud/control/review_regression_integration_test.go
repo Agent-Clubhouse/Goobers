@@ -22,7 +22,7 @@ import (
 // every cycle bumps the epoch twice and appends a lease_history row.
 func TestReviewIncompleteAssemblyNeverAcquiresAuthority(t *testing.T) {
 	pool := controlTestPool(t)
-	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "churn", Name: "controller", Holder: "incomplete"})
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "churn", Name: lease.ControllerName, Holder: "incomplete"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func (c *countingTemporal) ExecuteWorkflow(context.Context, client.StartWorkflow
 func TestReviewChurnedEpochsHonorStartBackoff(t *testing.T) {
 	pool := controlTestPool(t)
 	const instance = "backoff"
-	predecessor, err := lease.New(lease.Config{Pool: pool, InstanceID: instance, Name: "controller", Holder: "old"})
+	predecessor, err := lease.New(lease.Config{Pool: pool, InstanceID: instance, Name: lease.ControllerName, Holder: "old"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestReviewChurnedEpochsHonorStartBackoff(t *testing.T) {
 		instance, old.Epoch); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: instance, Name: "controller", Holder: "replica"})
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: instance, Name: lease.ControllerName, Holder: "replica"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestReviewChurnedEpochsHonorStartBackoff(t *testing.T) {
 // Temporal starts or provider calls until the process exits).
 func TestReviewStopTimeoutDoesNotHandOffWhileCallbackRuns(t *testing.T) {
 	pool := controlTestPool(t)
-	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "overrun", Name: "controller", Holder: "old"})
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "overrun", Name: lease.ControllerName, Holder: "old"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestReviewStopTimeoutDoesNotHandOffWhileCallbackRuns(t *testing.T) {
 	if !errors.Is(runErr, errStopTimeout) || !errors.Is(runErr, lease.ErrWorkStillRunning) {
 		t.Fatalf("SIGTERM lost stop timeout: %v", runErr)
 	}
-	successor, err := lease.New(lease.Config{Pool: pool, InstanceID: "overrun", Name: "controller", Holder: "new"})
+	successor, err := lease.New(lease.Config{Pool: pool, InstanceID: "overrun", Name: lease.ControllerName, Holder: "new"})
 	if err != nil {
 		t.Fatal(err)
 	}

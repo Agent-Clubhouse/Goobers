@@ -13,6 +13,9 @@ import (
 )
 
 const (
+	// ControllerName is the lease name of the single controller role. The
+	// controller, the journal epoch stamp and the HA invariant checker share it.
+	ControllerName = "controller"
 	// DefaultTTL is the database-clock lease lifetime.
 	DefaultTTL = 15 * time.Second
 	// DefaultRenewInterval is the normal heartbeat cadence.
