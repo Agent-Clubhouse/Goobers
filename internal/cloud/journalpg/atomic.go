@@ -2,6 +2,7 @@ package journalpg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -24,20 +25,13 @@ func (b *Backend) ClaimNotificationDelivery(ctx context.Context, h journal.RunHa
 	var existing *apiv1.NotificationReceipt
 	var last int64
 	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
-		events, err := b.eventsTx(ctx, tx, r.key.RunID)
+		prior, err := b.latestNotification(ctx, tx, r.key.RunID, *clean.NotificationReceipt)
 		if err != nil {
 			return err
 		}
-		for i := len(events) - 1; i >= 0; i-- {
-			prior := events[i].NotificationReceipt
-			if prior == nil || prior.IdempotencyDigest != clean.NotificationReceipt.IdempotencyDigest || prior.Sink.Kind != clean.NotificationReceipt.Sink.Kind || prior.Attempt == 0 {
-				continue
-			}
-			if prior.Status == apiv1.NotificationDelivered || prior.Status == apiv1.NotificationPending || prior.Unresolved {
-				existing = prior
-				return nil
-			}
-			break
+		if prior != nil && (prior.Status == apiv1.NotificationDelivered || prior.Status == apiv1.NotificationPending || prior.Unresolved) {
+			existing = prior
+			return nil
 		}
 		last, _, err = b.appendClean(ctx, tx, r, seq, clean)
 		return err
@@ -98,20 +92,43 @@ func (b *Backend) AppendChildStageStarted(ctx context.Context, h journal.RunHand
 	return committed.Seq, origin, nil
 }
 func (b *Backend) previousOccurrence(ctx context.Context, tx pgx.Tx, r *runOwner, event journal.Event) (string, error) {
-	events, err := b.eventsTx(ctx, tx, r.key.RunID)
+	var raw []byte
+	err := tx.QueryRow(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND stage=$3 AND branch=$4 AND type='stage.started' ORDER BY seq DESC LIMIT 1`, b.config.InstanceID, r.key.RunID, event.Stage, event.Branch).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("journalpg: child continuation has no bound occurrence")
+	}
 	if err != nil {
 		return "", err
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		prior := events[i]
-		if prior.Type != journal.EventStageStarted || prior.Stage != event.Stage || prior.Branch != event.Branch {
-			continue
-		}
-		origin, err := journal.ChildWorkflowOriginForEvent(r.key.RunID, prior)
-		if err != nil {
-			return "", err
-		}
-		return origin.StageOccurrence, nil
+	var prior journal.Event
+	if err := json.Unmarshal(raw, &prior); err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("journalpg: child continuation has no bound occurrence")
+	origin, err := journal.ChildWorkflowOriginForEvent(r.key.RunID, prior)
+	if err != nil {
+		return "", err
+	}
+	return origin.StageOccurrence, nil
+}
+
+func notificationIndex(event journal.Event) (string, string, int) {
+	if receipt := event.NotificationReceipt; receipt != nil {
+		return receipt.IdempotencyDigest, string(receipt.Sink.Kind), receipt.Attempt
+	}
+	return "", "", 0
+}
+func (b *Backend) latestNotification(ctx context.Context, tx pgx.Tx, runID string, receipt apiv1.NotificationReceipt) (*apiv1.NotificationReceipt, error) {
+	var raw []byte
+	err := tx.QueryRow(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND notification_key=$3 AND notification_sink=$4 AND notification_attempt<>0 ORDER BY seq DESC LIMIT 1`, b.config.InstanceID, runID, receipt.IdempotencyDigest, string(receipt.Sink.Kind)).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var event journal.Event
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return nil, err
+	}
+	return event.NotificationReceipt, nil
 }

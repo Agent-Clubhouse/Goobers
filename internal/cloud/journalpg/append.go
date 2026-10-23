@@ -71,7 +71,7 @@ func (b *Backend) AppendBatch(ctx context.Context, handle journal.RunHandle, tok
 		}
 	}
 	var last int64
-	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
+	err = b.withAppend(ctx, r, clean, func(ctx context.Context, tx pgx.Tx, seq int64) error {
 		last = seq
 		for _, event := range clean {
 			var err error
@@ -105,11 +105,7 @@ func (b *Backend) appendClean(ctx context.Context, tx pgx.Tx, r *runOwner, seq i
 		}
 	}
 	if event.Type == journal.EventAgentProgress && event.Progress != nil {
-		events, err := b.eventsTx(ctx, tx, r.key.RunID)
-		if err != nil {
-			return seq, journal.Event{}, err
-		}
-		if err := journal.ValidateAgentProgressRate(events, *event.Progress, event.Time); err != nil {
+		if err := b.validateProgress(ctx, tx, r, event); err != nil {
 			return seq, journal.Event{}, err
 		}
 	}
@@ -128,18 +124,17 @@ func (b *Backend) appendClean(ctx context.Context, tx pgx.Tx, r *runOwner, seq i
 	if len(raw)+1 > maxEventBytes {
 		return seq, journal.Event{}, errors.New("journalpg: event exceeds 8 MiB")
 	}
-	tag, err := tx.Exec(ctx, `INSERT INTO journal.run_event(instance_id,run_id,seq,branch,type,stage,attempt,emit_key,at,body)
- SELECT instance_id,run_id,$5,$6,$7,$8,$9,$10,$11,$12 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`,
-		b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Branch, string(event.Type), event.Stage, event.Attempt, emitKey(event), event.Time, raw)
+	notificationKey, notificationSink, notificationAttempt := notificationIndex(event)
+	agentID, agentRun, agentStage, agentAttempt := progressIndex(event)
+	tag, err := tx.Exec(ctx, `INSERT INTO journal.run_event(instance_id,run_id,seq,branch,type,stage,attempt,emit_key,at,body,operator_key,notification_key,notification_sink,notification_attempt,agent_id,agent_run,agent_stage,agent_attempt,at_submicro)
+ SELECT instance_id,run_id,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`,
+		b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Branch, string(event.Type), event.Stage, event.Attempt, emitKey(event), event.Time.Truncate(time.Microsecond), raw, operatorKey(event), notificationKey, notificationSink, notificationAttempt, agentID, agentRun, agentStage, agentAttempt, event.Time.Nanosecond()%1000)
 	if err = requireWrite(tag.RowsAffected(), err); err != nil {
 		return seq, journal.Event{}, err
 	}
 
 	if err = b.indexArtifact(ctx, tx, r, event); err != nil {
 		return seq, journal.Event{}, err
-	}
-	if lifecycle(event) {
-		err = b.checkpointTx(ctx, tx, r)
 	}
 	return int64(event.Seq), event, err
 }
@@ -159,46 +154,10 @@ func (b *Backend) indexArtifact(ctx context.Context, tx pgx.Tx, r *runOwner, eve
  SELECT instance_id,run_id,$5,$6,$7 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, int64(event.Seq), event.Ref.Digest, string(event.Type))
 	return requireWrite(tag.RowsAffected(), err)
 }
-func (b *Backend) checkpointTx(ctx context.Context, tx pgx.Tx, r *runOwner) error {
-	events, err := b.eventsTx(ctx, tx, r.key.RunID)
-	if err != nil {
-		return err
-	}
-	state := stateForEvents(r.key.RunID, events)
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	// Phase-change writes only; explicit Checkpoint calls may advance at_seq.
-	tag, err := tx.Exec(ctx, `INSERT INTO journal.run_checkpoint(instance_id,run_id,phase,terminal,state,at_seq)
- SELECT instance_id,run_id,$5,$6,$7,$8 FROM journal.run_seq WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4
- ON CONFLICT(instance_id,run_id) DO UPDATE SET phase=EXCLUDED.phase,terminal=EXCLUDED.terminal,state=EXCLUDED.state,at_seq=EXCLUDED.at_seq
- WHERE EXISTS(SELECT 1 FROM journal.run_seq s WHERE s.instance_id=$1 AND s.run_id=$2 AND s.owner_token=$3 AND s.owner_epoch=$4)`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, string(state.Phase), state.Phase != journal.PhaseRunning, raw, int64(state.LastSeq))
-	return requireWrite(tag.RowsAffected(), err)
-}
-func (b *Backend) eventsTx(ctx context.Context, tx pgx.Tx, runID string) ([]journal.Event, error) {
-	rows, err := tx.Query(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 ORDER BY seq`, b.config.InstanceID, runID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []journal.Event
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var e journal.Event
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, rows.Err()
-}
 
-// AppendIfAbsent evaluates the predicate against durable history while holding
-// the same row lock as the append. The predicate must not perform blocking IO.
+// AppendIfAbsent evaluates the predicate outside the fence, then atomically
+// compares the observed counter and appends. The predicate must be pure: a
+// concurrent append can require evaluation against a newer snapshot.
 func (b *Backend) AppendIfAbsent(ctx context.Context, h journal.RunHandle, o journal.OwnerToken, event journal.Event, match func(journal.Event) bool) (bool, error) {
 	r, err := b.writeRun(h, o)
 	if err != nil {
@@ -213,19 +172,25 @@ func (b *Backend) AppendIfAbsent(ctx context.Context, h journal.RunHandle, o jou
 	}
 	appended := false
 	var last int64
-	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
-		events, err := b.eventsTx(ctx, tx, r.key.RunID)
-		if err != nil {
-			return err
-		}
-		for _, event := range events {
-			if match(event) {
-				return nil
+	err = b.withHistory(ctx, r, func(s historySnapshot) (runWrite, error) {
+		for _, prior := range s.events {
+			if match(prior) {
+				return func(context.Context, pgx.Tx, int64) error { return nil }, nil
 			}
 		}
-		last, _, err = b.appendClean(ctx, tx, r, seq, clean)
-		appended = err == nil
-		return err
+		checkpoint, err := prepareAppendCheckpoint(r.key.RunID, s, []journal.Event{clean})
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, tx pgx.Tx, seq int64) error {
+			var err error
+			last, _, err = b.appendClean(ctx, tx, r, seq, clean)
+			if err != nil {
+				return err
+			}
+			appended = true
+			return b.storeCheckpoint(ctx, tx, r, checkpoint)
+		}, nil
 	})
 	if err != nil {
 		return false, err
@@ -242,7 +207,13 @@ func (b *Backend) Checkpoint(ctx context.Context, h journal.RunHandle, o journal
 	if err != nil {
 		return err
 	}
-	return b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, _ int64) error { return b.checkpointTx(ctx, tx, r) })
+	return b.withHistory(ctx, r, func(s historySnapshot) (runWrite, error) {
+		checkpoint, err := prepareCheckpoint(r.key.RunID, s.events)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, tx pgx.Tx, _ int64) error { return b.storeCheckpoint(ctx, tx, r, checkpoint) }, nil
+	})
 }
 
 // RepairAppendBoundary validates ownership. Atomic commits leave no torn tail.

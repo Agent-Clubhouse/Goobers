@@ -68,7 +68,7 @@ func (b *Backend) recordBlob(ctx context.Context, r *runOwner, event journal.Eve
 	}
 	var committed journal.Event
 	var seq int64
-	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, last int64) error {
+	err = b.withAppend(ctx, r, []journal.Event{clean}, func(ctx context.Context, tx pgx.Tx, last int64) error {
 		if err := b.putBlob(ctx, tx, r, blob); err != nil {
 			return err
 		}

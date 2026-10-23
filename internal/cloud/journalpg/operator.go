@@ -57,7 +57,7 @@ func (b *Backend) requestOperator(ctx context.Context, h journal.RunHandle, o jo
 	appended := false
 	var last int64
 	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
-		events, err := b.eventsTx(ctx, tx, r.key.RunID)
+		events, err := b.operatorEvents(ctx, tx, r.key.RunID, request.IdempotencyKey)
 		if err != nil {
 			return err
 		}
@@ -126,7 +126,7 @@ func (b *Backend) updateOperator(ctx context.Context, r *runOwner, id, key strin
 	var last int64
 	appended := false
 	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, seq int64) error {
-		events, err := b.eventsTx(ctx, tx, r.key.RunID)
+		events, err := b.operatorEvents(ctx, tx, r.key.RunID, key)
 		if err != nil {
 			return err
 		}
@@ -171,4 +171,26 @@ func findOperator(records []apiv1.OperatorMessageRecord, id, key string) (apiv1.
 		}
 	}
 	return apiv1.OperatorMessageRecord{}, journal.ErrOperatorMessageNotFound
+}
+
+// The request key index isolates this request's small state machine from all
+// other run telemetry. Replay preserves the shared request/ack/outcome rules.
+func (b *Backend) operatorEvents(ctx context.Context, tx pgx.Tx, runID, key string) ([]journal.Event, error) {
+	rows, err := tx.Query(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND operator_key=$3 AND operator_key<>'' ORDER BY seq`, b.config.InstanceID, runID, key)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEvents(rows)
+}
+func operatorKey(event journal.Event) string {
+	switch {
+	case event.OperatorMessageRequest != nil:
+		return event.OperatorMessageRequest.IdempotencyKey
+	case event.OperatorMessageAcknowledgement != nil:
+		return event.OperatorMessageAcknowledgement.IdempotencyKey
+	case event.OperatorMessageOutcome != nil:
+		return event.OperatorMessageOutcome.IdempotencyKey
+	default:
+		return ""
+	}
 }

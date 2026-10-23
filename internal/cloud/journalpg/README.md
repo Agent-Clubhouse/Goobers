@@ -21,6 +21,16 @@ sequence numbers. The `emitKey` runner field deduplicates retries. Clients must
 reuse that key when retrying an uncertain commit; a two-second admission deadline
 can refuse saturated writers before they acquire a connection or row lock.
 
+History-dependent replay and arbitrary append predicates run before the fence.
+The observed counter is compared under the append lock; a concurrent append
+retries preparation against a newer snapshot. Lifecycle/checkpoint replay remains
+O(history) outside the write budget, while fenced work is O(batch). Progress-rate
+checks use a bounded indexed window count; operator keys, notification claims and
+child continuations use dedicated indexes. Recovery prepares its report before
+fenced takeover and cleans transcript fragments in batches of at most 100.
+A process-lifetime backend forgets local handles from strictly older epochs on
+recovery, so lease reacquisition does not require restarting the process.
+
 Run identity and input snapshots are immutable. Artifact/span bytes live in a
 content-addressed PG blob table and are verified on reads. Transcript checkpoints
 store only safe scrubbed prefixes. Final transcript publication commits before

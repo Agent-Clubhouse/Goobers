@@ -485,8 +485,6 @@ github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunNotifications # H
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunStatus # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.appendClean # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.changed # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/journalpg.Backend.checkpointTx # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/journalpg.Backend.eventsTx # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.indexArtifact # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.instanceOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.keepRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
@@ -497,7 +495,6 @@ github.com/goobers/goobers/internal/cloud/journalpg.Backend.readBlob # HA-P3-09 
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.readRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.recordBlob # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.recordSpan # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/journalpg.Backend.recoverTranscriptPartials # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.removePartialPaths # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.removeTranscriptPartials # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.requestOperator # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
@@ -536,3 +533,20 @@ github.com/goobers/goobers/internal/journal.CurrentSchemaInfo # HA-P3-09 journal
 github.com/goobers/goobers/internal/journal.MarshalEvent # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/journal.RecoverState # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/journal.ValidateAgentProgressRate # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.ownsRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.snapshot # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.decodeEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.withHistory # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.withAppend # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.prepareCheckpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.prepareAppendCheckpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.storeCheckpoint # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.operatorEvents # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.operatorKey # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.notificationIndex # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.latestNotification # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.progressIndex # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.validateProgress # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.claimRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.retireOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.completedTranscriptPartials # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22

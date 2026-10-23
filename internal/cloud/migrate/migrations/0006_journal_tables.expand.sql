@@ -41,12 +41,25 @@ CREATE TABLE journal.run_event (
     stage text NOT NULL DEFAULT '',
     attempt integer NOT NULL DEFAULT 0,
     emit_key text,
+    operator_key text NOT NULL DEFAULT '',
+    notification_key text NOT NULL DEFAULT '',
+    notification_sink text NOT NULL DEFAULT '',
+    notification_attempt integer NOT NULL DEFAULT 0,
+    agent_id text NOT NULL DEFAULT '',
+    agent_run text NOT NULL DEFAULT '',
+    agent_stage text NOT NULL DEFAULT '',
+    agent_attempt integer NOT NULL DEFAULT 0,
+    at_submicro smallint NOT NULL DEFAULT 0 CHECK (at_submicro BETWEEN 0 AND 999),
     at timestamptz NOT NULL,
     body bytea NOT NULL,
     PRIMARY KEY (instance_id, run_id, seq),
     FOREIGN KEY (instance_id, run_id) REFERENCES journal.run
 );
 CREATE UNIQUE INDEX run_event_emit_key ON journal.run_event(instance_id, run_id, emit_key) WHERE emit_key IS NOT NULL;
+CREATE INDEX run_event_operator ON journal.run_event(instance_id, run_id, operator_key, seq) WHERE operator_key <> '';
+CREATE INDEX run_event_notification ON journal.run_event(instance_id, run_id, notification_key, notification_sink, seq DESC) WHERE notification_attempt <> 0;
+CREATE INDEX run_event_progress ON journal.run_event(instance_id, run_id, agent_id, agent_run, agent_stage, agent_attempt, at, at_submicro) WHERE type = 'agent.progress';
+CREATE INDEX run_event_stage_start ON journal.run_event(instance_id, run_id, stage, branch, seq DESC) WHERE type = 'stage.started';
 CREATE TABLE journal.blob (
     instance_id text NOT NULL,
     run_id text NOT NULL,

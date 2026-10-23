@@ -49,6 +49,11 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 	if err != nil {
 		return "", "", err
 	}
+	started.Seq = 1
+	checkpoint, err := prepareCheckpoint(r.key.RunID, []journal.Event{started})
+	if err != nil {
+		return "", "", err
+	}
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `INSERT INTO journal.run(instance_id,run_id,gaggle,workflow,run_yaml,created_at)
   SELECT instance_id,$5,$6,$7,$8,$9 FROM control.lease WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`, h.InstanceID, h.Name, h.Holder, h.Epoch, id.RunID, id.Gaggle, id.Workflow, raw, id.StartedAt)
@@ -65,8 +70,10 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 				return err
 			}
 		}
-		_, _, err = b.appendClean(ctx, tx, r, 0, started)
-		return err
+		if _, _, err = b.appendClean(ctx, tx, r, 0, started); err != nil {
+			return err
+		}
+		return b.storeCheckpoint(ctx, tx, r, checkpoint)
 	})
 	if err != nil {
 		return "", "", err
@@ -127,6 +134,9 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 		if err == nil {
 			return b.keepRun(r), r.token, report, nil
 		}
+		if errors.Is(err, errHistoryChanged) {
+			continue
+		}
 		if !errors.Is(err, journal.ErrRunOwned) {
 			return "", "", report, err
 		}
@@ -163,47 +173,70 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 		return nil, journal.RecoverReport{}, err
 	}
 	r := &runOwner{key: key, token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, options: normalizedOptions(options)}
-	var report journal.RecoverReport
+	snapshot, err := b.snapshot(ctx, key.RunID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = os.ErrNotExist
+	}
+	if err != nil {
+		return nil, journal.RecoverReport{}, err
+	}
+	checkpoint, err := prepareCheckpoint(key.RunID, snapshot.events)
+	if err != nil {
+		return nil, journal.RecoverReport{}, err
+	}
+	paths := completedTranscriptPartials(snapshot.events)
+	report := journal.RecoverReport{LastSeq: uint64(snapshot.seq), Events: snapshot.events}
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
-		var epoch, seq int64
-		var token *string
-		var gaggle string
-		err := tx.QueryRow(ctx, `SELECT s.owner_epoch,s.owner_token,s.last_seq,r.gaggle FROM journal.run_seq s JOIN journal.run r USING(instance_id,run_id) WHERE s.instance_id=$1 AND s.run_id=$2 FOR UPDATE OF s`, b.config.InstanceID, key.RunID).Scan(&epoch, &token, &seq, &gaggle)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return os.ErrNotExist
-		}
-		if err != nil {
+		if err := b.claimRun(ctx, tx, h, r, snapshot.seq); err != nil {
 			return err
 		}
-		if gaggle != key.Gaggle {
-			return os.ErrNotExist
-		}
-		if epoch > h.Epoch {
-			return lease.ErrStale
-		}
-		if token != nil && epoch == h.Epoch {
-			return journal.ErrRunOwned
-		}
-		tag, err := tx.Exec(ctx, `UPDATE journal.run_seq s SET owner_epoch=$4,owner_token=$6 WHERE s.instance_id=$1 AND s.run_id=$5 AND (s.owner_token IS NULL OR s.owner_epoch<$4) AND s.owner_epoch<=$4
-  AND EXISTS(SELECT 1 FROM control.lease l WHERE l.instance_id=$1 AND l.name=$2 AND l.holder=$3 AND l.epoch=$4)`, h.InstanceID, h.Name, h.Holder, h.Epoch, key.RunID, r.token)
-		if err = requireWrite(tag.RowsAffected(), err); err != nil {
-			return err
-		}
-		tag, err = tx.Exec(ctx, `UPDATE journal.run SET retired_at=NULL WHERE instance_id=$1 AND run_id=$2 AND EXISTS(SELECT 1 FROM journal.run_seq s WHERE s.instance_id=$1 AND s.run_id=$2 AND s.owner_token=$3 AND s.owner_epoch=$4)`, b.config.InstanceID, key.RunID, r.token, r.epoch)
-		if err = requireWrite(tag.RowsAffected(), err); err != nil {
-			return err
-		}
-		events, err := b.eventsTx(ctx, tx, key.RunID)
-		if err != nil {
-			return err
-		}
-		report = journal.RecoverReport{LastSeq: uint64(seq), Events: events}
-		if err := b.recoverTranscriptPartials(ctx, tx, r, events); err != nil {
-			return err
-		}
-		return b.checkpointTx(ctx, tx, r)
+		return b.storeCheckpoint(ctx, tx, r, checkpoint)
 	})
+	if err == nil {
+		err = b.removeTranscriptPartials(ctx, r, paths)
+		if err != nil {
+			// A failed cleanup must not strand a same-epoch owner that was never
+			// returned to the caller. Preserve the original error as well.
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lease.FencedTransactionTimeout)
+			err = errors.Join(err, b.retireOwner(releaseCtx, r))
+			cancel()
+		}
+	}
 	return r, report, err
+}
+
+// claimRun validates the pre-fence snapshot under the counter lock. No event
+// history is read here; takeover plus the prepared checkpoint is one short TX.
+func (b *Backend) claimRun(ctx context.Context, tx pgx.Tx, h *lease.Handle, r *runOwner, expected int64) error {
+	var epoch, seq int64
+	var token *string
+	var gaggle string
+	err := tx.QueryRow(ctx, `SELECT s.owner_epoch,s.owner_token,s.last_seq,r.gaggle FROM journal.run_seq s JOIN journal.run r USING(instance_id,run_id) WHERE s.instance_id=$1 AND s.run_id=$2 FOR UPDATE OF s`, b.config.InstanceID, r.key.RunID).Scan(&epoch, &token, &seq, &gaggle)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return os.ErrNotExist
+	}
+	if err != nil {
+		return err
+	}
+	if gaggle != r.key.Gaggle {
+		return os.ErrNotExist
+	}
+	if epoch > h.Epoch {
+		return lease.ErrStale
+	}
+	if token != nil && epoch == h.Epoch {
+		return journal.ErrRunOwned
+	}
+	if seq != expected {
+		return errHistoryChanged
+	}
+	tag, err := tx.Exec(ctx, `UPDATE journal.run_seq s SET owner_epoch=$4,owner_token=$6 WHERE s.instance_id=$1 AND s.run_id=$5 AND (s.owner_token IS NULL OR s.owner_epoch<$4) AND s.owner_epoch<=$4
+ AND EXISTS(SELECT 1 FROM control.lease l WHERE l.instance_id=$1 AND l.name=$2 AND l.holder=$3 AND l.epoch=$4)`, h.InstanceID, h.Name, h.Holder, h.Epoch, r.key.RunID, r.token)
+	if err = requireWrite(tag.RowsAffected(), err); err != nil {
+		return err
+	}
+	tag, err = tx.Exec(ctx, `UPDATE journal.run SET retired_at=NULL WHERE instance_id=$1 AND run_id=$2 AND EXISTS(SELECT 1 FROM journal.run_seq s WHERE s.instance_id=$1 AND s.run_id=$2 AND s.owner_token=$3 AND s.owner_epoch=$4)`, b.config.InstanceID, r.key.RunID, r.token, r.epoch)
+	return requireWrite(tag.RowsAffected(), err)
 }
 
 // RunStatus reads committed sequence and phase for a still-open handle.
@@ -227,7 +260,17 @@ func (b *Backend) Retire(ctx context.Context, h journal.RunHandle, o journal.Own
 	if err != nil {
 		return err
 	}
-	err = b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, _ int64) error {
+	err = b.retireOwner(ctx, r)
+	if err == nil {
+		b.mu.Lock()
+		delete(b.runs, h)
+		b.mu.Unlock()
+	}
+	return err
+}
+
+func (b *Backend) retireOwner(ctx context.Context, r *runOwner) error {
+	return b.withRun(ctx, r, func(ctx context.Context, tx pgx.Tx, _ int64) error {
 		tag, err := tx.Exec(ctx, `UPDATE journal.run SET retired_at=clock_timestamp() WHERE instance_id=$1 AND run_id=$2 AND EXISTS(SELECT 1 FROM journal.run_seq s WHERE s.instance_id=$1 AND s.run_id=$2 AND s.owner_token=$3 AND s.owner_epoch=$4)`, b.config.InstanceID, r.key.RunID, r.token, r.epoch)
 		if err = requireWrite(tag.RowsAffected(), err); err != nil {
 			return err
@@ -235,10 +278,4 @@ func (b *Backend) Retire(ctx context.Context, h journal.RunHandle, o journal.Own
 		tag, err = tx.Exec(ctx, `UPDATE journal.run_seq SET owner_token=NULL WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, r.key.RunID, r.token, r.epoch)
 		return requireWrite(tag.RowsAffected(), err)
 	})
-	if err == nil {
-		b.mu.Lock()
-		delete(b.runs, h)
-		b.mu.Unlock()
-	}
-	return err
 }

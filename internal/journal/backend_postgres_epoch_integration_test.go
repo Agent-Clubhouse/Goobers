@@ -5,11 +5,12 @@ package journal_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"testing"
+
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/journal"
-	"sync"
-	"testing"
 )
 
 func TestPostgresRecoverAfterSameProcessReacquire(t *testing.T) {
