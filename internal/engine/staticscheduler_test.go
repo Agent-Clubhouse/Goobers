@@ -84,7 +84,7 @@ func staticScheduler(ctx workflow.Context, input staticSchedulerInput) (staticSc
 
 func schedulerInput(name string, width int32) staticSchedulerInput {
 	in := branchBodyInput(name, false, false).Run
-	gamma := r9Task("gamma")
+	gamma := detTask("gamma", "")
 	gamma.Next = wf.TargetJoin
 	gamma.InputsFrom = map[string]string{"root": "seed.value"}
 	in.Spec.Tasks = append(in.Spec.Tasks, gamma)

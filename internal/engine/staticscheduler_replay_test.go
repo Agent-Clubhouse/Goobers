@@ -51,7 +51,7 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 				in.Run.Spec.Parallels[0].MaxConcurrentBranches = 1
 				in.Run.Spec.Parallels[0].BranchTimeoutSeconds = 1
 				in.Run.Spec.Tasks[1].Next = "after"
-				after := r9Task("after")
+				after := detTask("after", "")
 				after.Next = wf.TargetJoin
 				in.Run.Spec.Tasks = append(in.Run.Spec.Tasks, after)
 			}
