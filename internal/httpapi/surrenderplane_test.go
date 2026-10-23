@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -104,6 +105,24 @@ func TestStageSurrenderMapsPlaneErrorToWriteFailure(t *testing.T) {
 	handler.ServeHTTP(response, jsonRequest(http.MethodPost, surrenderPath("run-1", "probe-builtin", 1), surrenderedBody("failure")))
 	if response.Code < 500 {
 		t.Fatalf("status = %d, want a server error for an unclassified plane failure", response.Code)
+	}
+}
+
+func TestStageSurrenderMapsWriteConflict(t *testing.T) {
+	service := &fakeSurrenderService{err: fmt.Errorf("different surrender: %w", apicontract.ErrWriteConflict)}
+	handler := writePlaneHandler(t, nil, AllowAll, WithSurrenderService(service))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, surrenderPath("run-1", "probe-builtin", 1), surrenderedBody("failure")))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	var envelope ErrorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "write_conflict" {
+		t.Fatalf("error code = %q, body = %s", envelope.Error.Code, response.Body)
 	}
 }
 

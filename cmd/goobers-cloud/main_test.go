@@ -41,6 +41,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	const password = "do-not-log-this-password"
 	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
 	code, _, stderr := runForTest("api")
 	if code != 1 {
 		t.Fatalf("api code = %d, stderr = %q", code, stderr)

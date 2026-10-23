@@ -23,6 +23,7 @@ func TestDatabaseUpstreamErrorsAreSanitized(t *testing.T) {
 	for _, phase := range []string{"connect", "ping"} {
 		for _, side := range []string{"transaction", "direct"} {
 			t.Run(phase+"/"+side, func(t *testing.T) {
+				t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
 				failing := credentialEchoPostgres(t, phase)
 				transactionURL, directURL := failing, failing
 				if side == "direct" {
@@ -48,6 +49,7 @@ func TestDatabaseUpstreamErrorsAreSanitized(t *testing.T) {
 func TestEntraUpstreamErrorsAreSanitized(t *testing.T) {
 	for _, phase := range []string{"initialize", "token"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
 			original := newDefaultAzureCredential
 			t.Cleanup(func() { newDefaultAzureCredential = original })
 			newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
