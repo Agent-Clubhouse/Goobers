@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
@@ -228,7 +230,7 @@ func TestRuntimeReadinessPreservesTelemetryConnectorAdmission(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			goobers := map[string]apiv1.GooberSpec{"fixture": {Harness: apiv1.HarnessClaudeCode, Model: model}}
 			_, _, _, err := compileRuntimePreflight("testdata/external-telemetry-workflow", set, goobers, nil, &instance.Config{})
-			var compileErr *workflowCompileError
+			var compileErr *runtimewiring.WorkflowCompileError
 			if !errors.As(err, &compileErr) || !strings.Contains(err.Error(), `unknown external telemetry connector "fixture"`) {
 				t.Fatalf("preflight bypassed connector admission: %v", err)
 			}

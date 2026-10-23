@@ -1,0 +1,297 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/agentickit"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/instance"
+
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+)
+
+func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
+	for _, selected := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex} {
+		for _, choice := range []string{"omitted", "explicit-default", "override"} {
+			name := string(selected) + "/" + choice
+			t.Run(name, func(t *testing.T) {
+				root := initDemo(t)
+				definition := filepath.Join(instance.NewLayout(root).ConfigDir(), "gaggles", pinGaggle, "goobers", pinGoober, "goober.yaml")
+				writeFileContent(t, definition, strings.Replace(readFileContent(t, definition), "harness: copilot", "harness: "+string(selected), 1))
+				cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+				if err != nil {
+					t.Fatal(err)
+				}
+				other := apiv1.HarnessCopilot
+				if selected == other {
+					other = apiv1.HarnessClaudeCode
+				}
+				cfg.Runner.HarnessEnvUnset = []string{"OUTER_LAUNCHER_SESSION_ID"}
+				cfg.Runner.HarnessCommand = map[string][]string{string(other): {"unrelated-launcher-must-not-travel"}}
+				var declared []string
+				switch choice {
+				case "override":
+					declared = []string{"/opt/fixture wrapper/launcher", "literal $(PATH)", "a b", "quote\"value", "$HOME; untouched"}
+				case "explicit-default":
+					switch selected {
+					case apiv1.HarnessClaudeCode:
+						declared = []string{"claude"}
+					case apiv1.HarnessCodex:
+						declared = []string{"codex"}
+					default:
+						declared = []string{"copilot"}
+					}
+				}
+				if len(declared) > 0 {
+					cfg.Runner.HarnessCommand[string(selected)] = slices.Clone(declared)
+					if selected == apiv1.HarnessCopilot {
+						cfg.Runner.HarnessSessionArgs = map[string][]string{
+							string(selected): {"--session-file", "{sessionId}.jsonl"},
+						}
+						cfg.Runner.HarnessPreflightArgs = map[string][]string{
+							string(selected): {"--minimal-preflight"},
+						}
+						cfg.Runner.RequiredMCPSettleTimeout = "75s"
+					}
+				}
+				if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+					t.Fatal(err)
+				}
+				seams := workerReloadSeams(t, root)
+				endpoint, _ := fakeBlobPlane(t)
+				writer := agenticKitWriter{instanceRoot: root, seams: seams, blobEndpoint: endpoint}
+				for _, review := range []bool{false, true} {
+					env := apiv1.InvocationEnvelope{RunID: "launcher-run", TaskID: "stage", WorkflowID: pinWorkflow, Gaggle: pinGaggle, Goober: pinGoober}
+					digest, err := writer.WriteKit(context.Background(), dispatcher.Attempt{RunID: env.RunID, Stage: env.TaskID, Number: 1, Agentic: true, Review: review, Envelope: &env})
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := (&dispatcher.BlobClient{BaseURL: endpoint}).Get(context.Background(), digest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if bytes.Contains(data, []byte("unrelated-launcher-must-not-travel")) {
+						t.Fatal("kit disclosed an unrelated harness launcher")
+					}
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(data, &fields); err != nil {
+						t.Fatal(err)
+					}
+					if len(declared) > 0 {
+						var argv []string
+						if err := json.Unmarshal(fields["harnessCommand"], &argv); err != nil {
+							t.Fatalf("selected launcher missing from produced kit: %v", err)
+						}
+						if !slices.Equal(argv, declared) {
+							t.Fatalf("kit argv=%q, want literal %q", argv, declared)
+						}
+					} else if _, ok := fields["harnessCommand"]; ok {
+						t.Fatal("default launcher changed legacy kit JSON")
+					}
+					kit, err := agentickit.Unmarshal(data, digest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if kit.IsReview() != review {
+						t.Fatal("review completion contract changed")
+					}
+					wantModelEnv := runtimewiring.CopilotModelEnv
+					if selected == apiv1.HarnessCodex {
+						wantModelEnv = runtimewiring.CodexModelEnv
+					}
+					if got := kit.EnvCapabilities["agent:model"]; got != wantModelEnv {
+						t.Fatalf("kit agent:model env = %q, want %q", got, wantModelEnv)
+					}
+					if !slices.Equal(kit.HarnessEnvUnset, cfg.Runner.HarnessEnvUnset) {
+						t.Fatalf("kit harness env unset = %v, want %v", kit.HarnessEnvUnset, cfg.Runner.HarnessEnvUnset)
+					}
+					if !slices.Equal(kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)]) {
+						t.Fatalf("kit harness session args = %v, want %v", kit.HarnessSessionArgs, cfg.Runner.HarnessSessionArgs[string(selected)])
+					}
+					if !slices.Equal(kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)]) {
+						t.Fatalf("kit harness preflight args = %v, want %v", kit.HarnessPreflightArgs, cfg.Runner.HarnessPreflightArgs[string(selected)])
+					}
+					if kit.RequiredMCPSettleTimeout != cfg.Runner.RequiredMCPSettleTimeout {
+						t.Fatalf("kit required-MCP settle timeout = %q, want %q", kit.RequiredMCPSettleTimeout, cfg.Runner.RequiredMCPSettleTimeout)
+					}
+					assertPodLauncher(t, kit, selected, declared, cfg.Runner.HarnessEnvUnset)
+				}
+			})
+		}
+	}
+}
+
+// A stage pod receives one goober's effective credential grants, not the raw
+// instance-wide source list. In particular, two harness-scoped agent:model
+// grants must never make both credential references visible to either pod,
+// and the selected grant must use the same plain capability key the daemon
+// credential plane materializes.
+func TestWorkerKitNarrowsHarnessScopedCredentialForPod(t *testing.T) {
+	for _, tc := range []struct {
+		harness apiv1.Harness
+		wantRef string
+		other   string
+	}{
+		{apiv1.HarnessCopilot, "credential:agent:model#harness:copilot", "credential:agent:model#harness:claude-code"},
+		{apiv1.HarnessClaudeCode, "credential:agent:model#harness:claude-code", "credential:agent:model#harness:copilot"},
+	} {
+		t.Run(string(tc.harness), func(t *testing.T) {
+			t.Setenv("COPILOT_PAT", "copilot-secret")
+			t.Setenv("CLAUDE_TOKEN", "claude-secret")
+			root := initDemo(t)
+			layout := instance.NewLayout(root)
+			cfg, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Credentials = []instance.CredentialGrant{
+				{Capability: "agent:model", Harness: "copilot", Token: instance.TokenRef{Env: "COPILOT_PAT"}},
+				{Capability: "agent:model", Harness: "claude-code", Token: instance.TokenRef{Env: "CLAUDE_TOKEN"}},
+			}
+			if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			definition := filepath.Join(layout.ConfigDir(), "gaggles", pinGaggle, "goobers", pinGoober, "goober.yaml")
+			writeFileContent(t, definition, strings.Replace(readFileContent(t, definition), "harness: copilot", "harness: "+string(tc.harness), 1))
+
+			writer := agenticKitWriter{instanceRoot: root, seams: workerReloadSeams(t, root), blobEndpoint: "http://blobs.invalid"}
+			kit, err := writer.buildKitContext(t.Context(), apiv1.InvocationEnvelope{
+				RunID: "scoped-model-run", TaskID: "implement", WorkflowID: pinWorkflow,
+				Gaggle: pinGaggle, Goober: pinGoober,
+			}, agentickit.ModeInvoke)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var modelGrants []agentickit.Grant
+			for _, grant := range kit.Grants {
+				if grant.Capability == "agent:model" {
+					modelGrants = append(modelGrants, grant)
+				}
+				if grant.Ref == tc.other {
+					t.Fatalf("kit disclosed the other harness credential reference: %+v", kit.Grants)
+				}
+				if strings.Contains(grant.Capability, "#harness:") {
+					t.Fatalf("kit retained a storage-scoped capability instead of the plane's plain key: %+v", grant)
+				}
+			}
+			if len(modelGrants) != 1 || modelGrants[0].Goober != pinGoober || modelGrants[0].Ref != tc.wantRef {
+				t.Fatalf("agent:model grants = %+v, want one grant for %s backed by %s", modelGrants, pinGoober, tc.wantRef)
+			}
+
+			// Exercise the pod-side association against exactly what the plane
+			// returns: a plain agent:model value.
+			resolver := runtimewiring.PodCredentialResolver{ByRef: map[string][]string{}, Vals: map[string]string{"agent:model": "minted-for-selected-harness"}}
+			for _, grant := range kit.Grants {
+				resolver.ByRef[grant.Ref] = append(resolver.ByRef[grant.Ref], grant.Capability)
+			}
+			if got, err := resolver.Resolve(context.Background(), tc.wantRef); err != nil || got != "minted-for-selected-harness" {
+				t.Fatalf("selected pod credential = %q, %v", got, err)
+			}
+			if _, err := resolver.Resolve(context.Background(), tc.other); err == nil {
+				t.Fatal("the pod resolver reached the other harness credential")
+			}
+		})
+	}
+}
+
+func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness, declared, envUnset []string) {
+	t.Helper()
+	previous := runtimewiring.PodHarnessRegistry
+	defer func() { runtimewiring.PodHarnessRegistry = previous }()
+	fake := &harnesstest.FakeAdapter{}
+	runtimewiring.PodHarnessRegistry = func(caps map[string]string, environment harness.EnvironmentConfig, commands map[string][]string, root, bin string, deferDiscovery bool, credential func(context.Context) (string, error), ephemeral bool) (*harness.Registry, error) {
+		selfBin, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bin != selfBin {
+			t.Fatalf("pod harness self binary = %q, want %q for goobers-io", bin, selfBin)
+		}
+		if !slices.Equal(environment.Unset, envUnset) {
+			t.Fatalf("pod harness env unset = %v, want %v", environment.Unset, envUnset)
+		}
+		if !slices.Equal(environment.PreflightArgs[string(selected)], kit.HarnessPreflightArgs) {
+			t.Fatalf("pod harness preflight args = %v, want %v", environment.PreflightArgs[string(selected)], kit.HarnessPreflightArgs)
+		}
+		// Build the real adapters from the actual pod-constructor arguments, then
+		// replace only the external process adapter before its preflight executes.
+		actual, err := runtimewiring.BuildHarnessRegistry(caps, environment, commands, root, bin, deferDiscovery, credential, ephemeral)
+		if err != nil {
+			return nil, err
+		}
+		if len(commands) > 1 {
+			t.Fatalf("pod received unrelated launchers: %v", commands)
+		}
+		adapter, err := actual.Get(string(selected))
+		if err != nil {
+			return nil, err
+		}
+		var argv []string
+		switch a := adapter.(type) {
+		case *harness.CopilotAdapter:
+			argv = a.Command
+			expectedAuthArgs := runtimewiring.CopilotAuthCheckArgs
+			if len(declared) > 0 && !slices.Equal(declared, []string{"copilot"}) {
+				expectedAuthArgs = runtimewiring.ForwardingLauncherAuthCheckArgs()
+			}
+			expectedAuthArgs = append(slices.Clone(expectedAuthArgs), kit.HarnessPreflightArgs...)
+			if !slices.Equal(a.AuthCheckArgs, expectedAuthArgs) {
+				t.Fatal("model authentication preflight was altered")
+			}
+			if a.RequireLauncherContract != (len(declared) > 0 && !slices.Equal(declared, []string{"copilot"})) {
+				t.Fatal("launcher contract admission changed")
+			}
+			if wantSettle, _ := time.ParseDuration(kit.RequiredMCPSettleTimeout); a.RequiredMCPSettleTimeout != wantSettle {
+				t.Fatalf("pod required-MCP settle timeout = %s, want %s", a.RequiredMCPSettleTimeout, wantSettle)
+			}
+		case *harness.ClaudeAdapter:
+			argv = a.Command
+		case *harness.CodexAdapter:
+			argv = a.Command
+		default:
+			t.Fatalf("unexpected real adapter %T", adapter)
+		}
+		want := declared
+		if len(want) == 0 {
+			switch selected {
+			case apiv1.HarnessClaudeCode:
+				want = []string{"claude"}
+			case apiv1.HarnessCodex:
+				want = []string{"codex"}
+			default:
+				want = []string{"copilot"}
+			}
+		}
+		if !slices.Equal(argv, want) {
+			t.Fatalf("pod launcher=%q, want selected prefix %q", argv, want)
+		}
+		registry := harness.NewRegistry()
+		if err := registry.RegisterAs(string(selected), fake); err != nil {
+			return nil, err
+		}
+		return registry, nil
+	}
+	if _, err := buildPodAgenticExecutor(kit, io.Discard, nil, t.TempDir()); err != nil {
+		t.Fatalf("pod constructor: %v", err)
+	}
+	refused := errors.New("fixture preflight refusal")
+	fake.PreflightErr = refused
+	if _, err := buildPodAgenticExecutor(kit, io.Discard, nil, t.TempDir()); !errors.Is(err, refused) {
+		t.Fatalf("pod skipped preflight refusal: %v", err)
+	}
+}

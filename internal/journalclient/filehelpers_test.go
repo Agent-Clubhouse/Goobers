@@ -1,6 +1,7 @@
 package journalclient
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -142,7 +143,7 @@ func TestUnpushedWorkFromRun(t *testing.T) {
 		dir := seedUnpushedRun(t, runsDir, "r1", at, unpushedFixture{sidecar: good, diff: diff})
 		var warns []string
 		f := &FileCrossRun{Warn: func(s string) { warns = append(warns, s) }}
-		w := f.unpushedWorkFromRun(dir, items, since, 1<<20)
+		w := f.unpushedWorkFromRun(context.Background(), runCandidate{dir: dir}, "", items, since, 1<<20)
 		if w == nil {
 			t.Fatalf("expected work; warns=%v", warns)
 		}
@@ -159,7 +160,7 @@ func TestUnpushedWorkFromRun(t *testing.T) {
 
 	t.Run("truncates inline diff", func(t *testing.T) {
 		dir := seedUnpushedRun(t, t.TempDir(), "r1", at, unpushedFixture{sidecar: good, diff: diff})
-		w := (&FileCrossRun{}).unpushedWorkFromRun(dir, items, since, 5)
+		w := (&FileCrossRun{}).unpushedWorkFromRun(context.Background(), runCandidate{dir: dir}, "", items, since, 5)
 		if w == nil || !w.DiffTruncated || w.Diff != string(diff[:5]) {
 			t.Fatalf("unexpected work: %+v", w)
 		}
@@ -169,7 +170,7 @@ func TestUnpushedWorkFromRun(t *testing.T) {
 		dir := seedUnpushedRun(t, t.TempDir(), "r1", at, unpushedFixture{sidecar: good})
 		var warns []string
 		f := &FileCrossRun{Warn: func(s string) { warns = append(warns, s) }}
-		w := f.unpushedWorkFromRun(dir, items, since, 1<<20)
+		w := f.unpushedWorkFromRun(context.Background(), runCandidate{dir: dir}, "", items, since, 1<<20)
 		if w == nil || w.Diff != "" || w.DiffDigest == "" {
 			t.Fatalf("unexpected work: %+v", w)
 		}
@@ -195,14 +196,14 @@ func TestUnpushedWorkFromRun(t *testing.T) {
 	for _, tc := range nilCases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := seedUnpushedRun(t, t.TempDir(), "r1", at, tc.fx)
-			if w := (&FileCrossRun{}).unpushedWorkFromRun(dir, tc.ids, tc.sin, 1<<20); w != nil {
+			if w := (&FileCrossRun{}).unpushedWorkFromRun(context.Background(), runCandidate{dir: dir}, "", tc.ids, tc.sin, 1<<20); w != nil {
 				t.Fatalf("expected nil, got %+v", w)
 			}
 		})
 	}
 
 	t.Run("not a journal directory", func(t *testing.T) {
-		if w := (&FileCrossRun{}).unpushedWorkFromRun(t.TempDir(), items, since, 1<<20); w != nil {
+		if w := (&FileCrossRun{}).unpushedWorkFromRun(context.Background(), runCandidate{dir: t.TempDir()}, "", items, since, 1<<20); w != nil {
 			t.Fatalf("expected nil, got %+v", w)
 		}
 	})
@@ -212,7 +213,7 @@ func TestUnpushedWorkFromRun(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte("not json\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if w := (&FileCrossRun{}).unpushedWorkFromRun(dir, items, since, 1<<20); w != nil {
+		if w := (&FileCrossRun{}).unpushedWorkFromRun(context.Background(), runCandidate{dir: dir}, "", items, since, 1<<20); w != nil {
 			t.Fatalf("expected nil, got %+v", w)
 		}
 	})

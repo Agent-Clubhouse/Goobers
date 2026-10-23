@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/cloud/config/readiness"
 	"github.com/goobers/goobers/internal/cloud/cutover"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
@@ -74,9 +75,19 @@ func runCutoverRole(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "goobers-cloud cutover check: %v\n", err)
 		return 2
 	}
-	set, _, err := instance.LoadConfigDir(*configDir)
+	set, loadReport, err := instance.LoadConfigDir(*configDir)
 	if err != nil {
 		writef(stderr, "goobers-cloud cutover check: load config: %v\n", err)
+		return 2
+	}
+	// A config with validation errors would silently drop workflows from the
+	// assessment, so it can never read as cloud-ready.
+	if loadReport != nil && loadReport.HasErrors() {
+		for _, issue := range loadReport.Issues {
+			if issue.Severity == validate.Error {
+				writef(stderr, "goobers-cloud cutover check: %s: %s\n", issue.File, issue.Message)
+			}
+		}
 		return 2
 	}
 	ctx, stop := signalContext()

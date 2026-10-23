@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -124,7 +126,7 @@ func TestFleetJoinTokenFileAndLocalAdminGrant(t *testing.T) {
 		t.Fatalf("enrollment = %+v", enrollment)
 	}
 	id, err := instance.ReadRootIdentity(root)
-	if err != nil || !strings.Contains(stderr.String(), id) || !strings.Contains(stderr.String(), canonicalStatusRoot(root)) {
+	if err != nil || !strings.Contains(stderr.String(), id) || !strings.Contains(stderr.String(), runtimewiring.CanonicalStatusRoot(root)) {
 		t.Fatalf("enrollment target missing: %q %v", stderr.String(), err)
 	}
 	if strings.Contains(stdout.String(), "secret-grant") || strings.Contains(stderr.String(), "secret-grant") {

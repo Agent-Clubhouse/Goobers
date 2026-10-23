@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -46,9 +47,9 @@ func retiredParentCleanup(ctx context.Context, layout instance.Layout, cfg *inst
 	if !ok {
 		return true, errors.New("retired parent cleanup requires its managed mirror")
 	}
-	policy, _ := resolveRecoveryPolicy(layout, cfg)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(layout, cfg)
 	maxBytes := policy.MaxArchiveBytesEffective()
-	state, err := recovery.LoadRetainedParentState(ctx, repository, filepath.Join(layout.Root, "recovery"), recoveryOverflowRoot(layout), record, maxBytes)
+	state, err := recovery.LoadRetainedParentState(ctx, repository, filepath.Join(layout.Root, "recovery"), runtimewiring.RecoveryOverflowRoot(layout), record, maxBytes)
 	if err != nil {
 		return true, err
 	}

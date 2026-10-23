@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -40,8 +41,8 @@ func TestIntegrationCopilotQualificationHostPreflight(t *testing.T) {
 	installQualificationParentProbe(t, bin)
 	command := filepath.Join(bin, "copilot")
 	adapter := &harness.CopilotAdapter{
-		Command: []string{command}, AuthCheckArgs: copilotAuthCheckArgs,
-		AuthCheckSuccessLine: copilotAuthCheckSuccessLine,
+		Command: []string{command}, AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
+		AuthCheckSuccessLine: runtimewiring.CopilotAuthCheckSuccessLine,
 		ModelCredential:      func(context.Context) (string, error) { return "qualification-copilot-model-token", nil },
 	}
 	if _, err := adapter.Preflight(t.Context()); err != nil {

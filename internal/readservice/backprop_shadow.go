@@ -76,7 +76,7 @@ func StoredShadowBackprop(
 	}
 	report := ShadowBackpropReport{Schema: ShadowBackpropReportSchema, Runs: []ShadowBackpropRun{}, Comparisons: []ShadowFindingComparison{}}
 	phases := map[string]journal.RunPhase{}
-	observe := func(_ context.Context, layout instance.Layout, row readmodel.RunRow) (creditgraph.AttributionObservation, bool, error) {
+	observe := func(ctx context.Context, layout instance.Layout, row readmodel.RunRow) (creditgraph.AttributionObservation, bool, error) {
 		runDir, err := layout.FindRunDir(row.RunID)
 		if err != nil {
 			return creditgraph.AttributionObservation{}, false, fmt.Errorf("open shadow run %q: %w", row.RunID, err)
@@ -97,7 +97,7 @@ func StoredShadowBackprop(
 			Phase: row.Phase, Status: shadow.Record.Status, Causes: len(shadow.Record.Attribution.Causes),
 		})
 		phases[row.RunID] = row.Phase
-		return attributionObservationFromRecord(layout, row, runDir, shadow.Record)
+		return attributionObservationFromRecord(ctx, fileJournalReader(layout), layout, row, runDir, shadow.Record)
 	}
 	observations, err := scanAttributionObservations(ctx, root, reads, query, maxObservations, observe)
 	if err != nil {

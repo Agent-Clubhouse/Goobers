@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationContainedParentDelegatesADOChildPublicationThroughRealWorkers(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // parentKitWriter reuses ordinary kit composition under exact retained stage
@@ -58,7 +59,7 @@ func (w parentKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attemp
 		return "", err
 	}
 	defer release()
-	kit, err := (agenticKitWriter{registrar: w.service.shared}).buildSnapshotKit(w.service.layout, snapshot, *attempt.Envelope, kitModeFor(attempt))
+	kit, err := snapshot.BuildAgenticKit(w.service.layout, *attempt.Envelope, runtimewiring.KitModeFor(attempt), w.service.shared)
 	if err != nil {
 		return "", err
 	}
@@ -108,15 +109,15 @@ func (w parentKitWriter) snapshot(ctx context.Context) (*workerConfigSnapshot, f
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
 		release()
-		return nil, nil, fmt.Errorf("parent kit: load retained config: %w (%s)", err, validationIssueSummary(report))
+		return nil, nil, fmt.Errorf("parent kit: load retained config: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
-	instructions, skills, err := loadSnapshotGooberInputs(directory, set)
+	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(directory, set)
 	if err != nil {
 		release()
 		return nil, nil, err
 	}
-	snapshot := &workerConfigSnapshot{configDir: directory, generation: w.identity.ConfigGeneration, cfg: w.service.config, set: set, instructions: instructions, skillPackages: skills, digests: newGooberDigestIndex(w.service.config, set, instructions, skills)}
-	digest, err := snapshot.gooberDigestFor(w.identity.Gaggle, w.identity.Workflow)
+	snapshot := &workerConfigSnapshot{ConfigDirectory: directory, Generation: w.identity.ConfigGeneration, Config: w.service.config, Definitions: set, Instructions: instructions, SkillPackages: skills, Digests: runtimewiring.NewGooberDigestIndex(w.service.config, set, instructions, skills)}
+	digest, err := snapshot.GooberDigestFor(w.identity.Gaggle, w.identity.Workflow)
 	if err != nil || digest != w.identity.GooberDigest {
 		release()
 		return nil, nil, errors.Join(errors.New("parent Goober pin differs from retained source"), err)

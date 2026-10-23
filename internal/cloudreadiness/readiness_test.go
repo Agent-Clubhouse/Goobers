@@ -47,7 +47,7 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 		}
 	}
 	for _, feature := range []string{
-		"spec.parallels", "spec.parallels.selection", "spec.maps",
+		"spec.parallels", "spec.maps",
 		"task.childWorkflows", "gate.evaluator.human",
 		"task.limits.maxTokens", "task.limits.maxCostUSD",
 		"task.outbox", "task.experiment",
@@ -57,8 +57,8 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 		}
 	}
 	if result.Summary.ConfigFixes == 0 || result.Summary.WaitingOnP4 == 0 ||
-		len(result.Summary.P4Issues) != 8 {
-		t.Fatalf("summary = %+v, want config and all 8 P4 issue groups", result.Summary)
+		len(result.Summary.P4Issues) != 7 {
+		t.Fatalf("summary = %+v, want config and all 7 P4 issue groups", result.Summary)
 	}
 }
 

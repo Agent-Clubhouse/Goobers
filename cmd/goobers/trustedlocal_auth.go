@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
@@ -48,7 +50,7 @@ func trustedLocalAuthenticationFor(goober string, spec apiv1.GooberSpec, grants 
 	}
 	ambientCodex := selected == apiv1.HarnessCodex && harness.CodexUsesAmbientChatGPT(spec.HarnessOptions)
 	if !ambientCodex {
-		for _, grant := range buildGooberCredentialGrants(goober, string(selected), []string{"agent:model"}, grants) {
+		for _, grant := range runtimewiring.BuildGooberCredentialGrants(goober, string(selected), []string{"agent:model"}, grants) {
 			if grant.Capability == "agent:model" {
 				binding.ModelRef = grant.Ref
 			}
