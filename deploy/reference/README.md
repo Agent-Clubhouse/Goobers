@@ -43,7 +43,8 @@ Local installs retain the compatible `allow` default.
 | [`examples/netpol-drift/`](examples/netpol-drift/README.md) | offline CI fixture: committed per-class manifests, provenance snapshot and address-count baseline checked by `make deploy-validate`; not for deployment | §5, decision 016 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
-| `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
+| `goobers-cloud/` | cloud (P3) base: `control` Deployment, migrate Job, policies, worker/stage hooks (see its README) | HA design §14 |
+| `temporal/` | values (and the `values-ha.yaml` HA overlay) for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
 
 ## Migrating an existing `goobers-system` overlay (#3287)
 

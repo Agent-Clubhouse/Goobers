@@ -1,0 +1,31 @@
+# goobers-cloud base (docs/design/control-plane-ha.md §14, HA-P3-20): the P3
+# single-namespace cloud install. `goobers-system` stays the mode-2 base and is
+# untouched. Reference — the customer applies/adapts (see ../README.md).
+#
+# Rollout order: the migrate Job MUST complete before the control Deployment
+# rolls. Argo CD does this via the PreSync hook on migrate-job.yaml. With plain
+# `kubectl apply -k`, apply in two steps (see README.md): the migrate Job and
+# its prerequisites first, `kubectl wait --for=condition=complete`, then the
+# rest. Worker Deployments (rainbow, one per build) come from an overlay that
+# uses components/worker-base; this base ships no worker Deployment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goobers-cloud
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: goobers
+
+resources:
+  - namespace.yaml
+  - priorityclasses.yaml
+  - serviceaccounts.yaml
+  - networkpolicies.yaml
+  - migrate-job.yaml
+  - control-deployment.yaml
+  - control-pdb.yaml
+  - control-service.yaml
+
+# Containers reference the bare image name `goobers`; a consumer overlay's
+# `images:` transformer retargets it (same convention as ../goobers-system).

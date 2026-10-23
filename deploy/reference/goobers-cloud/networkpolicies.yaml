@@ -1,0 +1,160 @@
+# Default-deny floor plus additive allows. CHANGE-ME markers are the points a
+# customer narrows to their own Postgres and ingress controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+# control and migrate reach Postgres: PgBouncer 6432 and direct 5432. Managed
+# Postgres is outside the cluster, so the destination is a CIDR placeholder.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres
+spec:
+  podSelector:
+    matchExpressions:
+      - key: goobers.dev/role
+        operator: In
+        values: [control, migrate]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        # CHANGE-ME: the Postgres subnet (private endpoint) or in-cluster CNPG.
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-temporal
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: goobers-temporal
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: temporal
+              app.kubernetes.io/component: frontend
+      ports:
+        - {protocol: TCP, port: 7233}
+---
+# Object storage, the identity provider (Entra), and the provider APIs that
+# credential minting calls are public HTTPS. Private ranges are excluded.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-public-https
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# Ingress to the API: the ingress controller, workers, and stage pods in
+# labelled gaggle namespaces.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-ingress
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              # CHANGE-ME: your ingress controller's namespace.
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              goobers.dev/role: worker
+        - namespaceSelector:
+            matchLabels:
+              goobers.dev/gaggle-namespace: "true"
+          podSelector:
+            matchLabels:
+              goobers.dev/role: stage
+      ports:
+        - {protocol: TCP, port: 8080}
+---
+# Worker egress to the Temporal frontend. Kubelet probes are not restricted by
+# NetworkPolicy on conforming CNIs, so no probe allow is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-temporal
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: goobers-temporal
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: temporal
+              app.kubernetes.io/component: frontend
+      ports:
+        - {protocol: TCP, port: 7233}
+---
+# Workers hold no database credentials: they reach only the control Service.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-control
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              goobers.dev/role: control
+      ports:
+        - {protocol: TCP, port: 8080}

@@ -1,0 +1,18 @@
+# Hooks for the rainbow worker overlay (HA-P2-07 / #7747). Include with
+# `components:` from the overlay that generates one worker Deployment per build
+# ID. This component ships NO Deployment; it provides what every version shares.
+#
+# Contract each per-build Deployment must meet :
+#   - labels goobers.dev/role=worker and goobers.dev/build=<build-id>
+#   - serviceAccountName goobers-worker, automountServiceAccountToken per
+#     stage-namespace Role needs (the Role lives with the gaggle namespace)
+#   - priorityClassName goobers-control-plane
+#   - emptyDir work root, no PVC; no database credentials
+#   - one PDB per version (maxUnavailable 1, AlwaysAllow), selecting by
+#     goobers.dev/build
+# Network access is already granted to goobers.dev/role=worker pods by the base
+# NetworkPolicies.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - serviceaccount.yaml

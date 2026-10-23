@@ -1,0 +1,84 @@
+# HA overlay for self-hosted OSS Temporal (docs/design/control-plane-ha.md
+# §13.5, HA-P3-22). FRESH INSTALL ONLY: numHistoryShards is fixed forever, so
+# this cannot be applied to a running cluster that used another value.
+#
+#   helm install temporal temporal/temporal \
+#     --namespace goobers-temporal --create-namespace \
+#     --version <chart pinned by HA-P2-01> \
+#     -f values.yaml -f values-ha.yaml
+#
+# Layered over values.yaml: it replaces the single-replica sizing and the
+# database role. The chart version is the one chosen by the HA-P2-01 upgrade
+# ladder (worker-versioning GA); per-service keys below follow the chart's
+# server.<service>.* layout.
+
+server:
+  replicaCount: 1 # superseded per service below
+  config:
+    # Fixed forever. ~1 history process per 500 shards; 512 fits an
+    # instance-dedicated cluster. Use 2048 only for one cluster serving many
+    # instances. Validate with omes before cutover.
+    numHistoryShards: 512
+    persistence:
+      default:
+        sql:
+          host: CHANGE-ME.postgres.example.com
+          # Direct 5432, never the app PgBouncer (Temporal holds session state).
+          port: 5432
+          database: temporal
+          user: temporal_app # separate role; no grants on goobers_* databases
+          existingSecret: temporal-postgres-credentials
+          # Budget: every service pod shares these limits, so worst case is
+          # (3+3+3+2 pods) x (maxConns default + visibility) = 11 x 18 = 198.
+          # Keep that under 70% of the server's max_connections.
+          maxConns: 12
+          maxIdleConns: 12
+      visibility:
+        sql:
+          host: CHANGE-ME.postgres.example.com
+          port: 5432
+          database: temporal_visibility
+          user: temporal_app
+          existingSecret: temporal-postgres-credentials
+          maxConns: 6
+          maxIdleConns: 6
+
+  # SQL advanced visibility on PG. Non-authoritative for Goobers (unknown
+  # means fail live), so a visibility lag never decides run state.
+  dynamicConfig:
+    system.enableAdvancedVisibility:
+      - value: true
+
+  frontend:
+    replicaCount: 3
+    podDisruptionBudget: {maxUnavailable: 1, unhealthyPodEvictionPolicy: AlwaysAllow}
+  history:
+    replicaCount: 3
+    podDisruptionBudget: {maxUnavailable: 1, unhealthyPodEvictionPolicy: AlwaysAllow}
+  matching:
+    replicaCount: 3
+    podDisruptionBudget: {maxUnavailable: 1, unhealthyPodEvictionPolicy: AlwaysAllow}
+  worker:
+    replicaCount: 2
+    podDisruptionBudget: {maxUnavailable: 1, unhealthyPodEvictionPolicy: AlwaysAllow}
+
+  # Zone and host spread for every service (the chart renders this per
+  # component; the selector is filled in by the chart).
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+
+web:
+  replicaCount: 2
+  podDisruptionBudget: {maxUnavailable: 1, unhealthyPodEvictionPolicy: AlwaysAllow}
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule

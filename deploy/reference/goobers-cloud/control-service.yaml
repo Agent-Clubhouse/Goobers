@@ -1,0 +1,16 @@
+# API backend for the ingress and for workers/stage pods. Only the Ready (lease
+# holding) control pod is an endpoint.
+apiVersion: v1
+kind: Service
+metadata:
+  name: goobers-control
+  labels:
+    app.kubernetes.io/name: goobers-control
+    app.kubernetes.io/component: control
+spec:
+  selector:
+    app.kubernetes.io/name: goobers-control
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
