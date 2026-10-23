@@ -38,6 +38,9 @@ func (f *fakeFixture) ResolveHITL(context.Context, HITLObservation) (HITLObserva
 }
 
 func TestCHAOS13Contract(t *testing.T) {
+	if err := RunCHAOS13(t.Context(), nil); err == nil {
+		t.Fatal("missing fixture passed CHAOS-13")
+	}
 	fixture := &fakeFixture{
 		sideBefore: SideEffectObservation{
 			RunID: "run", Attempt: 2, StagePod: "stage-pod",
@@ -58,9 +61,16 @@ func TestCHAOS13Contract(t *testing.T) {
 	if err := RunCHAOS13(t.Context(), fixture); err == nil {
 		t.Fatal("second pod passed CHAOS-13")
 	}
+	fixture.sideBefore.StagePod = ""
+	if err := RunCHAOS13(t.Context(), fixture); err == nil {
+		t.Fatal("incomplete fixture evidence passed CHAOS-13")
+	}
 }
 
 func TestUPGRADE11Contract(t *testing.T) {
+	if err := RunUPGRADE11(t.Context(), nil, "build-n1"); err == nil {
+		t.Fatal("missing fixture passed UPGRADE-11")
+	}
 	fixture := &fakeFixture{
 		hold: HITLObservation{
 			RunID: "run", HoldID: "hold", WorkerBuild: "build-n",
@@ -81,5 +91,10 @@ func TestUPGRADE11Contract(t *testing.T) {
 	if err := RunUPGRADE11(
 		t.Context(), fixture, "build-n1"); err == nil {
 		t.Fatal("duplicate resolution passed UPGRADE-11")
+	}
+	fixture.hold.HoldID = ""
+	if err := RunUPGRADE11(
+		t.Context(), fixture, "build-n1"); err == nil {
+		t.Fatal("incomplete fixture evidence passed UPGRADE-11")
 	}
 }
