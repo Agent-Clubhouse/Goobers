@@ -19,6 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/workerhost"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestCloudJournalEquivalenceProbe(t *testing.T) {
@@ -35,7 +37,7 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, scenario := range localCorpus() {
-		if scenario.name != "human-gate" {
+		if scenario.name != "human-gate" && scenario.name != "infrastructure-retry" {
 			continue
 		}
 		t.Run(scenario.name, func(t *testing.T) {
@@ -57,7 +59,12 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 			machine := loadMachine(t, scenario.fixture)
 			var suite testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&suite)
-			env.RegisterActivity(&engine.Activities{Journal: writer})
+			manager, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := fixtureRepository(t)
+			env.RegisterActivity(&engine.Activities{Journal: writer, Det: &scriptedDeterministic{script: newDeterministicScript(scenario.script)}, Workspaces: &workerhost.WorktreeWorkspaces{Manager: manager, CloneURL: func(apiv1.RepoRef) (string, error) { return repository, nil }}})
 			request := engine.GateDecisionRequest{Protocol: engine.GateDecisionProtocol, Version: engine.GateDecisionProtocolVersion, RunID: scenario.runID, RequestID: "fixture", Actor: "operator:fixture", Gate: "approval", GateOccurrence: 2, Decision: "pass"}
 			emitted := 0
 			env.SetOnActivityCompletedListener(func(info *activity.Info, _ converter.EncodedValue, err error) {
@@ -65,7 +72,7 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 					return
 				}
 				emitted++
-				if emitted == 2 {
+				if emitted == 2 && scenario.name == "human-gate" {
 					env.UpdateWorkflow(engine.GateDecisionUpdateName, engine.GateDecisionUpdateID(request), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
 						if err != nil {
 							t.Error(err)
@@ -88,7 +95,7 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join("/tmp", "p3-7872-"+name+"-human.json"), data, 0600); err != nil {
+				if err := os.WriteFile(filepath.Join("/tmp", "p3-7872-"+name+"-"+scenario.name+".json"), data, 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
