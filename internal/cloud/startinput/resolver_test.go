@@ -338,9 +338,11 @@ func TestAChildCustodyPayloadIsNotMineAndNeverPermanent(t *testing.T) {
 	if !errors.Is(err, acceptance.ErrNotOrdinaryStart) || permanentRefusal(err) {
 		t.Fatalf("a non-start payload = %v, want ErrNotOrdinaryStart and never permanent", err)
 	}
-	record.Payload = []byte(`not json`)
-	if _, err := f.resolver.Resolve(t.Context(), record); !errors.Is(err, acceptance.ErrNotOrdinaryStart) || permanentRefusal(err) {
-		t.Fatalf("an unreadable payload = %v, want not-mine", err)
+	for _, payload := range []string{`not json`, ``, `{}`, `{"kind":""}`} {
+		record.Payload = []byte(payload)
+		if _, err := f.resolver.Resolve(t.Context(), record); !errors.Is(err, acceptance.ErrCorruptStart) || !errors.Is(err, acceptance.ErrNotOrdinaryStart) || permanentRefusal(err) {
+			t.Fatalf("payload %q = %v, want ErrCorruptStart (not-mine, visible, never permanent)", payload, err)
+		}
 	}
 	if f.src.acquires != 0 {
 		t.Fatal("a payload that is not a start acquired a generation")

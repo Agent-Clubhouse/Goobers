@@ -3,6 +3,7 @@ package acceptance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -25,6 +26,11 @@ var ErrPermanentStart = errors.New("cloud start is permanently refused")
 // workflow-start envelope (a generated child's custody, for one). The ordinary
 // start loop must leave such a row alone: it is neither started nor rejected.
 var ErrNotOrdinaryStart = errors.New("accepted row is not an ordinary workflow start")
+
+// ErrCorruptStart is an accepted row whose payload is not even a readable kind
+// (not JSON, or an empty kind). It is not-mine like any non-start payload but
+// must be visible: nothing else will ever look at it.
+var ErrCorruptStart = fmt.Errorf("%w: unreadable payload", ErrNotOrdinaryStart)
 
 // StartInputResolver reconstructs pinned workflow input from durable acceptance.
 // The controller supplies configuration-generation resolution; admission still

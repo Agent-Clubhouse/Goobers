@@ -63,6 +63,10 @@ func TestPermanentResolveRefusalFinishesTheRowOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	corrupt, _, err := store.Accept(t.Context(), "corrupt", "operator", []byte(`not json`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var resolves atomic.Int32
 	var reports []error
 	var reportsMu sync.Mutex
@@ -70,6 +74,9 @@ func TestPermanentResolveRefusalFinishesTheRowOnce(t *testing.T) {
 		resolves.Add(1)
 		if r.ID == child.ID {
 			return engine.RunInput{}, fmt.Errorf("%w: kind child", acceptance.ErrNotOrdinaryStart)
+		}
+		if r.ID == corrupt.ID {
+			return engine.RunInput{}, acceptance.ErrCorruptStart
 		}
 		if r.ID == permanent.ID {
 			return engine.RunInput{}, fmt.Errorf("%w: retained generation differs from the pinned digests", acceptance.ErrPermanentStart)
@@ -104,10 +111,13 @@ func TestPermanentResolveRefusalFinishesTheRowOnce(t *testing.T) {
 		t.Fatalf("child-like row = %q, want it left alone by the ordinary start loop", s)
 	}
 	// permanent: resolved once; transient and child-like: resolved on both sweeps.
-	if resolves.Load() != 5 || starter.starts.Load() != 0 {
-		t.Fatalf("resolves = %d starts = %d, want 5 resolves and no start", resolves.Load(), starter.starts.Load())
+	if s, _ := state(corrupt.ID); s != "accepted" {
+		t.Fatalf("corrupt row = %q, want it left accepted (visible, never rejected)", s)
 	}
-	if len(reports) != 3 {
+	if resolves.Load() != 7 || starter.starts.Load() != 0 {
+		t.Fatalf("resolves = %d starts = %d, want 7 resolves and no start", resolves.Load(), starter.starts.Load())
+	}
+	if len(reports) != 5 { // permanent once, transient x2, corrupt x2; the child-like row is not reported
 		t.Fatalf("reports = %v, want every refusal surfaced", reports)
 	}
 	// A row that already began dispatching cannot be rejected out from under the starter.

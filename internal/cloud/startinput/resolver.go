@@ -76,7 +76,10 @@ func (r *Resolver) Resolve(ctx context.Context, record triggerqueue.Record) (eng
 	var header struct {
 		Kind string `json:"kind"`
 	}
-	if json.Unmarshal(record.Payload, &header) != nil || header.Kind != startintent.Kind {
+	if json.Unmarshal(record.Payload, &header) != nil || header.Kind == "" {
+		return engine.RunInput{}, acceptance.ErrCorruptStart
+	}
+	if header.Kind != startintent.Kind {
 		// Not an ordinary start (a generated child's custody, for one): leave it
 		// to its owner. Never permanent: rejecting it would destroy that custody.
 		return engine.RunInput{}, fmt.Errorf("%w: kind %q", acceptance.ErrNotOrdinaryStart, header.Kind)

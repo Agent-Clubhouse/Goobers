@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -149,7 +150,13 @@ func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter eng
 			defer cancel()
 			in, err := r.resolve(attempt, record)
 			if errors.Is(err, acceptance.ErrNotOrdinaryStart) {
-				return // a generated child's custody: its own lifecycle owns it
+				// A generated child's custody is owned by its own lifecycle. A
+				// payload that is not even a readable kind is corrupt and nothing
+				// else will ever look at it, so it is reported (still never rejected).
+				if errors.Is(err, acceptance.ErrCorruptStart) && r.Report != nil {
+					r.Report(fmt.Errorf("accepted row %s: %w", record.ID, err))
+				}
+				return
 			}
 			if errors.Is(err, acceptance.ErrPermanentStart) {
 				// Retrying can never succeed and would re-pin the generation on
