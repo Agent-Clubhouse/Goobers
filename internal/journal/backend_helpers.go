@@ -2,6 +2,7 @@ package journal
 
 import (
 	"fmt"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -89,4 +90,15 @@ func RecoverState(prior State, events []Event) State {
 		state.MachineState = resumed.Target
 	}
 	return state
+}
+
+// CurrentSchemaInfo returns the shared metadata for newly created journals.
+func CurrentSchemaInfo() SchemaInfo {
+	return SchemaInfo{Version: CurrentSchemaVersion, MinimumBinary: minimumBinaryForJournalSchema(CurrentSchemaVersion)}
+}
+
+// ValidateAgentProgressRate applies the same history-dependent append policy
+// used by the file writer. Backends call it under their append lock.
+func ValidateAgentProgressRate(events []Event, progress AgentProgress, observedAt time.Time) error {
+	return validateAgentProgressRate(events, progress, observedAt)
 }
