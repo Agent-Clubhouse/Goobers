@@ -117,7 +117,7 @@ jobs:
           retention-days: 30
 
   control-restart:
-    name: control RESTART-RTO (PG16 and Temporal)
+    name: control in-process voluntary handoff (PG16 and Temporal)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -159,16 +159,16 @@ jobs:
           import math, os, pathlib, re
           log = pathlib.Path(os.environ['RUNNER_TEMP'], 'control-restart.log').read_text()
           scale = {'ns': 1e-9, 'µs': 1e-6, 'ms': 1e-3, 's': 1}
-          samples = sorted(float(value) * scale[unit] for value, unit in re.findall(r'RESTART-RTO: ([0-9.]+)(ns|µs|ms|s)', log))
+          samples = sorted(float(value) * scale[unit] for value, unit in re.findall(r'IN-PROCESS-HANDOFF: ([0-9.]+)(ns|µs|ms|s)', log))
           if len(samples) != 20:
               raise SystemExit(f'Expected 20 restart samples, got {len(samples)}')
           p95 = samples[math.ceil(len(samples) * .95) - 1]
-          message = f'RESTART-RTO lifecycle p95: {p95:.3f}s ({len(samples)} samples; production lease timings; limit 60s)'
+          message = f'In-process voluntary handoff p95: {p95:.3f}s ({len(samples)} samples; production lease timings; limit 60s)'
           print(message)
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write(message + '\n\nIncludes real PG16/Temporal acceptance recovery; full provider/claim rebuild remains a separate composition seam.\n')
+              summary.write(message + '\n\nIn-process voluntary handoff only; kind rollout RESTART-RTO and full provider/claim rebuild remain pending.\n')
           if p95 > 60:
-              raise SystemExit('RESTART-RTO p95 exceeds 60 seconds')
+              raise SystemExit('In-process handoff p95 exceeds 60 seconds')
           PY
       - name: Upload restart evidence
         if: ${{ always() }}

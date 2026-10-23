@@ -91,7 +91,7 @@ func TestControlRestartNightlyMeasuresProductionLeaseTimings(t *testing.T) {
 		t.Fatal(err)
 	}
 	section := workflowJob(string(data), "control-restart")
-	for _, required := range []string{"postgres:16@sha256:", "GOOBERS_CONTROL_RTO_PRODUCTION:", "-tags=cloudintegration", "-count=20", "TestTwoReplicaPG16Failover", "if p95 > 60:", "control-restart.log"} {
+	for _, required := range []string{"postgres:16@sha256:", "GOOBERS_CONTROL_RTO_PRODUCTION:", "-tags=cloudintegration", "-count=20", "TestTwoReplicaPG16Failover", "if p95 > 60:", "control-restart.log", "in-process voluntary handoff", "IN-PROCESS-HANDOFF:"} {
 		if !strings.Contains(section, required) {
 			t.Errorf("control restart nightly omits %q", required)
 		}

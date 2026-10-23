@@ -85,7 +85,11 @@ func (c *lostResponseClient) ExecuteWorkflow(ctx context.Context, o client.Start
 	return run, err
 }
 
-func TestTwoReplicaPG16Failover(t *testing.T) {
+func TestTwoReplicaPG16Failover(t *testing.T) { testTwoReplicaPG16Failover(t, false) }
+
+func TestTwoReplicaPG16InvoluntaryFailover(t *testing.T) { testTwoReplicaPG16Failover(t, true) }
+
+func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	pool := controlTestPool(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
@@ -105,10 +109,19 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 		leaseTTL, renew, selfFence = lease.DefaultTTL, lease.DefaultRenewInterval, lease.DefaultSelfFenceAfter
 		retry, tick, takeoverBound = 2*time.Second, time.Second, lease.DefaultTTL+5*time.Second
 	}
+	if involuntary {
+		takeoverBound = leaseTTL + 5*time.Second
+	}
+	paused := newLeaseDeadlineClock()
+	selfFenced := make(chan error, 1)
 	var active, restored atomic.Int32
 	var unsafeOverlap atomic.Bool
 	makeReplica := func(holder string) (*Host, *lease.Manager) {
-		manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "control-test", Name: "controller", Holder: holder, TTL: leaseTTL, RenewInterval: renew, SelfFenceAfter: selfFence})
+		leaseConfig := lease.Config{Pool: pool, InstanceID: "control-test", Name: "controller", Holder: holder, TTL: leaseTTL, RenewInterval: renew, SelfFenceAfter: selfFence}
+		if involuntary && holder == "first" {
+			leaseConfig.Now, leaseConfig.After = paused.Now, paused.After
+		}
+		manager, err := lease.New(leaseConfig)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,13 +129,15 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 			return engine.RunInput{AcceptanceID: r.ID, Gaggle: "test", WorkflowName: "remote", SelfExecutionDenied: true}, nil
 		}, Services: func(context.Context, *lease.Handle) (EpochServices, error) {
 			services := testServices()
-			services.RebuildBeforeReap = func(context.Context) error {
+			// Count live callbacks, independently of Stop and lease Release.
+			services.L3 = func(ctx context.Context) error {
 				if active.Add(1) != 1 {
 					unsafeOverlap.Store(true)
 				}
-				return nil
+				defer active.Add(-1)
+				<-ctx.Done()
+				return ctx.Err()
 			}
-			services.Stop = func(context.Context) error { active.Add(-1); return nil }
 			services.RestoreObservations = func(_ context.Context, rows []Observation) error {
 				if len(rows) == 1 && strings.Contains(string(rows[0].Payload), "openPRs") {
 					restored.Add(1)
@@ -134,7 +149,18 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 			}
 			return services, nil
 		}}
-		host, err := New(Config{SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, BuildEpoch: runtime.Build, RetryInterval: retry, TickInterval: tick, StopTimeout: time.Second})
+		replicaRetry := retry
+		if involuntary && holder == "first" {
+			replicaRetry = leaseTTL + 10*time.Second
+		}
+		host, err := New(Config{ValidateAssembly: func() error { return nil }, SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, BuildEpoch: runtime.Build, RetryInterval: replicaRetry, TickInterval: tick, StopTimeout: time.Second, Report: func(err error) {
+			if holder == "first" {
+				select {
+				case selfFenced <- err:
+				default:
+				}
+			}
+		}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,6 +172,7 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- first.Run(firstCtx) }()
 	waitControl(t, ctx, first.Ready)
+	waitControl(t, ctx, func() bool { return active.Load() == 1 })
 	old := first.Owner()
 	store, err := acceptance.New(pool, "control-test")
 	if err != nil {
@@ -166,7 +193,27 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 		t.Fatal("standby became ready while first held lease")
 	}
 	started := time.Now()
-	stopFirst() // SIGTERM uses this same context-cancellation path.
+	if involuntary {
+		// The holder cannot renew. Drive its monotonic watchdog to the deadline;
+		// database TTL and the successor still use PostgreSQL's real clock.
+		paused.FenceAt(t, ctx, selfFence)
+		select {
+		case err := <-selfFenced:
+			if !errors.Is(err, lease.ErrSelfFenced) {
+				t.Fatalf("wrong loss path: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		var kind *string
+		if err := pool.QueryRow(ctx, `SELECT release_kind FROM control.lease_history WHERE instance_id='control-test' AND epoch=$1`, old.Epoch).Scan(&kind); err != nil {
+			t.Fatal(err)
+		}
+		if kind != nil {
+			t.Fatalf("self-fenced holder released voluntarily: %s", *kind)
+		}
+	}
+	stopFirst() // After self-fencing there is no acquired epoch left to release.
 	select {
 	case err := <-firstDone:
 		if err != nil {
@@ -183,7 +230,17 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 	if latency := time.Since(started); latency > takeoverBound {
 		t.Fatalf("takeover exceeded bound: %v", latency)
 	} else {
-		t.Logf("RESTART-RTO: %s", latency)
+		t.Logf("IN-PROCESS-HANDOFF: %s", latency)
+	}
+	waitControl(t, ctx, func() bool { return active.Load() == 1 })
+	if involuntary {
+		var kind string
+		if err := pool.QueryRow(ctx, `SELECT release_kind FROM control.lease_history WHERE instance_id='control-test' AND epoch=$1`, old.Epoch).Scan(&kind); err != nil {
+			t.Fatal(err)
+		}
+		if kind != "expired" {
+			t.Fatalf("involuntary handoff kind=%q", kind)
+		}
 	}
 	if first.Ready() || first.Owner() != nil || unsafeOverlap.Load() {
 		t.Fatal("controllers overlapped authority")
@@ -195,7 +252,11 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 		t.Fatal("provider observations were not restored on takeover")
 	}
 	observations := Observations{Pool: pool, InstanceID: "control-test", Lease: firstManager, Handle: old}
-	if err := observations.Replace(ctx, nil); !errors.Is(err, lease.ErrStale) {
+	wantFence := lease.ErrStale
+	if involuntary {
+		wantFence = lease.ErrSelfFenced
+	}
+	if err := observations.Replace(ctx, nil); !errors.Is(err, wantFence) {
 		t.Fatalf("zombie observation write: %v", err)
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")
@@ -227,14 +288,16 @@ func waitControl(t *testing.T, ctx context.Context, predicate func() bool) {
 	}
 }
 
-func TestPGControllerStopsWithinSelfFenceBoundAfterLeaseLoss(t *testing.T) {
+func TestPGControllerStopsAtSelfFenceDeadline(t *testing.T) {
 	pool := controlTestPool(t)
-	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: "controller", Holder: "old", TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond, SelfFenceAfter: 800 * time.Millisecond})
+	clock := newLeaseDeadlineClock()
+	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: "controller", Holder: "old", TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond, SelfFenceAfter: 800 * time.Millisecond, Now: clock.Now, After: clock.After})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopped := make(chan struct{})
-	host, err := New(Config{SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, RetryInterval: 10 * time.Second, TickInterval: 10 * time.Millisecond, BuildEpoch: func(context.Context, *lease.Handle) (EpochServices, error) {
+	reported := make(chan error, 1)
+	host, err := New(Config{ValidateAssembly: func() error { return nil }, SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, RetryInterval: time.Hour, Report: func(err error) { reported <- err }, BuildEpoch: func(context.Context, *lease.Handle) (EpochServices, error) {
 		services := testServices()
 		services.Stop = func(context.Context) error { close(stopped); return nil }
 		return services, nil
@@ -242,38 +305,65 @@ func TestPGControllerStopsWithinSelfFenceBoundAfterLeaseLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- host.Run(ctx) }()
 	waitControl(t, ctx, host.Ready)
 	old := host.Owner()
-	start := time.Now()
-	if err := manager.Release(ctx, old); err != nil {
-		t.Fatal(err)
-	}
-	successor, err := lease.New(lease.Config{Pool: pool, InstanceID: "loss", Name: "controller", Holder: "new"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := successor.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = successor.Release(context.Background(), next) }()
+	clock.FenceAt(t, ctx, 800*time.Millisecond)
 	select {
-	case <-stopped:
+	case err := <-reported:
+		if !errors.Is(err, lease.ErrSelfFenced) {
+			t.Fatalf("wrong deadline path: %v", err)
+		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if host.Ready() || host.Owner() != nil || time.Since(start) > 800*time.Millisecond {
-		t.Fatal("lost owner remained active beyond self-fence bound")
+	<-stopped
+	if host.Ready() || host.Owner() != nil || !manager.SelfFenced(old) {
+		t.Fatal("deadline left owner active")
 	}
-	if err := manager.WithFence(ctx, old, func(context.Context, pgx.Tx) error { t.Error("stale callback entered"); return nil }); !errors.Is(err, lease.ErrStale) {
-		t.Fatalf("stale write=%v", err)
+	if err := manager.WithFence(ctx, old, func(context.Context, pgx.Tx) error { t.Error("self-fenced callback entered"); return nil }); !errors.Is(err, lease.ErrSelfFenced) {
+		t.Fatalf("deadline fence=%v", err)
+	}
+	var holder string
+	if err := pool.QueryRow(ctx, `SELECT holder FROM control.lease WHERE instance_id='loss' AND name='controller'`).Scan(&holder); err != nil {
+		t.Fatal(err)
+	}
+	if holder != "old" {
+		t.Fatalf("deadline released authority early: %s", holder)
 	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// leaseDeadlineClock pauses renewal scheduling without relying on wall-clock
+// assertions. PostgreSQL's heartbeat expiry is deliberately not changed.
+type leaseDeadlineClock struct {
+	base    time.Time
+	elapsed atomic.Int64
+	timers  chan chan time.Time
+}
+
+func newLeaseDeadlineClock() *leaseDeadlineClock {
+	return &leaseDeadlineClock{base: time.Now(), timers: make(chan chan time.Time, 8)}
+}
+func (c *leaseDeadlineClock) Now() time.Time { return c.base.Add(time.Duration(c.elapsed.Load())) }
+func (c *leaseDeadlineClock) After(time.Duration) <-chan time.Time {
+	timer := make(chan time.Time, 1)
+	c.timers <- timer
+	return timer
+}
+func (c *leaseDeadlineClock) FenceAt(t *testing.T, ctx context.Context, deadline time.Duration) {
+	t.Helper()
+	select {
+	case timer := <-c.timers:
+		c.elapsed.Store(int64(deadline))
+		timer <- c.Now()
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }

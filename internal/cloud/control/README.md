@@ -10,11 +10,13 @@ locally after 10 seconds without a successful renewal. Standbys retry every
 Every epoch rebuilds claims against open workflows, reconciles uncertain starts,
 and reattaches awaiters before readiness or any L1/L2/L3 tick. Losing authority
 cancels the epoch. SIGTERM cancels loops, stops epoch services, and voluntarily
-releases the lease; it does not cancel Temporal workflows.
+releases the lease; it does not cancel Temporal workflows. If callbacks fail to
+stop within the shutdown bound, shutdown exits non-zero without releasing early;
+renewal stops and the database TTL expires.
 
 BeginDispatch is the provisional reservation. Starts use only the durable row's
 run ID and are confirmed/adopted after Temporal classification. A new owner gets
-one immediate attempt for predecessor dispatches; unresolved attempts retain
+one immediate attempt after a dispatch owner loses authority; later epochs retain
 backoff and remain visible as `start ownership uncertain`. Attempts are bounded
 and independent, so one uncertain workflow cannot stop healthy admission.
 Provider observations are bounded JSON snapshots, restored before rebuilding
@@ -39,8 +41,9 @@ The default human authenticator denies access pending the cloud identity
 adapter. Status requires an instance-view principal; pod/grant identities cannot
 read global status. Health/readiness probes carry no private workflow data.
 
-Until those PG/lifecycle seams are assembled, the command serves probes and
-status with readiness false. There is no local filesystem, SQLite, registry-auth
+Until those PG/lifecycle seams are assembled, the command exits with an error
+before dialing Temporal or acquiring the controller lease. Dynamic preparation
+failures use exponential contention backoff, capped at one minute. There is no local filesystem, SQLite, registry-auth
 or in-process runner fallback, and no fabricated successful recovery callback.
 The actual dependency assembly is deliberately reviewable in the command.
 
@@ -54,9 +57,13 @@ go test -race -tags cloudintegration ./internal/cloud/control ./internal/cloud/a
 
 The control suite uses a real Temporal dev server with no worker, simulates a
 lost response after Temporal accepts a start, transfers the lease between two
-replicas, verifies one start and restored observations, and reports RESTART-RTO.
-It also proves a released/taken-over owner stops within the self-fence bound.
+replicas, verifies one start and restored observations, and measures in-process handoff latency.
+A second variant pauses holder renewal, drives the monotonic self-fence deadline,
+and requires real database TTL expiry before involuntary takeover. Live callback
+accounting checks overlap independently of Stop. The deadline test checks
+ErrSelfFenced using a controlled clock, without wall-clock timing assertions.
 The HA nightly control-restart job runs 20 samples with production lease timings
-and reports the lifecycle p95 against 60 seconds. This isolates real PG/Temporal
+and reports in-process voluntary handoff p95 against 60 seconds. This is not the
+HA-P3-18 kind rollout RESTART-RTO gate, which remains pending. It isolates PG/Temporal
 acceptance recovery; full provider/claim rebuild awaits the required composition
 seams. A single test's elapsed time is not a production percentile.
