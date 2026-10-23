@@ -64,7 +64,7 @@ func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
 	value := map[string]any{
 		"time": "volatile", "runId": runID, "host": "runner-a", "durationMs": 42,
 		"name": "artifact-" + runID, "status": "completed", "format": "json",
-		"finishedAt": nil, "latestErrorAt": "",
+		"finishedAt": nil, "latestErrorAt": "", "startedAt": "0001-01-01T00:00:00Z",
 	}
 	maskVolatile(value, runID)
 	for _, key := range []string{"time", "runId", "host", "durationMs"} {
@@ -75,13 +75,15 @@ func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
 	if value["name"] != "artifact-<run-id>" || value["status"] != "completed" || value["format"] != "json" {
 		t.Fatalf("semantic fields changed: %+v", value)
 	}
-	if value["finishedAt"] != nil || value["latestErrorAt"] != "" {
+	if value["finishedAt"] != nil || value["latestErrorAt"] != "" ||
+		value["startedAt"] != "0001-01-01T00:00:00Z" {
 		t.Fatalf("unset timestamp presence changed: %+v", value)
 	}
 	unset := canonicalJSON(t, map[string]any{"finishedAt": nil}, runID)
+	zero := canonicalJSON(t, map[string]any{"finishedAt": "0001-01-01T00:00:00Z"}, runID)
 	set := canonicalJSON(t, map[string]any{"finishedAt": "2026-10-23T00:00:00Z"}, runID)
-	if bytes.Equal(unset, set) {
-		t.Fatalf("unset and set timestamps canonicalized identically: %s", unset)
+	if bytes.Equal(unset, set) || bytes.Equal(zero, set) {
+		t.Fatalf("unset timestamp canonicalized like set: null=%s zero=%s set=%s", unset, zero, set)
 	}
 }
 
@@ -272,7 +274,7 @@ func maskVolatile(value any, runID string) {
 	case map[string]any:
 		for key, item := range typed {
 			if volatileField(key) {
-				if item != nil && item != "" {
+				if item != nil && item != "" && item != "0001-01-01T00:00:00Z" {
 					typed[key] = "<masked>"
 				}
 				continue
