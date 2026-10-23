@@ -625,7 +625,7 @@ changed. The manifest that broke reload here read exactly like a working one.
 
 ### The worker reloads its own config tree
 
-`goobers worker --instance <root>` re-reads `<root>/config` every
+`goobers-cloud worker --instance <root>` re-reads `<root>/config` every
 `--config-reload-interval` (default 10s, `0` disables) and atomically replaces
 the gaggle, credential, and agentic-kit seams whose config changed, so a
 definitions edit reaches the **next** stage that worker serves without a pod
@@ -830,7 +830,7 @@ Until it does, the new worker's polls succeed and receive nothing, and runs
 pinned to the previous build wait for a worker of that build.
 
 The worker checks the deployment's routing 30 seconds after start and every 5
-minutes after that. It logs `goobers worker: error: worker deployment "goobers" current version is ...`
+minutes after that. It logs `goobers-cloud worker: error: worker deployment "goobers" current version is ...`
 while the current version does not route to it, in either mode. It never exits
 over it.
 

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const blockedHelp = "Usage: goobers blocked <command> [flags] [path]\n\n" +
@@ -276,7 +278,7 @@ func runBlockedClear(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cleared := false
-	if err := prepareManualRoot(layoutFor(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layoutFor(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

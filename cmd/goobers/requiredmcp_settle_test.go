@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/harness"
@@ -14,7 +16,7 @@ import (
 // and an unset value leaves the adapter on its own default.
 func TestRequiredMCPSettleTimeoutReachesDaemonCopilotAdapter(t *testing.T) {
 	for value, want := range map[string]time.Duration{"": 0, "2m": 2 * time.Minute} {
-		registry, err := buildHarnessRegistry(nil, harnessEnvironmentPolicy(instance.RunnerConfig{RequiredMCPSettleTimeout: value}), nil, "", "", true, nil, false)
+		registry, err := runtimewiring.BuildHarnessRegistry(nil, runtimewiring.HarnessEnvironmentPolicy(instance.RunnerConfig{RequiredMCPSettleTimeout: value}), nil, "", "", true, nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -32,7 +34,7 @@ func TestRequiredMCPSettleTimeoutReachesDaemonCopilotAdapter(t *testing.T) {
 // A legacy kit, which carries no settle budget, keeps the adapter default.
 func TestPodHarnessEnvironmentSettleTimeout(t *testing.T) {
 	for value, want := range map[string]time.Duration{"": 0, "45s": 45 * time.Second} {
-		got := podHarnessEnvironment(&agentickit.Kit{RequiredMCPSettleTimeout: value}, apiv1.HarnessCopilot).RequiredMCPSettleTimeout
+		got := runtimewiring.PodHarnessEnvironment(&agentickit.Kit{RequiredMCPSettleTimeout: value}, apiv1.HarnessCopilot).RequiredMCPSettleTimeout
 		if got != want {
 			t.Fatalf("kit settle %q: got %s want %s", value, got, want)
 		}

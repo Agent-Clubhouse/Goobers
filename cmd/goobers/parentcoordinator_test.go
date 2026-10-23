@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -35,7 +37,7 @@ func TestContainedParentCoordinatorKeepsOrdinaryPlacementEnforcement(t *testing.
 			if slices.Contains(caps, "isolated-parent") != ordinary {
 				t.Fatal("ordinary host capability changed", caps)
 			}
-			decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, placements)
+			decisions, err := placementRefusals(f.cfg, f.applied, runtimewiring.GoobersByName(f.applied), machines, placements)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +63,7 @@ func TestContainedParentCoordinatorRequiresAuthenticatedPlacement(t *testing.T) 
 	if selected.refusal == "" || len(selected.containedParentStages) != 0 {
 		t.Fatal("unsigned parent transport admitted")
 	}
-	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, placements)
+	decisions, err := placementRefusals(f.cfg, f.applied, runtimewiring.GoobersByName(f.applied), machines, placements)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +91,7 @@ func TestLocalPlacementsRefusesUnsupportedParentWithoutFailingAllDefinitions(t *
 	if refusal := placements[identity].refusal; !strings.Contains(refusal, "additional repositories") {
 		t.Fatalf("local placement refusal = %q", refusal)
 	}
-	decisions, err := placementRefusals(f.cfg, f.applied, goobersByName(f.applied), machines, placements)
+	decisions, err := placementRefusals(f.cfg, f.applied, runtimewiring.GoobersByName(f.applied), machines, placements)
 	if err != nil {
 		t.Fatal(err)
 	}

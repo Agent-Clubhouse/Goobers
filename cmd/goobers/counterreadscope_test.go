@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -233,7 +235,7 @@ func TestCounterReadScopeLaunchOverridesAuthoredAndAmbientScope(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
 			rec := runnerWiringArtifactRecorder{}
-			delegate, err := buildDeterministicExecutor(deterministicExecutorInput{AutomationReadCache: enabled, Config: &instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{executor.ProviderReadBindingEnvVar, executor.ProviderReadGenerationEnvVar}}}, Resolver: resolver, SharedRegistry: journal.NewRegistryScrubber(), InstanceRoot: t.TempDir(), SelfBin: stub, ArtifactRecorder: rec, SecretRegistrar: journal.NewRegistryScrubber(), ScratchDir: t.TempDir()})
+			delegate, err := runtimewiring.BuildDeterministicExecutor(runtimewiring.DeterministicExecutorInput{AutomationReadCache: enabled, Config: &instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{executor.ProviderReadBindingEnvVar, executor.ProviderReadGenerationEnvVar}}}, Resolver: resolver, SharedRegistry: journal.NewRegistryScrubber(), InstanceRoot: t.TempDir(), SelfBin: stub, ArtifactRecorder: rec, SecretRegistrar: journal.NewRegistryScrubber(), ScratchDir: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}

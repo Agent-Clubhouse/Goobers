@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/parallelworkspace"
@@ -36,7 +38,7 @@ func (r parentArchiveRestorer) retire(run *journal.Run) error {
 	if filepath.Dir(reader.Dir()) != r.layout.RunsDir() {
 		return errors.New("parent retirement journal belongs to another layout")
 	}
-	captureAt, terminal, err := recoveryCaptureWindow(ctx, reader, id.StartedAt)
+	captureAt, terminal, err := runtimewiring.RecoveryCaptureWindow(ctx, reader, id.StartedAt)
 	if err != nil {
 		return err
 	}
@@ -109,8 +111,8 @@ func (r parentArchiveRestorer) captureHeldRetirement(ctx context.Context, reader
 	if scrubber == nil {
 		scrubber = journal.NewRegistryScrubber()
 	}
-	publication := recoveryCleanupJournal{directory: r.layout.SchedulerDir(), scrubber: scrubber}
-	request, err := recoveryCleanupRequest(r.layout, r.config, r.worktrees.Root, r.worktrees, key, wt.Path, target.OwnerRunID, captureAt, publication)
+	publication := runtimewiring.RecoveryCleanupJournal{Directory: r.layout.SchedulerDir(), Scrubber: scrubber}
+	request, err := runtimewiring.RecoveryCleanupRequest(r.layout, r.config, r.worktrees.Root, r.worktrees, key, wt.Path, target.OwnerRunID, captureAt, publication)
 	if err != nil {
 		return err
 	}
@@ -151,7 +153,7 @@ func (r parentArchiveRestorer) retirementWorkspace(ctx context.Context, reader *
 		return nil, "", "", errors.New("parent retirement branch changed")
 	}
 	key := authority.repositoryKey
-	project, err := recoveryConfiguredProject(r.config, key)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, key)
 	if err != nil {
 		return nil, "", "", err
 	}

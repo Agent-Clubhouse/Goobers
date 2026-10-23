@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -52,8 +55,8 @@ func TestUpPinsExecutionGenerationAcrossReloadAndRestart(t *testing.T) {
 			t.Cleanup(func() { configReloadInterval, delegationSweepInterval = oldReload, oldSweep })
 			entered := make(chan harness.RunRequest, 4)
 			proceed := make(chan struct{})
-			previous := newAgenticAdapter
-			newAgenticAdapter = func(name string, _ map[string]string) harness.Adapter {
+			previous := runtimewiring.NewAgenticAdapter
+			runtimewiring.NewAgenticAdapter = func(name string, _ map[string]string) harness.Adapter {
 				return &harnesstest.FakeAdapter{Act: func(ctx context.Context, req harness.RunRequest) error {
 					asset, err := os.ReadFile(filepath.Join(req.Workspace, ".goober-assets", "identity.txt"))
 					if err != nil {
@@ -77,7 +80,7 @@ func TestUpPinsExecutionGenerationAcrossReloadAndRestart(t *testing.T) {
 					return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, acceptanceAct(name, 1))
 				}}
 			}
-			t.Cleanup(func() { newAgenticAdapter = previous })
+			t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previous })
 			stop := startGenerationTestDaemon(t, root)
 			requestID, err := writeTriggerRequestContextOptions(t.Context(), l.SchedulerDir(), "example", "acceptance", false)
 			if err != nil {

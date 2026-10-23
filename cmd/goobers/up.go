@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configauthoring"
 	"github.com/goobers/goobers/internal/configmirror"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -37,13 +38,16 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/sweepreport"
 	"github.com/goobers/goobers/internal/telemetry"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/version"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
 	"github.com/goobers/goobers/internal/worktree"
@@ -805,8 +809,8 @@ func (u *upSession) prepare() int {
 	// the gaggle inventory the daemon itself is about to provision from. Read
 	// off instance.yaml alone, the advisory would have reported an
 	// affirmative all-clear over directories it never enumerated.
-	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
-		if line := hostAVExclusionAdvisory(u.ctx, "daemon",
+	if avDeps := runtimewiring.RealAVExclusionDeps(); avDeps.HostOS == "windows" {
+		if line := runtimewiring.HostAVExclusionAdvisory(u.ctx, "daemon",
 			daemonAVExclusionDirectories(u.l, u.setup.Config, u.setup.Definitions, avDeps), avDeps); line != "" {
 			pln(u.stdout, line)
 		}
@@ -1721,7 +1725,7 @@ func (u *upSession) configureSource() int {
 	// loop below, so both draw on one near-expiry-refreshing token cache.
 	var workflowSourceAppTokens instance.GitTokenSource
 	if source := u.setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
-		minted, mintErr := newWorkflowSourceAppTokenSource(*source, u.setup.SharedRegistry, u.setup.SecretStores)
+		minted, mintErr := runtimewiring.NewWorkflowSourceAppTokenSource(*source, u.setup.SharedRegistry, u.setup.SecretStores)
 		if mintErr != nil {
 			pf(u.stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
 			return 1
@@ -1730,9 +1734,7 @@ func (u *upSession) configureSource() int {
 	}
 
 	if source := u.setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-		u.sourceApplier = &workflowSourceApplier{
-			root: u.root, source: *source, appTokens: workflowSourceAppTokens, setup: u.setup, reloader: u.reloader,
-		}
+		u.sourceApplier = newWorkflowSourceApplier(u.root, *source, workflowSourceAppTokens, u.setup, u.reloader)
 	}
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
 		if u.sourceApplier != nil {
@@ -1976,7 +1978,7 @@ func (u *upSession) startRequestLoops() int {
 	if u.sourceApplier != nil {
 		u.configLoopEnabled = true
 		sourceLoop := &configSourceReconciler{
-			source:    u.sourceApplier.source,
+			source:    u.sourceApplier.Source,
 			errors:    newSweepErrorReporter(u.setup.InstanceLog, "config_reconcile_failed"),
 			wake:      u.sourceReconcileWake,
 			reconcile: u.sourceApplier.Reconcile,
@@ -2359,7 +2361,7 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 // journaled its own start, so the newest drain interval ends at this
 // lifetime's beginning. A read failure credits nothing, which is the
 // pre-#5601 behavior, and says so.
-func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDowntime, *hostsuspend.Ledger) {
+func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) (scheduling.DowntimeWindows, *hostsuspend.Ledger) {
 	if log == nil {
 		return nil, hostsuspend.NewLedger(nil, nil)
 	}
@@ -2371,7 +2373,7 @@ func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDown
 	return cleanDaemonDowntime(events), hostsuspend.NewLedger(log, hostsuspend.FromEvents(events))
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime scheduling.DowntimeWindows, hostSuspensions *hostsuspend.Ledger) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree

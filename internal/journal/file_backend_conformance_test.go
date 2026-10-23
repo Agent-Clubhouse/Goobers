@@ -129,5 +129,8 @@ func TestJournalBackendConformance(t *testing.T) {
 		if err := journalBackendConformance(fileBackendFactory(t)); err != nil {
 			t.Fatal(err)
 		}
+		if err := journalReaderBackendConformance(fileReaderBackendFactory(t)); err != nil {
+			t.Fatal(err)
+		}
 	})
 }

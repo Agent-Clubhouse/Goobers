@@ -375,7 +375,7 @@ The self-hosting instance's own configuration lives outside this repository, so 
 | Selection | Evaluated as a deterministic step before fan-out; the selection result is frozen in history; unselected branches are journaled as the runner does | parallels |
 | Maps | Roster frozen at map start as a blob digest in history (the fan-out contract's source-freezing), one branch per item, bounded concurrency, the join and integrity checks (`workflow_integrity`) | parallels |
 | Child workflows + parents | Per the engine-child-workflows draft, phase 1: frozen proposal bytes under `SourceDigest`, committed child origin carried from `emitPending` into dispatch (no projection ordinal), Temporal child workflows with one active path; parents on the engine, removing `containedParentSelection` | HA-P4-03 record |
-| Human gates | New Update `goobers.gate-decision.v1`: `UpdateID = RequestID`; the validator binds (gate name, gate occurrence ordinal, terminal generation); the hold is a workflow timer bounded by the HITL window; `gate.pending` / `gate.decided` journaled via the emit plane; `approve` / `override` / `deny` route to the Update for engine runs. This is the "occurrence-bound Temporal signal" the refusal text asks for (`refusal.go:243`) | gate-occurrence identity in the journal; HA-P4-03 record |
+| Human gates | New Update `goobers.gate-decision.v1`: `UpdateID = RequestID`; the validator binds (gate name, committed `gate.paused` sequence, terminal generation); the hold is a workflow timer bounded by the HITL window; the existing parity events `gate.paused` / `gate.evaluated` are journaled via the emit plane. An unanswered hold fails closed as `human_gate_window_expired`, journaled against that occurrence; `approve` / `override` / `deny` route to the Update for engine runs. This is the "occurrence-bound Temporal signal" the refusal text asks for (`refusal.go:243`) | committed gate-occurrence identity in the journal; HA-P4-03 record |
 | Remote limits | The trusted supervisor in the stage pod (`__dispatch-exec`, a Goobers binary, not workflow-authored) reads the harness adapter's usage, reports it in an additive surrender field, and enforces the in-stage cap by terminating the harness. The walk charges cumulative usage under the existing `cumulative-agentic-usage` gate. **Trust model:** usage is "supervisor-measured", the same class as the local runner's measurement; HA-P4-03 records the ruling | surrender field (contract version bump, N/N-1 tolerant) |
 | Outbox | `__dispatch-exec` collects declared outbox paths after the stage, uploads them as content-addressed blobs, and lists them in an additive `outbox` surrender manifest; the walk records `artifact.recorded` (kind `outbox`) at the runner's paths | additive surrender field |
 | Experiment | Arm assignment in a local activity whose result is recorded in history (replay-stable); observations through a new closed-parameter plane route to a bandit store seam (file store locally, a PG table in cloud). Workers keep no DB credentials | plane route; bandit store seam |
@@ -632,6 +632,14 @@ and lifetime flock. The local runner remains directly file-bound; only
 backend replaces the owner token with the fenced run-owner epoch and preserves
 the same conformance suite.
 
+**P1 read seam (HA-P1-11).** Shared read paths target
+`internal/journal.ReaderBackend`: bounded event reads after a sequence, filtered
+run listing, incremental instance-log reads, and typed run handles for
+identity/checkpoint/blob access. `FileReaderBackend` preserves schema migration,
+torn-tail tolerance, digest verification and lexical discovery. Readservice,
+the read-model projector and its repair sweep use the seam; CLI-only
+instance-root readers remain directly file-bound.
+
 ```sql
 CREATE TABLE journal.run (instance_id text, run_id text, gaggle text NOT NULL, workflow text NOT NULL,
   run_yaml bytea NOT NULL, created_at timestamptz NOT NULL, retired_at timestamptz,
@@ -795,7 +803,7 @@ CREATE TABLE control.schema_migration (version int PRIMARY KEY, kind text CHECK 
 - Layout `blobs/sha256/<aa>/<rest>` (same as `blobstore.Dir`) with `If-None-Match: *` create-only puts. Readers verify the digest.
 - Write order: blob first, then the row that points at it. A crash in between leaves an orphan for GC, never a dangling pointer.
 - `recovery/<record>/snapshot.bundle` is immutable, with soft-delete and versioning on.
-- **GC (DS8)** is a leader job under the `gc` lease. A digest is deleted only when **all** hold: no row in `journal.run_artifact`, config generations, recovery records or pending adoptions; older than the TTL baseline; unreferenced for longer than the **PITR retention window**, so a restored DB never points at a deleted blob. GC is pausable for restores; bucket lifecycle rules are a backstop only.
+- **GC (DS8)** is a leader job under the `gc` lease. A digest is deleted only when **all** hold: no row in `journal.run_artifact`, config generations, recovery records or pending adoptions; older than the TTL baseline; unreferenced for longer than the **PITR retention window**, so a restored DB never points at a deleted blob. GC is pausable for restores; bucket lifecycle rules and Blob soft-delete are backstops. Physical deletion is disabled by default and remains experimental behind `--experimental-physical-blob-gc` pending #7843.
 - Today there is **no** general GC caller; the only `Remove` caller is `internal/configgeneration/store.go:232`.
 
 <a id="migrations"></a>
@@ -1004,7 +1012,7 @@ No k8s Lease or Lease RBAC anywhere; the controller has `automountServiceAccount
 - **Grants.** Generated from the write-path inventory ([§11.2](#lease)). `goobers_api` has no DDL and no write on leader-only columns; `goobers_controller` has no DDL; `goobers_owner` is used only by the migrate Job.
 - **Secrets.** Key Vault CSI (or k8s Secrets) holds versioned pod-token keys, the webhook HMAC secret and provider app keys, mounted into **api and controller only**. Workers and stage pods get none. There is **no scrub key**: the database and its backups hold no secret material, raw, encrypted or fingerprinted ([§11.4](#scrubber)).
 - **No stages in the control plane (D-2).** `selfExecution: deny` is enforced at boot; the `control` / api / controller pods mount no harness, workspace or stage credentials; `internal/runner` is not linked into `goobers-cloud`.
-- **Plane bearer keys** (HA-P3-17). Signed tokens carry a `kid`; verifiers hold {current, previous} and mint with current; the key file is watched and reloaded. Rotation: add new as previous → roll → promote → roll → drop old after the max token TTL (8h, `signed.go:17`). Registry mode (`podauth.go:144-155`) is refused at boot in cloud. The credential-refresh grant key is derived from the shared key in its own MAC domain (HA-P0-06); revocations go to `control.grant_revocation`.
+- **Plane bearer keys** (HA-P3-17). Signed tokens carry a `kid`; verifiers hold {current, previous} and mint with current; the key file is watched and reloaded. Rotation: add new as previous → roll → promote → roll → drop old only after at least the longest grant TTL (currently **24h**), counted from when every replica has stopped minting with the old key. Pod tokens alone expire within 8h; credential-refresh and child-workflow grants determine the longer overlap. Registry mode (`podauth.go:144-155`) is refused at boot in cloud. The credential-refresh grant key is derived from the shared key in its own MAC domain (HA-P0-06); revocations go to `control.grant_revocation`.
 - **Internal proxy channel** (P5 run-owner routing and registry handoff): a service bearer in a new `podauth` MAC domain; NetworkPolicy allows it only between pods in `goobers-api`; handoff payloads are never logged or persisted.
 - **Webhook secret:** dual-secret verify during rotation; dedup by source receipt makes redeliveries harmless.
 - **Network:** default-deny in every namespace; stage pods reach the api Service only; workers have no DB route.

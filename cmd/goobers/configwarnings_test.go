@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/harness"
@@ -61,7 +63,7 @@ func isSafetyFinding(finding diagnosticFinding) bool {
 
 func TestAppendGooberHarnessWarningsMapsModelFallback(t *testing.T) {
 	report := &validate.Report{}
-	coded, err := appendGooberHarnessWarnings(report, []gooberHarnessWarning{{
+	coded, err := appendGooberHarnessWarnings(report, []runtimewiring.GooberHarnessWarning{{
 		Goober: "coder",
 		Warning: harness.ConfigWarning{
 			Kind:    harness.ConfigWarningModelFallback,
