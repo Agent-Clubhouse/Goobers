@@ -15,6 +15,7 @@ func TestPostgresMigrationApply(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
 	}
+
 	pool, err := pgxpool.New(t.Context(), databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -43,5 +44,60 @@ func TestPostgresMigrationApply(t *testing.T) {
 	}
 	if count != len(catalog) {
 		t.Fatalf("recorded migrations = %d, want %d", count, len(catalog))
+	}
+}
+
+func TestPartitionIndexRetryRepairsInvalidAndReapplies(t *testing.T) {
+	databaseURL := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
+	}
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(t.Context(), `
+		DROP TABLE IF EXISTS review_event CASCADE;
+		CREATE TABLE review_event (id integer, created_at integer) PARTITION BY RANGE (id);
+		CREATE TABLE review_event_1 PARTITION OF review_event FOR VALUES FROM (0) TO (100);
+		INSERT INTO review_event VALUES (1, 10), (2, 10);
+		CREATE INDEX review_event_parent_idx ON ONLY review_event (created_at)`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS review_event CASCADE")
+	})
+	if _, err := pool.Exec(t.Context(), `
+		CREATE UNIQUE INDEX CONCURRENTLY review_event_1_idx
+		ON review_event_1 (created_at)`); err == nil {
+		t.Fatal("duplicate values unexpectedly produced a valid unique index")
+	}
+	plan := []PartitionIndex{{Table: "review_event_1", Index: "review_event_1_idx"}}
+	if err := CreatePartitionedIndex(t.Context(), pool, "review_event_parent_idx", []string{"created_at"}, plan); err != nil {
+		t.Fatalf("repair invalid index: %v", err)
+	}
+	if err := CreatePartitionedIndex(t.Context(), pool, "review_event_parent_idx", []string{"created_at"}, plan); err != nil {
+		t.Fatalf("idempotent reapply: %v", err)
+	}
+	var valid, attached bool
+	if err := pool.QueryRow(t.Context(), `
+		SELECT child.indisvalid,
+			EXISTS (
+				SELECT 1 FROM pg_inherits
+				WHERE inhparent='review_event_parent_idx'::regclass
+				  AND inhrelid='review_event_1_idx'::regclass
+			)
+		FROM pg_index AS child
+		WHERE child.indexrelid='review_event_1_idx'::regclass`).Scan(&valid, &attached); err != nil {
+		t.Fatal(err)
+	}
+	if !valid || !attached {
+		t.Fatalf("repaired index valid=%v attached=%v", valid, attached)
 	}
 }
