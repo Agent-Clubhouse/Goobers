@@ -64,6 +64,7 @@ func Pool(t *testing.T, prefix string) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	EnsureRoles(t, pool)
 	runner := migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: prefix + "-test",
 		InstanceID: "migration", Holder: "migration-test",

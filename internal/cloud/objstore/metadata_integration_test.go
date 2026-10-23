@@ -5,6 +5,7 @@ package objstore
 import (
 	"context"
 	"errors"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"os"
 	"strings"
 	"testing"
@@ -453,6 +454,7 @@ func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Az
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	if err := (migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "object-test",
 		InstanceID: "migration", Holder: "migration",

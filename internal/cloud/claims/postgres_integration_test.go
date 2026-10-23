@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"os"
 	"strings"
 	"sync"
@@ -439,6 +440,7 @@ func testStore(t *testing.T, holder string) (*Store, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	if err := (migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "claims-test",
 		InstanceID: "migration", Holder: "migration",

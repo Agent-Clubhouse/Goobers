@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -536,16 +537,38 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if databaseURL == "" {
 		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
 	}
+	// A private database per test: migrate's grant reconcile spans every
+	// schema in the database, so tests must not share one.
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "readmodelpg_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	identifier := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.Exec(t.Context(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+identifier); err != nil {
+		t.Fatal(err)
+	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.ConnConfig.Database = name
 	config.MaxConns = cloudlease.MaxFencedConnections
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		pool.Close()
+		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
+		admin.Close()
+	})
 	return pool
 }
 
@@ -555,6 +578,7 @@ func applyMigrations(t *testing.T, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	runner := migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "readmodel-integration-pitr",
 		InstanceID: "readmodel-migration", Holder: "readmodel-migration",
