@@ -65,8 +65,6 @@
       ".github/workflows/ha-nightly.yml#smoke/Run chaos harness:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run chaos harness[2]:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run kind environment smoke:go-modules",
-      ".github/workflows/ha-nightly.yml#smoke/Run chaos harness:go-modules",
-      ".github/workflows/ha-nightly.yml#smoke/Run chaos harness[2]:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Verify chaos pending references are still open:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Verify worker HA scenario contracts:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
