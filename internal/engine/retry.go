@@ -170,7 +170,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
-			activityResult, err = dispatch(ctx, int(attempt), class)
+			dispatchCtx := withDispatchAttemptStarted(ctx, startedAt)
+			activityResult, err = dispatch(dispatchCtx, int(attempt), class)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
@@ -383,6 +384,9 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
+	if errors.Is(err, errHandoffWorkerLost) {
+		return journal.AttemptInfra, nil
+	}
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		switch timeoutErr.TimeoutType() {

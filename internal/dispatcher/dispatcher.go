@@ -971,8 +971,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, &report)
+	return report, d.finishAttemptPod(ctx, attempt, pod, &report)
+}
+
+func (d *Dispatcher) finishAttemptPod(ctx context.Context, attempt Attempt, pod *corev1.Pod, report *Report) error {
+	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, report)
 	report.Phase = phase
+	if superviseErr != nil && ctx.Err() != nil && workerHandoffRequested(ctx) {
+		return ErrWorkerHandoff
+	}
 	settlementCtx, cancelSettlement := childSettlementContext(ctx, attempt)
 	defer cancelSettlement()
 
@@ -1018,13 +1025,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	}
 
 	if superviseErr != nil {
-		return report, superviseErr
+		return superviseErr
 	}
 	if phase == corev1.PodFailed {
-		return report, fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
+		return fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
 			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
 	}
-	return report, nil
+	return nil
 }
 
 // stageContainerImage reads the stage container's image off a rendered pod.
