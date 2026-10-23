@@ -3,8 +3,10 @@
 # this cannot be applied to a running cluster that used another value.
 #
 # Standalone values for chart 1.6.0 (Temporal server 1.31.4), the end state of
-# the HA-P2-01 upgrade ladder. It is NOT layered over values.yaml, which still
-# targets the pre-ladder 0.x chart layout:
+# the HA-P2-01 upgrade ladder. It is self-contained rather than layered over
+# values.yaml (same chart layout, but the HA install is a fresh one with its own
+# datastore settings), and it pins the same validated server and admin-tools
+# images as values.yaml:
 #
 #   helm install temporal temporal/temporal \
 #     --namespace goobers-temporal --create-namespace \
@@ -26,10 +28,16 @@ schema:
   useHelmHooks: true
 
 admintools:
+  image:
+    repository: temporalio/admin-tools
+    tag: "1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87"
   nodeSelector:
     kubernetes.io/os: linux
 
 server:
+  image:
+    repository: temporalio/server
+    tag: "1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6"
   nodeSelector:
     kubernetes.io/os: linux
   dynamicConfig:
