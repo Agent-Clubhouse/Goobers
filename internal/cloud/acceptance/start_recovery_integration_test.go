@@ -154,7 +154,7 @@ func TestPGRecoverySkipsLockedRowsAndBoundsReservations(t *testing.T) {
 	}
 }
 
-func TestPGFreshPredecessorRetriesOncePerLeaseThenBacksOff(t *testing.T) {
+func TestPGFreshPredecessorRetriesOnceThenBacksOffAcrossLeaseChurn(t *testing.T) {
 	first, pool := testStore(t, 1)
 	record, _, err := first.Accept(t.Context(), "fresh-predecessor", "operator", []byte("pinned"), time.Now())
 	if err != nil {
@@ -191,8 +191,8 @@ func TestPGFreshPredecessorRetriesOncePerLeaseThenBacksOff(t *testing.T) {
 	}
 	third := successorStore(t, pool)
 	rows, err = third.reserveStartRetries(t.Context())
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("new epoch did not retry immediately: %v %v", rows, err)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("new epoch bypassed predecessor backoff: %v %v", rows, err)
 	}
 	row, err := third.Get(t.Context(), record.ID, "operator")
 	if err != nil || row.State != triggerqueue.Dispatching {
