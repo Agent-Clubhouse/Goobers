@@ -761,9 +761,13 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 				run.rememberArtifactKey(key, *ev.Ref)
 			}
 		}
-		if ev.Type == journal.EventRunFinished {
+		switch ev.Type {
+		case journal.EventRunFinished:
 			terminal = true
 			run.keys[terminalMarker] = ev.Seq
+		case journal.EventRunResumed, journal.EventStageRerunRequested, journal.EventGateOverridden:
+			terminal = false
+			delete(run.keys, terminalMarker)
 		}
 	}
 	return terminal
@@ -930,6 +934,12 @@ const terminalMarker = "\x00terminal"
 // out first: rehydrating mid-repair would open (and then lose) the very
 // directory the repairer is about to replace.
 func (w *Writer) acquire(ctx context.Context, req EmitRequest) (*liveRun, error) {
+	return w.acquireForTransition(ctx, req, false)
+}
+
+// retainTerminal retains the owned handle for the narrow intervention seam;
+// it does not authorize an append or change applyOp's terminal refusal.
+func (w *Writer) acquireForTransition(ctx context.Context, req EmitRequest, retainTerminal bool) (*liveRun, error) {
 	w.mu.Lock()
 	for {
 		if run, ok := w.open[req.RunID]; ok {
@@ -956,7 +966,7 @@ func (w *Writer) acquire(ctx context.Context, req EmitRequest) (*liveRun, error)
 		return nil, fmt.Errorf("livejournal: look up run %s: %w", req.RunID, err)
 	}
 	if recorded {
-		run, err = w.rehydrate(req, dir)
+		run, err = w.rehydrate(req, dir, retainTerminal)
 	} else {
 		run, err = w.create(req, runsDir, dir)
 	}
@@ -1112,7 +1122,7 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 // separately-crashable dedup record is what the journal-as-dedup-state design
 // rejected; a checkpoint would need the same lag-tolerant healing state.json
 // gets).
-func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
+func (w *Writer) rehydrate(req EmitRequest, dir string, retainTerminal bool) (*liveRun, error) {
 	clock := &replayClock{}
 	// Seed the clock with the batch's first op time so anything Recover
 	// itself appends (a torn-tail repaired event) carries a real,
@@ -1135,7 +1145,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		artifactRefs: map[string]journal.Ref{},
 	}
 	terminal := deriveDedupState(run, report.Events)
-	if terminal {
+	if terminal && !retainTerminal {
 		// Terminal under the lock: release the writer immediately, having
 		// written nothing. jr stays nil on the returned run — duplicates
 		// dedupe against keys; a genuinely new op is refused with ErrTerminal
