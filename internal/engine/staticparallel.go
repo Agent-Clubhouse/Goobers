@@ -14,9 +14,9 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
-// staticWalkSession is assembled only by the versioned test entry. Production
-// Run still refuses fan-out before the walk. New histories retain each
-// committed visit identity; legacy histories keep their single-visit refusal.
+// staticWalkSession belongs to one versioned Run controller. Admission still
+// refuses unqualified features. New histories retain each committed visit
+// identity; legacy scheduler histories keep their single-visit refusal.
 type staticWalkSession struct {
 	currentVisits bool
 	seen          map[string]bool

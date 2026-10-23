@@ -266,7 +266,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && !childProtocolEnabled(ctx) {
 		return RunResult{}, err
 	}
-	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
+	if err := refuseUnassembledFanOut(ctx, in); err != nil {
 		return RunResult{}, err
 	}
 	in.Item = normalizeItemIntegrity(in.Item)
@@ -285,6 +285,9 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		return RunResult{}, err
 	}
 	enableHumanGateDecisionOwner(ctx, rec, in)
+	if err := rec.initializeFanOut(ctx, in); err != nil {
+		return RunResult{}, err
+	}
 	// The HITL protocol's handlers are registered BEFORE the run does
 	// anything (#3883, decision 005 R8). Registration emits no history event,
 	// so this is invisible to replay of pre-protocol histories; registering
