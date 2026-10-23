@@ -26,7 +26,7 @@ an entry for a hosted action does not mean a local developer needs that action.
 | Kubernetes schemas | Override the Make `KUBECONFORM` command with the pinned tool plus `-schema-location /absolute/registry/template` | Provide every needed schema locally; do not include `default` or HTTP fallback locations, and do not skip missing schemas. |
 
 Without `GOOBERS_TEMPORAL_CLI`, the Temporal helper downloads the explicit
-`temporaltest.CLIVersion` release (`v1.8.2`), not the SDK's floating `default`.
+`temporaltest.CLIVersion` release (`v1.9.0`), not the SDK's floating `default`.
 Upgrade that pin only after validating both the engine schedule lifecycle and
 bootstrap schedule-reconciler tests against the proposed release. The offline
 override remains authoritative; it does not validate or replace the supplied

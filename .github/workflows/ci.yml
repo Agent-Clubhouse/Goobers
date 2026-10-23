@@ -128,7 +128,7 @@ permissions:
 env:
   # Pin lint to the version the Makefile/ADO pipeline targeted (schema v2 config).
   GOLANGCI_LINT_VERSION: v2.12.2
-  TEMPORAL_CLI_VERSION: v1.8.2
+  TEMPORAL_CLI_VERSION: v1.9.0
 
   # The declared dependency set the integration tier provisions (#3322). It is
   # declared and fixed, so its .deb payloads are cached and the mirrors are only
@@ -1650,8 +1650,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/cancellation-regression"
           cd "$RUNNER_TEMP/cancellation-regression"
           curl --fail --location --retry 3 --max-time 120 \
-            https://github.com/temporalio/cli/releases/download/v1.8.2/temporal_cli_1.8.2_linux_amd64.tar.gz -o temporal.tar.gz
-          echo 'd8421bda989e6514b4bdb4d63a9012a8a05a806892e881a5aad8510496349a94  temporal.tar.gz' | sha256sum --check
+            https://github.com/temporalio/cli/releases/download/v1.9.0/temporal_cli_1.9.0_linux_amd64.tar.gz -o temporal.tar.gz
+          echo '2c01b78e980d932bf609fbd44f6998a9eda2281952d4c8d7216905c845aaa071  temporal.tar.gz' | sha256sum --check
           tar -xzf temporal.tar.gz temporal
           echo "GOOBERS_TEMPORAL_CLI=$PWD/temporal" >> "$GITHUB_ENV"
 

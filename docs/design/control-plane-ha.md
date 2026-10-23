@@ -859,7 +859,7 @@ Pinning protects rollouts, but node drains and evictions still kill worker pods.
 
 ### 13.4 Upgrade ladder [APPROVED] (HA-P2-01)
 
-From 1.27.2 / chart 0.62.0, one minor at a time with the schema job first, to the first release where Worker Deployment APIs are GA (target picked in HA-P2-01; UNVERIFIED; chart ≥0.73.1 for 1.30+). Each step sets the versioning dynamic config, runs the engine replay suites and a D11 smoke, and records rollback. The ladder runs on the **current** single-replica Temporal, because P2 doesn't wait for P3.
+From 1.27.2 / chart 0.62.0, first patch to 1.27.4, then advance one minor at a time through 1.28.4 / 0.67.0, 1.29.7 / 0.73.2 and 1.30.8 / 0.74.0, to **1.31.4 / chart 1.6.0** (Worker Deployment APIs became GA in 1.31.0; the ladder takes the latest patch in that minor). Each legacy step runs and awaits a schema-only Job before changing server pods; chart 1.6.0 supplies a pre-upgrade hook. Each step sets the versioning dynamic config, waits for every disposable History shard's range ID to advance and remain stable for 30 seconds, continues and replays a history started on the previous version, runs a fresh workflow, and records rollback. The ladder runs on the **current** single-replica Temporal, because P2 doesn't wait for P3.
 
 ### 13.5 Server HA [APPROVED] (HA-P3-22)
 
@@ -1359,7 +1359,6 @@ The adversarial review (verdict: rethink) drove the current shape: the cloud DSL
 
 ### A.4 Still UNVERIFIED
 
-- The exact Temporal server version where Worker Deployment APIs are GA (picked in HA-P2-01).
 - KEDA Temporal scaler; Worker Controller fit.
 - Azure Disk detach time on node loss (today's RTO estimate).
 - Entra token auth through PgBouncer 6432 with pgx.

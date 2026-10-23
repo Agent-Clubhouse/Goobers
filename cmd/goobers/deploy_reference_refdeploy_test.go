@@ -306,8 +306,8 @@ func TestDeployReferenceTemporalNamespaceJobIsIdempotentAndOrdered(t *testing.T)
 	if !regexp.MustCompile(`namespace describe`).MatchString(script) {
 		t.Error("namespace-job.yaml does not describe-before-register — it is not idempotent")
 	}
-	if !regexp.MustCompile(`namespace register`).MatchString(script) {
-		t.Error("namespace-job.yaml never registers the namespace")
+	if !regexp.MustCompile(`namespace create`).MatchString(script) {
+		t.Error("namespace-job.yaml never creates the namespace")
 	}
 
 	var namespaceEnv string
