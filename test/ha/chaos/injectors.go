@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -183,91 +183,189 @@ func (f CNPGFailover) Apply(ctx context.Context) error {
 // Revert implements Fault.
 func (CNPGFailover) Revert(context.Context) error { return nil }
 
-// ClockSkew sets FAKETIME on a deployment whose image preloads libfaketime;
-// the DB clock stays authoritative, so this exercises pod-clock independence.
+var (
+	containerIDPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	containerNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	skewPattern          = regexp.MustCompile(`^[+-][0-9]+[smhd]$`)
+	nodePattern          = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+)
+
+// ClockSkew shifts one pod's clock without restarting it. The pod must run an
+// image that preloads libfaketime and sets FAKETIME_TIMESTAMP_FILE (with
+// FAKETIME_NO_CACHE=1), so the offset is re-read from a file; Apply writes the
+// offset there and reads it back, and fails if libfaketime is not preloaded.
+// (Setting FAKETIME through the deployment env would roll the pods, which
+// confounds any restart-sensitive scenario.)
 type ClockSkew struct {
-	Exec       Executor
-	Namespace  string
-	Deployment string
-	Offset     string // libfaketime form, e.g. "-10m"
-}
-
-// Name implements Fault.
-func (f ClockSkew) Name() string { return "clock-skew:" + f.Deployment }
-
-// Apply implements Fault.
-func (f ClockSkew) Apply(ctx context.Context) error {
-	_, err := f.Exec.Run(ctx, "", "kubectl", "set", "env", "deployment/"+f.Deployment, "-n", f.Namespace, "FAKETIME="+f.Offset)
-	return err
-}
-
-// Revert implements Fault.
-func (f ClockSkew) Revert(ctx context.Context) error {
-	_, err := f.Exec.Run(ctx, "", "kubectl", "set", "env", "deployment/"+f.Deployment, "-n", f.Namespace, "FAKETIME-")
-	return err
-}
-
-var pidPattern = regexp.MustCompile(`^[0-9]+$`)
-
-// SigStop pauses a process with SIGSTOP, addressed only by PID read from the
-// pod's cgroup. There is deliberately no name-based path: killing by name has
-// taken down unrelated processes on shared hosts.
-type SigStop struct {
 	Exec      Executor
 	Namespace string
 	Pod       string
 	Container string
-	pid       int
+	Offset    string // libfaketime relative form, e.g. "-10m"
 }
 
 // Name implements Fault.
-func (f *SigStop) Name() string { return "sigstop:" + f.Pod }
+func (f ClockSkew) Name() string { return "clock-skew:" + f.Pod }
 
-// Apply implements Fault. It stops the lowest PID in the container cgroup (the main process).
-func (f *SigStop) Apply(ctx context.Context) error {
-	out, err := f.Exec.Run(ctx, "", "kubectl", "exec", f.Pod, "-n", f.Namespace, "-c", f.Container, "--", "cat", "/sys/fs/cgroup/cgroup.procs")
-	if err != nil {
-		return err
-	}
-	pid, err := lowestPID(out)
-	if err != nil {
-		return err
-	}
-	f.pid = pid
-	return f.signal(ctx, "STOP")
+func (f ClockSkew) exec(ctx context.Context, script string) (string, error) {
+	return f.Exec.Run(ctx, "", "kubectl", "exec", f.Pod, "-n", f.Namespace, "-c", f.Container, "--", "sh", "-c", script)
 }
+
+func (f ClockSkew) write(ctx context.Context, offset string) error {
+	if !skewPattern.MatchString(offset) && offset != "+0s" {
+		return fmt.Errorf("clock offset %q must look like -10m", offset)
+	}
+	check := `case "$LD_PRELOAD" in *faketime*) ;; *) echo "libfaketime not preloaded" >&2; exit 3;; esac; ` +
+		`[ -n "$FAKETIME_TIMESTAMP_FILE" ] || { echo "FAKETIME_TIMESTAMP_FILE unset" >&2; exit 3; }; `
+	out, err := f.exec(ctx, check+`printf '%s' '`+offset+`' > "$FAKETIME_TIMESTAMP_FILE" && cat "$FAKETIME_TIMESTAMP_FILE"`)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(out) != offset {
+		return fmt.Errorf("clock offset read back %q, want %q", strings.TrimSpace(out), offset)
+	}
+	return nil
+}
+
+// Apply implements Fault.
+func (f ClockSkew) Apply(ctx context.Context) error { return f.write(ctx, f.Offset) }
 
 // Revert implements Fault.
-func (f *SigStop) Revert(ctx context.Context) error {
-	if f.pid == 0 {
-		return nil
-	}
-	return f.signal(ctx, "CONT")
+func (f ClockSkew) Revert(ctx context.Context) error { return f.write(ctx, "+0s") }
+
+// CgroupFreeze pauses every process of one container by freezing its cgroup
+// (cgroup v2 cgroup.freeze) from a privileged helper pod on the container's
+// node. Signalling from inside the container cannot work: the kernel drops
+// SIGSTOP sent to a PID-namespace init by members of that namespace. The
+// target is the container ID read from the pod status, never a process name,
+// and Apply fails unless cgroup.events reports "frozen 1" afterwards.
+type CgroupFreeze struct {
+	Exec      Executor
+	Namespace string
+	Pod       string
+	Container string
+	// HelperImage is a pinned image with sh and find; the caller supplies the
+	// digest.
+	HelperImage string
+
+	helper string
+	cgroup string
 }
 
-func (f *SigStop) signal(ctx context.Context, sig string) error {
-	_, err := f.Exec.Run(ctx, "", "kubectl", "exec", f.Pod, "-n", f.Namespace, "-c", f.Container, "--", "kill", "-"+sig, strconv.Itoa(f.pid))
+// Name implements Fault.
+func (f *CgroupFreeze) Name() string { return "cgroup-freeze:" + f.Pod }
+
+// Apply implements Fault.
+func (f *CgroupFreeze) Apply(ctx context.Context) error {
+	if f.HelperImage == "" {
+		return errors.New("cgroup freeze needs a pinned helper image")
+	}
+	if !containerNamePattern.MatchString(f.Container) {
+		return fmt.Errorf("container name %q is invalid", f.Container)
+	}
+	idOut, err := f.Exec.Run(ctx, "", "kubectl", "get", "pod", f.Pod, "-n", f.Namespace, "-o",
+		fmt.Sprintf(`jsonpath={.status.containerStatuses[?(@.name=="%s")].containerID}`, f.Container))
+	if err != nil {
+		return err
+	}
+	id := strings.TrimSpace(idOut)
+	if i := strings.Index(id, "://"); i >= 0 {
+		id = id[i+3:]
+	}
+	if !containerIDPattern.MatchString(id) {
+		return fmt.Errorf("container ID %q is not a 64-hex ID", id)
+	}
+	nodeOut, err := f.Exec.Run(ctx, "", "kubectl", "get", "pod", f.Pod, "-n", f.Namespace, "-o", "jsonpath={.spec.nodeName}")
+	if err != nil {
+		return err
+	}
+	node := strings.TrimSpace(nodeOut)
+	if !nodePattern.MatchString(node) {
+		return fmt.Errorf("node name %q is invalid", node)
+	}
+	f.helper = "chaos-freezer-" + id[:12]
+	if _, err := f.Exec.Run(ctx, f.helperManifest(node), "kubectl", "apply", "-f", "-"); err != nil {
+		return err
+	}
+	if _, err := f.Exec.Run(ctx, "", "kubectl", "wait", "--for=condition=Ready", "pod/"+f.helper, "-n", f.Namespace, "--timeout=120s"); err != nil {
+		_ = f.deleteHelper(ctx)
+		return err
+	}
+	found, err := f.hostExec(ctx, `find /host/sys/fs/cgroup -type d -name '*`+id+`*' | head -n 1`)
+	if err != nil {
+		_ = f.deleteHelper(ctx)
+		return err
+	}
+	f.cgroup = strings.TrimSpace(found)
+	if f.cgroup == "" || !strings.HasPrefix(f.cgroup, "/host/sys/fs/cgroup/") {
+		_ = f.deleteHelper(ctx)
+		return fmt.Errorf("no cgroup directory found for container %s", id)
+	}
+	return f.setFrozen(ctx, true)
+}
+
+// Revert implements Fault. It thaws the cgroup, verifies, and removes the helper.
+func (f *CgroupFreeze) Revert(ctx context.Context) error {
+	if f.helper == "" {
+		return nil
+	}
+	var err error
+	if f.cgroup != "" {
+		err = f.setFrozen(ctx, false)
+	}
+	if derr := f.deleteHelper(ctx); err == nil {
+		err = derr
+	}
 	return err
 }
 
-func lowestPID(procs string) (int, error) {
-	lowest := 0
-	for _, line := range strings.Fields(procs) {
-		if !pidPattern.MatchString(line) {
-			return 0, fmt.Errorf("cgroup.procs entry %q is not a PID", line)
-		}
-		pid, err := strconv.Atoi(line)
-		if err != nil {
-			return 0, err
-		}
-		if pid > 0 && (lowest == 0 || pid < lowest) {
-			lowest = pid
-		}
+func (f *CgroupFreeze) setFrozen(ctx context.Context, frozen bool) error {
+	want := "0"
+	if frozen {
+		want = "1"
 	}
-	if lowest == 0 {
-		return 0, fmt.Errorf("no PID in cgroup.procs")
+	out, err := f.hostExec(ctx, fmt.Sprintf(`echo %s > %s/cgroup.freeze && sleep 1 && grep '^frozen ' %s/cgroup.events`, want, f.cgroup, f.cgroup))
+	if err != nil {
+		return err
 	}
-	return lowest, nil
+	if got := strings.TrimSpace(out); got != "frozen "+want {
+		return fmt.Errorf("cgroup %s reports %q after freeze=%s", f.cgroup, got, want)
+	}
+	return nil
+}
+
+func (f *CgroupFreeze) hostExec(ctx context.Context, script string) (string, error) {
+	return f.Exec.Run(ctx, "", "kubectl", "exec", f.helper, "-n", f.Namespace, "--", "sh", "-c", script)
+}
+
+func (f *CgroupFreeze) deleteHelper(ctx context.Context) error {
+	_, err := f.Exec.Run(ctx, "", "kubectl", "delete", "pod", f.helper, "-n", f.Namespace, "--ignore-not-found", "--wait=false")
+	return err
+}
+
+func (f *CgroupFreeze) helperManifest(node string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  nodeName: %s
+  hostPID: true
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  containers:
+  - name: helper
+    image: %s
+    command: ["sleep", "3600"]
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - {name: host, mountPath: /host}
+  volumes:
+  - name: host
+    hostPath: {path: /}
+`, f.helper, f.Namespace, node, f.HelperImage)
 }
 
 // WithFault applies f, runs fn, and always reverts, joining any revert error.

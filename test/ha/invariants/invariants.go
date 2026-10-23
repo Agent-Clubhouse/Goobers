@@ -31,6 +31,11 @@ type Invariant struct {
 	Reads       []string
 	// SQL selects violating rows; no rows means the invariant holds.
 	SQL string
+	// Args are bound to $1... in SQL.
+	Args []any
+	// CoverageSQL returns one count: the rows SQL examines. A zero count means
+	// the checker looked at nothing (empty or wrong database), which is not a pass.
+	CoverageSQL string
 	// Pending is "pending #<PR>" when no schema exists to check yet; the
 	// invariant is then reported as skipped.
 	Pending string
@@ -52,11 +57,13 @@ type Violation struct {
 type Report struct {
 	Checked    []string    `json:"checked"`
 	Violations []Violation `json:"violations"`
-	Skipped    []Skip      `json:"skipped,omitempty"`
+	// Uncovered names invariants whose coverage count was zero.
+	Uncovered []string `json:"uncovered,omitempty"`
+	Skipped   []Skip   `json:"skipped,omitempty"`
 }
 
-// OK reports whether every checked invariant held.
-func (r Report) OK() bool { return len(r.Violations) == 0 }
+// OK reports whether every checked invariant held over a non-empty data set.
+func (r Report) OK() bool { return len(r.Violations) == 0 && len(r.Uncovered) == 0 }
 
 // All returns the invariant set in a stable order.
 func All() []Invariant {
@@ -80,6 +87,24 @@ func CheckSet(ctx context.Context, q Queryer, set []Invariant) (Report, error) {
 			continue
 		}
 		report.Checked = append(report.Checked, inv.Name)
+		var covered int64
+		rs, err := q.Query(ctx, inv.CoverageSQL)
+		if err != nil {
+			return report, fmt.Errorf("invariant %s coverage: %w", inv.Name, err)
+		}
+		if rs.Next() {
+			err = rs.Scan(&covered)
+		}
+		rs.Close()
+		if err == nil {
+			err = rs.Err()
+		}
+		if err != nil {
+			return report, fmt.Errorf("invariant %s coverage: %w", inv.Name, err)
+		}
+		if covered == 0 {
+			report.Uncovered = append(report.Uncovered, inv.Name)
+		}
 		rows, err := collect(ctx, q, inv)
 		if err != nil {
 			return report, fmt.Errorf("invariant %s: %w", inv.Name, err)
@@ -92,7 +117,7 @@ func CheckSet(ctx context.Context, q Queryer, set []Invariant) (Report, error) {
 }
 
 func collect(ctx context.Context, q Queryer, inv Invariant) ([]map[string]string, error) {
-	rs, err := q.Query(ctx, inv.SQL)
+	rs, err := q.Query(ctx, inv.SQL, inv.Args...)
 	if err != nil {
 		return nil, err
 	}

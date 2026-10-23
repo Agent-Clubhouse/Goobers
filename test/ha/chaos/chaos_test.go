@@ -108,30 +108,69 @@ func TestReportedMeasurementsAreNotAsserted(t *testing.T) {
 	}
 }
 
-func TestSigStopUsesPIDFromCgroupNeverName(t *testing.T) {
+const testContainerID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func freezeExec(events string) *fakeExec {
+	return &fakeExec{out: map[string]string{
+		"kubectl get pod p -n ns -o jsonpath={.status.containerStatuses": "containerd://" + testContainerID,
+		"kubectl get pod p -n ns -o jsonpath={.spec.nodeName}":           "node-1",
+		"kubectl exec chaos-freezer-0123456789ab -n ns -- sh -c find":    "/host/sys/fs/cgroup/kubepods/pod/cri-containerd-" + testContainerID + ".scope",
+		"kubectl exec chaos-freezer-0123456789ab -n ns -- sh -c echo":    events,
+	}}
+}
+
+func TestCgroupFreezeFreezesFromNodeAndVerifies(t *testing.T) {
 	t.Parallel()
-	ex := &fakeExec{out: map[string]string{"kubectl exec p": "42\n7\n99\n"}}
-	f := &SigStop{Exec: ex, Namespace: "ns", Pod: "p", Container: "c"}
-	if err := WithFault(context.Background(), f, func(context.Context) error { return nil }); err != nil {
+	ex := freezeExec("frozen 1\n")
+	f := &CgroupFreeze{Exec: ex, Namespace: "ns", Pod: "p", Container: "c", HelperImage: "img@sha256:x"}
+	if err := f.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var kills []string
+	var manifest string
 	for _, c := range ex.calls {
-		for _, banned := range []string{"pkill", "killall", "pgrep"} {
+		for _, banned := range []string{"pkill", "killall", "pgrep", "kill -", "-- kill"} {
 			if strings.Contains(c.line, banned) {
-				t.Fatalf("name-based kill: %s", c.line)
+				t.Fatalf("signal path used: %s", c.line)
 			}
 		}
-		if strings.Contains(c.line, " kill ") {
-			kills = append(kills, c.line[strings.Index(c.line, "kill"):])
+		if strings.HasPrefix(c.line, "kubectl apply") {
+			manifest = c.stdin
 		}
 	}
-	if len(kills) != 2 || kills[0] != "kill -STOP 7" || kills[1] != "kill -CONT 7" {
-		t.Fatalf("kills = %v", kills)
+	for _, want := range []string{"nodeName: node-1", "hostPID: true", "privileged: true", "image: img@sha256:x"} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("helper manifest lacks %q:\n%s", want, manifest)
+		}
 	}
-	bad := &SigStop{Exec: &fakeExec{out: map[string]string{"kubectl exec": "nginx\n"}}, Pod: "p"}
-	if bad.Apply(context.Background()) == nil {
-		t.Fatal("non-numeric cgroup entry accepted")
+	// Revert thaws, verifies and deletes the helper.
+	ex.out["kubectl exec chaos-freezer-0123456789ab -n ns -- sh -c echo"] = "frozen 0\n"
+	if err := f.Revert(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if last := ex.calls[len(ex.calls)-1].line; !strings.HasPrefix(last, "kubectl delete pod chaos-freezer-0123456789ab") {
+		t.Fatalf("helper not deleted, last call %q", last)
+	}
+}
+
+func TestCgroupFreezeFailsWhenEffectNotObserved(t *testing.T) {
+	t.Parallel()
+	for _, events := range []string{"frozen 0\n", ""} {
+		ex := freezeExec(events)
+		f := &CgroupFreeze{Exec: ex, Namespace: "ns", Pod: "p", Container: "c", HelperImage: "img"}
+		if f.Apply(context.Background()) == nil {
+			t.Fatalf("events %q accepted as frozen", events)
+		}
+	}
+	bad := freezeExec("frozen 1")
+	bad.out["kubectl get pod p -n ns -o jsonpath={.status.containerStatuses"] = "containerd://nginx"
+	if (&CgroupFreeze{Exec: bad, Namespace: "ns", Pod: "p", Container: "c", HelperImage: "img"}).Apply(context.Background()) == nil {
+		t.Fatal("non-ID container accepted")
+	}
+	if (&CgroupFreeze{Exec: freezeExec(""), Namespace: "ns", Pod: "p", Container: "c"}).Apply(context.Background()) == nil {
+		t.Fatal("missing helper image accepted")
+	}
+	if (&CgroupFreeze{Exec: freezeExec(""), Namespace: "ns", Pod: "p", Container: `c")]; x`, HelperImage: "img"}).Apply(context.Background()) == nil {
+		t.Fatal("jsonpath-injecting container name accepted")
 	}
 }
 
@@ -159,15 +198,47 @@ func TestCNPGFailoverDeletesNamedPrimary(t *testing.T) {
 	}
 }
 
-func TestClockSkewSetsAndClearsEnv(t *testing.T) {
+func TestClockSkewWritesOffsetFileWithoutRestart(t *testing.T) {
 	t.Parallel()
-	ex := &fakeExec{}
-	f := ClockSkew{Exec: ex, Namespace: "ns", Deployment: "api", Offset: "-10m"}
-	if err := WithFault(context.Background(), f, func(context.Context) error { return nil }); err != nil {
+	ex := &fakeExec{out: map[string]string{"kubectl exec api-0": "-10m"}}
+	f := ClockSkew{Exec: ex, Namespace: "ns", Pod: "api-0", Container: "c", Offset: "-10m"}
+	if err := f.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(ex.calls[0].line, "FAKETIME=-10m") || !strings.HasSuffix(ex.calls[1].line, "FAKETIME-") {
-		t.Fatalf("calls = %+v", ex.calls)
+	for _, c := range ex.calls {
+		if strings.Contains(c.line, "set env") || strings.Contains(c.line, "rollout") {
+			t.Fatalf("skew restarts pods: %s", c.line)
+		}
+	}
+	if !strings.Contains(ex.calls[0].line, "faketime") || !strings.Contains(ex.calls[0].line, "'-10m'") {
+		t.Fatalf("call = %s", ex.calls[0].line)
+	}
+	ex.out["kubectl exec api-0"] = "+0s"
+	if err := f.Revert(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ex.out["kubectl exec api-0"] = "garbage"
+	if f.Apply(context.Background()) == nil {
+		t.Fatal("unverified read-back accepted")
+	}
+	f.Offset = "-10m; rm -rf /"
+	if f.Apply(context.Background()) == nil {
+		t.Fatal("injected offset accepted")
+	}
+}
+
+func TestVerifyPendingOpenFailsOnMergedReference(t *testing.T) {
+	t.Parallel()
+	ex := &fakeExec{out: map[string]string{
+		"gh api repos/Agent-Clubhouse/Goobers/issues/1": "open",
+		"gh api repos/Agent-Clubhouse/Goobers/issues/2": "closed",
+	}}
+	if err := VerifyPendingOpen(context.Background(), ex, []string{"1"}); err != nil {
+		t.Fatal(err)
+	}
+	err := VerifyPendingOpen(context.Background(), ex, []string{"1", "2"})
+	if err == nil || !strings.Contains(err.Error(), "#2 is closed") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

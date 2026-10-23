@@ -16,15 +16,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/testdep"
 )
 
 // cleanData is a history that satisfies every invariant.
-const cleanData = `
+var cleanData = fmt.Sprintf(`
 INSERT INTO control.lease_history VALUES
-  ('i','control',1,'a','2026-01-01 00:00:00+00','2026-01-01 00:10:00+00','voluntary'),
-  ('i','control',2,'b','2026-01-01 00:10:00+00',NULL,NULL);
+  ('i','%[1]s',1,'a','2026-01-01 00:00:00+00','2026-01-01 00:10:00+00','voluntary'),
+  ('i','%[1]s',2,'b','2026-01-01 00:10:00+00',NULL,NULL);
 INSERT INTO journal.run VALUES
   ('i','r1','g','w','\x00','2026-01-01 00:01:00+00',NULL),
   ('i','r2','g','w','\x00','2026-01-01 00:01:00+00',NULL);
@@ -49,7 +50,7 @@ INSERT INTO control.acceptance (instance_id, id, idem_key, actor, fingerprint, p
 INSERT INTO control.source_receipt VALUES
   ('i','src1','act','fp',ARRAY['a1'],'2026-01-01 00:00:30+00'),
   ('i','src2','act','fp',ARRAY['a2','a3'],'2026-01-01 00:00:40+00');
-`
+`, lease.ControllerName)
 
 var createsMarker = regexp.MustCompile(`(?m)^-- creates: (\S+)$`)
 
@@ -127,14 +128,17 @@ func newSchemaDB(t *testing.T) *pgxpool.Pool {
 func TestInvariantsAgainstRealSchema(t *testing.T) {
 	pool := newSchemaDB(t)
 	ctx := context.Background()
-	inTx := func(t *testing.T, stmts ...string) Report {
+	inTx := func(t *testing.T, seed bool, stmts ...string) Report {
 		t.Helper()
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		for _, s := range append([]string{cleanData}, stmts...) {
+		if seed {
+			stmts = append([]string{cleanData}, stmts...)
+		}
+		for _, s := range stmts {
 			if _, err := tx.Exec(ctx, s); err != nil {
 				t.Fatalf("%s: %v", strings.TrimSpace(s), err)
 			}
@@ -146,7 +150,7 @@ func TestInvariantsAgainstRealSchema(t *testing.T) {
 		return report
 	}
 	t.Run("clean history holds", func(t *testing.T) {
-		report := inTx(t)
+		report := inTx(t, true)
 		if !report.OK() {
 			t.Fatalf("clean history violated: %+v", report.Violations)
 		}
@@ -154,16 +158,30 @@ func TestInvariantsAgainstRealSchema(t *testing.T) {
 			t.Fatal("pending invariants not reported as skipped")
 		}
 	})
+	t.Run("empty database is not a pass", func(t *testing.T) {
+		report := inTx(t, false)
+		var want int
+		for _, inv := range All() {
+			if inv.Pending == "" {
+				want++
+			}
+		}
+		if report.OK() || len(report.Uncovered) != want {
+			t.Fatalf("uncovered = %v (ok=%v), want all %d invariants uncovered", report.Uncovered, report.OK(), want)
+		}
+	})
 	for _, inv := range All() {
 		if inv.Pending != "" {
 			continue
 		}
-		t.Run(inv.Name, func(t *testing.T) {
-			report := inTx(t, injections[inv.Name]...)
-			if len(report.Violations) != 1 || report.Violations[0].Invariant != inv.Name {
-				t.Fatalf("violations = %+v, want only %s", report.Violations, inv.Name)
-			}
-		})
+		for i, stmts := range injections[inv.Name] {
+			t.Run(fmt.Sprintf("%s/%d", inv.Name, i), func(t *testing.T) {
+				report := inTx(t, true, stmts...)
+				if len(report.Violations) != 1 || report.Violations[0].Invariant != inv.Name || len(report.Uncovered) != 0 {
+					t.Fatalf("report = %+v, want only %s", report, inv.Name)
+				}
+			})
+		}
 	}
 }
 

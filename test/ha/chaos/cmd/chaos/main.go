@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/goobers/goobers/test/ha/chaos"
+	"github.com/goobers/goobers/test/ha/invariants"
 )
 
 func main() {
 	if len(os.Args) != 2 {
-		exitf("usage: chaos list|run")
+		exitf("usage: chaos list|run|verify-pending")
 	}
 	switch os.Args[1] {
 	case "list":
@@ -25,6 +28,10 @@ func main() {
 			}
 			fmt.Printf("%s\t%s\n", s.ID, state)
 		}
+	case "verify-pending":
+		if err := verifyPending(); err != nil {
+			exitf("%v", err)
+		}
 	case "run":
 		if err := run(); err != nil {
 			exitf("%v", err)
@@ -34,12 +41,68 @@ func main() {
 	}
 }
 
+// verifyPending fails when a pending reference is no longer open.
+func verifyPending() error {
+	seen := map[string]bool{}
+	for _, s := range chaos.Scenarios() {
+		if n, ok := chaos.PendingNumber(s.Pending); ok {
+			seen[n] = true
+		}
+	}
+	for _, inv := range invariants.All() {
+		if n, ok := chaos.PendingNumber(inv.Pending); ok {
+			seen[n] = true
+		}
+	}
+	refs := make([]string, 0, len(seen))
+	for n := range seen {
+		refs = append(refs, n)
+	}
+	return chaos.VerifyPendingOpen(context.Background(), chaos.OSExecutor{}, refs)
+}
+
+// checkerFromEnv returns the invariant checker for runnable scenarios. It is
+// required, not optional: with runnable scenarios and no database the run
+// fails rather than passing unchecked.
+func checkerFromEnv(ctx context.Context, evidence string) (func(context.Context) (int, error), func(), error) {
+	url := os.Getenv("HA_INVARIANT_DB_URL")
+	if url == "" {
+		return nil, nil, fmt.Errorf("runnable scenarios need HA_INVARIANT_DB_URL for the invariant checker")
+	}
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		return nil, nil, err
+	}
+	check := func(ctx context.Context) (int, error) {
+		report, err := invariants.Check(ctx, pool)
+		if err != nil {
+			return 0, err
+		}
+		if err := report.WriteEvidence(evidence); err != nil {
+			return 0, err
+		}
+		return len(report.Violations) + len(report.Uncovered), nil
+	}
+	return check, pool.Close, nil
+}
+
 func run() error {
 	evidence := os.Getenv("HA_EVIDENCE_DIR")
 	if evidence == "" {
 		return fmt.Errorf("HA_EVIDENCE_DIR is required")
 	}
 	env := chaos.Env{Exec: chaos.OSExecutor{}}
+	for _, s := range chaos.Scenarios() {
+		if s.Pending == "" {
+			check, closeDB, err := checkerFromEnv(context.Background(), evidence)
+			if err != nil {
+				return err
+			}
+			defer closeDB()
+			env.Check = check
+			break
+		}
+	}
 	summary, err := chaos.RunAll(context.Background(), chaos.Scenarios(), env)
 	if err != nil {
 		return err
