@@ -33,7 +33,7 @@ func (s *startCustody) ReadStart(ctx context.Context, id string) (engine.StartId
 	}, nil
 }
 
-func (s *startCustody) ConfirmStart(ctx context.Context, identity engine.StartIdentity, _ bool) error {
+func (s *startCustody) ConfirmStart(ctx context.Context, identity engine.StartIdentity, _ bool, pins RunPins) error {
 	if err := s.CheckStartLease(ctx); err != nil {
 		return err
 	}
@@ -46,9 +46,9 @@ func (s *startCustody) ConfirmStart(ctx context.Context, identity engine.StartId
 		return triggerqueue.ErrTransition
 	}
 	if identity.PredecessorEpoch < identity.OwnerEpoch {
-		return s.store.AdoptStart(ctx, identity.AcceptanceID, identity.RunID, identity.PredecessorEpoch)
+		return s.store.AdoptStart(ctx, identity.AcceptanceID, identity.RunID, identity.PredecessorEpoch, pins)
 	}
-	return s.store.ConfirmStart(ctx, identity.AcceptanceID, identity.RunID)
+	return s.store.ConfirmStart(ctx, identity.AcceptanceID, identity.RunID, pins)
 }
 
 func (s *startCustody) CheckStartLease(ctx context.Context) error {
