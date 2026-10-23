@@ -86,3 +86,59 @@ func (s *Store) recordRunPins(ctx context.Context, tx pgx.Tx, pins RunPins, epoc
 	}
 	return nil
 }
+
+// runPinSweepBatch bounds one retention pass.
+const runPinSweepBatch = 64
+
+// RunClosed reports whether a run's engine execution is closed. A run the
+// engine no longer knows (its history retention-deleted) is closed.
+type RunClosed func(ctx context.Context, runID string) (bool, error)
+
+// SweepRunPins applies run_pin's terminal-keyed retention: pins of runs that
+// are older than ReplayRetention and now closed are marked terminal, and pins
+// terminal for longer than ReplayRetention are deleted. A running parent's
+// pins are never touched, however old. The closed predicate runs outside any
+// transaction; only the marking and deletion are fenced.
+func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed) (marked, deleted int64, err error) {
+	if closed == nil {
+		return 0, 0, errors.New("cloud acceptance: run pin sweep requires a run status")
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT run_id FROM control.run_pin
+		WHERE instance_id=$1 AND terminal_at IS NULL AND created_at<clock_timestamp()-$2*interval '1 second'
+		ORDER BY created_at, run_id LIMIT $3`,
+		s.instanceID, triggerqueue.ReplayRetention.Seconds(), runPinSweepBatch)
+	if err != nil {
+		return 0, 0, err
+	}
+	candidates, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, 0, err
+	}
+	var closedRuns []string
+	for _, runID := range candidates {
+		done, err := closed(ctx, runID)
+		if err != nil {
+			return 0, 0, fmt.Errorf("run pin sweep: status of run %s: %w", runID, err)
+		}
+		if done {
+			closedRuns = append(closedRuns, runID)
+		}
+	}
+	err = s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, _ int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.run_pin SET terminal_at=clock_timestamp()
+			WHERE instance_id=$1 AND run_id=ANY($2) AND terminal_at IS NULL`, s.instanceID, closedRuns)
+		if err != nil {
+			return err
+		}
+		marked = tag.RowsAffected()
+		tag, err = tx.Exec(txCtx, `
+			DELETE FROM control.run_pin
+			WHERE instance_id=$1 AND terminal_at<clock_timestamp()-$2*interval '1 second'`,
+			s.instanceID, triggerqueue.ReplayRetention.Seconds())
+		deleted = tag.RowsAffected()
+		return err
+	})
+	return marked, deleted, err
+}
