@@ -201,6 +201,15 @@ const (
 	RunStageSurrenderPath     = V1Prefix + "/runs/{run}/stages/{stage}/attempts/{attempt}/surrender"
 	RunStageSurrenderSeenPath = RunStageSurrenderPath + "/seen"
 
+	// EngineChildAdmitPath, EngineChildLoadPath and EngineChildCancelPath are
+	// the engine child-admission plane (HA-P4-10, #7879): a Temporal worker,
+	// which holds no database credentials, reaches the control plane's
+	// generated-child custody. Only the dedicated worker child-admission
+	// credential may call them; stage pods never can.
+	EngineChildAdmitPath  = V1Prefix + "/engine/children/admit"
+	EngineChildLoadPath   = V1Prefix + "/engine/children/load"
+	EngineChildCancelPath = V1Prefix + "/engine/children/cancel"
+
 	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
 	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
 	// BlobPathPrefix) fetches and puts content-addressed artifacts by sha256
@@ -373,6 +382,9 @@ const (
 	RouteStageSurrender     RouteID = "stageSurrender"
 	RouteStageSurrenderGet  RouteID = "stageSurrenderGet"
 	RouteStageSurrenderSeen RouteID = "stageSurrenderSeen"
+	RouteEngineChildAdmit   RouteID = "engineChildAdmit"
+	RouteEngineChildLoad    RouteID = "engineChildLoad"
+	RouteEngineChildCancel  RouteID = "engineChildCancel"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
 	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
@@ -656,6 +668,14 @@ var v1Routes = []Route{
 	{ID: RouteStageSurrender, Method: http.MethodPost, Path: RunStageSurrenderPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteStageSurrenderGet, Method: http.MethodGet, Path: RunStageSurrenderPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteStageSurrenderSeen, Method: http.MethodGet, Path: RunStageSurrenderSeenPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+
+	// The engine child-admission plane (#7879) is a machine seam advancing a
+	// run's own generated-child custody, so it shares the workflow-execution
+	// class and the standard mutation budget. Load is a POST because it
+	// carries the bounded admission receipt it is fenced by.
+	{ID: RouteEngineChildAdmit, Method: http.MethodPost, Path: EngineChildAdmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildLoad, Method: http.MethodPost, Path: EngineChildLoadPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildCancel, Method: http.MethodPost, Path: EngineChildCancelPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The blob plane (decision 010/012, §2a) is the network transport for the
 	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET
