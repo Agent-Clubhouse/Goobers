@@ -147,6 +147,7 @@ type runJournal struct {
 	// reconstructed from recorded activity results, never mutable journal reads.
 	childOrigins map[string]livejournal.ChildOriginReceipt
 	children     *childFamily
+	receipts     map[string]livejournal.AppendReceipt
 
 	owner         *journalCommitOwner
 	branch        int
@@ -227,6 +228,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 		machine: m,
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
+				Child:           in.childLineage,
 				InstanceID:      in.InstanceID,
 				RunID:           in.RunID,
 				Workflow:        in.WorkflowName,

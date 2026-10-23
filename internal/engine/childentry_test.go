@@ -16,7 +16,7 @@ const childWorkflowChangeID = "engine-child-workflows-v1"
 // including permissive nil preview semantics for ordinary runs. The production
 // entry and worker registration stay refused until qualification (#7758).
 func runWithChildWorkflows(ctx workflow.Context, in RunInput) (RunResult, error) {
-	if wf.RefuseChildWorkflowExecution(in.Spec) == nil {
+	if in.FrozenChild == nil && wf.RefuseChildWorkflowExecution(in.Spec) == nil {
 		return run(ctx, in)
 	}
 	if workflow.GetVersion(ctx, childWorkflowChangeID, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
@@ -25,5 +25,5 @@ func runWithChildWorkflows(ctx workflow.Context, in RunInput) (RunResult, error)
 	if in.PreviewFeaturesEnabled == nil || !*in.PreviewFeaturesEnabled || !in.LiveJournal {
 		return RunResult{}, errors.New("engine: children require explicit preview and live journal")
 	}
-	return run(workflow.WithValue(ctx, childProtocolContextKey{}, true), in)
+	return Run(workflow.WithValue(ctx, childProtocolContextKey{}, true), in)
 }

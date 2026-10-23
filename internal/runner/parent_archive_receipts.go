@@ -17,7 +17,7 @@ func RecordParentArchiveRetirement(rec OwnedJournalRecorder, branch string, arch
 	if err != nil {
 		return err
 	}
-	value := state.archiveValue(archive)
+	value := state.ArchiveValue(archive)
 	event := journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": ParentContributionRetiredKind, "archive": value}}
 	if _, err := decodeParentWorkspaceArchive(event); err != nil {
 		return err
@@ -29,8 +29,8 @@ func RecordParentArchiveRetirement(rec OwnedJournalRecorder, branch string, arch
 	if _, err := reader.ArtifactBytesBounded(archive, 16384); err != nil {
 		return err
 	}
-	if state.retiredAt != 0 {
-		if !reflect.DeepEqual(value, state.archive) {
+	if state.RetiredAt != 0 {
+		if !reflect.DeepEqual(value, state.Archive) {
 			return errors.New("parent retirement changed on replay")
 		}
 		return nil
@@ -56,10 +56,10 @@ func ParentArchiveRestorationPending(rec OwnedJournalRecorder, archive ParentWor
 	if err != nil {
 		return false, err
 	}
-	if state.retiredAt == 0 && retirementSeq != 0 && state.restoredRetirement == retirementSeq && reflect.DeepEqual(archive, state.archive) {
+	if state.RetiredAt == 0 && retirementSeq != 0 && state.RestoredRetirement == retirementSeq && reflect.DeepEqual(archive, state.Archive) {
 		return false, nil
 	}
-	if state.retiredAt == 0 || state.retiredAt != retirementSeq || !reflect.DeepEqual(archive, state.archive) {
+	if state.RetiredAt == 0 || state.RetiredAt != retirementSeq || !reflect.DeepEqual(archive, state.Archive) {
 		return false, errors.New("parent restoration differs from outstanding retirement")
 	}
 	return true, nil
@@ -90,11 +90,11 @@ func ownedParentArchiveState(rec OwnedJournalRecorder, branch string) (parentWor
 	if err != nil {
 		return state, err
 	}
-	if state.returnedAt == 0 || state.branch != branchIndex {
+	if state.ReturnedAt == 0 || state.Branch != branchIndex {
 		return empty, errors.New("parent archive has no acknowledged workspace")
 	}
-	if state.archive.Archive.Path != "" {
-		if _, err := reader.ArtifactBytesBounded(state.archive.Archive, 16384); err != nil {
+	if state.Archive.Archive.Path != "" {
+		if _, err := reader.ArtifactBytesBounded(state.Archive.Archive, 16384); err != nil {
 			return empty, err
 		}
 	}

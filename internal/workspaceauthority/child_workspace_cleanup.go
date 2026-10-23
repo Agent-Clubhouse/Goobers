@@ -1,4 +1,4 @@
-package runner
+package workspaceauthority
 
 import (
 	"github.com/goobers/goobers/internal/invoke"
@@ -24,7 +24,7 @@ func VerifyChildWorkspaceCleanup(reader *journal.Reader, id journal.RunIdentity,
 	if err != nil {
 		return err
 	}
-	pending, err := pendingChildWorkspaceWriters(reader, id, events)
+	pending, err := PendingChildWorkspaceWriters(reader, id, events)
 	if err != nil {
 		return err
 	}

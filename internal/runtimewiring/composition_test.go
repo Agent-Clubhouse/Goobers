@@ -21,7 +21,7 @@ func TestCompositionInstallsWorkspaceGuardsOnNewAndReusedManagers(t *testing.T) 
 	}
 	calls := 0
 	var observed *worktree.Manager
-	input := runtimewiring.RunnerCompositionInput{
+	input := runtimewiring.ExecutorCompositionInput{
 		ExecutionFence: func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 			return ctx, func() {}, nil
 		},
@@ -35,7 +35,7 @@ func TestCompositionInstallsWorkspaceGuardsOnNewAndReusedManagers(t *testing.T) 
 			return nil
 		},
 	}
-	_, manager, err := runtimewiring.BuildRunnerConfig(input)
+	_, manager, err := runtimewiring.BuildExecutorConfig(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestCompositionInstallsWorkspaceGuardsOnNewAndReusedManagers(t *testing.T) 
 		t.Fatalf("new manager guard wiring: calls=%d observed=%p returned=%p", calls, observed, manager)
 	}
 	input.WorktreeManager = manager
-	_, reused, err := runtimewiring.BuildRunnerConfig(input)
+	_, reused, err := runtimewiring.BuildExecutorConfig(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,13 +52,13 @@ func TestCompositionInstallsWorkspaceGuardsOnNewAndReusedManagers(t *testing.T) 
 	}
 	refused := errors.New("recovery ownership is ambiguous")
 	input.ConfigureWorktree = func(*worktree.Manager) error { return refused }
-	if _, _, err := runtimewiring.BuildRunnerConfig(input); !errors.Is(err, refused) {
+	if _, _, err := runtimewiring.BuildExecutorConfig(input); !errors.Is(err, refused) {
 		t.Fatalf("cleanup guard failure was ignored: %v", err)
 	}
 }
 
 func TestCompositionRequiresExecutionFence(t *testing.T) {
-	if _, _, err := runtimewiring.BuildRunnerConfig(runtimewiring.RunnerCompositionInput{}); err == nil {
+	if _, _, err := runtimewiring.BuildExecutorConfig(runtimewiring.ExecutorCompositionInput{}); err == nil {
 		t.Fatal("accepted runner without execution fence")
 	}
 }

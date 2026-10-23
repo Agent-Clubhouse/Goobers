@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/goobers/goobers/internal/stageexec"
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
@@ -15,16 +18,15 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// RunnerCompositionInput supplies shared runtime dependencies and the callbacks
+// ExecutorCompositionInput supplies shared runtime dependencies and the callbacks
 // owned by each binary. ConfigureWorktree installs cleanup guards on both new
 // and reused managers; Finalize adds binary-specific runner services.
-type RunnerCompositionInput struct {
+type ExecutorCompositionInput struct {
 	// ExecutorBinary names the local CLI used by stage commands and harness MCP servers. Empty uses this process.
 	ExecutorBinary           string
 	ExecutionFence           ExecutionFenceStart
@@ -55,13 +57,13 @@ type RunnerCompositionInput struct {
 	BuildDeterministic       func(DeterministicExecutorInput) (invoke.Deterministic, error)
 	BuildAgentic             func(AgenticExecutorInput) (invoke.Goober, error)
 	ConfigureWorktree        func(*worktree.Manager) error
-	Finalize                 func(*runner.Config, credentials.Resolver, *worktree.Manager) error
+	Finalize                 func(*ExecutorConfig, credentials.Resolver, *worktree.Manager) error
 }
 
-// BuildRunnerConfig composes shared executors and workspaces with binary-specific hooks.
-func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.Manager, error) {
+// BuildExecutorConfig composes shared executors and workspaces with binary-specific hooks.
+func BuildExecutorConfig(input ExecutorCompositionInput) (ExecutorConfig, *worktree.Manager, error) {
 	if input.ExecutionFence == nil {
-		return runner.Config{}, nil, fmt.Errorf("runner execution fence is required")
+		return ExecutorConfig{}, nil, fmt.Errorf("runner execution fence is required")
 	}
 	executionFence := WithCurrentMergeAuthority(input.Layout, input.ExecutionFence)
 	if input.LookPath == nil {
@@ -77,7 +79,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	cfg, goobers := input.Config, input.Goobers
 	skillPackages, skillErr := input.resolvedSkillFiles()
 	if skillErr != nil {
-		return runner.Config{}, nil, skillErr
+		return ExecutorConfig{}, nil, skillErr
 	}
 	tel := input.Telemetry
 	sharedReg := input.SharedRegistry
@@ -91,18 +93,18 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	appliedConfigDigest := input.AppliedConfigDigest
 	infra, err := prepareRunnerInfrastructure(input)
 	if err != nil {
-		return runner.Config{}, nil, err
+		return ExecutorConfig{}, nil, err
 	}
 	resolver, grants := infra.resolver, infra.grants
 	deterministicGrants := infra.deterministicGrants
 	wtMgr, pathLimits := infra.worktreeManager, infra.pathLimits
 	configuredProject, projectConfigured, pinned := infra.configuredProject, infra.projectConfigured, infra.pinned
 	if _, err := BuildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
-		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
+		return ExecutorConfig{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
 	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
-		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
+		return ExecutorConfig{}, nil, fmt.Errorf("resolve instance root: %w", err)
 	}
 	// The running daemon's own binary path, substituted for a bare "goobers"
 	// command token in deterministic stages — a fresh stage worktree never
@@ -112,7 +114,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	if selfBin == "" {
 		selfBin, err = os.Executable()
 		if err != nil {
-			return runner.Config{}, nil, fmt.Errorf("resolve goobers binary path: %w", err)
+			return ExecutorConfig{}, nil, fmt.Errorf("resolve goobers binary path: %w", err)
 		}
 	}
 
@@ -123,16 +125,16 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 		// or the declaration is only half enforced.
 		cfg.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral))
 	if err != nil {
-		return runner.Config{}, nil, err
+		return ExecutorConfig{}, nil, err
 	}
 	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
 		if _, ok := input.InstructionsByGoober[name]; !ok {
-			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
+			return ExecutorConfig{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
 		assets, err := gooberassets.Load(filepath.Join(ResolvedGooberDefinitionDir(l.ConfigDir(), input.Definitions, spec, name), gooberassets.SourceDir))
 		if err != nil {
-			return runner.Config{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
+			return ExecutorConfig{}, nil, fmt.Errorf("load goober %q assets: %w", name, err)
 		}
 		assetsByGoober[name] = assets
 	}
@@ -142,7 +144,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	// each goober to its declared grants for that lookup; only agentic gates
 	// consult it (task stages carry their own stage-level capabilities).
 	gateGooberCaps := make(map[string][]string, len(goobers))
-	agentProvenance := make(map[string]runner.AgentProvenance, len(goobers))
+	agentProvenance := make(map[string]stageexec.AgentProvenance, len(goobers))
 	for name, spec := range goobers {
 		if len(spec.Capabilities) > 0 {
 			gateGooberCaps[name] = append([]string(nil), spec.Capabilities...)
@@ -151,7 +153,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 		if harnessName == "" {
 			harnessName = apiv1.HarnessCopilot
 		}
-		agentProvenance[name] = runner.AgentProvenance{
+		agentProvenance[name] = stageexec.AgentProvenance{
 			Model:          spec.Model,
 			HarnessVersion: harnessInfo[harnessName].Version,
 		}
@@ -165,11 +167,10 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
 	// #2971: compare a failing local-ci stage against the target branch's own
 	// health before attributing it to the run. nil unless the instance opted in.
-	var baselineHealth runner.BaselineHealth
-	rc := runner.Config{
+	rc := ExecutorConfig{
 		ConfigGeneration: input.ConfigGeneration,
 		RunControls:      cfg.RunConditions.RunControls(),
-		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
+		NewDeterministic: func(rec stageexec.ArtifactRecorder, reg stageexec.SecretRegistrar) (invoke.Deterministic, error) {
 			exec, err := input.BuildDeterministic(DeterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
@@ -182,7 +183,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 			}
 			return ClaimFencedDeterministic{Deterministic: exec, Start: executionFence}, nil
 		},
-		NewAgenticWithMCPServers: func(gooberName string, servers []apiv1.MCPServer, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
+		NewAgenticWithMCPServers: func(gooberName string, servers []apiv1.MCPServer, rec stageexec.ArtifactRecorder, reg stageexec.SecretRegistrar) (invoke.Goober, error) {
 			ordinary := func() (invoke.Goober, error) {
 				return input.BuildAgentic(AgenticExecutorInput{
 					GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
@@ -224,7 +225,6 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 		ResolveRepositoryIdentity: BuildRevisionIdentityResolver(cfg, resolver, sharedReg, stores),
 		GateGooberCapabilities:    gateGooberCaps,
 		AgentProvenance:           agentProvenance,
-		BaselineHealth:            baselineHealth,
 		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
@@ -236,7 +236,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	applyRunnerConfigFinalizers(&rc, input, tel)
 	if input.Finalize != nil {
 		if err := input.Finalize(&rc, resolver, wtMgr); err != nil {
-			return runner.Config{}, nil, err
+			return ExecutorConfig{}, nil, err
 		}
 	}
 	wtMgr.SetPathLengthLimits(pathLimits)
@@ -265,7 +265,7 @@ type runnerInfrastructure struct {
 	pinned              bool
 }
 
-func prepareRunnerInfrastructure(input RunnerCompositionInput) (runnerInfrastructure, error) {
+func prepareRunnerInfrastructure(input ExecutorCompositionInput) (runnerInfrastructure, error) {
 	l := input.Layout
 	cfg := input.Config
 	tel := input.Telemetry
@@ -295,7 +295,7 @@ func prepareRunnerInfrastructure(input RunnerCompositionInput) (runnerInfrastruc
 	// URLs the runner hands WorkingCopy.
 	cloneURLFn := RepoCloneURL
 	if cloneURLFn == nil {
-		cloneURLFn = runner.DefaultRepoCloneURL
+		cloneURLFn = providers.CloneURL
 	}
 	pathLimits, pathLimitsErr := PathLengthManagerLimits(cfg, cloneURLFn, runtime.GOOS)
 	if pathLimitsErr != nil {
@@ -370,7 +370,7 @@ func prepareRunnerInfrastructure(input RunnerCompositionInput) (runnerInfrastruc
 	}, nil
 }
 
-func applyRunnerConfigFinalizers(cfg *runner.Config, input RunnerCompositionInput, tel *telemetry.Client) {
+func applyRunnerConfigFinalizers(cfg *ExecutorConfig, input ExecutorCompositionInput, tel *telemetry.Client) {
 	if tel != nil {
 		cfg.Telemetry = tel
 	}
@@ -378,7 +378,7 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input RunnerCompositionInpu
 	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
 }
 
-func (input RunnerCompositionInput) resolvedSkillFiles() (map[string][]workflow.SkillFile, error) {
+func (input ExecutorCompositionInput) resolvedSkillFiles() (map[string][]workflow.SkillFile, error) {
 	if input.SkillPackages != nil {
 		return input.SkillPackages, nil
 	}

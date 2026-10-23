@@ -1,12 +1,12 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sync"
+
+	"github.com/goobers/goobers/internal/workspaceauthority"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -15,34 +15,15 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// ChildWorkspaceInputName names the immutable trusted fork selector in run inputs.
-const ChildWorkspaceInputName = "child-workspace"
+// ChildWorkspaceInputName uses the shared workspaceauthority.ChildWorkspaceInputName contract.
+const ChildWorkspaceInputName = workspaceauthority.ChildWorkspaceInputName
 
-const maxChildWorkspaceAdmissionBytes = 4096
-
-// ChildWorkspaceAdmission is supplied by the trusted child launcher after it
-// provisions an isolated managed fork. It carries no path, URL or credentials.
-// The journal pins it as an immutable trusted input; resume never substitutes
-// current configuration or creates a replacement for missing custody.
-type ChildWorkspaceAdmission struct {
-	WorkspaceID      string `json:"workspaceId"`
-	ForkSHA          string `json:"forkSha"`
-	RepositoryDigest string `json:"repositoryDigest"`
-}
+// ChildWorkspaceAdmission uses the shared workspaceauthority.ChildWorkspaceAdmission contract.
+type ChildWorkspaceAdmission = workspaceauthority.ChildWorkspaceAdmission
 
 type childRunWorkspace struct {
 	worktree *worktree.Worktree
 	stage    sync.RWMutex
-}
-
-var childForkSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-var childRepositoryDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-func (a ChildWorkspaceAdmission) validate() error {
-	if !apiv1.ValidRunID(a.WorkspaceID) || len(a.WorkspaceID) > 256 || !childForkSHA.MatchString(a.ForkSHA) || !childRepositoryDigest.MatchString(a.RepositoryDigest) {
-		return fmt.Errorf("runner: invalid child workspace admission")
-	}
-	return nil
 }
 
 func (r *Runner) prepareChildWorkspaceStart(ctx context.Context, in *StartInput, inputs map[string][]byte, integrity map[string]apiv1.Integrity) error {
@@ -89,7 +70,7 @@ func (r *Runner) validateChildWorkspacePlan(in StartInput) error {
 		}
 		return nil
 	}
-	if err := in.ChildWorkspace.validate(); err != nil {
+	if err := in.ChildWorkspace.Validate(); err != nil {
 		return err
 	}
 	if r.cfg.PinnedWorkspace {
@@ -117,7 +98,7 @@ func (r *Runner) childWorkspaceOptions(in StartInput) (worktree.ChildOptions, er
 	if in.Child == nil || in.ChildWorkspace == nil || r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
 		return worktree.ChildOptions{}, fmt.Errorf("runner: child workspace custody is unavailable")
 	}
-	if err := in.ChildWorkspace.validate(); err != nil {
+	if err := in.ChildWorkspace.Validate(); err != nil {
 		return worktree.ChildOptions{}, err
 	}
 	url, err := r.cfg.RepoCloneURL(in.RepoRef)
@@ -148,37 +129,9 @@ func (r *Runner) adoptChildWorkspace(ctx context.Context, in *StartInput) error 
 	return nil
 }
 
-// PinnedChildWorkspaceAdmission verifies the exact bounded input bytes before
-// returning a recovery selector. A selector alone is not execution authority.
+// PinnedChildWorkspaceAdmission uses the shared workspaceauthority.PinnedChildWorkspaceAdmission contract.
 func PinnedChildWorkspaceAdmission(reader *journal.Reader, id journal.RunIdentity) (*ChildWorkspaceAdmission, error) {
-	var ref *journal.InputRef
-	for i := range id.Inputs {
-		if id.Inputs[i].Name == ChildWorkspaceInputName {
-			if ref != nil {
-				return nil, fmt.Errorf("runner: duplicate child workspace admission")
-			}
-			ref = &id.Inputs[i]
-		}
-	}
-	if ref == nil {
-		return nil, nil
-	}
-	if id.Child == nil || ref.Integrity != apiv1.IntegrityTrusted {
-		return nil, fmt.Errorf("runner: child workspace admission is not trusted child state")
-	}
-	data, err := reader.ArtifactBytesBounded(ref.Ref, maxChildWorkspaceAdmissionBytes)
-	if err != nil {
-		return nil, err
-	}
-	var admission ChildWorkspaceAdmission
-	if err := json.Unmarshal(data, &admission); err != nil {
-		return nil, err
-	}
-	canonical, err := json.Marshal(admission)
-	if err != nil || !bytes.Equal(canonical, data) {
-		return nil, fmt.Errorf("runner: child workspace admission is not canonical")
-	}
-	return &admission, admission.validate()
+	return workspaceauthority.PinnedChildWorkspaceAdmission(reader, id)
 }
 
 func (r *Runner) restoreChildWorkspace(ctx context.Context, reader *journal.Reader, id journal.RunIdentity, in *StartInput) error {

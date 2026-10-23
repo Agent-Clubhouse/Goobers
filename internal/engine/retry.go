@@ -149,6 +149,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if attempt > 1 {
 			class = nextRetryClass
 		}
+		policyBefore := policyAttempts
 		if class != journal.AttemptInfra {
 			policyAttempts++
 		}
@@ -163,7 +164,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		startedAt := workflow.Now(ctx)
 		rec.stageStarted(startedAt, t, int(attempt), class)
 		rec.bindChildStart(ctx, t, int(attempt), class)
-		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
+		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, rec.childContextPointers(t.Name, pointers)); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
 		var res apiv1.ResultEnvelope
@@ -173,15 +174,17 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if emitErr == nil {
 			var activityResult stageActivityResult
 			dispatchCtx := withDispatchAttemptStarted(ctx, startedAt)
-			allowance := nextAttemptUsageAllowance(t, &usageBudget)
-			chargedDispatch := func(c workflow.Context, a int, cl journal.AttemptClass) (stageActivityResult, error) {
-				return dispatch(c, a, cl, allowance)
-			}
-			activityResult, err = rec.dispatchWithChildAdmission(dispatchCtx, in, t, int(attempt), class, chargedDispatch)
+			step := childStep{Attempt: int(attempt), Class: class, PolicyAttempts: policyBefore, InfrastructureFailures: infrastructureFailures, Pointers: pointers}
+			activityResult, err = rec.dispatchChargedAttempt(dispatchCtx, in, t, step, &usageBudget, dispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if stopsAttemptLoop(ctx, err) {
 				return apiv1.ResultEnvelope{}, err
+			}
+			if errors.Is(err, errChildContinued) {
+				// A yield continues this policy attempt: no retry allowance is consumed.
+				maxAttempts, policyAttempts, nextRetryClass = maxAttempts+1, policyBefore, class
+				continue
 			}
 			if err != nil && activityResult.Placement == nil {
 				activityResult.Placement = DispatchFailurePlacement(err)
@@ -457,4 +460,36 @@ func recordAttemptArtifacts(
 		return fmt.Errorf("engine: journal unpushed diff for stage %q: %w", stage, err)
 	}
 	return nil
+}
+
+// dispatchChargedAttempt dispatches one attempt under its usage allowance
+// and routes a trusted child handoff through admission.
+func (r *runJournal) dispatchChargedAttempt(ctx workflow.Context, in RunInput, t apiv1.Task, step childStep, budget *runsemantics.StageUsageBudget,
+	dispatch func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error)) (stageActivityResult, error) {
+	allowance := nextAttemptUsageAllowance(t, budget)
+	step.Charge = childHandoffCharge(t, budget)
+	return r.dispatchWithChildAdmission(ctx, in, t, step, func(c workflow.Context, a int, cl journal.AttemptClass) (stageActivityResult, error) {
+		return dispatch(c, a, cl, allowance)
+	})
+}
+
+// childHandoffCharge applies the stage's cumulative usage cap to a yielding
+// attempt before its child runs, as the runner charges before it waits.
+func childHandoffCharge(t apiv1.Task, budget *runsemantics.StageUsageBudget) func(stageActivityResult) error {
+	return func(result stageActivityResult) error {
+		if t.Type != apiv1.TaskAgentic || t.Limits == nil || (t.Limits.MaxTokens <= 0 && t.Limits.MaxCostUSD <= 0) {
+			return nil
+		}
+		usage := AttemptUsage{}
+		if result.Usage != nil {
+			usage = *result.Usage
+		}
+		envelope := result.ResultEnvelope
+		var err error
+		budget.Apply(*t.Limits, usage.Metrics, usage.Reported, &envelope, &err)
+		if err == nil && envelope.Error != nil && envelope.Error.Code == runsemantics.BudgetExceededErrorCode {
+			err = errors.New("engine: cumulative parent usage exhausted while handing off child")
+		}
+		return err
+	}
 }

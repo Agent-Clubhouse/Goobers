@@ -6,6 +6,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/goobers/goobers/providers"
+
 	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -13,9 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 func (w *workerSeams) installRemoteRecoveryGuard(manager *worktree.Manager) error {
@@ -118,7 +118,7 @@ func workerRecoveryRepository(layout instance.Layout, digest string) (string, er
 	var selected string
 	for _, repo := range cfg.Repos {
 		ref := apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
-		url, err := runner.DefaultRepoCloneURL(ref)
+		url, err := providers.CloneURL(ref)
 		if err != nil {
 			return "", err
 		}

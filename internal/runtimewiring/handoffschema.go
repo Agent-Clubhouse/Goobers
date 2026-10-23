@@ -11,10 +11,9 @@ import (
 	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/runner"
 )
 
-func newHandoffSchemaLoader(cfg *instance.Config, configDir string) runner.HandoffSchemaLoader {
+func newHandoffSchemaLoader(cfg *instance.Config, configDir string) func(string) (*handoffcheck.Schema, error) {
 	if cfg == nil || cfg.DecisionGate.EffectiveMode() == decisiongate.ModeOff {
 		return nil
 	}

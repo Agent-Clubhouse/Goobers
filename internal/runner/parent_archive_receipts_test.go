@@ -56,7 +56,7 @@ func TestParentArchiveRetirementRestorationCycles(t *testing.T) {
 			t.Fatal(err)
 		}
 		state, err := ownedParentArchiveState(rec, "parent-branch")
-		if err != nil || state.retiredAt <= prior {
+		if err != nil || state.RetiredAt <= prior {
 			t.Fatal("retirement cycle missing", state, err)
 		}
 		if err := RecordParentArchiveRetirement(rec, "parent-branch", record); err != nil {
@@ -67,7 +67,7 @@ func TestParentArchiveRetirementRestorationCycles(t *testing.T) {
 		if err := RecordParentArchiveRetirement(rec, "parent-branch", changed); err == nil {
 			t.Fatal("changed retirement replay accepted")
 		}
-		if err := RecordParentArchiveRestoration(rec, state.archive, prior); err == nil {
+		if err := RecordParentArchiveRestoration(rec, state.Archive, prior); err == nil {
 			t.Fatal("stale restoration unfenced a newer retirement")
 		}
 		reader, _ := journal.OpenReadOnly(run.Dir())
@@ -79,7 +79,7 @@ func TestParentArchiveRetirementRestorationCycles(t *testing.T) {
 			t.Fatal("retired workspace remained runnable")
 		}
 		for range 2 {
-			if err := RecordParentArchiveRestoration(rec, state.archive, state.retiredAt); err != nil {
+			if err := RecordParentArchiveRestoration(rec, state.Archive, state.RetiredAt); err != nil {
 				t.Fatal("restoration replay", err)
 			}
 		}
@@ -90,7 +90,7 @@ func TestParentArchiveRetirementRestorationCycles(t *testing.T) {
 		if _, found, err := selectHeldParentContribution(events, "parent", "parent-branch"); err != nil || !found {
 			t.Fatal("restored workspace unavailable", err)
 		}
-		prior = state.retiredAt
+		prior = state.RetiredAt
 	}
 }
 

@@ -50,27 +50,27 @@ func parallelForkJoinRequest(reader *journal.Reader, in StartInput, parallel api
 		return empty, err
 	}
 	state := states[started.Seq]
-	if state == nil || state.plan.Root == nil || !state.ready[0] || len(outcomes) != len(state.plan.Workspaces) {
+	if state == nil || state.Plan.Root == nil || !state.Ready[0] || len(outcomes) != len(state.Plan.Workspaces) {
 		return empty, errors.New("parallel join lacks exact root reservation and outcomes")
 	}
-	if err := validateJoinWriters(events, state.plan); err != nil {
+	if err := validateJoinWriters(events, state.Plan); err != nil {
 		return empty, err
 	}
-	results, err := ParentForkResults(reader, state.plan, state.reference)
+	results, err := ParentForkResults(reader, state.Plan, state.Reference)
 	if err != nil {
 		return empty, err
 	}
 	if len(results) != len(outcomes) {
 		return empty, errors.New("parallel join lacks immutable branch results")
 	}
-	request := spec.JoinRequest{Request: forkSourceRequest(in, started), Plan: state.reference, Seed: state.plan.Source, Root: *state.plan.Root, Results: make([]spec.JoinResult, len(results))}
+	request := spec.JoinRequest{Request: forkSourceRequest(in, started), Plan: state.Reference, Seed: state.Plan.Source, Root: *state.Plan.Root, Results: make([]spec.JoinResult, len(results))}
 	for _, result := range results {
 		index := result.Branch - 1
 		outcome := outcomes[index]
 		if outcome == nil || outcome.index != index || outcome.status != result.Status || outcome.paused {
 			return empty, errors.New("parallel join result differs from settled outcome")
 		}
-		request.Results[index] = spec.JoinResult{Branch: result.Branch, Status: result.Status, Custody: state.plan.Workspaces[index], Source: result.Source}
+		request.Results[index] = spec.JoinResult{Branch: result.Branch, Status: result.Status, Custody: state.Plan.Workspaces[index], Source: result.Source}
 	}
 	return request, nil
 }
@@ -88,7 +88,7 @@ func validateJoinWriters(events []journal.Event, plan ParentForkPlan) error {
 		if err != nil {
 			return err
 		}
-		if state.hold.Workspace != owner || state.returnedAt <= state.heldAt || state.retiredAt != 0 {
+		if state.Hold.Workspace != owner || state.ReturnedAt <= state.HeldAt || state.RetiredAt != 0 {
 			return errors.New("parallel join lacks returned physical workspace custody")
 		}
 	}

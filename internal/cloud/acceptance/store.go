@@ -184,7 +184,8 @@ func (s *Store) BeginDispatch(ctx context.Context, id string) error {
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.acceptance
-			SET state='dispatching', owner_epoch=$3
+			SET state='dispatching', owner_epoch=$3, dispatch_started_at=clock_timestamp(),
+ start_retry_at=NULL, start_retry_count=0
 			WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
 			s.instanceID, id, epoch,
 		)
