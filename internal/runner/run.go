@@ -3819,7 +3819,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 			err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
 		}
 		acted := err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0
-		err = errors.Join(err, r.journalWorkspaceBranches(ctx, jr, tf, workspace, boundSHA, acted))
+		err = joinDispatchDiagnostic(err, r.journalWorkspaceBranches(ctx, jr, tf, workspace, boundSHA, acted))
 		cleanup = func(preserve bool) error {
 			return r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.finishDispatch(ctx, preserve))
 		}
@@ -3875,7 +3875,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		// paths, before the deferred workspace teardown removes the sidecar.
 		var issues []string
 		mutations, issues = readMutationSidecar(env.Workspace)
-		err = errors.Join(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
+		err = joinDispatchDiagnostic(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
 		if err == nil {
 			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
 		}
