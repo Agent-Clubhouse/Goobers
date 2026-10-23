@@ -712,6 +712,7 @@ func completeJournalEvent() journal.Event {
 				Integrity: apiv1.IntegrityDerived, Path: "artifacts/roster", Size: 64, MediaType: "application/json",
 			},
 			FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 60, MaxConcurrent: 2,
+			RosterDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			Items: []journal.MapItem{{
 				Identity: "east",
 				Digest:   "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
