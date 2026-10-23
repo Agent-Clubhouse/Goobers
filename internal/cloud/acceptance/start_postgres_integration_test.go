@@ -393,7 +393,7 @@ func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
 	}
 	controller := successorStore(t, childRolePool(t, pool, "goobers_controller"))
 	running := func(context.Context, string) (bool, error) { return false, nil }
-	if sweep, err := controller.SweepRunPins(t.Context(), running, ""); err != nil || sweep.Marked != 0 || sweep.Deleted != 0 {
+	if sweep, err := controller.SweepRunPins(t.Context(), running, "", time.Minute); err != nil || sweep.Marked != 0 || sweep.Deleted != 0 {
 		t.Fatalf("sweep of a running parent = %+v, %v", sweep, err)
 	}
 	if present, terminal := pinState(); !present || terminal {
@@ -401,7 +401,7 @@ func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
 	}
 
 	closed := func(context.Context, string) (bool, error) { return true, nil }
-	if sweep, err := controller.SweepRunPins(t.Context(), closed, ""); err != nil || sweep.Marked != 1 || sweep.Deleted != 0 {
+	if sweep, err := controller.SweepRunPins(t.Context(), closed, "", time.Minute); err != nil || sweep.Marked != 1 || sweep.Deleted != 0 {
 		t.Fatalf("sweep of the closed run = %+v, %v", sweep, err)
 	}
 	if present, terminal := pinState(); !present || !terminal {
@@ -410,7 +410,7 @@ func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `UPDATE control.run_pin SET terminal_at=terminal_at-interval '8 days' WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID); err != nil {
 		t.Fatal(err)
 	}
-	if sweep, err := controller.SweepRunPins(t.Context(), closed, ""); err != nil || sweep.Deleted != 1 {
+	if sweep, err := controller.SweepRunPins(t.Context(), closed, "", time.Minute); err != nil || sweep.Deleted != 1 {
 		t.Fatalf("sweep after retention deleted %d (%v), want 1", sweep.Deleted, err)
 	}
 	if present, _ := pinState(); present {
@@ -450,17 +450,28 @@ func TestPGRunPinSweepRotatesPastLiveRunsAndIsolatesUnconfirmed(t *testing.T) {
 
 	// A full batch of candidates: the unconfirmed run is reported, not failed
 	// on, and the closed run inside the batch is still marked.
-	first, err := controller.SweepRunPins(t.Context(), status, "")
-	if err != nil || first.Marked != 1 || first.Next == "" || len(first.Unconfirmed) != 1 || !errors.Is(first.Unconfirmed[0], outage) {
+	first, err := controller.SweepRunPins(t.Context(), status, "", time.Minute)
+	if err != nil || first.Marked != 1 || first.Next == "" || len(first.Unconfirmed) != 1 || !errors.Is(first.Unconfirmed["aa-unconfirmed"], outage) || first.Halted != nil {
 		t.Fatalf("first pass = %+v, %v; want 1 marked, a cursor, and only the unconfirmed run reported", first, err)
 	}
 	// The cursor carries the sweep past the long-running parents to the closed
 	// run behind them, and the lap then wraps.
-	second, err := controller.SweepRunPins(t.Context(), status, first.Next)
+	second, err := controller.SweepRunPins(t.Context(), status, first.Next, time.Minute)
 	if err != nil || second.Marked != 1 || second.Next != "" {
 		t.Fatalf("second pass = %+v, %v; want 1 marked and the lap complete", second, err)
 	}
 
+	// An engine outage halts the pass at once: one call, nothing marked, and
+	// the cursor stays put so the next pass retries from the same place.
+	calls := 0
+	unavailable := func(context.Context, string) (bool, error) {
+		calls++
+		return false, fmt.Errorf("%w: connection refused", ErrRunStatusUnavailable)
+	}
+	halted, err := controller.SweepRunPins(t.Context(), unavailable, first.Next, time.Minute)
+	if err != nil || calls != 1 || halted.Marked != 0 || halted.Next != first.Next || !errors.Is(halted.Halted, ErrRunStatusUnavailable) {
+		t.Fatalf("halted pass = %+v, %v after %d calls; want one call, the cursor kept and the halt reported", halted, err, calls)
+	}
 	rows, err := pool.Query(t.Context(), `SELECT run_id FROM control.run_pin WHERE instance_id=$1 AND terminal_at IS NOT NULL ORDER BY run_id`, store.instanceID)
 	if err != nil {
 		t.Fatal(err)

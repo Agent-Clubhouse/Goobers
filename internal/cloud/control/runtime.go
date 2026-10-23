@@ -96,7 +96,7 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		after = next
 		return err
 	}
-	var pinsAfter string
+	pins := runPinReports{}
 	services.L2 = func(ctx context.Context) error {
 		if err := store.Prune(ctx); err != nil {
 			return err
@@ -114,13 +114,13 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		// run's engine execution is closed, then for ReplayRetention more. The
 		// sweep is best-effort against Temporal: a run it cannot vouch for keeps
 		// its pins and is reported, never returned, since an L2 error ends every
-		// loop and drops the epoch. Only the store's own errors (a lost fence
-		// among them) are returned, as for Prune above.
-		sweep, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pinsAfter)
-		pinsAfter = sweep.Next
-		for _, unconfirmed := range sweep.Unconfirmed {
-			r.report(unconfirmed)
-		}
+		// loop and drops the epoch; its Temporal calls are bounded by
+		// runPinSweepBudget so an outage cannot hold up claim renewal and reap.
+		// Only the store's own errors (a lost fence among them) are returned, as
+		// for Prune above.
+		sweep, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pins.after, runPinSweepBudget)
+		pins.after = sweep.Next
+		pins.report(sweep, r.report)
 		return err
 	}
 	return services, nil
@@ -183,4 +183,35 @@ func (r Runtime) report(err error) {
 	if r.Report != nil {
 		r.Report(err)
 	}
+}
+
+// runPinSweepBudget bounds one L2 pass's Temporal calls for the run-pin sweep.
+var runPinSweepBudget = 5 * time.Second
+
+// runPinReports carries the sweep cursor across L2 passes and reports each
+// unconfirmed run, and a Temporal outage, once when it starts rather than on
+// every pass while it lasts.
+type runPinReports struct {
+	after       string
+	unconfirmed map[string]bool
+	halted      bool
+}
+
+func (p *runPinReports) report(sweep acceptance.RunPinSweep, report func(error)) {
+	if p.unconfirmed == nil {
+		p.unconfirmed = map[string]bool{}
+	}
+	for _, runID := range sweep.Checked {
+		delete(p.unconfirmed, runID)
+	}
+	for runID, err := range sweep.Unconfirmed {
+		if !p.unconfirmed[runID] {
+			p.unconfirmed[runID] = true
+			report(err)
+		}
+	}
+	if sweep.Halted != nil && !p.halted {
+		report(sweep.Halted)
+	}
+	p.halted = sweep.Halted != nil
 }

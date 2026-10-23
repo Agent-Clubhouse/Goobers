@@ -31,6 +31,8 @@ func temporalRunClosed(temporal workflowDescriber) acceptance.RunClosed {
 		switch {
 		case errors.As(err, &notFound):
 			return true, nil
+		case isTemporalUnavailable(err):
+			return false, fmt.Errorf("%w: %w", acceptance.ErrRunStatusUnavailable, err)
 		case err != nil:
 			return false, err
 		case description.GetWorkflowExecutionInfo() == nil:
@@ -47,4 +49,14 @@ func temporalRunClosed(temporal workflowDescriber) acceptance.RunClosed {
 			return false, fmt.Errorf("control: run %q has unrecognized execution status %d", runID, int32(status))
 		}
 	}
+}
+
+// isTemporalUnavailable reports an error that says nothing about the run and
+// everything about Temporal: the sweep stops the pass rather than wait out the
+// same timeout on every remaining candidate.
+func isTemporalUnavailable(err error) bool {
+	var unavailable *serviceerror.Unavailable
+	var deadline *serviceerror.DeadlineExceeded
+	return errors.As(err, &unavailable) || errors.As(err, &deadline) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
