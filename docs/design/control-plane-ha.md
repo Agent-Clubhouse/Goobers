@@ -642,6 +642,12 @@ torn-tail tolerance, digest verification and lexical discovery. Readservice,
 the read-model projector and its repair sweep use the seam; CLI-only
 instance-root readers remain directly file-bound.
 
+**P1 read-model callers (HA-P1-12).** The SSE router depends on
+`readmodel.Backend` and the narrow `readmodel.Feed` read capability, never on
+the SQLite `*readmodel.Store`. The projector reaches run evidence through the
+journal read seam above. Backend conformance includes definition changes in the
+same dense ordered feed as projected run changes.
+
 ```sql
 CREATE TABLE journal.run (instance_id text, run_id text, gaggle text NOT NULL, workflow text NOT NULL,
   run_yaml bytea NOT NULL, created_at timestamptz NOT NULL, retired_at timestamptz,

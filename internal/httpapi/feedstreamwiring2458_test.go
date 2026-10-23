@@ -22,11 +22,45 @@ func TestFeedStreamUsesTheStoreFeed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	stream := newFeedStream(store)
-	t.Cleanup(stream.Close)
+	backend := struct{ readmodel.Backend }{Backend: store}
+	config := &handlerConfig{}
+	if err := WithChangeFeedStream(backend, store.Feed())(config); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(config.events.Close)
+	stream, ok := config.events.(*feedStream)
+	if !ok || stream.feed != store.Feed() {
+		t.Fatal("handler did not retain the store's singleton feed")
+	}
 
-	if stream.feed != store.Feed() {
-		t.Fatal("the SSE stream holds a different feed from the store's: a projector commit notifies " +
-			"the store's feed while Since waits here, so the wakeup is lost and the Portal stays stale")
+	foreign := &handlerConfig{}
+	if err := WithChangeFeedStream(backend, readmodel.NewFeed(store))(foreign); err == nil {
+		if foreign.events != nil {
+			foreign.events.Close()
+		}
+		t.Fatal("handler accepted a second feed: projector wakeups would be lost")
+	}
+	if foreign.events != nil {
+		t.Fatal("refused feed was installed")
+	}
+
+}
+
+func TestWithChangeFeedStreamRequiresBothCapabilities(t *testing.T) {
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), "read.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for name, option := range map[string]HandlerOption{
+		"backend": WithChangeFeedStream(nil, store.Feed()),
+		"feed":    WithChangeFeedStream(store, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := option(&handlerConfig{}); err == nil {
+				t.Fatal("incomplete change-feed capabilities accepted")
+			}
+		})
 	}
 }

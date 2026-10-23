@@ -55,6 +55,24 @@ type Factory func(t *testing.T) readmodel.Backend
 // Run executes the whole contract against a backend.
 func Run(t *testing.T, newBackend Factory) {
 	t.Helper()
+	definitionsChange := func(t *testing.T, newBackend Factory) {
+		ctx := context.Background()
+		store := newBackend(t)
+		if err := store.UpsertRun(ctx, completedRun(runID(90), "alpha", "wf", 1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.PublishDefinitionsChanged(ctx); err != nil {
+			t.Fatal(err)
+		}
+		changes, err := store.Changes(ctx, 0, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changes) != 2 || changes[0].Seq >= changes[1].Seq ||
+			changes[1].Kind != readmodel.ChangeDefinitionsChanged {
+			t.Fatalf("definition change feed = %+v", changes)
+		}
+	}
 	cases := []struct {
 		name string
 		run  func(*testing.T, Factory)
@@ -64,6 +82,7 @@ func Run(t *testing.T, newBackend Factory) {
 		{"EpochsAreOpaqueAndDistinct", epochsAreOpaqueAndDistinct},
 		{"ChangeOrderIsSerializedAndDense", changeOrderIsSerializedAndDense},
 		{"ChangeSeqIsNeverReused", changeSeqIsNeverReused},
+		{"DefinitionsChangeOrdersAfterRun", definitionsChange},
 		{"ChangeFeedIdentityIsStable", changeFeedIdentityIsStable},
 		{"DefinitionsChangeJoinsOrderedFeed", definitionsChangeJoinsOrderedFeed},
 		{"RetentionFloorOnlyAdvances", retentionFloorOnlyAdvances},
@@ -73,6 +92,7 @@ func Run(t *testing.T, newBackend Factory) {
 		{"FreshnessIsSourceRelative", freshnessIsSourceRelative},
 		{"AbsentRunIsAnAnswerNotAnError", absentRunIsAnAnswerNotAnError},
 	}
+
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) { testCase.run(t, newBackend) })
 	}

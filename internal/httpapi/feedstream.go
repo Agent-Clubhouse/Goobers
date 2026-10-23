@@ -73,8 +73,8 @@ type feedStream struct {
 }
 
 // newFeedStream constructs a change-feed-backed event source.
-func newFeedStream(store *readmodel.Store) *feedStream {
-	return newFeedStreamWithFeed(store.Feed(), store)
+func newFeedStream(store readmodel.Backend, feed readmodel.Feed) *feedStream {
+	return newFeedStreamWithFeed(feed, store)
 }
 
 func newFeedStreamWithFeed(
