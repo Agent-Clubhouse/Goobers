@@ -661,6 +661,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
+	c.warnUnprobedStoredAuth(authCheckArgs)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
@@ -1211,24 +1212,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err != nil {
 		return Outcome{}, err
 	}
-	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
-	// into the workspace, with the exception of raw debug logs, which get an
-	// invocation-private external directory and a narrow writable grant below.
-	// The remaining runtime state follows ADR-0001. The overrides
-	// happen before the session-id block below so the native transcript path
-	// derives from the confined COPILOT_HOME.
-	var confinement *copilotConfinement
-	if req.Sandbox != nil {
-		confinement, err = prepareCopilotConfinement(req.Workspace)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
-		}
-		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
-		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
-	}
-	if err := seedTrustedLocalCopilotAuthentication(ctx, env); err != nil {
+	env, confinement, cleanupRuntime, err := c.prepareStageRuntime(ctx, req, env)
+	if err != nil {
 		return Outcome{}, err
 	}
+	defer cleanupRuntime()
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)
 		if err != nil {
@@ -1244,7 +1232,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	defer captures.cleanup()
 	argv, env = captures.argv, captures.env
-	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
+	nativeTranscriptPath := captures.transcriptPath
+	repairUsage := &copilotRepairUsage{transcriptPath: nativeTranscriptPath, usagePath: captures.usagePath}
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
@@ -1281,6 +1270,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err != nil {
 		return Outcome{}, err
 	}
+	repairUsage.checkpoints = &nativeCheckpoints
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
@@ -1327,7 +1317,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
 			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv,
-			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry, repairUsage,
 		)
 	}
 	out = Outcome{
@@ -1352,9 +1342,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
-	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
-	applyControlledCopilotUsage(&out, runner)
-	applyCopilotUsageDocument(&out, usageOutputPath, req.UsageSink)
+	runErr = errors.Join(runErr, repairUsage.applyTelemetry(&out, req, runner, agentTelemetry))
 	if runErr != nil {
 		return out, runErr
 	}
@@ -1377,6 +1365,7 @@ func runCopilotCompletionRepair(
 	started time.Time,
 	completionErr error,
 	agentTelemetry *adapterAgentEmitter,
+	usage *copilotRepairUsage,
 ) (ProcessResult, []byte, error, error) {
 	if !repairableCompletionError(completionErr) {
 		return result, payload, nil, completionErr
@@ -1423,6 +1412,14 @@ func runCopilotCompletionRepair(
 		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     agentTelemetry.activityObserver(),
+	}
+	if usage != nil {
+		var err error
+		recoveryReq.Command, recoveryReq.Env, err = usage.prepare(ctx, runner, req, recoveryReq.Command, recoveryReq.Env)
+		if err != nil {
+			return result, payload, err, completionErr
+		}
+		nativeTranscriptPath = usage.transcriptPath
 	}
 	if restarter, ok := runner.(copilotRepairRestarter); ok {
 		if err := restarter.RestartCopilotForRepair(ctx, recoveryReq); err != nil {
@@ -1934,11 +1931,17 @@ func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunR
 	return nil
 }
 
-func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter) (runErr error) {
+func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter, previousPaths ...string) (runErr error) {
 	if nativeTranscriptPath != "" {
-		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+		native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes)
+		if ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+		}
+		if len(previousPaths) > 0 && previousPaths[0] != "" {
+			native, ok = readCopilotSessionTranscripts(append(previousPaths, nativeTranscriptPath), req.MaxTranscriptBytes)
+		}
+		if ok {
 			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
 				runErr = fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err)
 			}

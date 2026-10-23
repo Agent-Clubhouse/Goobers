@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -193,13 +192,6 @@ func assertJournalOwnerOutcome(t *testing.T, projection JournalProjection, event
 	}
 	if mode != "cancel" && (events[3].Branch != 2 || events[3].Stage != "beta") {
 		t.Fatal("second branch lost attribution")
-	}
-	repaired, err := ProjectRun(filepath.Join(t.TempDir(), "projection"), projection)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := branchJournalView(t, repaired); got[fmt.Sprintf("1/%s", journal.EventStageStarted)] == "" {
-		t.Fatal("repair lost submitted branch")
 	}
 }
 

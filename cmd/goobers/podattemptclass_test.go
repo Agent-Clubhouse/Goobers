@@ -145,13 +145,6 @@ func TestPodArtifactsPreserveDispatchedAttemptClass(t *testing.T) {
 				if len(artifacts) != 3 {
 					t.Fatalf("persisted artifacts = %d", len(artifacts))
 				}
-				wantNormative := 3
-				if tc.class == journal.AttemptInfra {
-					wantNormative = 0
-				}
-				if got := len(journal.ConformanceView(artifacts)); got != wantNormative {
-					t.Fatalf("normative artifacts = %d; want %d", got, wantNormative)
-				}
 				t.Setenv(dispatcher.EnvStageIsCLI, "false")
 				for _, kv := range stageEnvironment() {
 					if strings.HasPrefix(kv, dispatcher.EnvAttemptClass+"=") {

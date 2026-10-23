@@ -317,6 +317,7 @@ func TestBuildClaudeArgvResolvesAutomaticModel(t *testing.T) {
 				"Bash(/usr/bin/pkill:*)", "Bash(/usr/bin/killall:*)",
 				"Bash(/bin/pkill:*)", "Bash(/bin/killall:*)",
 				"Bash(/usr/bin/env pkill:*)", "Bash(/usr/bin/env killall:*)",
+				"--setting-sources", "user",
 			}
 			if model == "claude-sonnet-5" {
 				want = append(want, "--model", model)
@@ -1219,6 +1220,7 @@ func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
+		HarnessVersion: "2.1.302 (Claude Code)",
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1235,10 +1237,14 @@ func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
 	if configDir == ambientDir {
 		t.Fatalf("CLAUDE_CONFIG_DIR points at the ambient config directory: %s", configDir)
 	}
-	for _, name := range []string{"settings.json", "plugins", ".mcp.json"} {
+	for _, name := range []string{"plugins", ".mcp.json"} {
 		if _, err := os.Stat(filepath.Join(configDir, name)); !os.IsNotExist(err) {
 			t.Fatalf("ambient %s is visible in the isolated config dir: %v", name, err)
 		}
+	}
+	settings, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	if err != nil || strings.Contains(string(settings), "ambient-hook-fired") || !strings.Contains(string(settings), "__claude-host-safety") {
+		t.Fatalf("isolated settings must contain only the managed safety hook: %v", err)
 	}
 	copied, err := os.ReadFile(filepath.Join(configDir, ".credentials.json"))
 	if err != nil {

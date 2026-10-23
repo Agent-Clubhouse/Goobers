@@ -124,15 +124,6 @@ _goobers_completion()
                 codec-server) flags+=" --listen --tls-cert --tls-key --allow-origin" ;;
             esac
             ;;
-        engine-start)
-            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --direct --live-journal"
-            ;;
-        engine-queues)
-            flags+=" --temporal-hostport --temporal-namespace --task-queue --timeout --json"
-            ;;
-        engine-project)
-            flags+=" --gaggle --temporal-hostport --temporal-namespace"
-            ;;
         worker)
             flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-endpoint --config-key-file --blob-probe-wait --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --health-addr --max-concurrent-activities --work-root"
             ;;

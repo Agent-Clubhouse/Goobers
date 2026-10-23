@@ -181,6 +181,15 @@ func TestCredentialGrantSurvivesRestart(t *testing.T) {
 	}
 }
 
+func instanceLogEvents(t *testing.T, layout instance.Layout) []journal.Event {
+	t.Helper()
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
 func TestCredentialRefreshReResolvesTheGrantedCapabilityAndJournalsIt(t *testing.T) {
 	service, minted, runID := newRefreshFixture(t, "http://127.0.0.1:1")
 	grant, err := service.MintStageGrant(pushBranchEnvelope(runID, 2), []string{"repo:push"}, time.Hour)

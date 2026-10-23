@@ -247,13 +247,20 @@ func branchStatus(branch *branchState) journal.BranchStatus {
 	if branch.settled && branch.status != "" {
 		return branch.status
 	}
-	if branch.timedOut {
+	return SettledBranchStatus(branch.timedOut, branch.failed, branch.noOutput, branch.produced)
+}
+
+// SettledBranchStatus is the shared terminal classification for a branch that
+// ran to a boundary. Cancellation/skipping are explicit outcomes applied by
+// the scheduler before this rule. No-output is a successful settle.
+func SettledBranchStatus(timedOut, failed, noOutput, produced bool) journal.BranchStatus {
+	if timedOut {
 		return journal.BranchTimedOut
 	}
-	if branch.failed {
+	if failed {
 		return journal.BranchFailed
 	}
-	if branch.noOutput || !branch.produced {
+	if noOutput || !produced {
 		return journal.BranchNoOutput
 	}
 	return journal.BranchSucceeded

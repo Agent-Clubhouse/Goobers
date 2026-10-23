@@ -22,8 +22,6 @@ func featureDriverConfiguration(entries []localscheduler.WorkflowEntry) map[loca
 func featureDriver(starter localscheduler.Starter) string {
 	for range 16 {
 		switch value := starter.(type) {
-		case *engineStarter:
-			return "runner.engine"
 		case *trackedStarter:
 			return "runner.local"
 		case interface{ Unwrap() localscheduler.Starter }:

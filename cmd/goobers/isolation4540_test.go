@@ -26,10 +26,6 @@ func TestIsolationMandatesRefuseWholeWorkflowLocalFallback(t *testing.T) {
 	if reason := decisions.Refusals[identity]; !strings.Contains(reason, "agent") || !strings.Contains(reason, "tmp:ephemeral") {
 		t.Fatalf("fallback was admitted without the operator floor: %+v", decisions)
 	}
-	decisions, err = placementRefusals(cfg, &instance.ConfigSet{}, nil, machines, map[localscheduler.WorkflowIdentity]engineSelection{identity: {UseEngine: true}})
-	if err != nil || len(decisions.Refusals) != 0 || decisions.EngineDeferred[identity] == "" {
-		t.Fatalf("engine-selected protected lane refused: %+v, %v", decisions, err)
-	}
 }
 
 func TestIsolationMandatesStatusTextAndJSON(t *testing.T) {

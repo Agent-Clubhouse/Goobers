@@ -1599,7 +1599,7 @@ func checkHarnessesAtSources(
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
 		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		_, err = preflightAdapterConfig(ctx, adapter, g.Spec)
+		info, err := preflightAdapterConfig(ctx, adapter, g.Spec)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
@@ -1609,6 +1609,10 @@ func checkHarnessesAtSources(
 		}
 
 		pf(stdout, "HARNESS %s: OK (agent:model: %s)\n", h, credentialLabel)
+		for _, warning := range info.Warnings {
+			pf(stdout, "HARNESS %s WARNING: %s\n", h, warning)
+			addDiagnostic(collectors, file, "/spec/harness", "HARNESS004", string(validate.Warning), warning)
+		}
 		if haveCredential {
 			// Reported separately from the OK above because it answers a
 			// different question. The preflight says this harness signed in

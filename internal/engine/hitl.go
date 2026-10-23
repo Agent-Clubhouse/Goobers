@@ -15,6 +15,9 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
+// ErrHITLRunNotFound reports that no engine workflow is addressable for a run.
+var ErrHITLRunNotFound = errors.New("engine: no engine workflow is addressable for this run")
+
 // hitl.go is decision 005 R8: the versioned Temporal protocol through which an
 // operator resolves an escalation, reruns a stage, or resumes from a terminal
 // on an ENGINE-DRIVEN run (#3883).

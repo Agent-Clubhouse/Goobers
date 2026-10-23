@@ -452,7 +452,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	if err != nil {
 		return nil, fmt.Errorf("harness %q is not available in this pod: %w", spec.Harness, err)
 	}
-	info, err := adapter.Preflight(context.Background())
+	info, err := preflightAdapterConfig(context.Background(), adapter, spec)
 	if err != nil {
 		// Fail closed with the harness's own message: an unusable harness
 		// discovered mid-invocation is a burned attempt with the cause buried
@@ -460,6 +460,9 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		return nil, fmt.Errorf("harness %q preflight failed in pod: %w", spec.Harness, err)
 	}
 	harnessInfo := harnessPreflightInfo{spec.Harness: info}
+	for _, warning := range info.Warnings {
+		pf(stderr, "HARNESS %s WARNING: %s\n", spec.Harness, warning)
+	}
 
 	return buildAgenticExecutor(podAgenticExecutorInput(podExecutorWiring{
 		Kit:             kit,

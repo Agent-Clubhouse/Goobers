@@ -17,11 +17,13 @@ import (
 )
 
 type authPreflightRunner struct {
-	authExit       int
-	authTranscript string
-	authEnv        []string
-	authCommand    []string
-	authConfig     bool
+	authExit             int
+	authTranscript       string
+	authEnv              []string
+	authCommand          []string
+	authConfig           bool
+	authDir              string
+	authWorkConfigAbsent bool
 }
 
 func (r *authPreflightRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
@@ -31,6 +33,11 @@ func (r *authPreflightRunner) Run(_ context.Context, req harness.ProcessRequest)
 	}
 	r.authCommand = slices.Clone(req.Command)
 	r.authEnv = slices.Clone(req.Env)
+	r.authDir = req.Dir
+	if req.Dir != "" {
+		_, err := os.Stat(filepath.Join(req.Dir, "config.json"))
+		r.authWorkConfigAbsent = errors.Is(err, os.ErrNotExist)
+	}
 	if home, ok := envValue(req.Env, "COPILOT_HOME"); ok {
 		_, err := os.Stat(filepath.Join(home, "config.json"))
 		r.authConfig = err == nil
@@ -205,6 +212,9 @@ func TestHarnessAuthCopilotLogoutFailsClearlyForDirectNativeHarness(t *testing.T
 }
 
 func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T) {
+	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		t.Setenv(name, "")
+	}
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -234,11 +244,17 @@ func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T
 		t.Fatalf("auth probe command = %v, want unattended status probe", runner.authCommand)
 	}
 	authHome, ok := envValue(runner.authEnv, "COPILOT_HOME")
-	if !ok || authHome == home {
-		t.Fatalf("auth probe COPILOT_HOME = %q, %v; want isolated copy", authHome, ok)
+	if !ok || authHome != home {
+		t.Fatalf("auth probe COPILOT_HOME = %q, %v; want original stored-login home %q", authHome, ok, home)
 	}
 	if !runner.authConfig {
-		t.Fatal("persisted login was not copied into isolated preflight home")
+		t.Fatal("persisted login was not available in its original home")
+	}
+	if runner.authDir == "" || runner.authDir == home {
+		t.Fatalf("auth probe working directory = %q, want private directory outside the login home", runner.authDir)
+	}
+	if !runner.authWorkConfigAbsent {
+		t.Fatal("auth probe copied stored login into its private working directory")
 	}
 }
 

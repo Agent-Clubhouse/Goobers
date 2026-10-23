@@ -327,7 +327,7 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 
 	runners.Replace(map[string]*runner.Runner{"example": reloadedRunner})
 	now := time.Now().Add(2 * time.Hour)
-	if err := sweepStalledRuns(context.Background(), layout, runners, reloadedRunner, nil, log, nil, nil, sched.ReleaseRun, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, runners, reloadedRunner, log, nil, nil, sched.ReleaseRun, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sched.Trigger(context.Background(), "implementation", now.Add(time.Second)); err != nil {
@@ -434,7 +434,7 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 		t.Fatalf("trigger before sweep error = %v, want max-parallel refusal", err)
 	}
 
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, log, nil, nil, sched.ReleaseReconciled, now, timeout, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, log, nil, nil, sched.ReleaseReconciled, now, timeout, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -495,7 +495,7 @@ func TestSweepStalledRunsUsesPinnedPerRunTimeout(t *testing.T) {
 		StalledRunTimeout: "2h",
 	})
 
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "short-timeout-run", journal.PhaseEscalated)
@@ -531,7 +531,7 @@ func TestSweepStalledRunsCreditsGracefulDrainDowntime(t *testing.T) {
 		{Type: journal.EventDaemonCleanShutdown, Time: now.Add(-92 * time.Minute)},
 		{Type: journal.EventDaemonStarted, Time: now.Add(-time.Minute)},
 	})}
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, deps, nil, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, deps, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "drained-run", journal.PhaseRunning)
@@ -539,7 +539,7 @@ func TestSweepStalledRunsCreditsGracefulDrainDowntime(t *testing.T) {
 
 	// Without the credit (no clean shutdown on record) the drained run is
 	// escalated exactly as before.
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "drained-run", journal.PhaseEscalated)
@@ -577,7 +577,7 @@ func TestSweepStalledRunsExcludesHostSuspension(t *testing.T) {
 	deps := &stalledSweepDeps{HostSuspensions: hostsuspend.NewLedger(nil, []hostsuspend.Window{
 		{From: now.Add(-100 * time.Minute), To: now.Add(-10 * time.Minute)},
 	})}
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, deps, nil, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, deps, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "slept-within-budget", journal.PhaseRunning)
@@ -587,7 +587,7 @@ func TestSweepStalledRunsExcludesHostSuspension(t *testing.T) {
 
 	// Without the suspension record both remaining runs are terminated, as
 	// wall-clock enforcement did before.
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "slept-within-budget", journal.PhaseAborted)
@@ -658,7 +658,7 @@ func TestSweepStalledRunsAbortsOverAgeRunWithFreshHeartbeat(t *testing.T) {
 		StalledRunTimeout: "45m",
 	})
 
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, time.Hour); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "expired-run", journal.PhaseAborted)
@@ -698,7 +698,7 @@ func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
 	}
 
 	released := false
-	if err := sweepStalledRuns(context.Background(), layout, nil, nil, nil, nil, nil, nil, func(string, string) { released = true }, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, nil, nil, nil, nil, func(string, string) { released = true }, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -747,7 +747,6 @@ func TestSweepStalledRunsPreservesPausedGateBehindAPodPlaneEmit(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
 		func(string, string) { released = true },
 		now,
 		45*time.Minute,
@@ -787,7 +786,7 @@ func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	}
 
 	reporter := newSweepErrorReporter(log, "stalled_run_sweep_failed")
-	reporter.report(sweepStalledRuns(context.Background(), layout, nil, nil, nil, log, nil, nil, nil, now, 45*time.Minute, 0))
+	reporter.report(sweepStalledRuns(context.Background(), layout, nil, nil, log, nil, nil, nil, now, 45*time.Minute, 0))
 
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -807,7 +806,7 @@ func TestSweepStalledRunsSkipsSpansOnlyRunDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "legacy-run", "spans"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepStalledRuns(context.Background(), layout, nil, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0); err != nil {
 		t.Fatalf("sweep spans-only run directory: %v", err)
 	}
 }
@@ -822,7 +821,7 @@ func TestSweepStalledRunsReportsRunOpenFailure(t *testing.T) {
 		t.Skipf("create run.yaml symlink loop: %v", err)
 	}
 
-	err := sweepStalledRuns(context.Background(), layout, nil, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0)
+	err := sweepStalledRuns(context.Background(), layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0)
 	if err == nil || !strings.Contains(err.Error(), "inspect run directory") {
 		t.Fatalf("sweep error = %v, want run inspection failure", err)
 	}
@@ -870,7 +869,7 @@ func TestSweepStalledRunsTerminalizesRemovedGaggleRoot(t *testing.T) {
 		return nil
 	}
 	runners := newDaemonRunnerRegistry()
-	if err := sweepStalledRuns(context.Background(), layout, runners, nil, nil, log, &stalledSweepDeps{PrepareTerminal: prepare}, notify, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, runners, nil, log, &stalledSweepDeps{PrepareTerminal: prepare}, notify, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -971,7 +970,7 @@ func TestSweepStalledRunsReportsItsOwnJournalAdvance(t *testing.T) {
 	// nil registry and nil fallback runner: exactly the case where the sweep has
 	// to construct a terminalizer of its own.
 	if err := sweepStalledRuns(
-		context.Background(), layout, nil, nil, nil, nil, deps, nil, nil, now, 45*time.Minute, 0,
+		context.Background(), layout, nil, nil, nil, deps, nil, nil, now, 45*time.Minute, 0,
 	); err != nil {
 		t.Fatal(err)
 	}
