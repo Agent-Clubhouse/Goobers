@@ -87,6 +87,8 @@ Options:
   --database-direct-url-file PATH  Read direct URL from a mounted Secret
   --database-auth MODE             password or entra (default password)
   --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --instance-id ID                 Goobers instance owning the migration lease (required)
+  --holder ID                      Unique migration pod/process identity
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL

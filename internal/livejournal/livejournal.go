@@ -849,7 +849,7 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 			resp.ChildOrigins = append(resp.ChildOrigins, receipt)
 		}
 		if req.Ops[i].Receipt {
-			receipt, err := run.appendReceipt(req.Ops[i])
+			receipt, err := w.appendReceipt(run, req.Ops[i])
 			if err != nil {
 				w.invalidateChildAppend(req.RunID, run)
 				return EmitResponse{}, err
