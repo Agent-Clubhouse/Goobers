@@ -413,8 +413,6 @@ const claimSelect = `SELECT external_id,gaggle,provider,run_id,workflow,
 	claimed_at,renewed_at,expires_at,verification`
 const claimSelectWithToken = claimSelect + `,owner_token`
 const claimSelectWithOwnership = claimSelectWithToken + `,owner_epoch`
-const claimHistorySelect = `SELECT external_id,gaggle,provider,run_id,workflow,
-	claimed_at,renewed_at,expires_at,verification,released_at,release_reason`
 
 func scanClaim(row pgx.CollectableRow) (localscheduler.ClaimEntry, error) {
 	return scanClaimRow(row)
