@@ -261,6 +261,11 @@ func canonicalJSON(t *testing.T, value any, runID string) json.RawMessage {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
+	if _, event := value.(journal.Event); event {
+		if err := excludeDeliveryMetadata(decoded.(map[string]any)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	maskVolatile(decoded, runID)
 	data, err = json.Marshal(decoded)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
@@ -37,13 +38,17 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, scenario := range localCorpus() {
-		if scenario.name != "human-gate" && scenario.name != "infrastructure-retry" {
+		if scenario.name != "human-gate" && scenario.name != "infrastructure-retry" && scenario.name != "retry-artifact-inputs-and-gates" {
 			continue
 		}
 		t.Run(scenario.name, func(t *testing.T) {
 			local := runScenario(t, scenario)
+			store, err := blobstore.NewDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			root := t.TempDir()
-			writer, err := livejournal.NewWriter(func(string) (string, bool) { return root, true }, livejournal.WithBackend(backend))
+			writer, err := livejournal.NewWriter(func(string) (string, bool) { return root, true }, livejournal.WithBackend(backend), livejournal.WithSpanSource(store))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,7 +69,7 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 				t.Fatal(err)
 			}
 			repository := fixtureRepository(t)
-			env.RegisterActivity(&engine.Activities{Journal: writer, Det: &scriptedDeterministic{script: newDeterministicScript(scenario.script)}, Workspaces: &workerhost.WorktreeWorkspaces{Manager: manager, CloneURL: func(apiv1.RepoRef) (string, error) { return repository, nil }}})
+			env.RegisterActivity(&engine.Activities{Journal: writer, Det: &scriptedDeterministic{script: newDeterministicScript(scenario.script), rec: workerhost.NewStagingArtifacts(t.TempDir(), journal.NewRegistryScrubber(), store)}, Goober: scriptedGoober{config: scenario.goober}, Auto: passingAutomated{}, Workspaces: &workerhost.WorktreeWorkspaces{Manager: manager, CloneURL: func(apiv1.RepoRef) (string, error) { return repository, nil }}})
 			request := engine.GateDecisionRequest{Protocol: engine.GateDecisionProtocol, Version: engine.GateDecisionProtocolVersion, RunID: scenario.runID, RequestID: "fixture", Actor: "operator:fixture", Gate: "approval", GateOccurrence: 2, Decision: "pass"}
 			emitted := 0
 			env.SetOnActivityCompletedListener(func(info *activity.Info, _ converter.EncodedValue, err error) {
@@ -87,6 +92,13 @@ func TestCloudJournalEquivalenceProbe(t *testing.T) {
 			}
 			reader, err := backend.OpenRun(t.Context(), journal.RunRef{ID: scenario.runID})
 			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateCloudEmitKeys(events, scenario.runID); err != nil {
 				t.Fatal(err)
 			}
 			cloud := canonicalReader(t, scenario, reader)
