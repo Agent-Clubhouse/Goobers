@@ -1729,6 +1729,7 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		time.Now(),
 		fmt.Errorf("%w: invalid payload", ErrInvalidCompletion),
 		&adapterAgentEmitter{},
+		nil,
 	)
 	if runErr != nil || completionErr != nil || result.ExitCode != 0 {
 		t.Fatalf("repair result=(%+v, payload %q, runErr %v, completionErr %v), want success", result, repaired, runErr, completionErr)
@@ -1760,6 +1761,7 @@ func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
 		"",
 		time.Now().Add(-time.Second),
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 0 {
@@ -1800,6 +1802,7 @@ func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *test
 		"",
 		started,
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 1 {
@@ -1860,8 +1863,9 @@ func TestCopilotAdapterToolAllowlistRejectsConflictingConfiguredArgs(t *testing.
 }
 
 func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("COPILOT_HOME", "")
+	for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+		t.Setenv(name, "")
+	}
 	workspace := t.TempDir()
 	var calls []ProcessRequest
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
@@ -1944,8 +1948,9 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", "")
-			t.Setenv("COPILOT_HOME", "")
+			for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+				t.Setenv(name, "")
+			}
 			workspace := t.TempDir()
 			var calls []ProcessRequest
 			runner := &fakeProcessRunner{
