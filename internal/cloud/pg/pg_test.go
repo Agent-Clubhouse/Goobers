@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const testURL = "postgres://user:password@localhost:6432/goobers"
@@ -118,5 +119,18 @@ func TestEntraTokenProviderRedactsCredentialFailure(t *testing.T) {
 	}
 	if diagnostic := SafeDiagnostic(err); diagnostic != "Entra token acquisition failed" {
 		t.Fatalf("diagnostic = %q", diagnostic)
+	}
+}
+
+func TestSafeDiagnosticRejectsMalformedSQLState(t *testing.T) {
+	const secret = "hunter2-password"
+	for _, code := range []string{secret, "28P0", "28p01", "28P01 " + secret} {
+		got := SafeDiagnostic(&pgconn.PgError{Code: code, Message: secret})
+		if strings.Contains(got, secret) || strings.Contains(got, code) {
+			t.Fatalf("SafeDiagnostic(%q) = %q, echoed an unvalidated SQLSTATE", code, got)
+		}
+	}
+	if got := SafeDiagnostic(&pgconn.PgError{Code: "28P01", Message: secret}); !strings.Contains(got, "SQLSTATE 28P01") || strings.Contains(got, secret) {
+		t.Fatalf("SafeDiagnostic(28P01) = %q, want the code and no message", got)
 	}
 }
