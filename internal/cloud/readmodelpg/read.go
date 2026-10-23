@@ -49,24 +49,33 @@ func (s *Store) ListRuns(ctx context.Context, options readmodel.ListOptions) (re
 	if !options.Until.IsZero() {
 		add("started_at < $%d", options.Until)
 	}
-	if options.Stage != "" {
-		add("$%d = ANY(stages)", options.Stage)
-	}
 	if !options.IncludeNoWork {
 		where = append(where, "disposition <> 'no-work'")
 	}
-	switch options.Population {
-	case readmodel.PopulationTokenMeasured:
-		where = append(where, "any_token_measured")
-	case readmodel.PopulationPremiumMeasured:
-		where = append(where, "any_premium_measured")
-	case readmodel.PopulationCostMeasured:
-		where = append(where, "any_cost_measured")
-	case readmodel.PopulationRetryWaste:
-		where = append(where, "any_retry_waste")
-	}
-	if options.Outcome != "" {
-		where = append(where, "terminal")
+	if options.Stage != "" {
+		args = append(args, options.Stage)
+		stageWhere := []string{
+			"rs.run_id = r.run_id",
+			fmt.Sprintf("rs.stage = $%d", len(args)),
+		}
+		stageWhere = append(stageWhere, stageOutcomePredicates(options.Outcome)...)
+		if predicate := stagePopulationPredicate(options.Population); predicate != "" {
+			stageWhere = append(stageWhere, predicate)
+		}
+		where = append(where, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM %s AS rs WHERE %s)",
+			s.table("run_stage"), strings.Join(stageWhere, " AND ")))
+	} else {
+		switch options.Population {
+		case readmodel.PopulationTokenMeasured:
+			where = append(where, "any_token_measured")
+		case readmodel.PopulationPremiumMeasured:
+			where = append(where, "any_premium_measured")
+		case readmodel.PopulationCostMeasured:
+			where = append(where, "any_cost_measured")
+		case readmodel.PopulationRetryWaste:
+			where = append(where, "any_retry_waste")
+		}
 	}
 	orderColumn := "started_at"
 	if options.OrderBy == readmodel.OrderLastActivity {
@@ -80,7 +89,7 @@ func (s *Store) ListRuns(ctx context.Context, options readmodel.ListOptions) (re
 	}
 	args = append(args, limit+1)
 	query := fmt.Sprintf(`
-		SELECT projection FROM %s
+		SELECT projection FROM %s AS r
 		WHERE %s
 		ORDER BY %s DESC, run_id ASC
 		LIMIT $%d`,
@@ -117,6 +126,43 @@ func (s *Store) ListRuns(ctx context.Context, options readmodel.ListOptions) (re
 		page.Next = readmodel.ListCursor{Key: key, RunID: last.RunID}
 	}
 	return page, nil
+}
+
+func stageOutcomePredicates(outcome readmodel.Outcome) []string {
+	switch outcome {
+	case "":
+		return nil
+	case readmodel.OutcomeFinished:
+		return []string{
+			"rs.run_terminal",
+			"(rs.had_success OR rs.had_failure OR rs.had_other)",
+		}
+	case readmodel.OutcomeTerminal:
+		return []string{"rs.run_terminal", "(rs.had_success OR rs.had_failure)"}
+	case readmodel.OutcomeSuccess:
+		return []string{"rs.run_terminal", "rs.had_success"}
+	case readmodel.OutcomeFailure:
+		return []string{"rs.run_terminal", "rs.had_failure"}
+	case readmodel.OutcomeOther:
+		return []string{"rs.run_terminal", "rs.had_other"}
+	default:
+		return nil
+	}
+}
+
+func stagePopulationPredicate(population readmodel.Population) string {
+	switch population {
+	case readmodel.PopulationTokenMeasured:
+		return "rs.token_measured"
+	case readmodel.PopulationPremiumMeasured:
+		return "rs.premium_measured"
+	case readmodel.PopulationCostMeasured:
+		return "rs.cost_measured"
+	case readmodel.PopulationRetryWaste:
+		return "rs.retry_waste"
+	default:
+		return ""
+	}
 }
 
 func validateFilters(options readmodel.ListOptions) error {

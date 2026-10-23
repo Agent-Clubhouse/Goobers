@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS readmodel_v1.meta (
     next_change_seq bigint NOT NULL DEFAULT 0 CHECK (next_change_seq >= 0),
     built_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     ready boolean NOT NULL DEFAULT false,
+    source_version integer,
+    run_cursor text NOT NULL DEFAULT '',
+    base_complete boolean NOT NULL DEFAULT false,
+    catchup_seq bigint NOT NULL DEFAULT 0 CHECK (catchup_seq >= 0),
     owner_epoch bigint NOT NULL CHECK (owner_epoch > 0)
 );
 
@@ -48,6 +52,24 @@ CREATE INDEX IF NOT EXISTS readmodel_v1_run_gaggle_workflow_phase_recency
     ON readmodel_v1.run (gaggle, workflow, phase, started_at DESC, run_id);
 CREATE INDEX IF NOT EXISTS readmodel_v1_run_stages
     ON readmodel_v1.run USING gin (stages);
+
+CREATE TABLE IF NOT EXISTS readmodel_v1.run_stage (
+    run_id text NOT NULL REFERENCES readmodel_v1.run(run_id) ON DELETE CASCADE,
+    stage text NOT NULL,
+    run_terminal boolean NOT NULL,
+    had_success boolean NOT NULL,
+    had_failure boolean NOT NULL,
+    had_other boolean NOT NULL,
+    token_measured boolean NOT NULL,
+    premium_measured boolean NOT NULL,
+    cost_measured boolean NOT NULL,
+    retry_waste boolean NOT NULL,
+    owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
+    PRIMARY KEY (run_id, stage)
+);
+
+CREATE INDEX IF NOT EXISTS readmodel_v1_stage_filter
+    ON readmodel_v1.run_stage (stage, run_id);
 
 CREATE TABLE IF NOT EXISTS readmodel_v1.change (
     seq bigint PRIMARY KEY CHECK (seq > 0),

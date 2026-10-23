@@ -21,6 +21,8 @@ var (
 	schemaPattern = regexp.MustCompile(`^readmodel_v[1-9][0-9]*$`)
 	// ErrStaleOwner means a newer lease epoch has already modified the model.
 	ErrStaleOwner = errors.New("readmodelpg: stale owner epoch")
+	// ErrVersionMismatch means a retained writer targets a retired model.
+	ErrVersionMismatch = errors.New("readmodelpg: active version changed")
 )
 
 // Fence supplies the live lease epoch inside the transaction it fences.
@@ -34,9 +36,10 @@ type Fence interface {
 
 // Store is a reader and fenced writer for one completed model version.
 type Store struct {
-	pool   *pgxpool.Pool
-	schema string
-	fence  Fence
+	pool    *pgxpool.Pool
+	schema  string
+	version int
+	fence   Fence
 }
 
 var _ readmodel.Backend = (*Store)(nil)
@@ -52,12 +55,16 @@ func New(ctx context.Context, pool *pgxpool.Pool, fence Fence) (*Store, error) {
 	).Scan(&version); err != nil {
 		return nil, fmt.Errorf("readmodelpg: load active version: %w", err)
 	}
-	return NewVersion(ctx, pool, version, fence)
+	return openVersion(ctx, pool, version, fence)
 }
 
 // NewVersion opens a specific completed version. It is used by rebuild
 // validation and tests; ordinary readers use New.
 func NewVersion(ctx context.Context, pool *pgxpool.Pool, version int, fence Fence) (*Store, error) {
+	return openVersion(ctx, pool, version, fence)
+}
+
+func openVersion(ctx context.Context, pool *pgxpool.Pool, version int, fence Fence) (*Store, error) {
 	if fence == nil {
 		return nil, errors.New("readmodelpg: nil lease fence")
 	}
@@ -73,7 +80,7 @@ func NewVersion(ctx context.Context, pool *pgxpool.Pool, version int, fence Fenc
 	if !ready {
 		return nil, fmt.Errorf("readmodelpg: %s is not ready", schema)
 	}
-	return &Store{pool: pool, schema: schema, fence: fence}, nil
+	return &Store{pool: pool, schema: schema, version: version, fence: fence}, nil
 }
 
 func versionSchema(version int) (string, error) {
@@ -138,6 +145,12 @@ func (s *Store) UpsertRun(ctx context.Context, projection readmodel.Projection) 
 		if epoch < 1 {
 			return fmt.Errorf("readmodelpg: invalid live lease epoch %d", epoch)
 		}
+		if err := s.checkActive(ctx, tx, epoch); err != nil {
+			return err
+		}
+		if err := s.bumpOwner(ctx, tx, epoch); err != nil {
+			return err
+		}
 		var previousSeq int64
 		var previousTerminal bool
 		var previousEpoch int64
@@ -159,9 +172,6 @@ func (s *Store) UpsertRun(ctx context.Context, projection readmodel.Projection) 
 			return nil
 		}
 
-		if err := s.bumpOwner(ctx, tx, epoch); err != nil {
-			return err
-		}
 		lastActivity := projection.Run.LastActivity
 		if lastActivity.IsZero() {
 			lastActivity = projection.Run.StartedAt
@@ -208,7 +218,23 @@ func (s *Store) UpsertRun(ctx context.Context, projection readmodel.Projection) 
 			return fmt.Errorf("readmodelpg: upsert run: %w", err)
 		}
 		if tag.RowsAffected() != 1 {
+			var storedSeq uint64
+			var storedEpoch int64
+			query := fmt.Sprintf(`
+				SELECT source_seq, owner_epoch FROM %s
+				WHERE run_id = $1`, s.table("run"))
+			if err := tx.QueryRow(ctx, query, projection.Run.RunID).Scan(
+				&storedSeq, &storedEpoch,
+			); err != nil {
+				return fmt.Errorf("readmodelpg: resolve replay: %w", err)
+			}
+			if storedEpoch <= epoch && storedSeq >= projection.Run.LastSeq {
+				return nil
+			}
 			return ErrStaleOwner
+		}
+		if err := s.replaceStages(ctx, tx, epoch, projection); err != nil {
+			return err
 		}
 		watermark := fmt.Sprintf(`
 			INSERT INTO %s (run_id, source_seq, owner_epoch)
@@ -279,6 +305,9 @@ func (s *Store) insertChange(
 func (s *Store) PruneChanges(ctx context.Context, keepFrom uint64) (int64, error) {
 	var pruned int64
 	err := s.fence.WithFence(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		if err := s.checkActive(ctx, tx, epoch); err != nil {
+			return err
+		}
 		if err := s.bumpOwner(ctx, tx, epoch); err != nil {
 			return err
 		}
@@ -300,6 +329,52 @@ func (s *Store) PruneChanges(ctx context.Context, keepFrom uint64) (int64, error
 		return nil
 	})
 	return pruned, err
+}
+
+func (s *Store) checkActive(ctx context.Context, tx pgx.Tx, epoch int64) error {
+	var one int
+	err := tx.QueryRow(ctx, `
+		SELECT 1 FROM control.readmodel_version
+		WHERE name = 'readmodel' AND active_version = $1 AND owner_epoch <= $2
+		FOR SHARE`, s.version, epoch,
+	).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrVersionMismatch
+	}
+	if err != nil {
+		return fmt.Errorf("readmodelpg: validate active version: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) replaceStages(
+	ctx context.Context,
+	tx pgx.Tx,
+	epoch int64,
+	projection readmodel.Projection,
+) error {
+	remove := fmt.Sprintf(`
+		DELETE FROM %s
+		WHERE run_id = $1 AND owner_epoch <= $2`, s.table("run_stage"))
+	if _, err := tx.Exec(ctx, remove, projection.Run.RunID, epoch); err != nil {
+		return fmt.Errorf("readmodelpg: replace run stages: %w", err)
+	}
+	insert := fmt.Sprintf(`
+		INSERT INTO %s (
+			run_id, stage, run_terminal, had_success, had_failure, had_other,
+			token_measured, premium_measured, cost_measured, retry_waste, owner_epoch
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, s.table("run_stage"))
+	for _, stage := range projection.Stages {
+		if _, err := tx.Exec(ctx, insert,
+			projection.Run.RunID, stage.Stage, projection.Run.Terminal,
+			stage.HadSuccess, stage.HadFailure, stage.HadOther,
+			stage.TokenMeasured, stage.PremiumMeasured, stage.CostMeasured,
+			stage.RetryWaste, epoch,
+		); err != nil {
+			return fmt.Errorf("readmodelpg: insert run stage: %w", err)
+		}
+	}
+	return nil
 }
 
 func newEpoch() string {
