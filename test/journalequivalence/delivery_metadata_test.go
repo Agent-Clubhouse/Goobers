@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/readmodel"
 )
 
 // This is the complete equivalence exclusion list for engine delivery metadata.
@@ -17,7 +18,10 @@ import (
 // these idempotency keys; opEmitScope (internal/engine/emit.go) deliberately uses
 // an empty scope for run-level events. They do not describe execution results.
 // All other runner fields remain byte-for-byte comparison inputs.
-var excludedDeliveryFields = []string{"runner.emitKey"}
+// terminalCause.causalEmitKey is resolved by livejournal against the same-run
+// causal event sequence. The A2 projection carries that same TerminalCause at
+// Run.Operator.Reliability.TerminalCause; only that exact mirror is excluded.
+var excludedDeliveryFields = []string{"runner.emitKey", "terminalCause.causalEmitKey"}
 
 // Explicitly review new runner fields when extending the corpus, even though
 // they would be compared by default. Never grow the exclusion list implicitly.
@@ -31,6 +35,9 @@ var comparedRunnerFields = []string{
 }
 
 func excludeDeliveryMetadata(event map[string]any) error {
+	if cause, ok := event["terminalCause"].(map[string]any); ok {
+		delete(cause, "causalEmitKey")
+	}
 	runner, ok := event["runner"].(map[string]any)
 	if !ok {
 		return nil
@@ -51,7 +58,7 @@ func excludeDeliveryMetadata(event map[string]any) error {
 }
 
 func TestDeliveryMetadataExclusionIsExactAndEngineInternal(t *testing.T) {
-	if len(excludedDeliveryFields) != 1 || excludedDeliveryFields[0] != "runner."+livejournal.EmitKeyRunnerField {
+	if !slices.Equal(excludedDeliveryFields, []string{"runner." + livejournal.EmitKeyRunnerField, "terminalCause.causalEmitKey"}) {
 		t.Fatalf("unreviewed engine-internal exclusions: %v", excludedDeliveryFields)
 	}
 	const runID = "11111111111111111111111111111111"
@@ -105,6 +112,9 @@ func validateCloudEmitKeys(events []journal.Event, runID string) error {
 			return fmt.Errorf("event %d: emitKey scope disagrees with event: %q", i, key)
 		}
 	}
+	if err := validateCloudCausalKeys(events, runID); err != nil {
+		return err
+	}
 	if len(seen) == 0 {
 		return fmt.Errorf("no cloud emit keys observed")
 	}
@@ -127,5 +137,81 @@ func TestCloudEmitKeyAssertionRejectsMutations(t *testing.T) {
 	}
 	if err := validateCloudEmitKeys([]journal.Event{{Type: journal.EventRunFinished}}, runID); err == nil {
 		t.Fatal("accepted missing key")
+	}
+}
+
+// Validate the excluded causal link independently of canonical equality.
+func validateCloudCausalKeys(events []journal.Event, runID string) error {
+	bySequence := make(map[uint64]journal.Event, len(events))
+	for _, event := range events {
+		bySequence[event.Seq] = event
+	}
+	for _, event := range events {
+		cause := event.TerminalCause
+		if cause == nil {
+			continue
+		}
+		if cause.CausalEventSeq == 0 {
+			if cause.CausalEmitKey != "" {
+				return fmt.Errorf("event %d: causalEmitKey has no causal sequence", event.Seq)
+			}
+			continue
+		}
+		target, ok := bySequence[cause.CausalEventSeq]
+		key, keyed := target.Runner[livejournal.EmitKeyRunnerField].(string)
+		if !ok || !keyed || key == "" || cause.CausalEmitKey != key || !strings.HasPrefix(key, runID+"|") {
+			return fmt.Errorf("event %d: causalEmitKey %q does not resolve to same-run causal event %d", event.Seq, cause.CausalEmitKey, cause.CausalEventSeq)
+		}
+	}
+	return nil
+}
+
+func TestCloudCausalKeyAssertionRejectsMutations(t *testing.T) {
+	const runID = "11111111111111111111111111111111"
+	key := runID + "|0|work|1|0"
+	target := journal.Event{Seq: 2, Type: journal.EventError, Runner: map[string]any{"emitKey": key}}
+	for _, tc := range []struct {
+		name, key string
+		sequence  uint64
+		valid     bool
+	}{
+		{"valid", key, 2, true}, {"missing", "", 2, false}, {"wrong event", key, 1, false}, {"missing event", key, 99, false}, {"foreign", "other|0|work|1|0", 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			terminal := journal.Event{Seq: 3, Type: journal.EventRunFinished, TerminalCause: &journal.TerminalCause{CausalEventSeq: tc.sequence, CausalEmitKey: tc.key}}
+			err := validateCloudCausalKeys([]journal.Event{target, terminal}, runID)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v error=%v", tc.valid, err)
+			}
+		})
+	}
+}
+
+func TestCausalMetadataExclusionPreservesEvidenceAndBusinessFields(t *testing.T) {
+	const runID = "11111111111111111111111111111111"
+	cause := &journal.TerminalCause{CausalEmitKey: runID + "|0|work|1|0", CausalEventSeq: 2, Code: "fixture"}
+	event := journal.Event{TerminalCause: cause, Outputs: map[string]any{"terminalCause": map[string]any{"causalEmitKey": "business", "causalEventSeq": 9}}}
+	var decoded map[string]any
+	if err := json.Unmarshal(canonicalJSON(t, event, runID), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	canonical := decoded["terminalCause"].(map[string]any)
+	if _, ok := canonical["causalEmitKey"]; ok || canonical["causalEventSeq"] != float64(2) || canonical["code"] != "fixture" {
+		t.Fatalf("terminal evidence changed: %v", canonical)
+	}
+	if decoded["outputs"].(map[string]any)["terminalCause"].(map[string]any)["causalEmitKey"] != "business" {
+		t.Fatal("business field masked")
+	}
+	var projection readmodel.Projection
+	projection.Run.Operator.Reliability.TerminalCause = cause
+	if err := json.Unmarshal(canonicalJSON(t, projection, runID), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	mirror := decoded["Run"].(map[string]any)["Operator"].(map[string]any)["Reliability"].(map[string]any)["TerminalCause"].(map[string]any)
+	if _, ok := mirror["causalEmitKey"]; ok || mirror["causalEventSeq"] != float64(2) {
+		t.Fatalf("projection mirror=%v", mirror)
+	}
+	if cause.CausalEmitKey == "" {
+		t.Fatal("canonicalizer mutated original evidence")
 	}
 }

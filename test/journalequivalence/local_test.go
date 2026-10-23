@@ -266,6 +266,17 @@ func canonicalJSON(t *testing.T, value any, runID string) json.RawMessage {
 			t.Fatal(err)
 		}
 	}
+	if _, projection := value.(readmodel.Projection); projection {
+		// The projection embeds the same terminal-cause record. Do not recurse into
+		// arbitrary user outputs with matching field names.
+		if root, ok := decoded.(map[string]any); ok {
+			current := root
+			for _, field := range []string{"Run", "Operator", "Reliability", "TerminalCause"} {
+				current, _ = current[field].(map[string]any)
+			}
+			delete(current, "causalEmitKey")
+		}
+	}
 	maskVolatile(decoded, runID)
 	data, err = json.Marshal(decoded)
 	if err != nil {
