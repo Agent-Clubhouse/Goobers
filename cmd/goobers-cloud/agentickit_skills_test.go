@@ -38,7 +38,7 @@ func TestWorkerKitDeliversCapturedSkillsThroughPodExecutor(t *testing.T) {
 			}
 			// Only selected packages may cross the claim check. Later edits to
 			// the config tree cannot replace the captured execution inputs.
-			seams.snapshot.Load().skillPackages[pinGaggle]["unselected"] = []workflow.SkillFile{{Path: "SKILL.md", Content: "unselected-package-must-not-travel"}}
+			seams.snapshot.Load().SkillPackages[pinGaggle]["unselected"] = []workflow.SkillFile{{Path: "SKILL.md", Content: "unselected-package-must-not-travel"}}
 			writeFileContent(t, skill, "changed live source must not travel")
 			endpoint, _ := fakeBlobPlane(t)
 			writer := agenticKitWriter{instanceRoot: root, seams: seams, blobEndpoint: endpoint}

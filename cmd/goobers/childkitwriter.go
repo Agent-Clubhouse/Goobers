@@ -47,7 +47,7 @@ func (w childKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt
 		return "", err
 	}
 	defer releaseSnapshot()
-	kit, err := (agenticKitWriter{registrar: w.service.shared}).buildSnapshotKit(w.service.layout, snapshot, *attempt.Envelope, kitModeFor(attempt))
+	kit, err := snapshot.BuildAgenticKit(w.service.layout, *attempt.Envelope, runtimewiring.KitModeFor(attempt), w.service.shared)
 	if err != nil {
 		return "", err
 	}
@@ -100,7 +100,7 @@ func (w childKitWriter) snapshot(ctx context.Context, start childExecutionStart)
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
 		release()
-		return nil, nil, fmt.Errorf("child kit: load retained config: %w (%s)", err, validationIssueSummary(report))
+		return nil, nil, fmt.Errorf("child kit: load retained config: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*start.Proposal.Workflow.DeepCopy()}
 	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(directory, set)
@@ -108,9 +108,9 @@ func (w childKitWriter) snapshot(ctx context.Context, start childExecutionStart)
 		release()
 		return nil, nil, err
 	}
-	snapshot := &workerConfigSnapshot{configDir: directory, generation: w.identity.ConfigGeneration, cfg: w.service.config, set: set,
-		instructions: instructions, skillPackages: skills, digests: newGooberDigestIndex(w.service.config, set, instructions, skills)}
-	digest, err := snapshot.gooberDigestFor(w.identity.Gaggle, w.identity.Workflow)
+	snapshot := &workerConfigSnapshot{ConfigDirectory: directory, Generation: w.identity.ConfigGeneration, Config: w.service.config, Definitions: set,
+		Instructions: instructions, SkillPackages: skills, Digests: runtimewiring.NewGooberDigestIndex(w.service.config, set, instructions, skills)}
+	digest, err := snapshot.GooberDigestFor(w.identity.Gaggle, w.identity.Workflow)
 	if err != nil || digest != w.identity.GooberDigest {
 		release()
 		return nil, nil, errors.Join(errors.New("child kit Goober pin differs from admitted source"), err)

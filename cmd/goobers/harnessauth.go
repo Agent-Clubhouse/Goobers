@@ -200,7 +200,7 @@ func copilotAuthPlacementUnavailable(root string, cfg *instance.Config) (string,
 	}
 	set, report, err := instance.LoadConfigDir(configDir)
 	if err != nil {
-		if summary := validationIssueSummary(report); summary != "" {
+		if summary := runtimewiring.ValidationIssueSummary(report); summary != "" {
 			return "", fmt.Errorf("load config directory: %w: %s", err, summary)
 		}
 		return "", fmt.Errorf("load config directory: %w", err)

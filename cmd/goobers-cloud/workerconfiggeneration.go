@@ -63,9 +63,9 @@ func (w *workerSeams) snapshotForInvocation(ctx context.Context, env apiv1.Invoc
 		release()
 		return nil, nil, fmt.Errorf("worker: immutable config generation changed while loading")
 	}
-	snapshot.generation = env.ConfigGeneration
+	snapshot.Generation = env.ConfigGeneration
 	if env.GooberDigest != "" {
-		actual, err := snapshot.gooberDigestFor(env.Gaggle, env.WorkflowID)
+		actual, err := snapshot.GooberDigestFor(env.Gaggle, env.WorkflowID)
 		if err != nil {
 			release()
 			return nil, nil, err

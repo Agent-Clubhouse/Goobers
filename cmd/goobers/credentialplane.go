@@ -281,7 +281,7 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 	if err != nil {
 		return stageResolution{}, err
 	}
-	if err := requireCurrentMergeAuthority(s.layout, apiv1.InvocationEnvelope{
+	if err := runtimewiring.RequireCurrentMergeAuthority(s.layout, apiv1.InvocationEnvelope{
 		ConfigGeneration: pinned.identity.ConfigGeneration, Gaggle: pinned.identity.Gaggle,
 		WorkflowID: pinned.identity.Workflow, TaskID: request.Stage, Capabilities: requested,
 	}); err != nil {

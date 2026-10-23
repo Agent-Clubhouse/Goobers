@@ -179,7 +179,7 @@ func generationResolverFor(layout instance.Layout, retainer *configgeneration.Re
 		defer func() { _ = lease.Release() }()
 		set, report, err := loadConfigDirectory(directory)
 		if err != nil {
-			return executionGenerationRuntime{}, fmt.Errorf("load pinned execution definitions: %w (%s)", err, validationIssueSummary(report))
+			return executionGenerationRuntime{}, fmt.Errorf("load pinned execution definitions: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 		}
 		definitions, err := build(instance.NewLayout(layout.Root).WithConfigDir(directory), identity.ConfigGeneration, set, report)
 		if err != nil {
@@ -241,7 +241,7 @@ func pinnedCredentialDefinitions(ctx context.Context, layout instance.Layout, ge
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
 		release()
-		return credentialPlaneDefinitions{}, nil, fmt.Errorf("load pinned credential definitions: %w (%s)", err, validationIssueSummary(report))
+		return credentialPlaneDefinitions{}, nil, fmt.Errorf("load pinned credential definitions: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	return credentialPlaneDefinitionsFromSet(set), release, nil
 }

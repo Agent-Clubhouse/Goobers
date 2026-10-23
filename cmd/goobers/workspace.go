@@ -59,7 +59,7 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 	layout := instance.NewLayout(root)
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}

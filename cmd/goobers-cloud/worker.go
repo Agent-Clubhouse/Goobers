@@ -138,17 +138,7 @@ const workerHelp = "Usage: goobers-cloud worker [--task-queue <queue>]... [flags
 const workerAbandonedExit = 3
 
 // repeatableFlag collects a repeatable string flag in declaration order.
-type repeatableFlag []string
-
-func (f *repeatableFlag) String() string { return strings.Join(*f, ",") }
-
-func (f *repeatableFlag) Set(v string) error {
-	if v == "" {
-		return errors.New("value must be non-empty")
-	}
-	*f = append(*f, v)
-	return nil
-}
+type repeatableFlag = runtimewiring.RepeatableFlag
 
 // The worker's host seams: everything runWorker assembles — the resolved
 // queue set, the work root, the blob store, the daemon-API journal emitter,
@@ -264,7 +254,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// well as their separate work root. Identify it before either allocation,
 	// and never activate a root that an operator marked historical.
 	if *instanceRoot != "" {
-		if err := prepareManualRoot(instance.NewLayout(*instanceRoot), stderr); err != nil {
+		if err := runtimewiring.PrepareManualRoot(instance.NewLayout(*instanceRoot), stderr); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}

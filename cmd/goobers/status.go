@@ -2288,7 +2288,7 @@ func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps runtim
 			// rather than silently reporting coverage over a per-gaggle
 			// inventory the daemon itself would refuse (mirrors doctor's own
 			// note, runDoctorAVExclusions above).
-			if summary := validationIssueSummary(configReport); summary != "" {
+			if summary := runtimewiring.ValidationIssueSummary(configReport); summary != "" {
 				pf(stdout, "av-exclusions (advisory, daemon): note: %s does not validate (%s); per-gaggle workcopies roots below are read from it as-is\n", l.ConfigDir(), summary)
 			}
 		case loadErr != nil:

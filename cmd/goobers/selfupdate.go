@@ -77,7 +77,7 @@ func runSelfUpdateWith(
 		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
 		return 2
 	}
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

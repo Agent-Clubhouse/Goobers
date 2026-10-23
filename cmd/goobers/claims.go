@@ -250,7 +250,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

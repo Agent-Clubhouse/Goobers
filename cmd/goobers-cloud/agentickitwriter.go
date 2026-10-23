@@ -71,7 +71,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 		return "", fmt.Errorf("envelope for run %s stage %s names no goober", env.RunID, env.TaskID)
 	}
 
-	kit, err := w.buildKitContext(ctx, env, kitModeFor(attempt))
+	kit, err := w.buildKitContext(ctx, env, runtimewiring.KitModeFor(attempt))
 	if err != nil {
 		return "", err
 	}
@@ -103,18 +103,6 @@ func applyAgenticKitAttemptContract(kit *agentickit.Kit, attempt dispatcher.Atte
 	kit.UsageAllowance = usageallowance.Clone(attempt.UsageAllowance)
 }
 
-// kitModeFor is the completion contract stamped INTO the kit (decision 001
-// rulings 7–8): a reviewer gate attempt (Attempt.Review) owes a verdict,
-// everything else a result. The pod learns which from the same verified,
-// content-addressed document that carries its instructions — never from a
-// pod-spec variable anything with namespace read could set.
-func kitModeFor(attempt dispatcher.Attempt) agentickit.Mode {
-	if attempt.Review {
-		return agentickit.ModeReview
-	}
-	return agentickit.ModeInvoke
-}
-
 func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	l := instance.NewLayout(w.instanceRoot)
 	if w.seams == nil {
@@ -128,12 +116,5 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		return nil, err
 	}
 	defer release()
-	return w.buildSnapshotKit(l, snapshot, env, mode)
-}
-
-func (w agenticKitWriter) buildSnapshotKit(l instance.Layout, snapshot *workerConfigSnapshot, env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
-	if snapshot.configDir != "" {
-		l = l.WithConfigDir(snapshot.configDir)
-	}
-	return runtimewiring.BuildAgenticKit(l, snapshot.cfg, snapshot.set, snapshot.instructions, snapshot.skillPackages, env, mode, w.registrar)
+	return snapshot.BuildAgenticKit(l, env, mode, w.registrar)
 }

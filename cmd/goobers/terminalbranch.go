@@ -174,7 +174,7 @@ func terminalGaggleProject(l instance.Layout) (apiv1.RepoRef, error) {
 		// This helper runs outside any CLI surface (one-shot abort, stalled-run
 		// sweep), so the report's errors travel inside the returned error
 		// rather than to a stderr this scope does not own.
-		if summary := validationIssueSummary(report); summary != "" {
+		if summary := runtimewiring.ValidationIssueSummary(report); summary != "" {
 			return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w (%s)", l.Gaggle(), err, summary)
 		}
 		return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w", l.Gaggle(), err)

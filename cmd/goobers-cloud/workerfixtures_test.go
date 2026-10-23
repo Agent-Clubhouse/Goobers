@@ -76,7 +76,7 @@ func manualServiceRootHeader(t *testing.T, root string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf("Instance root: %q; instance ID: %q\n", filepath.Clean(root), id)
+	return fmt.Sprintf("Instance root: %q; instance ID: %q\n", runtimewiring.CanonicalStatusRoot(root), id)
 }
 
 func writeFixture(t *testing.T, path, content string) {

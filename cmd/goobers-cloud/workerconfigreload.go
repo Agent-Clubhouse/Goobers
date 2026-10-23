@@ -85,7 +85,7 @@ func (w *workerSeams) currentSnapshotLocked() (*workerConfigSnapshot, error) {
 		return nil, err
 	}
 	if !stable {
-		w.log("worker config reload: initial config tree read at %s was not stable; the next reload converges", snapshot.digest)
+		w.log("worker config reload: initial config tree read at %s was not stable; the next reload converges", snapshot.Digest)
 	}
 	w.snapshot.Store(snapshot)
 	return snapshot, nil
@@ -114,7 +114,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	// TestCallersDoNotDiscardConfigReports enforces this, and caught it here.
 	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
-		if issues := validationIssueSummary(report); issues != "" {
+		if issues := runtimewiring.ValidationIssueSummary(report); issues != "" {
 			return nil, false, fmt.Errorf("worker: load config directory: %w (%s)", err, issues)
 		}
 		return nil, false, fmt.Errorf("worker: load config directory: %w", err)
@@ -124,7 +124,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	gaggleDigests := make(map[string]string, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggle := set.Gaggles[i].Name
-		gaggleDigest, err := deterministicStageConfigDigest(l.ConfigDir(), gaggle)
+		gaggleDigest, err := runtimewiring.DeterministicStageConfigDigest(l.ConfigDir(), gaggle)
 		if err != nil {
 			return nil, false, fmt.Errorf("worker: %w", err)
 		}
@@ -148,15 +148,17 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	}
 	cfg.StartSelfExecutionAccounting()
 	snapshot := &workerConfigSnapshot{
-		configDir:     l.ConfigDir(),
-		digest:        digest,
 		gaggleDigests: gaggleDigests,
-		cfg:           cfg,
-		set:           set,
-		instructions:  instructions,
-		skillPackages: skillPackages,
-		digests:       newGooberDigestIndex(cfg, set, instructions, skillPackages),
 		gaggles:       map[string]*builtGaggleSeams{},
+		ConfigSnapshot: runtimewiring.ConfigSnapshot{
+			ConfigDirectory: l.ConfigDir(),
+			Digest:          digest,
+			Config:          cfg,
+			Definitions:     set,
+			Instructions:    instructions,
+			SkillPackages:   skillPackages,
+			Digests:         runtimewiring.NewGooberDigestIndex(cfg, set, instructions, skillPackages),
+		},
 	}
 	return snapshot, settled == digest, nil
 }
@@ -177,7 +179,7 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	}
 	// The steady state: same content, so nothing is parsed, nothing is
 	// rebuilt, and no snapshot is published.
-	if current := w.snapshot.Load(); current != nil && current.digest == digest {
+	if current := w.snapshot.Load(); current != nil && current.Digest == digest {
 		return workerReloadOutcome{Digest: digest}, nil
 	}
 
@@ -185,8 +187,8 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	if err != nil {
 		return workerReloadOutcome{Digest: digest}, err
 	}
-	if !stable || next.digest != digest {
-		return workerReloadOutcome{Digest: next.digest, Unstable: true}, nil
+	if !stable || next.Digest != digest {
+		return workerReloadOutcome{Digest: next.Digest, Unstable: true}, nil
 	}
 
 	w.mu.Lock()
@@ -196,7 +198,7 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 		w.snapshot.Store(next)
 		return workerReloadOutcome{Digest: digest, Applied: true}, nil
 	}
-	if current.digest == digest {
+	if current.Digest == digest {
 		// forGaggle published this same tree while the parse was in flight.
 		return workerReloadOutcome{Digest: digest}, nil
 	}
@@ -218,12 +220,12 @@ func (w *workerSeams) installSnapshotLocked(next *workerConfigSnapshot) workerRe
 	current := w.snapshot.Load()
 	if current == nil {
 		w.snapshot.Store(next)
-		return workerReloadOutcome{Digest: next.digest, Applied: true}
+		return workerReloadOutcome{Digest: next.Digest, Applied: true}
 	}
-	if current.digest == next.digest {
-		return workerReloadOutcome{Digest: next.digest}
+	if current.Digest == next.Digest {
+		return workerReloadOutcome{Digest: next.Digest}
 	}
-	outcome := workerReloadOutcome{Digest: next.digest, Applied: true}
+	outcome := workerReloadOutcome{Digest: next.Digest, Applied: true}
 	for gaggle, built := range current.gaggles {
 		fingerprint, err := w.gaggleFingerprint(next, gaggle)
 		// A fingerprint that cannot be computed against the new tree (the
@@ -258,7 +260,7 @@ func (w *workerSeams) reloadFromLayout(layout instance.Layout) (workerReloadOutc
 		return workerReloadOutcome{}, err
 	}
 	if !stable {
-		return workerReloadOutcome{Digest: next.digest, Unstable: true}, errors.New("worker: immutable remote config snapshot changed while loading")
+		return workerReloadOutcome{Digest: next.Digest, Unstable: true}, errors.New("worker: immutable remote config snapshot changed while loading")
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -270,7 +272,7 @@ func (w *workerSeams) reloadFromLayout(layout instance.Layout) (workerReloadOutc
 func (w *workerSeams) historyDigestsLocked() []string {
 	out := make([]string, 0, len(w.history))
 	for _, entry := range w.history {
-		out = append(out, entry.digest)
+		out = append(out, entry.Digest)
 	}
 	return out
 }
@@ -283,15 +285,15 @@ func (w *workerSeams) historyDigestsLocked() []string {
 // the directory here would compare whatever landed since instead — which
 // could retain a kit across a change it does not reflect.
 func (w *workerSeams) gaggleFingerprint(snapshot *workerConfigSnapshot, gaggle string) (string, error) {
-	goobers, err := runtimewiring.ResolveGoobersForGaggle(snapshot.set, gaggle)
+	goobers, err := runtimewiring.ResolveGoobersForGaggle(snapshot.Definitions, gaggle)
 	if err != nil {
 		return "", err
 	}
-	instructions, err := snapshot.instructionsFor(goobers)
+	instructions, err := snapshot.InstructionsFor(goobers)
 	if err != nil {
 		return "", err
 	}
-	return gaggleConfigFingerprint(snapshot.cfg, snapshot.set, gaggle, goobers, instructions, snapshot.skillPackages[gaggle])
+	return gaggleConfigFingerprint(snapshot.Config, snapshot.Definitions, gaggle, goobers, instructions, snapshot.SkillPackages[gaggle])
 }
 
 // gaggleFingerprintInput is the exact input set buildGaggleSeams reads for one
@@ -366,7 +368,7 @@ func gaggleConfigFingerprint(
 // and the tree actually in use cannot disagree.
 func (w *workerSeams) currentDigest() string {
 	if current := w.snapshot.Load(); current != nil {
-		return current.digest
+		return current.Digest
 	}
 	return ""
 }

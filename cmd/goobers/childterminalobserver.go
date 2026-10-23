@@ -181,7 +181,7 @@ func (l *queuedChildLauncher) retainedChildWorktrees(ctx context.Context, id jou
 	defer func() { _ = lease.Release() }()
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return nil, fmt.Errorf("load child terminal generation: %w (%s)", err, validationIssueSummary(report))
+		return nil, fmt.Errorf("load child terminal generation: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	for i := range set.Gaggles {
 		gaggle := &set.Gaggles[i]

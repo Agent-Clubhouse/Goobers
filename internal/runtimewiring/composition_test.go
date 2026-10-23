@@ -1,8 +1,11 @@
 package runtimewiring_test
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -19,6 +22,9 @@ func TestCompositionInstallsWorkspaceGuardsOnNewAndReusedManagers(t *testing.T) 
 	calls := 0
 	var observed *worktree.Manager
 	input := runtimewiring.RunnerCompositionInput{
+		ExecutionFence: func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
+			return ctx, func() {}, nil
+		},
 		Layout: layout, Config: cfg, SharedRegistry: journal.NewRegistryScrubber(),
 		ConfigureWorktree: func(manager *worktree.Manager) error {
 			if manager == nil {
@@ -48,5 +54,11 @@ func TestCompositionInstallsWorkspaceGuardsOnNewAndReusedManagers(t *testing.T) 
 	input.ConfigureWorktree = func(*worktree.Manager) error { return refused }
 	if _, _, err := runtimewiring.BuildRunnerConfig(input); !errors.Is(err, refused) {
 		t.Fatalf("cleanup guard failure was ignored: %v", err)
+	}
+}
+
+func TestCompositionRequiresExecutionFence(t *testing.T) {
+	if _, _, err := runtimewiring.BuildRunnerConfig(runtimewiring.RunnerCompositionInput{}); err == nil {
+		t.Fatal("accepted runner without execution fence")
 	}
 }

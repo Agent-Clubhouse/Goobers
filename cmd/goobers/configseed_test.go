@@ -31,7 +31,7 @@ func TestConfigSeedCLIInitializesDispatchInputs(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("seed exit=%d: %s", code, stderr.String())
 		}
-		if err := validateSeededWorkerConfig(destination); err != nil {
+		if err := runtimewiring.ValidateSeededWorkerConfig(destination); err != nil {
 			t.Fatal(err)
 		}
 	}

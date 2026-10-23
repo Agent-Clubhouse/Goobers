@@ -38,11 +38,11 @@ import (
 // else — including a plain agentic task — stamps invoke, and an attempt with
 // no mode at all decodes as invoke on the pod.
 func TestKitModeFollowsTheAttempt(t *testing.T) {
-	if got := kitModeFor(dispatcher.Attempt{Agentic: true, Review: true}); got != agentickit.ModeReview {
-		t.Fatalf("kitModeFor(review attempt) = %q, want %q", got, agentickit.ModeReview)
+	if got := runtimewiring.KitModeFor(dispatcher.Attempt{Agentic: true, Review: true}); got != agentickit.ModeReview {
+		t.Fatalf("runtimewiring.KitModeFor(review attempt) = %q, want %q", got, agentickit.ModeReview)
 	}
-	if got := kitModeFor(dispatcher.Attempt{Agentic: true}); got != agentickit.ModeInvoke {
-		t.Fatalf("kitModeFor(task attempt) = %q, want %q", got, agentickit.ModeInvoke)
+	if got := runtimewiring.KitModeFor(dispatcher.Attempt{Agentic: true}); got != agentickit.ModeInvoke {
+		t.Fatalf("runtimewiring.KitModeFor(task attempt) = %q, want %q", got, agentickit.ModeInvoke)
 	}
 	var legacy agentickit.Kit
 	if err := json.Unmarshal([]byte(`{"envelope":{}}`), &legacy); err != nil {

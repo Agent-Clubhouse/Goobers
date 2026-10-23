@@ -32,7 +32,9 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	if err != nil {
 		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
 	}
-	executionFence := runnerExecutionFence(input)
+	if input.ExecutionFence == nil {
+		input.ExecutionFence = localSharedExecutionFence(input.Layout)
+	}
 	decisionObserver := newDecisionShadowObserver(cfg, nil)
 	input.Diagnostics, input.DiagnosticsMaxBytes = diagnosticsMode, diagnosticsMaxOutputBytes
 	input.LookPath = runnerLookPath
@@ -54,13 +56,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		if err != nil {
 			return nil, err
 		}
-		return runtimewiring.ClaimFencedDeterministic{Deterministic: exec, Start: executionFence}, nil
+		return exec, nil
 	}
 	input.BuildAgentic = func(stage runtimewiring.AgenticExecutorInput) (invoke.Goober, error) {
 		stage.Observer = decisionObserver
 		stage.ChildWorkflows = childWorkflowAccessFor(instanceRoot, stage.SecretRegistrar)
 		ordinary := func() (invoke.Goober, error) { return runtimewiring.BuildAgenticExecutor(stage) }
-		return bindParentRouting(instanceRoot, stage.GooberName, stage.ArtifactRecorder, ordinary, stage.Assets[stage.GooberName] != nil, executionFence)
+		return bindParentRouting(instanceRoot, stage.GooberName, stage.ArtifactRecorder, ordinary, stage.Assets[stage.GooberName] != nil)
 	}
 	input.Finalize = func(rc *runner.Config, resolver credentials.Resolver, manager *worktree.Manager) error {
 		baselineHealth, err := buildBaselineHealth(l, cfg, manager)
@@ -107,14 +109,6 @@ func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInpu
 	}
 	cfg.RestoreParentArchive = archives.restore
 	cfg.RetireParentWorkspaces = archives.retire
-}
-
-func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {
-	digest, err := runtimewiring.ConfigDirectoryDigestForGaggle(configDir, gaggle)
-	if err != nil {
-		return "", fmt.Errorf("digest deterministic-stage config: %w", err)
-	}
-	return digest, nil
 }
 
 // resolveWorkflowRunControls collapses one workflow's run-control inheritance

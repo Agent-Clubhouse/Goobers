@@ -22,10 +22,10 @@ func (w *workerSeams) admitSelfExecution(stage string) error {
 			return err
 		}
 	}
-	if snapshot.cfg == nil {
+	if snapshot.Config == nil {
 		return engine.ErrNotConfigured
 	}
-	cfg := snapshot.cfg
+	cfg := snapshot.Config
 	denied := cfg.SelfExecutionDenied()
 	cfg.ObserveSelfExecution(denied)
 	if denied {

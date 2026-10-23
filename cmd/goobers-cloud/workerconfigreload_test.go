@@ -103,7 +103,7 @@ func TestWorkerReloadObservesChangedInstructionsWithoutRestart(t *testing.T) {
 	if !outcome.Applied {
 		t.Fatalf("reload outcome = %+v, want a new config tree applied", outcome)
 	}
-	if outcome.Digest == beforeSnapshot.digest {
+	if outcome.Digest == beforeSnapshot.Digest {
 		t.Fatalf("reload digest %s unchanged after an instructions edit", outcome.Digest)
 	}
 	if len(outcome.Invalidated) != 1 || outcome.Invalidated[0] != "example" {
@@ -146,7 +146,7 @@ func TestWorkerReloadObservesChangedGaggleOwner(t *testing.T) {
 	if _, err := seams.forGaggle("example"); err != nil {
 		t.Fatalf("forGaggle before reload: %v", err)
 	}
-	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().set, "example").Owner; got != "your-org" {
+	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().Definitions, "example").Owner; got != "your-org" {
 		t.Fatalf("owner before reload = %q, want the scaffolded your-org", got)
 	}
 
@@ -159,7 +159,7 @@ func TestWorkerReloadObservesChangedGaggleOwner(t *testing.T) {
 	if !outcome.Applied {
 		t.Fatalf("reload outcome = %+v, want a retargeted gaggle applied", outcome)
 	}
-	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().set, "example").Owner; got != "Agent-Clubhouse" {
+	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().Definitions, "example").Owner; got != "Agent-Clubhouse" {
 		t.Fatalf("owner after reload = %q, want Agent-Clubhouse", got)
 	}
 	if entry := builtEntry(t, seams, "example"); entry != nil {
@@ -293,7 +293,7 @@ func TestWorkerReloadRejectsInvalidConfigTreeAndRecovers(t *testing.T) {
 	if !recovered.Applied {
 		t.Fatalf("reload outcome after repair = %+v, want applied", recovered)
 	}
-	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().set, "example").Owner; got != "recovered-org" {
+	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().Definitions, "example").Owner; got != "recovered-org" {
 		t.Fatalf("owner after recovery = %q, want recovered-org", got)
 	}
 }
@@ -359,7 +359,7 @@ func TestWorkerReloadPublishesWholeSnapshots(t *testing.T) {
 					return
 				}
 				snapshot := seams.snapshot.Load()
-				owner := runtimewiring.GaggleProjectRef(snapshot.set, "example").Owner
+				owner := runtimewiring.GaggleProjectRef(snapshot.Definitions, "example").Owner
 				if owner != "owner-one" && owner != "owner-two" {
 					t.Errorf("observed owner %q, want a whole tree's owner", owner)
 					return
@@ -394,21 +394,21 @@ func TestWorkerConfigWatcherAppliesEditsAndStopsOnShutdown(t *testing.T) {
 	if _, err := seams.forGaggle("example"); err != nil {
 		t.Fatalf("forGaggle: %v", err)
 	}
-	initial := seams.snapshot.Load().digest
+	initial := seams.snapshot.Load().Digest
 
 	watcher := startWorkerConfigWatcher(context.Background(), seams, time.Millisecond)
 	t.Cleanup(watcher.Stop)
 
 	replaceInFile(t, gagglePath(root, "example"), "owner: your-org", "owner: watched-org")
 	deadline := time.Now().Add(workerReloadWaitTimeout)
-	for seams.snapshot.Load().digest == initial {
+	for seams.snapshot.Load().Digest == initial {
 		if time.Now().After(deadline) {
 			t.Fatal("watcher did not apply the config edit")
 		}
 		time.Sleep(time.Millisecond)
 	}
 	applied := seams.snapshot.Load()
-	if got := runtimewiring.GaggleProjectRef(applied.set, "example").Owner; got != "watched-org" {
+	if got := runtimewiring.GaggleProjectRef(applied.Definitions, "example").Owner; got != "watched-org" {
 		t.Fatalf("owner after watched reload = %q, want watched-org", got)
 	}
 
@@ -494,7 +494,7 @@ func TestWorkerConfigWatcherLogsRejectionOnceAndRecovery(t *testing.T) {
 	waitFor("applied config tree", 1)
 
 	watcher.Stop()
-	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().set, "example").Owner; got != "repaired-org" {
+	if got := runtimewiring.GaggleProjectRef(seams.snapshot.Load().Definitions, "example").Owner; got != "repaired-org" {
 		t.Fatalf("owner after repair = %q, want repaired-org", got)
 	}
 }

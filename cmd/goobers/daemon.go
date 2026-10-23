@@ -1303,7 +1303,7 @@ func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
 func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Manager, error) {
 	manager := input.WorktreeManager
 
-	appliedConfigDigest, err := deterministicStageConfigDigest(input.Layout.ConfigDir(), input.Layout.Gaggle())
+	appliedConfigDigest, err := runtimewiring.DeterministicStageConfigDigest(input.Layout.ConfigDir(), input.Layout.Gaggle())
 	if err != nil {
 		return nil, nil, err
 	}

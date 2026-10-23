@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os/exec"
 
 	"github.com/goobers/goobers/internal/invoke"
@@ -36,31 +35,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	input.BuildDeterministic = func(stage runtimewiring.DeterministicExecutorInput) (invoke.Deterministic, error) {
 		stage.AutomationReadCache = true
-		executor, err := runtimewiring.BuildDeterministicExecutor(stage)
-		if err != nil {
-			return nil, err
-		}
-		if input.ExecutionFence != nil {
-			return runtimewiring.ClaimFencedDeterministic{Deterministic: executor, Start: input.ExecutionFence}, nil
-		}
-		return executor, nil
-	}
-	input.BuildAgentic = func(stage runtimewiring.AgenticExecutorInput) (invoke.Goober, error) {
-		executor, err := runtimewiring.BuildAgenticExecutor(stage)
-		if err != nil {
-			return nil, err
-		}
-		if input.ExecutionFence != nil {
-			return runtimewiring.ClaimFencedGoober{Goober: executor, Start: input.ExecutionFence}, nil
-		}
-		return executor, nil
+		return runtimewiring.BuildDeterministicExecutor(stage)
 	}
 	return runtimewiring.BuildRunnerConfig(input)
-}
-func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {
-	digest, err := runtimewiring.ConfigDirectoryDigestForGaggle(configDir, gaggle)
-	if err != nil {
-		return "", fmt.Errorf("digest deterministic-stage config: %w", err)
-	}
-	return digest, nil
 }

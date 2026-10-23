@@ -112,7 +112,7 @@ func fetchInitialWorkerConfig(ctx context.Context, client configmirror.Client, c
 		if err != nil {
 			return configmirror.Retryable(err), err
 		}
-		root, err = client.Materialize(ctx, cacheRoot, current.Digest, validateSeededWorkerConfig)
+		root, err = client.Materialize(ctx, cacheRoot, current.Digest, runtimewiring.ValidateSeededWorkerConfig)
 		return configmirror.Retryable(err), err
 	})
 	return root, current, err
@@ -158,7 +158,7 @@ func startWorkerConfigPlaneWatcher(parent context.Context, seams *workerSeams, c
 			if next.Digest == current {
 				continue
 			}
-			root, err := client.Materialize(ctx, cacheRoot, next.Digest, validateSeededWorkerConfig)
+			root, err := client.Materialize(ctx, cacheRoot, next.Digest, runtimewiring.ValidateSeededWorkerConfig)
 			if err != nil {
 				seams.log("worker config plane: fetch %s: %v", next.Digest, err)
 				continue
@@ -225,13 +225,13 @@ func (w *workerSeams) retainedConfigRoots() map[string]bool {
 	w.retainActiveRetiredLocked(nil)
 	roots := make(map[string]bool, len(w.history)+len(w.retired)+1)
 	if current := w.snapshot.Load(); current != nil {
-		roots[filepath.Dir(current.configDir)] = true
+		roots[filepath.Dir(current.ConfigDirectory)] = true
 	}
 	for _, snapshot := range w.history {
-		roots[filepath.Dir(snapshot.configDir)] = true
+		roots[filepath.Dir(snapshot.ConfigDirectory)] = true
 	}
 	for _, snapshot := range w.retired {
-		roots[filepath.Dir(snapshot.configDir)] = true
+		roots[filepath.Dir(snapshot.ConfigDirectory)] = true
 	}
 	return roots
 }

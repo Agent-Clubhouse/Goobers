@@ -159,7 +159,7 @@ func runDoctorAVExclusions(root, workRoot, reportFormat string, stdout, stderr i
 			// which findings, so an operator reading a coverage report knows
 			// the inventory it was derived from is not one the daemon would
 			// accept — rather than trusting a list silently built on it.
-			if summary := validationIssueSummary(configReport); summary != "" {
+			if summary := runtimewiring.ValidationIssueSummary(configReport); summary != "" {
 				pf(stderr, "note: %s does not validate (%s); the gaggle roots below are read from it as-is\n", layout.ConfigDir(), summary)
 			}
 		case loadErr != nil:

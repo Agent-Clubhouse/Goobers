@@ -1,13 +1,10 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
-
-	"github.com/goobers/goobers/internal/runtimewiring"
 
 	// workergooberpin.go is the pin/refusal half of #3884.
 	//
@@ -44,11 +41,8 @@ import (
 	// the current tree exactly as before, byte for byte, which is what keeps every
 	// run started before D1 (and every non-agentic seam) working unchanged.
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 // workerConfigHistoryDepth is how many superseded config snapshots a worker
@@ -208,112 +202,6 @@ func (w *workerSeams) clearGooberPinRefusalLocked(gaggle, workflowName string) {
 	delete(w.lastPinRefusal, localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflowName})
 }
 
-// gooberDigestIndex is one config snapshot's (gaggle, workflow) →
-// goober-digest table, computed at most once and only if something actually
-// asks. Lazy because the compile it runs is not free and an unpinned worker
-// must not pay for it; once because every attempt on a busy worker would
-// otherwise recompute the same table.
-type gooberDigestIndex struct {
-	once       sync.Once
-	compute    func() (map[localscheduler.WorkflowIdentity]string, error)
-	byIdentity map[localscheduler.WorkflowIdentity]string
-	err        error
-}
-
-func (i *gooberDigestIndex) resolve() (map[localscheduler.WorkflowIdentity]string, error) {
-	i.once.Do(func() {
-		if i.compute == nil {
-			i.err = errors.New("no goober digest computation is wired for this config snapshot")
-			return
-		}
-		i.byIdentity, i.err = i.compute()
-	})
-	return i.byIdentity, i.err
-}
-
-// gooberDigestFor returns the digest this snapshot's tree resolves for one
-// workflow identity.
-func (s *workerConfigSnapshot) gooberDigestFor(gaggle, workflowName string) (string, error) {
-	if s.digests == nil {
-		return "", errors.New("config snapshot carries no goober digest index")
-	}
-	byIdentity, err := s.digests.resolve()
-	if err != nil {
-		return "", err
-	}
-	digest, ok := byIdentity[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflowName}]
-	if !ok {
-		return "", fmt.Errorf("config tree %s declares no workflow %q in gaggle %q", s.digest, workflowName, gaggle)
-	}
-	return digest, nil
-}
-
-// instructionsFor narrows this snapshot's captured instruction bodies to one
-// gaggle's goobers. It fails closed on a goober the snapshot has no
-// instructions for rather than handing an executor a short map: an agentic
-// stage built without its instructions is a stage running as nobody.
-func (s *workerConfigSnapshot) instructionsFor(goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
-	out := make(map[string]string, len(goobers))
-	for name := range goobers {
-		content, ok := s.instructions[name]
-		if !ok {
-			return nil, &runtimewiring.GooberInstructionsError{
-				Goober: name,
-				Err:    fmt.Errorf("config tree %s captured no instructions for this goober", s.digest),
-			}
-		}
-		out[name] = content
-	}
-	return out, nil
-}
-
-// newGooberDigestIndex builds the lazy digest table for one just-read tree.
-//
-// It closes over the snapshot's OWN captured instructions and skill packages,
-// never over the config directory, which is the property that makes a retained
-// snapshot's answer a fact about the tree it captured rather than about
-// whatever is mounted when the question is finally asked.
-func newGooberDigestIndex(
-	cfg *instance.Config,
-	set *instance.ConfigSet,
-	instructions map[string]string,
-	skillPackages map[string]map[string][]workflow.SkillFile,
-) *gooberDigestIndex {
-	return &gooberDigestIndex{
-		compute: func() (map[localscheduler.WorkflowIdentity]string, error) {
-			_, digests, _, _, err := runtimewiring.CompiledMachinesWithGooberDigests(
-				set,
-				runtimewiring.GoobersByName(set),
-				instructions,
-				runtimewiring.HarnessEnvironmentPolicy(cfg.Runner),
-				cfg.Runner.HarnessCommand,
-				// The daemon defers model discovery when it computes the
-				// digests this pin is matched against. Deferring here too is
-				// not an optimization: a worker that probed the launcher for a
-				// model the daemon took from config would resolve a different
-				// GooberSpec.Model, digest it, and refuse every attempt of
-				// every run as a mismatch.
-				true,
-				// nil, not built: DeferDiscovery (above) short-circuits before
-				// any credential is ever consulted, so resolving one here would
-				// be pure overhead on this hot per-reload path (#4292).
-				nil,
-				// nil: the connector check (#4475) is an authoring-time
-				// rejection the daemon already applied; it never changes a
-				// digest, so re-running it here could only refuse attempts.
-				nil,
-				func(gaggle string, _ map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
-					return skillPackages[gaggle], nil
-				},
-			)
-			if err != nil {
-				return nil, err
-			}
-			return digests, nil
-		},
-	}
-}
-
 // retainSupersededLocked pushes the snapshot a reload just replaced onto the
 // bounded history. Callers must hold w.mu.
 //
@@ -339,7 +227,7 @@ func (w *workerSeams) retainSupersededLocked(superseded *workerConfigSnapshot) {
 		// A tree can be superseded and re-published (an edit reverted): keep
 		// exactly one entry per digest so a flapping tree cannot evict the
 		// whole history with copies of itself.
-		if entry.digest == superseded.digest {
+		if entry.Digest == superseded.Digest {
 			continue
 		}
 		retained = append(retained, entry)
@@ -382,7 +270,7 @@ func (w *workerSeams) forPinnedGaggle(gaggle, workflowName, pin string) (*gaggle
 	// here is whole-tree consistent.
 	if snapshot := w.snapshot.Load(); snapshot != nil {
 		if built, ok := snapshot.gaggles[gaggle]; ok {
-			if digest, err := snapshot.gooberDigestFor(gaggle, workflowName); err == nil && digest == pin {
+			if digest, err := snapshot.GooberDigestFor(gaggle, workflowName); err == nil && digest == pin {
 				return built.seams, nil
 			}
 		}
@@ -405,7 +293,7 @@ func (w *workerSeams) forPinnedGaggle(gaggle, workflowName, pin string) (*gaggle
 	var served []string
 	var unverifiable error
 	for _, snapshot := range candidates {
-		digest, err := snapshot.gooberDigestFor(gaggle, workflowName)
+		digest, err := snapshot.GooberDigestFor(gaggle, workflowName)
 		if err != nil {
 			// A tree that cannot answer is not a tree that answers "no": keep
 			// looking, and only report unverifiability if NOTHING answered.
@@ -486,7 +374,7 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 	var served []string
 	var unverifiable error
 	for _, snapshot := range candidates {
-		digest, err := snapshot.gooberDigestFor(gaggle, workflowName)
+		digest, err := snapshot.GooberDigestFor(gaggle, workflowName)
 		if err != nil {
 			if unverifiable == nil {
 				unverifiable = err

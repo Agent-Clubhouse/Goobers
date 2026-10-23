@@ -36,8 +36,8 @@ func TestWorkerRetainsSharedPersonaAcrossInstructionReload(t *testing.T) {
 	oldPin := currentPin(t, seams)
 	snapshot := seams.snapshot.Load()
 	_, daemonPins, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
-		instance.NewLayout(root).ConfigDir(), snapshot.set, runtimewiring.GoobersByName(snapshot.set), snapshot.instructions,
-		runtimewiring.HarnessEnvironmentPolicy(snapshot.cfg.Runner), snapshot.cfg.Runner.HarnessCommand, true, nil,
+		instance.NewLayout(root).ConfigDir(), snapshot.Definitions, runtimewiring.GoobersByName(snapshot.Definitions), snapshot.Instructions,
+		runtimewiring.HarnessEnvironmentPolicy(snapshot.Config.Runner), snapshot.Config.Runner.HarnessCommand, true, nil,
 		nil,
 	)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestWorkerSnapshotsSharedSkillContentBeforeReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := candidate.gooberDigestFor(pinGaggle, pinWorkflow); err != nil || got != oldPin {
+	if got, err := candidate.GooberDigestFor(pinGaggle, pinWorkflow); err != nil || got != oldPin {
 		t.Fatalf("shared pin changed with unrelated gaggle content: %q, %v", got, err)
 	}
 	writeFileContent(t, shared, "shared after")
@@ -101,7 +101,7 @@ func TestWorkerSnapshotsSharedSkillContentBeforeReload(t *testing.T) {
 	if currentPin(t, seams) == oldPin {
 		t.Fatal("shared skill edit did not change the new snapshot's pin")
 	}
-	if got, err := old.gooberDigestFor(pinGaggle, pinWorkflow); err != nil || got != oldPin {
+	if got, err := old.GooberDigestFor(pinGaggle, pinWorkflow); err != nil || got != oldPin {
 		t.Fatalf("historical shared skill pin followed disk: %q, %v", got, err)
 	}
 }
@@ -127,7 +127,7 @@ func TestWorkerSharesOnePersonaBetweenTwoGaggles(t *testing.T) {
 
 	seams := workerReloadSeams(t, root)
 	firstPin := currentPin(t, seams)
-	secondPin, err := seams.snapshot.Load().gooberDigestFor("second", pinWorkflow)
+	secondPin, err := seams.snapshot.Load().GooberDigestFor("second", pinWorkflow)
 	if err != nil || firstPin != secondPin {
 		t.Fatalf("same persona acquired gaggle-specific identities: %s / %s (%v)", firstPin, secondPin, err)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -73,7 +74,7 @@ func TestEngineDispatchRoutesQueueAndGooberIdentityThroughWorkerSeams(t *testing
 		shared:   shared,
 	}
 	seams.snapshot.Store(&workerConfigSnapshot{
-		digest: "sha256:routing-fixture",
+		ConfigSnapshot: runtimewiring.ConfigSnapshot{Digest: "sha256:routing-fixture"},
 		gaggles: map[string]*builtGaggleSeams{
 			"web": {seams: &gaggleSeams{
 				cfg: runner.Config{

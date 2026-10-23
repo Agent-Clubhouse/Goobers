@@ -60,6 +60,10 @@ type RunnerCompositionInput struct {
 
 // BuildRunnerConfig composes shared executors and workspaces with binary-specific hooks.
 func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.Manager, error) {
+	if input.ExecutionFence == nil {
+		return runner.Config{}, nil, fmt.Errorf("runner execution fence is required")
+	}
+	executionFence := WithCurrentMergeAuthority(input.Layout, input.ExecutionFence)
 	if input.LookPath == nil {
 		input.LookPath = exec.LookPath
 	}
@@ -176,7 +180,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 			if err != nil {
 				return nil, err
 			}
-			return exec, nil
+			return ClaimFencedDeterministic{Deterministic: exec, Start: executionFence}, nil
 		},
 		NewAgenticWithMCPServers: func(gooberName string, servers []apiv1.MCPServer, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			ordinary := func() (invoke.Goober, error) {
@@ -189,7 +193,11 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 					MCPServers:             servers, MCPServersSet: servers != nil,
 				})
 			}
-			return ordinary()
+			goober, err := ordinary()
+			if err != nil {
+				return nil, err
+			}
+			return ClaimFencedGoober{Goober: goober, Start: executionFence}, nil
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a

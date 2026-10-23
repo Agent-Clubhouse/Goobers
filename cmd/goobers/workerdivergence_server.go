@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -70,14 +72,7 @@ const (
 	workerDivergenceNotActive  = string(journal.WorkerConfigDivergenceNotActive)
 )
 
-type workerDivergenceAppender interface {
-	Append(journal.Event) error
-}
-
-func divergenceRunnerString(event journal.Event, key string) string {
-	value, _ := event.Runner[key].(string)
-	return value
-}
+type workerDivergenceAppender = runtimewiring.WorkerDivergenceAppender
 
 // workerDivergenceJournalRecorder makes retries idempotent against the
 // daemon's durable journal, including after daemon restart. Only an exact
@@ -110,7 +105,7 @@ func newWorkerDivergenceJournalRecorder(log *journal.InstanceLog) (*workerDiverg
 func (r *workerDivergenceJournalRecorder) Append(event journal.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	worker := divergenceRunnerString(event, "worker")
+	worker := runtimewiring.DivergenceRunnerString(event, "worker")
 	fingerprint := workerDivergenceFingerprint(event)
 	resolvesSentinel := r.reportingSentinelOpen && worker != "" && worker != journal.WorkerConfigDivergenceReportingCapability
 	if worker != "" && r.latest[worker] == fingerprint && !resolvesSentinel {
@@ -124,7 +119,7 @@ func (r *workerDivergenceJournalRecorder) Append(event journal.Event) error {
 }
 
 func (r *workerDivergenceJournalRecorder) remember(event journal.Event) {
-	worker := divergenceRunnerString(event, "worker")
+	worker := runtimewiring.DivergenceRunnerString(event, "worker")
 	// A real worker report resolves the daemon-lifetime capability sentinel.
 	// Forget its fingerprint as well as letting the read-model fold hide it,
 	// so the next daemon startup can author a genuinely new "awaiting" period.
@@ -141,11 +136,11 @@ func (r *workerDivergenceJournalRecorder) remember(event journal.Event) {
 
 func workerDivergenceFingerprint(event journal.Event) string {
 	parts := []string{
-		divergenceRunnerString(event, "state"),
-		divergenceRunnerString(event, "workerDigest"),
-		divergenceRunnerString(event, "daemonDigest"),
-		divergenceRunnerString(event, "reason"),
-		divergenceRunnerString(event, "message"),
+		runtimewiring.DivergenceRunnerString(event, "state"),
+		runtimewiring.DivergenceRunnerString(event, "workerDigest"),
+		runtimewiring.DivergenceRunnerString(event, "daemonDigest"),
+		runtimewiring.DivergenceRunnerString(event, "reason"),
+		runtimewiring.DivergenceRunnerString(event, "message"),
 	}
 	var out strings.Builder
 	for _, part := range parts {

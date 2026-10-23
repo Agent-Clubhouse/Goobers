@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -38,7 +40,7 @@ type failFirstDivergenceAppender struct {
 }
 
 func (a *failFirstDivergenceAppender) Append(event journal.Event) error {
-	a.attempts <- divergenceRunnerString(event, "state")
+	a.attempts <- runtimewiring.DivergenceRunnerString(event, "state")
 	if a.calls.Add(1) == 1 {
 		return errors.New("response lost")
 	}
@@ -56,7 +58,7 @@ func TestWorkerDivergenceRetriesFailedTransitionBeforeNewerState(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	seams := &workerSeams{logf: func(string, ...any) {}}
-	seams.snapshot.Store(&workerConfigSnapshot{digest: "sha256:worker"})
+	seams.snapshot.Store(&workerConfigSnapshot{ConfigSnapshot: runtimewiring.ConfigSnapshot{Digest: "sha256:worker"}})
 	appender := &failFirstDivergenceAppender{attempts: make(chan string, 8)}
 	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL,
 		func() (string, error) { return "token", nil }, 10*time.Millisecond, "worker:a", appender)
@@ -85,7 +87,7 @@ func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
 	messages := make(chan string, 16)
 	events := make(chan journal.Event, 16)
 	seams := &workerSeams{logf: func(format string, args ...any) { messages <- fmt.Sprintf(format, args...) }}
-	seams.snapshot.Store(&workerConfigSnapshot{digest: "sha256:original"})
+	seams.snapshot.Store(&workerConfigSnapshot{ConfigSnapshot: runtimewiring.ConfigSnapshot{Digest: "sha256:original"}})
 	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL, func() (string, error) {
 		if !available.Load() {
 			return "", errors.New("credential unavailable")
@@ -163,7 +165,7 @@ func TestWorkerDigestKeyAuthenticatesPollingAndDetectsRecovery(t *testing.T) {
 	messages := make(chan string, 16)
 	events := make(chan journal.Event, 16)
 	seams := &workerSeams{logf: func(format string, args ...any) { messages <- fmt.Sprintf(format, args...) }}
-	seams.snapshot.Store(&workerConfigSnapshot{digest: "sha256:original"})
+	seams.snapshot.Store(&workerConfigSnapshot{ConfigSnapshot: runtimewiring.ConfigSnapshot{Digest: "sha256:original"}})
 	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL, func() (string, error) { mints.Add(1); return source() }, 10*time.Millisecond, "worker-a", &recordingDivergenceAppender{events: events})
 	t.Cleanup(watcher.Stop)
 	for i, want := range []string{"divergence: none", "daemon has sha256:changed", "divergence: none"} {

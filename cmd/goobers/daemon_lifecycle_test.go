@@ -655,7 +655,7 @@ func TestRunAbortRejectsAmbiguousRunIDPrefix(t *testing.T) {
 	}
 	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
 	var banner strings.Builder
-	if err := prepareManualRoot(instance.NewLayout(root), &banner); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), &banner); err != nil {
 		t.Fatal(err)
 	}
 	want = banner.String() + want

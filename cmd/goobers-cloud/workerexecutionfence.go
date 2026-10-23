@@ -16,7 +16,7 @@ func localSharedExecutionFence(layout instance.Layout) runtimewiring.ExecutionFe
 		stop := func() {}
 		set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 		if err != nil {
-			return ctx, stop, fmt.Errorf("verify worker claim configuration: %w (%s)", err, validationIssueSummary(report))
+			return ctx, stop, fmt.Errorf("verify worker claim configuration: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 		}
 		for _, workflow := range set.Workflows {
 			if mode := workflow.Spec.Readiness.ClaimVisibility; mode != "" && mode != "local" {

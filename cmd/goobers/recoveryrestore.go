@@ -58,7 +58,7 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	} else {
-		if err := prepareManualRoot(layout, stderr); err != nil {
+		if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}

@@ -1,16 +1,10 @@
 package main
 
 import (
-	"strings"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
-type repeatableFlag []string
-
-func (f *repeatableFlag) String() string { return strings.Join(*f, ",") }
-func (f *repeatableFlag) Set(value string) error {
-	*f = append(*f, value)
-	return nil
-}
+type repeatableFlag = runtimewiring.RepeatableFlag
 
 func onOff(enabled bool) string {
 	if enabled {

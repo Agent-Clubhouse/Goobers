@@ -285,7 +285,7 @@ func (s *daemonCredentialService) localChildAuthentication(ctx context.Context, 
 func (s *daemonCredentialService) loadTrustedLocalChildConfig(directory string) (*instance.ConfigSet, error) {
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return nil, fmt.Errorf("load trusted-local child generation: %w (%s)", err, validationIssueSummary(report))
+		return nil, fmt.Errorf("load trusted-local child generation: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	// Match daemon startup/reload: warnings remain nonfatal, but must reach
 	// the instance journal before child admission continues.

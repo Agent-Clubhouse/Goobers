@@ -48,7 +48,7 @@ func currentPin(t *testing.T, seams *workerSeams) string {
 		}
 		seams.snapshot.Store(snapshot)
 	}
-	digest, err := snapshot.gooberDigestFor(pinGaggle, pinWorkflow)
+	digest, err := snapshot.GooberDigestFor(pinGaggle, pinWorkflow)
 	if err != nil {
 		t.Fatalf("goober digest for %s/%s: %v", pinGaggle, pinWorkflow, err)
 	}
@@ -97,11 +97,11 @@ func TestWorkerGooberDigestsAgreeWithTheDaemonForTheSameTree(t *testing.T) {
 	snapshot := seams.snapshot.Load()
 	_, daemonDigests, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
 		instance.NewLayout(root).ConfigDir(),
-		snapshot.set,
-		runtimewiring.GoobersByName(snapshot.set),
-		snapshot.instructions,
-		runtimewiring.HarnessEnvironmentPolicy(snapshot.cfg.Runner),
-		snapshot.cfg.Runner.HarnessCommand,
+		snapshot.Definitions,
+		runtimewiring.GoobersByName(snapshot.Definitions),
+		snapshot.Instructions,
+		runtimewiring.HarnessEnvironmentPolicy(snapshot.Config.Runner),
+		snapshot.Config.Runner.HarnessCommand,
 		true,
 		nil,
 		nil,
@@ -736,10 +736,10 @@ func (w *workerSeams) retainedDigests() []string {
 	defer w.mu.Unlock()
 	var out []string
 	if current := w.snapshot.Load(); current != nil {
-		out = append(out, current.digest)
+		out = append(out, current.Digest)
 	}
 	for _, entry := range w.history {
-		out = append(out, entry.digest)
+		out = append(out, entry.Digest)
 	}
 	return out
 }

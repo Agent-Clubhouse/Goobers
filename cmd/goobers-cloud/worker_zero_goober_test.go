@@ -57,7 +57,7 @@ func TestWorkerAutomatedGateInitializesZeroGooberDemo(t *testing.T) {
 			t.Fatalf("zero-goober automated verdict=%s outcome=%q err=%v", verdict, outcome, err)
 		}
 	}
-	if snapshot := seams.snapshot.Load(); snapshot == nil || len(snapshot.set.Goobers) != 0 || snapshot.gaggles["demo"] == nil {
+	if snapshot := seams.snapshot.Load(); snapshot == nil || len(snapshot.Definitions.Goobers) != 0 || snapshot.gaggles["demo"] == nil {
 		t.Fatal("test did not construct the real zero-goober gaggle seams")
 	}
 	env.Gaggle = "missing-gaggle"

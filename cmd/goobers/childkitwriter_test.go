@@ -177,15 +177,15 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	}
 	set, report, err := loadConfigDirectory(f.retainedPath)
 	if err != nil {
-		t.Fatalf("load config: %v (%s)", err, validationIssueSummary(report))
+		t.Fatalf("load config: %v (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*proposal.Workflow.DeepCopy()}
 	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(f.retainedPath, set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := &workerConfigSnapshot{digests: newGooberDigestIndex(f.cfg, set, instructions, skills)}
-	gooberDigest, err := snapshot.gooberDigestFor(parentEnv.Gaggle, proposal.Workflow.Name)
+	snapshot := &workerConfigSnapshot{Digests: runtimewiring.NewGooberDigestIndex(f.cfg, set, instructions, skills)}
+	gooberDigest, err := snapshot.GooberDigestFor(parentEnv.Gaggle, proposal.Workflow.Name)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ import (
 func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
-	applied, err := deterministicStageConfigDigest(layout.ConfigDir(), "example")
+	applied, err := runtimewiring.DeterministicStageConfigDigest(layout.ConfigDir(), "example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	if code := run([]string{"version"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("fenced stage exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	rejectedScoped, err := deterministicStageConfigDigest(layout.ConfigDir(), "example")
+	rejectedScoped, err := runtimewiring.DeterministicStageConfigDigest(layout.ConfigDir(), "example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 }
 
 func TestDeterministicStageConfigDigestFailsClosed(t *testing.T) {
-	digest, err := deterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"), "example")
+	digest, err := runtimewiring.DeterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"), "example")
 	if err == nil || digest != "" || !strings.Contains(err.Error(), "digest deterministic-stage config") {
 		t.Fatalf("digest missing config: digest=%q err=%v", digest, err)
 	}
@@ -129,7 +129,7 @@ func TestDeterministicStageConfigDigestIgnoresSiblingGaggleReload(t *testing.T) 
 	configDir := instance.NewLayout(root).ConfigDir()
 	siblingPath := addConfigReloadFenceSiblingGaggle(t, configDir)
 
-	applied, err := deterministicStageConfigDigest(configDir, "example")
+	applied, err := runtimewiring.DeterministicStageConfigDigest(configDir, "example")
 	if err != nil {
 		t.Fatal(err)
 	}

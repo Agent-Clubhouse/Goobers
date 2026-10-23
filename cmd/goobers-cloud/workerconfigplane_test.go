@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/configmirror"
@@ -238,7 +240,7 @@ func TestWorkerConfigPlaneRotationsPreserveStableRootAndLeasedSnapshot(t *testin
 		t.Fatal(err)
 	}
 	defer release()
-	leasedRoot := filepath.Dir(snapshot.configDir)
+	leasedRoot := filepath.Dir(snapshot.ConfigDirectory)
 	cacheRoot := filepath.Join(workRoot, "config-snapshots")
 	for generation := 1; generation <= 5; generation++ {
 		editInstructions(t, fixture.source, fmt.Sprintf("generation %d", generation))
@@ -247,7 +249,7 @@ func TestWorkerConfigPlaneRotationsPreserveStableRootAndLeasedSnapshot(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		root, err := setup.client.Materialize(t.Context(), cacheRoot, current.Digest, validateSeededWorkerConfig)
+		root, err := setup.client.Materialize(t.Context(), cacheRoot, current.Digest, runtimewiring.ValidateSeededWorkerConfig)
 		if err != nil {
 			t.Fatal(err)
 		}

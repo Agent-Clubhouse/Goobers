@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +22,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -42,24 +43,12 @@ const dispatchNamespacePreflightTimeout = 30 * time.Second
 // same way they already fake dispatchKubeClient.
 var preflightGaggleNamespaces = dispatcher.PreflightNamespaces
 
-// gaggleNamespacesFromConfig builds the gaggle -> isolation namespace map
+// runtimewiring.GaggleNamespacesFromConfig builds the gaggle -> isolation namespace map
 // (#4897) a dispatcher.Config needs to route each stage pod to its OWN
 // gaggle's declared namespace instead of one process-wide value. Every
 // gaggle's isolation.namespace is schema-required, so an empty value here
 // means a config that loaded despite failing that requirement — refused
 // rather than silently dispatching that gaggle nowhere.
-func gaggleNamespacesFromConfig(gaggles []apiv1.Gaggle) (map[string]string, error) {
-	namespaces := make(map[string]string, len(gaggles))
-	for i := range gaggles {
-		g := &gaggles[i]
-		namespace := strings.TrimSpace(g.Spec.Isolation.Namespace)
-		if namespace == "" {
-			return nil, fmt.Errorf("stage dispatch: gaggle %q declares no isolation.namespace", g.Name)
-		}
-		namespaces[g.Name] = namespace
-	}
-	return namespaces, nil
-}
 
 // stageDispatch is what buildStageDispatch wires: the dispatcher seam, the
 // surrender plane, the dispatch queues this worker must serve, and the same
@@ -141,7 +130,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 
 	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
-		if issues := validationIssueSummary(report); issues != "" {
+		if issues := runtimewiring.ValidationIssueSummary(report); issues != "" {
 			return stageDispatch{}, fmt.Errorf("stage dispatch: load config directory: %w (%s)", err, issues)
 		}
 		return stageDispatch{}, fmt.Errorf("stage dispatch: load config directory: %w", err)
@@ -168,7 +157,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if len(queues) == 0 {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: the instance at %s declares no non-self runner; --dispatch-namespace has nothing to serve", instanceRoot)
 	}
-	gaggleNamespaces, err := gaggleNamespacesFromConfig(set.Gaggles)
+	gaggleNamespaces, err := runtimewiring.GaggleNamespacesFromConfig(set.Gaggles)
 	if err != nil {
 		return stageDispatch{}, err
 	}

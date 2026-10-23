@@ -63,7 +63,7 @@ func HostAVExclusionAdvisory(ctx context.Context, label string, dirs []avexclusi
 	return avexclusion.Summary(label, AvExclusionReport(ctx, dirs, deps))
 }
 
-// WorkerAVExclusionDirectories is `goobers worker`'s set under workRoot,
+// WorkerAVExclusionDirectories is `goobers-cloud worker`'s set under workRoot,
 // resolved through the same helpers workerEngineDepsForPlatform provisions
 // with.
 func WorkerAVExclusionDirectories(workRoot string, deps AvExclusionDeps) []avexclusion.Directory {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -138,9 +140,7 @@ func (r divergenceReport) State() string {
 	}
 }
 
-type workerDivergenceAppender interface {
-	Append(journal.Event) error
-}
+type workerDivergenceAppender = runtimewiring.WorkerDivergenceAppender
 
 type remoteWorkerDivergenceAppender struct {
 	client      *http.Client
@@ -166,10 +166,10 @@ func (a localWorkerDivergenceAppender) Append(event journal.Event) error {
 
 func (a *remoteWorkerDivergenceAppender) Append(event journal.Event) error {
 	body, err := json.Marshal(map[string]string{
-		"state":        divergenceRunnerString(event, "state"),
-		"workerDigest": divergenceRunnerString(event, "workerDigest"),
-		"daemonDigest": divergenceRunnerString(event, "daemonDigest"),
-		"reason":       divergenceRunnerString(event, "reason"),
+		"state":        runtimewiring.DivergenceRunnerString(event, "state"),
+		"workerDigest": runtimewiring.DivergenceRunnerString(event, "workerDigest"),
+		"daemonDigest": runtimewiring.DivergenceRunnerString(event, "daemonDigest"),
+		"reason":       runtimewiring.DivergenceRunnerString(event, "reason"),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal worker config-divergence event: %w", err)
@@ -204,11 +204,6 @@ func (a *remoteWorkerDivergenceAppender) Append(event journal.Event) error {
 		return fmt.Errorf("daemon worker config-divergence plane returned %s", response.Status)
 	}
 	return nil
-}
-
-func divergenceRunnerString(event journal.Event, key string) string {
-	value, _ := event.Runner[key].(string)
-	return value
 }
 
 func recordWorkerDivergence(appender workerDivergenceAppender, worker, state string, report divergenceReport, message string) error {
@@ -386,7 +381,7 @@ func startWorkerDivergenceWatcher(
 						seams.log("worker config divergence: journal transition: %v", err)
 						continue
 					}
-					lastRecorded = divergenceRunnerString(*pending, "message")
+					lastRecorded = runtimewiring.DivergenceRunnerString(*pending, "message")
 					pending = nil
 				}
 				requestCtx, cancelRequest := context.WithTimeout(ctx, 15*time.Second)

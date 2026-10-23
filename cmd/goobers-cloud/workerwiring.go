@@ -26,7 +26,6 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/workerhost"
-	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -116,34 +115,10 @@ type workerSeams struct {
 // cache in place, which is what lets an in-flight attempt keep the kit it was
 // handed while the next attempt gets the new tree.
 type workerConfigSnapshot struct {
+	runtimewiring.ConfigSnapshot
 	users         atomic.Int64
-	configDir     string
-	generation    string
-	digest        string
 	gaggleDigests map[string]string
-	cfg           *instance.Config
-	set           *instance.ConfigSet
-	// instructions holds every configured goober's instruction body, and
-	// skillPackages every gaggle's resolved skill files, read ONCE when this
-	// snapshot was taken.
-	//
-	// They are captured rather than re-read because a snapshot must stay
-	// answerable after the tree on disk has moved past it (#3884). The
-	// worker retains a bounded history of superseded snapshots so a run
-	// pinned to an older goober digest can still be served its own kit across
-	// a reload; a history entry that went back to disk for its instruction
-	// bytes would resolve the CURRENT tree while claiming to be the old one,
-	// which is the silent substitution the pin exists to prevent.
-	instructions  map[string]string
-	skillPackages map[string]map[string][]workflow.SkillFile
-	// digests is the lazily-computed (gaggle, workflow) → goober-digest index
-	// for THIS tree — the value a run's pinned GooberDigest is matched
-	// against. Shared by pointer across withGaggle copies so the compile is
-	// paid at most once per snapshot.
-	digests *gooberDigestIndex
-	// gaggles holds the seams already built from this snapshot's tree. The map
-	// is never written after publication: both writers publish a copy.
-	gaggles map[string]*builtGaggleSeams
+	gaggles       map[string]*builtGaggleSeams
 }
 
 // builtGaggleSeams pairs a gaggle's constructed seams with the fingerprint of
@@ -157,16 +132,9 @@ type builtGaggleSeams struct {
 // withGaggle returns a copy of the snapshot carrying one more built gaggle.
 func (s *workerConfigSnapshot) withGaggle(gaggle string, built *builtGaggleSeams) *workerConfigSnapshot {
 	next := &workerConfigSnapshot{
-		configDir:     s.configDir,
-		generation:    s.generation,
-		digest:        s.digest,
-		gaggleDigests: s.gaggleDigests,
-		cfg:           s.cfg,
-		set:           s.set,
-		instructions:  s.instructions,
-		skillPackages: s.skillPackages,
-		digests:       s.digests,
-		gaggles:       make(map[string]*builtGaggleSeams, len(s.gaggles)+1),
+		ConfigSnapshot: s.ConfigSnapshot,
+		gaggleDigests:  s.gaggleDigests,
+		gaggles:        make(map[string]*builtGaggleSeams, len(s.gaggles)+1),
 	}
 	maps.Copy(next.gaggles, s.gaggles)
 	next.gaggles[gaggle] = built
@@ -306,10 +274,10 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 // deliberately not config-tree state.
 func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle string) (*builtGaggleSeams, error) {
 	l := instance.NewLayout(w.root)
-	if snapshot.configDir != "" {
-		l = l.WithConfigDir(snapshot.configDir)
+	if snapshot.ConfigDirectory != "" {
+		l = l.WithConfigDir(snapshot.ConfigDirectory)
 	}
-	cfg, set := snapshot.cfg, snapshot.set
+	cfg, set := snapshot.Config, snapshot.Definitions
 
 	goobers, err := runtimewiring.ResolveGoobersForGaggle(set, gaggle)
 	if err != nil {
@@ -318,11 +286,11 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err := runtimewiring.ValidateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
 		return nil, fmt.Errorf("worker: credential admission: %w", err)
 	}
-	instructions, err := snapshot.instructionsFor(goobers)
+	instructions, err := snapshot.InstructionsFor(goobers)
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
 	}
-	fingerprint, err := gaggleConfigFingerprint(cfg, set, gaggle, goobers, instructions, snapshot.skillPackages[gaggle])
+	fingerprint, err := gaggleConfigFingerprint(cfg, set, gaggle, goobers, instructions, snapshot.SkillPackages[gaggle])
 	if err != nil {
 		return nil, fmt.Errorf("worker: fingerprint gaggle %q config: %w", gaggle, err)
 	}
@@ -360,7 +328,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		Definitions:          set,
 		Goobers:              goobers,
 		InstructionsByGoober: instructions,
-		SkillPackages:        snapshot.skillPackages[gaggle],
+		SkillPackages:        snapshot.SkillPackages[gaggle],
 		// The worker's spans come from the engine, not this client.
 		Telemetry: nil,
 		// nil manager ON PURPOSE. buildRunnerConfig builds its own only when
@@ -382,7 +350,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		CredentialStores:         stores,
 		SandboxPosture:           instance.EffectiveAgenticSandbox(cfg, nil),
 		AppliedConfigDigest:      appliedConfigDigest,
-		ConfigGeneration:         snapshot.generation,
+		ConfigGeneration:         snapshot.Generation,
 		// Provider quota is a scheduler-side concern, not the executor's.
 		ProviderQuota: nil,
 	})
