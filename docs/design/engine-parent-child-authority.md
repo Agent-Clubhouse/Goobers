@@ -155,7 +155,18 @@ Temporal workflow starts. That is one expand migration and one store method:
 - `repo_ref` (JSON)
 - `driver`
 
-The bind then requires the journal identity to equal those pins exactly. This is
+The bind then requires the journal identity to equal those pins exactly.
+
+The pins are **evidence, never a start gate**. Refusing to confirm a Temporal
+start because a pin is empty would wedge legitimate runs; a prototype did
+exactly that in the control failover tests. The start fence records whatever
+the started input carries, and requires only the run and acceptance identity.
+The child-authority bind refuses its own operation when a pin it needs is
+empty. Pins are written in the same fenced transaction that confirms or adopts
+the start. The classified start runs exactly that `RunInput`: an existing
+workflow is adopted only when its start-owner memo carries the same input
+digest, so a retry or a successor adopt writes identical pins. Different pins
+for a recorded run refuse. This is
 **much smaller than #7818**: a migration, a writepaths row and a start-fence
 change, against composing the whole journal plane. It does **not remove** the
 #7818 dependency, though. The origin receipt in step 1 is itself a journal-plane
