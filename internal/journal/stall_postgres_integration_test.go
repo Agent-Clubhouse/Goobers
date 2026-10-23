@@ -250,7 +250,7 @@ func TestCloudStaleSweeperCannotTerminateAfterTakeover(t *testing.T) {
 		t.Fatalf("successor sweep = %+v %v", result, err)
 	}
 	close(release)
-	_ = <-oldDone
+	<-oldDone
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	if len(engine.terminated) != 0 {
