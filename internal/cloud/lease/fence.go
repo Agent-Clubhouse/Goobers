@@ -78,9 +78,12 @@ func commitError(ctx context.Context, err error) error {
 		return fmt.Errorf("commit fenced transaction: %w", err)
 	}
 	if cause := context.Cause(ctx); cause != nil {
-		return fmt.Errorf("%w: %v (deadline: %v)", ErrCommitUnknown, err, cause)
+		// The deadline cause is ErrSelfFenced or ErrFencedTransactionTimeout,
+		// whose contract (nothing committed) this outcome breaks: describe it,
+		// never wrap it.
+		return fmt.Errorf("%w: %w (deadline: %v)", ErrCommitUnknown, err, cause) //nolint:errorlint // see above
 	}
-	return fmt.Errorf("%w: %v", ErrCommitUnknown, err)
+	return fmt.Errorf("%w: %w", ErrCommitUnknown, err)
 }
 
 // Confirm share-locks the acquired epoch inside a caller-owned transaction
