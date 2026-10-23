@@ -9,7 +9,6 @@ import (
 // the same fail-closed policy with child admission.
 var (
 	ErrExperimentUnsupported        = engineadmission.ErrExperimentUnsupported
-	ErrRemoteUsageLimitsUnsupported = engineadmission.ErrRemoteUsageLimitsUnsupported
 	ErrOutboxUnsupported            = engineadmission.ErrOutboxUnsupported
 	ErrParallelsUnsupported         = engineadmission.ErrParallelsUnsupported
 	ErrMapsUnsupported              = engineadmission.ErrMapsUnsupported
@@ -23,8 +22,4 @@ type UnsupportedFeaturesError = engineadmission.UnsupportedFeaturesError
 
 func refuseHumanGate(g apiv1.Gate) error {
 	return engineadmission.RefuseHumanGate(g)
-}
-
-func refuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []PinnedPlacement) error {
-	return engineadmission.RefuseRemoteUsage(name, spec, placements)
 }
