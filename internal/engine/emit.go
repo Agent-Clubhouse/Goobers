@@ -226,6 +226,9 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 	if err := r.preserveChildOrigins(ops, resp.ChildOrigins); err != nil {
 		return err
 	}
+	if err := r.preserveSerialReceipts(ops, resp.AppendReceipts, resp.Seq); err != nil {
+		return err
+	}
 	r.emitted = pending
 	return nil
 }
