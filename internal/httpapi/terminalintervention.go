@@ -68,7 +68,7 @@ func registerTerminalInterventionRoute(router *Router, config handlerConfig, err
 		switch {
 		case errors.Is(err, journal.ErrInterventionInvalid):
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
-		case errors.Is(err, journal.ErrInterventionStale), errors.Is(err, journal.ErrInterventionConflict), errors.Is(err, journal.ErrInterventionPending):
+		case errors.Is(err, journal.ErrInterventionCancelled), errors.Is(err, journal.ErrInterventionStale), errors.Is(err, journal.ErrInterventionConflict), errors.Is(err, journal.ErrInterventionPending):
 			writeError(w, http.StatusConflict, "terminal_intervention_conflict", err.Error())
 		case err != nil:
 			writeJournalPlaneError(w, errorLog, err)

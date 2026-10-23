@@ -94,3 +94,61 @@ func TestTerminalInterventionPreservesBorrowedFileOwner(t *testing.T) {
 		t.Fatalf("receipt=%+v phase=%s closed=%v err=%v", duplicate, run.Phase(), run.Closed(), err)
 	}
 }
+
+func TestTerminalInterventionCancellationPrefixKeepsLiveWriterClosed(t *testing.T) {
+	w, root := testWriter(t)
+	const id = "cancel-recovered"
+	run := runnerHandle(t, root, id)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	req := liveTerminalRequest(id, 2, 1)
+	if _, err := run.CommitTerminalIntervention(req.Transition); err != nil {
+		t.Fatal(err)
+	}
+	cancellation := req
+	cancellation.Transition.Cancellation = []journal.Event{
+		{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "intervention.cancelled", "idempotencyKey": req.Transition.RequestID, "fingerprint": req.Transition.Fingerprint, "terminalGeneration": "1", "terminalSeq": "2", "emitKey": "cancel-key"}},
+		{Type: journal.EventRunFinished, Status: "aborted", Runner: map[string]any{"emitKey": "abort-key"}},
+	}
+	// Crash between cancellation tombstone and aborted terminal while the
+	// preceding resume was already committed (its response may have been lost).
+	if err := run.Append(cancellation.Transition.Cancellation[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stray := EmitRequest{RunID: id, Gaggle: "web", Ops: []Op{appendOp("late-stage", time.Now(), journal.Event{Type: journal.EventStageStarted, Stage: "build", Attempt: 2})}}
+	if _, err := w.Emit(t.Context(), stray); !errors.Is(err, ErrTerminal) {
+		t.Fatalf("cancelled prefix accepted stage: %v", err)
+	}
+	receipt, err := w.CommitTerminalIntervention(t.Context(), cancellation)
+	if err != nil || !receipt.Cancelled || receipt.Seq != 6 {
+		t.Fatalf("cancel=%+v err=%v", receipt, err)
+	}
+	if _, err := w.CommitTerminalIntervention(t.Context(), req); !errors.Is(err, journal.ErrInterventionCancelled) {
+		t.Fatalf("late resume=%v", err)
+	}
+}
+
+func TestOrdinaryEmitCannotForgeInterventionCancellation(t *testing.T) {
+	w, root := testWriter(t)
+	const id = "cancel-forgery"
+	now := time.Now()
+	if _, err := w.Emit(t.Context(), openBatch(id, now)); err != nil {
+		t.Fatal(err)
+	}
+	before := len(readEvents(t, root, id))
+	req := EmitRequest{RunID: id, Gaggle: "web", Ops: []Op{appendOp("forged", now, journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "intervention.cancelled"}})}}
+	if _, err := w.Emit(t.Context(), req); !errors.Is(err, journal.ErrInterventionInvalid) {
+		t.Fatalf("forged cancellation=%v", err)
+	}
+	if got := len(readEvents(t, root, id)); got != before {
+		t.Fatalf("forged cancellation appended: before=%d after=%d", before, got)
+	}
+	req.Ops = []Op{appendOp("real-stage", now, journal.Event{Type: journal.EventStageStarted, Stage: "build"})}
+	if _, err := w.Emit(t.Context(), req); err != nil {
+		t.Fatalf("forgery closed active run: %v", err)
+	}
+}

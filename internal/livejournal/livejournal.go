@@ -762,6 +762,11 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 			}
 		}
 		switch ev.Type {
+		case journal.EventRunnerAnnotation:
+			if ev.Runner["kind"] == "intervention.cancelled" {
+				terminal = true
+				run.keys[terminalMarker] = ev.Seq
+			}
 		case journal.EventRunFinished:
 			terminal = true
 			run.keys[terminalMarker] = ev.Seq
@@ -1188,6 +1193,9 @@ func (w *Writer) runWriterOptions(clock func() time.Time, integrity map[string]a
 // an instance annotation is stamped with, never one the op carries. It is
 // also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
+	if op.Kind == OpAppend && op.Event != nil && op.Event.Type == journal.EventRunnerAnnotation && op.Event.Runner["kind"] == "intervention.cancelled" {
+		return false, journal.ErrInterventionInvalid
+	}
 	ctx, err := opBranchContext(ctx, op)
 	if err != nil {
 		return false, err

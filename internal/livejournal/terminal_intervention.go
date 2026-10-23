@@ -105,6 +105,7 @@ func (w *Writer) forgetInterventionRun(runID string, run *liveRun) {
 }
 func (w *Writer) discardInterventionRun(runID string, run *liveRun) {
 	if run.adopted {
+		w.refreshAdopted(run)
 		return
 	}
 	_ = w.retire(run)

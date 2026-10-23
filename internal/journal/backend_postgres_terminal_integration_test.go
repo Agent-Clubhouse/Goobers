@@ -5,6 +5,7 @@ package journal_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -225,5 +226,82 @@ func TestPostgresTerminalInterventionRollsBackTheWholePrefix(t *testing.T) {
 	receipt, err := backend.CommitTerminalIntervention(t.Context(), h, o, intent)
 	if err != nil || receipt.Seq != 4 || receipt.Duplicate {
 		t.Fatalf("retry=%+v err=%v", receipt, err)
+	}
+}
+
+func TestPostgresTerminalInterventionCancellationBlocksLateRetry(t *testing.T) {
+	config := postgresJournalConfig(t)
+	var role string
+	if err := config.Pool.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != "goobers_controller" {
+		t.Fatalf("role=%s err=%v", role, err)
+	}
+	backend := postgresBackend(t, config)
+	for prefix := 0; prefix <= 2; prefix++ {
+		t.Run(fmt.Sprint(prefix), func(t *testing.T) {
+			key := journal.RunKey{RunID: fmt.Sprintf("cancelled-%d", prefix), Gaggle: "web"}
+			h, o, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: journal.RunIdentity{RunID: key.RunID, Gaggle: key.Gaggle, Workflow: "wf"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := backend.AppendBatch(t.Context(), h, o, []journal.Event{{Type: journal.EventRunFinished, Status: "failed"}}); err != nil {
+				t.Fatal(err)
+			}
+			original := pgTerminalIntent(key.RunID, 2, 1)
+			// Exercise recovery of an imported/legacy partial prefix as well as the
+			// atomic current PG commit. No backend is allowed to resurrect it.
+			if prefix > 0 {
+				if _, err := backend.AppendBatch(t.Context(), h, o, original.Events[:prefix]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := backend.Retire(t.Context(), h, o); err != nil {
+				t.Fatal(err)
+			}
+			h, o, _, err = backend.RecoverRun(t.Context(), key, journal.RunWriterOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancel := original
+			cancel.Cancellation = []journal.Event{
+				{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "intervention.cancelled", "idempotencyKey": original.RequestID, "fingerprint": original.Fingerprint, "terminalGeneration": "1", "terminalSeq": "2", "emitKey": key.RunID + "-cancel"}},
+				{Type: journal.EventRunFinished, Status: "aborted", Reason: "operator cancellation", Runner: map[string]any{"emitKey": key.RunID + "-abort"}},
+			}
+			receipt, err := backend.CommitTerminalIntervention(t.Context(), h, o, cancel)
+			if err != nil || !receipt.Cancelled || receipt.Seq != uint64(prefix+4) {
+				t.Fatalf("cancel=%+v err=%v", receipt, err)
+			}
+			if _, err := backend.CommitTerminalIntervention(t.Context(), h, o, original); !errors.Is(err, journal.ErrInterventionCancelled) {
+				t.Fatalf("late retry=%v", err)
+			}
+			duplicate, err := backend.CommitTerminalIntervention(t.Context(), h, o, cancel)
+			if err != nil || !duplicate.Cancelled || !duplicate.Duplicate || duplicate.Seq != receipt.Seq {
+				t.Fatalf("cancel retry=%+v err=%v", duplicate, err)
+			}
+			reader, err := backend.OpenRun(t.Context(), journal.RunRef{ID: key.RunID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := reader.State()
+			if err != nil || state.Phase != journal.PhaseAborted {
+				t.Fatalf("state=%+v err=%v", state, err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumes := 0
+			for _, event := range events {
+				if event.Type == journal.EventRunResumed {
+					resumes++
+				}
+			}
+			want := 0
+			if prefix == 2 {
+				want = 1
+			}
+			if resumes != want {
+				t.Fatalf("cancel reopened: %d, want %d", resumes, want)
+			}
+		})
 	}
 }

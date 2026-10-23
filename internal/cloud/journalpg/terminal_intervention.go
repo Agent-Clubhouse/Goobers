@@ -17,12 +17,13 @@ func (b *Backend) CommitTerminalIntervention(ctx context.Context, h journal.RunH
 		return journal.TerminalInterventionReceipt{}, err
 	}
 	clean := req
-	clean.Events = make([]journal.Event, len(req.Events))
-	for i, event := range req.Events {
-		clean.Events[i], err = prepareEvent(r, event)
-		if err != nil {
-			return journal.TerminalInterventionReceipt{}, err
-		}
+	clean.Events, err = prepareInterventionEvents(r, req.Events)
+	if err != nil {
+		return journal.TerminalInterventionReceipt{}, err
+	}
+	clean.Cancellation, err = prepareInterventionEvents(r, req.Cancellation)
+	if err != nil {
+		return journal.TerminalInterventionReceipt{}, err
 	}
 	var receipt journal.TerminalInterventionReceipt
 	err = b.withHistory(ctx, r, func(s historySnapshot) (tailWrite, error) {
@@ -42,7 +43,7 @@ func (b *Backend) CommitTerminalIntervention(ctx context.Context, h journal.RunH
 			if receipt.Duplicate {
 				return nil
 			}
-			for _, event := range clean.Events[skip:] {
+			for _, event := range clean.WriteEvents()[skip:] {
 				var stored journal.Event
 				seq, stored, err = b.appendClean(ctx, tx, r, seq, event)
 				if err != nil {
@@ -68,3 +69,15 @@ func (b *Backend) CommitTerminalIntervention(ctx context.Context, h journal.RunH
 }
 
 var _ journal.TerminalInterventionBackend = (*Backend)(nil)
+
+func prepareInterventionEvents(r *runOwner, events []journal.Event) ([]journal.Event, error) {
+	clean := make([]journal.Event, len(events))
+	for i, event := range events {
+		var err error
+		clean[i], err = prepareEvent(r, event)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return clean, nil
+}

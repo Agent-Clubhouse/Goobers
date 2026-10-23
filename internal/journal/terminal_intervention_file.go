@@ -46,7 +46,7 @@ func (r *Run) CommitTerminalIntervention(req TerminalIntervention) (TerminalInte
 	if err != nil {
 		return receipt, interventionError(err)
 	}
-	for _, event := range clean.Events[skip:] {
+	for _, event := range clean.WriteEvents()[skip:] {
 		if err := r.append(event); err != nil {
 			return receipt, err
 		}
@@ -62,8 +62,18 @@ func (r *Run) CommitTerminalIntervention(req TerminalIntervention) (TerminalInte
 
 func (r *Run) cleanIntervention(req TerminalIntervention) (TerminalIntervention, error) {
 	clean := req
-	clean.Events = make([]Event, len(req.Events))
-	for i, event := range req.Events {
+	var err error
+	clean.Events, err = r.cleanInterventionEvents(req.Events)
+	if err != nil {
+		return clean, err
+	}
+	clean.Cancellation, err = r.cleanInterventionEvents(req.Cancellation)
+	return clean, err
+}
+
+func (r *Run) cleanInterventionEvents(events []Event) ([]Event, error) {
+	clean := make([]Event, len(events))
+	for i, event := range events {
 		event.Seq = r.seq + uint64(i) + 1
 		event.Schema = EventSchema
 		event.Time = r.now()
@@ -75,7 +85,7 @@ func (r *Run) cleanIntervention(req TerminalIntervention) (TerminalIntervention,
 		if len(raw)+1 > maxEventBytes {
 			return clean, fmt.Errorf("journal: event exceeds %d-byte limit", maxEventBytes)
 		}
-		if err := json.Unmarshal(raw, &clean.Events[i]); err != nil {
+		if err := json.Unmarshal(raw, &clean[i]); err != nil {
 			return clean, err
 		}
 	}

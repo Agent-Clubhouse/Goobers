@@ -75,3 +75,26 @@ They cover lost response across lease takeover, stale-owner duplicate refusal,
 conflicting intents, denial, atomic rollback of a failed second append, resumed
 live-writer recovery, and the ordinary post-terminal refusal. File tests also
 cover recovering a partially committed prefix and preserving a borrowed owner.
+
+## Cancellation reconciliation
+
+A cancelled pending workflow Update uses the same fenced seam and binds the
+original intent, generation and sequence. Its cancellation writes a keyed
+`intervention.cancelled` annotation followed by `run.finished(aborted)`. It never
+completes an uncommitted reopening prefix. If reopening already committed but
+its reply was lost, cancellation aborts that resumed segment. An identical
+cancellation returns its durable receipt; every late original retry is refused
+with `ErrInterventionCancelled`.
+
+The file backend can recover either a marker-only original intent or a
+marker-only cancellation. A cancellation tombstone closes the ordinary emit
+lane even when the prior resume committed. Only the exact cancellation may
+finish that prefix. PG commits both cancellation events atomically under the
+same owner fence. Ordinary emits cannot forge a cancellation tombstone; only
+the dedicated worker credential can submit the bounded transition.
+
+File and controller-role PG16 tests cover no prefix, original marker only,
+fully committed reopening, cancellation response loss, and late retries. File
+recovery additionally tests a crash after the cancellation marker. Workflow
+retry state, operator cancellation routing and durable-before-ack handling are
+the next layer; this seam does not change Update acceptance on its own.

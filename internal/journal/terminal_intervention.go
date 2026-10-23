@@ -20,6 +20,9 @@ type TerminalIntervention struct {
 	ExpectedTerminalGeneration uint64  `json:"expectedTerminalGeneration"`
 	ExpectedTerminalSeq        uint64  `json:"expectedTerminalSeq"`
 	Events                     []Event `json:"events"`
+	// Cancellation, when present, is exactly a keyed cancellation tombstone
+	// and aborted terminal. Events still binds the original proposed prefix.
+	Cancellation []Event `json:"cancellation,omitempty"`
 }
 
 // TerminalInterventionReceipt identifies the durable prefix and its run segment.
@@ -28,6 +31,7 @@ type TerminalInterventionReceipt struct {
 	Segment   uint64 `json:"segment"`
 	Resumed   bool   `json:"resumed"`
 	Duplicate bool   `json:"duplicate"`
+	Cancelled bool   `json:"cancelled,omitempty"`
 }
 
 // TerminalInterventionBackend is intentionally separate from ordinary append.
@@ -41,10 +45,11 @@ type TerminalInterventionBackend interface {
 // Terminal intervention errors distinguish malformed, conflicting, stale and
 // incomplete intents without granting ordinary append authority.
 var (
-	ErrInterventionInvalid  = errors.New("journal: invalid terminal intervention")
-	ErrInterventionConflict = errors.New("journal: terminal intervention key reused")
-	ErrInterventionStale    = errors.New("journal: terminal intervention generation changed")
-	ErrInterventionPending  = errors.New("journal: another terminal intervention has an incomplete prefix")
+	ErrInterventionInvalid   = errors.New("journal: invalid terminal intervention")
+	ErrInterventionConflict  = errors.New("journal: terminal intervention key reused")
+	ErrInterventionStale     = errors.New("journal: terminal intervention generation changed")
+	ErrInterventionCancelled = errors.New("journal: terminal intervention cancelled")
+	ErrInterventionPending   = errors.New("journal: another terminal intervention has an incomplete prefix")
 )
 
 // ValidateTerminalIntervention admits only the local marker followed by its
@@ -54,6 +59,9 @@ func ValidateTerminalIntervention(req TerminalIntervention) error {
 	decoded, err := hex.DecodeString(digest)
 	if strings.TrimSpace(req.RequestID) == "" || !ok || err != nil || len(decoded) != 32 || req.ExpectedTerminalGeneration == 0 || req.ExpectedTerminalSeq == 0 || len(req.Events) < 1 || len(req.Events) > 2 {
 		return ErrInterventionInvalid
+	}
+	if err := validateInterventionCancellation(req); err != nil {
+		return err
 	}
 	marker := req.Events[0]
 	if marker.Type != EventRunnerAnnotation || marker.Branch != 0 || marker.Runner["idempotencyKey"] != req.RequestID || marker.Runner["fingerprint"] != req.Fingerprint {
@@ -102,6 +110,8 @@ type TerminalInterventionCheck struct {
 	terminal                bool
 	pending                 string
 	matched                 int
+	cancelMatched           int
+	cancelReceipt           TerminalInterventionReceipt
 	receipt                 TerminalInterventionReceipt
 	err                     error
 }
@@ -124,6 +134,9 @@ func (c *TerminalInterventionCheck) Observe(events []Event) {
 }
 func (c *TerminalInterventionCheck) observe(event Event) {
 	if c.err != nil {
+		return
+	}
+	if c.observeCancellation(event) {
 		return
 	}
 	for _, expected := range c.request.Events {
@@ -171,6 +184,9 @@ func (c *TerminalInterventionCheck) observe(event Event) {
 func (c *TerminalInterventionCheck) Remaining() (int, TerminalInterventionReceipt, error) {
 	if c.err != nil {
 		return 0, TerminalInterventionReceipt{}, c.err
+	}
+	if len(c.request.Cancellation) > 0 || c.cancelMatched > 0 {
+		return c.remainingCancellation()
 	}
 	if c.matched == len(c.request.Events) {
 		receipt := c.receipt
