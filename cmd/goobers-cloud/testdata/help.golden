@@ -10,6 +10,8 @@ Roles:
   worker             Run a Temporal engine worker.
 
 Commands:
+  bootstrap          Prepare a new cloud install for cutover.
+  cutover            Check cutover readiness of a cloud install.
   completion         Generate a shell completion script.
   help               Show command help.
   status             Show cloud instance status through the API.

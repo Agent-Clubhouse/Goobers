@@ -10,6 +10,7 @@
 | --- | --- |
 | [`goobers-cloud api`](#goobers-cloud-api) | Serve the cloud control-plane API. |
 | [`goobers-cloud approve`](#goobers-cloud-approve) | Approve a paused stage through the API. |
+| [`goobers-cloud bootstrap`](#goobers-cloud-bootstrap) | Prepare a new cloud install for cutover. |
 | [`goobers-cloud cancel`](#goobers-cloud-cancel) | Cancel a live run through the API. |
 | [`goobers-cloud claims list`](#goobers-cloud-claims-list) | List active claims through the API. |
 | [`goobers-cloud claims release`](#goobers-cloud-claims-release) | Release a cloud claim. |
@@ -17,6 +18,7 @@
 | [`goobers-cloud config apply`](#goobers-cloud-config-apply) | Apply cloud configuration. |
 | [`goobers-cloud config status`](#goobers-cloud-config-status) | Show cloud configuration status. |
 | [`goobers-cloud controller`](#goobers-cloud-controller) | Run cloud control-plane reconciliation. |
+| [`goobers-cloud cutover`](#goobers-cloud-cutover) | Check cutover readiness of a cloud install. |
 | [`goobers-cloud deny`](#goobers-cloud-deny) | Deny an escalated run through the API. |
 | [`goobers-cloud lease status`](#goobers-cloud-lease-status) | Show cloud controller lease status. |
 | [`goobers-cloud migrate`](#goobers-cloud-migrate) | Apply cloud data-store migrations. |
@@ -78,6 +80,32 @@ Approve a paused stage through the API.
 Usage: goobers-cloud approve --api URL --idempotency-key KEY [--actor NAME] [--rationale TEXT] RUN STAGE
 
 Approve one paused or escalated stage through the control-plane API.
+~~~
+
+## `goobers-cloud bootstrap`
+
+Prepare a new cloud install for cutover.
+
+~~~text
+Usage: goobers-cloud bootstrap --instance-id ID --backup-ref REF [OPTIONS]
+
+Prepare a new cloud install for cutover: create the database and roles, apply
+schema migrations, create the first lease row and object-store bucket, and
+leave admissions paused. Every step is idempotent.
+
+Bootstrap refuses before changing anything while any step depends on a backend
+that has not shipped; the refusal names each step as "not available until #N".
+
+Options:
+  --instance-id ID                 Instance identifier (required)
+  --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --lease-name NAME                Controller lease name (default controller)
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE             password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud cancel`
@@ -152,6 +180,36 @@ Usage: goobers-cloud controller [DATABASE OPTIONS]
 Run cloud control-plane reconciliation.
 
 Database options are the same as for the api role.
+~~~
+
+## `goobers-cloud cutover`
+
+Check cutover readiness of a cloud install.
+
+~~~text
+Usage: goobers-cloud cutover check --config-dir DIR --instance-config FILE [OPTIONS]
+
+Check that a target install is ready to take over from a local instance.
+
+check runs the cloud-readiness assessment over the instance config (every
+workflow must be DSL 3.0+, engine-supported and placeable without the control
+plane) and the install checks: schema compatible, lease row present,
+admissions paused, object-store bucket reachable. It exits non-zero while
+anything blocks; a check whose backend has not shipped reports
+"not available until #N" and blocks.
+
+Options:
+  --config-dir DIR               Instance config directory (required)
+  --instance-config FILE         instance.yaml (required)
+  --instance-id ID               Instance identifier (required)
+  --lease-name NAME              Controller lease name (default controller)
+  --format FORMAT                text or json (default text)
+  --database-direct-url URL      Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE           password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud deny`

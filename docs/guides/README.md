@@ -22,6 +22,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Investigation: default-branch CI failures 32040570522 and 32063514602](ci-main-failures-32040570522-32063514602.md)
 - [CI test results: JUnit artifacts and failure annotations](ci-test-results.md)
 - [Inspect claim verification](claim-verification.md)
+- [Cloud cutover runbook](cloud-cutover.md)
 - [Cloud operations](cloud-operations.md)
 - [Codex harness](codex-harness.md)
 - [Goobers comment attribution](comment-attribution.md)
