@@ -171,6 +171,76 @@ func TestTelemetryCursorMonotonicAndFenced(t *testing.T) {
 	}
 }
 
+func TestRepeatedAggregateKeyLastWins(t *testing.T) {
+	store, _ := telemetryTestStore(t, "repeated-key")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	first := telemetryclient.Finding{
+		Kind: "stage-failure-rate", Subject: "build",
+		Metrics: map[string]float64{"failureRate": 0.5, "totalAttempts": 4},
+	}
+	last := telemetryclient.Finding{
+		Kind: "stage-failure-rate", Subject: "build",
+		Metrics: map[string]float64{"failureRate": 0.6, "totalAttempts": 5},
+	}
+	batch := Batch{
+		Consumer: "rollup",
+		Current:  journal.StreamCursor{Stream: journal.StreamScheduler},
+		NextSeq:  10,
+		Aggregates: []AggregateRow{
+			{Gaggle: "g", Workflow: "w", Aggregate: telemetryclient.AggregateStageFailureRate, ObservedAt: now, Finding: first},
+			{Gaggle: "g", Workflow: "w", Aggregate: telemetryclient.AggregateStageFailureRate, ObservedAt: now.Add(time.Second), Finding: last},
+		},
+	}
+	if err := store.Apply(t.Context(), batch); err != nil {
+		t.Fatalf("Apply repeated aggregate key: %v", err)
+	}
+	response, err := store.DefectAggregates(t.Context(),
+		httpapi.TelemetryDefectAggregateRequest{
+			Gaggle: "g", Workflow: "w", Since: now.Add(-time.Minute),
+			Aggregates: []telemetryclient.Aggregate{telemetryclient.AggregateStageFailureRate},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Findings) != 1 || !reflect.DeepEqual(response.Findings[0], last) {
+		t.Fatalf("findings = %+v, want last row %+v", response.Findings, last)
+	}
+}
+
+func TestReplayFingerprintNormalizesTimestamps(t *testing.T) {
+	store, _ := telemetryTestStore(t, "timestamp-replay")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	batch := Batch{
+		Consumer: "rollup",
+		Current:  journal.StreamCursor{Stream: journal.StreamScheduler},
+		NextSeq:  3,
+		Milestones: Milestones{
+			InitCompletedAt: now,
+			FirstPROpenAt:   now.Add(time.Second),
+		},
+		Aggregates: []AggregateRow{{
+			Gaggle: "g", Aggregate: telemetryclient.AggregateStageFailureRate,
+			ObservedAt: now,
+			Finding: telemetryclient.Finding{
+				Kind: "stage-failure-rate", Subject: "build",
+				Metrics: map[string]float64{"failureRate": 0.5, "totalAttempts": 4},
+			},
+		}},
+	}
+	if err := store.Apply(t.Context(), batch); err != nil {
+		t.Fatal(err)
+	}
+	replay := batch
+	location := time.FixedZone("review", 3600)
+	replay.Aggregates = append([]AggregateRow(nil), batch.Aggregates...)
+	replay.Aggregates[0].ObservedAt = now.In(location).Add(500 * time.Nanosecond)
+	replay.Milestones.InitCompletedAt = now.In(location).Add(500 * time.Nanosecond)
+	replay.Milestones.FirstPROpenAt = now.Add(time.Second).In(location).Add(500 * time.Nanosecond)
+	if err := store.Apply(t.Context(), replay); err != nil {
+		t.Fatalf("semantically identical timestamp replay: %v", err)
+	}
+}
+
 func sortFindings(findings []telemetryclient.Finding) {
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Kind != findings[j].Kind {
@@ -240,7 +310,7 @@ func telemetrySuccessor(
 	t.Helper()
 	manager, err := cloudlease.New(cloudlease.Config{
 		Pool: pool, InstanceID: "test-instance",
-		Name: "control", Holder: holder,
+		Name: cloudlease.ControllerName, Holder: holder,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -81,6 +81,9 @@ func (s *Store) Apply(ctx context.Context, batch Batch) error {
 			return err
 		}
 	}
+	batch.Aggregates = collapseAggregates(batch.Aggregates)
+	batch.Milestones.InitCompletedAt = normalizeTimestamp(batch.Milestones.InitCompletedAt)
+	batch.Milestones.FirstPROpenAt = normalizeTimestamp(batch.Milestones.FirstPROpenAt)
 	fingerprint, err := telemetryBatchFingerprint(batch)
 	if err != nil {
 		return err
@@ -208,7 +211,45 @@ func normalizeAggregate(row *AggregateRow) error {
 		row.Finding.Kind == "" || row.Finding.Subject == "" {
 		return errors.New("telemetrypg: invalid aggregate row")
 	}
+	row.ObservedAt = normalizeTimestamp(row.ObservedAt)
 	return nil
+}
+
+type aggregateKey struct {
+	gaggle     string
+	workflow   string
+	aggregate  telemetryclient.Aggregate
+	kind       string
+	subject    string
+	errorClass string
+	signature  string
+}
+
+func collapseAggregates(rows []AggregateRow) []AggregateRow {
+	collapsed := make([]AggregateRow, 0, len(rows))
+	indexByKey := make(map[aggregateKey]int, len(rows))
+	for _, row := range rows {
+		key := aggregateKey{
+			gaggle: row.Gaggle, workflow: row.Workflow,
+			aggregate: row.Aggregate, kind: row.Finding.Kind,
+			subject: row.Finding.Subject, errorClass: row.Finding.ErrorClass,
+			signature: row.Finding.Signature,
+		}
+		if index, ok := indexByKey[key]; ok {
+			collapsed[index] = row
+			continue
+		}
+		indexByKey[key] = len(collapsed)
+		collapsed = append(collapsed, row)
+	}
+	return collapsed
+}
+
+func normalizeTimestamp(value time.Time) time.Time {
+	if value.IsZero() {
+		return value
+	}
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 func (s *Store) checkCursor(
@@ -431,7 +472,7 @@ func (s *Store) DefectAggregates(
 		if err := json.Unmarshal(raw, &finding); err != nil {
 			return response, err
 		}
-		if findingPassesThresholds(finding, request.Thresholds) {
+		if telemetryclient.FindingPassesThresholds(finding, request.Thresholds) {
 			response.Findings = append(response.Findings, finding)
 		}
 	}
@@ -451,37 +492,6 @@ func (s *Store) DefectAggregates(
 	}
 	sort.Strings(response.Aggregates)
 	return response, rows.Err()
-}
-
-func findingPassesThresholds(
-	finding telemetryclient.Finding,
-	thresholds telemetryclient.Thresholds,
-) bool {
-	switch finding.Kind {
-	case "stage-failure-rate":
-		return (thresholds.MinSamples == 0 ||
-			finding.Metrics["totalAttempts"] >= float64(thresholds.MinSamples)) &&
-			(thresholds.MaxFailureRate == 0 ||
-				finding.Metrics["failureRate"] >= thresholds.MaxFailureRate)
-	case "error-signature":
-		return thresholds.MinErrorSignatureCount == 0 ||
-			finding.Metrics["count"] >= float64(thresholds.MinErrorSignatureCount)
-	case "gate-never-fails":
-		return thresholds.MinGateEvaluations == 0 ||
-			finding.Metrics["totalEvaluations"] >= float64(thresholds.MinGateEvaluations)
-	case "gate-repass-churn":
-		return (thresholds.MinGateEvaluations == 0 ||
-			finding.Metrics["totalEvaluations"] >= float64(thresholds.MinGateEvaluations)) &&
-			(thresholds.MaxGateEscalationRate == 0 ||
-				finding.Metrics["escalationRate"] >= thresholds.MaxGateEscalationRate)
-	case "credit-assignment":
-		return (thresholds.MinCreditRuns == 0 ||
-			finding.Metrics["runs"] >= float64(thresholds.MinCreditRuns)) &&
-			(thresholds.MinCreditFailureShare == 0 ||
-				finding.Metrics["failureShare"] >= thresholds.MinCreditFailureShare)
-	default:
-		return false
-	}
 }
 
 func (s *Store) withFence(
