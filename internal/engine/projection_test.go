@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,5 +337,85 @@ func TestProjectionPinsGateGooberCapabilities(t *testing.T) {
 	}
 	if got := pinned["reviewer"]; len(got) != 1 || got[0] != "github:issues:write" {
 		t.Fatalf("pinned reviewer capabilities = %v, want [github:issues:write]", got)
+	}
+}
+
+// A failed workflow must still record its cause and terminal for journal readers.
+func TestFailedWorkflowJournalRecordsTerminalCause(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	proj := executeForProjection(t, projectionInput("proj-fail", spec), &Activities{
+		Det: &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+			return apiv1.ResultEnvelope{}, errors.New("tool exploded")
+		}},
+		Workspaces: testWorkspaces(t),
+	}, true)
+
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("write live journal: %v", err)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRunFinished || last.Status != string(journal.PhaseFailed) {
+		t.Fatalf("last event = %+v, want run.finished failed", last)
+	}
+	cause := events[len(events)-2]
+	if cause.Type != journal.EventError || cause.Error == nil || cause.Error.Code != "run_failed" {
+		t.Fatalf("penultimate event = %+v, want the run_failed cause", cause)
+	}
+	st, err := rd.State()
+	if err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if st.Phase != journal.PhaseFailed {
+		t.Fatalf("state phase = %q, want failed", st.Phase)
+	}
+}
+
+// Preserve workflow identity and immutable input coverage independently of host repair.
+func TestWorkflowJournalPinsIdentityAndInputs(t *testing.T) {
+	spec := crSpec("implement",
+		[]apiv1.Task{crTask("implement", "review")},
+		[]apiv1.Gate{crGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort})})
+	proj := executeForProjection(t, projectionInput("proj-det", spec), &Activities{
+		Det:        &scriptedStages{},
+		Auto:       gate.NewAutomatedEvaluator(),
+		Workspaces: testWorkspaces(t),
+	}, false)
+
+	dirA, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("write live journal: %v", err)
+	}
+
+	// The projected journal reads back through the standard reader with the
+	// journal's own structural invariant intact.
+	rd, err := journal.OpenRead(dirA)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if err := journal.MonotonicSeq(events); err != nil {
+		t.Fatalf("projected journal violates seq monotonicity: %v", err)
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	if id.WorkflowDigest == "" || id.Workflow != "proj-det" || id.Trigger.Kind != journal.TriggerManual {
+		t.Errorf("projected identity incomplete: %+v", id)
+	}
+	if len(id.Inputs) == 0 {
+		t.Errorf("projected run.yaml pins no input snapshots (want the workflow graph)")
 	}
 }
