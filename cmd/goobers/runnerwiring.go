@@ -22,7 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-type runnerCompositionInput = runtimewiring.RunnerCompositionInput
+type runnerCompositionInput = runtimewiring.ExecutorCompositionInput
 
 var runnerLookPath = exec.LookPath
 
@@ -64,7 +64,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		ordinary := func() (invoke.Goober, error) { return runtimewiring.BuildAgenticExecutor(stage) }
 		return bindParentRouting(instanceRoot, stage.GooberName, stage.ArtifactRecorder, ordinary, stage.Assets[stage.GooberName] != nil)
 	}
-	input.Finalize = func(rc *runner.Config, resolver credentials.Resolver, manager *worktree.Manager) error {
+	var localConfig runner.Config
+	input.Finalize = func(shared *runtimewiring.ExecutorConfig, resolver credentials.Resolver, manager *worktree.Manager) error {
+		localConfig = localRunnerConfig(*shared)
+		rc := &localConfig
 		baselineHealth, err := buildBaselineHealth(l, cfg, manager)
 		if err != nil {
 			return err
@@ -81,7 +84,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		applyRunnerConfigFinalizers(rc, input, input.Telemetry)
 		return nil
 	}
-	return runtimewiring.BuildRunnerConfig(input)
+	shared, manager, err := runtimewiring.BuildExecutorConfig(input)
+	if err != nil {
+		return runner.Config{}, nil, err
+	}
+	// The shared builder installs the legacy adapter after finalization.
+	localConfig.NewAgentic = shared.NewAgentic
+	return localConfig, manager, nil
 }
 
 func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInput, tel *telemetry.Client) {

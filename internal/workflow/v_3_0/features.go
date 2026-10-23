@@ -987,8 +987,6 @@ func withRuntimeSupport(features []Feature) []Feature {
 		engineLevel := RuntimeSupported
 		switch features[i].ID {
 		case featureWorkflowParallels,
-			featureTaskLimitMaxTokens,
-			featureTaskLimitMaxCostUSD,
 			featureEvaluatorHuman:
 			engineLevel = RuntimeUnsupported
 		}

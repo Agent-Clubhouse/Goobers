@@ -1,10 +1,10 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
+
+	"github.com/goobers/goobers/internal/workspaceauthority"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
@@ -12,10 +12,13 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
-const childWriterPolicyInput = "child-writer-policy"
-const childWriterStarted = "child.workspace.writer.started"
-const childWriterJoined = "child.workspace.writer.joined"
-const childWriterPolicy = `{"version":1,"scope":"managed-child-repository","writers":"stop-and-wait"}`
+const childWriterPolicyInput = workspaceauthority.ChildWriterPolicyInput
+
+const childWriterStarted = workspaceauthority.ChildWriterStarted
+
+const childWriterJoined = workspaceauthority.ChildWriterJoined
+
+const childWriterPolicy = workspaceauthority.ChildWriterPolicy
 
 // Every invocation that can write the retained child repository gets an
 // independent durable scope. A returned executor call alone is not evidence;
@@ -88,55 +91,11 @@ func verifyChildWorkspaceQuiescence(reader *journal.Reader, id journal.RunIdenti
 }
 
 func pendingChildWorkspaceWriters(reader *journal.Reader, id journal.RunIdentity, events []journal.Event) (map[string]journal.Event, error) {
-	if err := verifyChildWriterPolicy(reader, id); err != nil {
-		return nil, err
-	}
-	pending := map[string]journal.Event{}
-	seen := map[string]bool{}
-	for _, event := range events {
-		kind, _ := event.Runner["kind"].(string)
-		if event.Type != journal.EventRunnerAnnotation || (kind != childWriterStarted && kind != childWriterJoined) {
-			continue
-		}
-		scope, ok := event.Runner["writerScope"].(string)
-		if !ok || len(scope) != 32 || !apiv1.ValidRunID(scope) || event.Stage == "" || event.Attempt < 1 {
-			return nil, invoke.ErrWorkspaceNotQuiescent
-		}
-		if kind == childWriterStarted {
-			if seen[scope] {
-				return nil, invoke.ErrWorkspaceNotQuiescent
-			}
-			seen[scope], pending[scope] = true, event
-			continue
-		}
-		started, ok := pending[scope]
-		if !ok || started.Stage != event.Stage || started.Attempt != event.Attempt || started.Branch != event.Branch {
-			return nil, invoke.ErrWorkspaceNotQuiescent
-		}
-		delete(pending, scope)
-	}
-	return pending, nil
+	return workspaceauthority.PendingChildWorkspaceWriters(reader, id, events)
 }
 
 func verifyChildWriterPolicy(reader *journal.Reader, id journal.RunIdentity) error {
-	var ref *journal.InputRef
-	for i := range id.Inputs {
-		if id.Inputs[i].Name != childWriterPolicyInput {
-			continue
-		}
-		if ref != nil {
-			return invoke.ErrWorkspaceNotQuiescent
-		}
-		ref = &id.Inputs[i]
-	}
-	if id.Child == nil || ref == nil || ref.Integrity != apiv1.IntegrityTrusted {
-		return invoke.ErrWorkspaceNotQuiescent
-	}
-	data, err := reader.ArtifactBytesBounded(ref.Ref, 256)
-	if err != nil || !bytes.Equal(data, []byte(childWriterPolicy)) {
-		return errors.Join(fmt.Errorf("runner: child workspace writer policy custody missing"), err)
-	}
-	return nil
+	return workspaceauthority.VerifyChildWriterPolicy(reader, id)
 }
 
 func childWorkspaceWriterRequired(in StartInput, mode apiv1.WorkspaceMode) bool {

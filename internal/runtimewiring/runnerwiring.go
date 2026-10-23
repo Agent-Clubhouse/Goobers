@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/stageexec"
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
@@ -16,10 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 // gooberDefinitionDir is the conventional, name-derived directory of a goober
@@ -57,13 +58,13 @@ func AdoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 	}
 }
 
-func withLegacyAgenticFactory(config runner.Config) runner.Config {
+func withLegacyAgenticFactory(config ExecutorConfig) ExecutorConfig {
 	config.NewAgentic = legacyAgenticFactory(config.NewAgenticWithMCPServers)
 	return config
 }
 
-func legacyAgenticFactory(next runner.NewAgenticWithMCPServersFunc) runner.NewAgenticFunc {
-	return func(name string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
+func legacyAgenticFactory(next stageexec.NewAgenticWithMCPServersFunc) stageexec.NewAgenticFunc {
+	return func(name string, rec stageexec.ArtifactRecorder, reg stageexec.SecretRegistrar) (invoke.Goober, error) {
 		return next(name, nil, rec, reg)
 	}
 }

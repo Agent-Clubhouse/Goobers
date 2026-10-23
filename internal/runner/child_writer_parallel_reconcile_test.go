@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -67,7 +69,7 @@ func TestReconcileChildWriterPreservesInterleavedSiblingCustody(t *testing.T) {
 	assertCleanup := func(workspace string, allowed bool) {
 		t.Helper()
 		target := worktree.CleanupTarget{WorktreeID: workspace, OwnerRunID: id.RunID, Gaggle: id.Gaggle, RepositoryDigest: strings.Repeat("2", 64)}
-		err := VerifyChildWorkspaceCleanup(rd, id, target)
+		err := workspaceauthority.VerifyChildWorkspaceCleanup(rd, id, target)
 		if (err == nil) != allowed || !allowed && !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
 			t.Fatalf("cleanup %s: allowed=%v, error=%v", workspace, allowed, err)
 		}
