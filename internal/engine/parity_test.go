@@ -444,8 +444,7 @@ type parityCase struct {
 	EngineWorkspaceDiffs map[string][]byte
 	// RunControls is the run's already-resolved run-control policy, threaded
 	// through the SAME seam production uses on each side: runner.StartInput's
-	// RunControls field and engine.StartSpec's, which Registry.StartInputVersion
-	// pins into RunInput. Deliberately NOT runner.Config.MaxRepasses /
+	// RunControls field and engine.RunInput's RunControls field. Deliberately NOT runner.Config.MaxRepasses /
 	// RunInput.MaxRepasses — both are documented-deprecated compatibility
 	// fields, and a harness that pins policy through them proves nothing about
 	// the path a production run takes.
@@ -453,7 +452,7 @@ type parityCase struct {
 	// BacklogQueryAssignedTo / BacklogQueryRequireLabels are the gaggle's
 	// claim-partition defaults (MIRC-2), threaded through the seam each side
 	// takes in production: runner.Config for the local runner, and
-	// engine.StartSpec — pinned into RunInput by Registry.StartInputVersion —
+	// engine.RunInput — pinned before workflow execution —
 	// for the engine (#3873, plan item E1).
 	BacklogQueryAssignedTo    string
 	BacklogQueryRequireLabels string
@@ -1104,7 +1103,7 @@ func projectEngineJournal(t *testing.T, env *testsuite.TestWorkflowEnvironment) 
 	}
 	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	return readJournalEvents(t, dir)
 }

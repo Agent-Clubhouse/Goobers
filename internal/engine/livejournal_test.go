@@ -13,10 +13,6 @@ package engine
 //     empty against an independent history re-projection (item 4);
 //   - an emission that exhausts its bounded budget fails the attempt as
 //     attemptClass infra, never the policy budget (§8 failure policy, #3361);
-//   - the demoted reconciler (DS5) VERIFIES a live-authored journal instead
-//     of rewriting it, files divergences to the named channel, skips runs
-//     the writer still holds open, and backfills — visibly — the
-//     crash-orphan case.
 
 import (
 	"context"
@@ -163,7 +159,7 @@ func TestLiveJournalShowsStageTransitionMidRun(t *testing.T) {
 	}
 	divergence, err := diffTestJournal(t, events, proj)
 	if err != nil {
-		t.Fatalf("DiffLiveJournal: %v", err)
+		t.Fatalf("compare journal: %v", err)
 	}
 	if divergence != "" {
 		t.Fatalf("live journal diverges from history re-projection:\n%s", divergence)
@@ -238,7 +234,7 @@ func TestLiveJournalRedeliveryIsDeduplicated(t *testing.T) {
 	}
 	divergence, err := diffTestJournal(t, events, proj)
 	if err != nil {
-		t.Fatalf("DiffLiveJournal: %v", err)
+		t.Fatalf("compare journal: %v", err)
 	}
 	if divergence != "" {
 		t.Fatalf("redelivered run diverges from history re-projection:\n%s", divergence)
@@ -336,5 +332,3 @@ func TestLiveJournalEmitExhaustionFailsAttemptAsInfra(t *testing.T) {
 		t.Fatalf("wedged journal phase = %q, want running", phase)
 	}
 }
-
-// --- DS5: the demoted reconciler ---

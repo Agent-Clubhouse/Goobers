@@ -11,29 +11,15 @@ import (
 	"github.com/goobers/goobers/internal/runcontrol"
 )
 
-// TestRunInputRunControlsReachRunYAML walks the whole pinning path a starter
-// depends on — StartSpec -> Registry.StartInputVersion -> RunInput ->
-// newRunJournal -> JournalProjection.Identity -> run.yaml — and asserts the
-// policy the starter resolved is the policy on disk.
-//
-// run.yaml is the far side that matters: cmd/goobers/stalledruns.go reads
-// Identity.RunControls in preference to its own configured timeout, so the
-// pinned string IS the budget the watchdog enforces. Before #3820 the
-// registry dropped StartSpec's controls on the floor and every engine-started
-// run landed here with the built-in 45m/3 defaults instead.
+// TestRunInputRunControlsReachRunYAML verifies that the workflow persists
+// supplied run controls in the journal identity.
 func TestRunInputRunControlsReachRunYAML(t *testing.T) {
 
 	// Deliberately not the defaults (45m / 3), and not derivable from them:
-	// this is what a starter that resolved instance -> repo -> gaggle ->
-	// workflow would hand the registry.
+	// the worker receives the already-resolved run policy in RunInput.
 	resolved := apiv1.RunControls{MaxRepasses: 7, StalledRunTimeout: "90m", MaxRunDuration: "8h"}
 	in := projectionInput("pinned-controls", crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil))
 	in.RunControls = resolved
-	if in.RunControls != resolved {
-		// Not fatal: let the run.yaml assertions below report what the
-		// downstream watchdog would actually have read.
-		t.Errorf("pinned RunInput.RunControls = %+v, want %+v; StartSpec's policy never reached the run input", in.RunControls, resolved)
-	}
 
 	proj := executeForProjection(t, in, &Activities{
 		Det:        &scriptedStages{},
@@ -42,7 +28,7 @@ func TestRunInputRunControlsReachRunYAML(t *testing.T) {
 
 	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {

@@ -144,13 +144,6 @@ func readDirBytes(t *testing.T, dir string) map[string][]byte {
 	return out
 }
 
-// scriptedErrors is an invoke.Deterministic that always fails dispatch.
-type scriptedErrors struct{ err error }
-
-func (s *scriptedErrors) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	return apiv1.ResultEnvelope{}, s.err
-}
-
 // TestProjectionOpTimesAreWorkflowClock guards against wall-clock leakage: op
 // times come from workflow.Now, so replaying the same fixture yields the same
 // projection (and therefore the same journal bytes).
@@ -313,7 +306,7 @@ func TestProjectionScrubsVerdictBeforeHistoryAndPointerAddressing(t *testing.T) 
 	}
 	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	data, err := pointer.Artifact.Resolve(dir)
 	if err != nil {

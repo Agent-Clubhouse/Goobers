@@ -15,7 +15,7 @@ import (
 )
 
 // TestEngineRunPinsEngineDriverInRunYAML walks the pinning path the daemon
-// actually reads — newRunJournal -> JournalProjection.Identity -> ProjectRun
+// actually reads — newRunJournal -> JournalProjection.Identity -> livejournal.Writer
 // -> run.yaml — and asserts the file names its driver.
 //
 // run.yaml is the far side that matters. cmd/goobers' resume scan, stall
@@ -40,7 +40,7 @@ func TestEngineRunPinsEngineDriverInRunYAML(t *testing.T) {
 
 	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
@@ -144,7 +144,7 @@ func TestEngineRunPinsGateGooberCapabilitiesForTheDaemonToReadBack(t *testing.T)
 	}, false)
 	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
