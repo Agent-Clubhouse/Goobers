@@ -282,43 +282,6 @@ func TestRecordDispatchMustUseAssignedID(t *testing.T) {
 	}
 }
 
-func TestStartAdmissionFencedReadConfirmAndAdopt(t *testing.T) {
-	old, pool := testStore(t, 1)
-	record, _, err := old.Accept(t.Context(), "start", "operator", []byte("payload"), time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := old.BeginDispatch(t.Context(), record.ID); err != nil {
-		t.Fatal(err)
-	}
-	runID := strings.TrimPrefix(record.ID, "trigger-")
-	authority, err := old.ReadStartAuthority(t.Context(), record.ID)
-	if err != nil || authority.RunID != runID || authority.OwnerEpoch != old.handle.Epoch {
-		t.Fatalf("authority = %+v, %v", authority, err)
-	}
-	if err := old.ConfirmStart(t.Context(), record.ID, runID); err != nil {
-		t.Fatal(err)
-	}
-	predecessorEpoch := old.handle.Epoch
-	if err := old.manager.Release(t.Context(), old.handle); err != nil {
-		t.Fatal(err)
-	}
-	current := successorStore(t, pool)
-	if _, err := old.ReadStartAuthority(t.Context(), record.ID); err == nil {
-		t.Fatal("stale owner retained start authority")
-	}
-	if err := current.AdoptStart(t.Context(), record.ID, runID, predecessorEpoch); err != nil {
-		t.Fatal(err)
-	}
-	authority, err = current.ReadStartAuthority(t.Context(), record.ID)
-	if err != nil || authority.OwnerEpoch != current.handle.Epoch {
-		t.Fatalf("adopted authority = %+v, %v", authority, err)
-	}
-	if err := current.ConfirmStart(t.Context(), record.ID, runID); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func successorStore(t *testing.T, pool *pgxpool.Pool) *Store {
 	t.Helper()
 	store, err := New(pool, "test-instance")

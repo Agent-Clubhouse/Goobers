@@ -173,7 +173,6 @@ var (
 type databaseServices struct {
 	Pools               *cloudpg.Pools
 	Acceptances         triggerqueue.SchedulerPolicyStore
-	StartAdmissions     cloudacceptance.StartAdmissionStore
 	SchemaCompatibility error
 }
 
@@ -255,8 +254,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		return 1
 	}
 	services := databaseServices{
-		Pools: pools, Acceptances: acceptances, StartAdmissions: acceptances,
-		SchemaCompatibility: compatibilityErr,
+		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
 	}
 	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
