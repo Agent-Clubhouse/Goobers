@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/readmodelpg"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // TestControlJournalWritesAsTheControllerRoleAndLeavesNoLocalFiles composes the
@@ -60,13 +62,17 @@ func TestControlJournalWritesAsTheControllerRoleAndLeavesNoLocalFiles(t *testing
 	t.Cleanup(planes.close)
 
 	runID := strings.Repeat("a", 32)
+	graph, err := json.Marshal(workflow.Graph{Name: "wf", Version: 1, Digest: "sha256:abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	started, stage := journal.Event{Type: journal.EventRunStarted, Status: string(journal.PhaseRunning)}, journal.Event{Type: journal.EventStageStarted, Stage: "build", Attempt: 1}
 	response, err := planes.Journal.Emit(t.Context(), livejournal.EmitRequest{
 		RunID: runID, Gaggle: "web",
 		Open: &livejournal.OpenHeader{
 			Identity: journal.RunIdentity{RunID: runID, Workflow: "wf", WorkflowVersion: 1, WorkflowDigest: "sha256:abc", Gaggle: "web", Trigger: journal.Trigger{Kind: journal.TriggerManual}},
-			Graph:    []byte(`{"nodes":[]}`), Definition: []byte(`{"name":"wf"}`),
+			Graph:    graph, Definition: []byte(`{"name":"wf"}`),
 		},
 		Ops: []livejournal.Op{
 			{Kind: livejournal.OpAppend, Key: runID + "|0||0|0", Event: &started, Time: at},
