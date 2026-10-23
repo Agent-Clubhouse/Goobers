@@ -270,7 +270,9 @@ jobs:
           # `goobers-cloud bootstrap` (--admin-url from temporal-postgres-superuser,
           # --database-direct-url-file from the owner URL below) once #7813,
           # #7818 and #7763 ship and it stops refusing. Idempotent on reuse.
-          # The chaos steps may have failed the primary over: ask the cluster.
+          # The chaos steps may have failed the primary over: wait for the cluster
+          # to settle, then ask it who the primary is.
+          kubectl -n goobers-temporal wait --for=condition=Ready cluster/temporal-postgres --timeout=5m
           primary="$(kubectl -n goobers-temporal get cluster temporal-postgres -o jsonpath='{.status.currentPrimary}')"
           {
             printf "SELECT 'CREATE DATABASE %s OWNER goobers_owner' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '%s') \\gexec\n" "$database" "$database"
