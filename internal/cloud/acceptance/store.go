@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -26,6 +27,7 @@ type Store struct {
 	instanceID string
 	manager    *cloudlease.Manager
 	handle     *cloudlease.Handle
+	childBlobs blobstore.Store
 }
 
 // New constructs an instance-scoped acceptance store.
@@ -40,6 +42,9 @@ func New(pool *pgxpool.Pool, instanceID string) (*Store, error) {
 func (s *Store) BindFence(manager *cloudlease.Manager, handle *cloudlease.Handle) {
 	s.manager, s.handle = manager, handle
 }
+
+// BindChildBlobs supplies content-addressed storage for child custody payloads.
+func (s *Store) BindChildBlobs(blobs blobstore.Store) { s.childBlobs = blobs }
 
 // Close leaves ownership of the shared pool with the composition root.
 func (s *Store) Close() error { return nil }
@@ -183,9 +188,19 @@ func (s *Store) RetainedPage(ctx context.Context, after string, limit int) ([]tr
 func (s *Store) BeginDispatch(ctx context.Context, id string) error {
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
-			UPDATE control.acceptance
+			UPDATE control.acceptance AS a
 			SET state='dispatching', owner_epoch=$3
-			WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
+			WHERE a.instance_id=$1 AND a.id=$2 AND a.state='accepted'
+			  AND NOT EXISTS (
+				SELECT 1 FROM control.child_lineage AS c
+				JOIN control.child_parent AS p
+				  ON p.instance_id=c.instance_id AND p.gaggle=c.gaggle
+				 AND p.parent_run_id=c.parent_run_id
+				WHERE c.instance_id=a.instance_id AND c.acceptance_id=a.id
+				  AND (c.owner_epoch<>$3 OR p.owner_epoch<>$3
+				       OR p.cancelled_at IS NOT NULL
+				       OR c.state IN ('completed','failed','cancelled'))
+			  )`,
 			s.instanceID, id, epoch,
 		)
 		return changed(tag.RowsAffected(), err)

@@ -281,6 +281,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
 		return 1
 	}
+	acceptances.BindChildBlobs(blobs)
 	objects, err := newObjectMetadata(pools.Direct, blobs, objstore.MetadataOptions{
 		ExperimentalPhysicalDelete: *experimentalPhysicalBlobGC,
 	})
