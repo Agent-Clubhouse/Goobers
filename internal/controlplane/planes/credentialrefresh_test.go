@@ -112,7 +112,9 @@ func TestStageGrantIssuerRejectsUnavailableAndForeignGrants(t *testing.T) {
 
 func TestStageGrantIssuerMintsPodGrantAndPrunesExpiredState(t *testing.T) {
 	issuer := newTestStageGrantIssuer(t, "http://127.0.0.1:8080")
-	now := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
+	// Anchor to the wall clock: the shared scrubber retires RegisterUntil
+	// values against real time, so a fixed date rots once its grace passes.
+	now := time.Now().UTC().Truncate(time.Second)
 	issuer.now = func() time.Time { return now }
 	issuer.Key().WithClock(func() time.Time { return now })
 	registry := journal.NewRegistryScrubber()
