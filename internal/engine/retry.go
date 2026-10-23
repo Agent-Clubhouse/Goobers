@@ -201,7 +201,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				// Worker-loss timeouts may hide an attempt that already spent
 				// budget. Require usage in that case even though the activity
 				// could not report it; pre-execution failures remain retryable.
-				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLoss(err), &res, &err)
+				usageBudget.Apply(limits, usage.Metrics, usageRequired(usage, err), &res, &err)
 			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
@@ -313,6 +313,10 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func usageRequired(usage AttemptUsage, err error) bool {
+	return usage.Reported || usage.Unavailable || isWorkerLoss(err)
 }
 
 func attemptIdentityFromError(err error) *attemptidentity.Identity {

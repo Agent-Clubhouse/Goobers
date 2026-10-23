@@ -10,10 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
+	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -783,7 +785,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
 	// kind alone closes the whole class of post-surrender dispatcher errors.
 	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
-		return unconfirmedReattachFailure(ctx, err, report, custody)
+		return unconfirmedExecutionFailure(ctx, err, report, custody)
 	}
 	if err == nil && report.Local {
 		return stageActivityResult{}, a.refuseLocalDispatch(input.Envelope.TaskID)
@@ -797,23 +799,14 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// than an error.
 	surrendered, rerr := a.readDispatchSurrender(ctx, attempt, report.SurrenderConfirmed)
 	if rerr != nil {
-		if rejection := workspaceRevisionRejection(rerr); rejection != nil {
-			return dispatchFailureResult(classifySeamError(rejection), report)
-		}
-		// The gate confirmed surrender yet the result is unreadable: the
-		// substrate lost or garbled the outputs after the stage did its work.
-		// Infra-classed — the attempt retries on a fresh pod (D1), never
-		// burning the policy budget on a data-plane fault.
-		if errors.Is(rerr, dispatcher.ErrNoSurrender) {
-			return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr))), report)
-		}
-		return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(rerr)), report)
+		return unreadableSurrenderFailure(input, attempt, report, rerr)
 	}
+	usage := surrenderedAttemptUsage(surrendered)
 	if surrendered.Result.Status == "" {
-		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
+		return dispatchFailureResultWithUsage(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report, usage, !usage.Reported)
 	}
 	if rejection := admitDistributedRevision(&surrendered.Result, input.Run != nil); rejection != nil {
-		return dispatchFailureResult(classifySeamError(rejection), report)
+		return dispatchFailureResultWithUsage(classifySeamError(rejection), report, usage, !usage.Reported)
 	}
 	if input.Review {
 		result, reviewErr := a.reviewActivityResult(ctx, input, attempt.Number, surrendered, report)
@@ -824,10 +817,10 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// under a review kit it was not dispatched with. Refused rather than
 		// dropped: a silently ignored verdict is exactly the shape a
 		// substituted surrender document would take to look harmless.
-		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
+		return dispatchFailureResultWithUsage(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report, usage, !usage.Reported)
 	}
 	result, resultErr := a.scrubStageActivityResult(ctx, stageActivityResult{
-		Usage:              surrenderedAttemptUsage(surrendered),
+		Usage:              usage,
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues:     surrendered.MutationIssues,
@@ -843,7 +836,38 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
 		Placement:               placementProvenance(report), WorkspaceHeadMoved: surrendered.WorkspaceHeadMoved,
 	})
-	return result, withDispatchFailurePlacement(resultErr, report)
+	return completedDispatchStageResult(result, resultErr, report)
+}
+
+func unconfirmedExecutionFailure(ctx context.Context, err error, report dispatcher.Report, custody *atomic.Pointer[dispatcher.PodCustody]) (stageActivityResult, error) {
+	result, dispatchErr := unconfirmedReattachFailure(ctx, err, report, custody)
+	if errors.Is(err, dispatcher.ErrWorkerHandoff) {
+		return result, dispatchErr
+	}
+	return result, withDispatchFailureEvidence(dispatchErr, report, nil, dispatchExecutionObserved(report))
+}
+
+func unreadableSurrenderFailure(input DispatchStageInput, attempt dispatcher.Attempt, report dispatcher.Report, err error) (stageActivityResult, error) {
+	if rejection := workspaceRevisionRejection(err); rejection != nil {
+		return dispatchFailureResultWithUsage(classifySeamError(rejection), report, nil, true)
+	}
+	// The pod executed, but the confirmed result cannot establish usage.
+	if errors.Is(err, dispatcher.ErrNoSurrender) {
+		err = fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, err)
+	}
+	return dispatchFailureResultWithUsage(classifySeamError(invoke.InfrastructureFailure(err)), report, nil, true)
+}
+
+func completedDispatchStageResult(result stageActivityResult, err error, report dispatcher.Report) (stageActivityResult, error) {
+	if err == nil {
+		return result, nil
+	}
+	return dispatchFailureResultWithUsage(err, report, result.Usage, result.Usage == nil || !result.Usage.Reported)
+}
+
+func dispatchExecutionObserved(report dispatcher.Report) bool {
+	return report.SurrenderConfirmed ||
+		(report.Phase != "" && report.Phase != corev1.PodPending)
 }
 
 func validateRemoteUsageAllowance(input DispatchStageInput) error {
