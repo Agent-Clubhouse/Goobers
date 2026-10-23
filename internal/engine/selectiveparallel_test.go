@@ -162,6 +162,14 @@ func selectiveParallelFixture(
 	t *testing.T,
 	selection string,
 ) (staticSchedulerInput, *Activities, *selectiveCalls) {
+	return selectiveParallelFixtureWithIntegrity(t, selection, apiv1.IntegrityUnapproved)
+}
+
+func selectiveParallelFixtureWithIntegrity(
+	t *testing.T,
+	selection string,
+	integrity apiv1.Integrity,
+) (staticSchedulerInput, *Activities, *selectiveCalls) {
 	t.Helper()
 	in := schedulerInput(t.Name(), 2)
 	in.Run.DSLVersion = "3.1"
@@ -179,7 +187,7 @@ func selectiveParallelFixture(
 	pointer := apiv1.ArtifactPointer{
 		Path: "artifacts/selection.json", Digest: journal.Digest(source),
 		MediaType: fanout.SourceMediaType, Size: int64(len(source)),
-		Integrity: apiv1.IntegrityUnapproved,
+		Integrity: integrity,
 	}
 	store, err := blobstore.NewDir(t.TempDir())
 	if err != nil {
@@ -196,8 +204,9 @@ func selectiveParallelFixture(
 			stage := env.TaskID[len(env.RunID)+1:]
 			calls.add(stage)
 			result := apiv1.ResultEnvelope{
-				Status:  apiv1.ResultSuccess,
-				Outputs: map[string]any{"value": stage},
+				Status:    apiv1.ResultSuccess,
+				Outputs:   map[string]any{"value": stage},
+				Integrity: apiv1.IntegrityDerived,
 			}
 			if stage == "seed" {
 				result.Artifacts = []apiv1.ArtifactPointer{pointer}

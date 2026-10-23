@@ -47,6 +47,7 @@ func TestFanOutRefusedAtEngineBoundaries(t *testing.T) {
 		direct   error
 	}{
 		{"map", fanOutEngineDefinition(true), ErrMapsUnsupported, "spec.maps", "items", wf.ErrMapUnsupported},
+		{"selective parallel", fanOutEngineDefinition(false), ErrParallelsUnsupported, "spec.parallels", "", wf.ErrParallelsUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := engineadmission.RefuseDefinition(tc.def.Name, tc.def.Spec)
