@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/client"
 
@@ -423,5 +424,264 @@ func TestIdentifyFromAcceptance(t *testing.T) {
 	}
 	if _, err := IdentifyFromAcceptance(byRun{err: errors.New("db down")}, nil)(t.Context(), "run-1"); err == nil || errors.Is(err, ErrUnidentifiable) {
 		t.Fatalf("a database error = %v, want a retryable error", err)
+	}
+}
+
+func waitIdle(a *Awaiters) {
+	for {
+		a.mu.Lock()
+		idle := len(a.running) == 0
+		a.mu.Unlock()
+		if idle {
+			return
+		}
+		runtime.Gosched()
+	}
+}
+
+type memWatermark struct {
+	mu       sync.Mutex
+	through  time.Time
+	set      bool
+	advances int
+}
+
+func (w *memWatermark) Load(context.Context) (time.Time, bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.through, w.set, nil
+}
+
+func (w *memWatermark) Advance(_ context.Context, _ *lease.Handle, through time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if through.After(w.through) {
+		w.through, w.set = through, true
+		w.advances++
+	}
+	return nil
+}
+
+func (w *memWatermark) position() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.through
+}
+
+func TestTheFrameFiresOncePerRunWithinAnEpoch(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 2}
+	r.temporal.runs["run-1"] = &fakeRun{id: "run-1", result: engine.RunResult{Status: engine.StatusEscalated, FinalState: "implement"}}
+	r.claims.held["run-1"] = []string{"1"}
+	r.open["run-1"] = true // visibility lag: still listed open after it closed
+	a := r.awaiters(t, handle)
+	if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+		t.Fatal(err)
+	}
+	waitReleased(t, r.claims)
+	waitIdle(a)
+	first := countKind(r.rec, CodeHookPending)
+	if first == 0 {
+		t.Fatal("the first frame recorded no hook records")
+	}
+	for range 6 {
+		waitIdle(a)
+		if err := a.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitIdle(a)
+	_ = a.Stop(t.Context())
+	if got := len(r.claims.calls); got != 1 {
+		t.Fatalf("frame fired %d times in 7 passes, want once", got)
+	}
+	if n := countKind(r.rec, CodeHookPending); n != first {
+		t.Fatalf("hook records grew %d -> %d: the frame re-ran", first, n)
+	}
+}
+
+func countKind(rec *recorder, kind string) int {
+	n := 0
+	for _, k := range rec.kinds() {
+		if k == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func TestOnlyAFailedFinalizeIsRetriedWithCappedBackoff(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 2}
+	r.temporal.runs["run-1"] = &fakeRun{id: "run-1", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.claims.held["run-1"] = []string{"1"}
+	r.claims.err = errors.New("claims plane unavailable")
+	r.open["run-1"] = true
+	r.claims.released = nil
+	var clock struct {
+		sync.Mutex
+		now time.Time
+	}
+	clock.now = time.Unix(1000, 0)
+	now := func() time.Time { clock.Lock(); defer clock.Unlock(); return clock.now }
+	advance := func(d time.Duration) { clock.Lock(); clock.now = clock.now.Add(d); clock.Unlock() }
+	a, err := New(handle, Config{
+		Temporal: r.temporal, Now: now, RetryBase: time.Second, RetryMax: 4 * time.Second,
+		Identify: func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+		Open:     func(context.Context) (map[string]bool, error) { return r.open, nil },
+		Hooks:    func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(a)
+	calls := func() int { r.claims.mu.Lock(); defer r.claims.mu.Unlock(); return len(r.claims.calls) }
+	if calls() != 1 {
+		t.Fatalf("calls = %d, want the first attempt", calls())
+	}
+	pending := countKind(r.rec, CodeHookPending)
+	tick := func() { _ = a.Tick(t.Context()); waitIdle(a) }
+	tick() // inside the backoff: nothing runs
+	if calls() != 1 {
+		t.Fatalf("retried inside the backoff: %d calls", calls())
+	}
+	for _, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 4 * time.Second} {
+		advance(want - time.Nanosecond)
+		tick()
+		before := calls()
+		advance(time.Nanosecond)
+		tick()
+		if calls() != before+1 {
+			t.Fatalf("after a %s backoff: calls %d -> %d, want one retry", want, before, calls())
+		}
+	}
+	if got := countKind(r.rec, CodeHookPending); got != pending {
+		t.Fatalf("a Finalize retry re-ran the other hooks: %d -> %d pending records", pending, got)
+	}
+	r.claims.mu.Lock()
+	r.claims.err = nil
+	r.claims.mu.Unlock()
+	advance(10 * time.Second)
+	tick()
+	done := calls()
+	advance(time.Hour)
+	tick()
+	_ = a.Stop(t.Context())
+	if calls() != done {
+		t.Fatalf("a finalized run was retried again: %d -> %d", done, calls())
+	}
+}
+
+func TestAChildWithNoAcceptanceIsNeitherReportedNorReIdentified(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 2}
+	r.open["child-1"] = true
+	identified := 0
+	r.identify = func(string) (Identity, error) {
+		r.mu.Lock()
+		identified++
+		r.mu.Unlock()
+		return Identity{}, fmt.Errorf("%w: child-1", ErrUnidentifiable)
+	}
+	a := r.awaiters(t, handle)
+	if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		waitIdle(a)
+		_ = a.Tick(t.Context())
+	}
+	waitIdle(a)
+	_ = a.Stop(t.Context())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if identified != 1 || len(r.reported) != 0 {
+		t.Fatalf("identified %d times, reported %v; want once and silent", identified, r.reported)
+	}
+}
+
+func TestARunThatClosedInTheLeaderGapWithNoClaimsStillGetsItsFrameOnce(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 3}
+	base := time.Unix(10_000, 0)
+	closeAt := base.Add(-time.Minute) // closed after the old leader's watermark, before this epoch began
+	mark := &memWatermark{through: base.Add(-time.Hour), set: true}
+	r.temporal.runs["gap-run"] = &fakeRun{id: "gap-run", result: engine.RunResult{Status: engine.StatusCompleted}}
+	// Not open, not holding claims: only the durable listing knows it.
+	a, err := New(handle, Config{
+		Temporal: r.temporal, Now: func() time.Time { return base },
+		Identify:  func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+		Open:      func(context.Context) (map[string]bool, error) { return r.open, nil },
+		Watermark: mark,
+		Closed: func(_ context.Context, since time.Time) ([]ClosedRun, error) {
+			if closeAt.After(since) {
+				return []ClosedRun{{RunID: "gap-run", CloseTime: closeAt}}, nil
+			}
+			return nil, nil
+		},
+		Hooks: func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		waitIdle(a)
+		if err := a.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitIdle(a)
+	_ = a.Stop(t.Context())
+	if got := r.claims.calls; len(got) != 1 || got[0] != "gap-run" {
+		t.Fatalf("frames fired for %v, want exactly gap-run once", got)
+	}
+	if mark.position().Before(closeAt) {
+		t.Fatalf("watermark %v did not pass the framed run's close %v", mark.position(), closeAt)
+	}
+}
+
+func TestTheWatermarkNeverPassesAnUnframedClosedRun(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 3}
+	base := time.Unix(10_000, 0)
+	mark := &memWatermark{through: base.Add(-time.Hour), set: true}
+	r.temporal.runs["early"] = &fakeRun{id: "early", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.temporal.runs["late"] = &fakeRun{id: "late", result: engine.RunResult{Status: engine.StatusCompleted}}
+	closes := []ClosedRun{
+		{RunID: "early", CloseTime: base.Add(-30 * time.Minute)},
+		{RunID: "late", CloseTime: base.Add(-10 * time.Minute)},
+	}
+	r.identify = func(id string) (Identity, error) {
+		if id == "early" {
+			return Identity{}, errors.New("acceptance unavailable") // transient: stays unframed
+		}
+		return Identity{Gaggle: "web"}, nil
+	}
+	a, err := New(handle, Config{
+		Temporal: r.temporal, Now: func() time.Time { return base }, Margin: time.Minute,
+		Identify:  func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+		Open:      func(context.Context) (map[string]bool, error) { return nil, nil },
+		Watermark: mark,
+		Closed:    func(context.Context, time.Time) ([]ClosedRun, error) { return closes, nil },
+		Hooks:     func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reattach(t.Context(), handle, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(a)
+	_ = a.Tick(t.Context())
+	waitIdle(a)
+	_ = a.Stop(t.Context())
+	if got := mark.position(); !got.Before(closes[0].CloseTime) {
+		t.Fatalf("watermark %v passed the unframed run closed at %v", got, closes[0].CloseTime)
 	}
 }

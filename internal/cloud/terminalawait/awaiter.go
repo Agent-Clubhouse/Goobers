@@ -3,21 +3,31 @@
 // (internal/terminalhooks/frame) with the run's outcome. It is the cloud
 // counterpart of the deleted daemon awaitInto (#7783).
 //
-// An awaiter is bound to one lease epoch's handle and stops with it. Hooks may
-// fire more than once for a run (a successor re-fires what a crashed leader
-// began), so every hook must be idempotent; the frame already requires it of
-// Finalize. A run is picked up while it is open, and also after it closes while
-// it still holds claims, so a leader that died between the close and the hooks
-// does not leave the run's claims to expire. A failed attempt (an unreachable
-// Temporal, an unidentifiable run) is reported and retried on the next Tick; it
-// never blocks readiness.
+// An awaiter is bound to one lease epoch's handle and stops with it. Within an
+// epoch the frame fires once per run: a completed run is remembered, and only a
+// failed Finalize (the claim release) is retried, with capped backoff. ACROSS
+// epochs a successor may re-fire what a crashed leader began, so every hook must
+// be idempotent. The frame already requires it of Finalize; a hook with an
+// external side effect (3b: parking labels, comments, branch delete) must carry
+// a durable idempotency key derived from the run, either an IdempotencyKey on
+// the provider write or an effect key in the terminal_report outbox.
+//
+// A run is picked up while it is open, while it still holds claims, and, so that
+// a run which closed while no leader was awaiting it (a leader gap, the
+// concurrency cap) is never lost, by a durable closed-run watermark: every Tick
+// lists the runs closed after the watermark (less a skew margin), and the
+// watermark advances only past runs whose frame completed. Closed runs therefore
+// fire late, never not at all. A failed attempt is reported and retried on the
+// next Tick; it never blocks readiness.
 package terminalawait
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"go.temporal.io/sdk/client"
 
@@ -54,6 +64,20 @@ type Config struct {
 	// ClaimHolders lists runs that currently hold claims, so a run that closed
 	// before its hooks fired is still picked up. Optional.
 	ClaimHolders func(ctx context.Context) ([]string, error)
+	// Closed lists the runs that closed after since, with their close times (a
+	// discovery hint: visibility is eventually consistent, hence Margin).
+	// Optional; with Watermark it makes discovery of closed runs durable.
+	Closed func(ctx context.Context, since time.Time) ([]ClosedRun, error)
+	// Watermark persists how far closed-run discovery has completed. Required
+	// with Closed.
+	Watermark Watermark
+	// Margin is how far before the watermark Closed looks, to cover visibility
+	// lag (default 10m).
+	Margin time.Duration
+	// RetryBase and RetryMax bound the backoff of a failed Finalize (defaults 2s
+	// and 5m).
+	RetryBase, RetryMax time.Duration
+	Now                 func() time.Time
 	// Hooks builds the frame for one run's identity.
 	Hooks func(handle *lease.Handle, id Identity) *frame.Hooks
 	// MaxConcurrent bounds simultaneous awaiters (default 256); further runs
@@ -62,17 +86,49 @@ type Config struct {
 	Report        func(error)
 }
 
+// ClosedRun is a run observed closed in Temporal visibility.
+type ClosedRun struct {
+	RunID     string
+	CloseTime time.Time
+}
+
+// Watermark is the durable closed-run discovery position (terminalwatermarkpg).
+type Watermark interface {
+	// Load returns the position, false when none was ever recorded.
+	Load(ctx context.Context) (time.Time, bool, error)
+	// Advance moves it forward under the epoch's fence.
+	Advance(ctx context.Context, handle *lease.Handle, through time.Time) error
+}
+
+// retryState is a run whose frame ran but whose Finalize failed.
+type retryState struct {
+	hooks    *frame.Hooks
+	out      frame.Outcome
+	attempts int
+	next     time.Time
+}
+
 // Awaiters is the epoch's awaiter set (it satisfies epoch.Awaiters).
 type Awaiters struct {
 	cfg    Config
 	handle *lease.Handle
 
-	mu       sync.Mutex
-	running  map[string]struct{}
-	cancel   context.CancelFunc
-	ctx      context.Context
-	stopping bool
-	wg       sync.WaitGroup
+	mu      sync.Mutex
+	running map[string]struct{}
+	// done holds the runs whose frame completed (or that this instance does not
+	// own) in this epoch; they are never fired again here.
+	done  map[string]struct{}
+	retry map[string]*retryState
+	// closedAt is the close time of each closed run discovered but not yet done;
+	// the watermark cannot pass the earliest of them.
+	closedAt    map[string]time.Time
+	maxClosed   time.Time
+	watermark   time.Time
+	initialized bool
+	cancel      context.CancelFunc
+	ctx         context.Context
+	stopping    bool
+	wg          sync.WaitGroup
 }
 
 // New returns the awaiters for one acquired epoch.
@@ -86,7 +142,27 @@ func New(handle *lease.Handle, cfg Config) (*Awaiters, error) {
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 256
 	}
-	return &Awaiters{cfg: cfg, handle: handle, running: map[string]struct{}{}}, nil
+	switch {
+	case cfg.Closed != nil && cfg.Watermark == nil:
+		return nil, errors.New("terminal awaiter: closed-run discovery requires a durable watermark")
+	}
+	if cfg.Margin <= 0 {
+		cfg.Margin = 10 * time.Minute
+	}
+	if cfg.RetryBase <= 0 {
+		cfg.RetryBase = 2 * time.Second
+	}
+	if cfg.RetryMax <= 0 {
+		cfg.RetryMax = 5 * time.Minute
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	return &Awaiters{
+		cfg: cfg, handle: handle,
+		running: map[string]struct{}{}, done: map[string]struct{}{},
+		retry: map[string]*retryState{}, closedAt: map[string]time.Time{},
+	}, nil
 }
 
 // Reattach starts an awaiter for every open run and every closed run still
@@ -128,10 +204,117 @@ func (a *Awaiters) discover(ctx context.Context, open map[string]bool) error {
 		}
 		runs = append(runs, holders...)
 	}
+	closed, err := a.discoverClosed(ctx)
+	if err != nil {
+		return err
+	}
 	for _, run := range runs {
 		a.start(run)
 	}
+	for _, run := range closed {
+		a.start(run.RunID)
+	}
+	a.startRetries()
+	a.advanceWatermark(ctx)
 	return nil
+}
+
+// discoverClosed lists the runs closed since the durable watermark (less the
+// margin), earliest first. The first epoch ever starts the watermark at now.
+func (a *Awaiters) discoverClosed(ctx context.Context) ([]ClosedRun, error) {
+	if a.cfg.Closed == nil {
+		return nil, nil
+	}
+	a.mu.Lock()
+	initialized, mark := a.initialized, a.watermark
+	a.mu.Unlock()
+	if !initialized {
+		through, ok, err := a.cfg.Watermark.Load(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("terminal awaiter: load watermark: %w", err)
+		}
+		if !ok {
+			through = a.cfg.Now()
+			if err := a.cfg.Watermark.Advance(ctx, a.handle, through); err != nil {
+				return nil, fmt.Errorf("terminal awaiter: initialise watermark: %w", err)
+			}
+		}
+		a.mu.Lock()
+		a.initialized, a.watermark, mark = true, through, through
+		a.mu.Unlock()
+	}
+	closed, err := a.cfg.Closed(ctx, mark.Add(-a.cfg.Margin))
+	if err != nil {
+		return nil, fmt.Errorf("terminal awaiter: list closed runs: %w", err)
+	}
+	sort.Slice(closed, func(i, j int) bool { return closed[i].CloseTime.Before(closed[j].CloseTime) })
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	fresh := closed[:0:0]
+	for _, run := range closed {
+		if _, ok := a.done[run.RunID]; ok {
+			continue
+		}
+		a.closedAt[run.RunID] = run.CloseTime
+		fresh = append(fresh, run)
+	}
+	for _, run := range closed {
+		if run.CloseTime.After(a.maxClosed) {
+			a.maxClosed = run.CloseTime
+		}
+	}
+	return fresh, nil
+}
+
+// advanceWatermark moves the durable position to just before the earliest closed
+// run still unframed, or to the latest close seen when none is pending. A failure
+// is reported and leaves the position where it was (late, never lost).
+func (a *Awaiters) advanceWatermark(ctx context.Context) {
+	if a.cfg.Closed == nil {
+		return
+	}
+	a.mu.Lock()
+	target := a.maxClosed
+	for _, at := range a.closedAt {
+		if at.Before(target) {
+			target = at
+		}
+	}
+	if len(a.closedAt) > 0 {
+		target = target.Add(-time.Nanosecond)
+	}
+	if !target.After(a.watermark) {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	if err := a.cfg.Watermark.Advance(ctx, a.handle, target); err != nil {
+		a.report(ctx, fmt.Errorf("terminal awaiter: advance watermark: %w", err))
+		return
+	}
+	a.mu.Lock()
+	if target.After(a.watermark) {
+		a.watermark = target
+	}
+	a.mu.Unlock()
+}
+
+// startRetries re-runs Finalize for every run whose backoff has elapsed.
+func (a *Awaiters) startRetries() {
+	now := a.cfg.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.stopping || a.ctx == nil {
+		return
+	}
+	for runID, st := range a.retry {
+		if _, ok := a.running[runID]; ok || len(a.running) >= a.cfg.MaxConcurrent || now.Before(st.next) {
+			continue
+		}
+		a.running[runID] = struct{}{}
+		a.wg.Add(1)
+		go a.refinalize(a.ctx, runID, st)
+	}
 }
 
 func (a *Awaiters) start(runID string) {
@@ -142,6 +325,12 @@ func (a *Awaiters) start(runID string) {
 	}
 	if _, ok := a.running[runID]; ok || len(a.running) >= a.cfg.MaxConcurrent {
 		return
+	}
+	if _, ok := a.done[runID]; ok {
+		return
+	}
+	if _, ok := a.retry[runID]; ok {
+		return // only its Finalize is outstanding; startRetries owns it
 	}
 	a.running[runID] = struct{}{}
 	a.wg.Add(1)
@@ -156,6 +345,12 @@ func (a *Awaiters) await(ctx context.Context, runID string) {
 		a.mu.Unlock()
 	}()
 	id, err := a.cfg.Identify(ctx, runID)
+	if errors.Is(err, ErrUnidentifiable) {
+		// A generated child, or a run this instance never accepted: its owner
+		// handles it. Remembered, so it is neither re-identified nor reported.
+		a.markDone(runID)
+		return
+	}
 	if err != nil {
 		a.report(ctx, fmt.Errorf("terminal awaiter: identify run %s: %w", runID, err))
 		return
@@ -173,7 +368,57 @@ func (a *Awaiters) await(ctx context.Context, runID string) {
 		out.Result = engine.RunResult{} // a walk-level failure carries no status
 	}
 	out.Phase = frame.PhaseFor(out.Result)
-	a.cfg.Hooks(a.handle, id).Run(ctx, out)
+	hooks := a.cfg.Hooks(a.handle, id)
+	if err := hooks.RunFinalizing(ctx, out); err != nil {
+		if ctx.Err() == nil {
+			a.scheduleRetry(runID, &retryState{hooks: hooks, out: out, attempts: 1}, ctx)
+		}
+		return
+	}
+	a.markDone(runID)
+}
+
+// refinalize retries only the claim release of a run whose frame already ran.
+func (a *Awaiters) refinalize(ctx context.Context, runID string, st *retryState) {
+	defer a.wg.Done()
+	defer func() {
+		a.mu.Lock()
+		delete(a.running, runID)
+		a.mu.Unlock()
+	}()
+	if err := st.hooks.Refinalize(ctx, st.out); err != nil {
+		if ctx.Err() == nil {
+			st.attempts++
+			a.scheduleRetry(runID, st, ctx)
+		}
+		return
+	}
+	a.mu.Lock()
+	delete(a.retry, runID)
+	a.mu.Unlock()
+	a.markDone(runID)
+}
+
+func (a *Awaiters) scheduleRetry(runID string, st *retryState, ctx context.Context) {
+	backoff := a.cfg.RetryBase
+	for i := 1; i < st.attempts && backoff < a.cfg.RetryMax; i++ {
+		backoff *= 2
+	}
+	if backoff > a.cfg.RetryMax {
+		backoff = a.cfg.RetryMax
+	}
+	st.next = a.cfg.Now().Add(backoff)
+	a.mu.Lock()
+	a.retry[runID] = st
+	a.mu.Unlock()
+	a.report(ctx, fmt.Errorf("terminal awaiter: finalize run %s failed (attempt %d), retrying after %s", runID, st.attempts, backoff))
+}
+
+func (a *Awaiters) markDone(runID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.done[runID] = struct{}{}
+	delete(a.closedAt, runID)
 }
 
 func (a *Awaiters) report(ctx context.Context, err error) {

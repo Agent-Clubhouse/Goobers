@@ -870,6 +870,28 @@ tables:
     - owner_epoch
     - delivered_at
     delete: true
+- schema: control
+  table: terminal_watermark
+  provisioned: true
+  fence: owner_token
+  rationale: The terminal awaiter records the time through which every closed run has had its terminal frame fired, under the controller-lease
+    fence. A BEFORE UPDATE trigger keeps closed_through and owner_epoch monotonic.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - closed_through
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - closed_through
+    - owner_epoch
+    update:
+    - closed_through
+    - owner_epoch
+    - updated_at
 - schema: journal
   table: run
   provisioned: true
