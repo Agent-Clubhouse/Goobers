@@ -45,6 +45,9 @@ const (
 
 // JournalOp is one journal write in a run's projection, in append order.
 type JournalOp struct {
+	// Receipt requests a durable per-op identity for a fan-out lifecycle event.
+	Receipt bool `json:"receipt,omitempty"`
+
 	// ChildStageStart is reserved for a version-gated child lifecycle caller.
 	// Existing stageStarted calls leave it nil and acquire no child authority.
 	ChildStageStart *livejournal.ChildStageStart `json:"childStageStart,omitempty"`
@@ -150,6 +153,7 @@ type runJournal struct {
 	// Receipts are separate from projection ordinals and remain workflow state
 	// reconstructed from recorded activity results, never mutable journal reads.
 	childOrigins map[string]livejournal.ChildOriginReceipt
+	children     *childFamily
 
 	owner         *journalCommitOwner
 	branch        int
@@ -960,5 +964,5 @@ func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
 func (r *runJournal) taskAttemptEnvelope(env apiv1.InvocationEnvelope, task apiv1.Task, attempt int) apiv1.InvocationEnvelope {
 	env.Attempt = int32(attempt)
 	env.ArtifactPublication = r.artifactPublication(task)
-	return env
+	return r.childAttemptEnvelope(env, task)
 }

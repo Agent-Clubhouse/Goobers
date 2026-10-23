@@ -1,0 +1,530 @@
+Cloud cutover blockers by workflow:
+
+goobers/backlog-curation (DSL 2.0)
+  - RUNTIME002 stage "reconcile-backlog" /spec/tasks/0/runsOn: stage "reconcile-backlog" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "implementation-feedback" /spec/tasks/1/runsOn: stage "implementation-feedback" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "sample-ready-pool" /spec/tasks/2/runsOn: stage "sample-ready-pool" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "query-backlog" /spec/tasks/3/runsOn: stage "query-backlog" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "surface-duplicates" /spec/tasks/4/runsOn: stage "surface-duplicates" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "curate" /spec/tasks/5/runsOn: stage "curate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "release-claim" /spec/tasks/6/runsOn: stage "release-claim" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/branch-cleanup (DSL 2.0)
+  - RUNTIME002 stage "reconcile-branches" /spec/tasks/0/runsOn: stage "reconcile-branches" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/curate-resweep (DSL 2.0)
+  - RUNTIME002 stage "query-resweep" /spec/tasks/0/runsOn: stage "query-resweep" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "surface-duplicates" /spec/tasks/1/runsOn: stage "surface-duplicates" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "curate" /spec/tasks/2/runsOn: stage "curate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "release-claim" /spec/tasks/3/runsOn: stage "release-claim" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/decomposition (DSL 2.0)
+  - RUNTIME002 stage "select-source" /spec/tasks/0/runsOn: stage "select-source" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "design-slices" /spec/tasks/1/runsOn: stage "design-slices" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "validate-plan" /spec/tasks/2/runsOn: stage "validate-plan" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "publish-slices" /spec/tasks/3/runsOn: stage "publish-slices" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-for-human" /spec/tasks/4/runsOn: stage "park-for-human" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-unresolved-decision" /spec/tasks/5/runsOn: stage "park-unresolved-decision" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-repass-exhausted" /spec/tasks/6/runsOn: stage "park-repass-exhausted" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/docs-updater (DSL 2.0)
+  - RUNTIME002 stage "signal-gather" /spec/tasks/0/runsOn: stage "signal-gather" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "update-docs" /spec/tasks/1/runsOn: stage "update-docs" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "validate" /spec/tasks/2/runsOn: stage "validate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "push-branch" /spec/tasks/3/runsOn: stage "push-branch" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "open-pr" /spec/tasks/4/runsOn: stage "open-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/implementation (DSL 2.0)
+  - RUNTIME002 stage "preflight-repo-write" /spec/tasks/0/runsOn: stage "preflight-repo-write" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "query-backlog" /spec/tasks/1/runsOn: stage "query-backlog" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "recovery-resume" /spec/tasks/2/runsOn: stage "recovery-resume" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-implement-context" /spec/tasks/3/runsOn: stage "gather-implement-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "warm-module-cache" /spec/tasks/4/runsOn: stage "warm-module-cache" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "implement" /spec/tasks/5/runsOn: stage "implement" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "remediate-ci" /spec/tasks/6/runsOn: stage "remediate-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "local-ci" /spec/tasks/7/runsOn: stage "local-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "push-branch" /spec/tasks/8/runsOn: stage "push-branch" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "open-pr" /spec/tasks/9/runsOn: stage "open-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "ci-poll" /spec/tasks/10/runsOn: stage "ci-poll" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "close-out" /spec/tasks/11/runsOn: stage "close-out" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-escalated" /spec/tasks/12/runsOn: stage "park-escalated" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-needs-human" /spec/tasks/13/runsOn: stage "park-needs-human" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review" /spec/gates/1/runsOn: agentic gate "review" has no runsOn and would execute on the control-plane host
+    unblock: add runsOn to the agentic gate
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/implementation-pre-review-experiment (DSL 2.0)
+  - RUNTIME002 stage "preflight-repo-write" /spec/tasks/0/runsOn: stage "preflight-repo-write" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "query-backlog" /spec/tasks/1/runsOn: stage "query-backlog" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "recovery-resume" /spec/tasks/2/runsOn: stage "recovery-resume" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-implement-context" /spec/tasks/3/runsOn: stage "gather-implement-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "warm-module-cache" /spec/tasks/4/runsOn: stage "warm-module-cache" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "implement" /spec/tasks/5/runsOn: stage "implement" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "remediate-ci" /spec/tasks/6/runsOn: stage "remediate-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "pre-review-validation" /spec/tasks/7/runsOn: stage "pre-review-validation" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "local-ci" /spec/tasks/8/runsOn: stage "local-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "push-branch" /spec/tasks/9/runsOn: stage "push-branch" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "open-pr" /spec/tasks/10/runsOn: stage "open-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "ci-poll" /spec/tasks/11/runsOn: stage "ci-poll" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "close-out" /spec/tasks/12/runsOn: stage "close-out" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-escalated" /spec/tasks/13/runsOn: stage "park-escalated" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-needs-human" /spec/tasks/14/runsOn: stage "park-needs-human" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review" /spec/gates/2/runsOn: agentic gate "review" has no runsOn and would execute on the control-plane host
+    unblock: add runsOn to the agentic gate
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/implementation-recovery (DSL 2.0)
+  - RUNTIME002 stage "preflight-repo-write" /spec/tasks/0/runsOn: stage "preflight-repo-write" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "query-backlog" /spec/tasks/1/runsOn: stage "query-backlog" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "recovery-resume" /spec/tasks/2/runsOn: stage "recovery-resume" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-implement-context" /spec/tasks/3/runsOn: stage "gather-implement-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "warm-module-cache" /spec/tasks/4/runsOn: stage "warm-module-cache" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "implement" /spec/tasks/5/runsOn: stage "implement" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "remediate-ci" /spec/tasks/6/runsOn: stage "remediate-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "local-ci" /spec/tasks/7/runsOn: stage "local-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "push-branch" /spec/tasks/8/runsOn: stage "push-branch" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "open-pr" /spec/tasks/9/runsOn: stage "open-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "ci-poll" /spec/tasks/10/runsOn: stage "ci-poll" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "close-out" /spec/tasks/11/runsOn: stage "close-out" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-escalated" /spec/tasks/12/runsOn: stage "park-escalated" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-needs-human" /spec/tasks/13/runsOn: stage "park-needs-human" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review" /spec/gates/1/runsOn: agentic gate "review" has no runsOn and would execute on the control-plane host
+    unblock: add runsOn to the agentic gate
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/merge-review (DSL 2.0)
+  - RUNTIME002 stage "reconcile-post-merge" /spec/tasks/0/runsOn: stage "reconcile-post-merge" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "pr-select" /spec/tasks/1/runsOn: stage "pr-select" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "check-issue-staleness" /spec/tasks/2/runsOn: stage "check-issue-staleness" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-sibling-context" /spec/tasks/3/runsOn: stage "gather-sibling-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "apply-verdict" /spec/tasks/4/runsOn: stage "apply-verdict" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "elect-lander" /spec/tasks/5/runsOn: stage "elect-lander" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "merge-pr" /spec/tasks/6/runsOn: stage "merge-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "queue-watch" /spec/tasks/7/runsOn: stage "queue-watch" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "post-merge" /spec/tasks/8/runsOn: stage "post-merge" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "record-merge-refusal" /spec/tasks/9/runsOn: stage "record-merge-refusal" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "cancel-pending-ci" /spec/tasks/10/runsOn: stage "cancel-pending-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review" /spec/gates/2/runsOn: agentic gate "review" has no runsOn and would execute on the control-plane host
+    unblock: add runsOn to the agentic gate
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/parked-item-report (DSL 2.0)
+  - RUNTIME002 stage "report-candidates" /spec/tasks/0/runsOn: stage "report-candidates" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/pr-remediation (DSL 2.0)
+  - RUNTIME002 stage "update-behind-pr" /spec/tasks/0/runsOn: stage "update-behind-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-pr-context" /spec/tasks/1/runsOn: stage "gather-pr-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-ci-failures" /spec/tasks/2/runsOn: stage "gather-ci-failures" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-sibling-context" /spec/tasks/3/runsOn: stage "gather-sibling-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "rebase-pr" /spec/tasks/4/runsOn: stage "rebase-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "retry-failed-ci" /spec/tasks/5/runsOn: stage "retry-failed-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "remediation-checkpoint" /spec/tasks/6/runsOn: stage "remediation-checkpoint" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-review-threads" /spec/tasks/7/runsOn: stage "gather-review-threads" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "guard-before-agent-context" /spec/tasks/8/runsOn: stage "guard-before-agent-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "guard-before-implement" /spec/tasks/9/runsOn: stage "guard-before-implement" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "warm-module-cache" /spec/tasks/10/runsOn: stage "warm-module-cache" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "classify-feedback-repass" /spec/tasks/11/runsOn: stage "classify-feedback-repass" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "guard-before-review" /spec/tasks/12/runsOn: stage "guard-before-review" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-issue-context" /spec/tasks/13/runsOn: stage "gather-issue-context" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "implement" /spec/tasks/14/runsOn: stage "implement" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "validate-finding-responses" /spec/tasks/15/runsOn: stage "validate-finding-responses" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "local-ci" /spec/tasks/16/runsOn: stage "local-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "guard-before-local-ci" /spec/tasks/17/runsOn: stage "guard-before-local-ci" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "guard-before-push" /spec/tasks/18/runsOn: stage "guard-before-push" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "push-remediated" /spec/tasks/19/runsOn: stage "push-remediated" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "respond-to-findings" /spec/tasks/20/runsOn: stage "respond-to-findings" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "resolve-review-threads" /spec/tasks/21/runsOn: stage "resolve-review-threads" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "release-claim" /spec/tasks/22/runsOn: stage "release-claim" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "release-escalated-claim" /spec/tasks/23/runsOn: stage "release-escalated-claim" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-escalated" /spec/tasks/24/runsOn: stage "park-escalated" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-infrastructure-failure" /spec/tasks/25/runsOn: stage "park-infrastructure-failure" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-invalid-finding-responses" /spec/tasks/26/runsOn: stage "park-invalid-finding-responses" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-stale-feedback" /spec/tasks/27/runsOn: stage "park-stale-feedback" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "park-unresolved-review-threads" /spec/tasks/28/runsOn: stage "park-unresolved-review-threads" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review" /spec/gates/11/runsOn: agentic gate "review" has no runsOn and would execute on the control-plane host
+    unblock: add runsOn to the agentic gate
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/quality-spot-check (DSL 3.1)
+  - RUNTIME001 stage "lenses" /spec/parallels/0: engine does not support spec.parallels
+    unblock: wait for engine parity in #7753 (https://github.com/Agent-Clubhouse/Goobers/issues/7753)
+  - RUNTIME001 stage "lenses" /spec/parallels/0/selection: engine does not support spec.parallels.selection
+    unblock: wait for engine parity in #7754 (https://github.com/Agent-Clubhouse/Goobers/issues/7754)
+  - RUNTIME002 stage "select-lenses" /spec/tasks/0/runsOn: stage "select-lenses" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-maintainability" /spec/tasks/1/runsOn: stage "review-maintainability" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-security" /spec/tasks/2/runsOn: stage "review-security" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-test-coverage" /spec/tasks/3/runsOn: stage "review-test-coverage" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-dependencies" /spec/tasks/4/runsOn: stage "review-dependencies" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "collate" /spec/tasks/5/runsOn: stage "collate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+
+goobers/quality-sprint (DSL 2.0)
+  - RUNTIME001 stage "focus-areas" /spec/parallels/0: engine does not support spec.parallels
+    unblock: wait for engine parity in #7753 (https://github.com/Agent-Clubhouse/Goobers/issues/7753)
+  - RUNTIME002 stage "churn-analysis" /spec/tasks/0/runsOn: stage "churn-analysis" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-security" /spec/tasks/1/runsOn: stage "review-security" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-performance" /spec/tasks/2/runsOn: stage "review-performance" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-maintainability" /spec/tasks/3/runsOn: stage "review-maintainability" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-test-coverage" /spec/tasks/4/runsOn: stage "review-test-coverage" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-dependencies" /spec/tasks/5/runsOn: stage "review-dependencies" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "review-latent-bugs" /spec/tasks/6/runsOn: stage "review-latent-bugs" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "collate" /spec/tasks/7/runsOn: stage "collate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "nominate" /spec/tasks/8/runsOn: stage "nominate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/self-update (DSL 2.0)
+  - RUNTIME002 stage "stage-update" /spec/tasks/0/runsOn: stage "stage-update" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/test-suite-quality (DSL 2.0)
+  - RUNTIME002 stage "gather-recurring-failures" /spec/tasks/0/runsOn: stage "gather-recurring-failures" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "classify-flakes" /spec/tasks/1/runsOn: stage "classify-flakes" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "nominate" /spec/tasks/2/runsOn: stage "nominate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/tutor (DSL 2.0)
+  - RUNTIME002 stage "verify-live-holdouts" /spec/tasks/0/runsOn: stage "verify-live-holdouts" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gather-signals" /spec/tasks/1/runsOn: stage "gather-signals" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "analyze" /spec/tasks/2/runsOn: stage "analyze" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "draft-change" /spec/tasks/3/runsOn: stage "draft-change" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "gate-removal-guard" /spec/tasks/4/runsOn: stage "gate-removal-guard" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "validate-config" /spec/tasks/5/runsOn: stage "validate-config" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "check-fail-first" /spec/tasks/6/runsOn: stage "check-fail-first" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "push-branch" /spec/tasks/7/runsOn: stage "push-branch" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "open-pr" /spec/tasks/8/runsOn: stage "open-pr" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+goobers/work-nomination (DSL 2.0)
+  - RUNTIME002 stage "gather-signals" /spec/tasks/0/runsOn: stage "gather-signals" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "nominate" /spec/tasks/1/runsOn: stage "nominate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
+Blockers grouped by remedy:
+  RUNTIME001 spec.parallels — wait for engine parity in #7753
+    - goobers/quality-spot-check stage "lenses" /spec/parallels/0
+    - goobers/quality-sprint stage "focus-areas" /spec/parallels/0
+  RUNTIME001 spec.parallels.selection — wait for engine parity in #7754
+    - goobers/quality-spot-check stage "lenses" /spec/parallels/0/selection
+  RUNTIME002 — add runsOn that selects a non-self runner
+    - goobers/backlog-curation stage "reconcile-backlog" /spec/tasks/0/runsOn
+    - goobers/backlog-curation stage "implementation-feedback" /spec/tasks/1/runsOn
+    - goobers/backlog-curation stage "sample-ready-pool" /spec/tasks/2/runsOn
+    - goobers/backlog-curation stage "query-backlog" /spec/tasks/3/runsOn
+    - goobers/backlog-curation stage "surface-duplicates" /spec/tasks/4/runsOn
+    - goobers/backlog-curation stage "curate" /spec/tasks/5/runsOn
+    - goobers/backlog-curation stage "release-claim" /spec/tasks/6/runsOn
+    - goobers/branch-cleanup stage "reconcile-branches" /spec/tasks/0/runsOn
+    - goobers/curate-resweep stage "query-resweep" /spec/tasks/0/runsOn
+    - goobers/curate-resweep stage "surface-duplicates" /spec/tasks/1/runsOn
+    - goobers/curate-resweep stage "curate" /spec/tasks/2/runsOn
+    - goobers/curate-resweep stage "release-claim" /spec/tasks/3/runsOn
+    - goobers/decomposition stage "select-source" /spec/tasks/0/runsOn
+    - goobers/decomposition stage "design-slices" /spec/tasks/1/runsOn
+    - goobers/decomposition stage "validate-plan" /spec/tasks/2/runsOn
+    - goobers/decomposition stage "publish-slices" /spec/tasks/3/runsOn
+    - goobers/decomposition stage "park-for-human" /spec/tasks/4/runsOn
+    - goobers/decomposition stage "park-unresolved-decision" /spec/tasks/5/runsOn
+    - goobers/decomposition stage "park-repass-exhausted" /spec/tasks/6/runsOn
+    - goobers/docs-updater stage "signal-gather" /spec/tasks/0/runsOn
+    - goobers/docs-updater stage "update-docs" /spec/tasks/1/runsOn
+    - goobers/docs-updater stage "validate" /spec/tasks/2/runsOn
+    - goobers/docs-updater stage "push-branch" /spec/tasks/3/runsOn
+    - goobers/docs-updater stage "open-pr" /spec/tasks/4/runsOn
+    - goobers/implementation stage "preflight-repo-write" /spec/tasks/0/runsOn
+    - goobers/implementation stage "query-backlog" /spec/tasks/1/runsOn
+    - goobers/implementation stage "recovery-resume" /spec/tasks/2/runsOn
+    - goobers/implementation stage "gather-implement-context" /spec/tasks/3/runsOn
+    - goobers/implementation stage "warm-module-cache" /spec/tasks/4/runsOn
+    - goobers/implementation stage "implement" /spec/tasks/5/runsOn
+    - goobers/implementation stage "remediate-ci" /spec/tasks/6/runsOn
+    - goobers/implementation stage "local-ci" /spec/tasks/7/runsOn
+    - goobers/implementation stage "push-branch" /spec/tasks/8/runsOn
+    - goobers/implementation stage "open-pr" /spec/tasks/9/runsOn
+    - goobers/implementation stage "ci-poll" /spec/tasks/10/runsOn
+    - goobers/implementation stage "close-out" /spec/tasks/11/runsOn
+    - goobers/implementation stage "park-escalated" /spec/tasks/12/runsOn
+    - goobers/implementation stage "park-needs-human" /spec/tasks/13/runsOn
+    - goobers/implementation-pre-review-experiment stage "preflight-repo-write" /spec/tasks/0/runsOn
+    - goobers/implementation-pre-review-experiment stage "query-backlog" /spec/tasks/1/runsOn
+    - goobers/implementation-pre-review-experiment stage "recovery-resume" /spec/tasks/2/runsOn
+    - goobers/implementation-pre-review-experiment stage "gather-implement-context" /spec/tasks/3/runsOn
+    - goobers/implementation-pre-review-experiment stage "warm-module-cache" /spec/tasks/4/runsOn
+    - goobers/implementation-pre-review-experiment stage "implement" /spec/tasks/5/runsOn
+    - goobers/implementation-pre-review-experiment stage "remediate-ci" /spec/tasks/6/runsOn
+    - goobers/implementation-pre-review-experiment stage "pre-review-validation" /spec/tasks/7/runsOn
+    - goobers/implementation-pre-review-experiment stage "local-ci" /spec/tasks/8/runsOn
+    - goobers/implementation-pre-review-experiment stage "push-branch" /spec/tasks/9/runsOn
+    - goobers/implementation-pre-review-experiment stage "open-pr" /spec/tasks/10/runsOn
+    - goobers/implementation-pre-review-experiment stage "ci-poll" /spec/tasks/11/runsOn
+    - goobers/implementation-pre-review-experiment stage "close-out" /spec/tasks/12/runsOn
+    - goobers/implementation-pre-review-experiment stage "park-escalated" /spec/tasks/13/runsOn
+    - goobers/implementation-pre-review-experiment stage "park-needs-human" /spec/tasks/14/runsOn
+    - goobers/implementation-recovery stage "preflight-repo-write" /spec/tasks/0/runsOn
+    - goobers/implementation-recovery stage "query-backlog" /spec/tasks/1/runsOn
+    - goobers/implementation-recovery stage "recovery-resume" /spec/tasks/2/runsOn
+    - goobers/implementation-recovery stage "gather-implement-context" /spec/tasks/3/runsOn
+    - goobers/implementation-recovery stage "warm-module-cache" /spec/tasks/4/runsOn
+    - goobers/implementation-recovery stage "implement" /spec/tasks/5/runsOn
+    - goobers/implementation-recovery stage "remediate-ci" /spec/tasks/6/runsOn
+    - goobers/implementation-recovery stage "local-ci" /spec/tasks/7/runsOn
+    - goobers/implementation-recovery stage "push-branch" /spec/tasks/8/runsOn
+    - goobers/implementation-recovery stage "open-pr" /spec/tasks/9/runsOn
+    - goobers/implementation-recovery stage "ci-poll" /spec/tasks/10/runsOn
+    - goobers/implementation-recovery stage "close-out" /spec/tasks/11/runsOn
+    - goobers/implementation-recovery stage "park-escalated" /spec/tasks/12/runsOn
+    - goobers/implementation-recovery stage "park-needs-human" /spec/tasks/13/runsOn
+    - goobers/merge-review stage "reconcile-post-merge" /spec/tasks/0/runsOn
+    - goobers/merge-review stage "pr-select" /spec/tasks/1/runsOn
+    - goobers/merge-review stage "check-issue-staleness" /spec/tasks/2/runsOn
+    - goobers/merge-review stage "gather-sibling-context" /spec/tasks/3/runsOn
+    - goobers/merge-review stage "apply-verdict" /spec/tasks/4/runsOn
+    - goobers/merge-review stage "elect-lander" /spec/tasks/5/runsOn
+    - goobers/merge-review stage "merge-pr" /spec/tasks/6/runsOn
+    - goobers/merge-review stage "queue-watch" /spec/tasks/7/runsOn
+    - goobers/merge-review stage "post-merge" /spec/tasks/8/runsOn
+    - goobers/merge-review stage "record-merge-refusal" /spec/tasks/9/runsOn
+    - goobers/merge-review stage "cancel-pending-ci" /spec/tasks/10/runsOn
+    - goobers/parked-item-report stage "report-candidates" /spec/tasks/0/runsOn
+    - goobers/pr-remediation stage "update-behind-pr" /spec/tasks/0/runsOn
+    - goobers/pr-remediation stage "gather-pr-context" /spec/tasks/1/runsOn
+    - goobers/pr-remediation stage "gather-ci-failures" /spec/tasks/2/runsOn
+    - goobers/pr-remediation stage "gather-sibling-context" /spec/tasks/3/runsOn
+    - goobers/pr-remediation stage "rebase-pr" /spec/tasks/4/runsOn
+    - goobers/pr-remediation stage "retry-failed-ci" /spec/tasks/5/runsOn
+    - goobers/pr-remediation stage "remediation-checkpoint" /spec/tasks/6/runsOn
+    - goobers/pr-remediation stage "gather-review-threads" /spec/tasks/7/runsOn
+    - goobers/pr-remediation stage "guard-before-agent-context" /spec/tasks/8/runsOn
+    - goobers/pr-remediation stage "guard-before-implement" /spec/tasks/9/runsOn
+    - goobers/pr-remediation stage "warm-module-cache" /spec/tasks/10/runsOn
+    - goobers/pr-remediation stage "classify-feedback-repass" /spec/tasks/11/runsOn
+    - goobers/pr-remediation stage "guard-before-review" /spec/tasks/12/runsOn
+    - goobers/pr-remediation stage "gather-issue-context" /spec/tasks/13/runsOn
+    - goobers/pr-remediation stage "implement" /spec/tasks/14/runsOn
+    - goobers/pr-remediation stage "validate-finding-responses" /spec/tasks/15/runsOn
+    - goobers/pr-remediation stage "local-ci" /spec/tasks/16/runsOn
+    - goobers/pr-remediation stage "guard-before-local-ci" /spec/tasks/17/runsOn
+    - goobers/pr-remediation stage "guard-before-push" /spec/tasks/18/runsOn
+    - goobers/pr-remediation stage "push-remediated" /spec/tasks/19/runsOn
+    - goobers/pr-remediation stage "respond-to-findings" /spec/tasks/20/runsOn
+    - goobers/pr-remediation stage "resolve-review-threads" /spec/tasks/21/runsOn
+    - goobers/pr-remediation stage "release-claim" /spec/tasks/22/runsOn
+    - goobers/pr-remediation stage "release-escalated-claim" /spec/tasks/23/runsOn
+    - goobers/pr-remediation stage "park-escalated" /spec/tasks/24/runsOn
+    - goobers/pr-remediation stage "park-infrastructure-failure" /spec/tasks/25/runsOn
+    - goobers/pr-remediation stage "park-invalid-finding-responses" /spec/tasks/26/runsOn
+    - goobers/pr-remediation stage "park-stale-feedback" /spec/tasks/27/runsOn
+    - goobers/pr-remediation stage "park-unresolved-review-threads" /spec/tasks/28/runsOn
+    - goobers/quality-spot-check stage "select-lenses" /spec/tasks/0/runsOn
+    - goobers/quality-spot-check stage "review-maintainability" /spec/tasks/1/runsOn
+    - goobers/quality-spot-check stage "review-security" /spec/tasks/2/runsOn
+    - goobers/quality-spot-check stage "review-test-coverage" /spec/tasks/3/runsOn
+    - goobers/quality-spot-check stage "review-dependencies" /spec/tasks/4/runsOn
+    - goobers/quality-spot-check stage "collate" /spec/tasks/5/runsOn
+    - goobers/quality-sprint stage "churn-analysis" /spec/tasks/0/runsOn
+    - goobers/quality-sprint stage "review-security" /spec/tasks/1/runsOn
+    - goobers/quality-sprint stage "review-performance" /spec/tasks/2/runsOn
+    - goobers/quality-sprint stage "review-maintainability" /spec/tasks/3/runsOn
+    - goobers/quality-sprint stage "review-test-coverage" /spec/tasks/4/runsOn
+    - goobers/quality-sprint stage "review-dependencies" /spec/tasks/5/runsOn
+    - goobers/quality-sprint stage "review-latent-bugs" /spec/tasks/6/runsOn
+    - goobers/quality-sprint stage "collate" /spec/tasks/7/runsOn
+    - goobers/quality-sprint stage "nominate" /spec/tasks/8/runsOn
+    - goobers/self-update stage "stage-update" /spec/tasks/0/runsOn
+    - goobers/test-suite-quality stage "gather-recurring-failures" /spec/tasks/0/runsOn
+    - goobers/test-suite-quality stage "classify-flakes" /spec/tasks/1/runsOn
+    - goobers/test-suite-quality stage "nominate" /spec/tasks/2/runsOn
+    - goobers/tutor stage "verify-live-holdouts" /spec/tasks/0/runsOn
+    - goobers/tutor stage "gather-signals" /spec/tasks/1/runsOn
+    - goobers/tutor stage "analyze" /spec/tasks/2/runsOn
+    - goobers/tutor stage "draft-change" /spec/tasks/3/runsOn
+    - goobers/tutor stage "gate-removal-guard" /spec/tasks/4/runsOn
+    - goobers/tutor stage "validate-config" /spec/tasks/5/runsOn
+    - goobers/tutor stage "check-fail-first" /spec/tasks/6/runsOn
+    - goobers/tutor stage "push-branch" /spec/tasks/7/runsOn
+    - goobers/tutor stage "open-pr" /spec/tasks/8/runsOn
+    - goobers/work-nomination stage "gather-signals" /spec/tasks/0/runsOn
+    - goobers/work-nomination stage "nominate" /spec/tasks/1/runsOn
+  RUNTIME002 — add runsOn to the agentic gate
+    - goobers/implementation stage "review" /spec/gates/1/runsOn
+    - goobers/implementation-pre-review-experiment stage "review" /spec/gates/2/runsOn
+    - goobers/implementation-recovery stage "review" /spec/gates/1/runsOn
+    - goobers/merge-review stage "review" /spec/gates/2/runsOn
+    - goobers/pr-remediation stage "review" /spec/gates/11/runsOn
+  RUNTIME003 — migrate the workflow to DSL 3.0
+    - goobers/backlog-curation /dslVersion
+    - goobers/branch-cleanup /dslVersion
+    - goobers/curate-resweep /dslVersion
+    - goobers/decomposition /dslVersion
+    - goobers/docs-updater /dslVersion
+    - goobers/implementation /dslVersion
+    - goobers/implementation-pre-review-experiment /dslVersion
+    - goobers/implementation-recovery /dslVersion
+    - goobers/merge-review /dslVersion
+    - goobers/parked-item-report /dslVersion
+    - goobers/pr-remediation /dslVersion
+    - goobers/quality-sprint /dslVersion
+    - goobers/self-update /dslVersion
+    - goobers/test-suite-quality /dslVersion
+    - goobers/tutor /dslVersion
+    - goobers/work-nomination /dslVersion
+
+blocked: 17 workflows, 162 blockers (159 config fixes, 3 waiting on P4 items: #7753, #7754)

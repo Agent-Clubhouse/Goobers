@@ -199,6 +199,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/cloud/lease",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud PostgreSQL lease tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/migrate",
       "coverage": "none",
       "category": "not-selected",
@@ -209,6 +215,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud PostgreSQL configuration tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/podauth",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud grant-revocation and auth assembly tests run in Linux unit and cloud-pg jobs; shared key-ring portability is covered in internal/podauth, and the cloud control plane has no Windows deployment target."
     },
     {
       "package": "internal/clidocs",

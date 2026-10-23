@@ -1,8 +1,8 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/cloudreadiness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
@@ -26,11 +27,7 @@ func TestRuntimeSupportColumnMatchesEngineRefusals(t *testing.T) {
 			t.Errorf("%s runner support = %q, want supported", feature.ID, runtimeLevel(feature, workflow.RuntimeRunner))
 		}
 	}
-	var want []workflow.FeatureID
-	for id := range engineRuntimeBlockers {
-		want = append(want, id)
-	}
-	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+	want := cloudreadiness.EngineUnsupportedFeatureIDs()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("engine-unsupported registry features = %v, want refusal set %v", got, want)
 	}
@@ -76,10 +73,36 @@ func TestValidateTargetCloudReportsRuntimeBlockers(t *testing.T) {
 	if !strings.Contains(cloudOut, "goobers fix --to 3.0") {
 		t.Errorf("cloud validate omitted DSL migration guidance:\n%s", cloudOut)
 	}
+	for _, text := range []string{
+		"Cloud cutover blockers by workflow:",
+		"Blockers grouped by remedy:",
+		"blocked:",
+	} {
+		if !strings.Contains(cloudOut, text) {
+			t.Errorf("cloud validate omitted %q:\n%s", text, cloudOut)
+		}
+	}
+
+	jsonCode, jsonOut, jsonErr := runArgs(t, "validate", "--target", "cloud", "--format", "json", root)
+	if jsonCode != 1 || jsonErr != "" {
+		t.Fatalf("cloud JSON validate = code %d, stdout %q, stderr %q", jsonCode, jsonOut, jsonErr)
+	}
+	var readiness cloudreadiness.Result
+	if err := json.Unmarshal([]byte(jsonOut), &readiness); err != nil {
+		t.Fatalf("decode cloud readiness: %v\n%s", err, jsonOut)
+	}
+	if readiness.SchemaVersion != cloudreadiness.SchemaVersion || readiness.CloudReady ||
+		readiness.Summary.TotalBlockers == 0 {
+		t.Fatalf("cloud readiness JSON = %+v", readiness)
+	}
 
 	if code, _, stderr := runArgs(t, "validate", "--target", "edge", root); code != 2 ||
 		!strings.Contains(stderr, "--target must be local or cloud") {
 		t.Fatalf("invalid target = code %d, stderr %q", code, stderr)
+	}
+	if code, _, stderr := runArgs(t, "validate", "--target", "cloud", "--format", "json", "--json", root); code != 2 ||
+		!strings.Contains(stderr, "mutually exclusive") {
+		t.Fatalf("conflicting JSON formats = code %d, stderr %q", code, stderr)
 	}
 }
 

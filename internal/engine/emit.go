@@ -246,7 +246,7 @@ func (r *runJournal) emitTerminal(ctx workflow.Context) {
 // liveOpFrom converts one accumulated JournalOp to the wire op the journal
 // plane accepts.
 func liveOpFrom(op JournalOp) livejournal.Op {
-	out := livejournal.Op{Branch: opEmitBranch(op), Kind: op.Kind, Key: op.EmitKey, Time: op.Time, ChildStageStart: op.ChildStageStart}
+	out := livejournal.Op{Branch: opEmitBranch(op), Kind: op.Kind, Key: op.EmitKey, Time: op.Time, ChildStageStart: op.ChildStageStart, Receipt: op.Receipt}
 	switch op.Kind {
 	case opAppend:
 		if op.Event != nil {

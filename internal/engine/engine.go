@@ -252,7 +252,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 }
 
 func run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil {
+	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && !childProtocolEnabled(ctx) {
 		return RunResult{}, err
 	}
 	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
@@ -918,7 +918,12 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// reused for the produced grade below so the admission check and the
 	// provenance the stage emits describe the same bindings.
 	qualifiedInputs := wf.SupportsStageQualifiedInputs(machine)
+	bindings, err := rec.branchBindings(t.Name)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q branch inputs: %w", t.Name, err)
+	}
 	inputGrades := engineInputGrades(t, upstreamResult, completed, qualifiedInputs)
+	inputGrades = bindings.addGrades(inputGrades)
 	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
 	if integrityErr == nil {
 		integrityErr = apiv1.ValidateResolvedInputIntegrity(inputGrades, env.MinimumIntegrity)
@@ -947,6 +952,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
+	bindings.apply(env.Inputs)
 	rec.staticJoinInputs(t.Name, env.Inputs)
 	env.Inputs, err = backlogdefaults.ApplyBacklogScopeToInvocation(t, env.Inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
 	if err != nil {

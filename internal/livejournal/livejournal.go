@@ -160,6 +160,9 @@ type SpanOp struct {
 // (Adopt): Time is not replayed there at all, because the loaned handle stamps
 // every event from its owner's single clock.
 type Op struct {
+	// Receipt requests the committed identity of this append.
+	Receipt bool `json:"receipt,omitempty"`
+
 	// Branch is explicit host attribution for an engine operation. Workload
 	// principals cannot set it; an existing verified context remains authority.
 	Branch int `json:"branch,omitempty"`
@@ -206,6 +209,9 @@ type EmitRequest struct {
 
 // EmitResponse reports what the writer did with a batch.
 type EmitResponse struct {
+	// AppendReceipts contains requested per-event identities in request order.
+	AppendReceipts []AppendReceipt `json:"appendReceipts,omitempty"`
+
 	// ChildOrigins contains receipts only for explicitly requested child starts,
 	// in request order. Absence on legacy responses confers no child authority.
 	ChildOrigins []ChildOriginReceipt `json:"childOrigins,omitempty"`
@@ -777,6 +783,10 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 	if len(req.Ops) == 0 {
 		return EmitResponse{}, errors.New("livejournal: emit carries no ops")
 	}
+	receiptBatch, err := requestedAppendReceipts(req.Ops)
+	if err != nil {
+		return EmitResponse{}, err
+	}
 	for i, op := range req.Ops {
 		if _, err := opBranchContext(ctx, op); err != nil {
 			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
@@ -823,12 +833,13 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 	for i := range req.Ops {
 		applied, err := w.applyOp(ctx, req.RunID, run, req.Ops[i])
 		if err != nil {
-			if req.Ops[i].ChildStageStart != nil {
+			if req.Ops[i].ChildStageStart != nil || receiptBatch {
 				w.invalidateChildAppend(req.RunID, run)
-				return EmitResponse{}, fmt.Errorf("livejournal: apply child op %d for run %s: %w", i, req.RunID, err)
+				return EmitResponse{}, fmt.Errorf("livejournal: apply identity op %d for run %s: %w", i, req.RunID, err)
 			}
 			w.finishRun(req.RunID, run, &resp)
 			resp.ChildOrigins = nil
+			resp.AppendReceipts = nil
 			return resp, fmt.Errorf("livejournal: apply op %d for run %s: %w", i, req.RunID, err)
 		}
 		if req.Ops[i].ChildStageStart != nil {
@@ -838,6 +849,14 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 				return EmitResponse{}, err
 			}
 			resp.ChildOrigins = append(resp.ChildOrigins, receipt)
+		}
+		if req.Ops[i].Receipt {
+			receipt, err := w.appendReceipt(run, req.Ops[i])
+			if err != nil {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, err
+			}
+			resp.AppendReceipts = append(resp.AppendReceipts, receipt)
 		}
 		if applied {
 			resp.Applied++
