@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -80,6 +81,7 @@ func TestTakeoverWaitsForInflightFencedTx(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	entered := make(chan struct{})
 	finish := make(chan struct{})
 	fencedDone := make(chan error, 1)
@@ -109,6 +111,205 @@ func TestTakeoverWaitsForInflightFencedTx(t *testing.T) {
 	}
 	if err := <-takeover; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFencedTransactionCannotOutliveSelfFence(t *testing.T) {
+	pool := testPool(t)
+	if _, err := pool.Exec(t.Context(), "CREATE TABLE control.fence_duration (value integer)"); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := lease.New(lease.Config{
+		Pool: pool, InstanceID: "instance", Name: "control", Holder: "holder-a",
+		TTL: 2 * time.Second, SelfFenceAfter: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := manager.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = manager.WithFence(t.Context(), handle, func(ctx context.Context, tx pgx.Tx) error {
+		for range 4 {
+			if _, err := tx.Exec(ctx, "SELECT pg_sleep(0.12)"); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(ctx, "INSERT INTO control.fence_duration VALUES (1)")
+		return err
+	})
+	if !errors.Is(err, lease.ErrSelfFenced) {
+		t.Fatalf("long fenced transaction error = %v, want ErrSelfFenced", err)
+	}
+	var commits int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM control.fence_duration").Scan(&commits); err != nil {
+		t.Fatal(err)
+	}
+	if commits != 0 {
+		t.Fatalf("long fenced transaction committed %d rows", commits)
+	}
+}
+
+func TestFencedTransactionIsBoundedAcrossStatements(t *testing.T) {
+	pool := testPool(t)
+	if _, err := pool.Exec(t.Context(), "CREATE TABLE control.fence_statement_bound (value integer)"); err != nil {
+		t.Fatal(err)
+	}
+	manager := testManager(t, pool, "holder-a")
+	handle, err := manager.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = manager.WithFence(t.Context(), handle, func(ctx context.Context, tx pgx.Tx) error {
+		for range 4 {
+			if _, err := tx.Exec(ctx, "SELECT pg_sleep(0.75)"); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(ctx, "INSERT INTO control.fence_statement_bound VALUES (1)")
+		return err
+	})
+	if !errors.Is(err, lease.ErrFencedTransactionTimeout) {
+		t.Fatalf("multi-statement transaction error = %v, want ErrFencedTransactionTimeout", err)
+	}
+	var commits int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM control.fence_statement_bound").Scan(&commits); err != nil {
+		t.Fatal(err)
+	}
+	if commits != 0 {
+		t.Fatalf("timed-out fenced transaction committed %d rows", commits)
+	}
+}
+
+func TestBlockedRenewSelfFencesAtDeadline(t *testing.T) {
+	pool := testPool(t)
+	manager, err := lease.New(lease.Config{
+		Pool: pool, InstanceID: "instance", Name: "control", Holder: "holder-a",
+		TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond,
+		SelfFenceAfter: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan time.Time, 1)
+	err = manager.Run(t.Context(), func(ctx context.Context, _ *lease.Handle) error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		if _, err := tx.Exec(ctx, `
+			SELECT 1 FROM control.lease_heartbeat
+			WHERE instance_id='instance' AND name='control'
+			FOR UPDATE`); err != nil {
+			return err
+		}
+		started <- time.Now()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	start := <-started
+	elapsed := time.Since(start)
+	if !errors.Is(err, lease.ErrSelfFenced) {
+		t.Fatalf("blocked renewal error = %v, want ErrSelfFenced", err)
+	}
+	if elapsed < 400*time.Millisecond || elapsed > 800*time.Millisecond {
+		t.Fatalf("self-fence elapsed = %s, want approximately 500ms", elapsed)
+	}
+}
+
+func TestReleaseAndAcquireUseSameLockOrder(t *testing.T) {
+	pool := testPool(t)
+	first := testManager(t, pool, "holder-a")
+	handle, err := first.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	finish := make(chan struct{})
+	fencedDone := make(chan error, 1)
+	go func() {
+		fencedDone <- first.WithFence(t.Context(), handle, func(context.Context, pgx.Tx) error {
+			close(entered)
+			<-finish
+			return nil
+		})
+	}()
+	<-entered
+	expireHeartbeat(t, pool)
+	second := testManager(t, pool, "holder-b")
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	released := make(chan error, 1)
+	acquired := make(chan error, 1)
+	go func() { released <- first.Release(ctx, handle) }()
+	go func() {
+		_, err := second.Acquire(ctx)
+		acquired <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	close(finish)
+	if err := <-fencedDone; err != nil {
+		t.Fatal(err)
+	}
+	releaseErr, acquireErr := <-released, <-acquired
+	if isDeadlock(releaseErr) || isDeadlock(acquireErr) {
+		t.Fatalf("release/acquire deadlocked: release=%v acquire=%v", releaseErr, acquireErr)
+	}
+	if acquireErr != nil {
+		t.Fatalf("acquire after concurrent release: %v", acquireErr)
+	}
+	if releaseErr != nil && !errors.Is(releaseErr, lease.ErrStale) {
+		t.Fatalf("concurrent release: %v", releaseErr)
+	}
+}
+
+func TestTakeoverExpiryStartsAfterLockWait(t *testing.T) {
+	pool := testPool(t)
+	first := testManager(t, pool, "holder-a")
+	handle, err := first.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	fencedDone := make(chan error, 1)
+	go func() {
+		fencedDone <- first.WithFence(t.Context(), handle, func(ctx context.Context, tx pgx.Tx) error {
+			close(entered)
+			_, err := tx.Exec(ctx, "SELECT pg_sleep(1.5)")
+			return err
+		})
+	}()
+	<-entered
+	expireHeartbeat(t, pool)
+	second, err := lease.New(lease.Config{
+		Pool: pool, InstanceID: "instance", Name: "control", Holder: "holder-b",
+		TTL: time.Second, SelfFenceAfter: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan error, 1)
+	go func() {
+		_, err := second.Acquire(t.Context())
+		acquired <- err
+	}()
+	if err := <-fencedDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-acquired; err != nil {
+		t.Fatal(err)
+	}
+	var remaining float64
+	if err := pool.QueryRow(t.Context(), `
+		SELECT extract(epoch FROM (expires_at-clock_timestamp()))
+		FROM control.lease_heartbeat
+		WHERE instance_id='instance' AND name='control'`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining < 0.8 {
+		t.Fatalf("takeover lease remaining = %.3fs, want a fresh 1s TTL", remaining)
 	}
 }
 
@@ -285,4 +486,9 @@ func expireHeartbeat(t *testing.T, pool *pgxpool.Pool) {
 		WHERE instance_id='instance' AND name='control'`); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func isDeadlock(err error) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == "40P01"
 }
