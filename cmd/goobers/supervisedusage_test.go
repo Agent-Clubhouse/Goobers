@@ -9,11 +9,12 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 func TestSupervisorTerminatesOnTokenCap(t *testing.T) {
 	ctx, supervisor := newSupervisedUsageContext(
-		context.Background(), apiv1.Limits{MaxTokens: 10},
+		context.Background(), testUsageAllowance(10, 0),
 	)
 	harnessStopped := make(chan error, 1)
 	go func() {
@@ -47,7 +48,7 @@ func TestSupervisorTerminatesOnTokenCap(t *testing.T) {
 
 func TestSupervisorUsageComesOnlyFromCallback(t *testing.T) {
 	ctx, supervisor := newSupervisedUsageContext(
-		context.Background(), apiv1.Limits{MaxTokens: 1, MaxCostUSD: 0.01},
+		context.Background(), testUsageAllowance(1, 0.01),
 	)
 	modelAuthored := apiv1.ResultEnvelope{Metrics: map[string]float64{
 		telemetry.AttrGenAIUsageInputTokens: 999,
@@ -67,7 +68,7 @@ func TestSupervisorUsageComesOnlyFromCallback(t *testing.T) {
 	}
 
 	belowCtx, below := newSupervisedUsageContext(
-		context.Background(), apiv1.Limits{MaxTokens: 1, MaxCostUSD: 0.01},
+		context.Background(), testUsageAllowance(1, 0.01),
 	)
 	below.report(map[string]float64{
 		telemetry.AttrGenAIUsageInputTokens:  0,
@@ -86,7 +87,7 @@ func TestSupervisorUsageComesOnlyFromCallback(t *testing.T) {
 
 func TestSupervisorBudgetCancellationIsNonRetryable(t *testing.T) {
 	_, supervisor := newSupervisedUsageContext(
-		context.Background(), apiv1.Limits{MaxCostUSD: 0.1},
+		context.Background(), testUsageAllowance(0, 0.1),
 	)
 	supervisor.report(map[string]float64{telemetry.AttrUsageCostUSD: 0.2})
 	outcome := stageOutcome{
@@ -110,7 +111,7 @@ func TestSupervisorBudgetCancellationIsNonRetryable(t *testing.T) {
 
 func TestSupervisorUsageSnapshotsAreMonotonic(t *testing.T) {
 	_, supervisor := newSupervisedUsageContext(
-		context.Background(), apiv1.Limits{MaxTokens: 100},
+		context.Background(), testUsageAllowance(100, 0),
 	)
 	supervisor.report(map[string]float64{
 		telemetry.AttrGenAIUsageInputTokens:  60,
@@ -147,4 +148,32 @@ func TestSupervisorUsageSnapshotsAreMonotonic(t *testing.T) {
 	if got := supervisor.budgetCause(); got == nil || got.Error() != firstCause.Error() {
 		t.Fatalf("post-cap report replaced the first crossing cause: %v", got)
 	}
+}
+
+func TestSupervisorRefusesExhaustedAllowanceBeforeUsage(t *testing.T) {
+	zero := int64(0)
+	ctx, supervisor := newSupervisedUsageContext(context.Background(), &usageallowance.Allowance{
+		MaxTokens: &zero,
+	})
+	var exceeded *supervisorBudgetExceededError
+	if !errors.As(context.Cause(ctx), &exceeded) ||
+		!errors.As(supervisor.budgetCause(), &exceeded) {
+		t.Fatalf("exhausted allowance cause = %T %v", context.Cause(ctx), context.Cause(ctx))
+	}
+	outcome := stageOutcome{}
+	settleSupervisedUsage(&outcome, supervisor)
+	if outcome.Result.Error == nil || outcome.Result.Error.Code != runner.BudgetExceededErrorCode {
+		t.Fatalf("exhausted outcome = %+v", outcome)
+	}
+}
+
+func testUsageAllowance(tokens int64, cost float64) *usageallowance.Allowance {
+	out := &usageallowance.Allowance{}
+	if tokens > 0 {
+		out.MaxTokens = &tokens
+	}
+	if cost > 0 {
+		out.MaxCostUSD = &cost
+	}
+	return out
 }
