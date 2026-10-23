@@ -656,3 +656,89 @@ No credit data migrates between the two stores, and none needs to:
 - If a later change makes the two failure signals agree, that change belongs
   in `readmodel.ProjectRun` and must update the pinned divergence cases in the
   conformance test in the same commit.
+
+## Evidence fidelity ablation (#7317)
+
+An offline experiment, not a production feature. It asks whether Backprop's
+diagnoses depend on the tool evidence in agent transcripts, and whether lossy
+or missing evidence makes Backprop abstain instead of looking as if the run
+had been fully observed. It changes nothing in Build, Attribute, scoring, or
+the fault audit, and makes no network or model calls.
+
+`go run ./test/attributioneval -ablation [-report=PATH]` attributes every
+case of the attribution eval set (the labels above, so there is no second
+taxonomy) at four fidelity levels:
+
+| Level | What changes in each canonical transcript |
+|---|---|
+| `full` | nothing |
+| `outcome-ablated` | each tool result's `success` is removed; call and result records and their IDs stay |
+| `results-truncated` | records from the first tool result on are dropped, and an explicit `truncated` marker record (the harness's truncation shape) is appended |
+| `transcript-missing` | the content is withheld; the `span.recorded` event stays, the shape of a recorded span whose content cannot be retrieved |
+
+Levels only remove recorded observations or mark them as missing. The journal
+is never changed and no observation is fabricated; a test holds every
+fixture at every level to that. A case is *affected* at a level when the
+level changed its evidence. The report pairs each level with `full` case by
+case and gives:
+
+- accuracy per granularity over all cases and over affected cases, with 95%
+  Wilson intervals, and paired lost/gained counts with an exact McNemar
+  p-value;
+- abstention (no cause, or an `unknown` top cause), overall and on affected
+  cases;
+- unsupported attribution: a committed top cause whose blamed node or a cited
+  node does not resolve in the graph built at that fidelity;
+- citation validity over every cause: cited nodes that resolve, where a cited
+  tool result must also still record its outcome;
+- misattributions: affected cases whose top cause commits to a different
+  class than at full fidelity;
+- the domain Brier score, and the confidence shift on affected cases;
+- coverage by adapter: transcripts, tool calls, results, and results with an
+  outcome per adapter, named from the `<adapter>.transcript` span name
+  (`unidentified` otherwise), plus cases with no transcript.
+
+Confidence protocol: an `unknown` cause's confidence is confidence in the
+refusal, not in a cause, so abstaining cases are counted as abstentions and
+not compared numerically. A committed cause where `full` abstained counts as
+a confidence gain. The canonical transcript records no tool start, end,
+duration, result digest, or evidence source for any adapter; the report
+lists those as unrecorded instead of measuring them, so long-running tools,
+polling, and repeated unchanged results cannot be told apart here.
+
+Predeclared success criteria, each reported with a verdict:
+
+1. `full-matches-eval`: full-fidelity accuracy equals the attribution eval's
+   at every granularity (the harness does not perturb attribution).
+2. `no-silent-misattribution`: at every ablated level, every affected case
+   abstains or keeps its full-fidelity class.
+3. `no-confidence-gain`: at every ablated level, no affected case that still
+   commits to a cause gains confidence.
+4. `citations-supported`: at every level, every citation resolves and no
+   committed cause is unsupported.
+5. `outcome-evidence-useful` (the hypothesis): removing tool outcomes loses
+   more class-correct cases than it gains, exact McNemar p < 0.05, over at
+   least 10 affected cases; fewer affected cases report
+   `insufficient-sample`, and a negative result is a valid result.
+
+Criteria 1–4 are safety properties that fail on a single violation at any
+sample size; `TestEvidenceAblationOnTheEvalSet` holds them in CI.
+
+Result on eval set v1 (18 cases): only 4 cases carry a transcript, all from
+`copilot-cli` with every tool result recording an outcome; the other 14 have
+no transcript. Criteria 1–4 pass. At each ablated level all 4 affected cases
+abstain (4/4, 95% interval 0.51–1.00), no case is misattributed, and class
+accuracy falls from 9/18 to 7/18 (2 lost, 0 gained, p = 0.5). Criterion 5 is
+`insufficient-sample`. Removing only the outcome already produces the same
+abstention as withholding the whole transcript, so in today's representation
+the per-result outcome is the smallest evidence addition that changes
+diagnoses; its overhead is one boolean per tool result. Failure cases: the two
+cases whose class was right at full fidelity become abstentions, and Build
+does not read the `truncated` marker, so truncation is visible to Backprop only
+as tool calls with no result.
+
+Not covered yet: labeled transcripts from `claude-code` (which records tool
+results with outcomes) and `codex` (whose composed transcript records no tool
+calls), real trajectories with tool evidence beyond v1, the enriched tool
+observations listed above (no adapter emits them), and an opt-in shadow run.
+These need new labeled cases, not changes to the harness.
