@@ -110,6 +110,12 @@ func (b ChildRunBinding) sameParent(in ChildAdmissionInput) bool {
 	return b.Request == in.Request && b.ParentWorkflow == in.ParentWorkflow && b.ParentWorkflowID == in.ParentWorkflowID && b.ParentTemporalRunID == in.ParentTemporalRunID
 }
 
+// restartedParent reports a receipt for this exact request that a different
+// execution of the same parent workflow already owns, as after a reset.
+func (b ChildRunBinding) restartedParent(in ChildAdmissionInput) bool {
+	return b.Request == in.Request && b.ParentWorkflow == in.ParentWorkflow && b.ParentWorkflowID == in.ParentWorkflowID && b.ParentTemporalRunID != in.ParentTemporalRunID
+}
+
 // decodeFrozenChildManifest verifies exact manifest and proposal bytes, then
 // the serial phase-1 subset. The result is the only part recorded in history.
 func decodeFrozenChildManifest(b ChildRunBinding, data []byte) (RunInput, error) {
