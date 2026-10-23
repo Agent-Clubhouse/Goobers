@@ -58,7 +58,7 @@ func (r *postgresPreparedReviewer) Review(ctx context.Context, env apiv1.Invocat
 	r.calls++
 	pointer, err := runsemantics.PreparedReviewerDiffPointer(env)
 	if err != nil || pointer == nil || pointer.Artifact.Digest != journal.Digest(r.stored) {
-		return apiv1.Verdict{}, fmt.Errorf("prepared pointer missing or invalid: %v", err)
+		return apiv1.Verdict{}, fmt.Errorf("prepared pointer missing or invalid: %w", err)
 	}
 	reader, err := r.backend.OpenRun(ctx, journal.RunRef{ID: env.RunID})
 	if err != nil {
