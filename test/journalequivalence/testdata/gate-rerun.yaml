@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: gate-rerun
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: implement
+  tasks:
+    - name: implement
+      type: deterministic
+      goal: prepare review input
+      run:
+        command: [fixture]
+      next: review
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: ""
+        needs-changes: "@escalate"
+        fail: "@escalate"

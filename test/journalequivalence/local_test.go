@@ -28,9 +28,12 @@ import (
 )
 
 var localBaselineDigests = map[string]string{
-	"retry-artifact-inputs-and-gates": "sha256:196737967b344cfcc26b2f614ca02b8a134b3f05a48d6873bf83a67216a6dc4e",
-	"human-gate":                      "sha256:ad2946487d76cac39e2246f74dd1e6211ee7ea4ce9ecf7ad7f88f851b26f6acd",
-	"stage-boundary-cancellation":     "sha256:1d425cf39d17e8d5172b09345d07c70b6e487209db06c819ec82cc32271df81d",
+	"retry-artifact-inputs-and-gates": "sha256:f2d85fc2231a0f9610f855c62258898d07cea1877ae6d2777d2585b1d5b90019",
+	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
+	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
+	"gate-fail-rerun":                 "sha256:fc5e7bfff6eefcdf64bca32e0ac76b97e68776a6b2f5c0036a470a6375cb0dc5",
+	"terminal-resume":                 "sha256:bcfc16278dbce9969be24de7dfd240c87e3960109399e9b6c79c923396ac1066",
+	"infrastructure-retry":            "sha256:53c21e89ac10d619a2ad13c70548dc9f4e7f3744687d01b0d7a1fec57796919d",
 }
 
 func TestLocalJournalEquivalenceBaseline(t *testing.T) {
@@ -61,6 +64,7 @@ func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
 	value := map[string]any{
 		"time": "volatile", "runId": runID, "host": "runner-a", "durationMs": 42,
 		"name": "artifact-" + runID, "status": "completed", "format": "json",
+		"finishedAt": nil, "latestErrorAt": "",
 	}
 	maskVolatile(value, runID)
 	for _, key := range []string{"time", "runId", "host", "durationMs"} {
@@ -71,14 +75,23 @@ func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
 	if value["name"] != "artifact-<run-id>" || value["status"] != "completed" || value["format"] != "json" {
 		t.Fatalf("semantic fields changed: %+v", value)
 	}
+	if value["finishedAt"] != nil || value["latestErrorAt"] != "" {
+		t.Fatalf("unset timestamp presence changed: %+v", value)
+	}
+	unset := canonicalJSON(t, map[string]any{"finishedAt": nil}, runID)
+	set := canonicalJSON(t, map[string]any{"finishedAt": "2026-10-23T00:00:00Z"}, runID)
+	if bytes.Equal(unset, set) {
+		t.Fatalf("unset and set timestamps canonicalized identically: %s", unset)
+	}
 }
 
 type corpusScenario struct {
 	name    string
 	runID   string
 	fixture string
-	run     func(*testing.T, context.Context, *runner.Runner, *workflow.Machine, string) runner.Result
+	run     func(*testing.T, context.Context, *runner.Runner, *workflow.Machine, string, string) runner.Result
 	script  deterministicConfig
+	goober  gooberConfig
 	expect  []journal.EventType
 }
 
@@ -110,6 +123,28 @@ func localCorpus() []corpusScenario {
 			run:     startToCancellationBoundary,
 			expect:  []journal.EventType{journal.EventStageStarted, journal.EventStageFinished},
 		},
+		{
+			name: "gate-fail-rerun", runID: strings.Repeat("4", 32),
+			fixture: "gate-rerun.yaml", run: startAndRerunGate,
+			goober: gooberConfig{failReviewWithoutAddendum: true},
+			expect: []journal.EventType{
+				journal.EventGateEvaluated, journal.EventStageRerunRequested, journal.EventRunFinished,
+			},
+		},
+		{
+			name: "terminal-resume", runID: strings.Repeat("5", 32),
+			fixture: "terminal-resume.yaml", run: startAndResumeTerminal,
+			script: deterministicConfig{businessFailFirst: true},
+			expect: []journal.EventType{
+				journal.EventRunFinished, journal.EventRunResumed, journal.EventStageStarted,
+			},
+		},
+		{
+			name: "infrastructure-retry", runID: strings.Repeat("6", 32),
+			fixture: "infra-retry.yaml", run: startToTerminal,
+			script: deterministicConfig{infraFailFirst: true},
+			expect: []journal.EventType{journal.EventError, journal.EventStageStarted, journal.EventRunFinished},
+		},
 	}
 }
 
@@ -132,9 +167,9 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r, runsDir := newCorpusRunner(t, newDeterministicScript(scenario.script), cancel)
+	r, runsDir := newCorpusRunner(t, newDeterministicScript(scenario.script), scenario.goober, cancel)
 	machine := loadMachine(t, scenario.fixture)
-	result := scenario.run(t, ctx, r, machine, scenario.runID)
+	result := scenario.run(t, ctx, r, machine, runsDir, scenario.runID)
 	if result.Phase == "" {
 		t.Fatal("runner returned an empty phase")
 	}
@@ -154,6 +189,9 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 		t.Fatal(err)
 	}
 	assertEventCoverage(t, scenario.expect, events)
+	if scenario.name == "infrastructure-retry" {
+		assertAttemptClass(t, events, journal.AttemptInfra)
+	}
 	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +216,16 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 		Events: canonicalEvents, ArtifactDigests: digests,
 		Projection: string(canonicalJSON(t, projection, scenario.runID)),
 	}
+}
+
+func assertAttemptClass(t *testing.T, events []journal.Event, class journal.AttemptClass) {
+	t.Helper()
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.AttemptClass == class {
+			return
+		}
+	}
+	t.Errorf("corpus does not emit a stage.started with attempt class %s", class)
 }
 
 func assertEventCoverage(t *testing.T, expected []journal.EventType, events []journal.Event) {
@@ -224,7 +272,9 @@ func maskVolatile(value any, runID string) {
 	case map[string]any:
 		for key, item := range typed {
 			if volatileField(key) {
-				typed[key] = "<masked>"
+				if item != nil && item != "" {
+					typed[key] = "<masked>"
+				}
 				continue
 			}
 			if text, ok := item.(string); ok {
@@ -256,9 +306,11 @@ type deterministicScript struct {
 }
 
 type deterministicConfig struct {
-	failFirst   bool
-	artifact    []byte
-	cancelAfter string
+	failFirst         bool
+	infraFailFirst    bool
+	businessFailFirst bool
+	artifact          []byte
+	cancelAfter       string
 }
 
 func newDeterministicScript(config deterministicConfig) *deterministicScript {
@@ -283,6 +335,15 @@ func (s *scriptedDeterministic) Run(_ context.Context, env apiv1.InvocationEnvel
 	if s.script.config.failFirst && call == 1 {
 		return apiv1.ResultEnvelope{}, errors.New("fixture policy retry")
 	}
+	if s.script.config.infraFailFirst && call == 1 {
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(errors.New("fixture infrastructure retry"))
+	}
+	if s.script.config.businessFailFirst && call == 1 {
+		return apiv1.ResultEnvelope{
+			Status: apiv1.ResultFailure,
+			Error:  &apiv1.ErrorInfo{Code: "fixture_failure", Message: "resume required"},
+		}, nil
+	}
 	result := apiv1.ResultEnvelope{
 		Status: apiv1.ResultSuccess, Summary: "stable result",
 		Outputs: map[string]any{"input": env.Inputs["fixture"]},
@@ -306,13 +367,22 @@ func (s *scriptedDeterministic) Run(_ context.Context, env apiv1.InvocationEnvel
 	return result, nil
 }
 
-type passingGoober struct{}
+type gooberConfig struct {
+	failReviewWithoutAddendum bool
+}
 
-func (passingGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+type scriptedGoober struct {
+	config gooberConfig
+}
+
+func (scriptedGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
-func (passingGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+func (g scriptedGoober) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	if g.config.failReviewWithoutAddendum && env.InstructionAddendum == "" {
+		return apiv1.Verdict{Decision: apiv1.VerdictFail, Rationale: "operator guidance required"}, nil
+	}
 	return apiv1.Verdict{Decision: apiv1.VerdictPass, Rationale: "stable approval"}, nil
 }
 
@@ -322,7 +392,7 @@ func (passingAutomated) Evaluate(context.Context, apiv1.AutomatedGate, apiv1.Inv
 	return "pass", nil
 }
 
-func newCorpusRunner(t *testing.T, script *deterministicScript, cancel context.CancelFunc) (*runner.Runner, string) {
+func newCorpusRunner(t *testing.T, script *deterministicScript, goober gooberConfig, cancel context.CancelFunc) (*runner.Runner, string) {
 	t.Helper()
 	root := t.TempDir()
 	runsDir := filepath.Join(root, "runs")
@@ -336,7 +406,7 @@ func newCorpusRunner(t *testing.T, script *deterministicScript, cancel context.C
 			return &scriptedDeterministic{rec: rec, script: script, cancel: cancel}, nil
 		},
 		NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
-			return passingGoober{}, nil
+			return scriptedGoober{config: goober}, nil
 		},
 		Automated: passingAutomated{},
 		Worktrees: manager,
@@ -370,7 +440,7 @@ func loadMachine(t *testing.T, fixture string) *workflow.Machine {
 	return machine
 }
 
-func startToTerminal(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, runID string) runner.Result {
+func startToTerminal(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, _ string, runID string) runner.Result {
 	t.Helper()
 	result, err := r.Start(ctx, startInput(runID, machine))
 	if err != nil {
@@ -382,7 +452,7 @@ func startToTerminal(t *testing.T, ctx context.Context, r *runner.Runner, machin
 	return result
 }
 
-func startAndApproveHumanGate(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, runID string) runner.Result {
+func startAndApproveHumanGate(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, _ string, runID string) runner.Result {
 	t.Helper()
 	result, err := r.Start(ctx, startInput(runID, machine))
 	if err != nil {
@@ -403,7 +473,64 @@ func startAndApproveHumanGate(t *testing.T, ctx context.Context, r *runner.Runne
 	return result
 }
 
-func startToCancellationBoundary(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, runID string) runner.Result {
+func startAndRerunGate(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, runsDir, runID string) runner.Result {
+	t.Helper()
+	result, err := r.Start(ctx, startInput(runID, machine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial rerun phase = %s", result.Phase)
+	}
+	result, err = r.RerunStage(context.Background(), runner.RerunStageInput{
+		RunID: runID, Machine: machine, RepoRef: fixtureRepoRef(), Stage: "review",
+		Actor: "operator:fixture", InstructionAddendum: "accept the deterministic fixture",
+		ExpectedTerminalSeq: terminalSequence(t, runsDir, runID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("rerun phase = %s", result.Phase)
+	}
+	return result
+}
+
+func startAndResumeTerminal(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, runsDir, runID string) runner.Result {
+	t.Helper()
+	result, err := r.Start(ctx, startInput(runID, machine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseFailed {
+		t.Fatalf("initial resume phase = %s", result.Phase)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err = r.ResumeFromTerminal(cancelled, runner.ResumeFromTerminalInput{
+		RunID: runID, Machine: machine, RepoRef: fixtureRepoRef(), Target: "recover",
+		Actor: "operator:fixture", Action: "override", Rationale: "retry deterministic fixture",
+		ExpectedTerminalSeq: terminalSequence(t, runsDir, runID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseRunning || result.FinalState != "recover" {
+		t.Fatalf("resume intervention = %+v", result)
+	}
+	result, err = r.Resume(context.Background(), runner.ResumeInput{
+		RunID: runID, Machine: machine, RepoRef: fixtureRepoRef(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("resumed phase = %s", result.Phase)
+	}
+	return result
+}
+
+func startToCancellationBoundary(t *testing.T, ctx context.Context, r *runner.Runner, machine *workflow.Machine, _ string, runID string) runner.Result {
 	t.Helper()
 	result, err := r.Start(ctx, startInput(runID, machine))
 	if err != nil {
@@ -413,6 +540,25 @@ func startToCancellationBoundary(t *testing.T, ctx context.Context, r *runner.Ru
 		t.Fatalf("cancellation boundary result = %+v", result)
 	}
 	return result
+}
+
+func terminalSequence(t *testing.T, runsDir, runID string) uint64 {
+	t.Helper()
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Type == journal.EventRunFinished {
+			return events[index].Seq
+		}
+	}
+	t.Fatalf("run %s has no terminal event", runID)
+	return 0
 }
 
 func startInput(runID string, machine *workflow.Machine) runner.StartInput {

@@ -463,7 +463,10 @@ Cloud implementations live under `internal/cloud/*` and are injected into shared
   DSL 3.0 corpus three times through the local runner and file journal. Its
   recorded digest covers canonical event bytes, artifact digests and the A2
   read-model projection. Canonicalization masks only timestamps, run identity,
-  host identity and durations; semantic fields remain byte-significant.
+  host identity and durations while preserving whether an optional timestamp is
+  set. The corpus includes policy and infrastructure retries, a failed gate
+  rerun, terminal resume, HITL and stage-boundary cancellation. Heartbeats stay
+  excluded because their cadence is intentionally nondeterministic.
 
 ### 9.5 Features that diverge between local and cloud
 
