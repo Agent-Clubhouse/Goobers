@@ -109,15 +109,20 @@ next planned stable release line, reviewed like any other change
 `TestDSLMatrixAgainstNextPlannedRelease`). Bump it when the plan changes; a PR
 that writes a lifecycle transition the declared release can't ship fails
 immediately, on that PR, rather than only at tag time (#4709).
-The declared version must remain later than the newest published stable tag;
-the same test names both values when the constant needs a post-release bump.
+Bump the constant after each stable release. Its freshness is checked at
+release time, not on every PR (#5852): the release workflow refuses to build a
+tag whose release line is later than the `NextPlannedRelease` declared on the
+tagged commit (`TestReleaseTagWithinNextPlannedRelease`, run with
+`GOOBERS_RELEASE_TAG` set), so bump it on the commit you tag. A pushed tag
+never turns unrelated in-flight PRs red.
 
 A staged lifecycle transition also constrains release ordering. Because the
 matrix's declared level must match its last history transition, merging a
 transition effective in (for example) `v0.5.0` prevents an intermediate
 `v0.4.x` patch from passing release validation. If that hotfix must ship first,
 prepare its branch from the intended release base and edit the support matrix
-there to remove the not-yet-effective transition, then validate and publish the
+there to remove the not-yet-effective transition, set `NextPlannedRelease` on
+that branch to no earlier than the patch being cut, then validate and publish the
 patch from that branch. Do not rewrite the already-merged transition on the
 main development line merely to cut the hotfix.
 

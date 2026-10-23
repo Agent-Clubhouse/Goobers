@@ -54,7 +54,11 @@ type ciJob struct {
 	Steps           []ciStep          `yaml:"steps"`
 	Env             map[string]string `yaml:"env"`
 	Permissions     map[string]string `yaml:"permissions"`
-	Strategy        struct {
+	Concurrency     struct {
+		Group            string `yaml:"group"`
+		CancelInProgress bool   `yaml:"cancel-in-progress"`
+	} `yaml:"concurrency"`
+	Strategy struct {
 		FailFast string `yaml:"fail-fast"`
 		Matrix   struct {
 			Shard []string `yaml:"shard"`
