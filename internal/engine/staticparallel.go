@@ -15,12 +15,15 @@ import (
 )
 
 // staticWalkSession is assembled only by the versioned test entry. Production
-// Run still refuses fan-out before the walk. Visits cannot yet be repeated:
-// per-visit dispatch identity and branch-qualified joins are separate slices.
+// Run still refuses fan-out before the walk. New histories retain each
+// committed visit identity; legacy histories keep their single-visit refusal.
 type staticWalkSession struct {
-	seen         map[string]bool
-	join         string
-	completeness []journal.BranchOutcome
+	currentVisits bool
+	seen          map[string]bool
+	join          string
+	completeness  []journal.BranchOutcome
+	parallel      string
+	branches      map[string]runsemantics.BranchInputSource
 }
 
 type staticBranchOutcome struct {
@@ -52,7 +55,8 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if r.staticWalk == nil || !ok {
 		return "", false, nil
 	}
-	if r.staticWalk.seen[state] {
+	repeatable := workflow.GetVersion(ctx, staticParallelVisitsVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	if r.staticWalk.seen[state] && !repeatable {
 		return "", true, fmt.Errorf("engine: repeated static parallel visit %q is not supported", state)
 	}
 	if r.owner == nil || r.stepBudget == nil {
@@ -62,8 +66,11 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 		workflow.GetVersion(ctx, staticSelectionVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 		return "", true, fmt.Errorf("engine: selective parallel execution is refused")
 	}
-	if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
-		return "", true, err
+	branchInputs := workflow.GetVersion(ctx, staticBranchInputsVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	if !branchInputs {
+		if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
+			return "", true, err
+		}
 	}
 	if r.staticWalk.seen == nil {
 		r.staticWalk.seen = map[string]bool{}
@@ -89,7 +96,16 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 		return "", true, err
 	}
 	r.staticWalk.join, r.staticWalk.completeness = p.Join, pwalk.completeness()
-	pwalk.merge()
+	if branchInputs {
+		r.staticWalk.parallel = p.Name
+		r.staticWalk.branches = pwalk.joinSources()
+	}
+	r.staticWalk.currentVisits = repeatable
+	if repeatable {
+		pwalk.mergeVisit()
+	} else {
+		pwalk.merge()
+	}
 	return result.Target, true, nil
 }
 
@@ -133,6 +149,7 @@ func (p *staticParallelWalk) launch() {
 	frame.bind = branch.Bind
 	frame.started = p.started
 	frame.results = nil
+	frame.visited = nil
 	if p.spec.BranchTimeoutSeconds > 0 {
 		frame.deadline = workflow.Now(p.ctx).Add(time.Duration(p.spec.BranchTimeoutSeconds) * time.Second)
 	}
