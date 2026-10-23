@@ -47,9 +47,15 @@ func (r Router) GateState(ctx context.Context, runID string) (engine.GateDecisio
 }
 
 // HITLState reads the run's terminal hold and generation.
-func (r Router) HITLState(ctx context.Context, runID string) (engine.HITLState, error) {
+func (r Router) HITLState(ctx context.Context, runID string, requestID ...string) (engine.HITLState, error) {
 	var state engine.HITLState
-	if err := r.query(ctx, runID, engine.HITLStateQuery, &state); err != nil {
+	name := engine.HITLStateQuery
+	var args []interface{}
+	if len(requestID) > 0 {
+		name = engine.HITLRequestStateQuery
+		args = []interface{}{requestID[0]}
+	}
+	if err := r.query(ctx, runID, name, &state, args...); err != nil {
 		return state, err
 	}
 	// Read retry evidence maintained by Temporal; no per-attempt workflow
@@ -116,11 +122,11 @@ func (r Router) update(ctx context.Context, runID, name, id string, arg, out any
 	return handle.Get(ctx, out)
 }
 
-func (r Router) query(ctx context.Context, runID, name string, out any) error {
+func (r Router) query(ctx context.Context, runID, name string, out any, args ...interface{}) error {
 	if r.Client == nil {
 		return errors.New("enginedecision: no Temporal client")
 	}
-	value, err := r.Client.QueryWorkflow(ctx, WorkflowID(runID), "", name)
+	value, err := r.Client.QueryWorkflow(ctx, WorkflowID(runID), "", name, args...)
 	if err != nil {
 		return fmt.Errorf("enginedecision: query %s: %w", name, err)
 	}

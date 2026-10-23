@@ -21,9 +21,12 @@ type pendingServer struct {
 	err        error
 	calls      int
 	workflowID string
+	queryName  string
+	queryArgs  []interface{}
 }
 
-func (s *pendingServer) QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error) {
+func (s *pendingServer) QueryWorkflow(_ context.Context, _, _, name string, args ...interface{}) (converter.EncodedValue, error) {
+	s.queryName, s.queryArgs = name, args
 	return stateValue{s.state}, nil
 }
 func (s *pendingServer) DescribeWorkflowExecution(_ context.Context, id, run string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
@@ -63,4 +66,16 @@ func (v stateValue) Get(out interface{}) error {
 		return err
 	}
 	return converter.GetDefaultDataConverter().FromPayload(payload, out)
+}
+
+func TestHITLRequestStateRoutesTheOriginalRequestKey(t *testing.T) {
+	server := &pendingServer{state: engine.HITLState{RequestKnown: true, RequestGeneration: 3}}
+	router := Router{Client: server}
+	state, err := router.HITLState(t.Context(), "run-1", "original-key")
+	if err != nil || !state.RequestKnown || state.RequestGeneration != 3 || server.queryName != engine.HITLRequestStateQuery || len(server.queryArgs) != 1 || server.queryArgs[0] != "original-key" {
+		t.Fatalf("state=%+v query=%s args=%v err=%v", state, server.queryName, server.queryArgs, err)
+	}
+	if _, err := router.HITLState(t.Context(), "run-1"); err != nil || server.queryName != engine.HITLStateQuery || len(server.queryArgs) != 0 {
+		t.Fatalf("legacy query=%s args=%v err=%v", server.queryName, server.queryArgs, err)
+	}
 }

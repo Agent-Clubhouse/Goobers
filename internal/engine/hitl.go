@@ -279,6 +279,12 @@ type HITLState struct {
 	Enabled                   bool          `json:"enabled"`
 	LiveTerminalInterventions bool          `json:"liveTerminalInterventions,omitempty"`
 	Delivery                  *HITLDelivery `json:"delivery,omitempty"`
+	// A bounded retry window, never the workflow's full deduplication ledger.
+	AcknowledgedGenerations map[string]uint64 `json:"acknowledgedGenerations,omitempty"`
+	// These fields answer the request-scoped query without exposing old keys.
+	RequestKnown      bool   `json:"requestKnown,omitempty"`
+	RequestExpired    bool   `json:"requestExpired,omitempty"`
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
 	// Phase is "executing", "awaiting-operator", or "settled".
 	Phase string `json:"phase"`
 	// TerminalGeneration is the number of terminals the run has produced. An
@@ -383,7 +389,8 @@ type hitlSession struct {
 	consumed map[string]bool
 	// acks records every accepted intent's outcome, keyed by request id, for
 	// in-workflow deduplication.
-	acks map[string]HITLAck
+	acks       map[string]HITLAck
+	recentAcks []string
 	// fingerprints pins the payload each request id was first seen with, so a
 	// key reused for a DIFFERENT intent is refused instead of replaying the
 	// first one's ack.
@@ -434,6 +441,11 @@ func (s *hitlSession) register(ctx workflow.Context) error {
 	if err := workflow.SetQueryHandler(ctx, HITLStateQuery, s.state); err != nil {
 		return fmt.Errorf("engine: register HITL state query: %w", err)
 	}
+	if s.liveTerminal {
+		if err := workflow.SetQueryHandler(ctx, HITLRequestStateQuery, s.requestState); err != nil {
+			return fmt.Errorf("engine: register terminal request query: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -446,6 +458,12 @@ func (s *hitlSession) state() (HITLState, error) {
 		TerminalGeneration: s.generation,
 	}
 	st.LiveTerminalInterventions = s.liveTerminal
+	if s.liveTerminal && len(s.recentAcks) > 0 {
+		st.AcknowledgedGenerations = make(map[string]uint64, len(s.recentAcks))
+		for _, id := range s.recentAcks {
+			st.AcknowledgedGenerations[id] = s.acks[id].TerminalGeneration
+		}
+	}
 	if s.delivery != nil {
 		st.Delivery = &HITLDelivery{RequestID: s.delivery.request.Transition.RequestID, Status: "intervention pending (journal delivery retrying)"}
 	}
@@ -649,7 +667,7 @@ func (s *hitlSession) handle(ctx workflow.Context, intent HITLIntent) (HITLAck, 
 			RunID: s.runID, RequestID: intent.RequestID, Kind: intent.Kind,
 			Resumed: false, TerminalGeneration: s.generation,
 		}
-		s.acks[intent.RequestID] = ack
+		s.rememberTerminalAck(intent.RequestID, ack)
 		return ack, nil
 	}
 
@@ -1025,12 +1043,12 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 	// outcome, and run() owns writing it unless this hook holds that one open
 	// too.
 	s.wroteTerminal = false
-	s.acks[accepted.requestID] = HITLAck{
+	s.rememberTerminalAck(accepted.requestID, HITLAck{
 		Protocol: HITLProtocol, Version: HITLProtocolVersion,
 		RunID: s.runID, RequestID: accepted.requestID, Kind: accepted.kind,
 		Resumed: true, ResumeState: accepted.state, Attempt: accepted.attempt,
 		TerminalGeneration: s.generation,
-	}
+	})
 	s.consumed[accepted.requestID] = true
 	return accepted, true, true, nil
 }

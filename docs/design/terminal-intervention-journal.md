@@ -129,6 +129,17 @@ Update immediately. A missing dedicated worker authority, or a 401/403 from
 the terminal route, is also a definitive refusal rather than an endless
 transport retry.
 
+Acknowledgement lookup retains the most recent 64 request-to-generation entries.
+Before constructing an Update, the API resolves the caller's request key through
+`goobers.hitl-request-state.v1`: a recent acknowledgement reuses its original
+generation, an in-flight delivery keeps its reserved generation, and a previously
+acknowledged key evicted from the window is refused as stale. An evicted key is
+never rebound to the current generation or a later human-gate occurrence. The
+existing workflow deduplication ledger identifies previously acknowledged keys;
+it is not copied into the query response or a second unbounded generation map.
+The request query is registered only for the new versioned capability, preserving
+N-1 query and command behavior.
+
 Only one terminal delivery can be pending. The workflow holds terminal settlement
 while it is pending, even after the original operator hold deadline. The activity
 uses server-side retries with exponential backoff capped at 30 seconds, so retries

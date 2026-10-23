@@ -28,7 +28,7 @@ type recordingEngine struct {
 func (e *recordingEngine) GateState(context.Context, string) (engine.GateDecisionState, error) {
 	return e.gate, nil
 }
-func (e *recordingEngine) HITLState(context.Context, string) (engine.HITLState, error) {
+func (e *recordingEngine) HITLState(context.Context, string, ...string) (engine.HITLState, error) {
 	return e.hitl, nil
 }
 func (e *recordingEngine) DecideGate(_ context.Context, r engine.GateDecisionRequest) (engine.GateDecisionAck, error) {
@@ -177,5 +177,32 @@ func TestTerminalInterventionsRequireCapabilityAndDurableAcknowledgement(t *test
 				t.Fatalf("uncertain delivery acknowledged: %+v %v", result, err)
 			}
 		})
+	}
+}
+
+func TestTerminalHTTPRetryKeepsOriginalGenerationAndNeverDecidesALaterGate(t *testing.T) {
+	decisions := &recordingEngine{hitl: engine.HITLState{LiveTerminalInterventions: true, TerminalGeneration: 1}}
+	service := engineRunService(t, decisions)
+	request := httpapi.InterventionRequest{RunID: "engine-run", Stage: "review", Actor: "alice", IdempotencyKey: "original-approval", Decision: "pass"}
+	if _, err := service.Approve(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	original := decisions.intents[0]
+	decisions.hitl.TerminalGeneration = 7
+	decisions.hitl.RequestKnown = true
+	decisions.hitl.RequestGeneration = 1
+	decisions.gate = engine.GateDecisionState{Pending: true, Gate: "review", GateOccurrence: 99, TerminalGeneration: 7}
+	if _, err := service.Approve(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions.gates) != 0 || len(decisions.intents) != 2 || engine.HITLIntentUpdateID(decisions.intents[1]) != engine.HITLIntentUpdateID(original) {
+		t.Fatalf("retry rebound: gates=%+v intents=%+v", decisions.gates, decisions.intents)
+	}
+	decisions.hitl.RequestExpired = true
+	decisions.hitl.RequestGeneration = 0
+	_, err := service.Approve(t.Context(), request)
+	var refusal *httpapi.InterventionError
+	if !errors.As(err, &refusal) || refusal.Code != engine.HITLErrGeneration || len(decisions.intents) != 2 || len(decisions.gates) != 0 {
+		t.Fatalf("evicted key sent a new Update: err=%v intents=%+v gates=%+v", err, decisions.intents, decisions.gates)
 	}
 }

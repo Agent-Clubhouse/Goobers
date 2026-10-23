@@ -166,6 +166,14 @@ func TestLiveTerminalHistoriesReplayEveryWorkflowTask(t *testing.T) {
 			if err := run.Get(ctx, &result); err != nil {
 				t.Fatal(err)
 			}
+			lookup, err := c.QueryWorkflow(ctx, run.GetID(), run.GetRunID(), HITLRequestStateQuery, intent.RequestID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var acknowledged HITLState
+			if err := lookup.Get(&acknowledged); err != nil || !acknowledged.RequestKnown || acknowledged.RequestExpired || acknowledged.RequestGeneration != intent.ExpectedTerminalGeneration || len(acknowledged.AcknowledgedGenerations) != 1 {
+				t.Fatalf("acknowledgement query=%+v err=%v", acknowledged, err)
+			}
 			events := liveEvents(t, root, input.RunID)
 			transitions := 0
 			for _, event := range events {
