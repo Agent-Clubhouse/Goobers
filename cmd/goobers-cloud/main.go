@@ -54,6 +54,8 @@ func writef(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, format, args...)
 }
 
+func pf(w io.Writer, format string, args ...any) { writef(w, format, args...) }
+
 func writeln(w io.Writer, text string) {
 	_, _ = fmt.Fprintln(w, text)
 }

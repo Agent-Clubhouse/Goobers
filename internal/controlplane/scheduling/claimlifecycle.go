@@ -16,7 +16,7 @@ import (
 
 // ReleaseForRun releases a terminal holder using the supplied lock discipline.
 func (c ClaimLifecycle) ReleaseForRun(l instance.Layout, log *journal.InstanceLog, runID string, lock func(string, func() error) error) error {
-	ledger, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(l.SchedulerDir(), "claims.json"),
+	ledger, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(l.SchedulerDir(), ClaimLedgerFileName),
 		Lock: lock, ProviderReleaseLock: c.Files.ProviderReleaseLock(l), Shared: c.SharedResolver(l), Options: WithClaimJournal(log)})
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
@@ -24,7 +24,7 @@ func (c ClaimLifecycle) ReleaseForRun(l instance.Layout, log *journal.InstanceLo
 	if held, err := ledger.ForRunAll(ClaimContext(), runID); err != nil || len(held) == 0 {
 		return err
 	}
-	return claimsclient.Sequence(ClaimContext(), ledger, "run-claims.release", func(tx claimsclient.Ledger) error {
+	return claimsclient.Sequence(ClaimContext(), ledger, ClaimLockOperationRunRelease, func(tx claimsclient.Ledger) error {
 		_, err := tx.ReleaseAllForRun(ClaimContext(), runID, c.HolderReleaseReason(l, runID))
 		return err
 	})
@@ -70,7 +70,7 @@ func (c ClaimLifecycle) HolderReleaseReason(l instance.Layout, runID string) cla
 // recurring InstanceLog.Append (a real cost per its own doc) purely to
 // restate what the original claim and any eventual release already record.
 func (c ClaimLifecycle) RenewLive(ctx context.Context, l instance.Layout, probe localscheduler.RunLivenessProbe, leaseDuration time.Duration) (renewed []localscheduler.ClaimEntry, probeErr, err error) {
-	ledgerPath := filepath.Join(l.SchedulerDir(), "claims.json")
+	ledgerPath := filepath.Join(l.SchedulerDir(), ClaimLedgerFileName)
 	snapshot, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open claim ledger: %w", err)
@@ -121,7 +121,7 @@ func (c ClaimLifecycle) RecoverWithResolver(
 	if !gate.RecoveryPermitted() {
 		return nil, nil
 	}
-	ledgerPath := filepath.Join(l.SchedulerDir(), "claims.json")
+	ledgerPath := filepath.Join(l.SchedulerDir(), ClaimLedgerFileName)
 	snapshot, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
 		return nil, err
@@ -167,7 +167,7 @@ func (c ClaimLifecycle) RecoverWithResolver(
 
 	var released []localscheduler.ClaimEntry
 	var sharedExpired, sharedTerminal []localscheduler.ClaimEntry
-	err = c.Files.ClaimLock(filepath.Join(l.SchedulerDir(), "claims.lock"), "claim-recovery", func() error {
+	err = c.Files.ClaimLock(filepath.Join(l.SchedulerDir(), ClaimLockFileName), ClaimLockOperationRecovery, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			ledgerPath,
 			localscheduler.WithInstanceLog(log),
@@ -295,7 +295,7 @@ func recordTerminalClaimInspectionError(log *journal.InstanceLog, entry localsch
 		Workflow: entry.Workflow,
 		RunID:    entry.RunID,
 		Error:    journal.ErrorDetailFor("terminal_claim_inspection_failed", err),
-		Runner:   map[string]any{"operation": "claim-recovery"},
+		Runner:   map[string]any{"operation": ClaimLockOperationRecovery},
 	})
 }
 

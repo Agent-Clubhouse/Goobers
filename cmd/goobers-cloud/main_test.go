@@ -38,50 +38,11 @@ func TestHelpGolden(t *testing.T) {
 	}
 }
 
-func TestWorkerUsesWorkerHost(t *testing.T) {
-	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
-	t.Cleanup(func() {
-		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
-	})
-	var got workerhost.Config
-	newWorkerHost = func(cfg workerhost.Config) (*workerhost.Host, error) {
-		got = cfg
-		return &workerhost.Host{}, nil
-	}
-	runWorkerHost = func(context.Context, *workerhost.Host) error { return nil }
-	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
-
-	code, stdout, stderr := runForTest("worker", "--task-queue", "one", "--task-queue", "two", "--health-addr", ":8080")
-	if code != 0 || stderr != "" {
-		t.Fatalf("worker: code=%d stderr=%q", code, stderr)
-	}
-	if strings.Join(got.TaskQueues, ",") != "one,two" || got.HealthAddr != ":8080" {
-		t.Fatalf("worker host config = %+v", got)
-	}
-	if !strings.Contains(stdout, "drained cleanly") {
-		t.Fatalf("worker output = %q", stdout)
-	}
-}
-
-func TestWorkerMapsHostErrors(t *testing.T) {
-	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
-	t.Cleanup(func() {
-		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
-	})
-	newWorkerHost = func(workerhost.Config) (*workerhost.Host, error) { return &workerhost.Host{}, nil }
-	runWorkerHost = func(context.Context, *workerhost.Host) error { return workerhost.ErrAbandonedWork }
-	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
-
-	code, _, stderr := runForTest("worker")
-	if code != 3 || !strings.Contains(stderr, "drain timeout") {
-		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
-	}
-}
-
 func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	const password = "do-not-log-this-password"
 	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
 	code, _, stderr := runForTest("api")
 	if code != 1 {
 		t.Fatalf("api code = %d, stderr = %q", code, stderr)
@@ -94,7 +55,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	if err := os.WriteFile(urlFile, []byte("postgres://file-secret@localhost/goobers\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := cloudpg.DatabaseURL("", urlFile, "UNSET_DATABASE_URL")
+	value, err := databaseURL("", urlFile, "UNSET_DATABASE_URL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +75,6 @@ func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
 	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
 		return &cloudpg.Pools{}, nil
 	}
-
 	var backupRef string
 	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string) error {
 		backupRef = backup
@@ -180,5 +140,45 @@ func TestNestedOperatorHelpRoutesFromRegistry(t *testing.T) {
 	code, stdout, stderr := runForTest("help", "runs", "list")
 	if want == "" || code != 0 || stderr != "" || stdout != want {
 		t.Fatalf("nested help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestWorkerUsesWorkerHost(t *testing.T) {
+	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
+	t.Cleanup(func() {
+		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
+	})
+	var got workerhost.Config
+	newWorkerHost = func(cfg workerhost.Config) (*workerhost.Host, error) {
+		got = cfg
+		return &workerhost.Host{}, nil
+	}
+	runWorkerHost = func(context.Context, *workerhost.Host) error { return nil }
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+
+	code, stdout, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir(), "--task-queue", "one", "--task-queue", "two", "--health-addr", ":8080")
+	if code != 0 || strings.Contains(stderr, "error:") {
+		t.Fatalf("worker: code=%d stderr=%q", code, stderr)
+	}
+	if strings.Join(got.TaskQueues, ",") != "one,two" || got.HealthAddr != ":8080" {
+		t.Fatalf("worker host config = %+v", got)
+	}
+	if !strings.Contains(stdout, "drained cleanly") {
+		t.Fatalf("worker output = %q", stdout)
+	}
+}
+
+func TestWorkerMapsHostErrors(t *testing.T) {
+	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
+	t.Cleanup(func() {
+		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
+	})
+	newWorkerHost = func(workerhost.Config) (*workerhost.Host, error) { return &workerhost.Host{}, nil }
+	runWorkerHost = func(context.Context, *workerhost.Host) error { return workerhost.ErrAbandonedWork }
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+
+	code, _, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir())
+	if code != 3 || !strings.Contains(stderr, "drain timeout") {
+		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
 	}
 }

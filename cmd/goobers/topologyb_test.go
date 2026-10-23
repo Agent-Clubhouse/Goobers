@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -248,7 +250,7 @@ func TestBuildGaggleCredentialsTopologyB(t *testing.T) {
 	project := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: topologyBOrg, Project: topologyBCodeProject, Name: topologyBCodeRepo}
 	backlog := apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: topologyBBacklog}
 
-	_, grants, err := buildGaggleCredentials(cfg, nil, project, backlog, nil, nil)
+	_, grants, err := runtimewiring.BuildGaggleCredentials(cfg, nil, project, backlog, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGaggleCredentials: %v", err)
 	}
@@ -278,7 +280,7 @@ func TestBuildGaggleCredentialsTopologyB(t *testing.T) {
 	withIdentity := *cfg
 	withIdentity.DaemonIdentity = &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "TOPOLOGY_B_DAEMON_PAT"}}
 	t.Setenv("TOPOLOGY_B_DAEMON_PAT", "daemon-token")
-	_, identityGrants, err := buildGaggleCredentials(&withIdentity, nil, project, backlog, nil, nil)
+	_, identityGrants, err := runtimewiring.BuildGaggleCredentials(&withIdentity, nil, project, backlog, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGaggleCredentials with a daemon identity: %v", err)
 	}
@@ -287,7 +289,7 @@ func TestBuildGaggleCredentialsTopologyB(t *testing.T) {
 		identityRefs[grant.Capability] = grant.Ref
 	}
 	for capabilityName, want := range map[capability.Capability]string{
-		capability.GitHubIssuesWrite:  daemonIdentityRefName,
+		capability.GitHubIssuesWrite:  runtimewiring.DaemonIdentityRefName,
 		capability.GitHubIssuesRead:   githubRef,
 		capability.GitHubPRWrite:      adoRef,
 		capability.GitHubPRMerge:      adoRef,
@@ -301,7 +303,7 @@ func TestBuildGaggleCredentialsTopologyB(t *testing.T) {
 	}
 
 	// Same-provider gaggles keep the single project binding.
-	_, same, err := buildGaggleCredentials(cfg, nil, project, apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "example-backlog-project"}, nil, nil)
+	_, same, err := runtimewiring.BuildGaggleCredentials(cfg, nil, project, apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "example-backlog-project"}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGaggleCredentials(same provider): %v", err)
 	}

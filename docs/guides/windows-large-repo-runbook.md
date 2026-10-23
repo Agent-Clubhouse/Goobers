@@ -34,7 +34,7 @@ full set, derived from the same path code the daemon, worker and stage pod use,
 and on a Windows host reports each directory as excluded, not-excluded, or
 unknown against Microsoft Defender's exclusion list (`--report json` for
 tooling). It is advisory: exit 0 whatever the coverage, and it never changes
-Defender settings. `goobers up`, `goobers worker` and every Windows stage pod
+Defender settings. `goobers up`, `goobers-cloud worker` and every Windows stage pod
 print the same verdict once at startup (`av-exclusions (advisory, ...)`), so a
 pod's own log answers the question after the fact.
 

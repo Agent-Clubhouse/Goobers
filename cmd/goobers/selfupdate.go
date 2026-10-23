@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/providers"
@@ -76,7 +77,7 @@ func runSelfUpdateWith(
 		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
 		return 2
 	}
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -206,7 +207,7 @@ func resolveSelfUpdateEscalationToken(ctx context.Context, cfg *instance.Config,
 		if grant.Capability != string(capability.GitHubIssuesWrite) {
 			continue
 		}
-		name := credentialRefName(grant.Capability)
+		name := runtimewiring.CredentialRefName(grant.Capability)
 		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{grant.Token.CredentialTokenRef(name)}, stores)
 		if err != nil {
 			return "", err

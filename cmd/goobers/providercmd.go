@@ -16,9 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -57,19 +60,9 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 // `goobers up`'s periodic RecoverExpired sweep (the reaper), both of which
 // must agree on the same paths.
 const (
-	claimLedgerFileName = "claims.json"
-	claimLockFileName   = "claims.lock"
-	// mergeLockFileName is the cross-process file lock `merge-pr` (mergepr.go)
-	// takes around its poll->decide->merge window (issue #719): once
-	// merge-review's readiness allows several concurrent runs to review
-	// DIFFERENT PRs at once, each independently reaches merge-pr, but only
-	// one PR may be inside that window at a time — serializing it is what
-	// lets a later run's re-poll (D6) actually observe an earlier run's
-	// just-landed merge instead of racing it. A dedicated lock file, not
-	// claimLockFileName, since this guards a different critical section
-	// (the merge decision, not claim-ledger mutation) with a different
-	// hold-time profile (network round-trips, not a fast local read/write).
-	mergeLockFileName = "merge.lock"
+	claimLedgerFileName = scheduling.ClaimLedgerFileName
+	claimLockFileName   = scheduling.ClaimLockFileName
+	mergeLockFileName   = scheduling.MergeLockFileName
 
 	claimLockOperationBacklogFilterBlocked = "backlog-query.filter-blocked"
 	claimLockOperationBacklogScanCursor    = "backlog-query.scan-cursor"
@@ -91,9 +84,9 @@ const (
 	claimLockOperationRunLookup               = "run-claims.lookup"
 	claimLockOperationBlockedUpdate           = "blocked-records.update"
 	claimLockOperationCircuitBreakerOutbox    = "circuit-breaker-outbox.update"
-	claimLockOperationRecovery                = "claim-recovery"
+	claimLockOperationRecovery                = scheduling.ClaimLockOperationRecovery
 	claimLockOperationRenewal                 = "claim-renewal"
-	claimLockOperationRunRelease              = "run-claims.release"
+	claimLockOperationRunRelease              = scheduling.ClaimLockOperationRunRelease
 	claimLockOperationCloseOutLookup          = "issue-close-out.lookup"
 	claimLockOperationCloseOutRelease         = "issue-close-out.release"
 	claimLockOperationMigration               = "claim-ledger.migrate"
@@ -1023,7 +1016,7 @@ func acquireClaimLockContext(ctx context.Context, lockPath, operation string, ti
 }
 
 func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
@@ -1049,7 +1042,7 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 }
 
 func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext, timeoutErr *claimsLockTimeoutError) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {

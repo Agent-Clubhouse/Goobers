@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/harness"
@@ -52,7 +54,7 @@ func childWorkflowAccessFor(root string, registrar runner.SecretRegistrar) harne
 		if !ok || service.children == nil || registrar == nil || service.shared == nil {
 			return nil, nil, childworkflow.ErrAuthorityUnavailable
 		}
-		return service.children.Acquire(ctx, env, teeRegistrar{run: registrar, shared: service.shared})
+		return service.children.Acquire(ctx, env, runtimewiring.TeeRegistrar{Run: registrar, Shared: service.shared})
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -31,7 +33,7 @@ func TestRecoveryCleanupUsesDurableBaseRef(t *testing.T) {
 		"0123456789012345678901234567890123456789",
 	} {
 		t.Run(strings.ReplaceAll(baseRef, "/", "_"), func(t *testing.T) {
-			got, err := recoveryCleanupBaseRef(worktree.CleanupTarget{BaseRef: baseRef})
+			got, err := runtimewiring.RecoveryCleanupBaseRef(worktree.CleanupTarget{BaseRef: baseRef})
 			if err != nil || got != baseRef {
 				t.Fatalf("recoveryCleanupBaseRef() = %q, %v; want %q", got, err, baseRef)
 			}
@@ -40,7 +42,7 @@ func TestRecoveryCleanupUsesDurableBaseRef(t *testing.T) {
 }
 
 func TestRecoveryCleanupRefusesMissingDurableBaseRef(t *testing.T) {
-	if _, err := recoveryCleanupBaseRef(worktree.CleanupTarget{}); err == nil {
+	if _, err := runtimewiring.RecoveryCleanupBaseRef(worktree.CleanupTarget{}); err == nil {
 		t.Fatal("missing owning-run base reference permitted recovery cleanup")
 	}
 }
@@ -273,14 +275,14 @@ func TestRecoveryCleanupTerminalFinalizationNoWorkTargets(t *testing.T) {
 				t.Fatal(err)
 			}
 			source, workcopies := createRecoveryCleanupSource(t), t.TempDir()
-			previousCloneURL := repoCloneURL
-			repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-			t.Cleanup(func() { repoCloneURL = previousCloneURL })
+			previousCloneURL := runtimewiring.RepoCloneURL
+			runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+			t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 			manager, err := worktree.NewManager(workcopies)
 			if err != nil {
 				t.Fatal(err)
 			}
-			option, err := recoveryCleanupOption(layout, cfg, workcopies, repoCloneURL, journal.NewRegistryScrubber(), nil)
+			option, err := recoveryCleanupOption(layout, cfg, workcopies, runtimewiring.RepoCloneURL, journal.NewRegistryScrubber(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -429,4 +431,8 @@ func assertNoRecoveryHandoffEvent(t *testing.T, layout instance.Layout, runID st
 			t.Fatalf("unexpected recovery handoff event: %+v", event.Runner)
 		}
 	}
+}
+
+func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, cfg *instance.Config, cleanupRoot string, scrubber journal.Scrubber, manager *worktree.Manager, key string, target worktree.CleanupTarget) error {
+	return runtimewiring.RecoveryCleanupCurrentTarget(ctx, layout, cfg, cleanupRoot, scrubber, manager, key, target, runtimewiring.RecoveryCleanupHooks{RetiredParent: retiredParentCleanup, ParentPolicy: parentCleanupPolicy})
 }

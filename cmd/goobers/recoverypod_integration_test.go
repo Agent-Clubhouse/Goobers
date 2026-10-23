@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -44,7 +45,7 @@ func testPodRecoveryRepositoryTransfer(t *testing.T, repo providers.RepositoryRe
 		t.Fatal(err)
 	}
 	host := instance.NewLayout(initDemo(t))
-	inventory, err := prepareRecoveryInventory(host.Root)
+	inventory, err := runtimewiring.PrepareRecoveryInventory(host.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func testPodRecoveryRepositoryTransfer(t *testing.T, repo providers.RepositoryRe
 			Repository: hostRepository, RepositoryKey: key, RunID: runID,
 			IdentityTime: time.Now().UTC(), RetainUntil: time.Now().UTC().Add(30 * 24 * time.Hour),
 			InventoryRoot: inventory, CleanupRoots: []string{source}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20,
-		}, recoveryCleanupJournal{directory: host.SchedulerDir(), scrubber: journal.NewRegistryScrubber()})
+		}, runtimewiring.RecoveryCleanupJournal{Directory: host.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()})
 		if err != nil {
 			t.Errorf("host intake: %v", err)
 			w.WriteHeader(http.StatusBadRequest)

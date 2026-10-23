@@ -7,6 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/providersnapshot"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -24,7 +25,7 @@ func configureStageADOReadCache(root string, provider *providers.ADOProvider) {
 
 // Only ordinary runtime construction opts into the automation read partition.
 // Human and isolated factories using the generic builder keep its zero value.
-func buildAutomationDeterministicExecutor(input deterministicExecutorInput) (invoke.Deterministic, error) {
+func buildAutomationDeterministicExecutor(input runtimewiring.DeterministicExecutorInput) (invoke.Deterministic, error) {
 	input.AutomationReadCache = true
-	return buildDeterministicExecutor(input)
+	return runtimewiring.BuildDeterministicExecutor(input)
 }

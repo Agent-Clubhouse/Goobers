@@ -7,6 +7,7 @@ import (
 
 	"github.com/goobers/goobers/internal/daemonlog"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/service"
 	"github.com/goobers/goobers/internal/signals"
@@ -61,7 +62,7 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 	}
 	run := func(ctx context.Context, supervisorStdout, supervisorStderr io.Writer) int {
 		readiness := newServiceReadinessTracker(supervisorStdout)
-		stopTelemetry := startCommandJournalTelemetry(layout, supervisorStderr)
+		stopTelemetry := runtimewiring.StartCommandJournalTelemetry(layout, supervisorStderr)
 		defer stopTelemetry()
 		err := deps.runSupervisor(ctx, selfupdate.SupervisorOptions{
 			Root:      root,

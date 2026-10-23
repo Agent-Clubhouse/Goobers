@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/apicontract"
@@ -333,7 +335,7 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 	if err != nil {
 		return statusPRLabelCounts{}, err
 	}
-	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, nil)
+	resolver, _, err := runtimewiring.BuildCredentials(cfg, stores, "", "", nil, nil)
 	if err != nil {
 		return statusPRLabelCounts{}, err
 	}
@@ -1224,19 +1226,19 @@ func statusCompiledHarnessWarnings(
 	instructions map[string]string,
 	cliWarnings []validate.CodedWarning,
 	stderr io.Writer,
-) ([]gooberHarnessWarning, int) {
+) ([]runtimewiring.GooberHarnessWarning, int) {
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		pf(stderr, "error: invalid secretStores: %v\n", err)
 		return nil, 1
 	}
-	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
+	modelCredential, _, err := runtimewiring.AgentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		pf(stderr, "error: invalid credentials: %v\n", err)
 		return nil, 1
 	}
-	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
+	_, _, _, harnessWarnings, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		false, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
@@ -1375,8 +1377,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(l.ConfigDir(), set, goobers)
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(l.ConfigDir(), set, goobers)
 	if err != nil {
 		printValidationWarnings(stderr, report.CLIWarnings())
 		pf(stderr, "error: invalid workflow: %v\n", err)
@@ -1996,7 +1998,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			reportTelemetryRetentionPolicy(l, now, stdout)
 			reportWorktreeRetentionPolicy(l, now, stdout)
-			reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
+			reportAVExclusionReadiness(l, stdout, runtimewiring.RealAVExclusionDeps())
 			return 1
 		}
 		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
@@ -2011,7 +2013,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		reportTelemetryRetentionPolicy(l, now, stdout)
 		reportWorktreeRetentionPolicy(l, now, stdout)
-		reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
+		reportAVExclusionReadiness(l, stdout, runtimewiring.RealAVExclusionDeps())
 		return 0
 	}
 	if identity != nil {
@@ -2266,8 +2268,8 @@ func reportFleetEnrollment(instanceRoot string, stdout io.Writer) {
 // reports "could not read Microsoft Defender exclusions" rather than
 // collapsing that into either verdict, so an operator on an unverified host
 // sees exactly that — not a false all-clear.
-func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps avExclusionDeps) {
-	if deps.hostOS != "windows" {
+func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps runtimewiring.AvExclusionDeps) {
+	if deps.HostOS != "windows" {
 		return
 	}
 	var cfg *instance.Config
@@ -2286,7 +2288,7 @@ func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps avExcl
 			// rather than silently reporting coverage over a per-gaggle
 			// inventory the daemon itself would refuse (mirrors doctor's own
 			// note, runDoctorAVExclusions above).
-			if summary := validationIssueSummary(configReport); summary != "" {
+			if summary := runtimewiring.ValidationIssueSummary(configReport); summary != "" {
 				pf(stdout, "av-exclusions (advisory, daemon): note: %s does not validate (%s); per-gaggle workcopies roots below are read from it as-is\n", l.ConfigDir(), summary)
 			}
 		case loadErr != nil:
@@ -2294,7 +2296,7 @@ func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps avExcl
 		}
 	}
 	dirs := daemonAVExclusionDirectories(l, cfg, set, deps)
-	report := avExclusionReport(context.Background(), dirs, deps)
+	report := runtimewiring.AvExclusionReport(context.Background(), dirs, deps)
 	pln(stdout, avexclusion.Summary("daemon", report))
 }
 

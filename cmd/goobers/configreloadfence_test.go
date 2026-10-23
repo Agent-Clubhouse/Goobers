@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
@@ -24,7 +26,7 @@ import (
 func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
-	applied, err := deterministicStageConfigDigest(layout.ConfigDir(), "example")
+	applied, err := runtimewiring.DeterministicStageConfigDigest(layout.ConfigDir(), "example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +44,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	if err := os.WriteFile(rejectedPath, []byte("kind: rejected\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rejected, err := configDirectoryDigest(layout.ConfigDir())
+	rejected, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 	if code := run([]string{"version"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("fenced stage exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	rejectedScoped, err := deterministicStageConfigDigest(layout.ConfigDir(), "example")
+	rejectedScoped, err := runtimewiring.DeterministicStageConfigDigest(layout.ConfigDir(), "example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +118,7 @@ func TestRejectedReloadFencesSubsequentDeterministicCLIStage(t *testing.T) {
 }
 
 func TestDeterministicStageConfigDigestFailsClosed(t *testing.T) {
-	digest, err := deterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"), "example")
+	digest, err := runtimewiring.DeterministicStageConfigDigest(filepath.Join(t.TempDir(), "missing"), "example")
 	if err == nil || digest != "" || !strings.Contains(err.Error(), "digest deterministic-stage config") {
 		t.Fatalf("digest missing config: digest=%q err=%v", digest, err)
 	}
@@ -127,12 +129,12 @@ func TestDeterministicStageConfigDigestIgnoresSiblingGaggleReload(t *testing.T) 
 	configDir := instance.NewLayout(root).ConfigDir()
 	siblingPath := addConfigReloadFenceSiblingGaggle(t, configDir)
 
-	applied, err := deterministicStageConfigDigest(configDir, "example")
+	applied, err := runtimewiring.DeterministicStageConfigDigest(configDir, "example")
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := newConfigReloadFenceRunner(t, instance.NewLayout(root), applied)
-	wholeBefore, err := configDirectoryDigest(configDir)
+	wholeBefore, err := runtimewiring.ConfigDirectoryDigest(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +149,7 @@ func TestDeterministicStageConfigDigestIgnoresSiblingGaggleReload(t *testing.T) 
 	if _, report, err := instance.LoadConfigDir(configDir); err != nil {
 		t.Fatalf("sibling gaggle reload is invalid: %v (%+v)", err, report)
 	}
-	wholeAfter, err := configDirectoryDigest(configDir)
+	wholeAfter, err := runtimewiring.ConfigDirectoryDigest(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}

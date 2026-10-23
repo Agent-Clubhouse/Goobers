@@ -238,7 +238,7 @@ func runnerCount(value any) int {
 // definition bounds. It returns nil when the definition is missing or fails
 // its integrity checks, so the projection reports those budgets as unknown
 // rather than reading today's configuration.
-func PinnedReliabilityAllowances(reader *journal.Reader, identity journal.RunIdentity) []ReliabilityAllowance {
+func PinnedReliabilityAllowances(reader journal.RunReader, identity journal.RunIdentity) []ReliabilityAllowance {
 	def, ok := trustedPinnedDefinition(reader, identity)
 	if !ok {
 		return nil
@@ -250,7 +250,7 @@ func PinnedReliabilityAllowances(reader *journal.Reader, identity journal.RunIde
 	return reliabilityAllowances(def.Spec, inherited)
 }
 
-func trustedPinnedDefinition(reader *journal.Reader, identity journal.RunIdentity) (workflow.Definition, bool) {
+func trustedPinnedDefinition(reader journal.RunReader, identity journal.RunIdentity) (workflow.Definition, bool) {
 	for _, input := range identity.Inputs {
 		if input.Name != journal.PinnedWorkflowDefinitionInputName {
 			continue
