@@ -5,29 +5,20 @@
 #   helm repo add temporal https://go.temporal.io/helm-charts
 #   helm install temporal temporal/temporal \
 #     --namespace goobers-temporal --create-namespace \
-#     --version 0.62.0 -f values.yaml
+#     --version 1.6.0 -f values.yaml
 #
 # Persistence is the customer-managed PostgreSQL (§2/§4: managed cloud PG
 # recommended — the one stateful service Goobers requires); every bundled
 # datastore is disabled. Visibility is basic/SQL — no Elasticsearch (§2).
 
-# Do not deploy the chart's bundled datastores (§2: external PG only).
-cassandra:
-  enabled: false
-mysql:
-  enabled: false
-postgresql:
-  enabled: false
-elasticsearch:
-  enabled: false
-prometheus:
-  enabled: false
-grafana:
-  enabled: false
-
+# Do not deploy bundled datastores (§2: external PG only). Chart 1.x removed
+# those subcharts; persistence below points only at the adopter's PostgreSQL.
 server:
   # §7: HA optional at first; scale replicas with the chart defaults later.
   replicaCount: 1
+  image:
+    repository: temporalio/server
+    tag: "1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6"
   nodeSelector:
     kubernetes.io/os: linux
   # §7 sizing: Temporal shares the 2-4 vCPU / 8-16GB control-plane band; §4:
@@ -40,54 +31,65 @@ server:
     limits:
       cpu: "2"
       memory: 4Gi
+  # Explicit even though 1.28+ defaults both on: every ladder step records
+  # the Worker Deployment API contract it is validating.
+  dynamicConfig:
+    frontend.workerVersioningWorkflowAPIs:
+      - value: true
+    system.enableDeploymentVersions:
+      - value: true
   config:
     persistence:
       defaultStore: default
       visibilityStore: visibility
-      additionalStores: {}
-      default:
-        driver: sql
-        sql:
-          driver: postgres12
-          host: CHANGE-ME.postgres.example.com # customer-managed PG (§4)
-          port: 5432
-          database: temporal
-          user: temporal # CHANGE-ME
-          # Nothing secret in the config repo (§6, SEC-046): the password
-          # arrives via a pre-created Secret (CSI/secret-resolver, SEC-010).
-          existingSecret: temporal-postgres-credentials # CHANGE-ME
-          tls:
-            enabled: true
-            enableHostVerification: true
-          maxConns: 20
-          maxIdleConns: 20
-      visibility:
-        driver: sql
-        sql:
-          driver: postgres12
-          host: CHANGE-ME.postgres.example.com # customer-managed PG (§4)
-          port: 5432
-          database: temporal_visibility
-          user: temporal # CHANGE-ME
-          existingSecret: temporal-postgres-credentials # CHANGE-ME
-          tls:
-            enabled: true
-            enableHostVerification: true
-          maxConns: 10
-          maxIdleConns: 10
+      datastores:
+        default:
+          sql:
+            createDatabase: false
+            manageSchema: true
+            pluginName: postgres12
+            driverName: postgres12
+            databaseName: temporal
+            connectAddr: CHANGE-ME.postgres.example.com:5432 # customer-managed PG (§4)
+            connectProtocol: tcp
+            user: temporal # CHANGE-ME
+            existingSecret: temporal-postgres-credentials # CHANGE-ME
+            tls:
+              enabled: true
+              enableHostVerification: true
+            maxConns: 20
+            maxIdleConns: 20
+        visibility:
+          sql:
+            createDatabase: false
+            manageSchema: true
+            pluginName: postgres12
+            driverName: postgres12
+            databaseName: temporal_visibility
+            connectAddr: CHANGE-ME.postgres.example.com:5432 # customer-managed PG (§4)
+            connectProtocol: tcp
+            user: temporal # CHANGE-ME
+            existingSecret: temporal-postgres-credentials # CHANGE-ME
+            tls:
+              enabled: true
+              enableHostVerification: true
+            maxConns: 10
+            maxIdleConns: 10
 
-# Schema setup/update jobs (temporal-sql-tool) run against the external DB;
-# database creation itself is the customer's PG provisioning step (§1).
+# The chart's pre-install/pre-upgrade hook runs temporal-sql-tool before server
+# pods change. manageSchema above opts both stores into that ordered migration.
 schema:
-  createDatabase:
-    enabled: false
-  setup:
-    enabled: true
-  update:
-    enabled: true
+  useHelmHooks: true
+
+shims:
+  dockerize: false
+  elasticsearchTool: false
 
 # The chart uses the admin-tools placement for its schema setup/update Jobs.
 admintools:
+  image:
+    repository: temporalio/admin-tools
+    tag: "1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87"
   nodeSelector:
     kubernetes.io/os: linux
 
