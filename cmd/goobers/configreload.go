@@ -22,6 +22,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/configsignal"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/credentials"
@@ -105,6 +106,8 @@ type configReloader struct {
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher
+	configSnapshots *configmirror.Plane
+	planeTreeDigest string
 	gaggleHealth    *daemonGaggleHealth
 	lastDigestError string
 	// lastRejectionMessage is set by reject() during the most recent poll

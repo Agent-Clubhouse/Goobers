@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -20,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configauthoring"
+	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -476,6 +476,7 @@ type upServices struct {
 	blobStore                  *blobstore.Dir
 	cancelPlane                *daemonCancelService
 	configDigests              *configDigestPublisher
+	configSnapshots            *configmirror.Plane
 	credentialPlane            *daemonCredentialService
 	durableTriggers            *durableTriggerService
 	engineClient               *daemonEngineClient
@@ -1211,10 +1212,8 @@ func (u *upSession) configureAPI() int {
 	// refused, so this is what OPENS the plane, and a daemon that serves stage
 	// pods at all can always answer which gaggle one of its own runs is in.
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(u.l)))
-	// #4153: publish which config tree is in force, so a worker can detect that
-	// its own has diverged instead of finding out when an agentic gate refuses.
-	u.configDigests = newConfigDigestPublisher(u.setup.ConfigDigest)
-	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithConfigDigest(u.configDigests.Get))
+	// Publish the applied config tree and sanitized worker snapshot.
+	u.configureWorkerConfigPlane()
 	if u.apiHandlerOpts, err = appendWorkerDivergenceHandlerOption(u.apiHandlerOpts, u.setup); err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize worker config-divergence reporting", err)
 	}
@@ -1638,19 +1637,20 @@ func (u *upSession) startScheduler() int {
 	// flag only decides whether its own ticker loop (wired further below)
 	// runs automatically.
 	u.reloader = &configReloader{
-		watching:       *u.watchConfig,
-		layout:         u.l,
-		setup:          u.setup,
-		scheduler:      u.sched,
-		openPRs:        u.openPRs,
-		reads:          u.reads,
-		cleanupRetries: u.cleanupRetries,
-		readModel:      u.setup.ReadModel,
-		wg:             &u.wg,
-		appliedDigest:  u.setup.ConfigDigest,
-		observedDigest: u.setup.ConfigDigest,
-		digests:        u.configDigests,
-		gaggleHealth:   u.gaggleHealth,
+		watching:        *u.watchConfig,
+		layout:          u.l,
+		setup:           u.setup,
+		scheduler:       u.sched,
+		openPRs:         u.openPRs,
+		reads:           u.reads,
+		cleanupRetries:  u.cleanupRetries,
+		readModel:       u.setup.ReadModel,
+		wg:              &u.wg,
+		appliedDigest:   u.setup.ConfigDigest,
+		observedDigest:  u.setup.ConfigDigest,
+		digests:         u.configDigests,
+		configSnapshots: u.configSnapshots,
+		gaggleHealth:    u.gaggleHealth,
 	}
 	if u.setup.CapacityRejection != "" {
 		u.reloader.retentionRejected = true
@@ -2680,9 +2680,5 @@ func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
 	if path == "" {
 		return podauth.NewRegistry(), nil
 	}
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
-	}
-	return podauth.NewSignedKey(bytes.TrimSpace(key))
+	return podauth.LoadSignedKeyFile(path)
 }

@@ -220,7 +220,7 @@ func testParentHarnessFactoryCustody(t *testing.T, lost, committed bool, selecte
 		if err = scoped.Put(ctx, ref.Digest, transcript); err != nil {
 			t.Fatal(err)
 		}
-		out := dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: "yielded", Message: "yielded"}, Transcript: &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 23}}
+		out := dispatcher.SurrenderedResult{ContractVersion: dispatcher.CurrentSurrenderContract, Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: "yielded", Message: "yielded"}, Transcript: &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 23}}
 		data, _ = json.Marshal(out)
 		if err = plane.Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			t.Fatal(err)

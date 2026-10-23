@@ -656,6 +656,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
 		ChildWorkflows:           childAccess,
+		UsageSink:                invoke.AgentUsageStream(ctx),
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {
@@ -666,8 +667,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
-		// posture with no usable platform sandbox must block the stage, never
-		// downgrade to an unconfined run (S3/#166, ADR-0001).
+		// sandbox with no usable mechanism never downgrades (S3/#166, ADR-0001).
 		sb, err := e.newSandbox()
 		if err != nil {
 			return Outcome{}, nil, nil, fmt.Errorf(
@@ -703,12 +703,12 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		agentProjection = newAgentEventProjection(ctx, appender, e.scrubber)
 		req.AgentEventSink = agentProjection.Emit
 	}
-	var out Outcome
-	var runErr error
+	out, runErr := Outcome{}, error(nil)
 	capture, err := e.beginTranscriptCapture(env.TaskID, &req)
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
+
 	out, runErr = publication.settle(postcondition.settle(e.runAdapter(ctx, req, nestedAdapter)))
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(req, out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)

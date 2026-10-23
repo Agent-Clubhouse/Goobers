@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
@@ -154,7 +155,9 @@ func newSelectiveHarness(t *testing.T, document string, results map[string]stubT
 	t.Helper()
 	h := &selectiveHarness{calls: map[string]int{}}
 	h.runner, h.runsDir = newParallelTestRunner(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
-		return &selectionDeterministic{rec: rec, document: []byte(document), results: results, mu: &h.mu, calls: h.calls}, nil
+		return &selectionDeterministic{
+			rec: rec, document: []byte(document), results: results, mu: &h.mu, calls: h.calls,
+		}, nil
 	})
 	return h
 }
@@ -375,6 +378,87 @@ func TestConformanceSelectiveParallelInvalidSourceFailsBeforeStart(t *testing.T)
 			t.Fatalf("phase = %q, want escalated", result.Phase)
 		}
 	})
+}
+
+func TestSelectiveParallelRefusalMessagesRemainExact(t *testing.T) {
+	multiIssue := `{"branches":["one","two","three","four"]}`
+	tests := []struct {
+		name     string
+		document string
+		want     string
+	}{
+		{
+			name: "unknown branch", document: `{"schemaVersion":1,"branches":[{"name":"performance"}]}`,
+			want: `runner: fan-out "review" source triage.lenses is invalid: names unknown branch "performance"`,
+		},
+		{
+			name: "duplicate branch", document: `{"schemaVersion":1,"branches":[{"name":"ui"},{"name":"ui"}]}`,
+			want: `runner: fan-out "review" source triage.lenses is invalid: names branch "ui" more than once`,
+		},
+		{
+			name: "reason bound",
+			document: `{"schemaVersion":1,"branches":[{"name":"ui","reason":"` +
+				strings.Repeat("é", fanout.MaxSelectionReasonBytes/2+1) + `"}]}`,
+			want: `runner: fan-out "review" source triage.lenses is invalid: reason for branch "ui" exceeds 512 bytes`,
+		},
+		{
+			name: "schema", document: `{"schemaVersion":1,"branches":["security"]}`,
+			want: `runner: fan-out "review" source triage.lenses is invalid: document violates fanout-selection.schema.json: /branches/0: expected object, but got string`,
+		},
+		{
+			name: "multi-issue schema", document: multiIssue,
+			want: `runner: fan-out "review" source triage.lenses is invalid: document violates fanout-selection.schema.json: /: missing properties: 'schemaVersion'; /branches/0: expected object, but got string; /branches/1: expected object, but got string; and 2 more`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h := newSelectiveHarness(t, test.document, nil)
+			runID := selectiveRunPrefix + "-exact-" + strings.ReplaceAll(test.name, " ", "-")
+			h.start(t, runID, selectiveMachine(t, selectiveOptions{}))
+			if got := fanOutSourceInvalidMessage(t, h.events(t, runID)); got != test.want {
+				t.Fatalf("journaled Error.Message =\n%q\nwant\n%q", got, test.want)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name, detail, want string
+	}{
+		{
+			name: "media type", detail: `media type "text/plain" is not application/json`,
+			want: `runner: fan-out "review" source triage.lenses is invalid: media type "text/plain" is not application/json`,
+		},
+		{
+			name: "decode", detail: "decode selection document: unexpected EOF",
+			want: `runner: fan-out "review" source triage.lenses is invalid: decode selection document: unexpected EOF`,
+		},
+		{
+			name: "integrity", detail: "source slot triage.lenses: artifact digest mismatch",
+			want: `runner: fan-out "review" source triage.lenses is invalid: source slot triage.lenses: artifact digest mismatch`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cause := &FanOutSourceError{
+				State: "review", Source: apiv1.FanOutSource{Task: "triage", Slot: "lenses"},
+				Err: errors.New(test.detail),
+			}
+			got := journal.ErrorDetailFor(FanOutSourceInvalidCode, cause).Message
+			if got != test.want {
+				t.Fatalf("journaled Error.Message = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func fanOutSourceInvalidMessage(t *testing.T, events []journal.Event) string {
+	t.Helper()
+	for _, event := range eventsOfType(events, journal.EventError) {
+		if event.Error != nil && event.Error.Code == FanOutSourceInvalidCode && event.Parallel == "review" {
+			return event.Error.Message
+		}
+	}
+	t.Fatalf("no fanout_source_invalid error event in %+v", eventsOfType(events, journal.EventError))
+	return ""
 }
 
 func assertFanOutSourceInvalid(t *testing.T, events []journal.Event, want string) {

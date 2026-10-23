@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -598,6 +599,7 @@ func runCodexInvocation(
 	// event before its terminal usage snapshot can be observed.
 	stdout := newCodexJSONLCapture(max(req.MaxTranscriptBytes, DefaultMaxTranscriptBytes))
 	stdout.transcript = transcript
+	stdout.usageSink = req.UsageSink
 	transcript.beginTurn(prompt)
 	result, err := runner.Run(ctx, ProcessRequest{
 		Command:                      argv,
@@ -754,6 +756,7 @@ type codexJSONLCapture struct {
 	parsed     codexParseResult
 	err        error
 	wrote      bool
+	usageSink  func(map[string]float64)
 }
 
 func newCodexJSONLCapture(limit int64) *codexJSONLCapture {
@@ -827,6 +830,11 @@ func (c *codexJSONLCapture) result() (codexParseResult, error) {
 }
 
 func parseCodexEvent(raw []byte, result *codexParseResult) error {
+	_, err := parseCodexEventType(raw, result)
+	return err
+}
+
+func parseCodexEventType(raw []byte, result *codexParseResult) (string, error) {
 	var event struct {
 		Type     string `json:"type"`
 		Message  string `json:"message"`
@@ -837,7 +845,7 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		Usage codexUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return err
+		return "", err
 	}
 	switch event.Type {
 	case "thread.started":
@@ -853,12 +861,19 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 	case "error":
 		result.failed = event.Message
 	}
-	return nil
+	return event.Type, nil
 }
 
 func (c *codexJSONLCapture) parseEvent(raw []byte) error {
 	if c.transcript != nil {
 		c.transcript.observe(raw)
 	}
-	return parseCodexEvent(raw, &c.parsed)
+	eventType, err := parseCodexEventType(raw, &c.parsed)
+	if err != nil {
+		return err
+	}
+	if c.usageSink != nil && eventType == "turn.completed" {
+		c.usageSink(maps.Clone(c.parsed.metrics))
+	}
+	return nil
 }

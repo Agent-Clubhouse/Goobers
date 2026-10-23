@@ -150,6 +150,10 @@ const (
 	// kept to booleans and timestamps so its unauthenticated fail-open
 	// exception cannot become an information-disclosure surface.
 	ConfigDigestPath = V1Prefix + "/config/digest"
+	// ConfigSnapshotPath is the worker-only configuration plane. Without a
+	// digest query it returns the current sanitized snapshot digest; with
+	// ?digest=sha256:... it streams that exact retained snapshot.
+	ConfigSnapshotPath = V1Prefix + "/config/snapshot"
 	// WorkerConfigDivergencePath accepts the worker's transition reports into
 	// the daemon-owned instance journal; it is the write half of the same
 	// narrow config-observability capability.
@@ -285,12 +289,20 @@ const DigestHeader = "X-Goobers-Digest"
 // RouteID is the stable cross-adapter identity of a versioned route.
 type RouteID string
 
+// ConfigSnapshotCurrent identifies the sanitized worker snapshot currently in
+// force and the durable instance identity every worker replica must share.
+type ConfigSnapshotCurrent struct {
+	Digest     string `json:"digest"`
+	InstanceID string `json:"instanceID"`
+}
+
 // Stable V1 route IDs.
 const (
 	RouteDiscovery                RouteID = "discovery"
 	RouteOpenAPI                  RouteID = "openapi"
 	RouteCapabilities             RouteID = "capabilities"
 	RouteConfigDigest             RouteID = "configDigest"
+	RouteConfigSnapshot           RouteID = "configSnapshot"
 	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
 	RouteInstanceReadiness        RouteID = "readiness"
@@ -543,6 +555,7 @@ var v1Routes = []Route{
 	// recovery completes) the way every other read route here does.
 	{ID: RouteInstanceReadiness, Method: http.MethodGet, Path: InstanceReadinessPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteConfigSnapshot, Method: http.MethodGet, Path: ConfigSnapshotPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	// A worker's divergence report is a machine-to-daemon journal seam, not an
 	// operator mutation that every product surface must expose. Class it with
 	// the journal emit plane and pool its append with mutations.

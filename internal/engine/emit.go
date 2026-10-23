@@ -104,6 +104,10 @@ func (r *runJournal) rollbackUnemitted(m journalMark) {
 	if r.emitted > floor {
 		floor = r.emitted
 	}
+	if r.owner != nil {
+		floor = r.owner.rollbackFloor(r, floor)
+		r.owner.rollback(r, floor)
+	}
 	if len(r.proj.Ops) > floor {
 		r.proj.Ops = r.proj.Ops[:floor]
 		r.branchRecorded = m.branchRecorded
@@ -131,6 +135,10 @@ func (r *runJournal) emitFailure(ctx workflow.Context, stage string, attempt int
 // to deliver re-emits the SAME keys — and ordinal gaps left by rolled-back
 // ops are harmless because keys only need determinism and uniqueness.
 func (r *runJournal) assignEmitKeys() {
+	if r.owner != nil {
+		r.owner.assignEmitKeys(len(r.owner.entries))
+		return
+	}
 	if r.ordinals == nil {
 		r.ordinals = map[string]int{}
 	}
@@ -182,6 +190,9 @@ func opEmitScope(op JournalOp) (string, int) {
 // dispatch), the run (open/gate), or is deferred to the repair projection
 // (terminal).
 func (r *runJournal) emitPending(ctx workflow.Context) error {
+	if r.owner != nil {
+		return r.owner.emitPending(ctx)
+	}
 	if !r.live {
 		return nil
 	}

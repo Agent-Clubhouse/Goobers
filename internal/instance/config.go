@@ -489,7 +489,9 @@ type APIConfig struct {
 	//
 	// Path only; key material never appears in instance.yaml (CFG-009).
 	// Unset keeps the in-memory registry, which is correct whenever daemon
-	// and dispatcher share a process.
+	// and dispatcher share a process. The key is read at process startup;
+	// rotation requires a coordinated restart and invalidates outstanding pod
+	// tokens and credential-refresh grants until every replica uses the new key.
 	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
 }
 

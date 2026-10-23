@@ -200,26 +200,21 @@ A configured deployment needs all of these inputs before enabling stage dispatch
   `api.tls.keyFile`, and `api.podTokenKeyFile` in its instance configuration.
   A pod-only listener can use signed pod authentication without a human OIDC
   provider; enabling human access requires its own supported authentication.
-- Give the worker `--daemon-api` (or `GOOBERS_DAEMON_API`) and
-  `GOOBERS_BLOB_ENDPOINT`, normally both
+- Give the worker `--config-endpoint`, `--daemon-api`, and `--blob-endpoint`,
+  normally all
   `https://goobers-api.goobers-system.svc:8080`, and the same signing key through
-  its own `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
+  `--config-key-file`. The fetched sanitized instance document must name that
+  same mount in `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
   user information, query parameters, or fragments. Startup validates syntax
   and key material, not endpoint reachability or remote key agreement. Use TLS
   for the in-cluster listener. The certificate must cover the Service name;
   workers and **all stage images** must trust its CA. Successful kubelet HTTPS
   probes alone do not establish client trust.
-- Share the RWX blob volume: the daemon's `<instance>/blobstore` and the worker's
-  `--blob-store` must refer to the same backing tree, including its `surrender/`
-  directory. Stage pods use the authenticated network planes, never the PVC.
-- Give the worker its **own writable instance root** and private `--work-root`,
-  with matching config supplied through a whole mounted config tree or a
-  maintained sync source. `--work-root` alone does not relocate all writes:
-  workspace setup constructs per-gaggle worktree managers under the instance,
-  and local execution stages artifacts there. A read-only mount of the daemon's
-  whole instance is therefore insufficient. RWO same-node affinity does not
-  solve state ownership. See the reload section below for propagation and pin
-  retention requirements; copying config once does not provide live sync.
+- Keep the blob PVC API-only. Workers and stage pods use the authenticated HTTP
+  blob plane and never mount the PVC.
+- Give every worker a private emptyDir `--work-root`. The config plane stores
+  current plus three superseded sanitized snapshots beneath it; no worker
+  mounts the daemon's instance or journal volume.
 - Add explicit deny-first network grants for worker-to-daemon, worker-to-Kubernetes
   API, worker-to-Temporal, and stage-to-daemon traffic, with DNS available.
   Retain namespace **and** pod selectors on cross-namespace blob/API grants.
@@ -637,10 +632,12 @@ that writes into the mounted directory), then verify by execution: edit the
 tree, wait past the interval, and confirm the worker logged
 `worker config reload: applied config tree sha256:…`.
 
-For credential-free cross-node **boot seeding**, use the
-[rendered-config mirror overlay](config-mirror/README.md) instead of a worker
-ConfigMap bridge. It copies a complete validated snapshot without the ConfigMap
-size ceiling. It is deliberately not a live updater: drain and recreate workers
+Workers fetch complete sanitized snapshots by content digest from the daemon
+configuration plane, without a ConfigMap or shared volume. The
+[rendered-config mirror overlay](config-mirror/README.md) remains a compatibility
+alias. The live updater retains three superseded trees, so configuration changes
+reach subsequent stages without recreating workers while pinned runs keep their
+admitted kit.
 to consume a newer seed, accounting for configuration pins of in-flight runs.
 
 ### The worker refuses a kit its run was not admitted against
@@ -920,7 +917,7 @@ The worker needs the whole config tree (workflows, goobers, gaggles, assets),
 not just `instance.yaml`. A worker seeded with only `instance.yaml` starts,
 passes its probes and reports healthy, then fails the first stage that needs a
 definition it does not have. The symptom is fail-late, not fail-fast; seed the
-complete tree, as the `config-mirror` overlay does (#3314, #3290).
+complete tree through the worker config plane (#3314, #3290).
 
 ### Grace-period inputs, and the AKS drain floor
 
@@ -968,8 +965,7 @@ need both halves.
 
 A config tree delivered through a ConfigMap is bounded by the Kubernetes object
 size limit of roughly 1 MiB. This is a hard limit of the transport, not a tuning
-knob: a tree that outgrows it needs a different delivery (the `config-mirror`
-overlay), so check its size before relying on ConfigMap delivery (#3290).
+knob: use the content-addressed worker config plane instead (#3290).
 
 ### Scheduled check reporting
 

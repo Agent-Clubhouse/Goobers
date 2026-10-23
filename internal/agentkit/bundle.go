@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Bundle and installation paths are versioned parts of the toolkit contract.
@@ -42,6 +43,7 @@ type Manifest struct {
 	BundleVersion   string                  `json:"bundleVersion"`
 	Producer        Producer                `json:"producer"`
 	DSLVersions     []supportmatrix.Version `json:"dslVersions"`
+	Features        []FeatureSupport        `json:"features"`
 	Ownership       Ownership               `json:"ownership"`
 	Assets          []Asset                 `json:"assets"`
 	Adapters        []Adapter               `json:"adapters"`
@@ -60,6 +62,12 @@ type Release struct {
 type Producer struct {
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
+}
+
+// FeatureSupport projects the runtime support column into the toolkit manifest.
+type FeatureSupport struct {
+	ID       workflow.FeatureID        `json:"id"`
+	Runtimes []workflow.RuntimeSupport `json:"runtimes"`
 }
 
 // Ownership declares the product root and instruction files it excludes.
@@ -214,6 +222,7 @@ func Build(source fs.FS, version, commit string) (Bundle, error) {
 		BundleVersion: BundleVersion,
 		Producer:      producer,
 		DSLVersions:   dslVersions,
+		Features:      toolkitFeatureSupport(),
 		Ownership: Ownership{
 			ProductRoot: ProductRoot,
 			UserOwnedInstructionFiles: []string{
@@ -257,7 +266,17 @@ func Build(source fs.FS, version, commit string) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
+
 	return Bundle{Manifest: manifest, ManifestJSON: manifestJSON, Files: files}, nil
+}
+
+func toolkitFeatureSupport() []FeatureSupport {
+	features := workflow.AllFeatures()
+	out := make([]FeatureSupport, len(features))
+	for i, feature := range features {
+		out[i] = FeatureSupport{ID: feature.ID, Runtimes: feature.Runtimes}
+	}
+	return out
 }
 
 // DecodeManifest validates and decodes installed manifest bytes.
