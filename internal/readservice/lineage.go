@@ -90,7 +90,7 @@ func (s *Local) offlineRunLineagePage(ctx context.Context, target RunSummary, af
 	}
 	lineage := lineagePage(target.Lineage, page)
 	err = accumulateLineage(ctx, target.ID, lineage, func(id string) (lineageAncestor, error) {
-		run, err := s.openRun(id)
+		run, err := s.openRun(ctx, id)
 		if err != nil {
 			return lineageAncestor{}, nil
 		}

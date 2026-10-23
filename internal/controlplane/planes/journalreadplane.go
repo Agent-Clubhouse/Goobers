@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 )
 
@@ -22,9 +21,8 @@ import (
 // the existing readservice routes with handler-level run containment added
 // (internal/httpapi/router.go, podRunContained).
 //
-// Every method here answers a purpose-built question from the instance's own
-// run directories through journalclient.FileCrossRun — the identical code the
-// same-host CLI path runs — so "the daemon answered it" and "the stage read it
+// Every method here answers a purpose-built question through the authoritative
+// journal backend, using the same event interpretation as the same-host CLI, so "the daemon answered it" and "the stage read it
 // off disk" cannot drift into two different answers. What the daemon adds is
 // the containment the filesystem cannot express:
 //
@@ -36,7 +34,7 @@ import (
 
 // RunJournalService serves the cross-run journal plane.
 type RunJournalService struct {
-	layout instance.Layout
+	backend journal.ReaderBackend
 	// reads is the daemon's live, read-model-backed run reader. The
 	// escalation-candidates route answers from it, never from an offline
 	// journal scan (#6889 follow-up).
@@ -48,20 +46,36 @@ type RunJournalService struct {
 }
 
 // NewRunJournalService constructs the cross-run journal read plane.
-func NewRunJournalService(layout instance.Layout, claimedIDs func(gaggle, runID string) ([]string, error)) *RunJournalService {
-	return &RunJournalService{layout: layout, claimedIDs: claimedIDs}
+func NewRunJournalService(layout instance.Layout, claimedIDs func(gaggle, runID string) ([]string, error), backends ...journal.ReaderBackend) *RunJournalService {
+	backend := journal.NewFileReaderBackend(journal.FileReaderBackendConfig{ResolveRun: func(ctx context.Context, id string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return layout.FindRunDir(id)
+	}})
+	if len(backends) > 0 {
+		backend = backends[0]
+	}
+	return &RunJournalService{claimedIDs: claimedIDs, backend: backend}
 }
 
-// RunJournalGaggleOK reports whether runID's journal lives under gaggle's runs
-// directory on this instance — the same run.yaml lookup daemonClaimService's
-// namespace containment makes, and the same fail-closed treatment of an
-// unsafe gaggle segment.
+// RunJournalGaggleOK checks authoritative journal identity. Request handlers
+// use the context-aware check; this context-free interface is retained for
+// callers that do not carry a request context.
 func (s *RunJournalService) RunJournalGaggleOK(gaggle, runID string) bool {
-	if !apiv1.ValidRunID(runID) || !PlainPathElement(gaggle) {
+	return s.runJournalGaggleOK(context.Background(), gaggle, runID)
+}
+
+func (s *RunJournalService) runJournalGaggleOK(ctx context.Context, gaggle, runID string) bool {
+	if !apiv1.ValidRunID(runID) || !PlainPathElement(gaggle) || s.backend == nil {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID, "run.yaml"))
-	return err == nil
+	reader, err := s.backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
+	if err != nil {
+		return false
+	}
+	identity, err := reader.Identity()
+	return err == nil && identity.RunID == runID && identity.Gaggle == gaggle
 }
 
 // GaggleMismatch returns the common containment refusal for cross-gaggle reads.
@@ -72,7 +86,7 @@ func GaggleMismatch(what string) error {
 
 // crossRun is the shared reader, scoped per request by the caller.
 func (s *RunJournalService) crossRun() *journalclient.FileCrossRun {
-	return journalclient.NewFileCrossRun(s.layout)
+	return journalclient.NewBackendCrossRun(s.backend)
 }
 
 // AttachReads installs the live read-model candidate source.
@@ -96,10 +110,10 @@ func (s *RunJournalService) RunPhase(ctx context.Context, request journalclient.
 		return journalclient.RunPhaseResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"runId and targetRunId are required and must be valid run ids", nil)
 	}
-	if !s.RunJournalGaggleOK(request.Gaggle, request.RunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.RunID) {
 		return journalclient.RunPhaseResponse{}, GaggleMismatch("a cross-run phase lookup")
 	}
-	if !s.RunJournalGaggleOK(request.Gaggle, request.TargetRunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.TargetRunID) {
 		// Deliberately the same refusal a foreign gaggle gets, and deliberately
 		// NOT a 404: "no such run" and "that run is not yours to ask about" must
 		// be indistinguishable, or the route becomes a run-id oracle.
@@ -119,7 +133,7 @@ func (s *RunJournalService) RunPhase(ctx context.Context, request journalclient.
 // ConflictTouches answers the gaggle's base-sync conflict history: run ids and
 // the file paths those runs conflicted over, nothing else.
 func (s *RunJournalService) ConflictTouches(ctx context.Context, request journalclient.ConflictTouchRequest) (journalclient.ConflictTouchResponse, error) {
-	if !s.RunJournalGaggleOK(request.Gaggle, request.RunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.RunID) {
 		return journalclient.ConflictTouchResponse{}, GaggleMismatch("a conflict-history read")
 	}
 	if err := s.requireWindowedLiveReads(request.Since, "a conflict-history read"); err != nil {
@@ -181,7 +195,7 @@ func (s *RunJournalService) contributingWorkflows(gaggle string, can func(apiv1.
 // item. The httpapi handler already blanks the request's list; deriving here
 // as well means no other caller of this service can reintroduce the hole.
 func (s *RunJournalService) UnpushedWork(ctx context.Context, request journalclient.UnpushedWorkRequest) (journalclient.UnpushedWorkResponse, error) {
-	if !s.RunJournalGaggleOK(request.Gaggle, request.RunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.RunID) {
 		return journalclient.UnpushedWorkResponse{}, GaggleMismatch("a prior-unpushed-work read")
 	}
 	if s.claimedIDs == nil {
@@ -221,7 +235,7 @@ func (s *RunJournalService) UnpushedWork(ctx context.Context, request journalcli
 // see the same candidate set. It reads the daemon's live read model (read.db),
 // not FileCrossRun's offline scan of every run journal on disk.
 func (s *RunJournalService) EscalationCandidates(ctx context.Context, request journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error) {
-	if !s.RunJournalGaggleOK(request.Gaggle, request.RunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.RunID) {
 		return journalclient.EscalationCandidatesResponse{}, GaggleMismatch("a decomposition escalation-candidates read")
 	}
 	if s.reads == nil {
@@ -249,10 +263,10 @@ func (s *RunJournalService) BranchOwnership(ctx context.Context, request journal
 		return journalclient.BranchOwnershipResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"runId and targetRunId are required and must be valid run ids", nil)
 	}
-	if !s.RunJournalGaggleOK(request.Gaggle, request.RunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.RunID) {
 		return journalclient.BranchOwnershipResponse{}, GaggleMismatch("a branch-ownership lookup")
 	}
-	if !s.RunJournalGaggleOK(request.Gaggle, request.TargetRunID) {
+	if !s.runJournalGaggleOK(ctx, request.Gaggle, request.TargetRunID) {
 		// Deliberately the same refusal a foreign gaggle gets (see RunPhase).
 		return journalclient.BranchOwnershipResponse{}, GaggleMismatch("a branch-ownership lookup")
 	}
