@@ -164,7 +164,9 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 		Name: current.Name, Version: 1, DSLVersion: current.DSLVersion, Spec: current.Spec,
 	}
 	placements, err := bootstrap.PinChildStagePlacements(cloudAssessmentConfig(cfg), set, current.Spec.Gaggle, def)
-	blockers := unsupportedFeatureBlockers(current.Name, current.Spec, placements)
+	blockers := unsupportedFeatureBlockers(
+		current.Name, current.Spec, cloudRefusalPlacements(current.Spec, placements),
+	)
 	if err != nil {
 		// A workflow the inventory cannot place would fall back to the
 		// control-plane host, which the cloud does not have: fail closed.
@@ -178,6 +180,7 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 	} else {
 		blockers = append(blockers, placementBlockers(current.Spec, placements)...)
 	}
+
 	if current.DSLVersion != supportmatrix.V3DSLVersion &&
 		current.DSLVersion != supportmatrix.V31DSLVersion {
 		blockers = append(blockers, Blocker{
@@ -193,6 +196,26 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 		return blockers[i].Code < blockers[j].Code
 	})
 	return blockers
+}
+
+func cloudRefusalPlacements(spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) []dispatcher.PinnedPlacement {
+	out := append([]dispatcher.PinnedPlacement(nil), placements...)
+	index := make(map[string]int, len(out))
+	for i := range out {
+		index[out[i].Stage] = i
+		out[i].Self = false
+	}
+	for _, task := range spec.Tasks {
+		if task.Type != apiv1.TaskAgentic || task.Limits == nil ||
+			(task.Limits.MaxTokens <= 0 && task.Limits.MaxCostUSD <= 0) {
+			continue
+		}
+		if _, ok := index[task.Name]; !ok {
+			index[task.Name] = len(out)
+			out = append(out, dispatcher.PinnedPlacement{Stage: task.Name})
+		}
+	}
+	return out
 }
 
 func unsupportedFeatureBlockers(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) []Blocker {

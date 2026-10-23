@@ -203,24 +203,12 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // the runner, where the feature is implemented, with the refusal text as the
 // operator-facing reason.
 func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
-	if err := RefuseFeatures(name, spec); err != nil {
-		return err
-	}
-	for _, g := range spec.Gates {
-		if err := RefuseHumanGate(g); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// RefusePlacedDefinition also checks features whose support depends on the
-// pinned executor. Local agentic usage budgets are supported; remote usage
-// must be carried in the surrender protocol before that refusal can be lifted.
-func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
 	var refusals []*UnsupportedFeatureError
 	var declared *UnsupportedFeaturesError
-	if err := RefuseDefinition(name, spec); errors.As(err, &declared) {
+	if err := RefuseFeatures(name, spec); err != nil {
+		if !errors.As(err, &declared) {
+			return err
+		}
 		refusals = append(refusals, declared.Refusals...)
 	}
 	for _, g := range spec.Gates {
@@ -230,8 +218,37 @@ func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []d
 			})
 		}
 	}
-	refusals = append(refusals, remoteUsageRefusals(spec, placements)...)
 	return refusalError(name, refusals)
+}
+
+// RefusePlacedDefinition also checks features whose support depends on the
+// pinned executor. Local agentic usage budgets are supported; remote usage
+// must be carried in the surrender protocol before that refusal can be lifted.
+func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) error {
+	refusals, err := placedDefinitionRefusals(name, spec, placements, RefuseDefinition)
+	if err != nil {
+		return err
+	}
+	return refusalError(name, refusals)
+}
+
+func placedDefinitionRefusals(
+	name string,
+	spec apiv1.WorkflowSpec,
+	placements []dispatcher.PinnedPlacement,
+	refuseDefinition func(string, apiv1.WorkflowSpec) error,
+) ([]*UnsupportedFeatureError, error) {
+	var refusals []*UnsupportedFeatureError
+	var declared *UnsupportedFeaturesError
+	err := refuseDefinition(name, spec)
+	if err != nil && !errors.As(err, &declared) {
+		return nil, err
+	}
+	if declared != nil {
+		refusals = append(refusals, declared.Refusals...)
+	}
+	refusals = append(refusals, remoteUsageRefusals(spec, placements)...)
+	return refusals, nil
 }
 
 // RefuseRemoteUsage rejects token or cost limits on agentic tasks pinned to

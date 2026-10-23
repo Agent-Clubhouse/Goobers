@@ -42,6 +42,25 @@ func TestCloudReadinessKeepsUnmappedEngineRefusal(t *testing.T) {
 	t.Fatalf("unmapped engine refusal disappeared: %+v", result)
 }
 
+func TestSelfPinnedAgenticLimitsStillReportP4Blockers(t *testing.T) {
+	set := blockerFixture()
+	result := Assess(&instance.Config{}, set)
+	features := map[string]bool{}
+	var placement bool
+	for _, assessed := range result.Workflows {
+		if assessed.Name != "all-features" {
+			continue
+		}
+		for _, blocker := range assessed.Blockers {
+			features[blocker.Feature] = true
+			placement = placement || blocker.Code == CodePlacement
+		}
+	}
+	if !placement || !features["task.limits.maxTokens"] || !features["task.limits.maxCostUSD"] {
+		t.Fatalf("self placement hid future cloud limit refusals: %+v", result)
+	}
+}
+
 func mapReadinessFixture() *instance.ConfigSet {
 	task := func(name, next string) apiv1.Task {
 		return apiv1.Task{
