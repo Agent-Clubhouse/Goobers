@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	"github.com/goobers/goobers/internal/cloud/operatorcli"
 	"github.com/goobers/goobers/internal/workerhost"
 )
 
@@ -165,5 +166,18 @@ func TestCompletionCommand(t *testing.T) {
 	code, stdout, stderr := runForTest("completion", "bash")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "goobers-cloud") {
 		t.Fatalf("completion bash: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestNestedOperatorHelpRoutesFromRegistry(t *testing.T) {
+	var want string
+	for _, candidate := range operatorcli.Commands() {
+		if candidate.Name == "runs list" {
+			want = candidate.Long
+		}
+	}
+	code, stdout, stderr := runForTest("help", "runs", "list")
+	if want == "" || code != 0 || stderr != "" || stdout != want {
+		t.Fatalf("nested help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
