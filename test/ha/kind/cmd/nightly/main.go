@@ -191,18 +191,33 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 }
 
 func waitForShardSettlement(ctx context.Context, env []string, evidence, serverVersion string, before map[int64]int64) error {
+	query := func(ctx context.Context) (map[int64]int64, string, error) {
+		return readShardRanges(ctx, env)
+	}
+	return waitForShardSettlementWithQuery(ctx, evidence, serverVersion, before, query, 30*time.Second, 5*time.Second)
+}
+
+func waitForShardSettlementWithQuery(
+	ctx context.Context,
+	evidence string,
+	serverVersion string,
+	before map[int64]int64,
+	query func(context.Context) (map[int64]int64, string, error),
+	dwell time.Duration,
+	pollInterval time.Duration,
+) error {
 	var last string
 	var candidate map[int64]int64
 	var stableSince time.Time
 	for range 120 {
-		current, raw, err := readShardRanges(ctx, env)
+		current, raw, err := query(ctx)
 		if err == nil {
 			last = raw
 			if shardRangesAdvanced(before, current) {
 				if !maps.Equal(current, candidate) {
 					candidate, stableSince = maps.Clone(current), time.Now()
-				} else if time.Since(stableSince) >= 30*time.Second {
-					data := "shard_id|range_id\n" + raw + "\nstable_seconds=30\n"
+				} else if time.Since(stableSince) >= dwell {
+					data := fmt.Sprintf("shard_id|range_id\n%s\nstable_seconds=%g\n", raw, dwell.Seconds())
 					if err := os.WriteFile(filepath.Join(evidence, "temporal-"+serverVersion+"-shards.txt"), []byte(data), 0o644); err != nil {
 						return err
 					}
@@ -215,11 +230,11 @@ func waitForShardSettlement(ctx context.Context, env []string, evidence, serverV
 		select {
 		case <-ctx.Done():
 			return errors.Join(ctx.Err(), err)
-		case <-time.After(5 * time.Second):
+		case <-time.After(pollInterval):
 		}
 	}
-	return fmt.Errorf("temporal %s shards did not all advance beyond their snapshots and remain stable for 30s (last=%q)",
-		serverVersion, last)
+	return fmt.Errorf("temporal %s shards did not all advance beyond their snapshots and remain stable for %s (last=%q)",
+		serverVersion, dwell, last)
 }
 
 func readShardRanges(ctx context.Context, env []string) (map[int64]int64, string, error) {

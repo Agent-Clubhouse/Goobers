@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTemporalLadderAdvancesOneMinorToWorkerDeploymentGA(t *testing.T) {
@@ -79,5 +81,34 @@ func TestShardRangesAdvancedRequiresEveryShardToMove(t *testing.T) {
 				t.Fatalf("shardRangesAdvanced() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestShardSettlementRejectsOneUnadvancedShard(t *testing.T) {
+	before := map[int64]int64{1: 17, 2: 17, 3: 17, 4: 20}
+	post := map[int64]int64{1: 18, 2: 18, 3: 18, 4: 20}
+	query := func(context.Context) (map[int64]int64, string, error) {
+		return post, "1|18\n2|18\n3|18\n4|20", nil
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if err := waitForShardSettlementWithQuery(ctx, t.TempDir(), "test", before, query, 0, time.Millisecond); err == nil {
+		t.Fatal("settlement accepted a post-rollout map whose fourth shard did not advance")
+	}
+}
+
+func TestShardSettlementDwellsAndRechecksAdvancedMap(t *testing.T) {
+	before := map[int64]int64{1: 17, 2: 17, 3: 17, 4: 20}
+	post := map[int64]int64{1: 18, 2: 18, 3: 18, 4: 21}
+	calls := 0
+	query := func(context.Context) (map[int64]int64, string, error) {
+		calls++
+		return post, "1|18\n2|18\n3|18\n4|21", nil
+	}
+	if err := waitForShardSettlementWithQuery(t.Context(), t.TempDir(), "test", before, query, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("query calls = %d, want at least two so the post-dwell map is rechecked", calls)
 	}
 }
