@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: goobers-pod-token-key
+  namespace: goobers-system
+type: Opaque
+stringData:
+  key: goobers-ha-nightly-worker-key-32-bytes

@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../deploy/reference/workers
+  - pod-token-key.yaml
+images:
+  - name: goobers
+    newName: goobers
+    newTag: ha-nightly
+patches:
+  - target:
+      kind: NetworkPolicy
+      name: allow-rainbow-worker-apiserver
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to/0/ipBlock/cidr
+        value: 0.0.0.0/0
+      - op: replace
+        path: /spec/egress/0/ports/0/port
+        value: 6443
+  - target:
+      kind: WorkerDeployment
+      name: goobers
+    patch: |-
+      - op: replace
+        path: /spec/workerOptions/unsafeCustomBuildID
+        value: ha-nightly

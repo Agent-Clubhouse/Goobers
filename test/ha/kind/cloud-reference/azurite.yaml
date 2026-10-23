@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: goobers-cloud-object-store
+  namespace: goobers-cloud
+type: Opaque
+stringData:
+  account-name: devstoreaccount1
+  account-key: Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
+  accounts: devstoreaccount1:Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: azurite-bootstrap
+  namespace: goobers-cloud
+data:
+  create-container.js: |
+    const crypto = require("crypto");
+    const http = require("http");
+    const account = process.env.AZURE_STORAGE_ACCOUNT;
+    const key = Buffer.from(process.env.AZURE_STORAGE_KEY, "base64");
+    const container = process.env.AZURE_STORAGE_CONTAINER;
+    const date = new Date().toUTCString();
+    const canonicalHeaders = `x-ms-date:${date}\nx-ms-version:2023-11-03\n`;
+    const canonicalResource = `/${account}/${account}/${container}\nrestype:container`;
+    const stringToSign = `PUT\n\n\n\n\n\n\n\n\n\n\n\n${canonicalHeaders}${canonicalResource}`;
+    const signature = crypto.createHmac("sha256", key).update(stringToSign).digest("base64");
+    const attempt = () => {
+      const request = http.request({
+        hostname: "azurite", port: 10000,
+        path: `/${account}/${container}?restype=container`, method: "PUT",
+        headers: {
+          Authorization: `SharedKey ${account}:${signature}`,
+          "x-ms-date": date, "x-ms-version": "2023-11-03", "Content-Length": "0",
+        },
+      }, response => {
+        if (response.statusCode === 201 || response.statusCode === 409) process.exit(0);
+        console.error(`create container returned ${response.statusCode}`);
+        process.exit(1);
+      });
+      request.on("error", () => setTimeout(attempt, 1000));
+      request.end();
+    };
+    attempt();
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: azurite
+  namespace: goobers-cloud
+  labels:
+    app.kubernetes.io/name: azurite
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: azurite
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: azurite
+    spec:
+      containers:
+        - name: azurite
+          image: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+          args: [azurite-blob, --blobHost, 0.0.0.0, --inMemoryPersistence]
+          env:
+            - name: AZURITE_ACCOUNTS
+              valueFrom:
+                secretKeyRef:
+                  name: goobers-cloud-object-store
+                  key: accounts
+          ports:
+            - name: blob
+              containerPort: 10000
+          readinessProbe:
+            tcpSocket:
+              port: blob
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: azurite
+  namespace: goobers-cloud
+spec:
+  selector:
+    app.kubernetes.io/name: azurite
+  ports:
+    - name: blob
+      port: 10000
+      targetPort: blob
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: azurite-bootstrap
+  namespace: goobers-cloud
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: create-container
+          image: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+          command: [node, /bootstrap/create-container.js]
+          env:
+            - name: AZURE_STORAGE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: goobers-cloud-object-store
+                  key: account-name
+            - name: AZURE_STORAGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: goobers-cloud-object-store
+                  key: account-key
+            - name: AZURE_STORAGE_CONTAINER
+              value: goobers
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: azurite-bootstrap
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-azurite
+  namespace: goobers-cloud
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: azurite
+      ports:
+        - protocol: TCP
+          port: 10000

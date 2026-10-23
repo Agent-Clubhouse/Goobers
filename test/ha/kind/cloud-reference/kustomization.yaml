@@ -6,6 +6,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../../../deploy/reference/goobers-cloud
+  - azurite.yaml
 images:
   - name: goobers
     newName: goobers
@@ -20,6 +21,9 @@ patches:
       data:
         instance-id: nightly
         database-auth: password
+        object-store-url: http://azurite.goobers-cloud.svc:10000/devstoreaccount1
+        object-store-container: goobers
+        object-store-account-name: devstoreaccount1
   - target: {kind: ConfigMap, name: goobers-cloud-migration}
     patch: |-
       apiVersion: v1
