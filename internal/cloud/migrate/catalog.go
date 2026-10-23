@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 // Kind describes whether a migration only expands compatibility or contracts it.
@@ -59,6 +61,16 @@ func Catalog() ([]Migration, error) {
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	if err := ValidateCatalog(migrations); err != nil {
 		return nil, err
+	}
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
+		return nil, err
+	}
+	for _, migration := range migrations {
+		if migration.Name == "0003_role_grants.expand.sql" &&
+			migration.SQL != cloudschema.GrantMigrationSQL(inventory) {
+			return nil, errors.New("cloud role grant migration is stale; regenerate it from writepaths.yaml")
+		}
 	}
 	return migrations, nil
 }
