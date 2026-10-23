@@ -15,7 +15,11 @@ import (
 
 // RecoveryGate reports whether expiry reaping may run for an epoch; the
 // localscheduler RecoveryGate satisfies it.
-type RecoveryGate interface {
+//
+// It is an alias, not a defined type, so a consumer declaring the literal
+// interface in its own method set (the epoch services' claims seam) is
+// satisfied by Plane: method signatures match by type identity.
+type RecoveryGate = interface {
 	RecoveryPermitted() bool
 }
 
@@ -110,8 +114,9 @@ func (p *Plane) renewRow(ctx context.Context, tx pgx.Tx, epoch int64, entry loca
 }
 
 // RunClosed confirms, from an authoritative source, that a run is closed.
-// An error means unknown, never closed.
-type RunClosed func(ctx context.Context, runID string) (closed bool, err error)
+// An error means unknown, never closed. An alias for the same reason as
+// RecoveryGate.
+type RunClosed = func(ctx context.Context, runID string) (closed bool, err error)
 
 // RecoverExpired releases expired claims as stall-swept, mirroring
 // localscheduler.ClaimLedger.RecoverExpired (claim.go), and returns the
