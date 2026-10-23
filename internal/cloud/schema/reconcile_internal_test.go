@@ -122,3 +122,41 @@ func TestFunctionStatementsRevokeAndRefuseDefiners(t *testing.T) {
 		}
 	}
 }
+
+func TestReadModelSchemaPatternIsTheOnlyWildcard(t *testing.T) {
+	row := func(schema string) Inventory {
+		return Inventory{Tables: []Table{{Schema: schema, Name: "runs", Provisioned: true, Fence: FenceNoneByDesign, Rationale: "test",
+			Readers: []Reader{{Role: "goobers_api", Columns: []string{"id"}}}}}}
+	}
+	if err := row(ReadModelSchemaPattern).Validate(); err != nil {
+		t.Fatalf("readmodel_v* rejected: %v", err)
+	}
+	for _, schema := range []string{"readmodel_*", "journal_*", "*", "readmodel_v%", "readmodel_v?"} {
+		if err := row(schema).Validate(); err == nil {
+			t.Errorf("wildcard schema %q accepted", schema)
+		}
+	}
+	sequence := Inventory{Tables: row("control").Tables, Sequences: []Sequence{{Schema: ReadModelSchemaPattern, Name: "s", Rationale: "test"}}}
+	if err := sequence.Validate(); err == nil {
+		t.Error("readmodel_v* accepted for a sequence")
+	}
+}
+
+func TestReadModelSchemaPatternExpandsToVersionSchemasOnly(t *testing.T) {
+	inventory := Inventory{Tables: []Table{
+		{Schema: ReadModelSchemaPattern, Name: "runs", Provisioned: true, Readers: []Reader{{Role: "goobers_api", Columns: []string{"id"}}}},
+	}}
+	expanded := inventory.Expand([]string{"control", "readmodel_v1", "readmodel_v12", "readmodel_x", "readmodel_v0", "readmodel_v"})
+	var schemas []string
+	for _, table := range expanded.Tables {
+		schemas = append(schemas, table.Schema)
+	}
+	if !slices.Equal(schemas, []string{"readmodel_v1", "readmodel_v12"}) {
+		t.Fatalf("expanded to %v", schemas)
+	}
+	objects := []object{{schema: "readmodel_v1", name: "runs", kind: "r"}, {schema: "readmodel_x", name: "runs", kind: "r"}}
+	if _, err := reconcileStatements(inventory.Expand([]string{"readmodel_v1", "readmodel_x"}), []string{"readmodel_v1", "readmodel_x"}, objects); err == nil ||
+		!strings.Contains(err.Error(), "readmodel_x.runs has no write-path inventory entry") {
+		t.Fatalf("a table in a schema outside the pattern = %v", err)
+	}
+}

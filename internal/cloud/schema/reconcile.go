@@ -52,6 +52,7 @@ func ReconcileGrants(ctx context.Context, tx pgx.Tx, inventory Inventory) error 
 	if err != nil {
 		return err
 	}
+	inventory = inventory.Expand(schemas)
 	for _, o := range objects {
 		if slices.Contains(RuntimeRoles, o.owner) {
 			return fmt.Errorf("%w: %s owns %s", ErrRolePrivileged, o.owner, o.qualified())
@@ -356,6 +357,11 @@ func EffectivePrivileges(ctx context.Context, q interface {
 // VerifyEffectivePrivileges fails with ErrPrivilegeMismatch unless the
 // runtime roles' effective privileges equal the inventory exactly.
 func VerifyEffectivePrivileges(ctx context.Context, tx pgx.Tx, inventory Inventory) error {
+	schemas, _, err := listObjects(ctx, tx)
+	if err != nil {
+		return err
+	}
+	inventory = inventory.Expand(schemas)
 	actual, err := EffectivePrivileges(ctx, tx)
 	if err != nil {
 		return err
