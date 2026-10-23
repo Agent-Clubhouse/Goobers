@@ -198,6 +198,13 @@ func (s *DurableTriggerService) Drain(ctx context.Context) error {
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, budget)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.Now(), 100)
 	cancelPrune()
+	// Budget exhaustion means "resume next sweep", not a failed sweep: the
+	// queue database has one connection that child launches also hold, so the
+	// prune routinely waits longer than its budget. Real prune errors and
+	// cancellation of the parent context still propagate.
+	if errors.Is(pruneErr, context.DeadlineExceeded) && ctx.Err() == nil {
+		pruneErr = nil
+	}
 	pruneErr = errors.Join(pruneErr, s.backend.SweepChildren(ctx))
 	if s.dispatch.Triggerer() == nil && !s.backend.HasChildren() {
 		return pruneErr

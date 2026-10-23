@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -347,8 +348,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 
 	candidateDigest := configDigest
-	if runtime.recoveredConfigDigest != "" {
-		configDigest = runtime.recoveredConfigDigest
+	if runtime.RecoveredConfigDigest != "" {
+		configDigest = runtime.RecoveredConfigDigest
 	}
 	if options.recoverGenerationCapacity {
 		if err := journalStartupGeneration(observation.instanceLog, definitions.ExecutionGeneration, configDigest); err != nil {
@@ -357,14 +358,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 
 	return &schedulerSetup{
-		CapacityRejection:        runtime.capacityRejection,
+		CapacityRejection:        runtime.CapacityRejection,
 		CandidateConfigDigest:    candidateDigest,
 		observation:              observation,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
 		ExecutionGeneration:      definitions.ExecutionGeneration,
 		OrdinaryRuntime:          definitions.OrdinaryRuntime,
-		Generations:              runtime.generations,
+		Generations:              runtime.Generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
 		Runners:                  definitions.Runners,
@@ -1541,7 +1542,7 @@ func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
 	steps = append(steps, observation.closeSteps(ctx)...)
 	runtime := s.runtime
 	if runtime == nil {
-		runtime = &schedulerRuntime{generations: s.Generations}
+		runtime = &schedulerRuntime{Runtime: &scheduling.Runtime{Generations: s.Generations}}
 	}
 	steps = append(steps, shutdownStep{"config generation leases", runtime.Close})
 
