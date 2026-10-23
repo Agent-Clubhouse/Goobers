@@ -1,4 +1,4 @@
-package terminalhooks
+package frame
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalhooks"
 )
 
 type recorder struct{ events []journal.Event }
@@ -23,9 +24,9 @@ func (r *recorder) AppendBestEffort(ev journal.Event) { r.events = append(r.even
 // rig records every hook call in order so the ORDER itself is asserted.
 type rig struct {
 	order       []string
-	existingFix []ExistingFixOutcome
-	blocked     []BlockedOutcome
-	failed      []FailedOutcome
+	existingFix []terminalhooks.ExistingFixOutcome
+	blocked     []terminalhooks.BlockedOutcome
+	failed      []terminalhooks.FailedOutcome
 	escalated   []string
 	failEvery   error
 	log         recorder
@@ -37,17 +38,17 @@ func (r *rig) hooks() *Hooks {
 	}
 	return &Hooks{
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
-		ExistingFix: func(_ context.Context, o ExistingFixOutcome) error {
+		ExistingFix: func(_ context.Context, o terminalhooks.ExistingFixOutcome) error {
 			r.order = append(r.order, "existingFix")
 			r.existingFix = append(r.existingFix, o)
 			return r.failEvery
 		},
-		Blocked: func(_ context.Context, o BlockedOutcome) error {
+		Blocked: func(_ context.Context, o terminalhooks.BlockedOutcome) error {
 			r.order = append(r.order, "blocked")
 			r.blocked = append(r.blocked, o)
 			return r.failEvery
 		},
-		Failed: func(_ context.Context, o FailedOutcome) error {
+		Failed: func(_ context.Context, o terminalhooks.FailedOutcome) error {
 			r.order = append(r.order, "failed")
 			r.failed = append(r.failed, o)
 			return r.failEvery
@@ -146,14 +147,14 @@ func TestExistingFixOnlyForACompletedImplementNoWorkWithACommit(t *testing.T) {
 func TestSelfBlockersAreDroppedAndAnnotated(t *testing.T) {
 	r := &rig{}
 	out := blockedOutcome()
-	out.Result.Outputs["implement"] = apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Outputs: map[string]interface{}{OutputBlockedBy: "#42, 41"}}
+	out.Result.Outputs["implement"] = apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Outputs: map[string]interface{}{terminalhooks.OutputBlockedBy: "#42, 41"}}
 	r.hooks().Run(t.Context(), out)
 	if len(r.blocked) != 1 || !slices.Equal(r.blocked[0].Blockers, []string{"41"}) {
 		t.Fatalf("blockers = %+v, want only 41", r.blocked)
 	}
 	var annotated bool
 	for _, ev := range r.log.events {
-		annotated = annotated || (ev.Type == journal.EventRunnerAnnotation && ev.Runner["kind"] == SelfBlockerDroppedKind)
+		annotated = annotated || (ev.Type == journal.EventRunnerAnnotation && ev.Runner["kind"] == terminalhooks.SelfBlockerDroppedKind)
 	}
 	if !annotated {
 		t.Fatal("the dropped self-reference was not annotated")
@@ -207,17 +208,4 @@ func TestPhaseForNeverSkipsTheFrame(t *testing.T) {
 		}
 	}
 	_ = telemetry.ErrorClassInfra
-}
-
-func TestParseBlockedByAndFilter(t *testing.T) {
-	if got := ParseBlockedBy(map[string]interface{}{OutputBlockedBy: "#12; 13, 12, x"}); !slices.Equal(got, []string{"12", "13"}) {
-		t.Fatalf("ParseBlockedBy = %v", got)
-	}
-	kept, dropped := FilterSelfBlockers([]string{"owner/repo#441", "7"}, "441")
-	if !slices.Equal(kept, []string{"7"}) || !slices.Equal(dropped, []string{"owner/repo#441"}) {
-		t.Fatalf("kept %v dropped %v", kept, dropped)
-	}
-	if BlockedReason(apiv1.ResultEnvelope{}) == "" || BlockedReason(apiv1.ResultEnvelope{Error: &apiv1.ErrorInfo{Code: "X", Message: "m"}}) != "X: m" {
-		t.Fatal("BlockedReason is wrong")
-	}
 }

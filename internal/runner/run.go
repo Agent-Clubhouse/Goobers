@@ -181,11 +181,17 @@ type TerminalNotifier func(runID string, phase journal.RunPhase, finalState stri
 // runner-free home shared with the cloud controller; these aliases keep every
 // local call site source-compatible.
 type (
-	BlockedOutcome     = terminalhooks.BlockedOutcome
-	BlockedHandler     = terminalhooks.BlockedHandler
-	FailedOutcome      = terminalhooks.FailedOutcome
-	FailedHandler      = terminalhooks.FailedHandler
+	// BlockedOutcome is terminalhooks.BlockedOutcome.
+	BlockedOutcome = terminalhooks.BlockedOutcome
+	// BlockedHandler is terminalhooks.BlockedHandler.
+	BlockedHandler = terminalhooks.BlockedHandler
+	// FailedOutcome is terminalhooks.FailedOutcome.
+	FailedOutcome = terminalhooks.FailedOutcome
+	// FailedHandler is terminalhooks.FailedHandler.
+	FailedHandler = terminalhooks.FailedHandler
+	// ExistingFixOutcome is terminalhooks.ExistingFixOutcome.
 	ExistingFixOutcome = terminalhooks.ExistingFixOutcome
+	// ExistingFixHandler is terminalhooks.ExistingFixHandler.
 	ExistingFixHandler = terminalhooks.ExistingFixHandler
 )
 

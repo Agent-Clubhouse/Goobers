@@ -488,16 +488,16 @@ github.com/goobers/goobers/internal/enginechildplane.planeError # Engine child-a
 
 # #7818 group D (PR 3a): the runner-free terminal-hook frame lands ahead of the cloud awaiter that fires it (PR 3a-2). Remove on wiring.
 github.com/goobers/goobers/internal/engine.IsSelfExecutionDenied # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.fire # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.fireExistingFix # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.fireBlocked # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.fireStageEscalation # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.fireFailed # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.FailureCode # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.FaultClass # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.PhaseFor # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.itemID # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.terminalItemIDs # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.recordFailure # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.annotate # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
-github.com/goobers/goobers/internal/terminalhooks.Hooks.Run # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fire # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireExistingFix # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireBlocked # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireStageEscalation # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireFailed # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.FailureCode # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.FaultClass # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.PhaseFor # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.itemID # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.terminalItemIDs # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.recordFailure # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.annotate # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.Run # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15

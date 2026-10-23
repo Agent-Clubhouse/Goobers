@@ -1,4 +1,9 @@
-package terminalhooks
+// Package frame is the terminal-hook frame: the instance-level policy fired for
+// one finished engine run, in the local runner's order, with every hook failure
+// recorded and none allowed to skip a later hook. It lives apart from
+// internal/terminalhooks (outcome types and helpers) because it imports the
+// engine, which the runner's dependency chain must not.
+package frame
 
 import (
 	"context"
@@ -8,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalhooks"
 )
 
 // Outcome is one finished engine run, as the frame sees it.
@@ -44,9 +50,9 @@ type Hooks struct {
 	SelfExecutionObserved func(bool)
 	RepoRef               apiv1.RepoRef
 
-	ExistingFix ExistingFixHandler
-	Blocked     BlockedHandler
-	Failed      FailedHandler
+	ExistingFix terminalhooks.ExistingFixHandler
+	Blocked     terminalhooks.BlockedHandler
+	Failed      terminalhooks.FailedHandler
 	// Escalate posts one stage-escalation comment for one driving item.
 	Escalate func(ctx context.Context, out Outcome, itemID, stage, reason string) error
 	// ClaimedItems resolves the items a run currently claims (claim ledger).
@@ -131,7 +137,7 @@ func (h *Hooks) fireExistingFix(ctx context.Context, out Outcome) {
 	if commit == "" {
 		return
 	}
-	if err := h.ExistingFix(ctx, ExistingFixOutcome{RunID: out.RunID, ItemID: h.itemID(out), RepoRef: h.RepoRef, Commit: commit}); err != nil {
+	if err := h.ExistingFix(ctx, terminalhooks.ExistingFixOutcome{RunID: out.RunID, ItemID: h.itemID(out), RepoRef: h.RepoRef, Commit: commit}); err != nil {
 		h.recordFailure(out, ExistingFixStage, "existingfix_handling_failed", err)
 	}
 }
@@ -146,7 +152,7 @@ func (h *Hooks) fireBlocked(ctx context.Context, out Outcome) {
 		}
 		h.fireStageEscalation(ctx, out, out.Result.FinalState, out.Err.Error())
 		if h.Blocked != nil {
-			if err := h.Blocked(ctx, BlockedOutcome{RunID: out.RunID, RepoRef: h.RepoRef, Stage: out.Result.FinalState, ItemID: h.itemID(out), Reason: out.Err.Error()}); err != nil {
+			if err := h.Blocked(ctx, terminalhooks.BlockedOutcome{RunID: out.RunID, RepoRef: h.RepoRef, Stage: out.Result.FinalState, ItemID: h.itemID(out), Reason: out.Err.Error()}); err != nil {
 				h.recordFailure(out, out.Result.FinalState, "blocked_handling_failed", err)
 			}
 		}
@@ -163,24 +169,24 @@ func (h *Hooks) fireBlocked(ctx context.Context, out Outcome) {
 	if env.Error != nil && env.Error.Code == runsemantics.SelfExecutionDeniedCode && h.SelfExecutionObserved != nil {
 		h.SelfExecutionObserved(true)
 	}
-	o := BlockedOutcome{
+	o := terminalhooks.BlockedOutcome{
 		RunID:    out.RunID,
 		RepoRef:  h.RepoRef,
 		Stage:    stage,
-		Reason:   BlockedReason(env),
-		Blockers: ParseBlockedBy(env.Outputs),
+		Reason:   terminalhooks.BlockedReason(env),
+		Blockers: terminalhooks.ParseBlockedBy(env.Outputs),
 	}
 	if itemID := h.itemID(out); itemID != "" {
 		o.ItemID = itemID
 		// #2961: an item cannot block itself.
-		if kept, dropped := FilterSelfBlockers(o.Blockers, itemID); len(dropped) > 0 {
+		if kept, dropped := terminalhooks.FilterSelfBlockers(o.Blockers, itemID); len(dropped) > 0 {
 			o.Blockers = kept
 			h.annotate(out, journal.Event{
 				Type:   journal.EventRunnerAnnotation,
 				Stage:  stage,
 				Reason: "self-referential blockedBy dropped",
 				Runner: map[string]any{
-					"kind":              SelfBlockerDroppedKind,
+					"kind":              terminalhooks.SelfBlockerDroppedKind,
 					"runID":             out.RunID,
 					"itemID":            itemID,
 					"droppedBlockers":   dropped,
@@ -238,7 +244,7 @@ func (h *Hooks) fireFailed(ctx context.Context, out Outcome) {
 		}
 		faultClass = FaultClass(out.Err)
 	}
-	if err := h.Failed(ctx, FailedOutcome{
+	if err := h.Failed(ctx, terminalhooks.FailedOutcome{
 		RunID: out.RunID, RepoRef: h.RepoRef, Stage: out.Result.FinalState,
 		Cause: cause, Code: code, FaultClass: faultClass,
 	}); err != nil {
@@ -264,7 +270,7 @@ func FailureCode(err error) string {
 	return WalkFailureCode
 }
 
-// FaultClass is FailedOutcome.FaultClass (#5638), from the same classifier as
+// FaultClass is terminalhooks.FailedOutcome.FaultClass (#5638), from the same classifier as
 // FailureCode, so the failure streak sees the same explicit infra class.
 func FaultClass(err error) telemetry.ErrorClass {
 	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
