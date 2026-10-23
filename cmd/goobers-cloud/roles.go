@@ -37,6 +37,7 @@ Database options:
   --database-auth MODE             password or entra (default password)
   --object-store-url URL           Azure Blob service URL
   --object-store-container NAME    Blob container (default goobers)
+  --experimental-physical-blob-gc  Enable unqualified physical deletion (#7843)
 
 Environment:
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
@@ -156,7 +157,7 @@ var (
 	signalContext             = signals.SetupSignalContext
 	newCloudPools             = cloudpg.NewPools
 	newAzureObjectStore       = objstore.NewAzure
-	newObjectMetadata         = objstore.NewMetadata
+	newObjectMetadata         = objstore.NewMetadataWithOptions
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
@@ -205,6 +206,10 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	authMode := flags.String("database-auth", "password", "database authentication mode: password or entra")
 	objectStoreURL := flags.String("object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	objectStoreContainer := flags.String("object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	experimentalPhysicalBlobGC := flags.Bool(
+		"experimental-physical-blob-gc", false,
+		"enable experimental physical blob deletion (#7843)",
+	)
 	flags.Usage = func() { write(stderr, help) }
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -264,7 +269,9 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
 		return 1
 	}
-	objects, err := newObjectMetadata(pools.Direct, blobs)
+	objects, err := newObjectMetadata(pools.Direct, blobs, objstore.MetadataOptions{
+		ExperimentalPhysicalDelete: *experimentalPhysicalBlobGC,
+	})
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
 		return 1

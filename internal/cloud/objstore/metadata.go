@@ -21,8 +21,9 @@ var ErrPinned = errors.New("config generation is pinned")
 
 // Metadata stores object-backed surrender and configuration pointers.
 type Metadata struct {
-	pool  *pgxpool.Pool
-	blobs interface {
+	pool                       *pgxpool.Pool
+	experimentalPhysicalDelete bool
+	blobs                      interface {
 		blobstore.Store
 		Remove(context.Context, string) error
 		StampGCIntent(context.Context, string, string) (string, error)
@@ -31,18 +32,28 @@ type Metadata struct {
 	}
 }
 
-// NewMetadata constructs the PostgreSQL object metadata store.
-func NewMetadata(pool *pgxpool.Pool, blobs interface {
+// MetadataOptions controls object metadata behavior.
+type MetadataOptions struct {
+	// ExperimentalPhysicalDelete enables storage deletion pending #7843.
+	// It is false by default; soft-delete and storage lifecycle are the backstop.
+	ExperimentalPhysicalDelete bool
+}
+
+// NewMetadataWithOptions constructs metadata with explicit experimental options.
+func NewMetadataWithOptions(pool *pgxpool.Pool, blobs interface {
 	blobstore.Store
 	Remove(context.Context, string) error
 	StampGCIntent(context.Context, string, string) (string, error)
 	Touch(context.Context, string, []byte) error
 	RemoveIfMatch(context.Context, string, string) (bool, error)
-}) (*Metadata, error) {
+}, options MetadataOptions) (*Metadata, error) {
 	if pool == nil || blobs == nil {
 		return nil, errors.New("cloud object metadata requires PostgreSQL and blob storage")
 	}
-	return &Metadata{pool: pool, blobs: blobs}, nil
+	return &Metadata{
+		pool: pool, blobs: blobs,
+		experimentalPhysicalDelete: options.ExperimentalPhysicalDelete,
+	}, nil
 }
 
 // PutSurrender creates one immutable surrender row or accepts an exact replay.
@@ -138,11 +149,17 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
+	var inserted bool
+	err = tx.QueryRow(ctx, `
 		INSERT INTO control.config_generation_pin (instance_id, digest, owner)
-		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+		RETURNING true`,
 		instanceID, digest, owner,
-	); err != nil {
+	).Scan(&inserted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		inserted, err = false, nil
+	}
+	if err != nil {
 		return fmt.Errorf("pin config generation: %w", err)
 	}
 	if _, err := tx.Exec(ctx, "DELETE FROM control.blob_gc_candidate WHERE digest=$1", digest); err != nil {
@@ -152,16 +169,18 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 		return err
 	}
 	if err := m.blobs.Touch(ctx, digest, nil); err != nil {
-		_, compensateErr := connection.Exec(context.WithoutCancel(ctx), `
-			DELETE FROM control.config_generation_pin
-			WHERE instance_id=$1 AND digest=$2 AND owner=$3`,
-			instanceID, digest, owner,
-		)
-		if compensateErr != nil {
-			return errors.Join(
-				fmt.Errorf("touch pinned config generation: %w", err),
-				fmt.Errorf("compensate pin: %w", compensateErr),
+		if inserted {
+			_, compensateErr := connection.Exec(context.WithoutCancel(ctx), `
+				DELETE FROM control.config_generation_pin
+				WHERE instance_id=$1 AND digest=$2 AND owner=$3`,
+				instanceID, digest, owner,
 			)
+			if compensateErr != nil {
+				return errors.Join(
+					fmt.Errorf("touch pinned config generation: %w", err),
+					fmt.Errorf("compensate pin: %w", compensateErr),
+				)
+			}
 		}
 		return fmt.Errorf("touch pinned config generation: %w", err)
 	}
@@ -335,6 +354,11 @@ func (m *Metadata) sweepCandidate(
 	})
 	if err != nil || !eligible {
 		return false, err
+	}
+	// #7843: storage deletion stays off until global reference/PITR and
+	// production-service qualification are complete. Candidate intent remains.
+	if !m.experimentalPhysicalDelete {
+		return false, nil
 	}
 	deleted := true
 	if intentETag != "" {

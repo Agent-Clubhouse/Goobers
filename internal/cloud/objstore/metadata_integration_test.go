@@ -99,6 +99,7 @@ func TestPruneDefersBlobUntilRetentionSweep(t *testing.T) {
 	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := metadata.PruneGeneration(t.Context(), "instance", digest); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +113,41 @@ func TestPruneDefersBlobUntilRetentionSweep(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Fatalf("GC deleted %d blobs inside retention window", deleted)
+	}
+}
+
+func TestPhysicalBlobDeleteIsDisabledByDefault(t *testing.T) {
+	_, pool, store := testMetadata(t, "goobers-config-gc-disabled")
+	metadata, err := NewMetadataWithOptions(pool, store, MetadataOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := []byte("default retained archive")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PruneGeneration(t.Context(), "instance", digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE control.blob_gc_candidate
+		SET unreferenced_at=clock_timestamp()-interval '2 hours'
+		WHERE digest=$1`,
+		digest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	manager, handle := gcLease(t, pool)
+	deleted, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("default GC physically deleted %d blobs", deleted)
+	}
+	if has, err := store.Has(t.Context(), digest); err != nil || !has {
+		t.Fatalf("default-retained blob Has=%v err=%v", has, err)
 	}
 }
 
@@ -257,6 +293,7 @@ func TestPinMissingBlobCompensatesRow(t *testing.T) {
 	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := store.Remove(t.Context(), digest); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +310,34 @@ func TestPinMissingBlobCompensatesRow(t *testing.T) {
 	}
 	if pins != 0 {
 		t.Fatalf("missing blob retained %d pin rows", pins)
+	}
+}
+
+func TestAcknowledgedPinSurvivesTouchFailure(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-pin-retry")
+	archive := []byte("acknowledged pin archive")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PinGeneration(t.Context(), "instance", digest, "run"); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected touch failure")
+	metadata.blobs = &touchFailStore{Azure: store, err: injected}
+	if err := metadata.PinGeneration(t.Context(), "instance", digest, "run"); !errors.Is(err, injected) {
+		t.Fatalf("retry pin error = %v, want injected touch failure", err)
+	}
+	var pins int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM control.config_generation_pin
+		WHERE instance_id='instance' AND digest=$1 AND owner='run'`,
+		digest,
+	).Scan(&pins); err != nil {
+		t.Fatal(err)
+	}
+	if pins != 1 {
+		t.Fatalf("acknowledged pin rows = %d, want 1", pins)
 	}
 }
 
@@ -302,6 +367,13 @@ type pausingStampStore struct {
 	stamping chan struct{}
 	resume   chan struct{}
 }
+
+type touchFailStore struct {
+	*Azure
+	err error
+}
+
+func (s *touchFailStore) Touch(context.Context, string, []byte) error { return s.err }
 
 func (s *pausingStampStore) StampGCIntent(ctx context.Context, digest, intentID string) (string, error) {
 	close(s.stamping)
@@ -388,7 +460,9 @@ func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Az
 		t.Fatal(err)
 	}
 	store := testAzureStore(t, container)
-	metadata, err := NewMetadata(pool, store)
+	metadata, err := NewMetadataWithOptions(pool, store, MetadataOptions{
+		ExperimentalPhysicalDelete: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
