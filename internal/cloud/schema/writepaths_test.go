@@ -57,8 +57,11 @@ func TestApiRoleCannotWriteAcceptanceDispatching(t *testing.T) {
 	if !ok {
 		t.Fatal("acceptance API writer policy is missing")
 	}
-	if slices.Contains(writer.Insert, "state") || slices.Contains(writer.Update, "state") ||
-		slices.Contains(writer.Insert, "owner_epoch") || slices.Contains(writer.Update, "owner_epoch") {
+	// Accept must insert state (NOT NULL, no default); a column grant cannot
+	// pin the inserted value, so the invariant is that the api never changes
+	// state or takes ownership: no UPDATE of either, no INSERT of owner_epoch.
+	if slices.Contains(writer.Update, "state") || slices.Contains(writer.Update, "owner_epoch") ||
+		slices.Contains(writer.Insert, "owner_epoch") {
 		t.Fatalf("API acceptance policy permits dispatch authority: %+v", writer)
 	}
 }

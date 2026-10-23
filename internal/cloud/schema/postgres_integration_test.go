@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -149,6 +150,15 @@ func applyErr(t *testing.T, pool *pgxpool.Pool) error {
 
 func assertPrivilegesMatch(t *testing.T, pool *pgxpool.Pool, inventory schema.Inventory) {
 	t.Helper()
+	rows, err := pool.Query(t.Context(), "SELECT nspname FROM pg_namespace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory = inventory.Expand(schemas)
 	expected := make(map[string]bool)
 	for _, table := range inventory.Tables {
 		if !table.Provisioned {
@@ -173,7 +183,19 @@ func assertPrivilegesMatch(t *testing.T, pool *pgxpool.Pool, inventory schema.In
 	}
 	actual := loadWritePrivileges(t, pool)
 	if !reflect.DeepEqual(actual, expected) {
-		t.Fatalf("database privileges differ from inventory\nactual: %#v\nwant:   %#v", actual, expected)
+		var differences []string
+		for key := range actual {
+			if !expected[key] {
+				differences = append(differences, "extra "+key)
+			}
+		}
+		for key := range expected {
+			if !actual[key] {
+				differences = append(differences, "missing "+key)
+			}
+		}
+		slices.Sort(differences)
+		t.Fatalf("database privileges differ from inventory:\n%s", strings.Join(differences, "\n"))
 	}
 	// ACL rows miss inherited and owner privileges; compare what the roles
 	// can effectively do as well.
@@ -181,15 +203,7 @@ func assertPrivilegesMatch(t *testing.T, pool *pgxpool.Pool, inventory schema.In
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := pool.Query(t.Context(), "SELECT nspname FROM pg_namespace")
-	if err != nil {
-		t.Fatal(err)
-	}
-	schemas, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := inventory.Expand(schemas).ExpectedPrivileges(); !reflect.DeepEqual(effective, want) {
+	if want := inventory.ExpectedPrivileges(); !reflect.DeepEqual(effective, want) {
 		t.Fatalf("effective privileges differ from inventory\nactual: %v\nwant:   %v", effective, want)
 	}
 }
@@ -248,7 +262,7 @@ func loadWritePrivileges(t *testing.T, pool *pgxpool.Pool) map[string]bool {
 	rows, err := pool.Query(t.Context(), `
 		SELECT grantee, table_schema, table_name, privilege_type, column_name
 		FROM information_schema.column_privileges
-		WHERE table_schema IN ('control', 'journal', 'readmodel')
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg\_%'
 		  AND grantee IN ('goobers_api', 'goobers_controller')
 		  AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')`,
 	)
@@ -270,7 +284,7 @@ func loadWritePrivileges(t *testing.T, pool *pgxpool.Pool) map[string]bool {
 	deleteRows, err := pool.Query(t.Context(), `
 		SELECT grantee, table_schema, table_name
 		FROM information_schema.table_privileges
-		WHERE table_schema IN ('control', 'journal', 'readmodel')
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg\_%'
 		  AND grantee IN ('goobers_api', 'goobers_controller')
 		  AND privilege_type='DELETE'`)
 	if err != nil {
@@ -458,9 +472,19 @@ func TestReconcileRevokesFunctionExecute(t *testing.T) {
 // rows, while a schema outside the pattern is still refused.
 func TestReconcileAppliesReadModelPatternToEveryVersion(t *testing.T) {
 	pool, _ := migratedPool(t)
-	if _, err := pool.Exec(t.Context(), `
-		CREATE SCHEMA readmodel_v1; CREATE TABLE readmodel_v1.runs (id text, secret text);
-		CREATE SCHEMA readmodel_v7; CREATE TABLE readmodel_v7.runs (id text, secret text)`); err != nil {
+	// Each version schema is complete: copy the existing version's tables.
+	if _, err := pool.Exec(t.Context(), `DO $$
+		DECLARE version text; tbl text;
+		BEGIN
+			FOREACH version IN ARRAY ARRAY['readmodel_v7', 'readmodel_v8'] LOOP
+				EXECUTE format('CREATE SCHEMA %I', version);
+				FOR tbl IN SELECT tablename FROM pg_tables WHERE schemaname = 'readmodel_v1' LOOP
+					EXECUTE format('CREATE TABLE %I.%I (LIKE readmodel_v1.%I)', version, tbl, tbl);
+				END LOOP;
+				EXECUTE format('CREATE TABLE %I.runs (id text, secret text)', version);
+			END LOOP;
+			CREATE TABLE readmodel_v1.runs (id text, secret text);
+		END $$`); err != nil {
 		t.Fatal(err)
 	}
 	inventory, err := schema.LoadWritePaths()
@@ -478,8 +502,8 @@ func TestReconcileAppliesReadModelPatternToEveryVersion(t *testing.T) {
 		table, column string
 		want          bool
 	}{
-		{"readmodel_v1.runs", "id", true}, {"readmodel_v7.runs", "id", true},
-		{"readmodel_v1.runs", "secret", false}, {"readmodel_v7.runs", "secret", false},
+		{"readmodel_v8.runs", "id", true}, {"readmodel_v7.runs", "id", true},
+		{"readmodel_v8.runs", "secret", false}, {"readmodel_v7.runs", "secret", false},
 	} {
 		var got bool
 		if err := pool.QueryRow(t.Context(), "SELECT has_column_privilege('goobers_api', $1, $2, 'SELECT')", check.table, check.column).Scan(&got); err != nil {

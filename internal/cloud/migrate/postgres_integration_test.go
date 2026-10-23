@@ -41,20 +41,9 @@ func TestPostgresMigrationApply(t *testing.T) {
 }
 
 func TestPartitionIndexRetryRepairsInvalidAndReapplies(t *testing.T) {
-	databaseURL := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
-	if databaseURL == "" {
-		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
-	}
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	// A private database: the grant reconcile in other tests spans every
+	// schema in the database it migrates.
+	pool := privatePool(t)
 	if _, err := pool.Exec(t.Context(), `
 		DROP TABLE IF EXISTS review_event CASCADE;
 		CREATE TABLE review_event (id integer, created_at integer) PARTITION BY RANGE (id);

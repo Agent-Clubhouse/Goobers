@@ -1,75 +1,820 @@
+# Cloud PostgreSQL privilege inventory. The migrate Job's grant reconcile
+# grants the runtime roles exactly these privileges on every schema, table,
+# sequence and routine, and fails when an object here and the database disagree.
+# Rows land in the same PR as the migration that creates the object.
+#
+# Attribution: the P3 control process holds two pools, api as goobers_api and
+# controller as goobers_controller; each access belongs to the pool that runs it.
+# Writes fenced by a lease (journal append, cancel receipts, the claim plane,
+# recovery publish, terminal reports) run on the lease manager's controller pool
+# in P3, even when an api request initiates them. P5 (#7700, separate api
+# replicas) must re-home them to run-owner-fenced api writes and move these rows.
+#
+# readmodel_v* is the one schema pattern: its rows apply to every read-model
+# version schema (readmodel_v1, readmodel_v2, ...).
 tables:
-  - schema: control
-    table: schema_migration
-    provisioned: true
-    fence: none-by-design
-    rationale: Only the owner migration job writes migration history while holding both migration locks.
-    readers:
-      - role: goobers_api
-        columns: [version, kind, binary_version, min_compatible_binary]
-      - role: goobers_controller
-        columns: [version, kind, binary_version, min_compatible_binary]
-    writers: []
-  - schema: control
-    table: readmodel_version
-    provisioned: true
-    fence: epoch
-    rationale: The controller flips read-model versions inside a projector-lease fenced transaction.
-    readers:
-      - role: goobers_controller
-        columns: [name, active_version, updated_at]
-    writers:
-      - role: goobers_controller
-        insert: [name, active_version, updated_at]
-        update: [active_version, updated_at]
-  - schema: control
-    table: lease
-    provisioned: true
-    fence: none-by-design
-    rationale: Authority is the fence itself and changes only during serialized takeover or voluntary release.
-    readers:
-      - role: goobers_controller
-        columns: [instance_id, name, holder, epoch]
-    writers:
-      - role: goobers_controller
-        insert: [instance_id, name, holder, epoch]
-        update: [holder, epoch]
-  - schema: control
-    table: lease_heartbeat
-    provisioned: true
-    fence: none-by-design
-    rationale: Liveness is isolated from fenced work and guarded by holder plus epoch compare-and-set.
-    readers:
-      - role: goobers_controller
-        columns: [instance_id, name, holder, epoch, expires_at]
-    writers:
-      - role: goobers_controller
-        insert: [instance_id, name, holder, epoch, expires_at]
-        update: [holder, epoch, expires_at]
-  - schema: control
-    table: lease_history
-    provisioned: true
-    fence: unique key
-    rationale: One audit row exists per lease epoch and its release fields are written once.
-    readers:
-      - role: goobers_controller
-        columns: [instance_id, name, epoch, released_at]
-    writers:
-      - role: goobers_controller
-        insert: [instance_id, name, epoch, holder, acquired_at]
-        update: [released_at, release_kind]
-  - schema: control
-    table: acceptance
-    provisioned: false
-    fence: owner_epoch
-    rationale: P3-05 provisions the table; API may insert only accepted rows while controller owns dispatch transitions.
-    readers:
-      - role: goobers_api
-        columns: [instance_id, id, kind, idem_key, actor, fingerprint, payload, state, run_id, accepted_at, finished_at]
-      - role: goobers_controller
-        columns: [instance_id, id, state, owner_epoch, run_id, accepted_at, finished_at]
-    writers:
-      - role: goobers_api
-        insert: [instance_id, id, kind, idem_key, actor, fingerprint, payload, run_id, accepted_at]
-      - role: goobers_controller
-        update: [state, owner_epoch, finished_at]
+- schema: control
+  table: schema_migration
+  provisioned: true
+  fence: none-by-design
+  rationale: Only the owner migration job writes migration history while holding both migration locks.
+  readers:
+  - role: goobers_api
+    columns:
+    - version
+    - kind
+    - binary_version
+    - min_compatible_binary
+  - role: goobers_controller
+    columns:
+    - version
+    - kind
+    - binary_version
+    - min_compatible_binary
+  writers: []
+- schema: control
+  table: readmodel_version
+  provisioned: true
+  fence: owner_epoch
+  rationale: Migration 0007 seeds the pointer and the owner-run rebuild flips it. Readers resolve the active version. The
+    projector share-locks the pointer, which needs UPDATE on one column.
+  readers:
+  - role: goobers_api
+    columns:
+    - name
+    - active_version
+  - role: goobers_controller
+    columns:
+    - name
+    - active_version
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    update:
+    - owner_epoch
+- schema: control
+  table: lease
+  provisioned: true
+  fence: none-by-design
+  rationale: Authority is the fence itself and changes only during serialized takeover or voluntary release.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - name
+    - holder
+    - epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - name
+    - holder
+    - epoch
+    update:
+    - holder
+    - epoch
+- schema: control
+  table: lease_heartbeat
+  provisioned: true
+  fence: none-by-design
+  rationale: Liveness is isolated from fenced work and guarded by holder plus epoch compare-and-set.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - name
+    - holder
+    - epoch
+    - expires_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - name
+    - holder
+    - epoch
+    - expires_at
+    update:
+    - holder
+    - epoch
+    - expires_at
+- schema: control
+  table: lease_history
+  provisioned: true
+  fence: unique key
+  rationale: One audit row exists per lease epoch and its release fields are written once.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - name
+    - epoch
+    - released_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - name
+    - epoch
+    - holder
+    - acquired_at
+    update:
+    - released_at
+    - release_kind
+- schema: control
+  table: acceptance
+  provisioned: true
+  fence: owner_epoch
+  rationale: 'The api Accept inserts accepted rows and never updates state or owner_epoch (column grants cannot pin the inserted
+    state value; the code inserts only ''accepted''). The controller inserts source-driven acceptances (AcceptSource) and
+    owns dispatch transitions under the controller-lease fence. TEMPORARY: the api''s SELECT(finished_at) and DELETE serve
+    main''s api-path retention prune; #7850 moves the prune to the fenced controller and removes both, and adds its 0009/0014
+    columns.'
+  readers:
+  - role: goobers_api
+    columns:
+    - instance_id
+    - id
+    - idem_key
+    - actor
+    - payload
+    - state
+    - run_id
+    - reason
+    - accepted_at
+    - finished_at
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - id
+    - idem_key
+    - actor
+    - payload
+    - state
+    - run_id
+    - reason
+    - accepted_at
+    - finished_at
+    - owner_epoch
+  writers:
+  - role: goobers_api
+    insert:
+    - instance_id
+    - id
+    - idem_key
+    - actor
+    - fingerprint
+    - payload
+    - state
+    - run_id
+    - accepted_at
+    delete: true
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - id
+    - idem_key
+    - actor
+    - fingerprint
+    - payload
+    - state
+    - run_id
+    - accepted_at
+    update:
+    - state
+    - owner_epoch
+    - reason
+    - finished_at
+- schema: control
+  table: source_receipt
+  provisioned: true
+  fence: epoch
+  rationale: The controller records one immutable receipt per source delivery inside the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
+- schema: control
+  table: source_cursor
+  provisioned: true
+  fence: epoch
+  rationale: Schedule cursors move only in controller-lease fenced compare-and-set updates.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - scope
+    - revision
+    - cursor_at
+    - legacy_pending
+    - occurrence_cursors
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - scope
+    - revision
+    - cursor_at
+    - legacy_pending
+    update:
+    - revision
+    - cursor_at
+    - legacy_pending
+    - occurrence_cursors
+- schema: control
+  table: schedule_demand
+  provisioned: true
+  fence: epoch
+  rationale: The controller captures, seals and drains schedule obligations inside the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - id
+    - scope
+    - payload
+    - observed_count
+    - queued
+    - accepted_at
+    - independent
+    - fingerprint
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - id
+    - scope
+    - payload
+    - accepted_at
+    - independent
+    - fingerprint
+    update:
+    - observed_count
+    - queued
+    delete: true
+- schema: control
+  table: grant_revocation
+  provisioned: true
+  fence: epoch
+  rationale: Revocations are inserted once under the controller-lease fence. Every API grant admission reads them.
+  readers:
+  - role: goobers_api
+    columns:
+    - instance_id
+    - grant_id
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - grant_id
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - grant_id
+    - owner_epoch
+    - expires_at
+- schema: control
+  table: claim
+  provisioned: true
+  fence: owner_epoch
+  rationale: Claims change only under the controller-lease fence, with compare-and-set on owner_epoch and owner_token. Release
+    moves rows to history using DELETE ... RETURNING *, which needs SELECT on every column.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - provider
+    - external_id
+    - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - verification
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - provider
+    - external_id
+    - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    update:
+    - renewed_at
+    - expires_at
+    - verification
+    - owner_epoch
+    delete: true
+- schema: control
+  table: claim_history
+  provisioned: true
+  fence: epoch
+  rationale: Released claims are appended once and expired history is pruned, both under the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - provider
+    - external_id
+    - run_id
+    - workflow
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - provider
+    - external_id
+    - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    delete: true
+- schema: control
+  table: scheduler_state
+  provisioned: true
+  fence: owner_epoch
+  rationale: Scheduler snapshots are compare-and-swapped on etag and a non-decreasing owner_epoch under the controller-lease
+    fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - scope
+    - key
+    - value
+    - etag
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - scope
+    - key
+    - value
+    - etag
+    - owner_epoch
+    - updated_at
+    update:
+    - value
+    - etag
+    - owner_epoch
+    - updated_at
+- schema: readmodel_v*
+  table: meta
+  provisioned: true
+  fence: owner_epoch
+  rationale: The projector advances change counters and the owner epoch under its lease fence. Readers load identity, readiness
+    and the change floor.
+  readers:
+  - role: goobers_api
+    columns:
+    - singleton
+    - epoch
+    - min_change_seq
+    - next_change_seq
+    - built_at
+    - ready
+  - role: goobers_controller
+    columns:
+    - singleton
+    - ready
+    - min_change_seq
+    - next_change_seq
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    update:
+    - min_change_seq
+    - next_change_seq
+    - owner_epoch
+- schema: readmodel_v*
+  table: run
+  provisioned: true
+  fence: owner_epoch
+  rationale: The projector upserts source-monotonic projections under its lease fence. Portal and read planes query them.
+  readers:
+  - role: goobers_api
+    columns:
+    - run_id
+    - projection
+    - gaggle
+    - workflow
+    - phase
+    - terminal
+    - started_at
+    - last_activity_at
+    - disposition
+    - any_token_measured
+    - any_premium_measured
+    - any_cost_measured
+    - any_retry_waste
+  - role: goobers_controller
+    columns:
+    - run_id
+    - source_seq
+    - projection
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - run_id
+    - source_seq
+    - projection
+    - gaggle
+    - workflow
+    - phase
+    - terminal
+    - started_at
+    - last_activity_at
+    - disposition
+    - stages
+    - any_token_measured
+    - any_premium_measured
+    - any_cost_measured
+    - any_retry_waste
+    - owner_epoch
+    update:
+    - source_seq
+    - projection
+    - gaggle
+    - workflow
+    - phase
+    - terminal
+    - started_at
+    - last_activity_at
+    - disposition
+    - stages
+    - any_token_measured
+    - any_premium_measured
+    - any_cost_measured
+    - any_retry_waste
+    - owner_epoch
+- schema: readmodel_v*
+  table: run_stage
+  provisioned: true
+  fence: owner_epoch
+  rationale: The projector replaces a run's stage rows under its lease fence. Read planes filter runs by stage.
+  readers:
+  - role: goobers_api
+    columns:
+    - run_id
+    - stage
+    - run_terminal
+    - had_success
+    - had_failure
+    - had_other
+    - token_measured
+    - premium_measured
+    - cost_measured
+    - retry_waste
+  - role: goobers_controller
+    columns:
+    - run_id
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - run_id
+    - stage
+    - run_terminal
+    - had_success
+    - had_failure
+    - had_other
+    - token_measured
+    - premium_measured
+    - cost_measured
+    - retry_waste
+    - owner_epoch
+    delete: true
+- schema: readmodel_v*
+  table: change
+  provisioned: true
+  fence: owner_epoch
+  rationale: The projector appends and prunes the change feed under its lease fence. The SSE and read planes page it.
+  readers:
+  - role: goobers_api
+    columns:
+    - seq
+    - changed_at
+    - kind
+    - run_id
+    - gaggle
+    - workflow
+  - role: goobers_controller
+    columns:
+    - seq
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - seq
+    - kind
+    - run_id
+    - gaggle
+    - workflow
+    - owner_epoch
+    delete: true
+- schema: readmodel_v*
+  table: source_watermark
+  provisioned: true
+  fence: owner_epoch
+  rationale: The projector advances per-run intake watermarks monotonically under its lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - run_id
+    - source_seq
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - run_id
+    - source_seq
+    - owner_epoch
+    update:
+    - source_seq
+    - owner_epoch
+- schema: control
+  table: surrender
+  provisioned: true
+  fence: unique key
+  rationale: The API surrender plane writes each surrender document once. An exact replay resolves against the stored row.
+  readers:
+  - role: goobers_api
+    columns:
+    - instance_id
+    - run_id
+    - stage
+    - attempt
+    - doc
+  writers:
+  - role: goobers_api
+    insert:
+    - instance_id
+    - run_id
+    - stage
+    - attempt
+    - doc
+- schema: control
+  table: config_generation
+  provisioned: true
+  fence: unique key
+  rationale: Config apply publishes immutable generation pointers idempotently. GC prunes unpinned pointers.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - digest
+    - blob_digest
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - digest
+    - blob_digest
+    delete: true
+- schema: control
+  table: config_generation_pin
+  provisioned: true
+  fence: unique key
+  rationale: Owners pin a generation with an idempotent insert and remove only their own pin.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - digest
+    - owner
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - digest
+    - owner
+    delete: true
+- schema: control
+  table: applied_config
+  provisioned: true
+  fence: epoch
+  rationale: Config apply advances the applied generation monotonically inside the caller's controller-lease fenced transaction.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - digest
+    - generation
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - digest
+    - generation
+    update:
+    - digest
+    - generation
+    - applied_at
+- schema: control
+  table: blob_gc_candidate
+  provisioned: true
+  fence: epoch
+  rationale: Prune marks candidates. Publish and pin cancel them under a per-digest advisory lock. The gc-lease fenced sweep
+    stamps the delete intent, and completion is compare-and-set on intent_id.
+  readers:
+  - role: goobers_controller
+    columns:
+    - digest
+    - unreferenced_at
+    - intent_id
+  writers:
+  - role: goobers_controller
+    insert:
+    - digest
+    - unreferenced_at
+    update:
+    - delete_started_at
+    - intent_id
+    - intent_etag
+    delete: true
+- schema: control
+  table: recovery_record
+  provisioned: true
+  fence: owner_epoch
+  rationale: Recovery records are published, renewed and reaped under the controller-lease fence. A BEFORE UPDATE trigger
+    keeps identity immutable and retain_until/owner_epoch monotonic.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - repository_key
+    - run_id
+    - snapshot_sha
+    - version
+    - ref
+    - base_ref
+    - base_sha
+    - patch_digest
+    - archive_digest
+    - archive_bytes
+    - archive_format
+    - bundle_key
+    - identity_unix_ns
+    - retain_until
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - repository_key
+    - run_id
+    - snapshot_sha
+    - version
+    - ref
+    - base_ref
+    - base_sha
+    - patch_digest
+    - archive_digest
+    - archive_bytes
+    - archive_format
+    - bundle_key
+    - identity_unix_ns
+    - retain_until
+    - owner_epoch
+    update:
+    - retain_until
+    - owner_epoch
+    delete: true
+- schema: control
+  table: recovery_bundle_tombstone
+  provisioned: true
+  fence: epoch
+  rationale: Reaped bundle keys are tombstoned in the reap transaction and released after storage deletion, both under the
+    controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - bundle_key
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - bundle_key
+    delete: true
+- schema: control
+  table: cancel_receipt
+  provisioned: true
+  fence: owner_epoch
+  rationale: Receipts are reserved, finished once by the owning epoch, adopted and pruned under the controller-lease fence.
+    A BEFORE UPDATE trigger enforces monotonic transitions.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - key
+    - actor
+    - payload
+    - result
+    - owner_epoch
+    - finished_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - key
+    - actor
+    - payload
+    - owner_epoch
+    update:
+    - result
+    - finished_at
+    - owner_epoch
+    delete: true
+- schema: control
+  table: terminal_report
+  provisioned: true
+  fence: owner_token
+  rationale: Outbox rows are admitted, leased by lease_token, acknowledged, adopted and pruned under the controller-lease
+    fence. A BEFORE UPDATE trigger keeps generation and owner_epoch monotonic.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - effect_key
+    - effect
+    - report_identity
+    - generation
+    - body
+    - attempts
+    - retry_at
+    - lease_token
+    - lease_until
+    - owner_epoch
+    - delivered_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - effect_key
+    - effect
+    - report_identity
+    - generation
+    - owner_epoch
+    update:
+    - effect
+    - report_identity
+    - generation
+    - delivered_generation
+    - body
+    - attempts
+    - retry_at
+    - lease_token
+    - lease_until
+    - owner_epoch
+    - delivered_at
+    delete: true
+sequences:
+- schema: control
+  sequence: terminal_report_generation
+  provisioned: true
+  rationale: Terminal-report admission and supersession draw a never-reused generation with explicit nextval under the controller-lease
+    fence.
+  usage:
+  - goobers_controller
