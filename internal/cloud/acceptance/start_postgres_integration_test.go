@@ -77,7 +77,57 @@ func acceptedStartInput(t *testing.T, store *Store) engine.RunInput {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return engine.RunInput{AcceptanceID: record.ID, Gaggle: "web", WorkflowName: "flow", Version: 1}
+	return engine.RunInput{AcceptanceID: record.ID, Gaggle: "web", WorkflowName: "flow", Version: 1,
+		WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober", ConfigGeneration: "sha256:generation"}
+}
+
+func testRunPins(acceptanceID, runID string) RunPins {
+	return RunPins{RunID: runID, AcceptanceID: acceptanceID, Gaggle: "web", Workflow: "flow", WorkflowVersion: 1,
+		WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober", ConfigGeneration: "sha256:generation", InputDigest: "sha256:input"}
+}
+
+func TestPGStartRecordsTheStartedRunsPinsOnce(t *testing.T) {
+	store, pool := testStore(t, 1)
+	temporal := &pgStartClient{}
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
+	in := acceptedStartInput(t, store)
+	result, err := starter.Start(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generation, workflowDigest, inputDigest string
+	var epoch int64
+	if err := pool.QueryRow(t.Context(), `SELECT config_generation, workflow_digest, input_digest, owner_epoch FROM control.run_pin
+		WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID).Scan(&generation, &workflowDigest, &inputDigest, &epoch); err != nil {
+		t.Fatalf("start recorded no pins: %v", err)
+	}
+	if generation != in.ConfigGeneration || workflowDigest != in.WorkflowDigest || epoch != store.handle.Epoch || inputDigest == "" {
+		t.Fatalf("recorded pins %s/%s/%s@%d do not match the started input", generation, workflowDigest, inputDigest, epoch)
+	}
+	identity, err := (&startCustody{store: store}).ReadStart(t.Context(), in.AcceptanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := testRunPins(identity.AcceptanceID, identity.RunID)
+	var recorded RunPins
+	if err := pool.QueryRow(t.Context(), `SELECT input_digest FROM control.run_pin WHERE run_id=$1`, identity.RunID).Scan(&recorded.InputDigest); err != nil {
+		t.Fatal(err)
+	}
+	pins.InputDigest = recorded.InputDigest
+	pins.BranchNamespace = in.BranchNamespace
+	// Repeating the confirmation of the same start is a no-op ...
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, identity.RunID, pins); err != nil {
+		t.Fatalf("repeated confirmation of the same pins: %v", err)
+	}
+	// ... but no confirmation can rewrite a recorded run's pins.
+	moved := pins
+	moved.ConfigGeneration = "sha256:reloaded-generation"
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, identity.RunID, moved); !errors.Is(err, ErrRunPinsDiffer) {
+		t.Fatalf("confirmation with different pins = %v, want ErrRunPinsDiffer", err)
+	}
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, "other-run", pins); err == nil {
+		t.Fatal("confirmed pins for a different run")
+	}
 }
 
 func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {
@@ -239,7 +289,7 @@ func TestPGStartConfirmationRejectsStaleAndCrossInstanceLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	current := successorStore(t, pool)
-	if err := (&startCustody{store: old}).ConfirmStart(t.Context(), identity, false); err == nil {
+	if err := (&startCustody{store: old}).ConfirmStart(t.Context(), identity, false, testRunPins(identity.AcceptanceID, identity.RunID)); err == nil {
 		t.Fatal("stale confirmation committed")
 	}
 	if err := (&startCustody{store: old}).CheckStartLease(t.Context()); err == nil {
@@ -273,16 +323,16 @@ func TestPGStartReadDoesNotAdoptAndDoubleAdoptRefuses(t *testing.T) {
 	if err != nil || observed != previous {
 		t.Fatalf("read adopted or hid predecessor: %+v, %v", observed, err)
 	}
-	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch); err != nil {
+	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch, testRunPins(observed.AcceptanceID, observed.RunID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch); err == nil {
+	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch, testRunPins(observed.AcceptanceID, observed.RunID)); err == nil {
 		t.Fatal("double adoption did not enforce predecessor CAS")
 	}
-	if err := old.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID); err == nil {
+	if err := old.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID, testRunPins(observed.AcceptanceID, observed.RunID)); err == nil {
 		t.Fatal("stale owner confirmed after adoption")
 	}
-	if err := current.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID); err != nil {
+	if err := current.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID, testRunPins(observed.AcceptanceID, observed.RunID)); err != nil {
 		t.Fatal(err)
 	}
 }

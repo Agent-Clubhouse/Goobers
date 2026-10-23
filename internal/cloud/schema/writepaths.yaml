@@ -194,6 +194,45 @@ tables:
     - start_retry_epoch
     delete: true
 - schema: control
+  table: run_pin
+  provisioned: true
+  fence: owner_epoch
+  rationale: "Start-fence run pins (HA-P4 cloud child authority, migration 0022) are inserted only inside the controller
+    lease fence that confirms or adopts the Temporal start, are immutable after insert, and are removed by cascade with
+    their acceptance. API and worker paths never read or write them."
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - acceptance_id
+    - gaggle
+    - workflow
+    - workflow_version
+    - workflow_digest
+    - goober_digest
+    - config_generation
+    - repo_ref
+    - branch_namespace
+    - input_digest
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - acceptance_id
+    - gaggle
+    - workflow
+    - workflow_version
+    - workflow_digest
+    - goober_digest
+    - config_generation
+    - repo_ref
+    - branch_namespace
+    - input_digest
+    - owner_epoch
+- schema: control
   table: source_receipt
   provisioned: true
   fence: epoch
