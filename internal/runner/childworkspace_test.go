@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -67,7 +68,7 @@ func TestChildWorkspaceRequiresExplicitManagedAdmission(t *testing.T) {
 
 func TestChildWorkspaceResultCannotChangeCustody(t *testing.T) {
 	in := StartInput{ChildWorkspace: &ChildWorkspaceAdmission{}, WorkspaceBranch: "goobers/children/child-run"}
-	for _, result := range []apiv1.ResultEnvelope{{WorkspaceRevision: &apiv1.WorkspaceRevision{}}, {Outputs: map[string]any{WorkspaceBranchOutput: "foreign-branch"}}} {
+	for _, result := range []apiv1.ResultEnvelope{{WorkspaceRevision: &apiv1.WorkspaceRevision{}}, {Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "foreign-branch"}}} {
 		if err := validateChildWorkspaceResult(in, result); err == nil {
 			t.Fatal("child result changed custody")
 		}

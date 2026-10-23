@@ -1,16 +1,5 @@
 package engine
 
-// The knownOutcome shortcut and the retry-decision annotation on the engine
-// walk — plan item E2 (#3874).
-//
-// Neither is visible on the parity harness's four surfaces. The shortcut is
-// invisible because the automated gate evaluator is not routed through
-// recordingExec on either side, so "did the checker dispatch?" never reaches an
-// envelope; the annotation is invisible because journal.IsConformanceNormative
-// excludes the whole runner.* namespace by prefix. The parity rows pin their
-// CONSEQUENCES (the routing, and the annotation compared on the raw event log);
-// these tests pin the mechanisms directly, with a counting evaluator.
-
 import (
 	"context"
 	"errors"
@@ -19,11 +8,22 @@ import (
 
 	"go.temporal.io/sdk/testsuite"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// The knownOutcome shortcut and the retry-decision annotation on the engine
+	// walk — plan item E2 (#3874).
+	//
+	// Neither is visible on the parity harness's four surfaces. The shortcut is
+	// invisible because the automated gate evaluator is not routed through
+	// recordingExec on either side, so "did the checker dispatch?" never reaches an
+	// envelope; the annotation is invisible because journal.IsConformanceNormative
+	// excludes the whole runner.* namespace by prefix. The parity rows pin their
+	// CONSEQUENCES (the routing, and the annotation compared on the raw event log);
+	// these tests pin the mechanisms directly, with a counting evaluator.
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -99,7 +99,7 @@ func shortcutSpec() apiv1.WorkflowSpec {
 // is shared rather than mirrored so the two runners cannot disagree about which
 // codes are shortcut-able.
 func TestKnownOutcomeShortcutSkipsTheChecker(t *testing.T) {
-	for _, code := range []string{"nonzero_exit", runner.BaseSyncConflictErrorCode} {
+	for _, code := range []string{"nonzero_exit", runsemantics.BaseSyncConflictErrorCode} {
 		t.Run(code, func(t *testing.T) {
 			events, res, err := shortcutRun(t, &refusingAutomated{t: t}, shortcutSpec(),
 				map[string][]scriptedCall{"build": {fail(code, "the command failed")}})

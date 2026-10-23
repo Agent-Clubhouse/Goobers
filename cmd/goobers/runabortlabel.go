@@ -13,7 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
@@ -248,7 +248,7 @@ func terminalFailureWasInfrastructure(events []journal.Event) bool {
 			continue
 		}
 		class, _ := ev.Runner["errorClass"].(string)
-		retryClass, _ := ev.Runner[runner.RetryFailureClassKey].(string)
+		retryClass, _ := ev.Runner[runsemantics.RetryFailureClassKey].(string)
 		return retryClass == string(journal.AttemptInfra) || telemetry.ErrorClass(class).InfraFault()
 	}
 	return false

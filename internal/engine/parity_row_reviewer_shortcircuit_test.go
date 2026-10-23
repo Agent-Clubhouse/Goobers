@@ -1,48 +1,48 @@
 package engine
 
-// Parity rows for plan items E4 and E5 (#3882): the three implementation-lane
-// decisions that determine whether an agentic reviewer is dispatched AT ALL.
-//
-// Every row here is a NEGATIVE row in the sense that matters. The behaviour
-// being ported is not "produce this verdict" — both lanes produced acceptable
-// verdicts before the port — it is "do not ask a reviewer a question whose
-// answer is already determined". A port that dispatches the reviewer anyway
-// still reaches the same outcome; it just spends a model call to get there,
-// and on a non-convergent repass loop it spends the whole budget. So these
-// rows assert on the DISPATCH, not the decision.
-//
-// The mechanism that makes that assertion sharp is the harness's scripted
-// reviewer: a gate the row does not script a verdict for FAILS LOUDLY when it
-// is dispatched, on either lane. There is no "quietly returns a zero verdict"
-// path for an over-eager port to hide in.
-//
-// # The diff seam, and why the engine's is scripted while the runner's is not
-//
-// The local runner reads a real git worktree, so its diff is whatever the
-// fixture's stages actually left behind — and scriptedExec, which drives both
-// lanes, writes no files. The runner therefore observes an EMPTY diff. The
-// engine's fake provisioner is told to report the same empty diff
-// (EngineWorkspaceDiffs), which is what makes these rows a comparison of two
-// DECISIONS over one observation rather than of one real observation against
-// one fictional one. Scripting a non-empty diff on the engine side would prove
-// nothing about the runner, so no row here does.
-//
-// That bounds what this file can cover, and the bound is stated rather than
-// hidden: a genuinely non-empty diff on both lanes would need the scripted
-// stages to write into a real worktree on one side and a fake on the other.
-// The #316 duplicate-diff dedup and the #3384 diff artifact/pointer are
-// therefore pinned by internal/engine's own deterministic tests
-// (implementationlane_test.go) and by internal/gate's shared-helper tests,
-// which is where the two lanes' single implementation of each already lives.
-
 import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Parity rows for plan items E4 and E5 (#3882): the three implementation-lane
+	// decisions that determine whether an agentic reviewer is dispatched AT ALL.
+	//
+	// Every row here is a NEGATIVE row in the sense that matters. The behaviour
+	// being ported is not "produce this verdict" — both lanes produced acceptable
+	// verdicts before the port — it is "do not ask a reviewer a question whose
+	// answer is already determined". A port that dispatches the reviewer anyway
+	// still reaches the same outcome; it just spends a model call to get there,
+	// and on a non-convergent repass loop it spends the whole budget. So these
+	// rows assert on the DISPATCH, not the decision.
+	//
+	// The mechanism that makes that assertion sharp is the harness's scripted
+	// reviewer: a gate the row does not script a verdict for FAILS LOUDLY when it
+	// is dispatched, on either lane. There is no "quietly returns a zero verdict"
+	// path for an over-eager port to hide in.
+	//
+	// # The diff seam, and why the engine's is scripted while the runner's is not
+	//
+	// The local runner reads a real git worktree, so its diff is whatever the
+	// fixture's stages actually left behind — and scriptedExec, which drives both
+	// lanes, writes no files. The runner therefore observes an EMPTY diff. The
+	// engine's fake provisioner is told to report the same empty diff
+	// (EngineWorkspaceDiffs), which is what makes these rows a comparison of two
+	// DECISIONS over one observation rather than of one real observation against
+	// one fictional one. Scripting a non-empty diff on the engine side would prove
+	// nothing about the runner, so no row here does.
+	//
+	// That bounds what this file can cover, and the bound is stated rather than
+	// hidden: a genuinely non-empty diff on both lanes would need the scripted
+	// stages to write into a real worktree on one side and a fake on the other.
+	// The #316 duplicate-diff dedup and the #3384 diff artifact/pointer are
+	// therefore pinned by internal/engine's own deterministic tests
+	// (implementationlane_test.go) and by internal/gate's shared-helper tests,
+	// which is where the two lanes' single implementation of each already lives.
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -65,7 +65,7 @@ func cachedVerdictOutputs(decision apiv1.VerdictDecision, rationale string) map[
 	if err != nil {
 		panic(fmt.Sprintf("encode cached verdict fixture: %v", err))
 	}
-	return map[string]interface{}{runner.CachedVerdictOutputKey: string(raw)}
+	return map[string]interface{}{runsemantics.CachedVerdictOutputKey: string(raw)}
 }
 
 func init() {

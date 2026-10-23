@@ -14,7 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/desktopnotify"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/speechnotify"
 	speechtest "github.com/goobers/goobers/test/testsupport/speechnotify"
 )
@@ -150,7 +150,7 @@ func TestTerminalNotificationCauseUsesEscalatingGate(t *testing.T) {
 func TestTerminalNotificationCauseUsesStalledRunError(t *testing.T) {
 	events := []journal.Event{{
 		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: runner.RunStalledErrorCode, Message: "no journal progress for 45m"},
+		Error: &journal.ErrorDetail{Code: runsemantics.RunStalledErrorCode, Message: "no journal progress for 45m"},
 	}}
 	got := terminalNotificationCause(events, journal.PhaseEscalated, "implement")
 	if got != "no journal progress for 45m" {

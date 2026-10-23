@@ -6,7 +6,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -79,8 +79,8 @@ func retryDecisionApplies(gr gateResult, retryable bool) bool {
 // while the POLICY stays runner-owned: which branches are correctable
 // re-entries is one ruling (#3929, extended for agentic outcomes), and a
 // second copy of it on this side is a second thing to drift.
-func learningEpisodeBranchFor(gr gateResult) runner.LearningEpisodeBranch {
-	return runner.LearningEpisodeBranch{
+func learningEpisodeBranchFor(gr gateResult) runsemantics.LearningEpisodeBranch {
+	return runsemantics.LearningEpisodeBranch{
 		Outcome: gr.Outcome, Escalated: gr.Escalated, Target: gr.Target, Attempt: gr.Attempt,
 	}
 }
@@ -110,11 +110,11 @@ func (r *runJournal) retryDecision(ctx workflow.Context, gr gateResult, stage st
 		Stage: stage,
 		Gate:  gr.Gate,
 		Runner: map[string]interface{}{
-			"kind":                      runner.RetryDecisionKind,
-			runner.RetryFailureClassKey: string(class),
-			"failureCode":               failureCode,
-			"repassAttempt":             gr.Attempt,
-			"target":                    gr.Target,
+			"kind":                            runsemantics.RetryDecisionKind,
+			runsemantics.RetryFailureClassKey: string(class),
+			"failureCode":                     failureCode,
+			"repassAttempt":                   gr.Attempt,
+			"target":                          gr.Target,
 		},
 	})
 }

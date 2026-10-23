@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/planehttp"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -51,19 +52,19 @@ func TestClassifyDispatchFailureTypesEveryKnownCause(t *testing.T) {
 		},
 		{
 			name:      "git provisioning",
-			err:       codedStageFailure(errCodeInfraGit, errors.New("prepare stage \"implement\": create worktree: 403")),
+			err:       runsemantics.CodedStageFailure(errCodeInfraGit, errors.New("prepare stage \"implement\": create worktree: 403")),
 			wantCode:  errCodeInfraGit,
 			wantClass: telemetry.ErrorClassInfraGit,
 		},
 		{
 			name:      "network provisioning",
-			err:       invoke.InfrastructureFailure(codedStageFailure(errCodeInfraNet, errors.New("could not resolve host"))),
+			err:       invoke.InfrastructureFailure(runsemantics.CodedStageFailure(errCodeInfraNet, errors.New("could not resolve host"))),
 			wantCode:  errCodeInfraNet,
 			wantClass: telemetry.ErrorClassInfraNet,
 		},
 		{
 			name:      "host workspace",
-			err:       codedStageFailure(errCodeInfraWorkspace, errors.New("create scratch workspace root: permission denied")),
+			err:       runsemantics.CodedStageFailure(errCodeInfraWorkspace, errors.New("create scratch workspace root: permission denied")),
 			wantCode:  errCodeInfraWorkspace,
 			wantClass: telemetry.ErrorClassInfra,
 		},
@@ -124,7 +125,7 @@ func TestProvisionFailureCodeSplitsOwners(t *testing.T) {
 
 func TestGatePreparationFailureIsInfraClassified(t *testing.T) {
 	prepErr := errors.New("create read-only workspace: a rebound branch requires a writable repo workspace")
-	err := fmt.Errorf("runner: prepare gate %q: %w", "reviewer", codedStageFailure(provisionFailureCode(prepErr), prepErr))
+	err := fmt.Errorf("runner: prepare gate %q: %w", "reviewer", runsemantics.CodedStageFailure(provisionFailureCode(prepErr), prepErr))
 	code, class := classifyDispatchFailure(err)
 	if code != errCodeInfraWorkspace {
 		t.Fatalf("classifyDispatchFailure(gate prep) code = %q, want %q", code, errCodeInfraWorkspace)

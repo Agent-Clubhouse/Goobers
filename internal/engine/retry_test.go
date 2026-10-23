@@ -19,7 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/usageallowance"
 	"github.com/goobers/goobers/internal/worktree"
@@ -277,15 +277,15 @@ func TestInfrastructureFailuresBoundedSeparately(t *testing.T) {
 	t.Run("persistent outage fails at the infrastructure bound", func(t *testing.T) {
 		det := &scriptedDeterministic{failures: persistentFailures(invoke.InfrastructureFailure(errors.New("503 upstream")), 100)}
 		err := executeRetryWorkflow(t, "infra-persistent", nil, det)
-		want := fmt.Sprintf("(attempt %d/%d)", runner.DefaultMaxInfrastructureAttempts, runner.DefaultMaxInfrastructureAttempts)
+		want := fmt.Sprintf("(attempt %d/%d)", runsemantics.DefaultMaxInfrastructureAttempts, runsemantics.DefaultMaxInfrastructureAttempts)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("workflow error = %v, want exhaustion at %s", err, want)
 		}
 		if !strings.Contains(err.Error(), "503") {
 			t.Fatalf("workflow error = %v, want the original cause preserved", err)
 		}
-		if got := det.callCount(); int32(got) != runner.DefaultMaxInfrastructureAttempts {
-			t.Fatalf("dispatches = %d, want %d", got, runner.DefaultMaxInfrastructureAttempts)
+		if got := det.callCount(); int32(got) != runsemantics.DefaultMaxInfrastructureAttempts {
+			t.Fatalf("dispatches = %d, want %d", got, runsemantics.DefaultMaxInfrastructureAttempts)
 		}
 	})
 
