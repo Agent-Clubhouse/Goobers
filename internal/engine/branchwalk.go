@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -19,6 +20,9 @@ import (
 // The walk copies seed collections before mutation, then stores its own
 // continuation back into the frame; siblings never write into the seed.
 type branchWalkFrame struct {
+	results         map[string]apiv1.ResultEnvelope
+	bind            func(fanOutBindingContext) (fanOutBindings, error)
+	started         livejournal.AppendReceipt
 	start           string
 	deadline        time.Time
 	upstream        map[string]apiv1.ResultEnvelope
@@ -91,6 +95,14 @@ func walkTaskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result a
 	f := rec.branchWalk
 	if f == nil {
 		return taskOutcome(ctx, m, t, result, upstream, evaluated, steps, rec)
+	}
+	if f.results == nil {
+		f.results = make(map[string]apiv1.ResultEnvelope)
+	}
+	if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+		delete(f.results, t.Name)
+	} else {
+		f.results[t.Name] = result
 	}
 	f.produced = f.produced || len(result.Outputs) > 0 || len(result.Artifacts) > 0
 	if result.Status == apiv1.ResultNoWork {

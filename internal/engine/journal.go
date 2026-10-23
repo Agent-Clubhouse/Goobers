@@ -43,6 +43,9 @@ const (
 
 // JournalOp is one journal write in a run's projection, in append order.
 type JournalOp struct {
+	// Receipt requests a durable per-op identity for a fan-out lifecycle event.
+	Receipt bool `json:"receipt,omitempty"`
+
 	// ChildStageStart is reserved for a version-gated child lifecycle caller.
 	// Existing stageStarted calls leave it nil and acquire no child authority.
 	ChildStageStart *livejournal.ChildStageStart `json:"childStageStart,omitempty"`
