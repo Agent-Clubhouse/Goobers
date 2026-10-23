@@ -61,6 +61,9 @@ type stageDispatch struct {
 	// the narrow sweep interface. Two fields rather than a type assertion make
 	// the boot and worker-lifetime reconciliation wiring explicit.
 	Sweeper stageOrphanSweeper
+	// Children is the engine child-admission plane client, or nil when the
+	// instance has no signing key (the engine then refuses child custody).
+	Children engine.ChildService
 }
 
 // dispatchKubeClient builds the typed clientset for pod creation: in-cluster
@@ -226,7 +229,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d}, nil
+	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: workerChildAdmissions(daemonAPI, owner, signed)}, nil
 }
 
 // validateStageDispatchConfig checks the remote planes before the worker can
