@@ -50,7 +50,7 @@ func (w *Writer) publishArtifact(ctx context.Context, run *liveRun, ref journal.
 	if err != nil || rel != ref.Path {
 		return fmt.Errorf("publish artifact %s: committed ref is not content-addressed", ref.Digest)
 	}
-	data, err := os.ReadFile(filepath.Join(run.jr.Dir(), filepath.FromSlash(rel)))
+	data, err := os.ReadFile(filepath.Join(run.dir, filepath.FromSlash(rel)))
 	if err != nil {
 		return fmt.Errorf("publish artifact %s: read committed bytes: %w", ref.Digest, err)
 	}
@@ -71,7 +71,7 @@ func (w *Writer) publishArtifact(ctx context.Context, run *liveRun, ref journal.
 // Put is idempotent by digest, so re-publishing an already-present blob is a
 // no-op. Caller holds run.mu.
 func (w *Writer) republishArtifact(ctx context.Context, run *liveRun, op Op) error {
-	if w.requestArtifactSink(ctx) == nil || op.Kind != OpArtifact || run.jr == nil {
+	if w.requestArtifactSink(ctx) == nil || op.Kind != OpArtifact || !w.hasRun(run) {
 		return nil
 	}
 	ref, ok := run.artifactKeyRefs[op.Key]

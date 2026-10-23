@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -34,7 +35,8 @@ type staticParallelWalk struct {
 	root         *runJournal
 	in           RunInput
 	machine      *wf.Machine
-	spec         apiv1.Parallel
+	spec         fanOutPlan
+	started      livejournal.AppendReceipt
 	seed         *branchWalkFrame
 	outcomes     []*staticBranchOutcome
 	results      workflow.Channel
@@ -63,36 +65,23 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 		r.staticWalk.seen = map[string]bool{}
 	}
 	r.staticWalk.seen[state] = true
-	branchCtx, cancel := workflow.WithCancel(ctx)
-	defer cancel()
-	drainCtx, disconnect := workflow.NewDisconnectedContext(ctx)
-	defer disconnect()
-	pwalk := &staticParallelWalk{
-		root: r, in: in, machine: m, spec: p, seed: seed,
-		outcomes: make([]*staticBranchOutcome, len(p.Branches)),
-		results:  workflow.NewBufferedChannel(ctx, len(p.Branches)),
-		ctx:      branchCtx, drain: drainCtx, cancel: cancel,
-	}
-	r.append(ctx, journal.Event{Type: journal.EventParallelStarted, Parallel: p.Name, Completeness: pwalk.completeness()})
-	if err := r.emitPending(ctx); err != nil {
+	pwalk, result, err := r.fanOut(ctx, in, m, staticFanOutPlan(p), seed)
+	if err != nil {
 		return "", true, err
-	}
-	pwalk.run(ctx)
-	target := pwalk.target()
-	r.append(drainCtx, journal.Event{Type: journal.EventParallelFinished, Parallel: p.Name, Completeness: pwalk.completeness(), Target: target})
-	pwalk.fail(r.emitPending(drainCtx))
-	if pwalk.err != nil {
-		return "", true, pwalk.err
 	}
 	r.staticWalk.join, r.staticWalk.completeness = p.Join, pwalk.completeness()
 	pwalk.merge()
-	return target, true, nil
+	return result.Target, true, nil
 }
 
 func (p *staticParallelWalk) run(ctx workflow.Context) {
 	limit := min(max(1, int(p.spec.MaxConcurrentBranches)), len(p.spec.Branches))
 	for p.active > 0 || p.next < len(p.spec.Branches) {
 		p.fail(ctx.Err())
+		if p.next < len(p.spec.Branches) && p.outcomes[p.next] != nil {
+			p.next++
+			continue
+		}
 		var out staticBranchOutcome
 		if p.results.ReceiveAsync(&out) {
 			p.accept(out)
@@ -115,13 +104,16 @@ func (p *staticParallelWalk) run(ctx workflow.Context) {
 func (p *staticParallelWalk) launch() {
 	i := p.next
 	branch := p.spec.Branches[i]
-	p.root.append(p.ctx, journal.Event{Type: journal.EventBranchStarted, Branch: i + 1, Parallel: p.spec.Name, BranchName: branch.Name, Stage: branch.Start})
+	p.root.append(p.ctx, journal.Event{Type: journal.EventBranchStarted, Branch: i + 1, Parallel: p.spec.Name, BranchName: branch.Name, Stage: branch.Start, MapItemIdentity: branch.ItemIdentity, MapItemDigest: branch.ItemDigest})
 	if err := p.root.emitPending(p.ctx); err != nil {
 		p.fail(err)
 		return
 	}
 	frame := *p.seed // walk clones every mutable seed collection before use.
 	frame.start = branch.Start
+	frame.bind = branch.Bind
+	frame.started = p.started
+	frame.results = nil
 	if p.spec.BranchTimeoutSeconds > 0 {
 		frame.deadline = workflow.Now(p.ctx).Add(time.Duration(p.spec.BranchTimeoutSeconds) * time.Second)
 	}
@@ -166,7 +158,7 @@ func (p *staticParallelWalk) fail(err error) {
 }
 
 func (p *staticParallelWalk) settle(i int) {
-	p.root.append(p.drain, journal.Event{Type: journal.EventBranchFinished, Branch: i + 1, Parallel: p.spec.Name, BranchName: p.spec.Branches[i].Name, BranchStatus: p.outcomes[i].frame.status})
+	p.root.append(p.drain, journal.Event{Type: journal.EventBranchFinished, Branch: i + 1, Parallel: p.spec.Name, BranchName: p.spec.Branches[i].Name, BranchStatus: p.outcomes[i].frame.status, Reason: p.spec.Branches[i].Reason, MapItemIdentity: p.spec.Branches[i].ItemIdentity, MapItemDigest: p.spec.Branches[i].ItemDigest})
 	p.fail(p.root.emitPending(p.drain))
 }
 
@@ -174,6 +166,9 @@ func (p *staticParallelWalk) cancelQueued() {
 	for p.next < len(p.spec.Branches) {
 		i := p.next
 		p.next++
+		if p.outcomes[i] != nil {
+			continue
+		}
 		p.outcomes[i] = &staticBranchOutcome{index: i, frame: &branchWalkFrame{status: journal.BranchCancelled}}
 		p.settle(i)
 	}
@@ -182,7 +177,7 @@ func (p *staticParallelWalk) cancelQueued() {
 func (p *staticParallelWalk) completeness() []journal.BranchOutcome {
 	out := make([]journal.BranchOutcome, len(p.spec.Branches))
 	for i, b := range p.spec.Branches {
-		out[i] = journal.BranchOutcome{Branch: i + 1, Name: b.Name, Status: journal.BranchCancelled}
+		out[i] = journal.BranchOutcome{Branch: i + 1, Name: b.Name, Status: journal.BranchCancelled, Reason: b.Reason, MapItemIdentity: b.ItemIdentity, MapItemDigest: b.ItemDigest}
 		if result := p.outcomes[i]; result != nil {
 			out[i].Status = result.frame.status
 			start := min(len(p.seed.pointers), len(result.frame.pointers))
