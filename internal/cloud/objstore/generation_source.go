@@ -143,7 +143,7 @@ func classifyPinError(err error) error {
 	// not transient.
 	var postgresError *pgconn.PgError
 	if errors.As(err, &postgresError) &&
-		postgresError.ConstraintName == "config_generation_pin_instance_id_digest_fkey" {
+		postgresError.Code == "23503" {
 		return fmt.Errorf("%w: generation pruned while pinning",
 			ErrGenerationNotFound)
 	}
