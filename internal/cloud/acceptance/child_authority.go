@@ -207,7 +207,8 @@ func (s *Store) checkChildAuthorityTx(
 		  ON p.instance_id=a.instance_id AND p.gaggle=a.gaggle
 		 AND p.parent_run_id=a.parent_run_id
 		WHERE a.instance_id=$1 AND a.gaggle=$2
-		  AND a.parent_run_id=$3 AND a.occurrence=$4`,
+		  AND a.parent_run_id=$3 AND a.occurrence=$4
+		FOR UPDATE OF a`,
 		s.instanceID, grant.Gaggle, grant.ParentRunID, grant.StageOccurrence,
 		grant.GrantID, grant.AttemptID, grant.ConfigDigest, grant.PolicyDigest,
 	).Scan(&valid)
@@ -226,6 +227,18 @@ func (s *Store) RevokeChildAuthority(
 		return triggerqueue.ErrChildAuthorityChanged
 	}
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		var parentEpoch int64
+		if err := tx.QueryRow(txCtx, `
+			SELECT owner_epoch FROM control.child_parent
+			WHERE instance_id=$1 AND gaggle=$2 AND parent_run_id=$3
+			FOR UPDATE`,
+			s.instanceID, grant.Gaggle, grant.ParentRunID,
+		).Scan(&parentEpoch); err != nil {
+			return err
+		}
+		if parentEpoch != epoch {
+			return triggerqueue.ErrChildAuthorityChanged
+		}
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.child_authority SET revoked=true,owner_epoch=$7
 			WHERE instance_id=$1 AND gaggle=$2 AND parent_run_id=$3

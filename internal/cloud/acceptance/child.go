@@ -59,36 +59,19 @@ func (s *Store) AcceptChild(
 	request triggerqueue.ChildAcceptance,
 	now time.Time,
 ) (record triggerqueue.ChildRecord, duplicate bool, err error) {
-	if !childIdentityValid(request.Identity) ||
-		!validText(request.Actor, 1024, true) ||
-		len(request.Payload) == 0 || len(request.Payload) > triggerqueue.MaxPayloadBytes ||
-		request.MaxChildren < 1 || request.MaxChildren > triggerqueue.MaxChildrenPerOccurrence ||
-		now.IsZero() {
-		return record, false, errors.New("cloud acceptance: invalid child acceptance")
+	proposalDigest, actorDigest, payloadDigest, err := s.prepareChildAcceptance(
+		ctx, request, now)
+	if err != nil {
+		return record, false, err
 	}
-	if request.Authority != nil &&
-		(!childAuthorityValid(*request.Authority) ||
-			request.Authority.ChildParent != request.Identity.ChildParent ||
-			request.Authority.StageOccurrence != request.Identity.StageOccurrence) {
-		return record, false, triggerqueue.ErrChildAuthorityChanged
-	}
-	proposalDigest := ""
-	if request.Proposal != nil {
-		if s.childBlobs == nil ||
-			len(request.Proposal.Source) == 0 ||
-			len(request.Proposal.Source) > triggerqueue.MaxChildProposalBytes ||
-			request.Proposal.Digest != childDigest(request.Proposal.Source) {
-			return record, false, triggerqueue.ErrChildProposalUnavailable
-		}
-		if err := s.childBlobs.Put(ctx, request.Proposal.Digest, request.Proposal.Source); err != nil {
-			return record, false, fmt.Errorf("cloud acceptance: store child proposal: %w", err)
-		}
-		proposalDigest = request.Proposal.Digest
-	}
-	actorDigest := childDigest([]byte(request.Actor))
-	payloadDigest := childDigest(request.Payload)
 	err = s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		identity := request.Identity
+		if _, err := tx.Exec(txCtx, `
+			SELECT pg_advisory_xact_lock(hashtextextended('accept:'||$1,0))`,
+			s.instanceID,
+		); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(txCtx, `
 			SELECT pg_advisory_xact_lock(hashtextextended(
 				'child:'||$1||':'||$2||':'||$3||':'||$4,0))`,
@@ -109,10 +92,15 @@ func (s *Store) AcceptChild(
 		if !errors.Is(readErr, pgx.ErrNoRows) {
 			return readErr
 		}
-		if request.Authority != nil {
-			if err := s.checkChildAuthorityTx(txCtx, tx, *request.Authority); err != nil {
-				return err
-			}
+		var acceptanceCount int
+		if err := tx.QueryRow(txCtx, `
+			SELECT count(*) FROM control.acceptance WHERE instance_id=$1`,
+			s.instanceID,
+		).Scan(&acceptanceCount); err != nil {
+			return err
+		}
+		if acceptanceCount >= triggerqueue.MaxRecords {
+			return triggerqueue.ErrFull
 		}
 		if err := s.ensureChildParent(txCtx, tx, identity.ChildParent, epoch); err != nil {
 			return err
@@ -136,6 +124,11 @@ func (s *Store) AcceptChild(
 		}
 		if settled != nil {
 			return triggerqueue.ErrParentSettled
+		}
+		if request.Authority != nil {
+			if err := s.checkChildAuthorityTx(txCtx, tx, *request.Authority); err != nil {
+				return err
+			}
 		}
 		var liveCount int
 		if err := tx.QueryRow(txCtx, `
@@ -243,6 +236,41 @@ func (s *Store) AcceptChild(
 		return err
 	})
 	return record, duplicate, err
+}
+
+func (s *Store) prepareChildAcceptance(
+	ctx context.Context,
+	request triggerqueue.ChildAcceptance,
+	now time.Time,
+) (proposalDigest string, actorDigest string, payloadDigest string, err error) {
+	if !childIdentityValid(request.Identity) ||
+		!validText(request.Actor, 1024, true) ||
+		len(request.Payload) == 0 || len(request.Payload) > triggerqueue.MaxPayloadBytes ||
+		request.MaxChildren < 1 || request.MaxChildren > triggerqueue.MaxChildrenPerOccurrence ||
+		now.IsZero() {
+		return "", "", "", errors.New("cloud acceptance: invalid child acceptance")
+	}
+	if request.Authority != nil &&
+		(!childAuthorityValid(*request.Authority) ||
+			request.Authority.ChildParent != request.Identity.ChildParent ||
+			request.Authority.StageOccurrence != request.Identity.StageOccurrence) {
+		return "", "", "", triggerqueue.ErrChildAuthorityChanged
+	}
+	proposalDigest = ""
+	if request.Proposal != nil {
+		if s.childBlobs == nil ||
+			len(request.Proposal.Source) == 0 ||
+			len(request.Proposal.Source) > triggerqueue.MaxChildProposalBytes ||
+			request.Proposal.Digest != childDigest(request.Proposal.Source) {
+			return "", "", "", triggerqueue.ErrChildProposalUnavailable
+		}
+		if err := s.childBlobs.Put(ctx, request.Proposal.Digest, request.Proposal.Source); err != nil {
+			return "", "", "", fmt.Errorf("cloud acceptance: store child proposal: %w", err)
+		}
+		proposalDigest = request.Proposal.Digest
+	}
+	return proposalDigest, childDigest([]byte(request.Actor)),
+		childDigest(request.Payload), nil
 }
 
 func (s *Store) ensureChildParent(

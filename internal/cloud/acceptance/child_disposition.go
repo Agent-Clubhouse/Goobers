@@ -33,11 +33,11 @@ func (s *Store) RequestChildDisposition(
 		return result, triggerqueue.ErrTransition
 	}
 	err = s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
-		if err := s.checkChildAuthorityTx(txCtx, tx, request.Authority); err != nil {
-			return err
-		}
 		child, err := s.lockChild(txCtx, tx, request.Identity, epoch)
 		if err != nil {
+			return err
+		}
+		if err := s.checkChildAuthorityTx(txCtx, tx, request.Authority); err != nil {
 			return err
 		}
 		if child.CancellationRequested || !child.TombstonedAt.IsZero() ||

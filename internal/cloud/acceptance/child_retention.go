@@ -22,86 +22,28 @@ func (s *Store) PruneChildren(
 	}
 	err = s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		remaining := limit
-		rows, err := tx.Query(txCtx, `
-			SELECT c.child_id,c.acceptance_id
-			FROM control.child_lineage AS c
-			JOIN control.child_parent AS p
-			  ON p.instance_id=c.instance_id AND p.gaggle=c.gaggle
-			 AND p.parent_run_id=c.parent_run_id
-			LEFT JOIN control.acceptance AS a
-			  ON a.instance_id=c.instance_id AND a.id=c.acceptance_id
-			WHERE c.instance_id=$1 AND c.owner_epoch=$2
-			  AND c.tombstoned_at IS NULL AND c.acknowledged_at IS NOT NULL
-			  AND p.settled_at <= clock_timestamp()-$3::interval
-			  AND COALESCE(a.state,'rejected')<>'dispatching'
-			  AND NOT EXISTS (
-				SELECT 1 FROM control.child_lineage AS sibling
-				WHERE sibling.instance_id=c.instance_id
-				  AND sibling.gaggle=c.gaggle
-				  AND sibling.parent_run_id=c.parent_run_id
-				  AND sibling.acknowledged_at IS NULL
-			  )
-			  AND NOT EXISTS (
-				SELECT 1 FROM control.child_lineage AS descendant
-				WHERE descendant.instance_id=c.instance_id
-				  AND descendant.gaggle=c.gaggle
-				  AND descendant.parent_run_id=a.run_id
-				  AND descendant.tombstoned_at IS NULL
-			  )
-			ORDER BY c.child_id
-			FOR UPDATE OF c SKIP LOCKED LIMIT $4`,
-			s.instanceID, epoch, triggerqueue.ChildRetention, remaining,
-		)
+		tombstoned, err := s.tombstoneChildrenTx(
+			txCtx, tx, epoch, remaining)
 		if err != nil {
 			return err
 		}
-		type candidate struct{ childID, acceptanceID string }
-		candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
-			var value candidate
-			err := row.Scan(&value.childID, &value.acceptanceID)
-			return value, err
-		})
-		if err != nil {
-			return err
-		}
-		for _, candidate := range candidates {
-			tag, err := tx.Exec(txCtx, `
-				UPDATE control.child_lineage
-				SET tombstoned_at=clock_timestamp(),result_ref='',workspace_ref='',
-				    snapshot_receipt_digest='',snapshot_bundle_digest='',
-				    result_receipt_digest='',result_bundle_digest='',owner_epoch=$3
-				WHERE instance_id=$1 AND child_id=$2 AND owner_epoch=$3
-				  AND tombstoned_at IS NULL`,
-				s.instanceID, candidate.childID, epoch,
-			)
-			if err := changed(tag.RowsAffected(), err); err != nil {
-				return err
-			}
-			for _, table := range []string{
-				"child_blob_read", "child_blob", "child_publication",
-				"child_disposition_history", "child_disposition",
-			} {
-				if _, err := tx.Exec(txCtx, `
-					DELETE FROM control.`+table+`
-					WHERE instance_id=$1 AND child_id=$2 AND owner_epoch=$3`,
-					s.instanceID, candidate.childID, epoch,
-				); err != nil {
-					return err
-				}
-			}
-			if _, err := tx.Exec(txCtx, `
-				DELETE FROM control.acceptance
-				WHERE instance_id=$1 AND id=$2 AND owner_epoch=$3
-				  AND state<>'dispatching'`,
-				s.instanceID, candidate.acceptanceID, epoch,
-			); err != nil {
-				return err
-			}
-			result.Tombstoned++
-			remaining--
-		}
+		result.Tombstoned = tombstoned
+		remaining -= tombstoned
 		if remaining == 0 {
 			return nil
+		}
+		if _, err := tx.Exec(txCtx, `
+			DELETE FROM control.acceptance AS acceptance
+			WHERE acceptance.instance_id=$1 AND acceptance.owner_epoch=$2
+			  AND acceptance.id IN (
+				SELECT acceptance_id FROM control.child_lineage
+				WHERE instance_id=$1 AND owner_epoch=$2
+				  AND tombstoned_at <= clock_timestamp()-$3::interval
+				ORDER BY child_id LIMIT $4
+			  )`,
+			s.instanceID, epoch, triggerqueue.ChildTombstoneRetention, remaining,
+		); err != nil {
+			return err
 		}
 		tag, err := tx.Exec(txCtx, `
 			DELETE FROM control.child_lineage
@@ -135,8 +77,15 @@ func (s *Store) PruneChildren(
 			  AND (occurrence.instance_id,occurrence.gaggle,
 			       occurrence.parent_run_id,occurrence.occurrence) IN (
 				SELECT instance_id,gaggle,parent_run_id,occurrence
-				FROM control.child_occurrence
-				WHERE instance_id=$1 AND owner_epoch=$2
+				FROM control.child_occurrence AS candidate
+				WHERE candidate.instance_id=$1 AND candidate.owner_epoch=$2
+				  AND NOT EXISTS (
+					SELECT 1 FROM control.child_lineage AS child
+					WHERE child.instance_id=candidate.instance_id
+					  AND child.gaggle=candidate.gaggle
+					  AND child.parent_run_id=candidate.parent_run_id
+					  AND child.occurrence=candidate.occurrence
+				  )
 				ORDER BY gaggle,parent_run_id,occurrence LIMIT $3
 			  )`,
 			s.instanceID, epoch, remaining,
@@ -164,8 +113,17 @@ func (s *Store) PruneChildren(
 			  AND (authority.instance_id,authority.gaggle,
 			       authority.parent_run_id,authority.occurrence) IN (
 				SELECT instance_id,gaggle,parent_run_id,occurrence
-				FROM control.child_authority
-				WHERE instance_id=$1 AND owner_epoch=$2
+				FROM control.child_authority AS candidate
+				WHERE candidate.instance_id=$1 AND candidate.owner_epoch=$2
+				  AND candidate.expires_at<=clock_timestamp()
+				  AND NOT EXISTS (
+					SELECT 1 FROM control.child_lineage AS child
+					WHERE child.instance_id=candidate.instance_id
+					  AND child.gaggle=candidate.gaggle
+					  AND child.parent_run_id=candidate.parent_run_id
+					  AND child.occurrence=candidate.occurrence
+					  AND child.tombstoned_at IS NULL
+				  )
 				ORDER BY gaggle,parent_run_id,occurrence LIMIT $3
 			  )`,
 			s.instanceID, epoch, remaining,
@@ -195,8 +153,22 @@ func (s *Store) PruneChildren(
 				  AND authority.parent_run_id=parent.parent_run_id
 			  )
 			  AND (parent.instance_id,parent.gaggle,parent.parent_run_id) IN (
-				SELECT instance_id,gaggle,parent_run_id FROM control.child_parent
-				WHERE instance_id=$1 AND owner_epoch=$2
+				SELECT instance_id,gaggle,parent_run_id
+				FROM control.child_parent AS candidate
+				WHERE candidate.instance_id=$1 AND candidate.owner_epoch=$2
+				  AND candidate.settled_at<=clock_timestamp()-$3::interval
+				  AND NOT EXISTS (
+					SELECT 1 FROM control.child_lineage AS child
+					WHERE child.instance_id=candidate.instance_id
+					  AND child.gaggle=candidate.gaggle
+					  AND child.parent_run_id=candidate.parent_run_id
+				  )
+				  AND NOT EXISTS (
+					SELECT 1 FROM control.child_authority AS authority
+					WHERE authority.instance_id=candidate.instance_id
+					  AND authority.gaggle=candidate.gaggle
+					  AND authority.parent_run_id=candidate.parent_run_id
+				  )
 				ORDER BY gaggle,parent_run_id LIMIT $4
 			  )`,
 			s.instanceID, epoch, triggerqueue.ChildRetention, remaining,
@@ -208,4 +180,88 @@ func (s *Store) PruneChildren(
 		return nil
 	})
 	return result, err
+}
+
+func (s *Store) tombstoneChildrenTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	epoch int64,
+	limit int,
+) (int, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT c.child_id
+		FROM control.child_lineage AS c
+		JOIN control.child_parent AS p
+		  ON p.instance_id=c.instance_id AND p.gaggle=c.gaggle
+		 AND p.parent_run_id=c.parent_run_id
+		LEFT JOIN control.acceptance AS a
+		  ON a.instance_id=c.instance_id AND a.id=c.acceptance_id
+		WHERE c.instance_id=$1 AND c.owner_epoch=$2
+		  AND c.tombstoned_at IS NULL AND c.acknowledged_at IS NOT NULL
+		  AND p.settled_at <= clock_timestamp()-$3::interval
+		  AND COALESCE(a.state,'rejected')<>'dispatching'
+		  AND NOT EXISTS (
+			SELECT 1 FROM control.child_lineage AS sibling
+			WHERE sibling.instance_id=c.instance_id
+			  AND sibling.gaggle=c.gaggle
+			  AND sibling.parent_run_id=c.parent_run_id
+			  AND sibling.acknowledged_at IS NULL
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM control.child_lineage AS descendant
+			WHERE descendant.instance_id=c.instance_id
+			  AND descendant.gaggle=c.gaggle
+			  AND descendant.parent_run_id=a.run_id
+			  AND descendant.tombstoned_at IS NULL
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM control.child_publication AS publication
+			WHERE publication.instance_id=c.instance_id
+			  AND publication.child_id=c.child_id
+			  AND publication.state='effect_pending'
+		  )
+		ORDER BY c.child_id
+		FOR UPDATE OF c SKIP LOCKED LIMIT $4`,
+		s.instanceID, epoch, triggerqueue.ChildRetention, limit,
+	)
+	if err != nil {
+		return 0, err
+	}
+	type candidate struct{ childID string }
+	candidates, err := pgx.CollectRows(rows,
+		func(row pgx.CollectableRow) (candidate, error) {
+			var value candidate
+			err := row.Scan(&value.childID)
+			return value, err
+		})
+	if err != nil {
+		return 0, err
+	}
+	for _, candidate := range candidates {
+		tag, err := tx.Exec(ctx, `
+			UPDATE control.child_lineage
+			SET tombstoned_at=clock_timestamp(),result_ref='',workspace_ref='',
+			    snapshot_receipt_digest='',snapshot_bundle_digest='',
+			    result_receipt_digest='',result_bundle_digest='',owner_epoch=$3
+			WHERE instance_id=$1 AND child_id=$2 AND owner_epoch=$3
+			  AND tombstoned_at IS NULL`,
+			s.instanceID, candidate.childID, epoch,
+		)
+		if err := changed(tag.RowsAffected(), err); err != nil {
+			return 0, err
+		}
+		for _, table := range []string{
+			"child_blob_read", "child_blob", "child_publication",
+			"child_disposition_history", "child_disposition",
+		} {
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM control.`+table+`
+				WHERE instance_id=$1 AND child_id=$2 AND owner_epoch=$3`,
+				s.instanceID, candidate.childID, epoch,
+			); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return len(candidates), nil
 }
