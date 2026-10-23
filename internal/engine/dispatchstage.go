@@ -23,7 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/usageallowance"
 )
 
@@ -381,7 +381,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			UsageAllowance:   versionedRemoteUsageAllowance(ctx, allowance),
 		})
-		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+		result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }
@@ -921,7 +921,7 @@ func (a *Activities) reviewActivityResult(ctx context.Context, input DispatchSta
 			code = "agentic_review_failed"
 		}
 		err := fmt.Errorf("engine: reviewer gate %q attempt %d failed in its pod: %s: %s", stage, number, code, message)
-		if code == runner.WorkspaceHeadMovedErrorCode {
+		if code == runsemantics.WorkspaceHeadMovedErrorCode {
 			// #6019: typed so the walk can end the run superseded. Never
 			// retried: a fresh pod clones the same moved head (#5948).
 			return stageActivityResult{}, temporal.NewNonRetryableApplicationError(err.Error(), FailureTypeWorkspaceHeadMoved, nil)

@@ -93,7 +93,7 @@ func runCutoverRole(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signalContext()
 	defer stop()
 	var install cutover.Install
-	if directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL"); err == nil {
+	if directURL, err := cloudpg.DatabaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL"); err == nil {
 		config := cloudpg.Config{TransactionURL: directURL, DirectURL: directURL}
 		if code := configureDatabaseAuth("cutover check", *authMode, &config, stderr); code != 0 {
 			return code

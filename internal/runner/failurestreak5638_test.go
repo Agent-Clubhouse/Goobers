@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -145,11 +146,11 @@ func TestGateInfraTimeoutThenExpiryIsAnInfraTerminal(t *testing.T) {
 
 	var decision journal.Event
 	for _, event := range events {
-		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == RetryDecisionKind {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == runsemantics.RetryDecisionKind {
 			decision = event
 		}
 	}
-	if decision.Gate != "local-gate" || decision.Runner[RetryFailureClassKey] != string(journal.AttemptInfra) ||
+	if decision.Gate != "local-gate" || decision.Runner[runsemantics.RetryFailureClassKey] != string(journal.AttemptInfra) ||
 		decision.Runner["failureCode"] != telemetry.ErrCodeTimeout || decision.Runner["target"] != "local-ci" {
 		t.Fatalf("precondition: want local-gate's infra retry of a local-ci timeout, got %+v", decision.Runner)
 	}
@@ -183,10 +184,10 @@ func TestJournaledTerminalFault(t *testing.T) {
 		return journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: code}}
 	}
 	retry := func(class journal.AttemptClass) journal.Event {
-		return journal.Event{Type: journal.EventRunnerAnnotation, Gate: "local-gate", Runner: map[string]any{"kind": RetryDecisionKind, RetryFailureClassKey: string(class)}}
+		return journal.Event{Type: journal.EventRunnerAnnotation, Gate: "local-gate", Runner: map[string]any{"kind": runsemantics.RetryDecisionKind, runsemantics.RetryFailureClassKey: string(class)}}
 	}
 	dispatchFailure := func(class journal.AttemptClass) journal.Event {
-		return journal.Event{Type: journal.EventError, Stage: "local-ci", Error: &journal.ErrorDetail{Code: "executor_error"}, Runner: map[string]any{RetryFailureClassKey: string(class)}}
+		return journal.Event{Type: journal.EventError, Stage: "local-ci", Error: &journal.ErrorDetail{Code: "executor_error"}, Runner: map[string]any{runsemantics.RetryFailureClassKey: string(class)}}
 	}
 	started := journal.Event{Type: journal.EventStageStarted, Stage: "local-ci"}
 	stageDone := journal.Event{Type: journal.EventStageFinished, Stage: "local-ci", Status: string(apiv1.ResultSuccess)}
@@ -196,14 +197,14 @@ func TestJournaledTerminalFault(t *testing.T) {
 		want   TerminalFault
 	}{
 		"infra repass budget escalation":    {[]journal.Event{finished(journal.PhaseEscalated, journal.TerminalInfrastructureFailure, gate.ReasonInfrastructureBudgetExhausted)}, TerminalFaultItemInfrastructure},
-		"expiry during gate infra retry":    {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, TerminalFaultItemInfrastructure},
-		"stall during dispatch infra retry": {[]journal.Event{started, dispatchFailure(journal.AttemptInfra), started, interrupt(RunStalledErrorCode), finished(journal.PhaseEscalated, journal.TerminalEscalation, RunStalledErrorCode)}, TerminalFaultSubstrate},
+		"expiry during gate infra retry":    {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(runsemantics.RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, runsemantics.RunDurationExceededErrorCode)}, TerminalFaultItemInfrastructure},
+		"stall during dispatch infra retry": {[]journal.Event{started, dispatchFailure(journal.AttemptInfra), started, interrupt(runsemantics.RunStalledErrorCode), finished(journal.PhaseEscalated, journal.TerminalEscalation, runsemantics.RunStalledErrorCode)}, TerminalFaultSubstrate},
 		// An engine workflow the daemon terminated because no worker polled it.
 		"terminated engine workflow":       {[]journal.Event{finished(journal.PhaseAborted, journal.TerminalInfrastructureFailure, "terminated")}, TerminalFaultSubstrate},
-		"expiry after the retry succeeded": {[]journal.Event{retry(journal.AttemptInfra), started, stageDone, started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, ""},
-		"expiry during a policy retry":     {[]journal.Event{started, dispatchFailure(journal.AttemptPolicy), started, interrupt(RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, RunDurationExceededErrorCode)}, ""},
+		"expiry after the retry succeeded": {[]journal.Event{retry(journal.AttemptInfra), started, stageDone, started, interrupt(runsemantics.RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, runsemantics.RunDurationExceededErrorCode)}, ""},
+		"expiry during a policy retry":     {[]journal.Event{started, dispatchFailure(journal.AttemptPolicy), started, interrupt(runsemantics.RunDurationExceededErrorCode), finished(journal.PhaseAborted, journal.TerminalPolicyExhaustion, runsemantics.RunDurationExceededErrorCode)}, ""},
 		// An operator's cancel is not a watchdog judgment about the run.
-		"cancel during infra retry": {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(RunCanceledErrorCode), finished(journal.PhaseAborted, journal.TerminalOperatorAbort, RunCanceledErrorCode)}, ""},
+		"cancel during infra retry": {[]journal.Event{retry(journal.AttemptInfra), started, interrupt(runsemantics.RunCanceledErrorCode), finished(journal.PhaseAborted, journal.TerminalOperatorAbort, runsemantics.RunCanceledErrorCode)}, ""},
 		"defined abort":             {[]journal.Event{finished(journal.PhaseAborted, journal.TerminalDefinedAbort, "defined_abort")}, ""},
 		// A failed cause defaults to infrastructure-failure whatever failed;
 		// FailedOutcome.FaultClass owns failed terminals.

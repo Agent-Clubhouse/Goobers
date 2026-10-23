@@ -74,6 +74,8 @@ CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CO
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 KUBECONFORM    := $(GO) run github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
+# Vendored CRD schemas for operator-owned kinds (CloudNativePG); see the README there.
+CRD_SCHEMA_CATALOG := test/fixtures/crd-schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 
 ## help: Show this help.
 .PHONY: help
@@ -293,6 +295,7 @@ deploy-validate:
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/temporal | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/workers | $(KUBECONFORM) -strict -ignore-missing-schemas -summary
+	kubectl kustomize deploy/reference/goobers-cloud/cnpg | $(KUBECONFORM) -strict -summary -schema-location default -schema-location '$(CRD_SCHEMA_CATALOG)'
 	kubectl kustomize deploy/reference/examples/goobers-system-registry | $(KUBECONFORM) -strict -summary
 	$(GO) test ./deploy/reference/workers -count=1
 	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1

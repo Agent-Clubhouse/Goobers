@@ -1,70 +1,70 @@
 package engine
 
-// Parity rows E2-retry-decision-annotation and E2-retry-decision-not-on-pass —
-// CLOSED by plan item E2, must stay GREEN.
-//
-// Inventory row: "retry-decision annotation: when a gate's fail branch re-enters
-// a completed stage, the runner writes a runner.annotation recording the failure
-// CLASS (policy vs infrastructure), the subject's failure code, the cumulative
-// repass attempt and the branch target — the record priorRepassCause reads back
-// (E6). It also skips the checker entirely when the status-equals outcome is
-// already known from the failure code (the knownOutcome shortcut)."
-// Runner site: internal/runner/run.go's routeRetryDecision (~4288) and
-// retryFailureClass (~4241). Engine: retrydecision.go's (*runJournal).retryDecision
-// plus the knownOutcome arm of walk's gate step.
-//
-// # What this row can and cannot see, and why that shaped it
-//
-// The annotation lives in the runner.* namespace, and journal.IsConformanceNormative
-// excludes that whole namespace by prefix. So it is invisible to
-// diffConformanceViews — the surface every other row leans on. Asserting it
-// therefore means reading the RAW event logs (paritySide.Events), which is what
-// checkRetryDecisionAnnotation does. That is not a weaker assertion: the raw log
-// is a superset of the conformance view, and comparing the annotations field by
-// field is a tighter claim than "the normative projections agree".
-//
-// The knownOutcome shortcut is likewise invisible on the envelope surface,
-// because neither runner routes its automated gate evaluator through
-// recordingExec. What IS visible is its consequence — the AttemptClass the
-// annotation carries — so the shortcut is pinned here through that, and
-// separately, directly, by TestKnownOutcomeShortcutSkipsTheChecker in
-// gateshortcut_test.go with a counting evaluator.
-//
-// # The learning-episode gap, and what this row therefore excludes
-//
-// This is the first row in the table to walk a gate FAIL branch back into a
-// completed stage, and doing so surfaced a divergence that is real, is NOT
-// E2's, and was not previously in the inventory: on that same retry arm the
-// local runner also injects a learning episode — it records a
-// learning/episode-<gate>-<seq>.json artifact and threads a
-// learning.episode[<seq>] context pointer into the re-entered stage
-// (internal/runner/run.go's recordLearningInjection, reachable only from the
-// retry branch of stepGate). The engine has no counterpart, and cannot cheaply
-// grow one: its walk has no artifact-recording seam at all, because artifacts
-// are recorded during history projection rather than during the run.
-//
-// It is recorded in this package's drift ledger (doc.go) and reported on #3874
-// as a candidate inventory row. It is NOT added to parityExpectedFailures: that
-// map is keyed by finding-002 row id, and inventing an id for a row the
-// inventory does not have would corrupt the join key the whole table is built
-// on — the harness's own failure text says a newly discovered gap needs its
-// inventory row first.
-//
-// What it costs this row is the envelope and conformance surfaces, which
-// checkSurfacesForRetryRow excludes and explains. The three #415 rows next door
-// were written to route around the retry path precisely so that they keep
-// comparing all four surfaces in full; the exclusion is confined to the two rows
-// that cannot avoid it, and checkLearningEpisodeGapIsBounded fails them if the
-// gap ever stops being exactly runner-only.
-
 import (
 	"fmt"
 	"slices"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Parity rows E2-retry-decision-annotation and E2-retry-decision-not-on-pass —
+	// CLOSED by plan item E2, must stay GREEN.
+	//
+	// Inventory row: "retry-decision annotation: when a gate's fail branch re-enters
+	// a completed stage, the runner writes a runner.annotation recording the failure
+	// CLASS (policy vs infrastructure), the subject's failure code, the cumulative
+	// repass attempt and the branch target — the record priorRepassCause reads back
+	// (E6). It also skips the checker entirely when the status-equals outcome is
+	// already known from the failure code (the knownOutcome shortcut)."
+	// Runner site: internal/runner/run.go's routeRetryDecision (~4288) and
+	// retryFailureClass (~4241). Engine: retrydecision.go's (*runJournal).retryDecision
+	// plus the knownOutcome arm of walk's gate step.
+	//
+	// # What this row can and cannot see, and why that shaped it
+	//
+	// The annotation lives in the runner.* namespace, and journal.IsConformanceNormative
+	// excludes that whole namespace by prefix. So it is invisible to
+	// diffConformanceViews — the surface every other row leans on. Asserting it
+	// therefore means reading the RAW event logs (paritySide.Events), which is what
+	// checkRetryDecisionAnnotation does. That is not a weaker assertion: the raw log
+	// is a superset of the conformance view, and comparing the annotations field by
+	// field is a tighter claim than "the normative projections agree".
+	//
+	// The knownOutcome shortcut is likewise invisible on the envelope surface,
+	// because neither runner routes its automated gate evaluator through
+	// recordingExec. What IS visible is its consequence — the AttemptClass the
+	// annotation carries — so the shortcut is pinned here through that, and
+	// separately, directly, by TestKnownOutcomeShortcutSkipsTheChecker in
+	// gateshortcut_test.go with a counting evaluator.
+	//
+	// # The learning-episode gap, and what this row therefore excludes
+	//
+	// This is the first row in the table to walk a gate FAIL branch back into a
+	// completed stage, and doing so surfaced a divergence that is real, is NOT
+	// E2's, and was not previously in the inventory: on that same retry arm the
+	// local runner also injects a learning episode — it records a
+	// learning/episode-<gate>-<seq>.json artifact and threads a
+	// learning.episode[<seq>] context pointer into the re-entered stage
+	// (internal/runner/run.go's recordLearningInjection, reachable only from the
+	// retry branch of stepGate). The engine has no counterpart, and cannot cheaply
+	// grow one: its walk has no artifact-recording seam at all, because artifacts
+	// are recorded during history projection rather than during the run.
+	//
+	// It is recorded in this package's drift ledger (doc.go) and reported on #3874
+	// as a candidate inventory row. It is NOT added to parityExpectedFailures: that
+	// map is keyed by finding-002 row id, and inventing an id for a row the
+	// inventory does not have would corrupt the join key the whole table is built
+	// on — the harness's own failure text says a newly discovered gap needs its
+	// inventory row first.
+	//
+	// What it costs this row is the envelope and conformance surfaces, which
+	// checkSurfacesForRetryRow excludes and explains. The three #415 rows next door
+	// were written to route around the retry path precisely so that they keep
+	// comparing all four surfaces in full; the exclusion is confined to the two rows
+	// that cannot avoid it, and checkLearningEpisodeGapIsBounded fails them if the
+	// gap ever stops being exactly runner-only.
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -96,7 +96,7 @@ func init() {
 				// base_sync_conflict is the other, and it classifies the same
 				// way — a second repass keeps the attempt counter moving so
 				// "repassAttempt" cannot pass by both sides reporting 1.
-				fail(runner.BaseSyncConflictErrorCode, "base moved under the branch"),
+				fail(runsemantics.BaseSyncConflictErrorCode, "base moved under the branch"),
 				succeed(map[string]interface{}{"tests": "green"}),
 			},
 		},
@@ -162,13 +162,13 @@ func retryDecisions(side paritySide) []retryDecisionRecord {
 		if e.Type != journal.EventRunnerAnnotation || e.Runner == nil {
 			continue
 		}
-		if kind, _ := e.Runner["kind"].(string); kind != runner.RetryDecisionKind {
+		if kind, _ := e.Runner["kind"].(string); kind != runsemantics.RetryDecisionKind {
 			continue
 		}
 		out = append(out, retryDecisionRecord{
 			Stage:         e.Stage,
 			Gate:          e.Gate,
-			FailureClass:  annotationString(e.Runner, runner.RetryFailureClassKey),
+			FailureClass:  annotationString(e.Runner, runsemantics.RetryFailureClassKey),
 			FailureCode:   annotationString(e.Runner, "failureCode"),
 			RepassAttempt: annotationInt(e.Runner, "repassAttempt"),
 			Target:        annotationString(e.Runner, "target"),
@@ -209,7 +209,7 @@ func premiseRetryDecisionAnnotation(obs parityObservation) error {
 		{Stage: "implement", Gate: "review", FailureClass: string(journal.AttemptPolicy),
 			FailureCode: "nonzero_exit", RepassAttempt: 1, Target: "implement"},
 		{Stage: "implement", Gate: "review", FailureClass: string(journal.AttemptPolicy),
-			FailureCode: runner.BaseSyncConflictErrorCode, RepassAttempt: 2, Target: "implement"},
+			FailureCode: runsemantics.BaseSyncConflictErrorCode, RepassAttempt: 2, Target: "implement"},
 	}
 	if err := diffRetryDecisions("runner", got, want); err != nil {
 		return errParityPremisef(obs.Case.Row,

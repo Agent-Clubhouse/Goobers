@@ -1,5 +1,15 @@
 package engine
 
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
+)
+
 // Parity row E3-placement-provenance.
 //
 // Inventory row: "runner.placement provenance" (finding 002 parity inventory;
@@ -33,16 +43,6 @@ package engine
 // activity so the fact reaches the workflow through history and replays) for an
 // in-process one. Then DELETE this row's parityExpectedFailures entry.
 
-import (
-	"fmt"
-	"sort"
-	"strings"
-	"testing"
-
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
-)
-
 func init() {
 	registerParityRow(parityCase{
 		Row:     rowPlacementProvenance,
@@ -65,7 +65,7 @@ func buildPlacementProvenanceCase(t *testing.T, c *parityCase) {
 	// and through the same gate (runner.placementDeclared). Set here rather
 	// than in the harness so every other row keeps running on an undeclared
 	// install and keeps proving zero-declaration invariance by default.
-	t.Setenv(runner.EnvPlacementNode, placementParityNode)
+	t.Setenv(runsemantics.EnvPlacementNode, placementParityNode)
 
 	lane := backlogCurationLane(t)
 	c.Spec = laneChain(t, lane, "reconcile-backlog", "implementation-feedback")

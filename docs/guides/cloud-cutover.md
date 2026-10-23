@@ -40,6 +40,16 @@ lease row and the bucket, imports local bandit observations (once the
 engine supports `task.experiment`, #7763), and leaves admissions paused. Every step is idempotent.
 It refuses before changing anything while a step depends on an unshipped backend.
 
+Use one PostgreSQL server per goobers instance. The roles bootstrap creates
+(`goobers_owner`, `goobers_api`, `goobers_controller`, `temporal_app`) are
+server-wide and are not named for the instance, so a second instance on the
+same server would share them. Role provisioning refuses that case with
+`ErrRoleDrift` ("owns database outside the contract"). Where the administrator
+can act for the maintenance database's owner (self-managed servers), bootstrap
+also closes that database to the contract roles. On managed servers the
+platform owns it, so it stays open to them; it holds no goobers data and grants
+them nothing inside it.
+
 ## 2. Quiesce the old instance
 
 Pause admissions on the old instance. Let open runs finish or cancel them

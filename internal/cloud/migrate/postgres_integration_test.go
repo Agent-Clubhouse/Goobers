@@ -38,6 +38,13 @@ func TestPostgresMigrationApply(t *testing.T) {
 	if count != len(catalog) {
 		t.Fatalf("recorded migrations = %d, want %d", count, len(catalog))
 	}
+	status, err := Status(t.Context(), pool, "0.7.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Compatible || status.MinimumCompatibleBinary != "0.6.0" || len(status.Applied) != len(catalog) || len(status.PendingVersions) != 0 {
+		t.Fatalf("migration status = %+v", status)
+	}
 }
 
 func TestPartitionIndexRetryRepairsInvalidAndReapplies(t *testing.T) {

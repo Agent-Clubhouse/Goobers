@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -275,7 +276,7 @@ func hasHandoffRetryAnnotation(events []journal.Event, consumer, producer string
 		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != handoffValidationRetryAnnotationKind {
 			continue
 		}
-		gotAttempt, _ := runnerInt(event.Runner["repassAttempt"])
+		gotAttempt, _ := runsemantics.RunnerInt(event.Runner["repassAttempt"])
 		if event.Stage == consumer && event.Runner["producer"] == producer && gotAttempt == attempt {
 			return true
 		}
