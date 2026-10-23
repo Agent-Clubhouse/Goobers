@@ -205,6 +205,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/cloud/config",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud engine-only admission tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",
