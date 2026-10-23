@@ -14,9 +14,9 @@ import (
 
 var epoch0 = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 
-func newQuota(now time.Time) (Quota, *localscheduler.ProviderQuotaState) {
+func newQuota(now time.Time) (*Quota, *localscheduler.ProviderQuotaState) {
 	state := localscheduler.NewProviderQuotaState()
-	return Quota{State: state, Now: func() time.Time { return now }}, state
+	return &Quota{State: state, Now: func() time.Time { return now }}, state
 }
 
 func TestCaptureRestoreRoundTripPreservesBudget(t *testing.T) {
@@ -51,34 +51,76 @@ func TestRestoreNeverAddsBudgetBack(t *testing.T) {
 	}
 }
 
-func TestRestoreSkipsExpiredForeignAndFutureVersions(t *testing.T) {
+// A newer binary's payload (different shape, higher version) must not fail the
+// restore: that would fail RebuildBeforeReap and a mixed-version failover could
+// never build an epoch. Foreign and unknown-version rows are skipped by Restore
+// and carried through by Capture so Replace does not delete them.
+func TestRestoreIgnoresUnknownVersionsAndPassesThemThrough(t *testing.T) {
 	q, state := newQuota(epoch0)
+	reset := epoch0.Add(time.Hour)
+	// Version 2 has an incompatible shape: "remaining" is an object.
+	future := json.RawMessage(`{"version":2,"provider":"ado","remaining":{"core":1},"resetAt":"` + reset.Format(time.RFC3339) + `"}`)
+	foreign := json.RawMessage(`{"anything":1}`)
 	expired, _ := json.Marshal(quotaPayload{Version: quotaVersion, Provider: "github", Remaining: 0, ResetAt: epoch0.Add(-time.Minute)})
-	future, _ := json.Marshal(map[string]any{"version": 2, "provider": "ado", "remaining": 1, "resetAt": epoch0.Add(time.Hour), "extra": true})
 	err := q.Restore(t.Context(), []control.Observation{
 		{Key: "provider-quota/github", Payload: expired, ObservedAt: epoch0},
 		{Key: "provider-quota/ado", Payload: future, ObservedAt: epoch0},
-		{Key: "some-other-adapter/x", Payload: json.RawMessage(`{"anything":1}`), ObservedAt: epoch0},
+		{Key: "some-other-adapter/x", Payload: foreign, ObservedAt: epoch0},
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("restore failed on a newer binary's row: %v", err)
 	}
 	if windows := state.Windows(); len(windows) != 0 {
 		t.Fatalf("windows = %+v, want none restored", windows)
 	}
+	snapshot, err := q.Capture(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, observation := range snapshot {
+		got[observation.Key] = string(observation.Payload)
+	}
+	if len(got) != 2 || got["provider-quota/ado"] != string(future) || got["some-other-adapter/x"] != string(foreign) {
+		t.Fatalf("capture = %v, want the unknown-version and foreign rows passed through untouched", got)
+	}
+	// Once this binary has a current window for a key, it supersedes a stale
+	// unknown-version row for the same key.
+	state.Record("ado", 4, reset)
+	snapshot, _ = q.Capture(t.Context())
+	for _, observation := range snapshot {
+		if observation.Key == "provider-quota/ado" && string(observation.Payload) == string(future) {
+			t.Fatal("a current window did not supersede the unknown-version row")
+		}
+	}
 }
 
-func TestRestoreRejectsCorruptKnownVersion(t *testing.T) {
-	q, _ := newQuota(epoch0)
+// A corrupt row of the known version is reported and skipped; the ledger is an
+// optimisation and must never keep a controller from serving.
+func TestRestoreReportsAndSkipsCorruptKnownVersion(t *testing.T) {
 	for name, payload := range map[string]string{
 		"not json":        `{`,
 		"negative":        `{"version":1,"provider":"github","remaining":-1,"resetAt":"2030-01-01T00:00:00Z"}`,
 		"key mismatch":    `{"version":1,"provider":"ado","remaining":1,"resetAt":"2030-01-01T00:00:00Z"}`,
 		"missing resetAt": `{"version":1,"provider":"github","remaining":1}`,
+		"wrong type":      `{"version":1,"provider":"github","remaining":"many","resetAt":"2030-01-01T00:00:00Z"}`,
 	} {
-		err := q.Restore(t.Context(), []control.Observation{{Key: "provider-quota/github", Payload: json.RawMessage(payload), ObservedAt: epoch0}})
-		if err == nil {
-			t.Fatalf("%s: corrupt payload accepted", name)
+		q, state := newQuota(epoch0)
+		var reported []error
+		q.Report = func(err error) { reported = append(reported, err) }
+		good, _ := json.Marshal(quotaPayload{Version: quotaVersion, Provider: "ado", Remaining: 7, ResetAt: epoch0.Add(time.Hour)})
+		err := q.Restore(t.Context(), []control.Observation{
+			{Key: "provider-quota/github", Payload: json.RawMessage(payload), ObservedAt: epoch0},
+			{Key: "provider-quota/ado", Payload: good, ObservedAt: epoch0},
+		})
+		if err != nil {
+			t.Fatalf("%s: corrupt row failed the restore: %v", name, err)
+		}
+		if len(reported) != 1 {
+			t.Fatalf("%s: reported = %v, want exactly one finding", name, reported)
+		}
+		if windows := state.Windows(); len(windows) != 1 || windows[0].Provider != "ado" || windows[0].Remaining != 7 {
+			t.Fatalf("%s: windows = %+v, want only the good row restored", name, windows)
 		}
 	}
 }
@@ -95,10 +137,10 @@ func TestCaptureOmitsExpiredAndRetiredWindows(t *testing.T) {
 }
 
 func TestNilStateFailsClosed(t *testing.T) {
-	if _, err := (Quota{}).Capture(context.Background()); err == nil {
+	if _, err := (&Quota{}).Capture(context.Background()); err == nil {
 		t.Fatal("capture without state succeeded")
 	}
-	if err := (Quota{}).Restore(context.Background(), nil); err == nil {
+	if err := (&Quota{}).Restore(context.Background(), nil); err == nil {
 		t.Fatal("restore without state succeeded")
 	}
 }

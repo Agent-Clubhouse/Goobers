@@ -4,6 +4,7 @@ package providerobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -72,12 +73,16 @@ func TestQuotaSurvivesTwoTakeoversAndFencesZombies(t *testing.T) {
 	}
 	stateA := localscheduler.NewProviderQuotaState()
 	stateA.Record(apiv1.ProviderGitHub, 50, reset)
-	quotaA := Quota{State: stateA}
+	quotaA := &Quota{State: stateA}
 	storeA := control.Observations{Pool: runtime, InstanceID: pgtest.InstanceID, Lease: managerA, Handle: handleA}
 	snapshotA, err := quotaA.Capture(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A newer binary's row for an adapter this one does not know must survive
+	// every takeover's Replace untouched.
+	foreign := control.Observation{Key: "zz-future/state", Payload: []byte(`{"version":9,"shape":"unknown"}`), ObservedAt: time.Now().UTC().Truncate(time.Second)}
+	snapshotA = append(snapshotA, foreign)
 	if err := storeA.Replace(t.Context(), snapshotA); err != nil {
 		t.Fatalf("leader A snapshot: %v", err)
 	}
@@ -86,10 +91,10 @@ func TestQuotaSurvivesTwoTakeoversAndFencesZombies(t *testing.T) {
 	managerB := epochManager(t, runtime, "b")
 	handleB := takeover(t, owner, managerB)
 	stateB := localscheduler.NewProviderQuotaState()
-	quotaB := Quota{State: stateB}
+	quotaB := &Quota{State: stateB}
 	storeB := control.Observations{Pool: runtime, InstanceID: pgtest.InstanceID, Lease: managerB, Handle: handleB}
 	loaded, err := storeB.Load(t.Context())
-	if err != nil || len(loaded) != 1 {
+	if err != nil || len(loaded) != 2 {
 		t.Fatalf("B load = %+v %v", loaded, err)
 	}
 	if err := quotaB.Restore(t.Context(), loaded); err != nil {
@@ -120,7 +125,16 @@ func TestQuotaSurvivesTwoTakeoversAndFencesZombies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (Quota{State: stateC}).Restore(t.Context(), loaded); err != nil {
+	var survived bool
+	for _, row := range loaded {
+		var fields map[string]any // jsonb normalizes key order and spacing
+		survived = survived || (row.Key == foreign.Key && json.Unmarshal(row.Payload, &fields) == nil &&
+			fields["version"] == float64(9) && fields["shape"] == "unknown")
+	}
+	if !survived {
+		t.Fatalf("the foreign row did not survive two takeovers: %+v", loaded)
+	}
+	if err := (&Quota{State: stateC}).Restore(t.Context(), loaded); err != nil {
 		t.Fatal(err)
 	}
 	if budget := stateC.ReserveCurrentPolls(apiv1.ProviderGitHub, 100); !budget.Known || budget.Allowed != 30 || !budget.ResetAt.Equal(reset) {

@@ -561,3 +561,8 @@ github.com/goobers/goobers/internal/enginechildplane.planeError # Engine child-a
 
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunRecorded # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenRunReader # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
+github.com/goobers/goobers/cmd/goobers-cloud.observationsFor # HA-P3 provider quota observations; the L1 scheduler binds observationsFor to its quota ledger. Remove when L1 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.Restore # HA-P3 provider quota observations; the L1 scheduler binds observationsFor to its quota ledger. Remove when L1 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.now # HA-P3 provider quota observations; the L1 scheduler binds observationsFor to its quota ledger. Remove when L1 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.report # HA-P3 provider quota observations; the L1 scheduler binds observationsFor to its quota ledger. Remove when L1 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.Capture # HA-P3 provider quota observations; the L1 scheduler binds observationsFor to its quota ledger. Remove when L1 lands. expires=2026-11-22
