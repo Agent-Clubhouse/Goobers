@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engine"
 	gateevaluator "github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -85,6 +86,9 @@ type Config struct {
 	// EngineDrivenRefusal explains why action cannot touch an engine-driven
 	// run when this daemon has no HITL deliverer attached.
 	EngineDrivenRefusal func(runID, action string) error
+	// EngineDecisions, when set, routes interventions on engine-driven runs
+	// to the run's Temporal Updates instead of refusing them.
+	EngineDecisions EngineDecisions
 	// WaitGroup, when set, tracks in-flight interventions for daemon drain.
 	WaitGroup *sync.WaitGroup
 	// ErrorLog receives failures of interventions accepted in the background.
@@ -99,6 +103,7 @@ type Service struct {
 	locateRun           func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
 	claims              ClaimStore
 	engineDrivenRefusal func(runID, action string) error
+	engineDecisions     EngineDecisions
 	errorLog            *log.Logger
 	scheduler           atomic.Pointer[localscheduler.Scheduler]
 	wg                  *sync.WaitGroup
@@ -118,6 +123,8 @@ type resolvedInterventionRun struct {
 	phase        journal.RunPhase
 	events       []journal.Event
 	terminalSeq  uint64
+	// engine marks a run the engine drives; only engineDecisions may act on it.
+	engine bool
 }
 
 // New builds the intervention service over the daemon's collaborators.
@@ -128,6 +135,7 @@ func New(cfg Config) *Service {
 		pinnedExecution:     cfg.PinnedExecution,
 		locateRun:           cfg.LocateRun,
 		claims:              cfg.Claims,
+		engineDecisions:     cfg.EngineDecisions,
 		engineDrivenRefusal: cfg.EngineDrivenRefusal,
 		errorLog:            cfg.ErrorLog,
 		wg:                  cfg.WaitGroup,
@@ -182,6 +190,9 @@ func (s *Service) approve(admission, execution context.Context, input httpapi.In
 	decision := strings.TrimSpace(input.Decision)
 	if decision == "" {
 		decision = "pass"
+	}
+	if resolved.engine {
+		return s.engineApprove(admission, resolved, input, decision)
 	}
 	gate, target, err := interventionBranch(resolved.machine, resolved.events, input.Stage, decision)
 	if err != nil {
@@ -272,6 +283,10 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 	if done {
 		return *result, err
 	}
+	if resolved.engine {
+		return s.engineIntent(admission, resolved, "override", input, engine.HITLIntent{Kind: engine.HITLResolveEscalation,
+			Gate: input.Stage, Resolution: engine.HITLResolutionOverride, Decision: decision, Rationale: rationale})
+	}
 	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
 		return httpapi.InterventionResult{}, interventionConflict(
 			"run_not_escalated",
@@ -326,6 +341,9 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 	resolved, result, done, err := s.prepareIntervention("rerun", input)
 	if done {
 		return *result, err
+	}
+	if resolved.engine {
+		return s.engineIntent(admission, resolved, "rerun", input, engine.HITLIntent{Kind: engine.HITLRerunStage, Stage: input.Stage, InstructionAddendum: addendum})
 	}
 	if resolved.phase != journal.PhaseEscalated {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -413,6 +431,10 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 	resolved, err := s.resolve(input.RunID)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
+	}
+	if resolved.engine {
+		return s.engineIntent(admission, resolved, "deny", input, engine.HITLIntent{Kind: engine.HITLResolveEscalation,
+			Gate: input.Stage, Resolution: engine.HITLResolutionDeny, Rationale: rationale})
 	}
 	return s.denyEscalation(resolved, input)
 }
@@ -547,6 +569,9 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 	// Every intervention this service performs — approve, override, rerun,
 	// deny — either calls Runner.Resume/ResumeFromTerminal or appends to the
 	// run's journal directly. All four are wrong for a run the engine drives:
+	if identity.EngineDriven() && s.engineDecisions != nil {
+		return resolvedInterventionRun{runID: runID, runDir: foundDir, gaggle: identity.Gaggle, workflow: identity.Workflow, engine: true}, nil
+	}
 	if identity.EngineDriven() {
 		refusal := errors.New("engine-driven runs are managed by goobers-cloud")
 		if s.engineDrivenRefusal != nil {
