@@ -162,6 +162,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
 		rec.stageStarted(startedAt, t, int(attempt), class)
+		rec.bindChildStart(ctx, t, int(attempt), class)
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
@@ -173,10 +174,13 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			var activityResult stageActivityResult
 			dispatchCtx := withDispatchAttemptStarted(ctx, startedAt)
 			allowance := nextAttemptUsageAllowance(t, &usageBudget)
-			activityResult, err = dispatch(dispatchCtx, int(attempt), class, allowance)
+			chargedDispatch := func(c workflow.Context, a int, cl journal.AttemptClass) (stageActivityResult, error) {
+				return dispatch(c, a, cl, allowance)
+			}
+			activityResult, err = rec.dispatchWithChildAdmission(dispatchCtx, in, t, int(attempt), class, chargedDispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
-			if temporal.IsCanceledError(err) || ctx.Err() != nil {
+			if stopsAttemptLoop(ctx, err) {
 				return apiv1.ResultEnvelope{}, err
 			}
 			if err != nil && activityResult.Placement == nil {
