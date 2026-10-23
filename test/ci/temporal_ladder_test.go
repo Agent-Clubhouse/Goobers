@@ -45,6 +45,7 @@ func TestTemporalValuesPinValidatedFinalImages(t *testing.T) {
 	)
 	for _, path := range []string{
 		filepath.Join(root, "deploy", "reference", "temporal", "values.yaml"),
+		filepath.Join(root, "deploy", "reference", "temporal", "values-ha.yaml"),
 		filepath.Join(root, "infra", "temporal", "values.yaml"),
 	} {
 		data, err := os.ReadFile(path)

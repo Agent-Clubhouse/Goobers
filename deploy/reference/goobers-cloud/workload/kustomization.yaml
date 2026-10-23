@@ -1,0 +1,13 @@
+# Containers reference the bare image name `goobers`; a consumer overlay's
+# `images:` transformer retargets it (same convention as ../../goobers-system).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: goobers-cloud
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: goobers
+resources:
+  - migrate-job.yaml
+  - control-deployment.yaml
+  - control-pdb.yaml
+  - control-service.yaml

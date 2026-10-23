@@ -1,0 +1,21 @@
+# Inputs the migrate Job and control Deployment read through configMapKeyRef.
+# Edit these in your overlay (patch the values; do not patch workloads).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: goobers-cloud
+data:
+  # Set once per install; migrate and control both read it. It names the lease
+  # and schema rows and the database (goobers_<instance-id>). No default: the
+  # control role requires it.
+  instance-id: change-me # CHANGE-ME
+  # entra (reference) or password. Applies to both migrate and control.
+  database-auth: entra
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: goobers-cloud-migration
+data:
+  # A restorable backup identifier or PITR mark taken before this migration.
+  backup-ref: change-me

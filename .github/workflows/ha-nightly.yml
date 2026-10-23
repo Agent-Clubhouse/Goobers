@@ -112,6 +112,11 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/ha-nightly/bin/kind" "$RUNNER_TEMP/ha-nightly/bin/temporal" "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server"
           echo "$RUNNER_TEMP/ha-nightly/bin" >> "$GITHUB_PATH"
 
+      # The chart is the ladder's end state, already downloaded and sha-verified
+      # by the acquisition step above.
+      - name: Render Temporal HA values
+        run: GOOBERS_TEMPORAL_HA_CHART="$RUNNER_TEMP/ha-nightly/assets/temporal-1.6.0.tgz" go test ./cmd/goobers -run 'TestDeployReferenceTemporalHAValues' -count=1
+
       - name: Build reference image
         run: make image IMAGE=goobers:ha-nightly
 
@@ -229,6 +234,79 @@ jobs:
         run: |
           go run ./test/ha/workerscenarios/cmd/verify-evidence \
             "$HA_EVIDENCE_DIR/chaos-summary.json" CHAOS-13 UPGRADE-11
+
+      # HA-P3-20: apply the goobers-cloud reference to the same kind cluster.
+      # Gated on the built CLI reporting a complete control-plane assembly:
+      # `control --check-assembly` exits 0 only when the role exists and its
+      # composition (HA-P3-18) is complete. A role without it would crash-loop
+      # goobers-control, so any non-zero exit (including an older CLI that does
+      # not know the flag) skips with an explicit notice.
+      - name: Detect goobers-cloud control assembly
+        id: cloud
+        run: |
+          if go run ./cmd/goobers-cloud control --check-assembly >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=cloud reference skipped::goobers-cloud control --check-assembly did not report a complete assembly"
+          fi
+
+      - name: Apply goobers-cloud reference and check rollout
+        if: ${{ steps.cloud.outputs.ready == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          instance=nightly # must match instance-id in test/ha/kind/cloud-reference
+          database="goobers_${instance}"
+          secrets="$(mktemp -d)"
+          trap 'rm -rf "$secrets"' EXIT
+          chmod 700 "$secrets"
+          # Provision the database and the three roles BEFORE migrate, as the
+          # CNPG superuser (the pgroles contract: goobers_<instance> owned by
+          # goobers_owner; goobers_api and goobers_controller are grant targets).
+          # This SQL is the nightly's provisioning path; swap it for
+          # `goobers-cloud bootstrap` (pgroles.Provision) once #7869 no longer
+          # refuses on unshipped steps. It is idempotent on a reused cluster:
+          # roles and the database are created only if missing, passwords are
+          # re-set every run and the Secrets re-applied to match. Passwords go
+          # over stdin, never argv, and statement logging is off for the session
+          # (log_statement=none, errors log no statement) so they are not logged.
+          for role in owner api controller; do
+            openssl rand -hex 24 | tr -d '\n' > "$secrets/pw-$role"
+          done
+          {
+            printf "SET log_statement = 'none';\nSET log_min_error_statement = 'panic';\nSET log_min_duration_statement = -1;\n"
+            for role in owner api controller; do
+              printf "SELECT 'CREATE ROLE goobers_%s LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'goobers_%s') \\gexec\n" "$role" "$role"
+              printf "ALTER ROLE goobers_%s PASSWORD '%s';\n" "$role" "$(cat "$secrets/pw-$role")"
+            done
+            printf "SELECT 'CREATE DATABASE %s OWNER goobers_owner' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '%s') \\gexec\n" "$database" "$database"
+          } | kubectl -n goobers-temporal exec -i temporal-postgres-1 -c postgres -- psql -q -v ON_ERROR_STOP=1 >/dev/null
+          for role in owner api controller; do
+            url="postgres://goobers_${role}:$(cat "$secrets/pw-$role")@temporal-postgres-rw.goobers-temporal.svc:5432/${database}?sslmode=require"
+            printf '%s' "$url" > "$secrets/$role-url"
+          done
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=goobers-control" \
+            -addext "subjectAltName=DNS:goobers-control,DNS:goobers-control.goobers-cloud.svc" \
+            -keyout "$secrets/tls.key" -out "$secrets/tls.crt"
+          printf '{"current":{"id":"nightly","key":"%s"}}' "$(openssl rand -base64 48 | tr -d '\n')" > "$secrets/keyring.json"
+          kubectl apply -k deploy/reference/goobers-cloud/prereqs
+          secret() { kubectl -n goobers-cloud create secret "$@" --dry-run=client -o yaml | kubectl apply -f -; }
+          secret generic goobers-cloud-db-owner --from-file=direct-url="$secrets/owner-url"
+          for role in api controller; do
+            secret generic "goobers-cloud-db-$role" \
+              --from-file=url="$secrets/$role-url" --from-file=direct-url="$secrets/$role-url"
+          done
+          secret tls goobers-cloud-control-tls --cert="$secrets/tls.crt" --key="$secrets/tls.key"
+          secret generic goobers-cloud-pod-key --from-file=keyring.json="$secrets/keyring.json"
+          # kind has no Entra: the overlay sets database-auth=password in the
+          # shared ConfigMap. Outside Argo the PreSync hook is just a Job: apply
+          # everything, then require it to complete before the rollout check.
+          kubectl apply -k test/ha/kind/cloud-reference
+          kubectl -n goobers-cloud wait --for=condition=complete job/goobers-cloud-migrate --timeout=10m
+          kubectl -n goobers-cloud rollout status deployment/goobers-control --timeout=5m
+          kubectl -n goobers-cloud wait --for=condition=Ready pod -l app.kubernetes.io/name=goobers-control --timeout=2m
+          kubectl -n goobers-cloud get pdb goobers-control
 
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}

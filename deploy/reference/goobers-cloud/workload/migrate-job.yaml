@@ -2,18 +2,26 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: goobers-cloud-migrate
+  labels:
+    app.kubernetes.io/name: goobers-cloud-migrate
+    goobers.dev/role: migrate
   annotations:
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
   template:
     metadata:
       labels:
         app.kubernetes.io/name: goobers-cloud-migrate
         app.kubernetes.io/component: migrate
+        goobers.dev/role: migrate
     spec:
       restartPolicy: Never
+      serviceAccountName: goobers-migrate
+      automountServiceAccountToken: false
+      priorityClassName: goobers-control-plane
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
@@ -31,10 +39,14 @@ spec:
             - name: GOOBERS_DATABASE_DIRECT_URL
               valueFrom:
                 secretKeyRef:
-                  name: goobers-cloud-database
+                  # goobers_owner: the only workload holding the DDL role.
+                  name: goobers-cloud-db-owner
                   key: direct-url
             - name: GOOBERS_DATABASE_AUTH
-              value: entra
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: database-auth
             - name: GOOBERS_MIGRATION_BACKUP_REF
               valueFrom:
                 configMapKeyRef:
