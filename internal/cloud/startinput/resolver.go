@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/startpin"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/engineadmission"
@@ -34,9 +35,15 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
+// permanent wraps a refusal that can never succeed on retry so the controller
+// finishes the acceptance as rejected (acceptance.ErrPermanentStart).
+func permanent(format string, args ...any) error {
+	return fmt.Errorf("%w: %w", acceptance.ErrPermanentStart, fmt.Errorf(format, args...))
+}
+
 // ErrPinDrift means the retained generation no longer compiles to the digests
 // the acceptance pinned. The start is refused; it is never re-pinned.
-var ErrPinDrift = errors.New("cloud start: retained generation differs from the pinned digests")
+var ErrPinDrift = fmt.Errorf("%w: cloud start: retained generation differs from the pinned digests", acceptance.ErrPermanentStart)
 
 // Resolver builds RunInputs for accepted starts.
 type Resolver struct {
@@ -46,6 +53,10 @@ type Resolver struct {
 	// HITL, self-execution). The retained archive excludes instance.yaml.
 	Config     func() *instance.Config
 	InstanceID string
+	// Now is the admission clock (default time.Now). Report receives a failed
+	// generation Release: a failed unpin leaks a reader pin.
+	Now    func() time.Time
+	Report func(error)
 
 	mu       sync.Mutex
 	compiled map[string]*startpin.Compiled
@@ -63,14 +74,25 @@ func (r *Resolver) Resolve(ctx context.Context, record triggerqueue.Record) (eng
 	}
 	envelope, err := startintent.Parse(record.Payload)
 	if err != nil {
-		return engine.RunInput{}, err
+		// An envelope that does not parse can never become valid.
+		return engine.RunInput{}, permanent("invalid start envelope: %v", err)
 	}
 	target := envelope.Target
 	if target.Gaggle == "" || target.Workflow == "" || target.ConfigGeneration == "" || target.WorkflowDigest == "" || target.GooberDigest == "" {
-		return engine.RunInput{}, errors.New("cloud start envelope is not pinned to a generation and digests")
+		return engine.RunInput{}, permanent("cloud start envelope is not pinned to a generation and digests")
 	}
 	if record.RunID == "" {
-		return engine.RunInput{}, errors.New("cloud start acceptance has no run identity")
+		return engine.RunInput{}, permanent("cloud start acceptance has no run identity")
+	}
+	// Deadline bounds admission, exactly as the local startintent.Service.Dispatch
+	// enforces it: a start accepted while the controller was down for longer
+	// than the pending age is refused, not started late.
+	now := time.Now
+	if r.Now != nil {
+		now = r.Now
+	}
+	if !envelope.Deadline.IsZero() && !now().Before(envelope.Deadline) {
+		return engine.RunInput{}, permanent("admission deadline %s has passed", envelope.Deadline.UTC().Format(time.RFC3339))
 	}
 	cfg := r.Config()
 	if cfg == nil {
@@ -80,7 +102,11 @@ func (r *Resolver) Resolve(ctx context.Context, record triggerqueue.Record) (eng
 	if err != nil {
 		return engine.RunInput{}, fmt.Errorf("retain pinned generation: %w", err)
 	}
-	defer func() { _ = generation.Release() }()
+	defer func() {
+		if err := generation.Release(); err != nil && r.Report != nil {
+			r.Report(fmt.Errorf("release pinned generation %s: %w", target.ConfigGeneration, err))
+		}
+	}()
 	return r.build(generation, cfg, envelope, record)
 }
 
@@ -96,24 +122,25 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 	identity := localscheduler.WorkflowIdentity{Gaggle: target.Gaggle, Workflow: target.Workflow}
 	machine, ok := compiled.Machines[identity]
 	if !ok {
-		return engine.RunInput{}, fmt.Errorf("pinned workflow %s/%s is unavailable in generation %s", target.Gaggle, target.Workflow, target.ConfigGeneration)
+		return engine.RunInput{}, permanent("pinned workflow %s/%s is unavailable in generation %s", target.Gaggle, target.Workflow, target.ConfigGeneration)
 	}
 	if machine.Digest() != target.WorkflowDigest || compiled.GooberDigests[identity] != target.GooberDigest {
 		return engine.RunInput{}, fmt.Errorf("%w: %s/%s", ErrPinDrift, target.Gaggle, target.Workflow)
 	}
 	def := machine.Def
-	// Cloud is engine-only: a definition the engine cannot walk is refused here
-	// too, the last layer behind config apply and the scheduler guard.
-	if err := engineadmission.RefuseDefinition(def.Name, def.Spec); err != nil {
-		return engine.RunInput{}, err
-	}
 	gaggle, project, ok := gaggleOf(set, target.Gaggle)
 	if !ok {
-		return engine.RunInput{}, fmt.Errorf("pinned gaggle %q is unavailable in generation %s", target.Gaggle, target.ConfigGeneration)
+		return engine.RunInput{}, permanent("pinned gaggle %q is unavailable in generation %s", target.Gaggle, target.ConfigGeneration)
 	}
 	placements, err := bootstrap.PinStagePlacements(cfg, set, target.Gaggle, def)
 	if err != nil {
 		return engine.RunInput{}, fmt.Errorf("resolve stage placements: %w", err)
+	}
+	// Cloud is engine-only: a definition the engine cannot walk is refused here
+	// too, the last layer behind config apply and the scheduler guard. It is the
+	// same check, with placements, that cloudreadiness applies at config apply.
+	if err := engineadmission.RefusePlacedDefinition(def.Name, def.Spec, placements); err != nil {
+		return engine.RunInput{}, fmt.Errorf("%w: %w", acceptance.ErrPermanentStart, err)
 	}
 	controls, err := runControls(cfg, project, gaggle, def)
 	if err != nil {
@@ -193,17 +220,17 @@ func gaggleOf(set *instance.ConfigSet, name string) (apiv1.Gaggle, apiv1.RepoRef
 	return apiv1.Gaggle{}, apiv1.RepoRef{}, false
 }
 
-// trigger maps the envelope's provenance onto the journal trigger vocabulary:
-// a webhook or named signal is a signal, anything else a manual start.
+// trigger is the local provenance mapping (SourceTrigger.Trigger): a counted
+// worker is an item, a signal carries its ref, and a source with neither is a
+// schedule; no source at all is a manual start. The engine branches on the kind
+// (it defers run-branch provenance for schedule and item), so every source must
+// map exactly as the local scheduler does.
 func trigger(envelope startintent.Envelope, workflowName string) (string, string) {
-	if source := envelope.Source; source != nil && source.Signal != "" {
-		ref := source.Ref
-		if ref == "" {
-			ref = source.Signal
-		}
-		return string(journal.TriggerSignal), ref
+	if envelope.Source == nil {
+		return string(journal.TriggerManual), workflowName
 	}
-	return string(journal.TriggerManual), workflowName
+	t := envelope.Source.Trigger(workflowName)
+	return string(t.Kind), t.Ref
 }
 
 // runControls collapses instance, matched repo, gaggle and workflow run-control

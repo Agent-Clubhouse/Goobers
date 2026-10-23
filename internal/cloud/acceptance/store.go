@@ -259,6 +259,25 @@ func (s *Store) Finish(ctx context.Context, id string, state triggerqueue.State,
 	})
 }
 
+// RejectAccepted finishes a row that was never dispatched as rejected with a
+// reason, under the controller fence. It is the terminal outcome for an
+// accepted start the resolver refuses permanently; it cannot touch a row that
+// has begun dispatching.
+func (s *Store) RejectAccepted(ctx context.Context, id, reason string, now time.Time) error {
+	if _, assigned := strings.CutPrefix(id, "trigger-"); !assigned || len(reason) > 1024 || now.IsZero() {
+		return triggerqueue.ErrTransition
+	}
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance
+			SET state='rejected', reason=$4, owner_epoch=$3, finished_at=GREATEST(accepted_at, $5)
+			WHERE instance_id=$1 AND id=$2 AND state='accepted' AND finished_at IS NULL`,
+			s.instanceID, id, epoch, reason, now.UTC(),
+		)
+		return changed(tag.RowsAffected(), err)
+	})
+}
+
 // Uncertain returns dispatching rows not owned by a currently live epoch.
 func (s *Store) Uncertain(ctx context.Context, liveEpochs []int64, limit int) ([]triggerqueue.Record, error) {
 	if limit < 1 || limit > 100 {

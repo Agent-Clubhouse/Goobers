@@ -15,6 +15,12 @@ import (
 const startRecoveryBatch = 32
 const startRecoveryTimeout = 10 * time.Second
 
+// ErrPermanentStart marks a resolver refusal that can never succeed on retry
+// (drifted pins, a definition the engine cannot walk, a missing workflow, an
+// expired admission deadline). The controller finishes such a row as rejected
+// with the reason instead of re-acquiring the generation on every sweep.
+var ErrPermanentStart = errors.New("cloud start is permanently refused")
+
 // StartInputResolver reconstructs pinned workflow input from durable acceptance.
 // The controller supplies configuration-generation resolution; admission still
 // replaces all start authority from the bound store before contacting Temporal.

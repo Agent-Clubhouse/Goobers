@@ -148,7 +148,11 @@ func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter eng
 			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			in, err := r.resolve(attempt, record)
-			if err == nil {
+			if errors.Is(err, acceptance.ErrPermanentStart) {
+				// Retrying can never succeed and would re-pin the generation on
+				// every sweep: finish the row as rejected with the reason.
+				err = errors.Join(err, store.RejectAccepted(attempt, record.ID, err.Error(), time.Now()))
+			} else if err == nil {
 				_, err = starter.Start(attempt, in)
 			}
 			if err != nil && r.Report != nil {

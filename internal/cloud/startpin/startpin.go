@@ -26,7 +26,8 @@ type Compiled struct {
 // reading goober instructions and skill packages from configDir (the
 // generation's read-only tree). A workflow that does not compile fails the
 // whole generation: admitting against a partial set would let an unpinned
-// workflow start.
+// workflow start. It applies the gaggle overlays to set IN PLACE (idempotent):
+// callers must treat set as owned by the compilation.
 func Compile(configDir string, cfg *instance.Config, set *instance.ConfigSet) (*Compiled, error) {
 	if cfg == nil || set == nil {
 		return nil, fmt.Errorf("startpin: a loaded configuration is required")
