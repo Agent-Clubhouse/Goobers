@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
@@ -226,18 +227,14 @@ func (m PartitionMaintainer) ensureMonth(ctx context.Context, conn *pgxpool.Conn
 	if attached {
 		return nil
 	}
-	if !exists {
-		if err := m.verify(ctx, handle); err != nil {
-			return err
-		}
-		if err := plan.prepare(ctx, conn, name, child, mo); err != nil {
-			return err
-		}
-	}
-	return m.moveAndAttach(ctx, conn, handle, plan, name, child, mo)
+	return m.moveAndAttach(ctx, conn, handle, plan, name, child, mo, exists)
 }
 
 func isLockTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "55P03"
+	}
 	return err != nil && strings.Contains(err.Error(), "55P03")
 }
 
@@ -248,16 +245,11 @@ func (m PartitionMaintainer) verify(ctx context.Context, handle *cloudlease.Hand
 	return nil
 }
 
-// prepare builds the private, unattached table in one transaction.
-func (p PartitionPlan) prepare(ctx context.Context, conn *pgxpool.Conn, name, child string, mo month) error {
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT set_config('statement_timeout', '%dms', true)", partitionBatchTimeout.Milliseconds())); err != nil {
-		return err
-	}
+// prepare builds the private, unattached table inside the caller's transaction,
+// so a failed pass leaves no table behind: a leftover unattached table in the
+// journal schema would have no write-path inventory entry and fail every later
+// grant reconcile.
+func (p PartitionPlan) prepare(ctx context.Context, tx pgx.Tx, name, child string, mo month) error {
 	statements := []string{
 		fmt.Sprintf("CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES)", child, p.parent()),
 		fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s >= %s AND %s < %s)",
@@ -300,7 +292,7 @@ func (p PartitionPlan) prepare(ctx context.Context, conn *pgxpool.Conn, name, ch
 			return fmt.Errorf("prepare partition %s foreign key: %w", name, err)
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // moveStatement moves one keyset batch from DEFAULT into the private table and
@@ -354,7 +346,7 @@ func (p PartitionPlan) moveBatch(ctx context.Context, q interface {
 // Row movement uses bounded statements and takes only row locks, so appends keep
 // flowing; only the final sweep + ATTACH hold the DEFAULT table lock, with a
 // lock_timeout and savepoint retries so a long writer cannot make it queue.
-func (m PartitionMaintainer) moveAndAttach(ctx context.Context, conn *pgxpool.Conn, handle *cloudlease.Handle, plan PartitionPlan, name, child string, mo month) error {
+func (m PartitionMaintainer) moveAndAttach(ctx context.Context, conn *pgxpool.Conn, handle *cloudlease.Handle, plan PartitionPlan, name, child string, mo month, exists bool) error {
 	if err := m.verify(ctx, handle); err != nil {
 		return err
 	}
@@ -365,6 +357,11 @@ func (m PartitionMaintainer) moveAndAttach(ctx context.Context, conn *pgxpool.Co
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT set_config('statement_timeout', '%dms', true)", partitionBatchTimeout.Milliseconds())); err != nil {
 		return err
+	}
+	if !exists {
+		if err := plan.prepare(ctx, tx, name, child, mo); err != nil {
+			return err
+		}
 	}
 	if err := plan.moveAll(ctx, tx, child, mo); err != nil {
 		return err

@@ -535,3 +535,64 @@ func TestPartitionMaintenanceStopsOnLostLease(t *testing.T) {
 		t.Fatalf("partitions after unfenced attempt = %d err=%v, want DEFAULT only", partitions, err)
 	}
 }
+
+// A long reader/writer holding DEFAULT must not fail the deploy: the ATTACH
+// lock times out (55P03), the pass is reported and left to the periodic job,
+// and the grant reconcile still ran.
+func TestApplyDefersPartitionPassOnAttachLockTimeout(t *testing.T) {
+	pool := privatePool(t)
+	ensureRoles(t, pool)
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Runner{Direct: pool, Catalog: catalog, BackupRef: "test", InstanceID: "deferred", Holder: "test"}
+	// First apply without partition plans: schema and grants only.
+	first := base
+	first.Partitions = []PartitionPlan{}
+	if err := first.Apply(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO journal.instance_seq(instance_id,stream,last_seq,owner_epoch) VALUES ('deferred','scheduler',1,1);
+		REVOKE ALL ON journal.consumer_cursor FROM goobers_controller`); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(t.Context(), `
+		INSERT INTO journal.instance_event(instance_id,stream,seq,at,type,emit_key,epoch,body)
+		VALUES ('deferred','scheduler',1,clock_timestamp(),'x',NULL,1,'\x7b7d')`); err != nil {
+		t.Fatal(err)
+	}
+	previous := partitionLockTries
+	partitionLockTries = 1
+	t.Cleanup(func() { partitionLockTries = previous })
+	var reported []error
+	second := base
+	second.Report = func(err error) { reported = append(reported, err) }
+	if err := second.Apply(t.Context()); err != nil {
+		t.Fatalf("an ATTACH lock timeout failed the deploy: %v", err)
+	}
+	if len(reported) != 1 || !isLockTimeout(reported[0]) {
+		t.Fatalf("reported = %v, want one lock-timeout finding", reported)
+	}
+	var restored bool
+	if err := pool.QueryRow(t.Context(), `SELECT has_column_privilege('goobers_controller','journal.consumer_cursor','seq','SELECT')`).Scan(&restored); err != nil || !restored {
+		t.Fatalf("grants were not reconciled despite the deferred partition pass (restored=%v err=%v)", restored, err)
+	}
+	// Once the blocker is gone the next pass finishes the work.
+	if err := blocker.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Apply(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var partitions int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_inherits WHERE inhparent='journal.instance_event'::regclass`).Scan(&partitions); err != nil || partitions < 4 {
+		t.Fatalf("partitions after the retry = %d err=%v", partitions, err)
+	}
+}

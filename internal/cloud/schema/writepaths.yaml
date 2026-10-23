@@ -1113,13 +1113,7 @@ tables:
   provisioned: true
   fence: owner_token
   rationale: Scheduler emit-key dedup is written in the same controller-lease-fenced transaction as the event (and by the instance_event row trigger for the previous binary), so a retry is idempotent across months.
-  readers:
-  - role: goobers_controller
-    columns:
-    - instance_id
-    - stream
-    - emit_key
-    - seq
+  readers: []
   writers:
   - role: goobers_controller
     insert:
