@@ -3,8 +3,9 @@ package runtimewiring
 import (
 	"time"
 
+	"github.com/goobers/goobers/internal/stageexec"
+
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 )
 
 // TeeRegistrar forwards every registered secret to BOTH a run's own
@@ -13,7 +14,7 @@ import (
 // per-run secret reaches the two instance-lifetime consumers without changing
 // internal/runner's per-run registrar creation (#117 Piece B).
 type TeeRegistrar struct {
-	Run    runner.SecretRegistrar
+	Run    stageexec.SecretRegistrar
 	Shared *journal.RegistryScrubber
 }
 

@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/providers"
 )
 
 // VerifyRecoveryLandingRepositories checks landing proof against the available clones.
@@ -37,7 +37,7 @@ func VerifyRecoveryLandingRepositories(ctx context.Context, repositories []strin
 func RecoveryRetentionCloneURL(cfg *instance.Config, key string) (string, error) {
 	clone := RepoCloneURL
 	if clone == nil {
-		clone = runner.DefaultRepoCloneURL
+		clone = providers.CloneURL
 	}
 	var url string
 	for _, repo := range cfg.Repos {

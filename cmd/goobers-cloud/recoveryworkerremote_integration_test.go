@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/providers"
+
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/testgit"
 
@@ -24,10 +26,8 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -40,7 +40,7 @@ func TestIntegrationRemoteWorkerCleanupWaitsForVerifiedCustody(t *testing.T) {
 	}
 	configured := cfg.Repos[0]
 	repo := apiv1.RepoRef{Provider: apiv1.Provider(configured.Provider), Owner: configured.Owner, Name: configured.Name, Branch: "main"}
-	url, err := runner.DefaultRepoCloneURL(repo)
+	url, err := providers.CloneURL(repo)
 	if err != nil {
 		t.Fatal(err)
 	}

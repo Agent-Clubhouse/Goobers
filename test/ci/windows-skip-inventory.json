@@ -1177,6 +1177,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/workspaceauthority",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure journal custody validation is exercised by Linux unit and race suites; no Windows-specific seam."
+    },
+    {
       "package": "internal/workspacedelta",
       "coverage": "none",
       "category": "not-selected",

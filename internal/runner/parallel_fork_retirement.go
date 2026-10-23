@@ -52,8 +52,8 @@ func RetiredParentForks(reader *journal.Reader) ([]ParentForkRetirement, error) 
 	}
 	var result []ParentForkRetirement
 	for _, state := range states {
-		value := ParentForkRetirement{Plan: state.plan, Reference: state.reference}
-		for _, owner := range state.plan.AllWorkspaces() {
+		value := ParentForkRetirement{Plan: state.Plan, Reference: state.Reference}
+		for _, owner := range state.Plan.AllWorkspaces() {
 			candidate, ok := byBranch[owner.Branch]
 			if !ok || candidate.Workspace.Custody.Workspace != owner {
 				return nil, ErrParentReturnPending
@@ -138,9 +138,9 @@ func ParentForkPlanForWorkspace(reader *journal.Reader, owner worktree.StageCust
 	}
 	var selected ParentForkPlan
 	for _, state := range states {
-		for _, expected := range state.plan.AllWorkspaces() {
-			if expected == owner && state.plan.Sequence > selected.Sequence {
-				selected = state.plan
+		for _, expected := range state.Plan.AllWorkspaces() {
+			if expected == owner && state.Plan.Sequence > selected.Sequence {
+				selected = state.Plan
 			}
 		}
 	}
