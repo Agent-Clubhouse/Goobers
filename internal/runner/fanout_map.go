@@ -25,10 +25,10 @@ import (
 const (
 	// MapCompletenessInput is the map join invocation input holding one
 	// terminal outcome per roster item, in identity order.
-	MapCompletenessInput = "mapCompleteness"
+	MapCompletenessInput = runsemantics.MapCompletenessInput
 	// MapResultsInput is the map join invocation input holding the mapped
 	// task's outputs and pointers per roster item, in identity order.
-	MapResultsInput = "mapResults"
+	MapResultsInput = runsemantics.MapResultsInput
 )
 
 // MapItemResult is one entry of the mapResults join input: the item's

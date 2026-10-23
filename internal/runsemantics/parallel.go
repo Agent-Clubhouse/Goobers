@@ -8,6 +8,12 @@ import (
 // outcome for every declared branch, in declaration order.
 const BranchCompletenessInput = "branchCompleteness"
 
+// MapCompletenessInput is the map join input holding one outcome per item.
+const MapCompletenessInput = "mapCompleteness"
+
+// MapResultsInput is the map join input holding results in roster order.
+const MapResultsInput = "mapResults"
+
 // SettledBranchStatus is the shared terminal classification for a branch that
 // ran to a boundary. Cancellation/skipping are explicit outcomes applied by
 // the scheduler before this rule. No-output is a successful settle.
