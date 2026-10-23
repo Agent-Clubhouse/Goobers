@@ -40,11 +40,11 @@ func TestWorkerOptionsUnversionedUnlessOptedIn(t *testing.T) {
 
 func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
 	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
-	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
+	t.Setenv(temporalWorkerBuildIDEnv, "release-v0.9.0")
 	t.Setenv(podNamespaceEnv, "goobers-system")
 	h, err := New(Config{
 		TaskQueues:           []string{"goobers-engine"},
-		BuildVersion:         "binary-version",
+		BuildVersion:         "v0.9.0",
 		AutoUpgradeRetention: true,
 	})
 	if err != nil {
@@ -53,10 +53,10 @@ func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
 	opts := h.workerOptions()
 	if !opts.DeploymentOptions.UseVersioning ||
 		opts.DeploymentOptions.Version.DeploymentName != DeploymentName ||
-		opts.DeploymentOptions.Version.BuildID != "template-hash" {
+		opts.DeploymentOptions.Version.BuildID != "release-v0.9.0" {
 		t.Fatalf("DeploymentOptions = %+v, want controller-injected version", opts.DeploymentOptions)
 	}
-	if !strings.Contains(opts.Identity, "goobers-worker/template-hash@") {
+	if !strings.Contains(opts.Identity, "goobers-worker/release-v0.9.0@") {
 		t.Fatalf("identity %q does not use controller build ID", opts.Identity)
 	}
 	if h.cfg.VersionRetention != workerrollout.DefaultVersionLimit || h.cfg.RolloutNamespace != "goobers-system" {
@@ -139,28 +139,27 @@ func TestWorkerControllerRejectsPlaceholderAttestation(t *testing.T) {
 	}
 }
 
-func TestWorkerControllerBuildIDChangesAcrossReleases(t *testing.T) {
-	var builds []string
-	for _, release := range []string{"release-v1", "release-v2"} {
-		cfg, err := applyDeploymentEnvironment(Config{}, func(key string) (string, bool) {
-			switch key {
-			case temporalDeploymentNameEnv:
-				return DeploymentName, true
-			case temporalWorkerBuildIDEnv:
-				return release, true
-			case podNamespaceEnv:
-				return "goobers-system", true
-			default:
-				return "", false
+func TestWorkerControllerBuildIDMustContainReleaseBinaryVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		buildID string
+		wantErr bool
+	}{
+		{name: "reused previous release", buildID: "release-0.8.0", wantErr: true},
+		{name: "matching release", buildID: "release-0.9.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+			t.Setenv(temporalWorkerBuildIDEnv, tc.buildID)
+			t.Setenv(podNamespaceEnv, "goobers-system")
+			_, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "0.9.0"})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("New(build=%q, binary=0.9.0) error = %v, wantErr=%t", tc.buildID, err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "does not contain release binary version") {
+				t.Fatalf("mismatch error = %v", err)
 			}
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		builds = append(builds, cfg.BuildVersion)
-	}
-	if builds[0] == builds[1] {
-		t.Fatalf("release build IDs did not change: %q", builds)
 	}
 }
 

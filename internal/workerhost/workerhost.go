@@ -199,6 +199,7 @@ func New(cfg Config) (*Host, error) {
 }
 
 func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) (Config, error) {
+	binaryVersion := strings.TrimSpace(cfg.BuildVersion)
 	deployment, hasDeployment := lookup(temporalDeploymentNameEnv)
 	buildID, hasBuildID := lookup(temporalWorkerBuildIDEnv)
 	if !hasDeployment && !hasBuildID {
@@ -214,6 +215,10 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 	}
 	if isPlaceholder(buildID) {
 		return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; set a distinct immutable ID for this release", temporalWorkerBuildIDEnv, buildID)
+	}
+	if !developmentBuild(binaryVersion) && !buildIDContainsVersion(buildID, binaryVersion) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q does not contain release binary version %q; refuse an in-place code update under a reused build ID",
+			temporalWorkerBuildIDEnv, buildID, binaryVersion)
 	}
 	cfg.BuildVersion = buildID
 	cfg.Versioning = true
@@ -242,6 +247,18 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 		}
 	}
 	return cfg, nil
+}
+
+func developmentBuild(version string) bool {
+	return version == "" || version == "dev"
+}
+
+func buildIDContainsVersion(buildID, binaryVersion string) bool {
+	if strings.Contains(buildID, binaryVersion) {
+		return true
+	}
+	normalized := strings.TrimPrefix(binaryVersion, "v")
+	return normalized != binaryVersion && strings.Contains(buildID, normalized)
 }
 
 func isPlaceholder(value string) bool {

@@ -834,10 +834,13 @@ after the old Deployment has scaled down. At the cap, budget for at least six
 worker pods and keep all three images pullable until their versions drain.
 
 Release tooling must replace `workerOptions.unsafeCustomBuildID` with a
-distinct, immutable release version or workflow-source hash for **every** image
-or workflow-code release, whether replay qualification passes or not. Reusing
-that ID makes Worker Controller roll changed code in place under pinned
-workflows, so the worker rejects the shipped `CHANGE-ME` placeholder.
+distinct, immutable identifier containing the binary version for **every**
+image or workflow-code release, whether replay qualification passes or not.
+Use the version itself or `<version>-<workflow-source-hash>` and inject it from
+the release pipeline. Reusing that ID makes Worker Controller roll changed
+code in place under pinned workflows, so the worker rejects both the shipped
+`CHANGE-ME` placeholder and a release ID that does not contain its binary
+version. Plain `dev` builds are exempt for local development.
 
 The reference omits `GOOBERS_AUTO_UPGRADE_RETENTION`. After replay qualification
 for that release, add it to the worker environment with a value exactly equal

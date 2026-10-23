@@ -136,5 +136,5 @@ spec:
     temporalNamespace: default
     # CHANGE-ME for every image or workflow-code release, whether or not that
     # release is replay-qualified. Release tooling must inject a distinct,
-    # immutable release version or workflow-source hash.
+    # immutable release version or version+workflow-source hash.
     unsafeCustomBuildID: CHANGE-ME-release-version
