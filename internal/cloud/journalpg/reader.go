@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"os"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/jackc/pgx/v5"
 	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type runReader struct {

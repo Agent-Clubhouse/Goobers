@@ -11,11 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/jackc/pgx/v5"
-	"sigs.k8s.io/yaml"
 )
 
 type preparedBlob struct {
@@ -176,6 +177,9 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 			return err
 		}
 		report = journal.RecoverReport{LastSeq: uint64(seq), Events: events}
+		if err := b.recoverTranscriptPartials(ctx, tx, r, events); err != nil {
+			return err
+		}
 		return b.checkpointTx(ctx, tx, r)
 	})
 	return r, report, err

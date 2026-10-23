@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const maxEventBytes = 8 << 20

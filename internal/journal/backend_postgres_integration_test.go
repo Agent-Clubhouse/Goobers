@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func postgresJournalConfig(t *testing.T) journalpg.Config {

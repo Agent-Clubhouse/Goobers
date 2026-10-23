@@ -5,14 +5,17 @@ package journal_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/jackc/pgx/v5"
 )
 
 func createPostgresRun(t *testing.T, b *journalpg.Backend) (journal.RunHandle, journal.OwnerToken) {
@@ -28,10 +31,15 @@ func TestJournalSeqContiguousUnderConcurrentEmit(t *testing.T) {
 	b := postgresBackend(t, config)
 	h, o := createPostgresRun(t, b)
 	var wg sync.WaitGroup
-	for range 16 {
+
+	for worker := range 16 {
 		wg.Go(func() {
-			for range 4 {
-				if _, err := b.AppendBatch(t.Context(), h, o, []journal.Event{{Type: journal.EventRunnerAnnotation}, {Type: journal.EventRunnerAnnotation}}); err != nil {
+			for batch := range 4 {
+				events := []journal.Event{
+					{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"emitKey": fmt.Sprintf("worker-%d-batch-%d-a", worker, batch)}},
+					{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"emitKey": fmt.Sprintf("worker-%d-batch-%d-b", worker, batch)}},
+				}
+				if err := appendPostgresRetry(t.Context(), b, h, o, events); err != nil {
 					t.Error(err)
 					return
 				}
@@ -153,5 +161,63 @@ func TestNoNotifyInEmitTransaction(t *testing.T) {
 	records, err := b.ReadEvents(t.Context(), journal.RunRef{ID: "run-guard"}, 0, 0)
 	if err != nil || len(records) != 2 {
 		t.Fatalf("notification preceded commit: %d,%v", len(records), err)
+	}
+}
+
+// Admission includes pool/row-lock wait in its two-second deadline. Saturation
+// may refuse a batch; stable emit keys make an uncertain commit safe to retry.
+func appendPostgresRetry(ctx context.Context, b *journalpg.Backend, h journal.RunHandle, o journal.OwnerToken, events []journal.Event) error {
+	retry, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		_, err := b.AppendBatch(retry, h, o, events)
+		if !errors.Is(err, lease.ErrFencedTransactionTimeout) || retry.Err() != nil {
+			return err
+		}
+	}
+}
+
+func TestPostgresTranscriptCleanupAndRecovery(t *testing.T) {
+	config := postgresJournalConfig(t)
+	b := postgresBackend(t, config)
+	h, o := createPostgresRun(t, b)
+	capture, err := b.BeginTranscript(t.Context(), h, o, 0, "stage", "transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capture.Append(journal.TranscriptCheckpoint{Stream: "process-output/1", Data: []byte("partial output\n"), Reason: "checkpoint"}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := b.ReadEvents(t.Context(), journal.RunRef{ID: "run-guard"}, 1, 0)
+	if err != nil || len(records) != 1 || records[0].Event.Ref == nil {
+		t.Fatalf("partial record=%v,%v", records, err)
+	}
+	partial := *records[0].Event.Ref
+	if _, err := b.ReadBlob(t.Context(), h, partial); err != nil {
+		t.Fatal(err)
+	}
+	final, err := capture.RecordFinalWithExpectedDigest("text/plain", []byte("finished output"), "final-key", journal.Digest([]byte("finished output")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ReadBlob(t.Context(), h, partial); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial remains after final: %v", err)
+	}
+	if data, err := b.ReadBlob(t.Context(), h, final); err != nil || string(data) != "finished output" {
+		t.Fatalf("final=%q,%v", data, err)
+	}
+	if err := b.Retire(t.Context(), h, o); err != nil {
+		t.Fatal(err)
+	}
+	reopened := postgresBackend(t, config)
+	h, o, _, err = reopened.RecoverRun(t.Context(), journal.RunKey{RunID: "run-guard", Gaggle: "g"}, journal.RunWriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.ReadBlob(t.Context(), h, final); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Retire(t.Context(), h, o); err != nil {
+		t.Fatal(err)
 	}
 }

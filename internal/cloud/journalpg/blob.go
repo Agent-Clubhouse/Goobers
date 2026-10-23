@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // RecordBlob commits scrubbed content and its event atomically.

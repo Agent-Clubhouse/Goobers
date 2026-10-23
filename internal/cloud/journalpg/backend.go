@@ -11,10 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goobers/goobers/internal/cloud/lease"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Config binds one instance to the live controller lease. Reader methods need

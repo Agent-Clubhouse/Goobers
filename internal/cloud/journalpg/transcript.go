@@ -20,6 +20,8 @@ type capture struct {
 	count           int
 	failed          error
 	final           *journal.Ref
+	finalErr        error
+	paths           []string
 }
 type captureStream struct {
 	scrubber *journal.CheckpointScrubber
@@ -97,6 +99,7 @@ func (c *capture) append(delta journal.TranscriptCheckpoint) error {
 	if err != nil {
 		return err
 	}
+	c.paths = append(c.paths, ref.Path)
 	stream.offset += len(delta.Data)
 	stream.dropped = delta.DroppedBytes
 	stream.previous = ref.Digest
@@ -121,11 +124,14 @@ func (c *capture) RecordFinalWithExpectedDigest(schema string, data []byte, key,
 	if len(key) > 256 {
 		return journal.Ref{}, errors.New("journalpg: transcript final key exceeds limit")
 	}
+	if c.finalErr != nil {
+		return journal.Ref{}, c.finalErr
+	}
 	if c.final != nil {
 		if journal.Digest(r.options.Scrubber.Scrub(data)) != c.final.Digest {
 			return journal.Ref{}, errors.New("journalpg: final transcript content changed")
 		}
-		return *c.final, nil
+		return *c.final, c.backend.removeTranscriptPartials(context.Background(), r, c.paths)
 	}
 	meta := map[string]any{"transcriptCaptureComplete": c.id}
 	if key != "" {
@@ -133,12 +139,13 @@ func (c *capture) RecordFinalWithExpectedDigest(schema string, data []byte, key,
 	}
 	ref, err := c.backend.recordSpan(context.Background(), r, journal.Event{Type: journal.EventSpanRecorded, Branch: c.branch, Stage: c.stage, Name: c.name, DataSchema: schema, Runner: meta}, data, expected)
 	if err != nil {
+		c.finalErr = err
 		return journal.Ref{}, err
 	}
 	c.final = &ref
-	// Partial blobs remain immutable evidence. The completion marker supersedes
-	// them; later retention/GC may remove them after its retention horizon.
-	return ref, nil
+	// The completion event commits before private partial cleanup. Recovery
+	// repeats this cleanup if a crash interrupts the second transaction.
+	return ref, c.backend.removeTranscriptPartials(context.Background(), r, c.paths)
 }
 
 var _ journal.Backend = (*Backend)(nil)

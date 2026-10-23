@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/jackc/pgx/v5"
 )
 
 // ClaimNotificationDelivery resolves a durable sink claim under the append lock.

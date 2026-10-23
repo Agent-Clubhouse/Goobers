@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/jackc/pgx/v5"
 )
 
 const instanceStream = "scheduler"
