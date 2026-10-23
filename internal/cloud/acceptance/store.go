@@ -152,9 +152,10 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]triggerqueue.Record, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := tx.Query(ctx, acceptanceColumns+`
-		FROM control.acceptance
-		WHERE instance_id=$1 AND state='accepted'
-		ORDER BY accepted_at, id
+		FROM control.acceptance AS a
+		WHERE a.instance_id=$1 AND a.state='accepted'
+		  AND NOT EXISTS (`+childLineageOwned+`)
+		ORDER BY a.accepted_at, a.id
 		FOR UPDATE SKIP LOCKED LIMIT $2`,
 		s.instanceID, limit,
 	)
@@ -276,10 +277,11 @@ func (s *Store) Uncertain(ctx context.Context, liveEpochs []int64, limit int) ([
 		return nil, errors.New("cloud acceptance: batch limit must be 1..100")
 	}
 	rows, err := s.pool.Query(ctx, acceptanceColumns+`
-		FROM control.acceptance
-		WHERE instance_id=$1 AND state='dispatching'
-		  AND (owner_epoch IS NULL OR NOT (owner_epoch=ANY($2)))
-		ORDER BY accepted_at, id LIMIT $3`,
+		FROM control.acceptance AS a
+		WHERE a.instance_id=$1 AND a.state='dispatching'
+		  AND (a.owner_epoch IS NULL OR NOT (a.owner_epoch=ANY($2)))
+		  AND NOT EXISTS (`+childLineageOwned+`)
+		ORDER BY a.accepted_at, a.id LIMIT $3`,
 		s.instanceID, normalizedEpochs(liveEpochs), limit,
 	)
 	if err != nil {

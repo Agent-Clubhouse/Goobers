@@ -291,3 +291,51 @@ func TestServiceRequiresConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// The ordinary start loop must never start a generated child: its Temporal
+// parent owns the start. Pending and Uncertain skip every child acceptance,
+// both before admission and after the engine start intent is bound.
+func TestStartLoopNeverSeesEngineOwnedChildren(t *testing.T) {
+	f := newFamily(t)
+	ordinary, _, err := f.store.Accept(t.Context(), "manual/1", "operator", []byte(`{"request":1}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingIDs := func() []string {
+		t.Helper()
+		records, err := f.store.Pending(t.Context(), 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, r := range records {
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}
+	in := acceptChild(t, f, "parent-f", "call-1")
+	if got := pendingIDs(); fmt.Sprint(got) != fmt.Sprint([]string{ordinary.ID}) {
+		t.Fatalf("pending before admission = %v, want only %s", got, ordinary.ID)
+	}
+	if _, err := activities(f.service(time.Hour)).AdmitEngineChild(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingIDs(); fmt.Sprint(got) != fmt.Sprint([]string{ordinary.ID}) {
+		t.Fatalf("pending after admission = %v, want only %s", got, ordinary.ID)
+	}
+	// A child acceptance left dispatching by a lost epoch is not ordinary
+	// uncertain custody either; only the ordinary row is reconciled.
+	if err := f.store.BeginDispatch(t.Context(), in.Request.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.BeginDispatch(t.Context(), ordinary.ID); err != nil {
+		t.Fatal(err)
+	}
+	uncertain, err := f.store.Uncertain(t.Context(), nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uncertain) != 1 || uncertain[0].ID != ordinary.ID {
+		t.Fatalf("uncertain = %+v, want only %s", uncertain, ordinary.ID)
+	}
+}
