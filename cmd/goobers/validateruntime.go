@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/cloudreadiness"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/instance"
@@ -23,8 +24,26 @@ func emitConfiguredRuntimeFindings(
 	set *instance.ConfigSet,
 	report *validate.Report,
 	stdout io.Writer,
+	stderr io.Writer,
 	diagnostics *diagnosticCollector,
 ) int {
+	if options.target == validateTargetCloud {
+		result := cloudreadiness.Assess(cfg, set)
+		if options.readinessResult != nil {
+			*options.readinessResult = result
+		}
+		errors := emitCloudReadinessFindings(options.root, configDir, set, report, diagnostics, result)
+		if options.format == "text" {
+			if err := cloudreadiness.WriteText(stdout, result); err != nil {
+				pf(stderr, "error: write cloud readiness: %v\n", err)
+				return 2
+			}
+		}
+		if errors > 0 {
+			return 1
+		}
+		return 0
+	}
 	findings := appendRuntimeFindings(options.root, configDir, cfg, set, options.target, report)
 	errors := emitRuntimeFindings(stdout, diagnostics, findings)
 	if errors == 0 {
@@ -48,22 +67,6 @@ type runtimeFinding struct {
 	path     string
 	workflow string
 	message  string
-}
-
-type runtimeBlocker struct {
-	path  string
-	issue int
-}
-
-var engineRuntimeBlockers = map[workflow.FeatureID]runtimeBlocker{
-	"workflow.spec.parallels": {path: "spec.parallels", issue: 7753},
-	"workflow.spec.maps":      {path: "spec.maps", issue: 7755},
-	"task.childWorkflows":     {path: "task.childWorkflows", issue: 7758},
-	"gate.evaluator.human":    {path: "gate.evaluator.human", issue: 7760},
-	"task.limits.maxTokens":   {path: "task.limits.maxTokens", issue: 7761},
-	"task.limits.maxCostUSD":  {path: "task.limits.maxCostUSD", issue: 7761},
-	"task.outbox":             {path: "task.outbox", issue: 7762},
-	"task.experiment":         {path: "task.experiment", issue: 7763},
 }
 
 func appendRuntimeFindings(
@@ -92,20 +95,21 @@ func appendRuntimeFindings(
 			severity = validate.Error
 		}
 		for _, id := range declaredEngineRuntimeBlockers(wf.Spec) {
-			blocker := engineRuntimeBlockers[id]
-			feature, ok := workflow.LookupFeature(id)
-			if !ok || runtimeLevel(feature, workflow.RuntimeEngine) != workflow.RuntimeUnsupported {
+			blocker, mapped := cloudreadiness.EngineFeatureBlocker(id)
+			feature, registered := workflow.LookupFeature(id)
+			if !mapped || !registered ||
+				runtimeLevel(feature, workflow.RuntimeEngine) != workflow.RuntimeUnsupported {
 				continue
 			}
 			findings = append(findings, runtimeFinding{
 				code:     validate.RuntimeEngineUnsupported,
 				severity: severity,
 				file:     file,
-				path:     "/" + strings.ReplaceAll(blocker.path, ".", "/"),
+				path:     "/" + strings.ReplaceAll(blocker.Path, ".", "/"),
 				workflow: wf.Name,
 				message: fmt.Sprintf(
 					"workflow declares engine-unsupported feature %s; engine parity is tracked by #%d",
-					blocker.path, blocker.issue,
+					blocker.Path, blocker.Issue,
 				),
 			})
 		}
@@ -212,12 +216,39 @@ func declaredEngineRuntimeBlockers(spec apiv1.WorkflowSpec) []workflow.FeatureID
 }
 
 func runtimeFeatureForPath(path string) (workflow.FeatureID, bool) {
-	for id, blocker := range engineRuntimeBlockers {
-		if blocker.path == path {
+	for _, id := range cloudreadiness.EngineUnsupportedFeatureIDs() {
+		blocker, _ := cloudreadiness.EngineFeatureBlocker(id)
+		if blocker.Path == path {
 			return id, true
 		}
+
 	}
 	return "", false
+}
+
+func emitCloudReadinessFindings(
+	root, configDir string,
+	set *instance.ConfigSet,
+	report *validate.Report,
+	diagnostics *diagnosticCollector,
+	result cloudreadiness.Result,
+) int {
+	errors := 0
+	for _, blocked := range result.Workflows {
+		source, _ := set.WorkflowSource(blocked.Gaggle, blocked.Name)
+		file := configSourceDiagnosticFile(root, configDir, source)
+		for _, blocker := range blocked.Blockers {
+			message := blocker.Message + "; unblock: " + blocker.Action.Description
+			report.AddFinding(validate.Issue{
+				Code: validate.WarningCode(blocker.Code), Severity: validate.Error,
+				File: file, Kind: "Workflow", Name: blocked.Name, Gaggle: blocked.Gaggle,
+				Message: message,
+			})
+			diagnostics.add(file, blocker.Path, blocker.Code, string(validate.Error), message)
+			errors++
+		}
+	}
+	return errors
 }
 
 func runtimeLevel(feature workflow.Feature, runtime workflow.Runtime) workflow.RuntimeSupportLevel {
