@@ -185,4 +185,3 @@ bound stage must publish exactly one `application/json` artifact (a
 deterministic stage's `.json` `resultFile`). A missing or ambiguous payload, or
 a schema that cannot be loaded, keeps the record unknown rather than guessing.
 Bindings are inert while `decisionGate.mode` is `off`.
-
