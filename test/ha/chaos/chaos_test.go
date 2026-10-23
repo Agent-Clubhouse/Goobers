@@ -37,7 +37,7 @@ func TestScenarioRegistryCannotPassSilently(t *testing.T) {
 		}
 		seen[s.ID] = true
 	}
-	for _, id := range []string{"CHAOS-4", "CHAOS-6", "CHAOS-9", "CHAOS-10", "RESTART-RTO", "NODEKILL-RTO"} {
+	for _, id := range []string{"CHAOS-4", "CHAOS-6", "CHAOS-9", "CHAOS-10", "CHAOS-13", "RESTART-RTO", "NODEKILL-RTO", "UPGRADE-11"} {
 		if !seen[id] {
 			t.Errorf("scenario %s not declared", id)
 		}
