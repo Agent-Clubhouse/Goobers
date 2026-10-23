@@ -44,6 +44,7 @@ Local installs retain the compatible `allow` default.
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
+| `goobers-cloud/cnpg/` | CloudNativePG reference for `goobers-cloud`: 3-instance quorum-synchronous `Cluster` (`dataDurability: required`), managed roles and databases matching `internal/cloud/pgroles`, and Barman Cloud plugin backups. For self-managed three-zone clusters (the nightly kind job uses `test/ha/kind/cnpg-cluster.yaml`); Azure uses `infra/bicep/modules/postgres.bicep`. See [its README](goobers-cloud/cnpg/README.md) | D-6 |
 
 ## Migrating an existing `goobers-system` overlay (#3287)
 
