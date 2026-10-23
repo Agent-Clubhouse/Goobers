@@ -448,11 +448,11 @@ func TestPGRunPinSweepRotatesPastLiveRunsAndIsolatesUnconfirmed(t *testing.T) {
 		return false, nil
 	}
 
-	// A full batch of the oldest candidates: the unconfirmed run's error is
-	// returned, yet the closed run inside the batch is still marked.
+	// A full batch of candidates: the unconfirmed run is reported, not failed
+	// on, and the closed run inside the batch is still marked.
 	first, err := controller.SweepRunPins(t.Context(), status, "")
-	if !errors.Is(err, outage) || first.Marked != 1 || first.Next == "" {
-		t.Fatalf("first pass = %+v, %v; want 1 marked, a cursor, and the unconfirmed error", first, err)
+	if err != nil || first.Marked != 1 || first.Next == "" || len(first.Unconfirmed) != 1 || !errors.Is(first.Unconfirmed[0], outage) {
+		t.Fatalf("first pass = %+v, %v; want 1 marked, a cursor, and only the unconfirmed run reported", first, err)
 	}
 	// The cursor carries the sweep past the long-running parents to the closed
 	// run behind them, and the lap then wraps.
