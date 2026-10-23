@@ -220,7 +220,9 @@ Required capability: `telemetry:read`.
 A worker handoff does not consume an attempt and does not reset the attempt's
 `timeoutSeconds` clock. The replacement worker adopts the exact live stage pod
 by Kubernetes UID and continues watching it. Five handoffs are allowed for one
-attempt; exhausting that handoff bound is an infrastructure failure.
+attempt; exhausting that handoff bound is an infrastructure failure. See
+[Worker handoffs preserve the attempt](graph-and-execution.md#worker-handoffs-preserve-the-attempt)
+for retry, deadline, grace, and side-effecting-stage semantics.
 
 ### DSL 3.1 named artifact contracts
 
