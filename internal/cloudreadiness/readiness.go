@@ -26,7 +26,15 @@ const (
 	CodePlacement = "RUNTIME002"
 	// CodeDSL identifies a local-runner-only DSL version.
 	CodeDSL = "RUNTIME003"
+	// CodeControlPlane identifies a workflow setting the cloud control plane
+	// cannot honour yet, although the engine can execute the workflow.
+	CodeControlPlane = "RUNTIME004"
 )
+
+// SharedClaimVisibilityIssue tracks shared claim visibility in the cloud
+// claims plane; until it lands the cloud refuses claimVisibility: shared
+// rather than silently admitting with local-only claim authority.
+const SharedClaimVisibilityIssue = 8094
 
 // Action describes how an operator can remove a blocker.
 type Action struct {
@@ -74,11 +82,13 @@ type BlockerGroup struct {
 
 // Summary contains whole-instance blocker counts.
 type Summary struct {
-	BlockedWorkflows int   `json:"blockedWorkflows"`
-	TotalBlockers    int   `json:"totalBlockers"`
-	ConfigFixes      int   `json:"configFixes"`
-	WaitingOnP4      int   `json:"waitingOnP4"`
-	P4Issues         []int `json:"p4Issues"`
+	BlockedWorkflows int `json:"blockedWorkflows"`
+	TotalBlockers    int `json:"totalBlockers"`
+	ConfigFixes      int `json:"configFixes"`
+	WaitingOnP4      int `json:"waitingOnP4"`
+	// WaitingOnControlPlane counts blockers waiting on cloud control-plane work.
+	WaitingOnControlPlane int   `json:"waitingOnControlPlane,omitempty"`
+	P4Issues              []int `json:"p4Issues"`
 }
 
 // Result is the stable whole-instance cloud readiness report.
@@ -173,6 +183,9 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 		blockers = append(blockers, placementBlockers(current.Spec, placements)...)
 	}
 
+	if current.Spec.Readiness.ClaimVisibility == "shared" {
+		blockers = append(blockers, sharedClaimVisibilityBlocker())
+	}
 	if current.DSLVersion != supportmatrix.V3DSLVersion &&
 		current.DSLVersion != supportmatrix.V31DSLVersion {
 		blockers = append(blockers, Blocker{
@@ -188,6 +201,25 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 		return blockers[i].Code < blockers[j].Code
 	})
 	return blockers
+}
+
+// sharedClaimVisibilityBlocker refuses cross-instance shared claim admission:
+// the cloud claims plane has local claim authority only, and a shared
+// workflow must never fall back to local admission.
+func sharedClaimVisibilityBlocker() Blocker {
+	issue := SharedClaimVisibilityIssue
+	return Blocker{
+		Code: CodeControlPlane, Feature: "workflow.spec.readiness.claimVisibility",
+		Path:    "/spec/readiness/claimVisibility",
+		Message: "claimVisibility: shared needs shared claim admission, which the cloud claims plane does not provide",
+		Action: Action{
+			Kind: "control-plane",
+			Description: fmt.Sprintf("wait for shared claim visibility in the cloud claims plane in #%d, "+
+				"or set claimVisibility: local if the workflow needs no cross-instance admission", issue),
+			Issue:    issue,
+			IssueURL: fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/issues/%d", issue),
+		},
+	}
 }
 
 func unsupportedFeatureBlockers(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) []Blocker {
@@ -352,10 +384,13 @@ func summarize(workflows []Workflow) (Summary, []BlockerGroup) {
 	for _, wf := range workflows {
 		for _, blocker := range wf.Blockers {
 			summary.TotalBlockers++
-			if blocker.Action.Kind == "p4" {
+			switch blocker.Action.Kind {
+			case "p4":
 				summary.WaitingOnP4++
 				issues[blocker.Action.Issue] = true
-			} else {
+			case "control-plane":
+				summary.WaitingOnControlPlane++
+			default:
 				summary.ConfigFixes++
 			}
 			key := blocker.Code + ":" + blocker.Feature
