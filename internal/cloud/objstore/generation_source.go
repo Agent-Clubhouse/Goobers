@@ -27,6 +27,10 @@ type Source struct {
 
 	mu     sync.RWMutex
 	handle *cloudlease.Handle
+
+	// extract lays an archive out on disk; nil is archive.Extract. Tests
+	// replace it to fail exactly at the extraction call site.
+	extract func(context.Context, *configgeneration.Archive, string) error
 }
 
 // NewGenerationSource constructs an instance-scoped generation source.
@@ -101,7 +105,11 @@ func (s *Source) Acquire(
 		_ = cleanup()
 		return childworkflow.Generation{}, materializeError("create generation directory", err)
 	}
-	if err := archive.Extract(ctx, directory); err != nil {
+	extract := s.extract
+	if extract == nil {
+		extract = func(ctx context.Context, a *configgeneration.Archive, dir string) error { return a.Extract(ctx, dir) }
+	}
+	if err := extract(ctx, archive, directory); err != nil {
 		_ = cleanup()
 		return childworkflow.Generation{}, materializeError("extract archive", err)
 	}

@@ -1117,6 +1117,14 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 }
 
 func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
+	if s.sources.Rootless {
+		// Stored attribution records, the evaluation summary and the fault
+		// audit state are files under the instance root: a rootless service
+		// has none, so it reports none rather than reading the working
+		// directory. (It also refuses a telemetry store, so TelemetryStats
+		// does not reach here today; this guard keeps that true by design.)
+		return nil
+	}
 	query := StoredAttributionQuery{
 		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
 	}
