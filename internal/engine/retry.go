@@ -334,11 +334,11 @@ func attemptIdentityFromError(err error) *attemptidentity.Identity {
 			continue
 		}
 		var identity attemptidentity.Identity
-		if appErr.Details(&identity) == nil && identity.WorkerIdentity != "" {
+		if readDispatchFailureDetails(appErr, &identity) == nil && identity.WorkerIdentity != "" {
 			return &identity
 		}
 		var retryAt time.Time
-		if appErr.Details(&retryAt, &identity) == nil && identity.WorkerIdentity != "" {
+		if readDispatchFailureDetails(appErr, &retryAt, &identity) == nil && identity.WorkerIdentity != "" {
 			return &identity
 		}
 	}
@@ -354,7 +354,7 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 		var retryAt time.Time
 		if appErr.Details(&retryAt) != nil {
 			var identity attemptidentity.Identity
-			if appErr.Details(&retryAt, &identity) != nil {
+			if readDispatchFailureDetails(appErr, &retryAt, &identity) != nil {
 				continue
 			}
 		}

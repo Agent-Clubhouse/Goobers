@@ -109,3 +109,13 @@ func TestDomainFailureCommitInspectionErrorDoesNotAssertWork(t *testing.T) {
 		t.Fatalf("inspection failure evidence=%+v want=%+v", got, want)
 	}
 }
+
+func TestDomainFailureDoesNotMasqueradeAsAttemptIdentity(t *testing.T) {
+	fresh := classifySeamError(invoke.InfrastructureFailure(errors.New("unavailable")))
+	converter := temporal.GetDefaultFailureConverter()
+	for _, err := range []error{fresh, converter.FailureToError(converter.ErrorToFailure(fresh))} {
+		if identity := attemptIdentityFromError(err); identity != nil {
+			t.Fatalf("domain evidence invented identity: %+v", identity)
+		}
+	}
+}
