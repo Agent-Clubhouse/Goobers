@@ -61,7 +61,8 @@ func TestStaticSchedulerMapBindsFrozenRosterAndJoinsInOrder(t *testing.T) {
 	}
 	if started == nil || started.MapRoster == nil || len(started.MapRoster.Items) != 2 ||
 		started.MapRoster.Items[0].Identity != "a" ||
-		string(started.MapRoster.Items[0].Item) != `{"number":9007199254740992}` {
+		len(started.MapRoster.Items[0].Item) != 0 ||
+		started.MapRoster.RosterDigest == "" {
 		t.Fatalf("map.started = %+v", started)
 	}
 	if finished == nil || len(finished.Completeness) != 2 ||
@@ -209,6 +210,15 @@ func staticMapFixture(
 	t *testing.T,
 	roster string,
 ) (staticSchedulerInput, *Activities, *staticMapCalls) {
+	return staticMapFixtureWith(t, roster, apiv1.IntegrityMaintainer, nil)
+}
+
+func staticMapFixtureWith(
+	t *testing.T,
+	roster string,
+	integrity apiv1.Integrity,
+	statuses map[string]apiv1.ResultStatus,
+) (staticSchedulerInput, *Activities, *staticMapCalls) {
 	t.Helper()
 	in := schedulerInput(strings.ReplaceAll(t.Name(), "/", "-"), 2)
 	in.Run.DSLVersion = "3.1"
@@ -235,7 +245,7 @@ func staticMapFixture(
 	pointer := apiv1.ArtifactPointer{
 		Path: "artifacts/roster.json", Digest: journal.Digest(source),
 		MediaType: fanout.SourceMediaType, Size: int64(len(source)),
-		Integrity: apiv1.IntegrityMaintainer,
+		Integrity: integrity,
 	}
 	store, err := blobstore.NewDir(t.TempDir())
 	if err != nil {
@@ -272,9 +282,17 @@ func staticMapFixture(
 				calls.mu.Lock()
 				calls.items[identity] = number.String()
 				calls.mu.Unlock()
+				status := statuses[identity]
+				if status == "" {
+					status = apiv1.ResultSuccess
+				}
+				var failure *apiv1.ErrorInfo
+				if status == apiv1.ResultFailure {
+					failure = &apiv1.ErrorInfo{Code: "mapped_failed", Message: identity + " failed"}
+				}
 				return apiv1.ResultEnvelope{
-					Status: apiv1.ResultSuccess, Outputs: map[string]any{"seen": identity},
-					Integrity: apiv1.IntegrityMaintainer,
+					Status: status, Outputs: map[string]any{"seen": identity},
+					Error: failure, Integrity: integrity,
 				}, nil
 			case "join":
 				data, err := json.Marshal(env.Inputs[runner.MapCompletenessInput])

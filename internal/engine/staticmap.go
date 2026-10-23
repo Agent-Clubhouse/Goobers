@@ -92,16 +92,13 @@ func (r *runJournal) mapFanOutPlan(
 	if err != nil {
 		return fanOutPlan{}, err
 	}
-	var loaded LoadFrozenMapRosterResult
-	err = workflow.ExecuteActivity(activityCtx, ActLoadFrozenMapRoster, LoadFrozenMapRosterInput{
-		RunID: in.RunID, MapName: def.Name, Definition: def,
-		RosterDigest: frozen.RosterDigest, RosterSize: frozen.RosterSize,
-		Items: frozen.Items,
-	}).Get(activityCtx, &loaded)
-	if err != nil {
-		return fanOutPlan{}, err
+	roster := journal.MapRoster{
+		Source: source, FailurePolicy: def.FailurePolicy,
+		ItemTimeoutSeconds: def.ItemTimeoutSeconds,
+		MaxConcurrent:      fanout.EffectiveMaxConcurrent(def),
+		RosterDigest:       frozen.RosterDigest,
+		Items:              make([]journal.MapItem, len(frozen.Items)),
 	}
-	roster := loaded.Roster
 	plan := fanOutPlan{
 		Name: def.Name, MaxConcurrentBranches: fanout.EffectiveMaxConcurrent(def),
 		BranchTimeoutSeconds: def.ItemTimeoutSeconds, FailurePolicy: def.FailurePolicy,
@@ -109,43 +106,65 @@ func (r *runJournal) mapFanOutPlan(
 		Started:  journal.Event{Type: journal.EventMapStarted, MapRoster: &roster},
 		Finished: journal.Event{Type: journal.EventMapFinished},
 	}
-	for i := range roster.Items {
+	for i, descriptor := range frozen.Items {
+		roster.Items[i] = journal.MapItem{
+			Identity: descriptor.Identity, Digest: descriptor.Digest,
+		}
 		item := roster.Items[i]
 		plan.Branches = append(plan.Branches, fanOutBranch{
 			ID: i + 1, Name: item.Identity, Start: def.Task,
 			ItemIdentity: item.Identity, ItemDigest: item.Digest,
-			Bind: staticMapBinding(def.Bindings, item, roster.Source.Integrity),
+			Bind: staticMapBinding(in, def, frozen, i, roster.Source.Integrity),
 		})
 	}
+	plan.Started.MapRoster = &roster
 	return plan, nil
 }
 
 func staticMapBinding(
-	bindings map[string]apiv1.MapBinding,
-	item journal.MapItem,
+	in RunInput,
+	def apiv1.Map,
+	frozen FreezeMapRosterResult,
+	index int,
 	integrity apiv1.Integrity,
 ) func(fanOutBindingContext) (fanOutBindings, error) {
-	return func(fanOutBindingContext) (fanOutBindings, error) {
-		values := make(map[string]any, len(bindings))
-		grades := make(map[string]apiv1.Integrity, len(bindings))
+	return func(bindingContext fanOutBindingContext) (fanOutBindings, error) {
+		activityCtx := workflow.WithActivityOptions(bindingContext.Context, workflow.ActivityOptions{
+			StartToCloseTimeout: time.Minute,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval: time.Millisecond,
+				MaximumAttempts: 2,
+			},
+		})
+		var loaded LoadFrozenMapItemResult
+		err := workflow.ExecuteActivity(activityCtx, ActLoadFrozenMapItem, LoadFrozenMapItemInput{
+			RunID: in.RunID, MapName: def.Name, Definition: def,
+			RosterDigest: frozen.RosterDigest, RosterSize: frozen.RosterSize,
+			Index: index, Item: frozen.Items[index],
+		}).Get(activityCtx, &loaded)
+		if err != nil {
+			return fanOutBindings{}, err
+		}
+		values := make(map[string]any, len(def.Bindings))
+		grades := make(map[string]apiv1.Integrity, len(def.Bindings))
 		exact := make(map[string]json.RawMessage)
-		for name, binding := range bindings {
+		for name, binding := range def.Bindings {
 			switch binding {
 			case apiv1.MapBindingItem:
-				decoder := json.NewDecoder(bytes.NewReader(item.Item))
+				decoder := json.NewDecoder(bytes.NewReader(loaded.Item))
 				decoder.UseNumber()
 				var value map[string]any
 				if err := decoder.Decode(&value); err != nil {
 					return fanOutBindings{}, fmt.Errorf(
-						"decode frozen map item %q: %w", item.Identity, err,
+						"decode frozen map item %q: %w", frozen.Items[index].Identity, err,
 					)
 				}
 				values[name] = value
-				exact[name] = append(json.RawMessage(nil), item.Item...)
+				exact[name] = append(json.RawMessage(nil), loaded.Item...)
 			case apiv1.MapBindingIdentity:
-				values[name] = item.Identity
+				values[name] = frozen.Items[index].Identity
 			case apiv1.MapBindingDigest:
-				values[name] = item.Digest
+				values[name] = frozen.Items[index].Digest
 			default:
 				return fanOutBindings{}, fmt.Errorf(
 					"map binding %q has unknown value %q", name, binding,

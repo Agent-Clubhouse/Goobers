@@ -106,6 +106,9 @@ func (r *runJournal) fanOut(ctx workflow.Context, in RunInput, m *wf.Machine, pl
 	}
 	start := plan.Started
 	start.Parallel, start.Branch, start.Completeness = plan.Name, 0, p.completeness()
+	if start.Type == journal.EventMapStarted {
+		start.Completeness = nil
+	}
 	var err error
 	result.Started, err = r.commitLifecycle(ctx, start)
 	if err != nil {

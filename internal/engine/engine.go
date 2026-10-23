@@ -943,7 +943,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// reused for the produced grade below so the admission check and the
 	// provenance the stage emits describe the same bindings.
 	qualifiedInputs := wf.SupportsStageQualifiedInputs(machine)
-	bindings, err := rec.branchBindings(t.Name)
+	bindings, err := rec.branchBindings(ctx, t.Name)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q branch inputs: %w", t.Name, err)
 	}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"go.temporal.io/sdk/temporal"
@@ -15,11 +16,9 @@ import (
 // into the normalized content-addressed roster consumed by the map controller.
 const ActFreezeMapRoster = "FreezeMapRoster"
 
-// ActLoadFrozenMapRoster loads the content-addressed normalized roster after
-// its compact descriptor result has been frozen in workflow history.
-const ActLoadFrozenMapRoster = "LoadFrozenMapRoster"
-
-const maxFrozenMapRosterBytes = 2 * fanout.MaxSourceBytes
+// ActLoadFrozenMapItem loads one canonical item from the frozen roster at
+// branch dispatch. The whole roster never enters workflow history.
+const ActLoadFrozenMapItem = "LoadFrozenMapItem"
 
 // FreezeMapRosterInput binds the map definition to the exact producer attempt
 // and source artifact already selected by deterministic workflow history.
@@ -48,21 +47,21 @@ type FreezeMapRosterResult struct {
 	Items        []MapRosterItem         `json:"items"`
 }
 
-// LoadFrozenMapRosterInput binds a blob load to the exact compact freeze
-// result already recorded in history.
-type LoadFrozenMapRosterInput struct {
-	RunID        string          `json:"runId"`
-	MapName      string          `json:"mapName"`
-	Definition   apiv1.Map       `json:"definition"`
-	RosterDigest string          `json:"rosterDigest"`
-	RosterSize   int64           `json:"rosterSize"`
-	Items        []MapRosterItem `json:"items"`
+// LoadFrozenMapItemInput binds an item load to the compact freeze result
+// already recorded in history.
+type LoadFrozenMapItemInput struct {
+	RunID        string        `json:"runId"`
+	MapName      string        `json:"mapName"`
+	Definition   apiv1.Map     `json:"definition"`
+	RosterDigest string        `json:"rosterDigest"`
+	RosterSize   int64         `json:"rosterSize"`
+	Index        int           `json:"index"`
+	Item         MapRosterItem `json:"item"`
 }
 
-// LoadFrozenMapRosterResult carries the verified canonical roster used for
-// map.started and fresh per-dispatch binding clones.
-type LoadFrozenMapRosterResult struct {
-	Roster journal.MapRoster `json:"roster"`
+// LoadFrozenMapItemResult carries one verified canonical item.
+type LoadFrozenMapItemResult struct {
+	Item json.RawMessage `json:"item"`
 }
 
 // FreezeMapRoster reads and verifies the exact source artifact, canonicalizes
@@ -103,50 +102,55 @@ func (a *Activities) FreezeMapRoster(ctx context.Context, in FreezeMapRosterInpu
 	}
 	return FreezeMapRosterResult{
 		MapName: in.MapName, RosterDigest: digest, RosterSize: int64(len(data)),
-		Source: blob.Roster.Source, Items: items,
+		Source: in.Source, Items: items,
 	}, nil
 }
 
-// LoadFrozenMapRoster reads only the frozen content-addressed blob and checks
-// it against every descriptor recorded by FreezeMapRoster.
-func (a *Activities) LoadFrozenMapRoster(ctx context.Context, in LoadFrozenMapRosterInput) (LoadFrozenMapRosterResult, error) {
+// LoadFrozenMapItem reads only the frozen content-addressed blob and checks
+// the selected item against its recorded descriptor.
+func (a *Activities) LoadFrozenMapItem(ctx context.Context, in LoadFrozenMapItemInput) (LoadFrozenMapItemResult, error) {
 	if in.RunID == "" || in.MapName == "" || in.Definition.Name != in.MapName ||
-		!fanout.ValidDigest(in.RosterDigest) || in.RosterSize < 1 || in.RosterSize > maxFrozenMapRosterBytes {
-		return LoadFrozenMapRosterResult{}, invalidFanOutCallerActivity(
-			fmt.Errorf("run ID, map identity and valid bounded roster reference are required"),
+		!fanout.ValidDigest(in.RosterDigest) || in.RosterSize < 1 || in.Index < 0 {
+		return LoadFrozenMapItemResult{}, invalidFanOutCallerActivity(
+			fmt.Errorf("run ID, map identity, frozen roster reference and item index are required"),
 		)
 	}
+	if in.RosterSize > fanout.MaxFrozenRosterBytes {
+		return LoadFrozenMapItemResult{}, invalidFanOutSourceActivity(&fanout.SourceError{
+			Reason: fanout.ReasonTooLarge,
+			Detail: fmt.Sprintf("normalized roster is %d bytes, bound is %d", in.RosterSize, fanout.MaxFrozenRosterBytes),
+		})
+	}
 	if a.FanOutBlobs == nil {
-		return LoadFrozenMapRosterResult{}, classifySeamError(ErrNotConfigured)
+		return LoadFrozenMapItemResult{}, classifySeamError(ErrNotConfigured)
 	}
 	data, err := a.FanOutBlobs.Get(ctx, in.RosterDigest)
 	if err != nil {
-		return LoadFrozenMapRosterResult{}, fmt.Errorf(
+		return LoadFrozenMapItemResult{}, fmt.Errorf(
 			"read map %q frozen roster %s: %w", in.MapName, in.RosterDigest, err,
 		)
 	}
 	if int64(len(data)) != in.RosterSize {
-		return LoadFrozenMapRosterResult{}, invalidFanOutSourceActivity(
+		return LoadFrozenMapItemResult{}, invalidFanOutSourceActivity(
 			fmt.Errorf("frozen map roster size %d differs from recorded %d", len(data), in.RosterSize),
 		)
 	}
 	blob, err := fanout.DecodeRosterBlob(data, in.RosterDigest, in.Definition)
 	if err != nil {
-		return LoadFrozenMapRosterResult{}, invalidFanOutSourceActivity(err)
+		return LoadFrozenMapItemResult{}, invalidFanOutSourceActivity(err)
 	}
-	if len(blob.Roster.Items) != len(in.Items) {
-		return LoadFrozenMapRosterResult{}, invalidFanOutSourceActivity(
-			fmt.Errorf("frozen map roster item count differs from recorded descriptors"),
+	if in.Index >= len(blob.Roster.Items) {
+		return LoadFrozenMapItemResult{}, invalidFanOutSourceActivity(
+			fmt.Errorf("frozen map roster item index %d is outside %d items", in.Index, len(blob.Roster.Items)),
 		)
 	}
-	for i, item := range blob.Roster.Items {
-		if in.Items[i].Identity != item.Identity || in.Items[i].Digest != item.Digest {
-			return LoadFrozenMapRosterResult{}, invalidFanOutSourceActivity(
-				fmt.Errorf("frozen map roster item %d differs from recorded descriptor", i),
-			)
-		}
+	item := blob.Roster.Items[in.Index]
+	if in.Item.Identity != item.Identity || in.Item.Digest != item.Digest {
+		return LoadFrozenMapItemResult{}, invalidFanOutSourceActivity(
+			fmt.Errorf("frozen map roster item %d differs from recorded descriptor", in.Index),
+		)
 	}
-	return LoadFrozenMapRosterResult{Roster: blob.Roster}, nil
+	return LoadFrozenMapItemResult{Item: item.Item}, nil
 }
 
 func invalidFanOutCallerActivity(err error) error {

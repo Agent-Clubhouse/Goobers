@@ -63,30 +63,28 @@ func TestMapRosterFrozen(t *testing.T) {
 	}
 }
 
-func TestLoadFrozenMapRosterRechecksRecordedDescriptors(t *testing.T) {
+func TestLoadFrozenMapItemRechecksRecordedDescriptor(t *testing.T) {
 	store, input, _ := mapRosterActivityFixture(t)
 	activities := &Activities{FanOutBlobs: store}
 	frozen, err := activities.FreezeMapRoster(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	load := LoadFrozenMapRosterInput{
+	load := LoadFrozenMapItemInput{
 		RunID: input.RunID, MapName: input.MapName, Definition: input.Definition,
 		RosterDigest: frozen.RosterDigest, RosterSize: frozen.RosterSize,
-		Items: frozen.Items,
+		Index: 0, Item: frozen.Items[0],
 	}
-	got, err := activities.LoadFrozenMapRoster(context.Background(), load)
+	got, err := activities.LoadFrozenMapItem(context.Background(), load)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Roster.Items) != len(frozen.Items) ||
-		got.Roster.Items[0].Identity != frozen.Items[0].Identity ||
-		len(got.Roster.Items[0].Item) == 0 {
-		t.Fatalf("loaded roster = %+v, descriptors = %+v", got.Roster, frozen.Items)
+	if len(got.Item) == 0 {
+		t.Fatalf("loaded item is empty for descriptor %+v", frozen.Items[0])
 	}
-	load.Items[0].Digest = journal.Digest([]byte("changed"))
-	if _, err := activities.LoadFrozenMapRoster(context.Background(), load); err == nil {
-		t.Fatal("LoadFrozenMapRoster accepted a descriptor mismatch")
+	load.Item.Digest = journal.Digest([]byte("changed"))
+	if _, err := activities.LoadFrozenMapItem(context.Background(), load); err == nil {
+		t.Fatal("LoadFrozenMapItem accepted a descriptor mismatch")
 	}
 }
 
