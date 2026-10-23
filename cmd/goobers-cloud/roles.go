@@ -354,6 +354,7 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		handle *cloudlease.Handle,
 	) {
 		bindAcceptanceFence(manager, handle)
+		generations.BindFence(handle)
 		configActivator.BindFence(manager, handle)
 	}
 	services.Surrenders = objstore.SurrenderPlane{

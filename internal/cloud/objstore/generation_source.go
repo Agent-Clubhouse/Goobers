@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/goobers/goobers/internal/childworkflow"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runtimewiring"
@@ -23,6 +24,9 @@ type Source struct {
 	metadata   *Metadata
 	instanceID string
 	tempRoot   string
+
+	mu     sync.RWMutex
+	handle *cloudlease.Handle
 }
 
 // NewGenerationSource constructs an instance-scoped generation source.
@@ -40,6 +44,13 @@ func NewGenerationSource(
 	return &Source{
 		metadata: metadata, instanceID: instanceID, tempRoot: tempRoot,
 	}, nil
+}
+
+// BindFence installs the live controller epoch used by ephemeral read pins.
+func (s *Source) BindFence(handle *cloudlease.Handle) {
+	s.mu.Lock()
+	s.handle = handle
+	s.mu.Unlock()
 }
 
 // Acquire pins, verifies, extracts, loads, and read-protects one generation.
@@ -62,9 +73,12 @@ func (s *Source) Acquire(
 			"%w: archive belongs to another instance",
 			ErrGenerationInvalid)
 	}
+	s.mu.RLock()
+	handle := s.handle
+	s.mu.RUnlock()
 	owner := "generation-reader:" + uuid.NewString()
-	if err := s.metadata.PinGeneration(
-		ctx, s.instanceID, generation, owner); err != nil {
+	if err := s.metadata.PinGenerationReader(
+		ctx, s.instanceID, generation, owner, handle); err != nil {
 		return childworkflow.Generation{}, classifyPinError(err)
 	}
 	pinned := true

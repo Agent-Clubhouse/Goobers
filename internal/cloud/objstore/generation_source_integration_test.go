@@ -41,6 +41,9 @@ func TestGenerationSourceAsControllerRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, handle := controllerLease(
+		t, controller, "generation-source-reader")
+	source.BindFence(handle)
 	generation, err := source.Acquire(t.Context(), digest)
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +164,77 @@ func TestGenerationSourceClassifiesMissingAndForeign(t *testing.T) {
 	}
 }
 
+func TestSuccessorPrunesCrashedGenerationReaderPin(t *testing.T) {
+	_, admin, store := testMetadata(t, "goobers-generation-reader-crash")
+	controller := controllerRolePool(t, admin)
+	metadata, err := NewMetadataWithOptions(
+		controller, store, MetadataOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, digest, err := configgeneration.CaptureForInstance(
+		t.Context(),
+		filepath.Join("..", "..", "instance", "starter"),
+		"instance",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.RecordGeneration(
+		t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	oldManager, oldHandle := controllerLease(
+		t, controller, "generation-reader-old")
+	source, err := NewGenerationSource(metadata, "instance", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.BindFence(oldHandle)
+	generation, err := source.Acquire(t.Context(), digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(t.Context(), `
+		UPDATE control.config_generation_pin
+		SET created_at=clock_timestamp()-interval '30 days'
+		WHERE instance_id='instance' AND digest=$1`,
+		digest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(t.Context(), `
+		UPDATE control.lease_heartbeat
+		SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`,
+		oldHandle.InstanceID, oldHandle.Name, oldHandle.Holder, oldHandle.Epoch,
+	); err != nil {
+		t.Fatal(err)
+	}
+	successor, successorHandle := controllerLease(
+		t, controller, "generation-reader-successor")
+	defer func() {
+		_ = successor.Release(context.Background(), successorHandle)
+		_ = oldManager.Release(context.Background(), oldHandle)
+		_ = generation.Release()
+	}()
+	if err := metadata.PruneGeneration(
+		t.Context(), "instance", digest); err != nil {
+		t.Fatalf("successor prune with crashed reader pin: %v", err)
+	}
+	var pins int
+	if err := admin.QueryRow(t.Context(), `
+		SELECT count(*) FROM control.config_generation_pin
+		WHERE instance_id='instance' AND digest=$1`,
+		digest,
+	).Scan(&pins); err != nil {
+		t.Fatal(err)
+	}
+	if pins != 0 {
+		t.Fatalf("stale reader pins = %d, want 0", pins)
+	}
+}
+
 func TestRecordAndApplyGenerationAsControllerRole(t *testing.T) {
 	_, admin, store := testMetadata(t, "goobers-generation-apply-role")
 	controller := controllerRolePool(t, admin)
@@ -169,17 +243,7 @@ func TestRecordAndApplyGenerationAsControllerRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := cloudlease.New(cloudlease.Config{
-		Pool: controller, InstanceID: "instance",
-		Name: cloudlease.ControllerName, Holder: "controller-test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handle, err := manager.Acquire(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	manager, handle := controllerLease(t, controller, "controller-test")
 	archive, digest, err := configgeneration.CaptureForInstance(
 		t.Context(),
 		filepath.Join("..", "..", "instance", "starter"),
@@ -219,6 +283,26 @@ func TestRecordAndApplyGenerationAsControllerRole(t *testing.T) {
 	if generation != 1 {
 		t.Fatalf("exact replay advanced generation to %d", generation)
 	}
+}
+
+func controllerLease(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	holder string,
+) (*cloudlease.Manager, *cloudlease.Handle) {
+	t.Helper()
+	manager, err := cloudlease.New(cloudlease.Config{
+		Pool: pool, InstanceID: "instance",
+		Name: cloudlease.ControllerName, Holder: holder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := manager.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, handle
 }
 
 func controllerRolePool(
