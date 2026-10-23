@@ -200,7 +200,7 @@ func TestDispatchStageRejectsInvalidUsageAllowance(t *testing.T) {
 	activities := &Activities{
 		Dispatcher: &fakeStageDispatcher{}, Surrenders: surrenderStore(t),
 	}
-	err := activities.validateStageDispatch(input)
+	err := activities.validateStageDispatch(&input)
 	if err == nil || !strings.Contains(err.Error(), "invalid usage allowance") {
 		t.Fatalf("validateStageDispatch error = %v", err)
 	}
@@ -208,7 +208,7 @@ func TestDispatchStageRejectsInvalidUsageAllowance(t *testing.T) {
 	input.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
 	zero := int64(0)
 	input.UsageAllowance = &usageallowance.Allowance{MaxTokens: &zero}
-	if err := activities.validateStageDispatch(input); err == nil ||
+	if err := activities.validateStageDispatch(&input); err == nil ||
 		!strings.Contains(err.Error(), "agentic task") {
 		t.Fatalf("deterministic allowance error = %v", err)
 	}

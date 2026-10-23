@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.temporal.io/sdk/testsuite"
 	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -15,8 +16,39 @@ import (
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
+
+func TestProductionRunExecutesFrozenMap(t *testing.T) {
+	in, acts, calls := staticMapFixture(t, `{
+		"schemaVersion":1,
+		"items":[
+			{"identity":"b","item":{"number":2}},
+			{"identity":"a","item":{"number":1}}
+		]
+	}`)
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.RegisterActivity(acts)
+	env.ExecuteWorkflow(Run, in.Run)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("production map result = %+v", result)
+	}
+	got := calls.snapshot()
+	if len(got.items) != 2 || got.items["a"] != "1" || got.items["b"] != "2" ||
+		got.joinCalls != 1 || len(got.completeness) != 2 || len(got.results) != 2 {
+		t.Fatalf("production map calls = %+v", got)
+	}
+}
 
 func TestStaticSchedulerMapBindsFrozenRosterAndJoinsInOrder(t *testing.T) {
 	in, acts, calls := staticMapFixture(t, `{
@@ -189,10 +221,17 @@ type staticMapCalls struct {
 	results      []runner.MapItemResult
 }
 
-func (c *staticMapCalls) snapshot() staticMapCalls {
+type staticMapSnapshot struct {
+	items        map[string]string
+	joinCalls    int
+	completeness []journal.BranchOutcome
+	results      []runner.MapItemResult
+}
+
+func (c *staticMapCalls) snapshot() staticMapSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := staticMapCalls{
+	out := staticMapSnapshot{
 		items:        make(map[string]string, len(c.items)),
 		joinCalls:    c.joinCalls,
 		completeness: make([]journal.BranchOutcome, len(c.completeness)),
@@ -295,7 +334,7 @@ func staticMapFixtureWith(
 					Error: failure, Integrity: integrity,
 				}, nil
 			case "join":
-				data, err := json.Marshal(env.Inputs[runner.MapCompletenessInput])
+				data, err := json.Marshal(env.Inputs[runsemantics.MapCompletenessInput])
 				if err != nil {
 					return apiv1.ResultEnvelope{}, err
 				}
@@ -303,7 +342,7 @@ func staticMapFixtureWith(
 				if err := json.Unmarshal(data, &completeness); err != nil {
 					return apiv1.ResultEnvelope{}, err
 				}
-				data, err = json.Marshal(env.Inputs[runner.MapResultsInput])
+				data, err = json.Marshal(env.Inputs[runsemantics.MapResultsInput])
 				if err != nil {
 					return apiv1.ResultEnvelope{}, err
 				}

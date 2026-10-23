@@ -60,6 +60,7 @@ func TestStaticSchedulerMapRealHistoryReplay(t *testing.T) {
 	const queue = "static-scheduler-map"
 	worker := temporalworker.New(server.Client(), queue, temporalworker.Options{})
 	worker.RegisterWorkflow(staticScheduler)
+	worker.RegisterWorkflow(Run)
 	worker.RegisterActivity(acts)
 	if err := worker.Start(); err != nil {
 		t.Fatal(err)
@@ -94,7 +95,42 @@ func TestStaticSchedulerMapRealHistoryReplay(t *testing.T) {
 	}
 	replayer := temporalworker.NewWorkflowReplayer()
 	replayer.RegisterWorkflow(staticScheduler)
+	replayer.RegisterWorkflow(Run)
 	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
+		t.Fatal(err)
+	}
+
+	productionInput := in.Run
+	productionInput.RunID += "-production"
+	production, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: queue + "-production", TaskQueue: queue,
+	}, Run, productionInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var productionResult RunResult
+	if err := production.Get(ctx, &productionResult); err != nil {
+		t.Fatal(err)
+	}
+	if productionResult.Status != StatusCompleted {
+		t.Fatalf("production result=%+v", productionResult)
+	}
+	productionHistory := hitlFetchHistory(t, ctx, server.Client(), production.GetID(), production.GetRunID())
+	for i, event := range productionHistory.Events {
+		if event.GetWorkflowTaskStartedEventAttributes() == nil {
+			continue
+		}
+		replayer := temporalworker.NewWorkflowReplayer()
+		replayer.RegisterWorkflow(Run)
+		if err := replayer.ReplayWorkflowHistory(nil, &historypb.History{
+			Events: productionHistory.Events[:i+1],
+		}); err != nil {
+			t.Fatalf("production replay prefix %d: %v", i, err)
+		}
+	}
+	productionReplayer := temporalworker.NewWorkflowReplayer()
+	productionReplayer.RegisterWorkflow(Run)
+	if err := productionReplayer.ReplayWorkflowHistory(nil, productionHistory); err != nil {
 		t.Fatal(err)
 	}
 }

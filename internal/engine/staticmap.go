@@ -12,7 +12,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -183,14 +182,14 @@ func assembleStaticMapJoin(
 ) *staticMapJoin {
 	join := &staticMapJoin{
 		completeness:    make([]journal.BranchOutcome, len(result.Settlements)),
-		results:         make([]runner.MapItemResult, 0, len(result.Settlements)),
+		results:         make([]runsemantics.MapItemResult, 0, len(result.Settlements)),
 		rosterIntegrity: roster.Source.Integrity,
 	}
 	grades := []apiv1.Integrity{join.rosterIntegrity}
 	for i, settlement := range result.Settlements {
 		outcome := settlement.Outcome
 		join.completeness[i] = outcome
-		entry := runner.MapItemResult{
+		entry := runsemantics.MapItemResult{
 			Identity: outcome.MapItemIdentity, Digest: outcome.MapItemDigest,
 			Branch: outcome.Branch, Status: outcome.Status,
 		}

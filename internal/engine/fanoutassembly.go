@@ -13,12 +13,20 @@ const fanOutAssemblyVersion = "engine-run-fanout-assembly-v1"
 // refuseUnassembledFanOut preserves the run-start refusal introduced before
 // production assembly. Admission rejects parallels independently, so older
 // test-only histories that walked to unknown-state were never admitted runs.
-// The versioned path delegates maps to the unchanged run-start refusal; plain
-// and selective parallels proceed through compilation and preview/live checks.
+// Each versioned adapter proceeds through compilation and preview/live checks;
+// older histories retain the refusal they recorded.
 func refuseUnassembledFanOut(ctx workflow.Context, in RunInput) error {
 	spec := in.Spec
 	if len(spec.Parallels) > 0 && workflow.GetVersion(ctx, fanOutAssemblyVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		spec.Parallels = nil
+	}
+	if len(spec.Maps) > 0 {
+		if workflow.GetVersion(ctx, staticMapVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+			return &wf.UnsupportedFanOutError{
+				State: spec.Maps[0].Name, Feature: "spec.maps", Err: wf.ErrMapUnsupported,
+			}
+		}
+		spec.Maps = nil
 	}
 	return wf.RefuseUnsupportedFanOut(spec)
 }

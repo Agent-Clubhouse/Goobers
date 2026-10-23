@@ -10,7 +10,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -30,7 +29,7 @@ type staticWalkSession struct {
 
 type staticMapJoin struct {
 	completeness     []journal.BranchOutcome
-	results          []runner.MapItemResult
+	results          []runsemantics.MapItemResult
 	rosterIntegrity  apiv1.Integrity
 	resultsIntegrity apiv1.Integrity
 }

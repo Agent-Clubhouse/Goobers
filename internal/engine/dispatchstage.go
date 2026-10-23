@@ -562,7 +562,7 @@ func (a *Activities) validateStageDispatch(input *DispatchStageInput) error {
 	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
 		return err
 	}
-	if err := validateRemoteUsageAllowance(input); err != nil {
+	if err := validateRemoteUsageAllowance(*input); err != nil {
 		return err
 	}
 	if input.Placement.Self {

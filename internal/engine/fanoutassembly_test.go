@@ -246,7 +246,7 @@ func TestProductionRunFanOutComposesWithSelection(t *testing.T) {
 	t.Fatal("Run did not settle its selective parallel")
 }
 
-func TestProductionRunFanOutKeepsMapRefusal(t *testing.T) {
+func TestProductionRunLegacyMapHistoryKeepsRefusal(t *testing.T) {
 	for _, withParallel := range []bool{false, true} {
 		def := fanOutEngineDefinition(true)
 		if withParallel {
@@ -256,6 +256,8 @@ func TestProductionRunFanOutKeepsMapRefusal(t *testing.T) {
 		in.DSLVersion, in.LiveJournal = "3.1", true
 		var suite testsuite.WorkflowTestSuite
 		env := temporaltest.NewWorkflowEnvironment(&suite)
+		env.OnGetVersion(staticMapVersion, workflow.DefaultVersion, 1).
+			Return(workflow.DefaultVersion)
 		// No activities registered: any attempt to run the producer is a failure.
 		env.ExecuteWorkflow(Run, in)
 		if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), wf.ErrMapUnsupported.Error()) {
