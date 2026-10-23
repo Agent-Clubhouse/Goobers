@@ -13,6 +13,9 @@
 # externally provisioned PostgreSQL server below.
 server:
   replicaCount: 1
+  image:
+    repository: temporalio/server
+    tag: "1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6"
   dynamicConfig:
     frontend.workerVersioningWorkflowAPIs:
       - value: true
@@ -59,6 +62,11 @@ server:
 # Run temporal-sql-tool as a pre-install/pre-upgrade hook before server pods.
 schema:
   useHelmHooks: true
+
+admintools:
+  image:
+    repository: temporalio/admin-tools
+    tag: "1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87"
 
 shims:
   dockerize: false
