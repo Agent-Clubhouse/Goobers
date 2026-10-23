@@ -49,9 +49,13 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		!strings.Contains(run.Run, " -json ") || !strings.Contains(run.Run, "set -uo pipefail") ||
 		!strings.Contains(run.Run, `tee "$RUNNER_TEMP/cloud-pg-test.json"`) ||
 		!strings.Contains(run.Run, `go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1`) ||
-		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/...") ||
+		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/...") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
+	}
+	pending := job.step(t, "Verify journal equivalence pending issues")
+	if pending.Run != "go run ./test/journalequivalence/cmd/equivalence verify-pending" || pending.Env["GH_TOKEN"] != "${{ github.token }}" || pending.ContinueOnError {
+		t.Fatalf("known journal divergences are not checked live: %+v", pending)
 	}
 	upload := job.step(t, "Upload cloud integration test events")
 	if upload.If != "always()" || !strings.Contains(upload.Uses, "actions/upload-artifact@") ||

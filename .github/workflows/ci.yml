@@ -917,6 +917,11 @@ jobs:
       - name: Export Temporal CLI path
         run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
 
+      - name: Verify journal equivalence pending issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./test/journalequivalence/cmd/equivalence verify-pending
+
       - name: Run cloud integration smoke
         env:
           TESTDEP_STRICT: "1"
@@ -933,7 +938,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... \
+          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... \
             | tee "$RUNNER_TEMP/cloud-pg-test.json" > /dev/null || status=$?
           go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1
           exit "$status"

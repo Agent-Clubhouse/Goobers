@@ -109,3 +109,26 @@ func TestCloudPGReportCollectsOnlyTaggedTopLevelTests(t *testing.T) {
 		t.Fatalf("objstore tagged tests = %d, want 13", got)
 	}
 }
+
+func TestCloudPGReportRequiresJournalEquivalence(t *testing.T) {
+	root := pgReportTree(t)
+	writeTestFile(t, root, "test/journalequivalence/cloud_test.go", "//go:build cloudintegration\n\npackage journalequivalence\n\nimport \"testing\"\n\nfunc TestCloudJournalEquivalentToLocal(t *testing.T) {}\n")
+	required, err := cloudIntegrationPackages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := modulePath + "/test/journalequivalence"
+	if len(required[pkg]) != 1 || required[pkg][0] != "TestCloudJournalEquivalentToLocal" {
+		t.Fatalf("equivalence not required: %v", required)
+	}
+	for _, action := range []string{"", "skip", "pass"} {
+		results := map[string]*packageResult{}
+		if action != "" {
+			results[pkg] = &packageResult{outcomes: map[string]string{"TestCloudJournalEquivalentToLocal": action}}
+		}
+		problems := cloudPGProblems(results, map[string][]string{pkg: required[pkg]})
+		if (len(problems) > 0) != (action != "pass") {
+			t.Fatalf("action=%q problems=%v", action, problems)
+		}
+	}
+}
