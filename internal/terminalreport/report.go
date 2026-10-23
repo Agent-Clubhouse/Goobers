@@ -72,3 +72,15 @@ func (e Effect) Key() string { return effectKey(e) }
 // Identity distinguishes report contents that must keep a frozen body on
 // re-admission from a new report that needs a fresh rendering.
 func (e Effect) Identity() string { return reportIdentity(e) }
+
+// Outbox is the storage-independent terminal-report publication contract.
+// Queue is the local reference; the cloud PostgreSQL outbox satisfies it too,
+// and test/testsupport/conformance/outbox verifies they agree.
+//
+// Publish durably admits the newest intent for its key and attempts delivery;
+// Reconcile retries at most budget due intents. Delivery is at-least-once:
+// apply must be idempotent, as the comment markers and additive labels are.
+type Outbox interface {
+	Publish(ctx context.Context, e Effect, apply func(context.Context, Effect) error) error
+	Reconcile(ctx context.Context, budget int, apply func(context.Context, Effect) error) error
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
 	"github.com/goobers/goobers/internal/terminalreport"
+	"github.com/goobers/goobers/test/testsupport/conformance/outbox"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -103,6 +104,27 @@ func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	if deliveries, err := newStore.Claim(t.Context(), successor, 10); err != nil || len(deliveries) != 0 {
 		t.Fatalf("delivered intent was claimed again: %d, %v", len(deliveries), err)
 	}
+}
+
+func TestOutboxConformance(t *testing.T) {
+	outbox.Run(t, func(t *testing.T) outbox.Backend {
+		pool := pgtest.Pool(t, "trpg")
+		manager := pgtest.Manager(t, pool, "holder", 0)
+		handle := pgtest.Acquire(t, manager)
+		return outbox.Backend{
+			Open: func(*testing.T) terminalreport.Outbox {
+				return terminalreportpg.Outbox{Store: terminalreportpg.Store{Fence: manager}, Handle: handle}
+			},
+			Expire: func(t *testing.T) {
+				if _, err := pool.Exec(t.Context(), `
+					UPDATE control.terminal_report
+					SET retry_at='-infinity', lease_token=NULL, lease_until=NULL
+					WHERE delivered_at IS NULL`); err != nil {
+					t.Fatal(err)
+				}
+			},
+		}
+	})
 }
 
 func TestTerminalReportConcurrentClaimHasOneWinner(t *testing.T) {
@@ -208,7 +230,7 @@ func TestTerminalReportDeferAndRetentionUseDatabaseClock(t *testing.T) {
 	if _, err := store.Publish(t.Context(), handle, e); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Defer(t.Context(), handle, claimOne(t, store, handle), time.Hour); err != nil {
+	if _, err := store.Defer(t.Context(), handle, claimOne(t, store, handle), time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if deliveries, err := store.Claim(t.Context(), handle, 1); err != nil || len(deliveries) != 0 {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -94,10 +95,11 @@ func encodeEffect(e terminalreport.Effect) ([]byte, error) {
 	return json.Marshal(e)
 }
 
-// Publish admits the newest intent for its key. Re-publishing the identical
-// intent resolves to the stored generation before any capacity check; a
-// different intent advances the generation so an in-flight older delivery
-// can no longer acknowledge it.
+// Publish admits the newest intent for its key. Re-publishing an identical
+// pending intent resolves to its stored generation before any capacity check.
+// A different intent, or any intent for an already delivered key, advances the
+// generation, so it is delivered again and an in-flight older delivery can no
+// longer acknowledge it.
 func (s Store) Publish(ctx context.Context, handle *lease.Handle, effect terminalreport.Effect) (int64, error) {
 	encoded, err := encodeEffect(effect)
 	if err != nil {
@@ -128,30 +130,32 @@ type admission struct {
 	encoded       []byte
 }
 
-// resolve reports whether the key exists, leaving an identical intent at its
-// stored generation and advancing a different one.
+// resolve reports whether the key exists, leaving an identical pending intent
+// at its stored generation and advancing anything else.
 func (s Store) resolve(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a admission, generation *int64) (bool, error) {
 	var stored []byte
 	var storedIdentity string
+	var delivered bool
 	err := tx.QueryRow(ctx, `
-		SELECT effect, report_identity, generation FROM control.terminal_report
+		SELECT effect, report_identity, generation, delivered_at IS NOT NULL FROM control.terminal_report
 		WHERE instance_id=$1 AND effect_key=$2 FOR UPDATE`,
 		handle.InstanceID, a.key,
-	).Scan(&stored, &storedIdentity, generation)
+	).Scan(&stored, &storedIdentity, generation, &delivered)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("read terminal report: %w", err)
-	case bytes.Equal(stored, a.encoded):
+	case !delivered && bytes.Equal(stored, a.encoded):
 		return true, nil
 	default:
-		return true, s.supersede(ctx, tx, handle, a, storedIdentity, generation)
+		// A frozen body belongs to its pending report identity; a delivered
+		// report or a new identity renders afresh.
+		return true, s.supersede(ctx, tx, handle, a, !delivered && a.identity == storedIdentity, generation)
 	}
 }
 
-func (s Store) supersede(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a admission, storedIdentity string, generation *int64) error {
-	// A frozen body belongs to its report identity; a new identity re-renders.
+func (s Store) supersede(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a admission, keepBody bool, generation *int64) error {
 	err := tx.QueryRow(ctx, `
 		UPDATE control.terminal_report
 		SET effect=$3, report_identity=$4, generation=generation+1, delivered_at=NULL,
@@ -161,7 +165,7 @@ func (s Store) supersede(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a
 		    owner_epoch=$6
 		WHERE instance_id=$1 AND effect_key=$2 AND owner_epoch <= $6
 		RETURNING generation`,
-		handle.InstanceID, a.key, a.encoded, a.identity, a.identity == storedIdentity, handle.Epoch,
+		handle.InstanceID, a.key, a.encoded, a.identity, keepBody, handle.Epoch,
 	).Scan(generation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lease.ErrStale
@@ -204,6 +208,10 @@ func (s Store) admit(ctx context.Context, tx pgx.Tx, handle *lease.Handle, a adm
 // Claim leases up to limit due intents. SKIP LOCKED keeps concurrent claimers
 // disjoint, and an unexpired lease on the database clock is never re-issued.
 func (s Store) Claim(ctx context.Context, handle *lease.Handle, limit int) ([]Delivery, error) {
+	return s.claim(ctx, handle, limit, nil)
+}
+
+func (s Store) claim(ctx context.Context, handle *lease.Handle, limit int, key *string) ([]Delivery, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -216,6 +224,7 @@ func (s Store) Claim(ctx context.Context, handle *lease.Handle, limit int) ([]De
 				  AND retry_at <= clock_timestamp()
 				  AND (lease_until IS NULL OR lease_until <= clock_timestamp())
 				  AND owner_epoch <= $2
+				  AND ($5::text IS NULL OR effect_key=$5)
 				ORDER BY retry_at, effect_key
 				LIMIT $3
 				FOR UPDATE SKIP LOCKED
@@ -224,8 +233,8 @@ func (s Store) Claim(ctx context.Context, handle *lease.Handle, limit int) ([]De
 			SET lease_token=gen_random_uuid(), lease_until=clock_timestamp()+$4::interval, owner_epoch=$2
 			FROM due
 			WHERE t.instance_id=$1 AND t.effect_key=due.effect_key
-			RETURNING t.effect_key, t.generation, t.lease_token::text, t.effect, coalesce(t.body, ''), t.attempts`,
-			handle.InstanceID, handle.Epoch, limit, s.leaseDuration(),
+			RETURNING t.effect_key, t.generation, t.lease_token::text, t.effect, coalesce(t.body, ''), t.attempts, t.retry_at`,
+			handle.InstanceID, handle.Epoch, limit, s.leaseDuration(), key,
 		)
 		if err != nil {
 			return fmt.Errorf("claim terminal reports: %w", err)
@@ -233,12 +242,20 @@ func (s Store) Claim(ctx context.Context, handle *lease.Handle, limit int) ([]De
 		deliveries, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Delivery, error) {
 			var d Delivery
 			var encoded []byte
-			if err := row.Scan(&d.Key, &d.Generation, &d.LeaseToken, &encoded, &d.Body, &d.Attempts); err != nil {
+			var retryAt pgtype.Timestamptz
+			if err := row.Scan(&d.Key, &d.Generation, &d.LeaseToken, &encoded, &d.Body, &d.Attempts, &retryAt); err != nil {
 				return d, err
 			}
 			d.OwnerEpoch, d.CallTimeout = handle.Epoch, s.callTimeout()
 			d.IdempotencyKey = fmt.Sprintf("%s/%d", d.Key, d.Generation)
-			return d, json.Unmarshal(encoded, &d.Effect)
+			if err := json.Unmarshal(encoded, &d.Effect); err != nil {
+				return d, err
+			}
+			d.Effect.Attempts = d.Attempts
+			if retryAt.InfinityModifier == pgtype.Finite {
+				d.Effect.RetryAt = retryAt.Time.UTC()
+			}
+			return d, nil
 		})
 		return err
 	})
@@ -311,35 +328,51 @@ func (s Store) Delivered(ctx context.Context, handle *lease.Handle, d Delivery) 
 }
 
 func (s Store) releaseLease(ctx context.Context, tx pgx.Tx, handle *lease.Handle, d Delivery) error {
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE control.terminal_report SET lease_token=NULL, lease_until=NULL
 		WHERE instance_id=$1 AND effect_key=$2 AND lease_token=$3::uuid AND owner_epoch=$4`,
 		handle.InstanceID, d.Key, d.LeaseToken, handle.Epoch,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("release terminal report lease: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrLeaseLost
 	}
 	return nil
 }
 
 // Defer releases d's lease and postpones the key by delay on the database
 // clock. A later retry time already recorded for the key is never shortened.
-func (s Store) Defer(ctx context.Context, handle *lease.Handle, d Delivery, delay time.Duration) error {
-	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
+// It returns the recorded retry time.
+func (s Store) Defer(ctx context.Context, handle *lease.Handle, d Delivery, delay time.Duration) (time.Time, error) {
+	var retryAt time.Time
+	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `
 			UPDATE control.terminal_report
 			SET retry_at=GREATEST(retry_at, clock_timestamp()+$5::interval), attempts=attempts+1,
 			    lease_token=NULL, lease_until=NULL
 			WHERE instance_id=$1 AND effect_key=$2 AND lease_token=$3::uuid
-			  AND owner_epoch=$4 AND delivered_at IS NULL`,
+			  AND owner_epoch=$4 AND delivered_at IS NULL
+			RETURNING retry_at`,
 			handle.InstanceID, d.Key, d.LeaseToken, handle.Epoch, max(delay, 0),
-		)
+		).Scan(&retryAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLeaseLost
+		}
 		if err != nil {
 			return fmt.Errorf("defer terminal report: %w", err)
 		}
-		if tag.RowsAffected() != 1 {
-			return ErrLeaseLost
-		}
 		return nil
+	})
+	return retryAt.UTC(), err
+}
+
+// Release gives up d's lease without changing its schedule, so it is claimed
+// again; it reports ErrLeaseLost if the lease was already reclaimed.
+func (s Store) Release(ctx context.Context, handle *lease.Handle, d Delivery) error {
+	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		return s.releaseLease(ctx, tx, handle, d)
 	})
 }
 
