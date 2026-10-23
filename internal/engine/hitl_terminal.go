@@ -190,9 +190,10 @@ func (s *hitlSession) cancelTerminalDelivery(ctx workflow.Context) (bool, error)
 	if err := workflow.ExecuteActivity(terminalInterventionContext(ctx), ActCommitTerminalIntervention, req).Get(ctx, &receipt); err != nil {
 		return true, err
 	}
-	if receipt.Resumed {
-		s.rec.publishTerminalOps(pending.ops)
+	if receipt.CommittedPrefix < 0 || receipt.CommittedPrefix > len(pending.ops) {
+		return true, fmt.Errorf("engine: invalid cancelled prefix length %d", receipt.CommittedPrefix)
 	}
+	s.rec.publishTerminalOps(pending.ops[:receipt.CommittedPrefix])
 	s.rec.publishTerminalOps(ops)
 	s.delivery = nil
 	s.pending = nil
