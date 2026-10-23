@@ -191,11 +191,6 @@ func declaredEngineRuntimeBlockers(spec apiv1.WorkflowSpec) []workflow.FeatureID
 			declared[id] = true
 		}
 	}
-	for _, gate := range spec.Gates {
-		if gate.Evaluator == apiv1.EvaluatorHuman {
-			declared["gate.evaluator.human"] = true
-		}
-	}
 	for _, task := range spec.Tasks {
 		if task.Type != apiv1.TaskAgentic || task.Limits == nil {
 			continue

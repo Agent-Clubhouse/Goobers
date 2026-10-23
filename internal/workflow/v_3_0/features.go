@@ -989,7 +989,6 @@ func withRuntimeSupport(features []Feature) []Feature {
 		case featureWorkflowParallels,
 			featureTaskLimitMaxTokens,
 			featureTaskLimitMaxCostUSD,
-			featureEvaluatorHuman,
 			featureTaskOutbox:
 			engineLevel = RuntimeUnsupported
 		}
