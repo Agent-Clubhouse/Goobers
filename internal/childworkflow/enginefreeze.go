@@ -24,6 +24,14 @@ type EngineFreezeContext struct {
 	Admission AdmissionContext
 	// Execution must reproduce the envelope's ExecutionDigest.
 	Execution ExecutionBinding
+	// ConfigGeneration, ParentWorkflowDigest and ParentGooberDigest identify
+	// the retained generation the resolver compiled the parent from. They
+	// must equal the envelope's pins; Admission.ConfigDigest is not compared
+	// because it also hashes the running instance configuration (harnesses,
+	// runner policy), which may reload between acceptance and freeze.
+	ConfigGeneration     string
+	ParentWorkflowDigest string
+	ParentGooberDigest   string
 }
 
 // EngineFreezeResolver loads the pinned context for one accepted envelope.
@@ -51,19 +59,25 @@ func (f EngineFreezer) Freeze(ctx context.Context, request journal.ChildHandoffR
 		e.SourceDigest != child.ProposalDigest || e.SourceDigest != request.SourceDigest || e.SourceDigest != digest(source) {
 		return engine.FrozenChildManifest{}, fmt.Errorf("%w: envelope, lineage and source differ", ErrFrozenChildDrift)
 	}
-	// ParentWorkflowDigest stays an audit pin: the parent's definition does
-	// not shape the child, and the parent's own walk already verifies it.
 	pinned, err := f.Resolve(ctx, e)
 	if err != nil {
 		return engine.FrozenChildManifest{}, err
+	}
+	// The child runs only against the generation its parent was accepted
+	// under, never whatever configuration is current.
+	if pinned.ConfigGeneration != e.ConfigGeneration || pinned.ParentWorkflowDigest != e.ParentWorkflowDigest || pinned.ParentGooberDigest != e.ParentGooberDigest {
+		return engine.FrozenChildManifest{}, fmt.Errorf("%w: pinned generation", ErrFrozenChildDrift)
 	}
 	executionDigest, err := pinned.Execution.Digest()
 	if err != nil || executionDigest != e.ExecutionDigest {
 		return engine.FrozenChildManifest{}, fmt.Errorf("%w: execution binding", ErrFrozenChildDrift)
 	}
 	admission := pinned.Admission
+	// Policy stays strict: any change to the effective child policy since
+	// acceptance refuses, a narrowing included, until accepted policy bytes
+	// are retained (#8079).
 	if admission.Backend != BackendEngine || admission.Gaggle.Name != e.Gaggle || admission.ParentTask.Name != e.ParentStage ||
-		admission.ConfigDigest != e.ConfigDigest || AuthorityPolicyDigest(admission) != e.PolicyDigest {
+		AuthorityPolicyDigest(admission) != e.PolicyDigest {
 		return engine.FrozenChildManifest{}, fmt.Errorf("%w: pinned admission context", ErrFrozenChildDrift)
 	}
 	validator, err := NewValidator(admission)

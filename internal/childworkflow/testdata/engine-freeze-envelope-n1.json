@@ -1,0 +1,23 @@
+{
+  "kind": "child-workflow",
+  "version": 1,
+  "gaggle": "web",
+  "parentRunId": "parent-run",
+  "parentStage": "plan",
+  "stageOccurrence": "sta_xv-Vb3OKFgZ1adgnY0wmL71AzGCrXFhyvu28IXhdeBs",
+  "invocationKey": "call-1",
+  "configGeneration": "sha256:41d22f3ff3734e6722e04b3dd9f61735e0dcbf8b1d49bea68900c4c04dcfbf12",
+  "parentWorkflow": "parent",
+  "parentWorkflowDigest": "sha256:df24f4e62df2535eec80ad50526f16d7a3f3e6b16556ec8bc134f3d5c31753f1",
+  "parentGooberDigest": "sha256:7482430039f9177113e79f9a48ee440833085ca25b92204ae480223d6c4ea018",
+  "workflow": "generated-check",
+  "sourceDigest": "sha256:9e110889c940044ea3949a11ab752d2d48420ff302fc323e8ecd9cab186f0218",
+  "canonicalDigest": "sha256:f132841bcf2946bd38ba8f2c013c9d592db890de37470eaaba26838a4ef3071e",
+  "configDigest": "sha256:62006087d0ad9cdcbd62a899e65e76a6d49d913f823c260a031af4620f887d99",
+  "policyDigest": "sha256:d004d1697ab622de7de8feec78cf7864ff9f3234ce698e01e6734c41717cf05c",
+  "workflowDigest": "sha256:17b9413aec9a247eb21304959bd3ee5232167188f370fa53bfc4469d484be785",
+  "placementsDigest": "sha256:88ec72fc2b306dd332f5fa2f2a973e3ba0fa8135f20b973e4dc83641c908328e",
+  "backend": "engine",
+  "maxChildren": 4,
+  "executionDigest": "sha256:2d743c163d5831a55fef3226a6f68a68fc94f8c036395128abf320336a13b878"
+}
