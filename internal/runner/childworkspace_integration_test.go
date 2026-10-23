@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/workspaceauthority"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -95,7 +96,7 @@ func prepareChildWorkspaceFixture(t *testing.T, pause bool) childWorkspaceFixtur
 		t.Fatal(err)
 	}
 	input := childWorkspaceStart(childWorkspaceMachine(t, apiv1.WorkspaceRepo, pause))
-	input.ChildWorkspace = &ChildWorkspaceAdmission{WorkspaceID: "child-workspace", ForkSHA: snapshot.Record.SnapshotSHA, RepositoryDigest: worktree.RepositoryDigest(parent)}
+	input.ChildWorkspace = &workspaceauthority.ChildWorkspaceAdmission{WorkspaceID: "child-workspace", ForkSHA: snapshot.Record.SnapshotSHA, RepositoryDigest: worktree.RepositoryDigest(parent)}
 	config := Config{Worktrees: manager, RunsDir: filepath.Join(root, "runs"), ScratchDir: filepath.Join(root, "scratch"), ConfigGeneration: journal.Digest([]byte("config")), RepoCloneURL: func(apiv1.RepoRef) (string, error) { return parent, nil }}
 	return childWorkspaceFixture{config: config, input: input, parent: parent, child: child, parentHead: head, parentIndex: index}
 }

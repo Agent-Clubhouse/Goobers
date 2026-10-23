@@ -64,18 +64,6 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('accept:' || $1, 0))", s.instanceID); err != nil {
 		return triggerqueue.Record{}, false, err
 	}
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM control.acceptance
-		WHERE instance_id=$1 AND finished_at IS NOT NULL AND accepted_at < $2
-		  AND NOT EXISTS (
-			SELECT 1 FROM control.child_lineage AS child
-			WHERE child.instance_id=control.acceptance.instance_id
-			  AND child.acceptance_id=control.acceptance.id
-		  )`,
-		s.instanceID, now.Add(-triggerqueue.ReplayRetention),
-	); err != nil {
-		return triggerqueue.Record{}, false, err
-	}
 	prior, err := s.byKey(ctx, tx, key)
 	if err == nil {
 		if prior.Actor != actor || !bytes.Equal(prior.Payload, payload) {

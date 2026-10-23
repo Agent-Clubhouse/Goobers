@@ -9,7 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/httpapi"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -20,7 +20,7 @@ func (a parentAttemptCustody) envelope(ctx context.Context) (apiv1.InvocationEnv
 		return apiv1.InvocationEnvelope{}, err
 	}
 	id := a.contract.Identity
-	machine, err := runner.PinnedWorkflowMachine(a.reader, id)
+	machine, err := runsemantics.PinnedWorkflowMachine(a.reader, id)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, err
 	}

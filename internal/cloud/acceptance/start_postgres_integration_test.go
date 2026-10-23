@@ -83,7 +83,7 @@ func acceptedStartInput(t *testing.T, store *Store) engine.RunInput {
 func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {
 	store, _ := testStore(t, 1)
 	temporal := &pgStartClient{}
-	starter := startfence.New(temporal, "cloud", NewStartAdmission(store))
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
 	invented := engine.RunInput{AcceptanceID: "trigger-invented", RunID: "invented", OwnerEpoch: store.handle.Epoch, StarterID: store.handle.Holder}
 	if _, err := starter.Start(t.Context(), invented); err == nil {
 		t.Fatal("unpersisted matching strings reached Temporal")
@@ -117,7 +117,7 @@ func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {
 func TestPGLostStartResponseIsMine(t *testing.T) {
 	store, _ := testStore(t, 1)
 	temporal := &pgStartClient{loseResponse: true}
-	starter := startfence.New(temporal, "cloud", NewStartAdmission(store))
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
 	in := acceptedStartInput(t, store)
 	if _, err := starter.Start(t.Context(), in); err == nil {
 		t.Fatal("lost response unexpectedly succeeded")
@@ -136,14 +136,14 @@ func TestPGReconcileAdoptsPredecessorStart(t *testing.T) {
 	old, pool := testStore(t, 1)
 	temporal := &pgStartClient{loseResponse: true}
 	in := acceptedStartInput(t, old)
-	if _, err := startfence.New(temporal, "cloud", NewStartAdmission(old)).Start(t.Context(), in); err == nil {
+	if _, err := startfence.New(temporal, "cloud", NewStartAdmission(old), testGenerationAdmission{}).Start(t.Context(), in); err == nil {
 		t.Fatal("lost response unexpectedly succeeded")
 	}
 	if err := old.manager.Release(t.Context(), old.handle); err != nil {
 		t.Fatal(err)
 	}
 	current := successorStore(t, pool)
-	result, err := startfence.New(temporal, "cloud", NewStartAdmission(current)).Start(t.Context(), in)
+	result, err := startfence.New(temporal, "cloud", NewStartAdmission(current), testGenerationAdmission{}).Start(t.Context(), in)
 	if err != nil || !result.Adopt || result.NotMine || temporal.executions != 1 {
 		t.Fatalf("adopt = %+v, %v", result, err)
 	}
@@ -167,7 +167,7 @@ func TestPGZombieStartPreservesNotMineAndWinnerCustody(t *testing.T) {
 			t.Fatal(err)
 		}
 		current := successorStore(t, pool)
-		result, err := startfence.New(temporal, "cloud", NewStartAdmission(current)).Start(t.Context(), in)
+		result, err := startfence.New(temporal, "cloud", NewStartAdmission(current), testGenerationAdmission{}).Start(t.Context(), in)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +175,7 @@ func TestPGZombieStartPreservesNotMineAndWinnerCustody(t *testing.T) {
 			t.Fatal("current owner refused")
 		}
 	}
-	result, err := startfence.New(temporal, "cloud", NewStartAdmission(old)).Start(t.Context(), in)
+	result, err := startfence.New(temporal, "cloud", NewStartAdmission(old), testGenerationAdmission{}).Start(t.Context(), in)
 	if err == nil || !result.NotMine {
 		t.Fatalf("stale NotMine classification lost: %+v %v", result, err)
 	}
@@ -194,7 +194,7 @@ func TestPGMissingMemoRefusesAdoption(t *testing.T) {
 	store, _ := testStore(t, 1)
 	in := acceptedStartInput(t, store)
 	temporal := &pgStartClient{memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{}}}
-	result, err := startfence.New(temporal, "cloud", NewStartAdmission(store)).Start(t.Context(), in)
+	result, err := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{}).Start(t.Context(), in)
 	if err != nil || !result.NotMine || result.Adopt {
 		t.Fatalf("missing memo = %+v, %v", result, err)
 	}
@@ -218,7 +218,7 @@ func TestPGSuccessorLostStartResponseIsMine(t *testing.T) {
 	}
 	current := successorStore(t, pool)
 	temporal := &pgStartClient{loseResponse: true}
-	starter := startfence.New(temporal, "cloud", NewStartAdmission(current))
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(current), testGenerationAdmission{})
 	if _, err := starter.Start(t.Context(), in); err == nil {
 		t.Fatal("lost response unexpectedly succeeded")
 	}
@@ -286,3 +286,8 @@ func TestPGStartReadDoesNotAdoptAndDoubleAdoptRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Config eligibility is independently qualified by the controller composition.
+type testGenerationAdmission struct{}
+
+func (testGenerationAdmission) Admit(string, string, string) error { return nil }

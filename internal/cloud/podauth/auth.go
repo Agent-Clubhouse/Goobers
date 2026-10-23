@@ -6,18 +6,27 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	shared "github.com/goobers/goobers/internal/podauth"
 )
 
+// GrantAdmission checks durable revocation and expiry against the same primary
+// database clock used by revocation cleanup. Local wall-clock validation alone
+// cannot safely admit a grant after its revocation has been pruned.
+type GrantAdmission interface {
+	planes.GrantRevocations
+	CheckGrant(context.Context, string, time.Time) error
+}
+
 // Config configures cloud auth. A key file and durable revocations are mandatory;
 // empty/registry modes fail at construction rather than admitting local state.
 type Config struct {
 	Mode        string
 	KeyFile     string
-	Revocations planes.GrantRevocations
+	Revocations GrantAdmission
 	Fallback    httpapi.Authenticator
 }
 
@@ -27,7 +36,7 @@ type Auth struct {
 	PodKeys     *shared.SignedKey
 	GrantKeys   *shared.SignedKey
 	verifier    *shared.Authenticator
-	revocations planes.GrantRevocations
+	revocations GrantAdmission
 }
 
 // New refuses process-local registry auth and loads both domain-separated keys.
@@ -79,12 +88,8 @@ func (a *Auth) VerifyCredentialGrant(ctx context.Context, token string) (shared.
 	if err != nil {
 		return shared.CredentialGrant{}, err
 	}
-	revoked, err := a.revocations.IsRevoked(ctx, grant.ID)
-	if err != nil {
+	if err := a.revocations.CheckGrant(ctx, grant.ID, grant.ExpiresAt); err != nil {
 		return shared.CredentialGrant{}, err
-	}
-	if revoked {
-		return shared.CredentialGrant{}, shared.ErrInvalidCredentialGrant
 	}
 	return grant, nil
 }

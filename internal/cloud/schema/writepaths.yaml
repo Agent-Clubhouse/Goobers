@@ -126,12 +126,8 @@ tables:
   table: acceptance
   provisioned: true
   fence: owner_epoch
-  rationale: 'The api Accept inserts accepted rows and never updates state or owner_epoch (column grants cannot
-    pin the inserted state value; the code inserts only ''accepted''). The controller inserts source-driven acceptances
-    (AcceptSource) and owns dispatch transitions under the controller-lease fence. TEMPORARY: the api''s SELECT(finished_at)
-    and DELETE serve main''s api-path retention prune; #7850 moves the prune to the fenced controller and removes
-    both, and adds its 0009 columns. Start-fence custody and retry updates (0014) belong to the controller; both
-    roles can read uncertain-start status.'
+  rationale: The API inserts accepted rows and reads receipts and uncertain-start status. Only the lease-fenced
+    controller dispatches, adopts, retries, finishes and prunes acceptance rows.
   readers:
   - role: goobers_api
     columns:
@@ -144,7 +140,6 @@ tables:
     - run_id
     - reason
     - accepted_at
-    - finished_at
     - dispatch_started_at
     - start_retry_at
   - role: goobers_controller
@@ -163,6 +158,7 @@ tables:
     - dispatch_started_at
     - start_retry_at
     - start_retry_count
+    - start_retry_epoch
   writers:
   - role: goobers_api
     insert:
@@ -175,7 +171,6 @@ tables:
     - state
     - run_id
     - accepted_at
-    delete: true
   - role: goobers_controller
     insert:
     - instance_id
@@ -196,6 +191,7 @@ tables:
     - dispatch_started_at
     - start_retry_at
     - start_retry_count
+    - start_retry_epoch
     delete: true
 - schema: control
   table: source_receipt
@@ -281,8 +277,9 @@ tables:
 - schema: control
   table: grant_revocation
   provisioned: true
-  fence: epoch
-  rationale: Revocations are inserted once under the controller-lease fence. Every API grant admission reads them.
+  fence: unique key
+  rationale: API revocations are immutable append-only security facts, idempotent by instance and grant ID, with
+    no controller lease. The controller alone prunes expired facts inside its live lease fence.
   readers:
   - role: goobers_api
     columns:
@@ -292,13 +289,15 @@ tables:
     columns:
     - instance_id
     - grant_id
+    - expires_at
   writers:
-  - role: goobers_controller
+  - role: goobers_api
     insert:
     - instance_id
     - grant_id
-    - owner_epoch
     - expires_at
+  - role: goobers_controller
+    delete: true
 - schema: control
   table: claim
   provisioned: true
@@ -1143,9 +1142,8 @@ tables:
   provisioned: true
   fence: owner_epoch
   rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
-    Controller reads also cover every blob reference probe. The API reads only instance_id/acceptance_id to exclude children
-    from generic start status and, until PR 7850 moves pruning to the controller, ordinary acceptance retention.
-    The status exclusion permanently requires this minimal grant. The worker has no custody privileges.
+    Controller reads also cover every blob reference probe. The API permanently reads only instance_id/acceptance_id
+    to exclude children from generic start status. Acceptance retention is controller-only. The worker has no custody privileges.
   readers:
   - role: goobers_controller
     columns:
@@ -1428,6 +1426,29 @@ tables:
   writers:
   - role: goobers_controller
     update:
+    - owner_epoch
+    delete: true
+- schema: control
+  table: provider_observation
+  provisioned: true
+  fence: owner_epoch
+  rationale: Controller snapshots provider observations under its live lease fence and restores them before admission
+    after restart.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - observation_key
+    - payload
+    - observed_at
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - observation_key
+    - payload
+    - observed_at
     - owner_epoch
     delete: true
 sequences:

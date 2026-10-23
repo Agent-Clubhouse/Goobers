@@ -27,7 +27,7 @@ func finishReviewChild(t *testing.T, store *Store, child triggerqueue.ChildRecor
 	}
 }
 
-func TestChildOrdinaryPruningPreservesCustody(t *testing.T) {
+func TestChildControllerPruningPreservesCustody(t *testing.T) {
 	store, pool := childTestStore(t)
 	request := childRequest("parent", "stage", "call")
 	child, _, err := store.AcceptChild(t.Context(), request, time.Now())
@@ -46,6 +46,9 @@ func TestChildOrdinaryPruningPreservesCustody(t *testing.T) {
 	}
 	if _, _, err := store.Accept(
 		t.Context(), "ordinary", "actor", []byte("ordinary"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Prune(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.GetChild(t.Context(), child.Identity); err != nil {
@@ -74,6 +77,16 @@ func TestChildTombstoneResolvesExactReplay(t *testing.T) {
 	result, err := store.PruneChildren(t.Context(), time.Now(), 100)
 	if err != nil || result.Tombstoned != 1 {
 		t.Fatalf("prune = %+v %v", result, err)
+	}
+	// Ordinary controller retention must also preserve the acceptance identity
+	// for the full child tombstone lifetime, not just while lineage is live.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance
+ SET accepted_at=clock_timestamp()-interval '8 days', finished_at=clock_timestamp()-interval '8 days'
+ WHERE instance_id=$1 AND id=$2`, store.instanceID, child.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Prune(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	replay, duplicate, err := store.AcceptChild(t.Context(), request, time.Now())
 	if err != nil || !duplicate || replay.TombstonedAt.IsZero() {

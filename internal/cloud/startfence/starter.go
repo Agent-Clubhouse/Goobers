@@ -71,9 +71,10 @@ type workflowDescriber interface {
 // WorkflowID to RunInput.RunID and asks Temporal to reject reuse whether the
 // first run is open or closed, mapping that rejection to AlreadyRunning.
 type TemporalStarter struct {
-	client    workflowStarter
-	taskQueue string
-	admission engine.StartAdmission
+	client     workflowStarter
+	taskQueue  string
+	admission  engine.StartAdmission
+	generation GenerationAdmission
 }
 
 // Start launches the engine workflow for in, idempotently on in.RunID.
@@ -82,6 +83,12 @@ func (s *TemporalStarter) Start(ctx context.Context, in engine.RunInput) (engine
 }
 
 func (s *TemporalStarter) start(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
+	if s.generation == nil {
+		return engine.StartResult{}, errors.New("cloud start requires configuration admission guard")
+	}
+	if err := s.generation.Admit(in.ConfigGeneration, in.Gaggle, in.WorkflowName); err != nil {
+		return engine.StartResult{}, err
+	}
 	var err error
 	in, err = s.admit(ctx, in)
 	if err != nil {
@@ -203,8 +210,8 @@ func startOwner(in engine.RunInput) (StartOwnerMemo, error) {
 }
 
 // New requires a durable admission adapter before any Temporal operation.
-func New(c client.Client, taskQueue string, admission engine.StartAdmission) *TemporalStarter {
-	return &TemporalStarter{client: c, taskQueue: taskQueue, admission: admission}
+func New(c client.Client, taskQueue string, admission engine.StartAdmission, generation GenerationAdmission) *TemporalStarter {
+	return &TemporalStarter{client: c, taskQueue: taskQueue, admission: admission, generation: generation}
 }
 func (s *TemporalStarter) admit(ctx context.Context, in engine.RunInput) (engine.RunInput, error) {
 	if s.admission == nil {

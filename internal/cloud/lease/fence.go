@@ -134,6 +134,11 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 	workErr := work(runCtx, handle)
 	cancel()
 	renewalErr := <-renewalDone
+	// A timed-out callback or failed self-fence must not grant an early handoff.
+	// Stop renewal and let the database TTL expire instead.
+	if errors.Is(workErr, ErrWorkStillRunning) || errors.Is(renewalErr, ErrSelfFenced) {
+		return errors.Join(workErr, renewalErr)
+	}
 
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), FencedTransactionTimeout)
 	defer releaseCancel()

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/runtimewiring"
@@ -62,7 +64,7 @@ type childKitFixtureOptions struct {
 	queued             bool
 	parent             string
 	source             string
-	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *runner.ChildWorkspaceAdmission
+	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *workspaceauthority.ChildWorkspaceAdmission
 }
 
 func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
@@ -193,7 +195,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var workspace *runner.ChildWorkspaceAdmission
+	var workspace *workspaceauthority.ChildWorkspaceAdmission
 	if options.workspace != nil {
 		workspace = options.workspace(service, ref.Child, manager)
 	}

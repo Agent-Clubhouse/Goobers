@@ -35,6 +35,7 @@ const (
 Serve the cloud control-plane API.
 
 Database options:
+  --instance-id ID                 Required instance (or GOOBERS_INSTANCE_ID)
   --database-url URL               PgBouncer URL (prefer env/file for credentials)
   --database-url-file PATH         Read PgBouncer URL from a mounted Secret
   --database-direct-url URL        Direct URL (prefer env/file for credentials)
@@ -48,6 +49,7 @@ Database options:
   --experimental-physical-blob-gc  Enable storage-leased physical deletion (#7843)
 
 Environment:
+  GOOBERS_INSTANCE_ID          Required non-placeholder instance identity
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
   GOOBERS_OBJECT_STORE_URL     Azure Blob service URL
@@ -224,6 +226,7 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 	}
 	flags := flag.NewFlagSet(role, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	instanceID := flags.String("instance-id", os.Getenv("GOOBERS_INSTANCE_ID"), "required non-placeholder instance identity")
 	transactionURLArg := flags.String("database-url", "", "PgBouncer transaction-pool URL")
 	transactionURLFile := flags.String("database-url-file", "", "file containing the PgBouncer transaction-pool URL")
 	directURLArg := flags.String("database-direct-url", "", "direct PostgreSQL URL")
@@ -251,6 +254,12 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 	if flags.NArg() != 0 || (initializeServices && (strings.TrimSpace(*objectStoreURL) == "" || strings.TrimSpace(*objectStoreContainer) == "")) {
 		flags.Usage()
 		return 2
+	}
+	if initializeServices {
+		if _, err := controlInstanceDatabase(*instanceID); err != nil {
+			writef(stderr, "goobers-cloud %s: %v\n", role, err)
+			return 2
+		}
 	}
 	transactionURL, err := cloudpg.DatabaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
 	if err != nil {
@@ -314,7 +323,7 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 	}
 	acceptances, err := newAcceptanceStore(
 		pools.Transaction,
-		environmentOr("GOOBERS_INSTANCE_ID", "default"),
+		*instanceID,
 	)
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
@@ -324,12 +333,12 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 	services = newDatabaseServices(pools, acceptances, compatibilityErr)
 	services.Blobs, services.Objects, services.Acceptances = blobs, objects, acceptances
 	services.Surrenders = objstore.SurrenderPlane{
-		Metadata: objects, InstanceID: environmentOr("GOOBERS_INSTANCE_ID", "default"),
+		Metadata: objects, InstanceID: *instanceID,
 	}
 	services.NewClaims = func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
 		return cloudclaims.New(
 			pools.Transaction,
-			environmentOr("GOOBERS_INSTANCE_ID", "default"),
+			*instanceID,
 			manager, handle,
 		)
 	}

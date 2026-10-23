@@ -4,6 +4,7 @@ Usage:
   goobers-cloud <COMMAND> [OPTIONS]
 
 Roles:
+  control            Serve API and the single-active cloud controller.
   api                Serve the cloud control-plane API.
   controller         Run cloud control-plane reconciliation.
   migrate            Apply cloud data-store migrations.

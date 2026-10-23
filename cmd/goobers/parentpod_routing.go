@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // The runner caches a goober across tasks and gates. Route each call using the
@@ -36,7 +37,7 @@ func routeContainedParent(root, goober string, rec runner.ArtifactRecorder, ordi
 	if id.Child != nil || id.WorkflowDigest == "" {
 		return routed, nil
 	}
-	machine, err := runner.PinnedWorkflowMachine(reader, id)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, id)
 	if err != nil {
 		return nil, err
 	}

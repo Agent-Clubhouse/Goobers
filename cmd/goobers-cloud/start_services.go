@@ -16,7 +16,7 @@ func newDatabaseServices(pools *cloudpg.Pools, store *acceptance.Store, compatib
 		RecoverStarts:       store.RecoverStarts,
 		StartStatusPage:     store.StartStatusPage,
 		NewStarter: func(c client.Client, queue string) engine.Starter {
-			return startfence.New(c, queue, acceptance.NewStartAdmission(store))
+			return startfence.New(c, queue, acceptance.NewStartAdmission(store), nil)
 		},
 	}
 }
