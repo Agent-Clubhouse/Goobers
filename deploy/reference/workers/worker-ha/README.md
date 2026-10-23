@@ -11,4 +11,11 @@ is lowered in the same change and CHAOS-13 qualifies rainbow re-attachment.
 `WorkerResourceTemplate`. The controller injects the exact build ID selector
 and creates/deletes one PDB with each live worker version. Merge
 `controller-values.yaml` into the Worker Controller chart values so its webhook
-and service account may manage PDBs.
+and service account may manage PDBs. Pin Worker Controller v1.13.0 (Helm chart
+0.32.0), whose selector injection adds `temporal.io/build-id` and
+`temporal.io/deployment-name`. The template also carries non-empty
+`matchExpressions`, so an uninjected selector never selects unrelated pods.
+
+The component delete-patches the legacy broad PDB before per-build PDBs are
+created. PriorityClasses are prerequisites owned by #7852's cloud reference;
+this component references `goobers-control-plane` and never redefines it.

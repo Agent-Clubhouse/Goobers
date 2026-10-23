@@ -6,3 +6,4 @@ resources:
 
 patches:
   - path: worker-deployment-patch.yaml
+  - path: legacy-worker-pdb-delete.yaml

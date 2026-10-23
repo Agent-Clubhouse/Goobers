@@ -112,6 +112,57 @@ jobs:
       - name: Verify worker HA scenario contracts
         run: go test ./test/ha/workerscenarios
 
+      # p3-chaos owns the generic runner. Until #7859 lands, absence is the
+      # only allowed deferral. Once present, registration and tonight's
+      # passing execution are both mandatory.
+      - name: Require executed worker chaos scenarios
+        shell: bash
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          set -euo pipefail
+          if [[ ! -f test/ha/chaos/chaos.go ]]; then
+            echo "::notice title=worker chaos registration deferred::p3-chaos #7859 is not on main"
+            exit 0
+          fi
+          cat >"$RUNNER_TEMP/require-worker-scenarios.go" <<'EOF'
+          package main
+
+          import (
+            "fmt"
+            "os"
+
+            "github.com/goobers/goobers/test/ha/chaos"
+          )
+
+          func main() {
+            required := map[string]bool{"CHAOS-13": false, "UPGRADE-11": false}
+            for _, scenario := range chaos.Scenarios() {
+              if _, wanted := required[scenario.ID]; !wanted {
+                continue
+              }
+              if scenario.Pending != "" {
+                fmt.Fprintf(os.Stderr, "%s is pending: %s\n", scenario.ID, scenario.Pending)
+                os.Exit(1)
+              }
+              if scenario.Run == nil {
+                fmt.Fprintf(os.Stderr, "%s has no Run function\n", scenario.ID)
+                os.Exit(1)
+              }
+              required[scenario.ID] = true
+            }
+            for id, found := range required {
+              if !found {
+                fmt.Fprintf(os.Stderr, "%s is absent from chaos.Scenarios()\n", id)
+                os.Exit(1)
+              }
+            }
+          }
+          EOF
+          go run "$RUNNER_TEMP/require-worker-scenarios.go"
+          go run ./test/ha/workerscenarios/cmd/verify-evidence \
+            "$HA_EVIDENCE_DIR/chaos-summary.json" CHAOS-13 UPGRADE-11
+
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
         run: |

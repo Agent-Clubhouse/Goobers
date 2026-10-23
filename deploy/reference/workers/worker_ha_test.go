@@ -23,6 +23,16 @@ func loadManifest(t *testing.T, path string) map[string]any {
 }
 
 func TestLegacyWorkerHAContract(t *testing.T) {
+	kustomization, err := os.ReadFile("../goobers-system/kustomization.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(kustomization), "priorityclasses.yaml") {
+		t.Fatal("legacy overlay redefines cloud-reference PriorityClasses")
+	}
+	if _, err := os.Stat("../goobers-system/priorityclasses.yaml"); !os.IsNotExist(err) {
+		t.Fatalf("legacy PriorityClass ownership is duplicated: %v", err)
+	}
 	deployment := loadManifest(t, "../goobers-system/worker-deployment.yaml")
 	podSpec, found, err := unstructured.NestedMap(
 		deployment, "spec", "template", "spec")
@@ -74,10 +84,27 @@ func TestRainbowWorkerHAContract(t *testing.T) {
 	}
 
 	selector, found, err := unstructured.NestedMap(
-		template, "spec", "template", "spec", "selector", "matchLabels")
-	if err != nil || !found || len(selector) != 0 {
-		t.Fatalf("injected selector sentinel = %+v found=%v err=%v",
+		template, "spec", "template", "spec", "selector")
+	if err != nil || !found || len(selector) < 2 {
+		t.Fatalf("fail-closed selector = %+v found=%v err=%v",
 			selector, found, err)
+	}
+	matchLabels, found, err := unstructured.NestedMap(
+		selector, "matchLabels")
+	if err != nil || !found || len(matchLabels) != 0 {
+		t.Fatalf("injected matchLabels sentinel = %+v found=%v err=%v",
+			matchLabels, found, err)
+	}
+	selectorYAML, err := yaml.Marshal(selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"temporal.io/build-id", "temporal.io/deployment-name", "Exists", "goobers",
+	} {
+		if !strings.Contains(string(selectorYAML), required) {
+			t.Fatalf("selector lacks %q:\n%s", required, selectorYAML)
+		}
 	}
 	policy, _, _ := unstructured.NestedString(
 		template, "spec", "template", "spec", "unhealthyPodEvictionPolicy")
@@ -90,11 +117,49 @@ func TestRainbowWorkerHAContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		"PodDisruptionBudget", "policy", "poddisruptionbudgets",
+		"v1.13.0", "0.32.0", "PodDisruptionBudget", "policy",
+		"poddisruptionbudgets",
 	} {
 		if !strings.Contains(string(values), required) {
 			t.Fatalf("controller values lack %q", required)
 		}
+	}
+
+	deletePatch := loadManifest(t, "worker-ha/legacy-worker-pdb-delete.yaml")
+	if deletePatch["kind"] != "PodDisruptionBudget" ||
+		deletePatch["$patch"] != "delete" {
+		t.Fatalf("legacy PDB delete patch = %+v", deletePatch)
+	}
+}
+
+func TestRainbowPDBSelectorsDoNotOverlap(t *testing.T) {
+	builds := []string{"build-a", "build-b"}
+	for _, podBuild := range builds {
+		matches := 0
+		for _, pdbBuild := range builds {
+			if podBuild == pdbBuild {
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("build %q matched %d per-build PDBs", podBuild, matches)
+		}
+	}
+	kustomization, err := os.ReadFile("worker-ha/kustomization.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(
+		string(kustomization), "legacy-worker-pdb-delete.yaml") {
+		t.Fatal("rainbow component does not delete the broad legacy PDB")
+	}
+	template, err := os.ReadFile("worker-ha/worker-pdb-template.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(template), "goobers.dev/build") ||
+		!strings.Contains(string(template), "temporal.io/build-id") {
+		t.Fatal("rainbow PDB does not use the Temporal build-label contract")
 	}
 }
 

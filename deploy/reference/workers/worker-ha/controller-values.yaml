@@ -1,4 +1,6 @@
-# Merge this fragment into the Temporal Worker Controller chart values. The
+# Merge this fragment into Temporal Worker Controller v1.13.0 (Helm chart
+# 0.32.0). That pinned release injects temporal.io/build-id and
+# temporal.io/deployment-name into WorkerResourceTemplate PDB selectors. The
 # validating webhook and controller RBAC both derive from allowedResources.
 workerResourceTemplate:
   allowedResources:

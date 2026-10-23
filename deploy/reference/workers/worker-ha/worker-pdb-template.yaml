@@ -3,6 +3,8 @@ kind: WorkerResourceTemplate
 metadata:
   name: goobers-worker-pdb
   namespace: goobers-system
+  annotations:
+    goobers.dev/requires-temporal-worker-controller: v1.13.0
 spec:
   workerDeploymentRef:
     name: goobers
@@ -16,3 +18,10 @@ spec:
       # exact temporal.io/build-id, yielding one PDB per rainbow version.
       selector:
         matchLabels: {}
+        matchExpressions:
+          - key: temporal.io/build-id
+            operator: Exists
+          - key: temporal.io/deployment-name
+            operator: In
+            values:
+              - goobers
