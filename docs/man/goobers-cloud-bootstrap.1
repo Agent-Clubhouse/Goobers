@@ -1,0 +1,30 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLOUD BOOTSTRAP" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers-cloud bootstrap \- Prepare a new cloud install for cutover.
+.SH SYNOPSIS
+\fBgoobers-cloud bootstrap\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers-cloud bootstrap --instance-id ID --backup-ref REF [OPTIONS]
+
+Prepare a new cloud install for cutover: create the database and roles, apply
+schema migrations, create the first lease row and object-store bucket, and
+leave admissions paused. Every step is idempotent.
+
+Bootstrap refuses before changing anything while any step depends on a backend
+that has not shipped; the refusal names each step as "not available until #N".
+
+Options:
+  --instance-id ID                 Instance identifier (required)
+  --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --lease-name NAME                Controller lease name (default controller)
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE             password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+.fi
+.SH SEE ALSO
+\fBgoobers-cloud\fR(1)

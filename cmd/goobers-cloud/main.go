@@ -29,6 +29,8 @@ func init() {
 		{name: "controller", short: "Run cloud control-plane reconciliation.", long: controllerHelp, run: runControllerRole, role: true},
 		{name: "worker", short: "Run a Temporal engine worker.", long: workerHelp, examples: []string{"goobers-cloud worker --task-queue goobers"}, run: runWorkerRole, role: true},
 		{name: "migrate", short: "Apply cloud data-store migrations.", long: migrateHelp, run: runMigrateRole, role: true},
+		{name: "bootstrap", short: "Prepare a new cloud install for cutover.", long: bootstrapHelp, run: runBootstrapRole},
+		{name: "cutover", short: "Check cutover readiness of a cloud install.", long: cutoverHelp, run: runCutoverRole},
 		{name: "completion", short: "Generate a shell completion script.", long: completionHelp, run: runCompletion},
 		{name: "help", short: "Show command help.", long: helpHelp, run: runHelp},
 		{name: "__generate-docs", run: runGenerateDocs, hidden: true},

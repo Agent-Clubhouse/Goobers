@@ -9,8 +9,10 @@
 | Command | Description |
 | --- | --- |
 | [`goobers-cloud api`](#goobers-cloud-api) | Serve the cloud control-plane API. |
+| [`goobers-cloud bootstrap`](#goobers-cloud-bootstrap) | Prepare a new cloud install for cutover. |
 | [`goobers-cloud completion`](#goobers-cloud-completion) | Generate a shell completion script. |
 | [`goobers-cloud controller`](#goobers-cloud-controller) | Run cloud control-plane reconciliation. |
+| [`goobers-cloud cutover`](#goobers-cloud-cutover) | Check cutover readiness of a cloud install. |
 | [`goobers-cloud migrate`](#goobers-cloud-migrate) | Apply cloud data-store migrations. |
 | [`goobers-cloud worker`](#goobers-cloud-worker) | Run a Temporal engine worker. |
 
@@ -51,6 +53,32 @@ Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
+## `goobers-cloud bootstrap`
+
+Prepare a new cloud install for cutover.
+
+~~~text
+Usage: goobers-cloud bootstrap --instance-id ID --backup-ref REF [OPTIONS]
+
+Prepare a new cloud install for cutover: create the database and roles, apply
+schema migrations, create the first lease row and object-store bucket, and
+leave admissions paused. Every step is idempotent.
+
+Bootstrap refuses before changing anything while any step depends on a backend
+that has not shipped; the refusal names each step as "not available until #N".
+
+Options:
+  --instance-id ID                 Instance identifier (required)
+  --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --lease-name NAME                Controller lease name (default controller)
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE             password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+~~~
+
 ## `goobers-cloud completion`
 
 Generate a shell completion script.
@@ -71,6 +99,36 @@ Usage: goobers-cloud controller [DATABASE OPTIONS]
 Run cloud control-plane reconciliation.
 
 Database options are the same as for the api role.
+~~~
+
+## `goobers-cloud cutover`
+
+Check cutover readiness of a cloud install.
+
+~~~text
+Usage: goobers-cloud cutover check --config-dir DIR --instance-config FILE [OPTIONS]
+
+Check that a target install is ready to take over from a local instance.
+
+check runs the cloud-readiness assessment over the instance config (every
+workflow must be DSL 3.0+, engine-supported and placeable without the control
+plane) and the install checks: schema compatible, lease row present,
+admissions paused, object-store bucket reachable. It exits non-zero while
+anything blocks; a check whose backend has not shipped reports
+"not available until #N" and blocks.
+
+Options:
+  --config-dir DIR               Instance config directory (required)
+  --instance-config FILE         instance.yaml (required)
+  --instance-id ID               Instance identifier (required)
+  --lease-name NAME              Controller lease name (default controller)
+  --format FORMAT                text or json (default text)
+  --database-direct-url URL      Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE           password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud migrate`

@@ -167,3 +167,16 @@ func TestCompletionCommand(t *testing.T) {
 		t.Fatalf("completion bash: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
+
+func TestBootstrapFailsClosedWhileBackendsUnavailable(t *testing.T) {
+	code, stdout, stderr := runForTest("bootstrap", "--instance-id", "i", "--backup-ref", "pitr")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "not available until #") || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("bootstrap: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestCutoverCheckRequiresInputs(t *testing.T) {
+	if code, _, _ := runForTest("cutover", "check"); code != 2 {
+		t.Fatalf("cutover check without inputs: code=%d, want 2", code)
+	}
+}
