@@ -273,7 +273,7 @@ func runLegacySchema(ctx context.Context, env []string, assets string, step temp
 	if err != nil {
 		return err
 	}
-	apply := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	apply := exec.CommandContext(ctx, "kubectl", "apply", "-n", "goobers-temporal", "-f", "-")
 	apply.Env, apply.Stdin, apply.Stdout, apply.Stderr = env, strings.NewReader(manifest), os.Stdout, os.Stderr
 	if err := apply.Run(); err != nil {
 		return fmt.Errorf("apply schema job: %w", err)
@@ -311,7 +311,7 @@ func proveSchemaFailureBlocksRollout(ctx context.Context, env []string, assets s
 	manifest = strings.Replace(manifest,
 		"command: ['temporal-sql-tool', 'setup-schema', '-v', '0.0']",
 		"command: ['sh', '-c', 'exit 42']", 1)
-	apply := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	apply := exec.CommandContext(ctx, "kubectl", "apply", "-n", "goobers-temporal", "-f", "-")
 	apply.Env, apply.Stdin, apply.Stdout, apply.Stderr = env, strings.NewReader(manifest), os.Stdout, os.Stderr
 	if err := apply.Run(); err != nil {
 		return fmt.Errorf("apply schema failure proof: %w", err)
