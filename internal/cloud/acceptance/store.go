@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -23,15 +24,21 @@ import (
 type Store struct {
 	pool       *pgxpool.Pool
 	instanceID string
-	ownerEpoch int64
+	manager    *cloudlease.Manager
+	handle     *cloudlease.Handle
 }
 
 // New constructs an instance-scoped acceptance store.
-func New(pool *pgxpool.Pool, instanceID string, ownerEpoch int64) (*Store, error) {
-	if pool == nil || strings.TrimSpace(instanceID) == "" || ownerEpoch < 1 {
-		return nil, errors.New("cloud acceptance requires a pool, instance, and positive owner epoch")
+func New(pool *pgxpool.Pool, instanceID string) (*Store, error) {
+	if pool == nil || strings.TrimSpace(instanceID) == "" {
+		return nil, errors.New("cloud acceptance requires a pool and instance")
 	}
-	return &Store{pool: pool, instanceID: instanceID, ownerEpoch: ownerEpoch}, nil
+	return &Store{pool: pool, instanceID: instanceID}, nil
+}
+
+// BindFence supplies the current controller lease authority.
+func (s *Store) BindFence(manager *cloudlease.Manager, handle *cloudlease.Handle) {
+	s.manager, s.handle = manager, handle
 }
 
 // Close leaves ownership of the shared pool with the composition root.
@@ -55,16 +62,6 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	); err != nil {
 		return triggerqueue.Record{}, false, err
 	}
-	prior, err := s.byKey(ctx, tx, key)
-	if err == nil {
-		if prior.Actor != actor || !bytes.Equal(prior.Payload, payload) {
-			return triggerqueue.Record{}, false, triggerqueue.ErrConflict
-		}
-		return prior, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return triggerqueue.Record{}, false, err
-	}
 	var count int
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM control.acceptance WHERE instance_id=$1", s.instanceID).Scan(&count); err != nil {
 		return triggerqueue.Record{}, false, err
@@ -78,17 +75,28 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	}
 	record := triggerqueue.Record{
 		ID: "trigger-" + runID, Key: key, Actor: actor, Payload: append([]byte(nil), payload...),
-		State: triggerqueue.Accepted, AcceptedAt: now.UTC(),
+		State: triggerqueue.Accepted, RunID: runID, AcceptedAt: now.UTC(),
 	}
 	fingerprint := sha256.Sum256(payload)
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO control.acceptance
-			(instance_id, id, idem_key, actor, fingerprint, payload, state, accepted_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'accepted', $7)`,
-		s.instanceID, record.ID, key, actor, fingerprint[:], payload, record.AcceptedAt,
+			(instance_id, id, idem_key, actor, fingerprint, payload, state, run_id, accepted_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'accepted', $7, $8)
+		ON CONFLICT (instance_id, idem_key) DO NOTHING`,
+		s.instanceID, record.ID, key, actor, fingerprint[:], payload, runID, record.AcceptedAt,
 	)
 	if err != nil {
 		return triggerqueue.Record{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		prior, err := s.byKey(ctx, tx, key)
+		if err != nil {
+			return triggerqueue.Record{}, false, err
+		}
+		if prior.Actor != actor || !bytes.Equal(prior.Payload, payload) {
+			return triggerqueue.Record{}, false, triggerqueue.ErrConflict
+		}
+		return prior, true, tx.Commit(ctx)
 	}
 	return record, false, tx.Commit(ctx)
 }
@@ -159,13 +167,15 @@ func (s *Store) RetainedPage(ctx context.Context, after string, limit int) ([]tr
 
 // BeginDispatch claims an accepted row and stamps the current owner epoch.
 func (s *Store) BeginDispatch(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE control.acceptance
-		SET state='dispatching', owner_epoch=$3
-		WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
-		s.instanceID, id, s.ownerEpoch,
-	)
-	return changed(tag.RowsAffected(), err)
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance
+			SET state='dispatching', owner_epoch=$3
+			WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
+			s.instanceID, id, epoch,
+		)
+		return changed(tag.RowsAffected(), err)
+	})
 }
 
 // Requeue returns a dispatching row to accepted custody.
@@ -173,26 +183,32 @@ func (s *Store) Requeue(ctx context.Context, id, reason string) error {
 	if len(reason) > 1024 {
 		return triggerqueue.ErrTransition
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE control.acceptance
-		SET state='accepted', owner_epoch=NULL, run_id='', reason=$3
-		WHERE instance_id=$1 AND id=$2 AND state='dispatching' AND finished_at IS NULL`,
-		s.instanceID, id, reason,
-	)
-	return changed(tag.RowsAffected(), err)
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance
+			SET state='accepted', owner_epoch=NULL, reason=$4
+			WHERE instance_id=$1 AND id=$2 AND state='dispatching'
+			  AND owner_epoch=$3 AND finished_at IS NULL`,
+			s.instanceID, id, epoch, reason,
+		)
+		return changed(tag.RowsAffected(), err)
+	})
 }
 
 // RecordDispatch records the accepted run identity.
 func (s *Store) RecordDispatch(ctx context.Context, id, runID string) error {
-	if len(runID) > 256 {
+	if len(runID) > 256 || id != "trigger-"+runID {
 		return triggerqueue.ErrTransition
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE control.acceptance SET run_id=$3, reason=''
-		WHERE instance_id=$1 AND id=$2 AND state='dispatching' AND run_id=''`,
-		s.instanceID, id, runID,
-	)
-	return changed(tag.RowsAffected(), err)
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance SET reason=''
+			WHERE instance_id=$1 AND id=$2 AND state='dispatching'
+			  AND owner_epoch=$3 AND run_id=$4`,
+			s.instanceID, id, epoch, runID,
+		)
+		return changed(tag.RowsAffected(), err)
+	})
 }
 
 // Finish records a definite terminal scheduler outcome.
@@ -202,14 +218,21 @@ func (s *Store) Finish(ctx context.Context, id string, state triggerqueue.State,
 		(state == triggerqueue.Rejected && runID != "") {
 		return triggerqueue.ErrTransition
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE control.acceptance
-		SET state=$3, run_id=$4, reason=$5,
-		    finished_at=GREATEST(accepted_at, $6)
-		WHERE instance_id=$1 AND id=$2 AND state='dispatching' AND finished_at IS NULL`,
-		s.instanceID, id, state, runID, reason, now.UTC(),
-	)
-	return changed(tag.RowsAffected(), err)
+	assignedRunID, assigned := strings.CutPrefix(id, "trigger-")
+	if !assigned || assignedRunID == "" ||
+		(state == triggerqueue.Dispatched && runID != assignedRunID) {
+		return triggerqueue.ErrTransition
+	}
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance
+			SET state=$4, reason=$5, finished_at=GREATEST(accepted_at, $6)
+			WHERE instance_id=$1 AND id=$2 AND state='dispatching'
+			  AND owner_epoch=$3 AND run_id=$7 AND finished_at IS NULL`,
+			s.instanceID, id, epoch, state, reason, now.UTC(), assignedRunID,
+		)
+		return changed(tag.RowsAffected(), err)
+	})
 }
 
 // Uncertain returns dispatching rows not owned by a currently live epoch.
@@ -222,7 +245,7 @@ func (s *Store) Uncertain(ctx context.Context, liveEpochs []int64, limit int) ([
 		WHERE instance_id=$1 AND state='dispatching'
 		  AND (owner_epoch IS NULL OR NOT (owner_epoch=ANY($2)))
 		ORDER BY accepted_at, id LIMIT $3`,
-		s.instanceID, liveEpochs, limit,
+		s.instanceID, normalizedEpochs(liveEpochs), limit,
 	)
 	if err != nil {
 		return nil, err
@@ -230,6 +253,22 @@ func (s *Store) Uncertain(ctx context.Context, liveEpochs []int64, limit int) ([
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (triggerqueue.Record, error) {
 		return scanRecord(row)
 	})
+}
+
+func (s *Store) withFence(ctx context.Context, action func(context.Context, pgx.Tx, int64) error) error {
+	if s.manager == nil || s.handle == nil {
+		return triggerqueue.ErrTransition
+	}
+	return s.manager.WithFence(ctx, s.handle, func(txCtx context.Context, tx pgx.Tx) error {
+		return action(txCtx, tx, s.handle.Epoch)
+	})
+}
+
+func normalizedEpochs(epochs []int64) []int64 {
+	if epochs == nil {
+		return []int64{}
+	}
+	return epochs
 }
 
 const acceptanceColumns = `

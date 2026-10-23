@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -246,15 +245,9 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
-	ownerEpoch, err := strconv.ParseInt(environmentOr("GOOBERS_OWNER_EPOCH", "1"), 10, 64)
-	if err != nil || ownerEpoch < 1 {
-		writef(stderr, "goobers-cloud %s: invalid GOOBERS_OWNER_EPOCH\n", role)
-		return 2
-	}
 	acceptances, err := newAcceptanceStore(
 		pools.Transaction,
 		environmentOr("GOOBERS_INSTANCE_ID", "default"),
-		ownerEpoch,
 	)
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)

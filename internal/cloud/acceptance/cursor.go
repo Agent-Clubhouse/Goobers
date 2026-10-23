@@ -21,50 +21,51 @@ func (s *Store) SourceCursorRevision(
 	if !validText(scope, 256, true) || !validText(revision, 128, true) || initial.IsZero() || observed.IsZero() {
 		return time.Time{}, false, errors.New("cloud acceptance: invalid source revision")
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var currentRevision string
 	var cursor time.Time
 	var pending bool
-	err = tx.QueryRow(ctx, `
-		SELECT revision, cursor_at, legacy_pending
-		FROM control.source_cursor
-		WHERE instance_id=$1 AND scope=$2
-		FOR UPDATE`,
-		s.instanceID, scope,
-	).Scan(&currentRevision, &cursor, &pending)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO control.source_cursor
-				(instance_id, scope, revision, cursor_at, legacy_pending)
-			VALUES ($1, $2, $3, $4, $5)`,
-			s.instanceID, scope, revision, initial.UTC(), legacy,
-		)
-		if err != nil {
-			return time.Time{}, false, err
+	err := s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, _ int64) error {
+		var currentRevision string
+		err := tx.QueryRow(txCtx, `
+			SELECT revision, cursor_at, legacy_pending
+			FROM control.source_cursor
+			WHERE instance_id=$1 AND scope=$2
+			FOR UPDATE`,
+			s.instanceID, scope,
+		).Scan(&currentRevision, &cursor, &pending)
+		if errors.Is(err, pgx.ErrNoRows) {
+			_, err = tx.Exec(txCtx, `
+				INSERT INTO control.source_cursor
+					(instance_id, scope, revision, cursor_at, legacy_pending)
+				VALUES ($1, $2, $3, $4, $5)`,
+				s.instanceID, scope, revision, initial.UTC(), legacy,
+			)
+			cursor, pending = initial.UTC(), legacy
+			return err
 		}
-		return initial.UTC(), legacy, tx.Commit(ctx)
-	}
+		if err != nil {
+			return err
+		}
+		if currentRevision != revision {
+			if !observed.After(cursor) {
+				return triggerqueue.ErrTransition
+			}
+			tag, err := tx.Exec(txCtx, `
+				UPDATE control.source_cursor
+				SET revision=$3, cursor_at=$4, legacy_pending=false, occurrence_cursors=NULL
+				WHERE instance_id=$1 AND scope=$2 AND revision=$5 AND cursor_at<$4`,
+				s.instanceID, scope, revision, observed.UTC(), currentRevision,
+			)
+			if err := changed(tag.RowsAffected(), err); err != nil {
+				return err
+			}
+			cursor, pending = observed.UTC(), false
+		}
+		return nil
+	})
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	if currentRevision != revision {
-		cursor = observed.UTC()
-		pending = false
-		_, err = tx.Exec(ctx, `
-			UPDATE control.source_cursor
-			SET revision=$3, cursor_at=$4, legacy_pending=false, occurrence_cursors=NULL
-			WHERE instance_id=$1 AND scope=$2`,
-			s.instanceID, scope, revision, cursor,
-		)
-		if err != nil {
-			return time.Time{}, false, err
-		}
-	}
-	return cursor.UTC(), pending, tx.Commit(ctx)
+	return cursor.UTC(), pending, nil
 }
 
 // SourceOccurrences returns per-declaration cursor positions.
@@ -124,24 +125,30 @@ func (s *Store) ResetExistingSourceRevision(ctx context.Context, scope, revision
 	if !validText(scope, 256, true) || !validText(revision, 128, true) || observed.IsZero() {
 		return errors.New("cloud acceptance: invalid source revision reset")
 	}
-	_, err := s.pool.Exec(ctx, `
-		UPDATE control.source_cursor
-		SET revision=$3, cursor_at=$4, legacy_pending=false, occurrence_cursors=NULL
-		WHERE instance_id=$1 AND scope=$2 AND revision<>$3`,
-		s.instanceID, scope, revision, observed.UTC(),
-	)
-	return err
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, _ int64) error {
+		_, err := tx.Exec(txCtx, `
+			UPDATE control.source_cursor
+			SET revision=$3, cursor_at=$4, legacy_pending=false, occurrence_cursors=NULL
+			WHERE instance_id=$1 AND scope=$2 AND revision<>$3 AND cursor_at<$4`,
+			s.instanceID, scope, revision, observed.UTC(),
+		)
+		return err
+	})
 }
 
 func advanceCursor(ctx context.Context, tx pgx.Tx, instanceID string, advance *triggerqueue.SourceAdvance) error {
 	if advance == nil {
 		return nil
 	}
+	if !validText(advance.Scope, 256, true) || !validText(advance.Revision, 128, true) ||
+		advance.Occurrence < 0 || advance.Before.IsZero() || !advance.After.After(advance.Before) {
+		return triggerqueue.ErrTransition
+	}
 	if advance.Occurrence == 0 {
 		tag, err := tx.Exec(ctx, `
 			UPDATE control.source_cursor SET cursor_at=$5, legacy_pending=false
 			WHERE instance_id=$1 AND scope=$2 AND revision=$3 AND cursor_at=$4
-			  AND occurrence_cursors IS NULL`,
+			  AND cursor_at<$5 AND occurrence_cursors IS NULL`,
 			instanceID, advance.Scope, advance.Revision, advance.Before.UTC(), advance.After.UTC(),
 		)
 		return changed(tag.RowsAffected(), err)

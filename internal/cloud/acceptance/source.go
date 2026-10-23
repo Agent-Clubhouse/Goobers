@@ -48,6 +48,12 @@ func (s *Store) AcceptSource(
 		return triggerqueue.SourceReceipt{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		SELECT pg_advisory_xact_lock(hashtextextended('source-accept:' || $1, 0))`,
+		batch.Key,
+	); err != nil {
+		return triggerqueue.SourceReceipt{}, false, err
+	}
 	prior, err := s.sourceReceipt(ctx, tx, batch.Key)
 	if err == nil {
 		if prior.Actor != batch.Actor || prior.Fingerprint != batch.Fingerprint {
@@ -85,9 +91,9 @@ func (s *Store) AcceptSource(
 		fingerprint := sha256.Sum256(start.Payload)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO control.acceptance
-				(instance_id, id, idem_key, actor, fingerprint, payload, state, accepted_at)
-			VALUES ($1, $2, $3, $4, $5, $6, 'accepted', $7)`,
-			s.instanceID, id, key, batch.Actor, fingerprint[:], start.Payload, now.UTC(),
+				(instance_id, id, idem_key, actor, fingerprint, payload, state, run_id, accepted_at)
+			VALUES ($1, $2, $3, $4, $5, $6, 'accepted', $7, $8)`,
+			s.instanceID, id, key, batch.Actor, fingerprint[:], start.Payload, runID, now.UTC(),
 		); err != nil {
 			return triggerqueue.SourceReceipt{}, false, err
 		}
@@ -202,7 +208,10 @@ func (s *Store) CaptureScheduleDemand(ctx context.Context, capture triggerqueue.
 			return err
 		}
 		if exists {
-			return advanceCursor(ctx, tx, s.instanceID, &capture.Advance)
+			if err := advanceCursor(ctx, tx, s.instanceID, &capture.Advance); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
 		}
 	}
 	if _, err := tx.Exec(ctx, `
