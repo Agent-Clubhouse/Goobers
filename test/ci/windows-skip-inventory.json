@@ -49,12 +49,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "deploy/reference/workers",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Kubernetes manifest semantic tests run on Linux; hosted kind validates the rendered worker resources."
-    },
-    {
       "package": "deploy/reference/telemetry",
       "coverage": "none",
       "category": "not-selected",
