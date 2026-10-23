@@ -324,21 +324,32 @@ func (q Queue) recordReplaySkip() {
 
 func (q Queue) deferred(e Effect, err error) Effect {
 	e.Attempts++
+	e.RetryAt = q.now().Add(RetryDelay(err, q.now()))
+	return e
+}
+
+// RetryDelay is the backoff after a failed delivery attempt at now: a minute,
+// or until the provider's rate-limit reset, plus two to three seconds of jitter.
+func RetryDelay(err error, now time.Time) time.Duration {
 	delay := time.Minute
 	if limit, ok := providers.AsRateLimitError(err); ok {
-		delay = limit.RetryDelay(q.now())
+		delay = limit.RetryDelay(now)
 	}
 	if delay < time.Duration(1<<63-1)-3*time.Second {
 		delay += 2*time.Second + time.Duration(rand.Int64N(int64(time.Second)))
 	}
-	e.RetryAt = q.now().Add(delay)
-	return e
+	return delay
 }
 
 func (q Queue) record(e Effect, outcome string, duplicates *gate.DuplicateReportCleanupUnsupported) error {
 	if q.Log == nil {
 		return nil
 	}
+	return q.Log(OutcomeEvent(e, outcome, duplicates))
+}
+
+// OutcomeEvent is the instance-journal annotation for one delivery outcome.
+func OutcomeEvent(e Effect, outcome string, duplicates *gate.DuplicateReportCleanupUnsupported) journal.Event {
 	event := journal.Event{
 		Type: journal.EventRunnerAnnotation, RunID: e.RunID, Stage: e.Stage,
 		Reason: "terminal provider report " + outcome,
@@ -351,7 +362,7 @@ func (q Queue) record(e Effect, outcome string, duplicates *gate.DuplicateReport
 		event.Runner["canonicalCommentUrl"] = duplicates.Canonical.URL
 		event.Runner["duplicateCommentIds"] = duplicates.DuplicateIDs
 	}
-	return q.Log(event)
+	return event
 }
 
 func save(path string, e entry) error {

@@ -12,11 +12,13 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
+	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -151,6 +153,7 @@ var (
 	runWorkerHost             = func(ctx context.Context, host *workerhost.Host) error { return host.Run(ctx) }
 	signalContext             = signals.SetupSignalContext
 	newCloudPools             = cloudpg.NewPools
+	newAcceptanceStore        = cloudacceptance.New
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
@@ -171,6 +174,7 @@ var (
 
 type databaseServices struct {
 	Pools               *cloudpg.Pools
+	Acceptances         triggerqueue.SchedulerPolicyStore
 	SchemaCompatibility error
 	NewClaims           func(*cloudlease.Manager, *cloudlease.Handle) (cloudclaims.Services, error)
 }
@@ -244,8 +248,16 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
+	acceptances, err := newAcceptanceStore(
+		pools.Transaction,
+		environmentOr("GOOBERS_INSTANCE_ID", "default"),
+	)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
+		return 1
+	}
 	services := databaseServices{
-		Pools: pools, SchemaCompatibility: compatibilityErr,
+		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
 		NewClaims: func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
 			return cloudclaims.New(
 				pools.Transaction,

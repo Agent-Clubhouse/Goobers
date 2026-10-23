@@ -199,6 +199,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/cloud/config",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud engine-only admission tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",
@@ -281,6 +287,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Extracted request-plane behavior remains covered by the Linux race shards and cmd/goobers parity tests; no Windows-specific seam is introduced."
+    },
+    {
+      "package": "internal/controlplane/scheduling",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted scheduling service tests run on the Linux race shards; the CLI retains composition coverage and no Windows-specific seam is introduced."
     },
     {
       "package": "internal/credentialoverride",
