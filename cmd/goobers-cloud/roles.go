@@ -13,6 +13,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/signals"
@@ -174,6 +176,7 @@ type databaseServices struct {
 	Pools               *cloudpg.Pools
 	Acceptances         triggerqueue.SchedulerPolicyStore
 	SchemaCompatibility error
+	NewClaims           func(*cloudlease.Manager, *cloudlease.Handle) (cloudclaims.Services, error)
 }
 
 type databaseRole func(context.Context, databaseServices) error
@@ -255,6 +258,13 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	}
 	services := databaseServices{
 		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
+		NewClaims: func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
+			return cloudclaims.New(
+				pools.Transaction,
+				environmentOr("GOOBERS_INSTANCE_ID", "default"),
+				manager, handle,
+			)
+		},
 	}
 	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
