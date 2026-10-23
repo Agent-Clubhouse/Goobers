@@ -24,7 +24,7 @@ func TestSurrenderedOutboxManifestFailsClosed(t *testing.T) {
 		{"oversized", []SurrenderedOutboxFile{{RelPath: valid.RelPath, Digest: valid.Digest, Size: journal.MaxOutboxBytesPerAttempt + 1}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := validateSurrenderedOutboxManifest(SurrenderContractV3, test.files, true); err == nil {
+			if err := validateSurrenderedOutboxManifest(SurrenderContractV3, test.files, true, true); err == nil {
 				t.Fatal("invalid manifest was accepted")
 			}
 		})

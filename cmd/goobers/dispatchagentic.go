@@ -172,9 +172,14 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
-	defer func() { out.OutboxScrubber = scrubber }()
+	executionStarted := false
+	defer func() {
+		out.OutboxScrubber = scrubber
+		out.OutboxEligible = executionStarted
+	}()
 
 	if kit.IsReview() {
+		executionStarted = true
 		// The SAME executor and the SAME constructor as an invocation — only
 		// the completion contract differs: harness.Executor.Review drives
 		// ModeReview and validates the verdict against the shared schema.
@@ -202,11 +207,12 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		}
 	}
 
+	executionStarted = true
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
 		return fail("agentic_invocation_failed", err)
 	}
-	return stageOutcome{Result: result, OutboxEligible: true}
+	return stageOutcome{Result: result}
 }
 
 // reviewSubstrateFailure names the pod-side refusals that are faults of the

@@ -27,9 +27,10 @@ func TestDeclaredOutboxRequiresCapableWriter(t *testing.T) {
 func TestDeclaredOutboxAcceptsAcknowledgedEmptyExport(t *testing.T) {
 	store := surrenderStore(t)
 	putSurrendered(t, store, "empty-outbox", "build", 1, dispatcher.SurrenderedResult{
-		ContractVersion: dispatcher.SurrenderContractV3,
-		OutboxExported:  true,
-		Result:          apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		ContractVersion:        dispatcher.SurrenderContractV3,
+		OutboxExported:         true,
+		OutboxExecutionStarted: true,
+		Result:                 apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
 	})
 	activities := &Activities{
 		Dispatcher: &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", SurrenderConfirmed: true}},

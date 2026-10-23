@@ -69,9 +69,10 @@ func TestDispatchStageCarriesValidatedOutboxManifest(t *testing.T) {
 	store := surrenderStore(t)
 	data := []byte("report")
 	putSurrendered(t, store, "outbox-run", "build", 1, dispatcher.SurrenderedResult{
-		ContractVersion: dispatcher.SurrenderContractV3,
-		OutboxExported:  true,
-		Result:          apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		ContractVersion:        dispatcher.SurrenderContractV3,
+		OutboxExported:         true,
+		OutboxExecutionStarted: true,
+		Result:                 apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
 		Outbox: []dispatcher.SurrenderedOutboxFile{{
 			RelPath: "reports/result.json", Digest: journal.Digest(data), Size: int64(len(data)),
 		}},
@@ -112,10 +113,11 @@ func TestDispatchStageRefusesUndeclaredOrReviewOutbox(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := surrenderStore(t)
 			putSurrendered(t, store, "outbox-refuse", "build", 1, dispatcher.SurrenderedResult{
-				ContractVersion: dispatcher.SurrenderContractV3,
-				OutboxExported:  true,
-				Result:          apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
-				Outbox:          test.outbox,
+				ContractVersion:        dispatcher.SurrenderContractV3,
+				OutboxExported:         true,
+				OutboxExecutionStarted: true,
+				Result:                 apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+				Outbox:                 test.outbox,
 			})
 			activities := &Activities{
 				Dispatcher: &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", SurrenderConfirmed: true}},

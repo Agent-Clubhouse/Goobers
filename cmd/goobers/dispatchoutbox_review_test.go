@@ -89,7 +89,8 @@ func TestNonzeroCommandStillExportsOutbox(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	_ = runDispatchExecContext(context.Background(), io.Discard, io.Discard)
 	if surrendered.ContractVersion != dispatcher.SurrenderContractV3 ||
-		!surrendered.OutboxExported || len(surrendered.Outbox) != 1 ||
+		!surrendered.OutboxExported || !surrendered.OutboxExecutionStarted ||
+		len(surrendered.Outbox) != 1 ||
 		surrendered.Outbox[0].RelPath != "report.txt" {
 		t.Fatalf("surrendered=%+v", surrendered)
 	}

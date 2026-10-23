@@ -95,6 +95,7 @@ func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
 		{name: "v3 outbox", mutate: func(result *SurrenderedResult) {
 			result.ContractVersion = SurrenderContractV3
 			result.OutboxExported = true
+			result.OutboxExecutionStarted = true
 			result.Outbox = []SurrenderedOutboxFile{{
 				RelPath: "reports/result.json",
 				Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -129,8 +130,9 @@ func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
 
 func TestOldWorkerIgnoresOutboxManifest(t *testing.T) {
 	current := SurrenderedResult{
-		ContractVersion: SurrenderContractV3,
-		OutboxExported:  true,
+		ContractVersion:        SurrenderContractV3,
+		OutboxExported:         true,
+		OutboxExecutionStarted: true,
 		Outbox: []SurrenderedOutboxFile{{
 			RelPath: "reports/result.json",
 			Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

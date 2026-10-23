@@ -853,7 +853,8 @@ func validateSurrenderedOutbox(input DispatchStageInput, surrendered dispatcher.
 	if surrendered.ContractVersion < dispatcher.SurrenderContractV3 {
 		return fmt.Errorf("engine: task %q declares outbox paths but the surrender writer does not support contract v%d", input.Envelope.TaskID, dispatcher.SurrenderContractV3)
 	}
-	if !surrendered.OutboxExported && !runner.IsOutboxExportFailure(surrendered.Result) {
+	requiresExport := surrendered.OutboxExecutionStarted || surrendered.Result.Status == apiv1.ResultSuccess
+	if requiresExport && !surrendered.OutboxExported && !runner.IsOutboxExportFailure(surrendered.Result) {
 		return fmt.Errorf("engine: task %q declares outbox paths but the surrender does not acknowledge export", input.Envelope.TaskID)
 	}
 	declared := make([]string, 0, len(input.Outbox))

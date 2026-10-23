@@ -188,14 +188,15 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		ContractVersion:       dispatcher.SurrenderContractForOutbox(outboxDeclared),
-		ObservedUsage:         outcome.ObservedUsage,
-		ObservedUsageReported: outcome.ObservedUsageReported,
-		Outbox:                outbox,
-		OutboxExported:        outboxDeclared && outcome.OutboxEligible && outboxErr == nil,
-		RecoveryAcknowledged:  true,
-		Mutations:             mutations,
-		Result:                envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		ContractVersion:        dispatcher.SurrenderContractForOutbox(outboxDeclared),
+		ObservedUsage:          outcome.ObservedUsage,
+		ObservedUsageReported:  outcome.ObservedUsageReported,
+		Outbox:                 outbox,
+		OutboxExported:         outboxDeclared && outcome.OutboxEligible && outboxErr == nil,
+		OutboxExecutionStarted: outboxDeclared && outcome.OutboxEligible,
+		RecoveryAcknowledged:   true,
+		Mutations:              mutations,
+		Result:                 envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
 		WorkspaceHeadMoved:      outcome.WorkspaceHeadMoved && envelope.Error != nil && envelope.Error.Code == runner.WorkspaceHeadMovedErrorCode,
 		Verdict:                 outcome.Verdict,
@@ -300,9 +301,9 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	ctx = context.WithValue(ctx, declaredStageOutboxCaptureKey{}, capture)
 	switch strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) {
 	case executor.KindCIPoll:
-		return stageOutcome{Result: runCIPollStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: true}
+		return stageOutcome{Result: runCIPollStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
 	case executor.KindExternalTelemetry:
-		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: true}
+		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr), OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
 	}
 	var headMoved bool
 	result := runDeclaredStage(ctx, stdout, stderr, &headMoved)

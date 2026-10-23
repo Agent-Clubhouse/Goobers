@@ -33,6 +33,12 @@ func capturePodOutboxScrubber(ctx context.Context, scrubber journal.Scrubber) {
 	}
 }
 
+func capturePodOutboxExecution(ctx context.Context) {
+	if capture, ok := ctx.Value(declaredStageOutboxCaptureKey{}).(*declaredStageOutboxCapture); ok {
+		capture.eligible = true
+	}
+}
+
 func publishPodOutbox(ctx context.Context, scrubber journal.Scrubber) ([]dispatcher.SurrenderedOutboxFile, error) {
 	raw := os.Getenv(dispatcher.EnvStageOutbox)
 	if raw == "" {

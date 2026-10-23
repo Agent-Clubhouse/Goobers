@@ -161,6 +161,7 @@ func runExternalTelemetryStage(ctx context.Context, stderr io.Writer) apiv1.Resu
 	runCtx, cancel := context.WithTimeout(ctx, podStageTimeout())
 	defer cancel()
 
+	capturePodOutboxExecution(ctx)
 	result, runErr := stage.Run(runCtx, podExternalTelemetryEnvelope(declared), apiv1.DeterministicRun{})
 	if runErr == nil {
 		return result

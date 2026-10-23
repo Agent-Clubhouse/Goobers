@@ -148,6 +148,9 @@ type SurrenderedResult struct {
 	// OutboxExported acknowledges that the v3 supervisor evaluated the pinned
 	// declaration, including the valid empty-export case.
 	OutboxExported bool `json:"outboxExported,omitempty"`
+	// OutboxExecutionStarted distinguishes pre-execution failure from an
+	// executed attempt that owes an export acknowledgement.
+	OutboxExecutionStarted bool `json:"outboxExecutionStarted,omitempty"`
 	// ChildWorkspaceDigest names the bounded child output carrier. The host
 	// verifies its contract and waits for exact pod writer termination before
 	// importing its tree. Ordinary workspace delta semantics do not apply.
@@ -248,7 +251,7 @@ func (r SurrenderedResult) Validate() error {
 			return fmt.Errorf("dispatcher: invalid observed usage")
 		}
 	}
-	if err := validateSurrenderedOutboxManifest(version, r.Outbox, r.OutboxExported); err != nil {
+	if err := validateSurrenderedOutboxManifest(version, r.Outbox, r.OutboxExported, r.OutboxExecutionStarted); err != nil {
 		return err
 	}
 	if err := r.Result.Validate(); err != nil {
@@ -272,12 +275,15 @@ func (r SurrenderedResult) Validate() error {
 	return nil
 }
 
-func validateSurrenderedOutboxManifest(version int, files []SurrenderedOutboxFile, exported bool) error {
-	if version < SurrenderContractV3 && (len(files) > 0 || exported) {
+func validateSurrenderedOutboxManifest(version int, files []SurrenderedOutboxFile, exported, executed bool) error {
+	if version < SurrenderContractV3 && (len(files) > 0 || exported || executed) {
 		return fmt.Errorf("dispatcher: outbox manifest requires surrender contract version %d", SurrenderContractV3)
 	}
 	if len(files) > 0 && !exported {
 		return errors.New("dispatcher: outbox manifest is not acknowledged as exported")
+	}
+	if exported && !executed {
+		return errors.New("dispatcher: outbox export acknowledgement requires an executed attempt")
 	}
 	if len(files) > journal.MaxOutboxFilesPerAttempt {
 		return fmt.Errorf("dispatcher: outbox manifest exceeds %d files", journal.MaxOutboxFilesPerAttempt)

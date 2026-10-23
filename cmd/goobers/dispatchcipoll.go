@@ -103,6 +103,7 @@ func runCIPollStage(ctx context.Context, stderr io.Writer) apiv1.ResultEnvelope 
 	runCtx, cancel := context.WithTimeout(ctx, podStageTimeout())
 	defer cancel()
 
+	capturePodOutboxExecution(ctx)
 	result, err := ciPoll.Run(runCtx, cfg)
 	if err == nil {
 		return result
