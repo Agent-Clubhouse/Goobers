@@ -426,6 +426,29 @@ func (s Store) Adopt(ctx context.Context, handle *lease.Handle, predecessorEpoch
 	return adopted, err
 }
 
+// AdoptAll moves the undelivered rows of EVERY older epoch to the live epoch in
+// one fenced statement and voids their delivery leases, so no predecessor can
+// acknowledge them. Adopt only takes the exact predecessor; after two or more
+// takeovers between uses (a successor that crashed before adopting) the older
+// epochs' rows would otherwise be stranded.
+func (s Store) AdoptAll(ctx context.Context, handle *lease.Handle) (int64, error) {
+	var adopted int64
+	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE control.terminal_report
+			SET owner_epoch=$2, lease_token=NULL, lease_until=NULL
+			WHERE instance_id=$1 AND owner_epoch < $2 AND delivered_at IS NULL`,
+			handle.InstanceID, handle.Epoch,
+		)
+		if err != nil {
+			return fmt.Errorf("adopt all terminal reports: %w", err)
+		}
+		adopted = tag.RowsAffected()
+		return nil
+	})
+	return adopted, err
+}
+
 // Prune deletes delivered rows older than the retention on the database clock.
 func (s Store) Prune(ctx context.Context, handle *lease.Handle) (int64, error) {
 	var pruned int64

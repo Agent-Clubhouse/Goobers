@@ -307,3 +307,75 @@ func TestIdempotencyKeyIsNeverReusedAfterPrune(t *testing.T) {
 		t.Fatalf("a different intent reused the spent idempotency key %q", spent.IdempotencyKey)
 	}
 }
+
+// TestAdoptAllReachesEveryOlderEpoch makes two consecutive takeovers with rows
+// stranded at epoch 1 and epoch 2: the exact-predecessor Adopt moves only the
+// latter, AdoptAll moves both, voids the delivery lease of the claimed row and
+// leaves delivered rows alone.
+func TestAdoptAllReachesEveryOlderEpoch(t *testing.T) {
+	pool := pgtest.Pool(t, "trpgall")
+	firstManager := pgtest.Manager(t, pool, "first", 0)
+	first := pgtest.Acquire(t, firstManager)
+	firstStore := terminalreportpg.Store{Fence: firstManager}
+	if _, err := firstStore.Publish(t.Context(), first, effect("1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	inFlight := claimOne(t, firstStore, first)
+	if _, err := firstStore.Publish(t.Context(), first, effect("2", 1)); err != nil {
+		t.Fatal(err)
+	}
+	delivered := claimOne(t, firstStore, first)
+	if err := firstStore.Delivered(t.Context(), first, delivered); err != nil {
+		t.Fatal(err)
+	}
+
+	secondManager := pgtest.Manager(t, pool, "second", 0)
+	second := pgtest.Takeover(t, pool, secondManager)
+	secondStore := terminalreportpg.Store{Fence: secondManager}
+	if _, err := secondStore.Publish(t.Context(), second, effect("3", 1)); err != nil {
+		t.Fatal(err)
+	}
+	// The second holder crashes before adopting anything.
+
+	thirdManager := pgtest.Manager(t, pool, "third", 0)
+	third := pgtest.Takeover(t, pool, thirdManager)
+	thirdStore := terminalreportpg.Store{Fence: thirdManager}
+	if adopted, err := thirdStore.Adopt(t.Context(), third, second.Epoch); err != nil || adopted != 1 {
+		t.Fatalf("exact-predecessor Adopt = %d, %v; want only the epoch-2 row", adopted, err)
+	}
+	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 1 {
+		t.Fatalf("AdoptAll = %d, %v; want the stranded epoch-1 row", adopted, err)
+	}
+	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 0 {
+		t.Fatalf("repeated AdoptAll = %d, %v; want 0", adopted, err)
+	}
+	var owners []int64
+	rows, err := pool.Query(t.Context(), `SELECT owner_epoch FROM control.terminal_report
+		WHERE instance_id=$1 AND delivered_at IS NULL ORDER BY effect_key`, pgtest.InstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var epoch int64
+		if err := rows.Scan(&epoch); err != nil {
+			t.Fatal(err)
+		}
+		owners = append(owners, epoch)
+	}
+	rows.Close()
+	if len(owners) != 2 || owners[0] != third.Epoch || owners[1] != third.Epoch {
+		t.Fatalf("undelivered owners = %v, want both at epoch %d", owners, third.Epoch)
+	}
+	// The epoch-1 delivery lease was voided: its holder cannot acknowledge, and
+	// the live epoch redelivers under the same intent key.
+	inFlight.OwnerEpoch = third.Epoch
+	if err := thirdStore.Delivered(t.Context(), third, inFlight); !errors.Is(err, terminalreportpg.ErrLeaseLost) {
+		t.Fatalf("voided lease acknowledgement = %v, want ErrLeaseLost", err)
+	}
+	if err := firstStore.Delivered(t.Context(), first, inFlight); !errors.Is(err, lease.ErrStale) {
+		t.Fatalf("stale holder acknowledgement = %v, want ErrStale", err)
+	}
+	if _, isDelivered := deliveredGeneration(t, pool, effect("2", 1).Key()); !isDelivered {
+		t.Fatal("a delivered row was disturbed by adoption")
+	}
+}

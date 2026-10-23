@@ -592,3 +592,4 @@ github.com/goobers/goobers/internal/enginechildplane.planeError # Engine child-a
 
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunRecorded # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenRunReader # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/terminalreportpg.Store.AdoptAll # HA-P3 epoch services (#7818 group D) call this at epoch start once the control Epoch row is composed; exercised by the cloudintegration two-takeover test. expires=2026-12-15
