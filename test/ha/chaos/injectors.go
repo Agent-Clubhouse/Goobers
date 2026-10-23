@@ -248,9 +248,38 @@ type CgroupFreeze struct {
 	// digest.
 	HelperImage string
 
+	// HelperNamespace hosts the privileged helper pod; it is created with the
+	// privileged Pod Security level and kept apart from the target namespace,
+	// whose restricted policy would reject the helper. Default DefaultChaosNamespace.
+	HelperNamespace string
+
 	helper string
 	cgroup string
 }
+
+// DefaultChaosNamespace is where privileged chaos helper pods run.
+const DefaultChaosNamespace = "goobers-chaos"
+
+const (
+	helperLabel      = "app.kubernetes.io/managed-by=goobers-chaos"
+	cgroupAnnotation = "goobers.dev/chaos-cgroup"
+)
+
+func (f *CgroupFreeze) helperNS() string {
+	if f.HelperNamespace == "" {
+		return DefaultChaosNamespace
+	}
+	return f.HelperNamespace
+}
+
+const chaosNamespaceManifest = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    app.kubernetes.io/managed-by: goobers-chaos
+`
 
 // Name implements Fault.
 func (f *CgroupFreeze) Name() string { return "cgroup-freeze:" + f.Pod }
@@ -284,10 +313,13 @@ func (f *CgroupFreeze) Apply(ctx context.Context) error {
 		return fmt.Errorf("node name %q is invalid", node)
 	}
 	f.helper = "chaos-freezer-" + id[:12]
+	if _, err := f.Exec.Run(ctx, fmt.Sprintf(chaosNamespaceManifest, f.helperNS()), "kubectl", "apply", "-f", "-"); err != nil {
+		return err
+	}
 	if _, err := f.Exec.Run(ctx, f.helperManifest(node), "kubectl", "apply", "-f", "-"); err != nil {
 		return err
 	}
-	if _, err := f.Exec.Run(ctx, "", "kubectl", "wait", "--for=condition=Ready", "pod/"+f.helper, "-n", f.Namespace, "--timeout=120s"); err != nil {
+	if _, err := f.Exec.Run(ctx, "", "kubectl", "wait", "--for=condition=Ready", "pod/"+f.helper, "-n", f.helperNS(), "--timeout=120s"); err != nil {
 		_ = f.deleteHelper(ctx)
 		return err
 	}
@@ -300,6 +332,12 @@ func (f *CgroupFreeze) Apply(ctx context.Context) error {
 	if f.cgroup == "" || !strings.HasPrefix(f.cgroup, "/host/sys/fs/cgroup/") {
 		_ = f.deleteHelper(ctx)
 		return fmt.Errorf("no cgroup directory found for container %s", id)
+	}
+	// Record the cgroup on the helper before freezing so Sweep can thaw it
+	// after an aborted run.
+	if _, err := f.Exec.Run(ctx, "", "kubectl", "annotate", "pod", f.helper, "-n", f.helperNS(), "--overwrite", cgroupAnnotation+"="+f.cgroup); err != nil {
+		_ = f.deleteHelper(ctx)
+		return err
 	}
 	return f.setFrozen(ctx, true)
 }
@@ -335,11 +373,11 @@ func (f *CgroupFreeze) setFrozen(ctx context.Context, frozen bool) error {
 }
 
 func (f *CgroupFreeze) hostExec(ctx context.Context, script string) (string, error) {
-	return f.Exec.Run(ctx, "", "kubectl", "exec", f.helper, "-n", f.Namespace, "--", "sh", "-c", script)
+	return f.Exec.Run(ctx, "", "kubectl", "exec", f.helper, "-n", f.helperNS(), "--", "sh", "-c", script)
 }
 
 func (f *CgroupFreeze) deleteHelper(ctx context.Context) error {
-	_, err := f.Exec.Run(ctx, "", "kubectl", "delete", "pod", f.helper, "-n", f.Namespace, "--ignore-not-found", "--wait=false")
+	_, err := f.Exec.Run(ctx, "", "kubectl", "delete", "pod", f.helper, "-n", f.helperNS(), "--ignore-not-found", "--wait=false")
 	return err
 }
 
@@ -349,6 +387,8 @@ kind: Pod
 metadata:
   name: %s
   namespace: %s
+  labels:
+    app.kubernetes.io/managed-by: goobers-chaos
 spec:
   nodeName: %s
   hostPID: true
@@ -365,7 +405,7 @@ spec:
   volumes:
   - name: host
     hostPath: {path: /}
-`, f.helper, f.Namespace, node, f.HelperImage)
+`, f.helper, f.helperNS(), node, f.HelperImage)
 }
 
 // WithFault applies f, runs fn, and always reverts, joining any revert error.
@@ -380,4 +420,41 @@ func WithFault(ctx context.Context, f Fault, fn func(context.Context) error) (er
 		}
 	}()
 	return fn(ctx)
+}
+
+// Sweep thaws and deletes every leftover chaos helper pod in namespace ns, so
+// an aborted run never leaves a frozen pod behind. A helper whose cgroup
+// cannot be verified thawed is kept and reported: deleting it would strand the
+// freeze. A missing namespace or no helpers is a clean sweep.
+func Sweep(ctx context.Context, exec Executor, ns string) error {
+	out, err := exec.Run(ctx, "", "kubectl", "get", "pods", "-n", ns, "-l", helperLabel, "--ignore-not-found",
+		"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.metadata.annotations.goobers\.dev/chaos-cgroup}{"\n"}{end}`)
+	if err != nil {
+		return err
+	}
+	var failed []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		name, cgroup, _ := strings.Cut(strings.TrimSpace(line), "=")
+		if name == "" {
+			continue
+		}
+		if cgroup != "" {
+			if !strings.HasPrefix(cgroup, "/host/sys/fs/cgroup/") || strings.Contains(cgroup, "..") || strings.ContainsAny(cgroup, "'\" ;$`&|<>()\n") {
+				failed = append(failed, name+": unsafe cgroup annotation")
+				continue
+			}
+			f := &CgroupFreeze{Exec: exec, HelperNamespace: ns, helper: name, cgroup: cgroup}
+			if err := f.setFrozen(ctx, false); err != nil {
+				failed = append(failed, name+": "+err.Error())
+				continue
+			}
+		}
+		if _, err := exec.Run(ctx, "", "kubectl", "delete", "pod", name, "-n", ns, "--ignore-not-found", "--wait=false"); err != nil {
+			failed = append(failed, name+": "+err.Error())
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("chaos sweep left helpers: %s", strings.Join(failed, "; "))
+	}
+	return nil
 }

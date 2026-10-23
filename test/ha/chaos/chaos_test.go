@@ -112,10 +112,10 @@ const testContainerID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456
 
 func freezeExec(events string) *fakeExec {
 	return &fakeExec{out: map[string]string{
-		"kubectl get pod p -n ns -o jsonpath={.status.containerStatuses": "containerd://" + testContainerID,
-		"kubectl get pod p -n ns -o jsonpath={.spec.nodeName}":           "node-1",
-		"kubectl exec chaos-freezer-0123456789ab -n ns -- sh -c find":    "/host/sys/fs/cgroup/kubepods/pod/cri-containerd-" + testContainerID + ".scope",
-		"kubectl exec chaos-freezer-0123456789ab -n ns -- sh -c echo":    events,
+		"kubectl get pod p -n ns -o jsonpath={.status.containerStatuses":         "containerd://" + testContainerID,
+		"kubectl get pod p -n ns -o jsonpath={.spec.nodeName}":                   "node-1",
+		"kubectl exec chaos-freezer-0123456789ab -n goobers-chaos -- sh -c find": "/host/sys/fs/cgroup/kubepods/pod/cri-containerd-" + testContainerID + ".scope",
+		"kubectl exec chaos-freezer-0123456789ab -n goobers-chaos -- sh -c echo": events,
 	}}
 }
 
@@ -126,24 +126,33 @@ func TestCgroupFreezeFreezesFromNodeAndVerifies(t *testing.T) {
 	if err := f.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var manifest string
+	var manifest, nsManifest string
 	for _, c := range ex.calls {
+		if strings.HasPrefix(c.line, "kubectl apply") && strings.Contains(c.stdin, "kind: Namespace") {
+			nsManifest = c.stdin
+		}
+		if strings.Contains(c.line, "-n ns ") && !strings.HasPrefix(c.line, "kubectl get pod p") {
+			t.Fatalf("helper work touched the target namespace: %s", c.line)
+		}
 		for _, banned := range []string{"pkill", "killall", "pgrep", "kill -", "-- kill"} {
 			if strings.Contains(c.line, banned) {
 				t.Fatalf("signal path used: %s", c.line)
 			}
 		}
-		if strings.HasPrefix(c.line, "kubectl apply") {
+		if strings.HasPrefix(c.line, "kubectl apply") && strings.Contains(c.stdin, "kind: Pod") {
 			manifest = c.stdin
 		}
 	}
-	for _, want := range []string{"nodeName: node-1", "hostPID: true", "privileged: true", "image: img@sha256:x"} {
+	if !strings.Contains(nsManifest, "name: goobers-chaos") || !strings.Contains(nsManifest, "pod-security.kubernetes.io/enforce: privileged") {
+		t.Errorf("chaos namespace manifest = %q", nsManifest)
+	}
+	for _, want := range []string{"namespace: goobers-chaos", "managed-by: goobers-chaos", "nodeName: node-1", "hostPID: true", "privileged: true", "image: img@sha256:x"} {
 		if !strings.Contains(manifest, want) {
 			t.Errorf("helper manifest lacks %q:\n%s", want, manifest)
 		}
 	}
 	// Revert thaws, verifies and deletes the helper.
-	ex.out["kubectl exec chaos-freezer-0123456789ab -n ns -- sh -c echo"] = "frozen 0\n"
+	ex.out["kubectl exec chaos-freezer-0123456789ab -n goobers-chaos -- sh -c echo"] = "frozen 0\n"
 	if err := f.Revert(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -263,5 +272,61 @@ func TestToxiproxyFaults(t *testing.T) {
 	defer bad.Close()
 	if (ProxyDown{T: &Toxiproxy{BaseURL: bad.URL}, Proxy: "pg"}).Apply(context.Background()) == nil {
 		t.Fatal("500 accepted")
+	}
+}
+
+func TestSweepThawsAndDeletesLeftoverHelpers(t *testing.T) {
+	t.Parallel()
+	cg := "/host/sys/fs/cgroup/kubepods/cri-containerd-" + testContainerID + ".scope"
+	ex := &fakeExec{out: map[string]string{
+		"kubectl get pods -n goobers-chaos":                   "chaos-freezer-a=" + cg + "\nchaos-freezer-b=\n",
+		"kubectl exec chaos-freezer-a -n goobers-chaos -- sh": "frozen 0\n",
+	}}
+	if err := Sweep(context.Background(), ex, DefaultChaosNamespace); err != nil {
+		t.Fatal(err)
+	}
+	var thawed, deleted []string
+	for _, c := range ex.calls {
+		switch {
+		case strings.Contains(c.line, "cgroup.freeze"):
+			thawed = append(thawed, c.line)
+		case strings.HasPrefix(c.line, "kubectl delete pod"):
+			deleted = append(deleted, strings.Fields(c.line)[3])
+		}
+	}
+	if len(thawed) != 1 || !strings.Contains(thawed[0], "echo 0 > "+cg) {
+		t.Fatalf("thawed = %v", thawed)
+	}
+	if strings.Join(deleted, ",") != "chaos-freezer-a,chaos-freezer-b" {
+		t.Fatalf("deleted = %v", deleted)
+	}
+}
+
+func TestSweepKeepsHelperWhenThawIsNotVerified(t *testing.T) {
+	t.Parallel()
+	cg := "/host/sys/fs/cgroup/kubepods/cri-containerd-" + testContainerID + ".scope"
+	ex := &fakeExec{out: map[string]string{
+		"kubectl get pods -n goobers-chaos":                   "chaos-freezer-a=" + cg + "\n",
+		"kubectl exec chaos-freezer-a -n goobers-chaos -- sh": "frozen 1\n",
+	}}
+	if Sweep(context.Background(), ex, DefaultChaosNamespace) == nil {
+		t.Fatal("unverified thaw reported clean")
+	}
+	for _, c := range ex.calls {
+		if strings.HasPrefix(c.line, "kubectl delete pod") {
+			t.Fatalf("helper deleted while its cgroup may still be frozen: %s", c.line)
+		}
+	}
+	unsafe := &fakeExec{out: map[string]string{"kubectl get pods": "p=/host/sys/fs/cgroup/x; rm -rf /\n"}}
+	if Sweep(context.Background(), unsafe, DefaultChaosNamespace) == nil {
+		t.Fatal("unsafe annotation accepted")
+	}
+}
+
+func TestSweepWithNothingLeftIsClean(t *testing.T) {
+	t.Parallel()
+	ex := &fakeExec{}
+	if err := Sweep(context.Background(), ex, DefaultChaosNamespace); err != nil || len(ex.calls) != 1 {
+		t.Fatalf("err=%v calls=%d", err, len(ex.calls))
 	}
 }

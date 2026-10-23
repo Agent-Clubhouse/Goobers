@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -92,6 +93,11 @@ func run() error {
 		return fmt.Errorf("HA_EVIDENCE_DIR is required")
 	}
 	env := chaos.Env{Exec: chaos.OSExecutor{}}
+	ctx := context.Background()
+	// An aborted earlier run must not leave a frozen pod: sweep before and after.
+	if err := chaos.Sweep(ctx, env.Exec, chaos.DefaultChaosNamespace); err != nil {
+		return fmt.Errorf("sweep at start: %w", err)
+	}
 	for _, s := range chaos.Scenarios() {
 		if s.Pending == "" {
 			check, closeDB, err := checkerFromEnv(context.Background(), evidence)
@@ -103,7 +109,11 @@ func run() error {
 			break
 		}
 	}
-	summary, err := chaos.RunAll(context.Background(), chaos.Scenarios(), env)
+	summary, err := chaos.RunAll(ctx, chaos.Scenarios(), env)
+	// The sweep must run even if a scenario aborted the run.
+	if sweepErr := chaos.Sweep(context.WithoutCancel(ctx), env.Exec, chaos.DefaultChaosNamespace); sweepErr != nil {
+		return errors.Join(err, fmt.Errorf("sweep at end: %w", sweepErr))
+	}
 	if err != nil {
 		return err
 	}
