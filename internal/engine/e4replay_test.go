@@ -405,7 +405,7 @@ func implementationAnnotations(events []journal.Event) []string {
 func TestE4WalkHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+	temporalClient, stop, err := startReplayClient(ctx, t, testsuite.DevServerOptions{
 		LogLevel: "error",
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
@@ -414,11 +414,10 @@ func TestE4WalkHistoryReplays(t *testing.T) {
 		t.Fatalf("start Temporal dev server: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := server.Stop(); err != nil {
+		if err := stop(); err != nil {
 			t.Errorf("stop Temporal dev server: %v", err)
 		}
 	})
-	temporalClient := server.Client()
 
 	for i, fx := range e4Fixtures() {
 		t.Run(fx.name, func(t *testing.T) {

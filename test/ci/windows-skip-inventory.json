@@ -1381,6 +1381,12 @@
       "reason": "HA chaos harness: Linux-only (kubectl/kind, PostgreSQL 16 integration); unit tests run on the Linux unit shards only."
     },
     {
+      "package": "test/ha/kind/cmd/nightly",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Linux-only kind environment driver; its unit contract runs on the Linux unit shards and the hosted HA nightly job."
+    },
+    {
       "package": "test/ha/workerscenarios",
       "coverage": "none",
       "category": "not-selected",
