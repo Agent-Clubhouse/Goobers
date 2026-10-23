@@ -11,9 +11,12 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationCloudServices(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEST_POSTGRES_URL")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
