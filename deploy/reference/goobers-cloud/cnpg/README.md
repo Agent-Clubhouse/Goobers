@@ -1,7 +1,11 @@
 # CloudNativePG reference (goobers-cloud)
 
 The cloud-agnostic PostgreSQL reference for `goobers-cloud` (HA-P3-21, design
-decision D-6). Nightly kind runs it for CHAOS-4. Azure installs use the
+decision D-6), for self-managed clusters that span three zones. The nightly
+kind job (CHAOS-4) does not apply it: it uses its own single-zone cluster,
+`test/ha/kind/cnpg-cluster.yaml`. This reference requires one instance per zone
+(`DoNotSchedule`), so on kind or any cluster without three labelled zones its
+pods stay Pending unless an overlay relaxes the spread. Azure installs use the
 zone-redundant flexible server in `infra/bicep/modules/postgres.bicep` instead.
 Both references declare the same roles and databases, from
 `internal/cloud/pgroles`. Tests in that package fail if either reference drifts.
