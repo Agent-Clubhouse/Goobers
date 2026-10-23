@@ -48,6 +48,7 @@ func (e EpochServices) validate() error {
 
 // Config supplies process-level policy and epoch-scoped service construction.
 type Config struct {
+	ValidateAssembly func() error
 	SelfExecution    string
 	RunnerHosts      []string
 	Leadership       Leadership
@@ -91,8 +92,11 @@ func New(config Config) (*Host, error) {
 	if err := ValidateBoot(config.SelfExecution, config.RunnerHosts); err != nil {
 		return nil, err
 	}
-	if config.Leadership == nil || config.SchemaCompatible == nil || config.BuildEpoch == nil {
-		return nil, errors.New("cloud control requires leadership, schema check and epoch services")
+	if config.ValidateAssembly == nil || config.Leadership == nil || config.SchemaCompatible == nil || config.BuildEpoch == nil {
+		return nil, errors.New("cloud control requires assembly validation, leadership, schema check and epoch services")
+	}
+	if err := config.ValidateAssembly(); err != nil {
+		return nil, fmt.Errorf("cloud control assembly: %w", err)
 	}
 	if config.RetryInterval == 0 {
 		config.RetryInterval = 2 * time.Second
@@ -132,22 +136,30 @@ func (h *Host) Run(ctx context.Context) error {
 	}
 	defer h.running.Store(false)
 	defer h.state.Store(nil)
+	backoff := h.config.RetryInterval
 	for ctx.Err() == nil {
 		err := h.checkSchema(ctx)
 		if err == nil {
 			err = h.config.Leadership.Run(ctx, h.runEpoch)
 		}
 		h.state.Store(nil)
-		if ctx.Err() != nil {
-			return nil
-		}
 		if errors.Is(err, errStopTimeout) {
 			return err
 		}
-		if err != nil && !errors.Is(err, lease.ErrHeld) && h.config.Report != nil {
-			h.config.Report(err)
+		if ctx.Err() != nil {
+			return nil
 		}
-		timer := time.NewTimer(h.config.RetryInterval)
+		delay := h.config.RetryInterval
+		if err != nil && !errors.Is(err, lease.ErrHeld) {
+			if h.config.Report != nil {
+				h.config.Report(err)
+			}
+			delay = backoff
+			backoff = min(backoff*2, max(time.Minute, h.config.RetryInterval))
+		} else {
+			backoff = h.config.RetryInterval
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -211,7 +223,7 @@ func (h *Host) prepare(ctx context.Context, services EpochServices) error {
 	return services.ReattachAwaiters(ctx)
 }
 
-var errStopTimeout = errors.New("cloud control callbacks did not stop within the shutdown bound")
+var errStopTimeout = fmt.Errorf("%w: cloud control callbacks did not stop within the shutdown bound", lease.ErrWorkStillRunning)
 
 func (h *Host) stop(services EpochServices) error {
 	ctx, cancel := context.WithTimeout(context.Background(), h.config.StopTimeout)

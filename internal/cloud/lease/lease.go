@@ -26,6 +26,9 @@ const (
 )
 
 var (
+	// ErrWorkStillRunning prevents voluntary handoff when work has not stopped.
+	// Callers must exit promptly; authority expires without further renewal.
+	ErrWorkStillRunning = errors.New("cloud lease work is still running")
 	// ErrHeld means another live holder owns the lease.
 	ErrHeld = errors.New("cloud lease is held")
 	// ErrStale means the holder or epoch no longer owns the lease.

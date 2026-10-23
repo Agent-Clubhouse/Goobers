@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -31,7 +32,7 @@ func testServices() EpochServices {
 	return EpochServices{RebuildBeforeReap: ok, ReconcileUncertain: ok, ReattachAwaiters: ok, L1: ok, L2: ok, L3: ok, Stop: ok}
 }
 func testConfig(leader Leadership, build func(context.Context, *lease.Handle) (EpochServices, error)) Config {
-	return Config{SelfExecution: "deny", Leadership: leader, SchemaCompatible: func(context.Context) error { return nil }, BuildEpoch: build, RetryInterval: time.Millisecond, TickInterval: 5 * time.Millisecond, StopTimeout: time.Second}
+	return Config{ValidateAssembly: func() error { return nil }, SelfExecution: "deny", Leadership: leader, SchemaCompatible: func(context.Context) error { return nil }, BuildEpoch: build, RetryInterval: time.Millisecond, TickInterval: 5 * time.Millisecond, StopTimeout: time.Second}
 }
 func TestRebuildBeforeReapOnAcquire(t *testing.T) {
 	leader := &fakeLeadership{}
@@ -167,4 +168,48 @@ func TestControlCancelsEpochBeforeStoppingAwaiters(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestIncompleteAssemblyIsRejectedBeforeLeadership(t *testing.T) {
+	leader := &fakeLeadership{}
+	config := testConfig(leader, func(context.Context, *lease.Handle) (EpochServices, error) {
+		t.Fatal("incomplete assembly built an epoch")
+		return EpochServices{}, nil
+	})
+	config.ValidateAssembly = func() error { return errors.New("missing PG planes") }
+	host, err := New(config)
+	if err == nil || host != nil || leader.released.Load() {
+		t.Fatalf("host=%v err=%v released=%v", host, err, leader.released.Load())
+	}
+}
+
+func TestPrepareFailuresBackOffBeforeReacquiring(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		start := time.Now()
+		var attempts []time.Duration
+		config := testConfig(&fakeLeadership{}, func(context.Context, *lease.Handle) (EpochServices, error) {
+			attempts = append(attempts, time.Since(start))
+			services := testServices()
+			services.ReattachAwaiters = func(context.Context) error {
+				if len(attempts) == 4 {
+					cancel()
+				}
+				return errors.New("visibility unavailable")
+			}
+			return services, nil
+		})
+		config.RetryInterval = 2 * time.Second
+		host, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := host.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(attempts, []time.Duration{0, 2 * time.Second, 6 * time.Second, 14 * time.Second}) {
+			t.Fatalf("virtual acquisition times=%v", attempts)
+		}
+	})
 }

@@ -119,6 +119,9 @@ func serveControl(ctx context.Context, db databaseServices, o controlOptions, lo
 	if err := control.ValidateBoot(o.selfExecution, services.RunnerHosts); err != nil {
 		return err
 	}
+	if err := services.validate(); err != nil {
+		return err
+	}
 	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
 	if err != nil {
 		return err
@@ -126,14 +129,9 @@ func serveControl(ctx context.Context, db databaseServices, o controlOptions, lo
 	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
 	runtime := control.Runtime{Pool: db.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
-	host, err := control.New(control.Config{SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
+	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
 		return checkCloudSchema(ctx, db.Pools.Transaction, version.Get().Version)
-	}, BuildEpoch: func(ctx context.Context, h *lease.Handle) (control.EpochServices, error) {
-		if !services.complete() {
-			return control.EpochServices{}, errors.New("cloud PG plane and recovery assembly incomplete")
-		}
-		return runtime.Build(ctx, h)
-	}, Report: report})
+	}, BuildEpoch: runtime.Build, Report: report})
 	if err != nil {
 		return err
 	}
@@ -193,7 +191,7 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		completed++
 	case err = <-server.Errors():
 	}
-	if errors.Is(err, context.Canceled) {
+	if err == context.Canceled {
 		err = nil
 	}
 	cancel()
@@ -204,7 +202,7 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		select {
 		case result := <-done:
 			completed++
-			if !errors.Is(result, context.Canceled) {
+			if result != context.Canceled {
 				err = errors.Join(err, result)
 			}
 		case <-shutdown.Done():
@@ -212,4 +210,11 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 		}
 	}
 	return err
+}
+
+func (p controlPlanes) validate() error {
+	if !p.complete() {
+		return errors.New("cloud PG plane and recovery assembly incomplete")
+	}
+	return nil
 }
