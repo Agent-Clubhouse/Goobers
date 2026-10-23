@@ -337,6 +337,15 @@ jobs:
           done
           secret tls goobers-cloud-control-tls --cert="$secrets/tls.crt" --key="$secrets/tls.key"
           secret generic goobers-cloud-pod-key --from-file=keyring.json="$secrets/keyring.json"
+          openssl rand -base64 32 | tr -d '\n' > "$secrets/azurite-key"
+          {
+            printf 'devstoreaccount1:'
+            cat "$secrets/azurite-key"
+          } > "$secrets/azurite-accounts"
+          secret generic goobers-cloud-object-store \
+            --from-literal=account-name=devstoreaccount1 \
+            --from-file=account-key="$secrets/azurite-key" \
+            --from-file=accounts="$secrets/azurite-accounts"
           # kind has no Entra: the overlay sets database-auth=password in the
           # shared ConfigMap. Outside Argo the PreSync hook is just a Job: apply
           # everything, then require it to complete before the rollout check.
