@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/schema"
 )
@@ -54,6 +56,11 @@ func TestPostgresColumnGrantsMatchWritePathInventory(t *testing.T) {
 		if !table.Provisioned {
 			continue
 		}
+		for _, reader := range table.Readers {
+			for _, column := range reader.Columns {
+				expected[privilegeKey(reader.Role, table.Schema, table.Name, "SELECT", column)] = true
+			}
+		}
 		for _, writer := range table.Writers {
 			for _, column := range writer.Insert {
 				expected[privilegeKey(writer.Role, table.Schema, table.Name, "INSERT", column)] = true
@@ -70,6 +77,56 @@ func TestPostgresColumnGrantsMatchWritePathInventory(t *testing.T) {
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("database write privileges differ from inventory\nactual: %#v\nwant:   %#v", actual, expected)
 	}
+	assertRuntimeRoleQueries(t, databaseURL)
+}
+
+func assertRuntimeRoleQueries(t *testing.T, databaseURL string) {
+	t.Helper()
+	controller := rolePool(t, databaseURL, "goobers_controller")
+	defer controller.Close()
+	manager, err := cloudlease.New(cloudlease.Config{
+		Pool: controller, InstanceID: "grant-role-test", Name: "control", Holder: "controller",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := manager.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("controller lease acquire: %v", err)
+	}
+	if err := manager.Renew(t.Context(), handle); err != nil {
+		t.Fatalf("controller lease renew: %v", err)
+	}
+	if err := manager.WithFence(t.Context(), handle, func(context.Context, pgx.Tx) error { return nil }); err != nil {
+		t.Fatalf("controller fenced read: %v", err)
+	}
+	if err := manager.Release(t.Context(), handle); err != nil {
+		t.Fatalf("controller lease release: %v", err)
+	}
+
+	api := rolePool(t, databaseURL, "goobers_api")
+	defer api.Close()
+	if _, err := migrate.AppliedMigrations(t.Context(), api); err != nil {
+		t.Fatalf("API schema compatibility read: %v", err)
+	}
+}
+
+func rolePool(t *testing.T, databaseURL, role string) *pgxpool.Pool {
+	t.Helper()
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 4
+	config.AfterConnect = func(ctx context.Context, connection *pgx.Conn) error {
+		_, err := connection.Exec(ctx, "SET ROLE "+pgx.Identifier{role}.Sanitize())
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pool
 }
 
 func loadWritePrivileges(t *testing.T, pool *pgxpool.Pool) map[string]bool {
@@ -79,7 +136,7 @@ func loadWritePrivileges(t *testing.T, pool *pgxpool.Pool) map[string]bool {
 		FROM information_schema.column_privileges
 		WHERE table_schema IN ('control', 'journal', 'readmodel')
 		  AND grantee IN ('goobers_api', 'goobers_controller')
-		  AND privilege_type IN ('INSERT', 'UPDATE')`,
+		  AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')`,
 	)
 	if err != nil {
 		t.Fatal(err)
