@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/temporaldial"
+	"github.com/goobers/goobers/internal/workerrollout"
 	"github.com/goobers/goobers/internal/workerrouting"
 )
 
@@ -51,9 +53,12 @@ const ChildSettlementTimeout = 5 * time.Minute
 const DefaultMaxConcurrentActivities = 1000
 
 const (
-	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
-	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
-	healthShutdownWait = 5 * time.Second
+	placementBuildEnv         = "GOOBERS_RUNNER_BUILD"
+	placementWorkerEnv        = "GOOBERS_RUNNER_WORKER"
+	temporalDeploymentNameEnv = "TEMPORAL_DEPLOYMENT_NAME"
+	temporalWorkerBuildIDEnv  = "TEMPORAL_WORKER_BUILD_ID"
+	podNamespaceEnv           = "POD_NAMESPACE"
+	healthShutdownWait        = 5 * time.Second
 )
 
 // Config describes one worker process.
@@ -84,6 +89,11 @@ type Config struct {
 	// as deployment "goobers", version BuildVersion (#5950). Off, the worker
 	// polls unversioned. It has no effect without a BuildVersion.
 	Versioning bool
+	// VersionRetention is the maximum number of live deployment versions.
+	// Zero disables retention reconciliation.
+	VersionRetention int
+	// RolloutNamespace contains the WorkerDeployment custom resource.
+	RolloutNamespace string
 	// Logf receives the non-fatal deployment-routing health reports (#5950).
 	// Nil writes them to the process's stderr.
 	Logf func(format string, args ...any)
@@ -108,8 +118,11 @@ type Host struct {
 	newWorker func(c client.Client, taskQueue string, opts worker.Options) managedWorker
 	// describeRouting and its cadence back the #5950 routing health check.
 	describeRouting        func(ctx context.Context, c client.Client) (workerrouting.Routing, error)
+	newRolloutStatus       func() (workerrollout.StatusSource, error)
+	reconcileRollout       func(context.Context, workerrollout.StatusSource, workerrollout.TemporalClient, int) (workerrollout.Result, error)
 	routingDelay           time.Duration
 	routingInterval        time.Duration
+	rolloutInterval        time.Duration
 	childSettlementTimeout time.Duration
 	pollersStarted         atomic.Bool
 	routed                 atomic.Bool
@@ -118,6 +131,10 @@ type Host struct {
 
 // New validates cfg and builds a Host.
 func New(cfg Config) (*Host, error) {
+	var err error
+	if cfg, err = applyDeploymentEnvironment(cfg, os.LookupEnv); err != nil {
+		return nil, err
+	}
 	if len(cfg.TaskQueues) == 0 {
 		return nil, errors.New("workerhost: at least one task queue is required")
 	}
@@ -135,6 +152,12 @@ func New(cfg Config) (*Host, error) {
 	if cfg.MaxConcurrentActivities == 0 {
 		cfg.MaxConcurrentActivities = DefaultMaxConcurrentActivities
 	}
+	if cfg.VersionRetention < 0 {
+		return nil, errors.New("workerhost: version retention must be positive")
+	}
+	if cfg.VersionRetention > 0 && cfg.RolloutNamespace == "" {
+		return nil, errors.New("workerhost: rollout namespace is required when version retention is enabled")
+	}
 	h := &Host{cfg: cfg, tracker: &activityTracker{
 		buildID: cfg.BuildVersion,
 		worker:  Identity(cfg.BuildVersion),
@@ -149,10 +172,41 @@ func New(cfg Config) (*Host, error) {
 		return w
 	}
 	h.describeRouting = workerrouting.DescribeRouting
+	h.newRolloutStatus = func() (workerrollout.StatusSource, error) {
+		return workerrollout.NewInClusterStatusSource(cfg.RolloutNamespace, DeploymentName)
+	}
+	h.reconcileRollout = workerrollout.Reconcile
 	h.routingDelay = routingCheckDelay
 	h.routingInterval = routingCheckInterval
+	h.rolloutInterval = time.Minute
 	h.childSettlementTimeout = ChildSettlementTimeout
 	return h, nil
+}
+
+func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) (Config, error) {
+	deployment, hasDeployment := lookup(temporalDeploymentNameEnv)
+	buildID, hasBuildID := lookup(temporalWorkerBuildIDEnv)
+	if !hasDeployment && !hasBuildID {
+		return cfg, nil
+	}
+	deployment = strings.TrimSpace(deployment)
+	buildID = strings.TrimSpace(buildID)
+	if !hasDeployment || !hasBuildID || deployment == "" || buildID == "" {
+		return Config{}, fmt.Errorf("workerhost: %s and %s must both be non-empty", temporalDeploymentNameEnv, temporalWorkerBuildIDEnv)
+	}
+	if deployment != DeploymentName {
+		return Config{}, fmt.Errorf("workerhost: %s=%q, want %q", temporalDeploymentNameEnv, deployment, DeploymentName)
+	}
+	cfg.BuildVersion = buildID
+	cfg.Versioning = true
+	if cfg.VersionRetention == 0 {
+		cfg.VersionRetention = workerrollout.DefaultVersionLimit
+	}
+	if cfg.RolloutNamespace == "" {
+		namespace, _ := lookup(podNamespaceEnv)
+		cfg.RolloutNamespace = strings.TrimSpace(namespace)
+	}
+	return cfg, nil
 }
 
 // Identity is the versioned Temporal worker identity (#632): build version,
@@ -215,6 +269,13 @@ func (h *Host) Run(ctx context.Context) error {
 	if c != nil {
 		defer c.Close()
 	}
+	var rolloutStatus workerrollout.StatusSource
+	if h.cfg.VersionRetention > 0 {
+		rolloutStatus, err = h.newRolloutStatus()
+		if err != nil {
+			return fmt.Errorf("workerhost: initialize version retention: %w", err)
+		}
+	}
 
 	previousBuild, hadBuild := os.LookupEnv(placementBuildEnv)
 	previousWorker, hadWorker := os.LookupEnv(placementWorkerEnv)
@@ -267,11 +328,19 @@ func (h *Host) Run(ctx context.Context) error {
 	// do, so report it rather than let the engine stall silently.
 	routingCtx, stopRouting := context.WithCancel(ctx)
 	defer stopRouting()
-	routingDone := make(chan struct{})
+	var background sync.WaitGroup
+	background.Add(1)
 	go func() {
-		defer close(routingDone)
+		defer background.Done()
 		h.checkRoutingLoop(routingCtx, c)
 	}()
+	if rolloutStatus != nil {
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			h.checkRolloutLoop(routingCtx, rolloutStatus, workerrollout.SDKClient{Client: c})
+		}()
+	}
 
 	var runErr error
 	select {
@@ -281,7 +350,8 @@ func (h *Host) Run(ctx context.Context) error {
 		stopRouting()
 	}
 	h.pollersStarted.Store(false)
-	<-routingDone
+	stopRouting()
+	background.Wait()
 	stopAll()
 	if runErr != nil {
 		return runErr

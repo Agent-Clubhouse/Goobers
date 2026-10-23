@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/goobers/goobers/internal/workerrollout"
 	"github.com/goobers/goobers/internal/workerrouting"
 )
 
@@ -34,6 +35,51 @@ func TestWorkerOptionsUnversionedUnlessOptedIn(t *testing.T) {
 	}
 	if !strings.Contains(opts.Identity, "goobers-worker/v0.5.0@") {
 		t.Fatalf("identity %q lost the build version; it must stay diagnosable when unversioned", opts.Identity)
+	}
+}
+
+func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
+	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
+	t.Setenv(podNamespaceEnv, "goobers-system")
+	h, err := New(Config{
+		TaskQueues:   []string{"goobers-engine"},
+		BuildVersion: "binary-version",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if !opts.DeploymentOptions.UseVersioning ||
+		opts.DeploymentOptions.Version.DeploymentName != DeploymentName ||
+		opts.DeploymentOptions.Version.BuildID != "template-hash" {
+		t.Fatalf("DeploymentOptions = %+v, want controller-injected version", opts.DeploymentOptions)
+	}
+	if !strings.Contains(opts.Identity, "goobers-worker/template-hash@") {
+		t.Fatalf("identity %q does not use controller build ID", opts.Identity)
+	}
+	if h.cfg.VersionRetention != workerrollout.DefaultVersionLimit || h.cfg.RolloutNamespace != "goobers-system" {
+		t.Fatalf("controller rollout config = retention %d namespace %q", h.cfg.VersionRetention, h.cfg.RolloutNamespace)
+	}
+}
+
+func TestWorkerControllerDeploymentVersionFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deployment string
+		build      string
+	}{
+		{name: "missing build", deployment: DeploymentName},
+		{name: "missing deployment", build: "v2"},
+		{name: "wrong deployment", deployment: "other", build: "v2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(temporalDeploymentNameEnv, tc.deployment)
+			t.Setenv(temporalWorkerBuildIDEnv, tc.build)
+			if _, err := New(Config{TaskQueues: []string{"goobers-engine"}}); err == nil {
+				t.Fatal("New accepted incomplete or foreign controller identity")
+			}
+		})
 	}
 }
 
