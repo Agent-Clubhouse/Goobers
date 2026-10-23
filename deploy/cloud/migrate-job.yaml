@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: goobers-cloud-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-cloud-migrate
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: goobers
+          command: ["/usr/local/bin/goobers-cloud"]
+          args: ["migrate", "apply"]
+          env:
+            - name: GOOBERS_DATABASE_DIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: goobers-cloud-database
+                  key: direct-url
+            - name: GOOBERS_DATABASE_AUTH
+              value: entra
+            - name: GOOBERS_MIGRATION_BACKUP_REF
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud-migration
+                  key: backup-ref
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

@@ -78,10 +78,18 @@ Database options are the same as for the api role.
 Apply cloud data-store migrations.
 
 ~~~text
-Usage: goobers-cloud migrate
+Usage: goobers-cloud migrate apply [OPTIONS]
 
-Apply cloud data-store migrations. The P1 skeleton reserves this role while
-the migration runner is wired into the cloud composition root.
+Apply ordered cloud PostgreSQL migrations.
+
+Options:
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE             password or entra (default password)
+  --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud worker`
