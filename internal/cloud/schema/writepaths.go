@@ -45,7 +45,14 @@ type Table struct {
 	Provisioned bool      `yaml:"provisioned"`
 	Fence       FenceKind `yaml:"fence"`
 	Rationale   string    `yaml:"rationale"`
+	Readers     []Reader  `yaml:"readers"`
 	Writers     []Writer  `yaml:"writers"`
+}
+
+// Reader describes column-level read privileges for one database role.
+type Reader struct {
+	Role    string   `yaml:"role"`
+	Columns []string `yaml:"columns"`
 }
 
 // Writer describes column-level write privileges for one database role.
@@ -91,6 +98,16 @@ func (inventory Inventory) Validate() error {
 		default:
 			return fmt.Errorf("cloud write-path inventory has invalid fence %q for %s", table.Fence, key)
 		}
+		for _, reader := range table.Readers {
+			if !identifier.MatchString(reader.Role) || len(reader.Columns) == 0 {
+				return fmt.Errorf("cloud write-path inventory has invalid reader %q on %s", reader.Role, key)
+			}
+			for _, column := range reader.Columns {
+				if !identifier.MatchString(column) {
+					return fmt.Errorf("cloud write-path inventory has invalid read column %q on %s", column, key)
+				}
+			}
+		}
 		for _, writer := range table.Writers {
 			if !identifier.MatchString(writer.Role) {
 				return fmt.Errorf("cloud write-path inventory has invalid role %q", writer.Role)
@@ -126,7 +143,10 @@ func GrantMigrationSQL(inventory Inventory) string {
 			continue
 		}
 		qualified := table.Schema + "." + table.Name
-		fmt.Fprintf(&output, "REVOKE INSERT, UPDATE, DELETE ON %s FROM goobers_api, goobers_controller;\n", qualified)
+		fmt.Fprintf(&output, "REVOKE SELECT, INSERT, UPDATE, DELETE ON %s FROM goobers_api, goobers_controller;\n", qualified)
+		for _, reader := range table.Readers {
+			fmt.Fprintf(&output, "GRANT SELECT (%s) ON %s TO %s;\n", strings.Join(reader.Columns, ", "), qualified, reader.Role)
+		}
 		for _, writer := range table.Writers {
 			if len(writer.Insert) > 0 {
 				fmt.Fprintf(&output, "GRANT INSERT (%s) ON %s TO %s;\n", strings.Join(writer.Insert, ", "), qualified, writer.Role)
@@ -140,7 +160,7 @@ func GrantMigrationSQL(inventory Inventory) string {
 		}
 		output.WriteByte('\n')
 	}
-	return output.String()
+	return strings.TrimRight(output.String(), "\n") + "\n"
 }
 
 // WriterFor returns a role's policy for one table.
