@@ -99,7 +99,6 @@ type FeatureBlocker struct {
 
 var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
 	"workflow.spec.parallels": {Path: "spec.parallels", Issue: 7753},
-	"workflow.spec.maps":      {Path: "spec.maps", Issue: 7755},
 	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758},
 	"task.experiment":         {Path: "task.experiment", Issue: 7763},
 }

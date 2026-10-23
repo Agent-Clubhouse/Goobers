@@ -199,12 +199,12 @@ func TestBranchBindingsDoNotShareMutableItems(t *testing.T) {
 	r := &runJournal{branchWalk: &branchWalkFrame{bind: func(fanOutBindingContext) (fanOutBindings, error) {
 		return fanOutBindings{Values: values, Grades: map[string]apiv1.Integrity{"item": apiv1.IntegrityMaintainer}}, nil
 	}}}
-	first, err := r.branchBindings("a")
+	first, err := r.branchBindings(nil, "a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.Values["item"].(map[string]any)["number"] = "mutated"
-	second, err := r.branchBindings("b")
+	second, err := r.branchBindings(nil, "b")
 	if err != nil {
 		t.Fatal(err)
 	}

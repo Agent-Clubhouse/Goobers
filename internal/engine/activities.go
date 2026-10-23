@@ -30,10 +30,12 @@ import (
 // decoupled from the concrete receiver instance; they must equal the method
 // names on Activities exactly (Temporal registers struct methods by name).
 const (
-	ActInvokeGoober      = "InvokeGoober"
-	ActReviewGoober      = "ReviewGoober"
-	ActRunDeterministic  = "RunDeterministic"
-	ActEvaluateAutomated = "EvaluateAutomated"
+	ActInvokeGoober          = "InvokeGoober"
+	ActInvokeGooberExact     = "InvokeGooberExact"
+	ActReviewGoober          = "ReviewGoober"
+	ActRunDeterministic      = "RunDeterministic"
+	ActRunDeterministicExact = "RunDeterministicExact"
+	ActEvaluateAutomated     = "EvaluateAutomated"
 	// ActDispatchStage is the mode-3 dispatch activity (#3588,
 	// dispatchstage.go): the stage executes in a dispatcher-created pod and
 	// its surrendered outputs marshal back into the same stageActivityResult

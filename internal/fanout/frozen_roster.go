@@ -13,6 +13,16 @@ import (
 // FrozenRosterSchemaVersion identifies the content-addressed roster blob.
 const FrozenRosterSchemaVersion = "goobers.dev/frozen-map-roster/v1"
 
+const (
+	// FrozenRosterOverheadBytes allows the normalized blob to add its schema,
+	// source lineage, bounds, identities, and computed digests without reducing
+	// the producer's full MaxSourceBytes payload allowance.
+	FrozenRosterOverheadBytes = 64 << 10
+	// MaxFrozenRosterBytes bounds the normalized content-addressed roster shared
+	// by the runner and engine.
+	MaxFrozenRosterBytes = MaxSourceBytes + FrozenRosterOverheadBytes
+)
+
 // FrozenRosterBlob is the normalized, content-addressed representation of one
 // map visit. The map definition is pinned separately in the workflow input;
 // Roster records the exact source attempt, effective bounds, and canonical
@@ -32,10 +42,12 @@ func FreezeRosterBlob(def apiv1.Map, source journal.FanOutSourceRef, sourceData 
 	if err != nil {
 		return FrozenRosterBlob{}, nil, "", err
 	}
+	frozenSource := source
+	frozenSource.Visit, frozenSource.Path = 0, ""
 	blob := FrozenRosterBlob{
 		SchemaVersion: FrozenRosterSchemaVersion,
 		Roster: journal.MapRoster{
-			Source:             source,
+			Source:             frozenSource,
 			FailurePolicy:      def.FailurePolicy,
 			ItemTimeoutSeconds: def.ItemTimeoutSeconds,
 			MaxConcurrent:      EffectiveMaxConcurrent(def),
@@ -47,9 +59,15 @@ func FreezeRosterBlob(def apiv1.Map, source journal.FanOutSourceRef, sourceData 
 	}, def); err != nil {
 		return FrozenRosterBlob{}, nil, "", err
 	}
-	data, err := json.Marshal(blob)
+	data, err := encodeFrozenRosterBlob(blob)
 	if err != nil {
 		return FrozenRosterBlob{}, nil, "", fmt.Errorf("encode frozen map roster: %w", err)
+	}
+	if int64(len(data)) > MaxFrozenRosterBytes {
+		return FrozenRosterBlob{}, nil, "", &SourceError{
+			Reason: ReasonTooLarge,
+			Detail: fmt.Sprintf("normalized roster is %d bytes, bound is %d", len(data), MaxFrozenRosterBytes),
+		}
 	}
 	return blob, data, journal.Digest(data), nil
 }
@@ -59,6 +77,12 @@ func FreezeRosterBlob(def apiv1.Map, source journal.FanOutSourceRef, sourceData 
 func DecodeRosterBlob(data []byte, digest string, def apiv1.Map) (FrozenRosterBlob, error) {
 	if !ValidDigest(digest) || journal.Digest(data) != digest {
 		return FrozenRosterBlob{}, fmt.Errorf("frozen map roster digest does not match its bytes")
+	}
+	if int64(len(data)) > MaxFrozenRosterBytes {
+		return FrozenRosterBlob{}, &SourceError{
+			Reason: ReasonTooLarge,
+			Detail: fmt.Sprintf("normalized roster is %d bytes, bound is %d", len(data), MaxFrozenRosterBytes),
+		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -78,7 +102,7 @@ func DecodeRosterBlob(data []byte, digest string, def apiv1.Map) (FrozenRosterBl
 	}, def); err != nil {
 		return FrozenRosterBlob{}, err
 	}
-	canonical, err := json.Marshal(blob)
+	canonical, err := encodeFrozenRosterBlob(blob)
 	if err != nil {
 		return FrozenRosterBlob{}, fmt.Errorf("re-encode frozen map roster: %w", err)
 	}
@@ -86,6 +110,16 @@ func DecodeRosterBlob(data []byte, digest string, def apiv1.Map) (FrozenRosterBl
 		return FrozenRosterBlob{}, fmt.Errorf("frozen map roster is not canonically encoded")
 	}
 	return blob, nil
+}
+
+func encodeFrozenRosterBlob(blob FrozenRosterBlob) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(blob); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
 }
 
 func validateFrozenSource(def apiv1.Map, source journal.FanOutSourceRef, data []byte) error {

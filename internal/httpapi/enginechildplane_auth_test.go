@@ -27,6 +27,18 @@ func TestWorkerChildAdmissionIdentityIsConfinedToItsPlane(t *testing.T) {
 			}
 		}
 	}
+	// No other issuer reaches the plane at the authorizer, even an admin or a
+	// credential-refresh grant, independent of the handler's own re-check.
+	for path := range plane {
+		for _, issuer := range []string{"", WorkerPrincipalIssuer, WorkerBlobPrincipalIssuer, WorkerSurrenderPrincipalIssuer, GeneratedChildPrincipalIssuer, WorkflowParentPrincipalIssuer, CredentialGrantPrincipalIssuer} {
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			principal := Principal{Subject: "operator", Issuer: issuer, Roles: []Role{RoleAdmin}, Scopes: knownPodScopes()}
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+			if RequireRoles().Authorize(request) == nil {
+				t.Fatalf("issuer %q reached %s at the authorizer", issuer, path)
+			}
+		}
+	}
 	// Stage pods, even with every scope, never reach the plane.
 	for path := range plane {
 		request := httptest.NewRequest(http.MethodPost, path, nil)

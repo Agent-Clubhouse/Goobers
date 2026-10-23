@@ -200,7 +200,7 @@ func TestDispatchStageRejectsInvalidUsageAllowance(t *testing.T) {
 	activities := &Activities{
 		Dispatcher: &fakeStageDispatcher{}, Surrenders: surrenderStore(t),
 	}
-	err := activities.validateStageDispatch(input)
+	err := activities.validateStageDispatch(&input)
 	if err == nil || !strings.Contains(err.Error(), "invalid usage allowance") {
 		t.Fatalf("validateStageDispatch error = %v", err)
 	}
@@ -208,9 +208,39 @@ func TestDispatchStageRejectsInvalidUsageAllowance(t *testing.T) {
 	input.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
 	zero := int64(0)
 	input.UsageAllowance = &usageallowance.Allowance{MaxTokens: &zero}
-	if err := activities.validateStageDispatch(input); err == nil ||
+	if err := activities.validateStageDispatch(&input); err == nil ||
 		!strings.Contains(err.Error(), "agentic task") {
 		t.Fatalf("deterministic allowance error = %v", err)
+	}
+}
+
+func TestDispatchStageCarriesCommittedFanOutIdentity(t *testing.T) {
+	store := surrenderStore(t)
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "win-ci", Pod: "map-item", Phase: corev1.PodSucceeded,
+		SurrenderConfirmed: true, Disposed: true,
+	}}
+	input := dispatchInput("map-run", "mapped", 1)
+	input.PodAttempt, input.FanOutVisit, input.FanOutBranch = 9, 57, 3
+	input.Envelope.Inputs = map[string]any{"item": map[string]any{"number": float64(9007199254740992)}}
+	input.ExactInputs = map[string]json.RawMessage{
+		"item": json.RawMessage(`{"number":9007199254740993}`),
+	}
+	putSurrendered(t, store, "map-run", "mapped", 9, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	acts := &Activities{Dispatcher: fake, Surrenders: store}
+	if _, err := acts.DispatchStage(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	attempts, _ := fake.recorded()
+	if len(attempts) != 1 || attempts[0].PodAttempt != 9 ||
+		attempts[0].FanOutVisit != 57 || attempts[0].FanOutBranch != 3 {
+		t.Fatalf("dispatcher attempts = %+v", attempts)
+	}
+	number, ok := attempts[0].Envelope.Inputs["item"].(map[string]any)["number"].(json.Number)
+	if !ok || number.String() != "9007199254740993" {
+		t.Fatalf("remote exact map input = %#v", attempts[0].Envelope.Inputs["item"])
 	}
 }
 

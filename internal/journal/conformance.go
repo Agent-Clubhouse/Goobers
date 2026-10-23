@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/jcs"
 )
 
 // NormativeEvent is the cross-runner comparable projection of an Event: the
@@ -243,38 +242,33 @@ func encodeSelection(selection *ParallelSelection) string {
 // every normative field, with the source artifact's storage metadata
 // (path, size, media type) dropped exactly as Ref's is, and the producer visit
 // (a runner-local journal sequence) dropped as a selection's is. Items keep their
-// normalized identity order, which is what assigns branch ids, and each item
-// is re-canonicalized so the projection compares values, not spellings.
+// normalized identity order, which is what assigns branch ids. RosterDigest
+// and each item digest commit to payload bytes without copying those bytes
+// into the conformance projection or engine history.
 func encodeMapRoster(roster *MapRoster) string {
 	if roster == nil {
 		return ""
 	}
 	type item struct {
-		Identity string          `json:"identity"`
-		Digest   string          `json:"digest"`
-		Item     json.RawMessage `json:"item"`
+		Identity string `json:"identity"`
+		Digest   string `json:"digest"`
 	}
 	view := struct {
-		Task, Slot, Digest      string
-		Attempt                 int
-		Integrity               apiv1.Integrity
-		FailurePolicy           apiv1.BranchFailurePolicy
-		ItemTimeout, MaxWorkers int32
-		Items                   []item
+		Task, Slot, Digest, RosterDigest string
+		Attempt                          int
+		Integrity                        apiv1.Integrity
+		FailurePolicy                    apiv1.BranchFailurePolicy
+		ItemTimeout, MaxWorkers          int32
+		Items                            []item
 	}{
 		Task: roster.Source.Task, Slot: roster.Source.Slot, Digest: roster.Source.Digest,
-		Attempt: roster.Source.Attempt, Integrity: roster.Source.Integrity,
+		RosterDigest: roster.RosterDigest,
+		Attempt:      roster.Source.Attempt, Integrity: roster.Source.Integrity,
 		FailurePolicy: roster.FailurePolicy, ItemTimeout: roster.ItemTimeoutSeconds, MaxWorkers: roster.MaxConcurrent,
 		Items: make([]item, 0, len(roster.Items)),
 	}
 	for _, entry := range roster.Items {
-		canonical, err := jcs.Canonicalize(entry.Item)
-		if err != nil {
-			// Not canonicalizable: compare the recorded bytes as-is, so the
-			// difference still shows instead of collapsing to "".
-			canonical = entry.Item
-		}
-		view.Items = append(view.Items, item{Identity: entry.Identity, Digest: entry.Digest, Item: canonical})
+		view.Items = append(view.Items, item{Identity: entry.Identity, Digest: entry.Digest})
 	}
 	data, err := json.Marshal(view)
 	if err != nil {

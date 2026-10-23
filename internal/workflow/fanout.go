@@ -73,9 +73,6 @@ func RefuseUnsupportedFanOut(spec apiv1.WorkflowSpec) error {
 	if len(spec.Parallels) > 0 {
 		return &UnsupportedFanOutError{State: spec.Parallels[0].Name, Feature: "spec.parallels", Err: ErrParallelsUnsupported}
 	}
-	if len(spec.Maps) > 0 {
-		return &UnsupportedFanOutError{State: spec.Maps[0].Name, Feature: "spec.maps", Err: ErrMapUnsupported}
-	}
 	return nil
 }
 

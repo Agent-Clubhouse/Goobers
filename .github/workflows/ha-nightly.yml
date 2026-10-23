@@ -261,30 +261,24 @@ jobs:
           secrets="$(mktemp -d)"
           trap 'rm -rf "$secrets"' EXIT
           chmod 700 "$secrets"
-          # Provision the database and the three roles BEFORE migrate, as the
-          # CNPG superuser (the pgroles contract: goobers_<instance> owned by
-          # goobers_owner; goobers_api and goobers_controller are grant targets).
-          # This SQL is the nightly's provisioning path; swap it for
-          # `goobers-cloud bootstrap` (pgroles.Provision) once #7869 no longer
-          # refuses on unshipped steps. It is idempotent on a reused cluster:
-          # roles and the database are created only if missing, passwords are
-          # re-set every run and the Secrets re-applied to match. Passwords go
-          # over stdin, never argv, and statement logging is off for the session
-          # (log_statement=none, errors log no statement) so they are not logged.
-          for role in owner api controller; do
-            openssl rand -hex 24 | tr -d '\n' > "$secrets/pw-$role"
-          done
+          # The roles (goobers_owner/api/controller, temporal_app) already exist
+          # with random passwords: the kind CNPG cluster declares the production
+          # role contract and the runner created the credential Secrets before
+          # applying it (test/ha/kind/cnpg-cluster.yaml). What is left is the
+          # instance database, created as the CNPG superuser over the local
+          # socket (no password anywhere). THIS IS THE SINGLE FLIP POINT for
+          # `goobers-cloud bootstrap` (--admin-url from temporal-postgres-superuser,
+          # --database-direct-url-file from the owner URL below) once #7813,
+          # #7818 and #7763 ship and it stops refusing. Idempotent on reuse.
+          # The chaos steps may have failed the primary over: ask the cluster.
+          primary="$(kubectl -n goobers-temporal get cluster temporal-postgres -o jsonpath='{.status.currentPrimary}')"
           {
-            printf "SET log_statement = 'none';\nSET log_min_error_statement = 'panic';\nSET log_min_duration_statement = -1;\n"
-            for role in owner api controller; do
-              printf "SELECT 'CREATE ROLE goobers_%s LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'goobers_%s') \\gexec\n" "$role" "$role"
-              printf "ALTER ROLE goobers_%s PASSWORD '%s';\n" "$role" "$(cat "$secrets/pw-$role")"
-            done
             printf "SELECT 'CREATE DATABASE %s OWNER goobers_owner' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '%s') \\gexec\n" "$database" "$database"
-          } | kubectl -n goobers-temporal exec -i temporal-postgres-1 -c postgres -- psql -q -v ON_ERROR_STOP=1 >/dev/null
+            printf 'REVOKE ALL ON DATABASE %s FROM PUBLIC;\nGRANT CONNECT ON DATABASE %s TO goobers_api, goobers_controller;\n' "$database" "$database"
+          } | kubectl -n goobers-temporal exec -i "$primary" -c postgres -- psql -q -v ON_ERROR_STOP=1 >/dev/null
           for role in owner api controller; do
-            url="postgres://goobers_${role}:$(cat "$secrets/pw-$role")@temporal-postgres-rw.goobers-temporal.svc:5432/${database}?sslmode=require"
-            printf '%s' "$url" > "$secrets/$role-url"
+            password="$(kubectl -n goobers-temporal get secret "goobers-${role}-credentials" -o jsonpath='{.data.password}' | base64 -d)"
+            printf 'postgres://goobers_%s:%s@temporal-postgres-rw.goobers-temporal.svc:5432/%s?sslmode=require' "$role" "$password" "$database" > "$secrets/$role-url"
           done
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=goobers-control" \
             -addext "subjectAltName=DNS:goobers-control,DNS:goobers-control.goobers-cloud.svc" \

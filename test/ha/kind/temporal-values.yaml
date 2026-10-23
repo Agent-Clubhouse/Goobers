@@ -6,6 +6,7 @@ server:
         default:
           sql:
             connectAddr: temporal-postgres-rw.goobers-temporal.svc:5432
+            user: temporal_app
             existingSecret: temporal-postgres-app
             tls:
               enabled: false
@@ -13,6 +14,7 @@ server:
         visibility:
           sql:
             connectAddr: temporal-postgres-rw.goobers-temporal.svc:5432
+            user: temporal_app
             existingSecret: temporal-postgres-app
             tls:
               enabled: false

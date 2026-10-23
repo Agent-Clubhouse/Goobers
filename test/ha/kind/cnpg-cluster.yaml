@@ -1,3 +1,7 @@
+# Nightly kind database: the production role contract (internal/cloud/pgroles),
+# so the Temporal ladder and the goobers-cloud reference run as the same roles
+# production does. The runner creates the credential Secrets below with random
+# passwords before applying this file (nothing secret is committed).
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -8,9 +12,31 @@ spec:
   imageName: ghcr.io/cloudnative-pg/postgresql:17.6@sha256:30b304a2e300ed80b6d1b740e4369e9b0f25599fb518de78c01fd9f25531791b
   storage:
     size: 1Gi
+  # Creates temporal-postgres-superuser: the administrator URL for the instance
+  # database provisioning step (and, later, goobers-cloud bootstrap --admin-url).
+  enableSuperuserAccess: true
   bootstrap:
     initdb:
       database: temporal
-      owner: temporal
+      owner: temporal_app
+      secret:
+        name: temporal-postgres-app
       postInitSQL:
-        - CREATE DATABASE temporal_visibility OWNER temporal
+        - CREATE DATABASE temporal_visibility OWNER temporal_app
+  managed:
+    roles:
+      - name: goobers_owner
+        ensure: present
+        login: true
+        passwordSecret:
+          name: goobers-owner-credentials
+      - name: goobers_api
+        ensure: present
+        login: true
+        passwordSecret:
+          name: goobers-api-credentials
+      - name: goobers_controller
+        ensure: present
+        login: true
+        passwordSecret:
+          name: goobers-controller-credentials
