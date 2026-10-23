@@ -89,15 +89,15 @@ func (f ClaimFiles) File(l instance.Layout, opts ...localscheduler.LedgerOption)
 
 // FileWithResolver constructs a file ledger with shared-claim coordination.
 func (f ClaimFiles) FileWithResolver(l instance.Layout, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	lockPath := filepath.Join(l.SchedulerDir(), "claims.lock")
+	lockPath := filepath.Join(l.SchedulerDir(), ClaimLockFileName)
 	return claimsclient.NewFile(claimsclient.FileConfig{
 		Shared:     resolver,
-		LedgerPath: filepath.Join(l.SchedulerDir(), "claims.json"),
+		LedgerPath: filepath.Join(l.SchedulerDir(), ClaimLedgerFileName),
 		Lock: func(operation string, fn func() error) error {
 			return f.ClaimLock(lockPath, operation, fn)
 		},
 		MergeLock: func(fn func() error) error {
-			return f.FileLock(filepath.Join(l.SchedulerDir(), "merge.lock"), fn)
+			return f.FileLock(filepath.Join(l.SchedulerDir(), MergeLockFileName), fn)
 		},
 		ProviderReleaseLock: f.ProviderReleaseLock(l),
 		Options:             opts,
@@ -118,10 +118,10 @@ func (f ClaimFiles) ProviderReleaseLock(l instance.Layout) func(claimsclient.Key
 // fileClaimLedgerForRunWithResolver uses withClaimLockForRun's lock
 // (the run-attributed lock-event context the run-lifecycle releases use).
 func (f ClaimFiles) FileForRunWithResolver(l instance.Layout, gaggle, runID string, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	lockPath := filepath.Join(l.SchedulerDir(), "claims.lock")
+	lockPath := filepath.Join(l.SchedulerDir(), ClaimLockFileName)
 	return claimsclient.NewFile(claimsclient.FileConfig{
 		Shared:              resolver,
-		LedgerPath:          filepath.Join(l.SchedulerDir(), "claims.json"),
+		LedgerPath:          filepath.Join(l.SchedulerDir(), ClaimLedgerFileName),
 		ProviderReleaseLock: f.ProviderReleaseLock(l),
 		Lock: func(operation string, fn func() error) error {
 			return f.RunLock(lockPath, operation, gaggle, runID, fn)
