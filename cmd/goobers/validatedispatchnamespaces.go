@@ -4,11 +4,31 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+const dispatchNamespacePreflightTimeout = 30 * time.Second
+
+var preflightGaggleNamespaces = dispatcher.PreflightNamespaces
+
+func gaggleNamespacesFromConfig(gaggles []apiv1.Gaggle) (map[string]string, error) {
+	namespaces := make(map[string]string, len(gaggles))
+	for i := range gaggles {
+		gaggle := &gaggles[i]
+		namespace := strings.TrimSpace(gaggle.Spec.Isolation.Namespace)
+		if namespace == "" {
+			return nil, fmt.Errorf("stage dispatch: gaggle %q declares no isolation.namespace", gaggle.Name)
+		}
+		namespaces[gaggle.Name] = namespace
+	}
+	return namespaces, nil
+}
 
 // WarningDispatchNamespaceUnready (GNS001) fires when --check-dispatch-namespaces
 // finds a gaggle's declared isolation.namespace that the CURRENT dispatch

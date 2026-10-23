@@ -15,6 +15,10 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+func defaultWorkerRoot(tempDir string) string    { return filepath.Join(tempDir, "goobers-worker") }
+func workerWorkcopiesDir(workRoot string) string { return filepath.Join(workRoot, "workcopies") }
+func workerScratchDir(workRoot string) string    { return filepath.Join(workRoot, "scratch") }
+
 // #3480: the antivirus-exclusion declaration and advisory check, wired into
 // the three processes that write-then-read on a Windows host — the daemon
 // (`goobers up`), the worker (`goobers worker`) and the dispatcher-created

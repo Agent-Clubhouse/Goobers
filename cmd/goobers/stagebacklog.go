@@ -33,24 +33,6 @@ type stageBacklogSettings struct {
 	DoneStates *apiv1.BacklogDoneStates `json:"doneStates,omitempty"`
 }
 
-// stageGaggleBacklogStamps encodes every configured gaggle's backlog settings
-// for the dispatcher to stamp (dispatcher.Config.GaggleBacklogs). Every gaggle
-// gets an entry, even one with nothing set: an entry is the dispatcher's
-// statement that the settings were resolved, and the empty stamp a gaggle
-// without one receives is refused by the stage.
-func stageGaggleBacklogStamps(gaggles []apiv1.Gaggle) (map[string]string, error) {
-	stamps := make(map[string]string, len(gaggles))
-	for _, gaggle := range gaggles {
-		backlog := gaggle.Spec.Backlog
-		encoded, err := json.Marshal(stageBacklogSettings{Provider: backlog.Provider, Project: backlog.Project, Labels: backlog.Labels, DoneStates: backlog.DoneStates})
-		if err != nil {
-			return nil, fmt.Errorf("encode gaggle %q backlog settings: %w", gaggle.Name, err)
-		}
-		stamps[gaggle.Name] = string(encoded)
-	}
-	return stamps, nil
-}
-
 // configSet renders the delivered settings as a one-gaggle config set, so a
 // stage applies them through exactly the functions that apply the instance
 // config (providerconfig.ApplyBacklogProject, GaggleADODoneStates).
