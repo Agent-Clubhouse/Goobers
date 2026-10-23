@@ -398,12 +398,14 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 		}(i)
 	}
 	waitForTakeoverLock(t, observer)
-	selfFenceDeadline := time.Now().Add(time.Second)
-	for !paused.SelfFenced(stale) {
-		if time.Now().After(selfFenceDeadline) {
-			t.Fatal("paused holder did not cross its self-fence deadline")
-		}
-		time.Sleep(10 * time.Millisecond)
+	var winner acquisition
+	select {
+	case winner = <-results:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no contender took over after the paused holder self-fenced")
+	}
+	if !paused.SelfFenced(stale) {
+		t.Fatal("contender took over before the paused holder self-fenced")
 	}
 	close(resume)
 	if err := <-pausedDone; !errors.Is(err, lease.ErrSelfFenced) {
@@ -411,14 +413,14 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 	}
 	wg.Wait()
 	close(results)
-	var winners []acquisition
+	winners := []acquisition{winner}
 	for result := range results {
 		winners = append(winners, result)
 	}
 	if len(winners) != 1 {
 		t.Fatalf("winners = %d, want 1", len(winners))
 	}
-	winner := winners[0]
+	winner = winners[0]
 	if err := winner.manager.WithFence(t.Context(), winner.handle, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO control.fence_commit (epoch, holder, started_at, finished_at)
