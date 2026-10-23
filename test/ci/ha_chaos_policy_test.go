@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/test/ha/chaos"
+	"github.com/goobers/goobers/test/ha/invariants"
 )
 
 // TestHAChaosPendingScenariosAreCountedAndWired is the CI policy for the HA
@@ -26,6 +27,14 @@ func TestHAChaosPendingScenariosAreCountedAndWired(t *testing.T) {
 		}
 	}
 	t.Logf("HA chaos scenarios pending: %d of %d", pending, len(chaos.Scenarios()))
+	pendingInvariants := 0
+	for _, inv := range invariants.All() {
+		if inv.Pending != "" {
+			pendingInvariants++
+			t.Logf("pending invariant %s: %s", inv.Name, inv.Pending)
+		}
+	}
+	t.Logf("HA invariants pending: %d of %d", pendingInvariants, len(invariants.All()))
 	workflow, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "workflows", "ha-nightly.yml"))
 	if err != nil {
 		t.Fatal(err)

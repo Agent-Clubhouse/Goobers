@@ -1,26 +1,27 @@
 // Package invariants is the SQL invariant checker for HA chaos runs.
 //
-// Each invariant is a violation query: it selects the offending rows, so an
-// empty result means the invariant holds. The queries use only the portable
-// SQL subset shared by PostgreSQL and SQLite, so the checker's self-test can
-// prove each query detects an injected violation without a cluster. The
-// schema-qualified table names (control.*, journal.*) follow the control-plane
-// HA design; the columns each query reads are listed in Invariant.Reads.
+// Each invariant is a PostgreSQL violation query: it selects the offending
+// rows, so an empty result means the invariant holds. The queries read the
+// shipped control.* and journal.* schemas; the self-test (cloudpg tag) applies
+// the real migrations to PostgreSQL 16 and proves each query detects an
+// injected violation. An invariant whose source of truth has no table yet is
+// declared with a Pending reference and reported as skipped, never as held.
 package invariants
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/jackc/pgx/v5"
 )
 
-// Queryer is the subset of *sql.DB and *sql.Tx the checker needs.
+// Queryer is the subset of *pgxpool.Pool, *pgx.Conn and pgx.Tx the checker needs.
 type Queryer interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // Invariant is one named violation query.
@@ -30,6 +31,15 @@ type Invariant struct {
 	Reads       []string
 	// SQL selects violating rows; no rows means the invariant holds.
 	SQL string
+	// Pending is "pending #<PR>" when no schema exists to check yet; the
+	// invariant is then reported as skipped.
+	Pending string
+}
+
+// Skip is an invariant that could not be checked yet.
+type Skip struct {
+	Invariant string `json:"invariant"`
+	Reason    string `json:"reason"`
 }
 
 // Violation is one invariant with the rows that violated it.
@@ -42,6 +52,7 @@ type Violation struct {
 type Report struct {
 	Checked    []string    `json:"checked"`
 	Violations []Violation `json:"violations"`
+	Skipped    []Skip      `json:"skipped,omitempty"`
 }
 
 // OK reports whether every checked invariant held.
@@ -64,6 +75,10 @@ func Check(ctx context.Context, q Queryer) (Report, error) {
 func CheckSet(ctx context.Context, q Queryer, set []Invariant) (Report, error) {
 	var report Report
 	for _, inv := range set {
+		if inv.Pending != "" {
+			report.Skipped = append(report.Skipped, Skip{Invariant: inv.Name, Reason: inv.Pending})
+			continue
+		}
 		report.Checked = append(report.Checked, inv.Name)
 		rows, err := collect(ctx, q, inv)
 		if err != nil {
@@ -77,28 +92,21 @@ func CheckSet(ctx context.Context, q Queryer, set []Invariant) (Report, error) {
 }
 
 func collect(ctx context.Context, q Queryer, inv Invariant) ([]map[string]string, error) {
-	rs, err := q.QueryContext(ctx, inv.SQL)
+	rs, err := q.Query(ctx, inv.SQL)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rs.Close() }()
-	cols, err := rs.Columns()
-	if err != nil {
-		return nil, err
-	}
+	defer rs.Close()
+	cols := rs.FieldDescriptions()
 	var out []map[string]string
 	for rs.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rs.Scan(ptrs...); err != nil {
+		vals, err := rs.Values()
+		if err != nil {
 			return nil, err
 		}
 		row := make(map[string]string, len(cols))
 		for i, c := range cols {
-			row[c] = fmt.Sprint(vals[i])
+			row[c.Name] = fmt.Sprint(vals[i])
 		}
 		out = append(out, row)
 	}

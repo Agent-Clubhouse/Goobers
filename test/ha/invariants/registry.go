@@ -3,74 +3,128 @@ package invariants
 var registry = []Invariant{
 	{
 		Name:        "no-duplicate-emit-key",
-		Description: "no (run, emit_key) appears twice in the journal",
-		Reads:       []string{"journal.event(instance_id, run_id, emit_key)"},
-		SQL: `SELECT instance_id, run_id, emit_key, COUNT(*) AS n
-FROM journal.event WHERE emit_key IS NOT NULL
-GROUP BY instance_id, run_id, emit_key HAVING COUNT(*) > 1`,
+		Description: "no (run, emit_key) or (stream, emit_key) appears twice in the journal, independent of the unique indexes",
+		Reads: []string{
+			"journal.run_event(instance_id, run_id, emit_key)",
+			"journal.instance_event(instance_id, stream, emit_key)",
+		},
+		SQL: `SELECT 'run_event' AS source, instance_id, run_id AS scope, emit_key, COUNT(*) AS n
+FROM journal.run_event WHERE emit_key IS NOT NULL
+GROUP BY instance_id, run_id, emit_key HAVING COUNT(*) > 1
+UNION ALL
+SELECT 'instance_event', instance_id, stream, emit_key, COUNT(*)
+FROM journal.instance_event WHERE emit_key IS NOT NULL
+GROUP BY instance_id, stream, emit_key HAVING COUNT(*) > 1`,
 	},
 	{
 		Name:        "journal-seq-contiguous",
-		Description: "(run, branch, seq) starts at 1 and has no gap or duplicate",
-		Reads:       []string{"journal.event(instance_id, run_id, branch, seq)"},
-		SQL: `SELECT instance_id, run_id, branch, COUNT(*) AS n, MAX(seq) AS max_seq
-FROM journal.event GROUP BY instance_id, run_id, branch
-HAVING COUNT(*) <> MAX(seq) OR MIN(seq) <> 1`,
+		Description: "run and instance sequences start at 1 with no gap or duplicate, and run_seq.last_seq matches the log",
+		Reads: []string{
+			"journal.run_event(instance_id, run_id, seq)",
+			"journal.run_seq(instance_id, run_id, last_seq)",
+			"journal.instance_event(instance_id, stream, seq)",
+		},
+		SQL: `SELECT 'run_event' AS source, instance_id, run_id AS scope, COUNT(*) AS n, MAX(seq) AS max_seq
+FROM journal.run_event GROUP BY instance_id, run_id
+HAVING COUNT(*) <> MAX(seq) OR MIN(seq) <> 1 OR COUNT(DISTINCT seq) <> COUNT(*)
+UNION ALL
+SELECT 'run_seq', s.instance_id, s.run_id, s.last_seq, COALESCE(MAX(e.seq), 0)
+FROM journal.run_seq s
+LEFT JOIN journal.run_event e ON e.instance_id = s.instance_id AND e.run_id = s.run_id
+GROUP BY s.instance_id, s.run_id, s.last_seq HAVING s.last_seq <> COALESCE(MAX(e.seq), 0)
+UNION ALL
+SELECT 'instance_event', instance_id, stream, COUNT(*), MAX(seq)
+FROM journal.instance_event GROUP BY instance_id, stream
+HAVING COUNT(*) <> MAX(seq) OR MIN(seq) <> 1 OR COUNT(DISTINCT seq) <> COUNT(*)
+UNION ALL
+SELECT 'instance_seq', s.instance_id, s.stream, s.last_seq, COALESCE(MAX(e.seq), 0)
+FROM journal.instance_seq s
+LEFT JOIN journal.instance_event e ON e.instance_id = s.instance_id AND e.stream = s.stream
+GROUP BY s.instance_id, s.stream, s.last_seq HAVING s.last_seq <> COALESCE(MAX(e.seq), 0)`,
 	},
 	{
 		Name:        "no-claim-with-two-runs",
-		Description: "no claim key is held by two run IDs over overlapping intervals",
-		Reads:       []string{"control.claim_history(instance_id, gaggle, provider, external_id, run_id, held_from, held_until)"},
-		SQL: `SELECT a.instance_id, a.gaggle, a.provider, a.external_id, a.run_id AS run_a, b.run_id AS run_b
-FROM control.claim_history a JOIN control.claim_history b
+		Description: "no claim key is held by two run IDs over overlapping intervals (history and live claims)",
+		Reads: []string{
+			"control.claim(instance_id, gaggle, provider, external_id, run_id, claimed_at)",
+			"control.claim_history(instance_id, gaggle, provider, external_id, run_id, claimed_at, released_at)",
+		},
+		SQL: `WITH held AS (
+  SELECT instance_id, gaggle, provider, external_id, run_id, claimed_at, released_at FROM control.claim_history
+  UNION ALL
+  SELECT instance_id, gaggle, provider, external_id, run_id, claimed_at, NULL FROM control.claim
+)
+SELECT a.instance_id, a.gaggle, a.provider, a.external_id, a.run_id AS run_a, b.run_id AS run_b
+FROM held a JOIN held b
   ON a.instance_id = b.instance_id AND a.gaggle = b.gaggle
  AND a.provider = b.provider AND a.external_id = b.external_id
  AND a.run_id < b.run_id
-WHERE (b.held_until IS NULL OR a.held_from < b.held_until)
-  AND (a.held_until IS NULL OR b.held_from < a.held_until)`,
+WHERE (b.released_at IS NULL OR a.claimed_at < b.released_at)
+  AND (a.released_at IS NULL OR b.claimed_at < a.released_at)`,
 	},
 	{
 		Name:        "one-acceptance-per-source-key",
-		Description: "each trigger source key has exactly one acceptance",
-		Reads:       []string{"control.acceptance(instance_id, source_kind, source_key)"},
-		SQL: `SELECT instance_id, source_kind, source_key, COUNT(*) AS n
-FROM control.acceptance GROUP BY instance_id, source_kind, source_key HAVING COUNT(*) > 1`,
+		Description: "no acceptance is recorded under two source receipts, and every receipt names existing acceptances",
+		Reads: []string{
+			"control.source_receipt(instance_id, source_key, acceptance_ids)",
+			"control.acceptance(instance_id, id)",
+		},
+		SQL: `WITH linked AS (
+  SELECT r.instance_id, r.source_key, unnest(r.acceptance_ids) AS acceptance_id FROM control.source_receipt r
+)
+SELECT 'shared' AS problem, instance_id, acceptance_id, COUNT(DISTINCT source_key) AS n
+FROM linked GROUP BY instance_id, acceptance_id HAVING COUNT(DISTINCT source_key) > 1
+UNION ALL
+SELECT 'missing', l.instance_id, l.acceptance_id, 1
+FROM linked l LEFT JOIN control.acceptance a ON a.instance_id = l.instance_id AND a.id = l.acceptance_id
+WHERE a.id IS NULL`,
+	},
+	{
+		Name:        "no-duplicate-run-start",
+		Description: "no run ID is started by two acceptances, independent of the unique index",
+		Reads:       []string{"control.acceptance(instance_id, id, run_id)"},
+		SQL: `SELECT instance_id, run_id, COUNT(*) AS n
+FROM control.acceptance WHERE run_id <> ''
+GROUP BY instance_id, run_id HAVING COUNT(*) > 1`,
+	},
+	{
+		Name:        "no-lost-acceptance",
+		Description: "a dispatched acceptance names the run it started",
+		Reads:       []string{"control.acceptance(instance_id, id, state, run_id)"},
+		SQL: `SELECT instance_id, id, state FROM control.acceptance
+WHERE state = 'dispatched' AND run_id = ''`,
 	},
 	{
 		Name:        "no-overlapping-lease-intervals",
 		Description: "two epochs of one lease never hold it at the same time",
-		Reads:       []string{"control.lease_history(instance_id, name, epoch, holder, acquired_at, released_at)"},
+		Reads:       []string{"control.lease_history(instance_id, name, epoch, acquired_at, released_at)"},
 		SQL: `SELECT a.instance_id, a.name, a.epoch AS epoch_a, b.epoch AS epoch_b
 FROM control.lease_history a JOIN control.lease_history b
   ON a.instance_id = b.instance_id AND a.name = b.name AND a.epoch < b.epoch
 WHERE a.released_at IS NULL OR a.released_at > b.acquired_at`,
 	},
 	{
-		Name:        "no-notmine-side-effects",
-		Description: "a start answered NotMine wrote no claim, slot or journal row",
-		Reads:       []string{"control.start_audit(instance_id, acceptance_id, epoch, outcome, claim_written, slot_written, journal_written)"},
-		SQL: `SELECT instance_id, acceptance_id, epoch FROM control.start_audit
-WHERE outcome = 'not_mine' AND (claim_written <> 0 OR slot_written <> 0 OR journal_written <> 0)`,
-	},
-	{
 		Name:        "no-stale-owner-emits",
-		Description: "no journal row was committed by an epoch after a later epoch had acquired the lease",
+		Description: "no instance-log row was written by an epoch after a later epoch had acquired the control lease",
 		Reads: []string{
-			"journal.event(instance_id, run_id, branch, seq, owner_epoch, committed_at)",
+			"journal.instance_event(instance_id, stream, seq, at, epoch)",
 			"control.lease_history(instance_id, name, epoch, acquired_at)",
 		},
-		SQL: `SELECT e.instance_id, e.run_id, e.branch, e.seq, e.owner_epoch
-FROM journal.event e
-WHERE e.owner_epoch IS NOT NULL AND EXISTS (
+		SQL: `SELECT e.instance_id, e.stream, e.seq, e.epoch
+FROM journal.instance_event e
+WHERE EXISTS (
   SELECT 1 FROM control.lease_history h
   WHERE h.instance_id = e.instance_id AND h.name = 'control'
-    AND h.epoch > e.owner_epoch AND h.acquired_at <= e.committed_at)`,
+    AND h.epoch > e.epoch AND h.acquired_at <= e.at)`,
+	},
+	{
+		Name:        "no-notmine-side-effects",
+		Description: "a start answered NotMine wrote no claim, slot or journal row",
+		Pending:     "pending #7840",
 	},
 	{
 		Name:        "no-stage-executed-by-control-plane",
 		Description: "stages only ever execute in worker or stage pods",
-		Reads:       []string{"control.stage_exec_audit(instance_id, run_id, stage, pod_role)"},
-		SQL: `SELECT instance_id, run_id, stage, pod_role FROM control.stage_exec_audit
-WHERE pod_role IN ('control', 'api')`,
+		Pending:     "pending #7823",
 	},
 }
