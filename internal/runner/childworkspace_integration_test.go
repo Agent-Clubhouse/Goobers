@@ -13,8 +13,6 @@ import (
 
 	"github.com/goobers/goobers/internal/workspaceauthority"
 
-	"github.com/goobers/goobers/internal/runsemantics"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
