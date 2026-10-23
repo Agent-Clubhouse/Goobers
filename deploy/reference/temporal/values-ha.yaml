@@ -1,21 +1,46 @@
-# HA overlay for self-hosted OSS Temporal (docs/design/control-plane-ha.md
+# HA values for self-hosted OSS Temporal (docs/design/control-plane-ha.md
 # §13.5, HA-P3-22). FRESH INSTALL ONLY: numHistoryShards is fixed forever, so
 # this cannot be applied to a running cluster that used another value.
 #
-# Written for chart 1.x (the HA-P2-01 ladder target, 1.3.0) and layered over
-# values.yaml:
+# Standalone values for chart 1.3.0 (Temporal server 1.31.0), the end state of
+# the HA-P2-01 upgrade ladder. It is NOT layered over values.yaml, which still
+# targets the pre-ladder 0.x chart layout:
 #
 #   helm install temporal temporal/temporal \
 #     --namespace goobers-temporal --create-namespace \
-#     --version 1.3.0 -f values.yaml -f values-ha.yaml
+#     --version 1.3.0 -f values-ha.yaml
+#
+# Offline check (CI runs the same render and asserts the result):
+#   helm template temporal temporal-1.3.0.tgz -f values-ha.yaml
 #
 # Per-service replicas, PDBs and spread are chart keys under server.<service>;
 # the chart does not add a pod selector to topology spread, so each constraint
 # names its component.
 
+# Shared by every service; each also gets the explicit entries below.
+shims:
+  dockerize: false
+  elasticsearchTool: false
+
+schema:
+  useHelmHooks: true
+
+admintools:
+  nodeSelector:
+    kubernetes.io/os: linux
+
 server:
+  nodeSelector:
+    kubernetes.io/os: linux
+  dynamicConfig:
+    frontend.workerVersioningWorkflowAPIs:
+      - value: true
+    system.enableDeploymentVersions:
+      - value: true
   config:
     persistence:
+      defaultStore: default
+      visibilityStore: visibility
       # Fixed forever. ~1 history process per 500 shards; 512 fits an
       # instance-dedicated cluster. Use 2048 only for one cluster serving many
       # instances. Validate with omes before cutover.
@@ -23,6 +48,14 @@ server:
       datastores:
         default:
           sql:
+            createDatabase: false
+            manageSchema: true
+            pluginName: postgres12
+            driverName: postgres12
+            connectProtocol: tcp
+            tls:
+              enabled: true
+              enableHostVerification: true
             databaseName: temporal
             connectAddr: CHANGE-ME.postgres.example.com:5432 # direct 5432, never the app PgBouncer
             user: temporal_app # separate role; no grants on goobers_* databases
@@ -36,6 +69,14 @@ server:
         # (unknown means fail live), so visibility lag never decides run state.
         visibility:
           sql:
+            createDatabase: false
+            manageSchema: true
+            pluginName: postgres12
+            driverName: postgres12
+            connectProtocol: tcp
+            tls:
+              enabled: true
+              enableHostVerification: true
             databaseName: temporal_visibility
             connectAddr: CHANGE-ME.postgres.example.com:5432
             user: temporal_app

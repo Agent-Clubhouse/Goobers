@@ -42,7 +42,10 @@ spec:
                   name: goobers-cloud-database
                   key: direct-url
             - name: GOOBERS_DATABASE_AUTH
-              value: entra
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: database-auth
             - name: GOOBERS_MIGRATION_BACKUP_REF
               valueFrom:
                 configMapKeyRef:

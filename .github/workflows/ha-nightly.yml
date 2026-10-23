@@ -85,6 +85,19 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/ha-nightly/bin/kind" "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server"
           echo "$RUNNER_TEMP/ha-nightly/bin" >> "$GITHUB_PATH"
 
+      - name: Render Temporal HA values
+        env:
+          TEMPORAL_HA_CHART_VERSION: 1.3.0
+          TEMPORAL_HA_CHART_SHA256: 83a98858961b3d085060c9c2a12b0777e06a619aca9f780ffd2b7d092a72ddfa
+        run: |
+          set -euo pipefail
+          chart="$RUNNER_TEMP/ha-nightly/assets/temporal-ha.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-${TEMPORAL_HA_CHART_VERSION}/temporal-${TEMPORAL_HA_CHART_VERSION}.tgz" \
+            --output "$chart"
+          printf '%s  %s\n' "$TEMPORAL_HA_CHART_SHA256" "$chart" | sha256sum --check --strict
+          GOOBERS_TEMPORAL_CHART_1_3_0="$chart" go test ./cmd/goobers -run 'TestDeployReferenceTemporalHAValues' -count=1
+
       - name: Build reference image
         run: make image IMAGE=goobers:ha-nightly
 
@@ -96,12 +109,12 @@ jobs:
         run: go run ./test/ha/kind/cmd/nightly run
 
       # HA-P3-20: apply the goobers-cloud reference to the same kind cluster.
-      # Gated until the combined `control` role and the `sleep` subcommand
-      # (#7850) are in the tree, so this stays a no-op before they land.
+      # Gated on the built CLI actually having the combined `control` role
+      # (#7850), so the step is a no-op before it lands.
       - name: Detect goobers-cloud control role
         id: cloud
         run: |
-          if grep -q 'name: "control"' cmd/goobers-cloud/main.go && grep -q 'name: "sleep"' cmd/goobers-cloud/main.go; then
+          if go run ./cmd/goobers-cloud help control >/dev/null 2>&1; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -121,11 +134,20 @@ jobs:
           pw="$(kubectl -n goobers-temporal get secret temporal-postgres-app -o jsonpath='{.data.password}' | base64 -d)"
           printf 'postgres://temporal:%s@temporal-postgres-rw.goobers-temporal.svc:5432/goobers_cloud?sslmode=require' "$pw" > "$secrets/url"
           cp "$secrets/url" "$secrets/direct-url"
-          kubectl create namespace goobers-cloud
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=goobers-control" \
+            -addext "subjectAltName=DNS:goobers-control,DNS:goobers-control.goobers-cloud.svc" \
+            -keyout "$secrets/tls.key" -out "$secrets/tls.crt"
+          printf '{"current":{"id":"nightly","key":"%s"}}' "$(openssl rand -base64 48 | tr -d '\n')" > "$secrets/keyring.json"
+          kubectl apply -k deploy/reference/goobers-cloud/prereqs
           kubectl -n goobers-cloud create secret generic goobers-cloud-database \
             --from-file=url="$secrets/url" --from-file=direct-url="$secrets/direct-url"
-          # Outside Argo the PreSync hook is just a Job: apply everything, then
-          # require the Job to complete before checking the control rollout.
+          kubectl -n goobers-cloud create secret tls goobers-cloud-control-tls \
+            --cert="$secrets/tls.crt" --key="$secrets/tls.key"
+          kubectl -n goobers-cloud create secret generic goobers-cloud-pod-key \
+            --from-file=keyring.json="$secrets/keyring.json"
+          # kind has no Entra: the overlay sets database-auth=password in the
+          # shared ConfigMap. Outside Argo the PreSync hook is just a Job: apply
+          # everything, then require it to complete before the rollout check.
           kubectl apply -k test/ha/kind/cloud-reference
           kubectl -n goobers-cloud wait --for=condition=complete job/goobers-cloud-migrate --timeout=10m
           kubectl -n goobers-cloud rollout status deployment/goobers-control --timeout=5m

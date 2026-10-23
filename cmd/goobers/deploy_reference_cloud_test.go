@@ -2,13 +2,16 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -40,7 +43,7 @@ func cloudDoc(t *testing.T, file, kind string, out any) {
 
 func TestDeployReferenceCloudControlShape(t *testing.T) {
 	var d appsv1.Deployment
-	cloudDoc(t, "control-deployment.yaml", "Deployment", &d)
+	cloudDoc(t, "workload/control-deployment.yaml", "Deployment", &d)
 	if d.Spec.Replicas == nil || *d.Spec.Replicas != 1 {
 		t.Fatalf("P3 control must be 1 replica, got %v", d.Spec.Replicas)
 	}
@@ -80,14 +83,35 @@ func TestDeployReferenceCloudControlShape(t *testing.T) {
 		}
 	}
 	c := spec.Containers[0]
-	if c.Lifecycle == nil || c.Lifecycle.PreStop == nil || c.Lifecycle.PreStop.Exec == nil ||
-		strings.Join(c.Lifecycle.PreStop.Exec.Command, " ") != "/usr/local/bin/goobers-cloud sleep 5" {
-		t.Fatalf("preStop = %+v", c.Lifecycle)
+	if c.Lifecycle != nil && c.Lifecycle.PreStop != nil {
+		t.Fatal("the control role ships no sleep subcommand; rely on SIGTERM lease release, not a preStop exec")
 	}
-	if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet.Path != "/readyz" {
+	args := strings.Join(c.Args, " ")
+	for _, want := range []string{"control", "--listen=0.0.0.0:8080", "--tls-cert=", "--tls-key=", "--pod-key-file=", "--temporal-hostport=", "--database-auth=$(GOOBERS_DATABASE_AUTH)"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("control args missing %q: %s", want, args)
+		}
+	}
+	env := map[string]bool{}
+	for _, e := range c.Env {
+		env[e.Name] = true
+	}
+	for _, name := range []string{"GOOBERS_INSTANCE_ID", "GOOBERS_REPLICA_ID", "GOOBERS_DATABASE_AUTH"} {
+		if !env[name] {
+			t.Fatalf("control env missing %s", name)
+		}
+	}
+	// The role serves probes on --listen (TLS off loopback), so probes must hit
+	// the serving port over HTTPS.
+	for name, probe := range map[string]*corev1.Probe{"readiness": c.ReadinessProbe, "liveness": c.LivenessProbe} {
+		if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Scheme != corev1.URISchemeHTTPS || probe.HTTPGet.Port.String() != "http" {
+			t.Fatalf("%s probe must be HTTPS on the serving port", name)
+		}
+	}
+	if c.ReadinessProbe.HTTPGet.Path != "/readyz" {
 		t.Fatal("readiness must be /readyz")
 	}
-	if c.LivenessProbe == nil || c.LivenessProbe.HTTPGet.Path != "/healthz" || c.LivenessProbe.TerminationGracePeriodSeconds == nil {
+	if c.LivenessProbe.HTTPGet.Path != "/healthz" || c.LivenessProbe.TerminationGracePeriodSeconds == nil {
 		t.Fatal("liveness needs /healthz and a probe-level terminationGracePeriodSeconds (KEP-2238)")
 	}
 	if c.SecurityContext == nil || c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
@@ -116,7 +140,7 @@ func assertNoInlineSecrets(t *testing.T, name string, c corev1.Container) {
 
 func TestDeployReferenceCloudPDBIsSingleReplicaSafe(t *testing.T) {
 	var p policyv1.PodDisruptionBudget
-	cloudDoc(t, "control-pdb.yaml", "PodDisruptionBudget", &p)
+	cloudDoc(t, "workload/control-pdb.yaml", "PodDisruptionBudget", &p)
 	if p.Spec.MinAvailable != nil {
 		t.Fatal("minAvailable on a single replica blocks node drains")
 	}
@@ -130,7 +154,7 @@ func TestDeployReferenceCloudPDBIsSingleReplicaSafe(t *testing.T) {
 
 func TestDeployReferenceCloudMigrateJob(t *testing.T) {
 	var j batchv1.Job
-	cloudDoc(t, "migrate-job.yaml", "Job", &j)
+	cloudDoc(t, "workload/migrate-job.yaml", "Job", &j)
 	if j.Annotations["argocd.argoproj.io/hook"] != "PreSync" {
 		t.Fatal("migrate must run as a PreSync hook so it precedes the control rollout")
 	}
@@ -159,11 +183,11 @@ func TestDeployReferenceCloudMigrateJob(t *testing.T) {
 
 func TestDeployReferenceCloudNamespaceAndPolicies(t *testing.T) {
 	var ns corev1.Namespace
-	cloudDoc(t, "namespace.yaml", "Namespace", &ns)
+	cloudDoc(t, "prereqs/namespace.yaml", "Namespace", &ns)
 	if ns.Labels["pod-security.kubernetes.io/enforce"] != "restricted" {
 		t.Fatal("namespace must enforce PSS restricted")
 	}
-	raw, err := os.ReadFile(filepath.Join(cloudRefDir, "networkpolicies.yaml"))
+	raw, err := os.ReadFile(filepath.Join(cloudRefDir, "prereqs/networkpolicies.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,5 +232,178 @@ func TestDeployReferenceTemporalHAValues(t *testing.T) {
 		if sql["user"] != "temporal_app" || !strings.HasSuffix(addr, ":5432") {
 			t.Fatalf("%s store must use temporal_app on direct 5432, got %v/%v", store, sql["user"], addr)
 		}
+	}
+}
+
+// TestDeployReferenceCloudControlArgsAreRealFlags checks every --flag in the
+// deployment against the flag set the control role registers, once that role is
+// in the tree.
+func TestDeployReferenceCloudControlArgsAreRealFlags(t *testing.T) {
+	src, err := os.ReadFile("../goobers-cloud/control.go")
+	if err != nil {
+		t.Skip("control role not in tree yet")
+	}
+	known := map[string]bool{}
+	for _, m := range regexp.MustCompile(`f\.StringVar\(&o\.\w+, "([a-z-]+)"`).FindAllStringSubmatch(string(src), -1) {
+		known[m[1]] = true
+	}
+	// Database flags are shared by every database role (runDatabaseRoleConfigured).
+	for _, f := range []string{"database-url-file", "database-direct-url-file", "database-auth"} {
+		known[f] = true
+	}
+	if len(known) < 8 {
+		t.Fatalf("flag extraction found %d flags; control.go layout changed", len(known))
+	}
+	var d appsv1.Deployment
+	cloudDoc(t, "workload/control-deployment.yaml", "Deployment", &d)
+	for _, a := range d.Spec.Template.Spec.Containers[0].Args {
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
+		if !known[name] {
+			t.Fatalf("control arg %q is not a flag of the control role", a)
+		}
+	}
+}
+
+func cloudPolicy(t *testing.T, name string) networkingv1.NetworkPolicy {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(cloudRefDir, "prereqs/networkpolicies.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range splitYAMLDocs(raw) {
+		var p networkingv1.NetworkPolicy
+		if err := yaml.UnmarshalStrict(doc, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("no NetworkPolicy %s", name)
+	return networkingv1.NetworkPolicy{}
+}
+
+func policyAllowsPort(p networkingv1.NetworkPolicy, port int) bool {
+	for _, rule := range p.Spec.Egress {
+		for _, rp := range rule.Ports {
+			if rp.Port != nil && rp.Port.IntValue() == port {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Default-deny means every flow the roles need has to be named: migrate reaches
+// the identity provider (Entra) and workers reach the API server to run stages.
+func TestDeployReferenceCloudPoliciesCoverRequiredFlows(t *testing.T) {
+	migrate := cloudPolicy(t, "allow-migrate-identity")
+	if migrate.Spec.PodSelector.MatchLabels["goobers.dev/role"] != "migrate" || !policyAllowsPort(migrate, 443) {
+		t.Fatal("migrate needs HTTPS egress for Entra")
+	}
+	worker := cloudPolicy(t, "allow-worker-kube-apiserver")
+	if worker.Spec.PodSelector.MatchLabels["goobers.dev/role"] != "worker" || !policyAllowsPort(worker, 443) {
+		t.Fatal("workers need egress to the Kubernetes API server")
+	}
+}
+
+// Both workloads read these through configMapKeyRef; a missing ConfigMap leaves
+// the Job in CreateContainerConfigError.
+func TestDeployReferenceCloudShipsReferencedConfigMaps(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(cloudRefDir, "prereqs/configmaps.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]map[string]string{}
+	for _, doc := range splitYAMLDocs(raw) {
+		var cm corev1.ConfigMap
+		if err := yaml.UnmarshalStrict(doc, &cm); err != nil {
+			t.Fatal(err)
+		}
+		have[cm.Name] = cm.Data
+	}
+	var j batchv1.Job
+	cloudDoc(t, "workload/migrate-job.yaml", "Job", &j)
+	var d appsv1.Deployment
+	cloudDoc(t, "workload/control-deployment.yaml", "Deployment", &d)
+	for _, c := range append(j.Spec.Template.Spec.Containers, d.Spec.Template.Spec.Containers...) {
+		for _, e := range c.Env {
+			if e.ValueFrom == nil || e.ValueFrom.ConfigMapKeyRef == nil {
+				continue
+			}
+			ref := e.ValueFrom.ConfigMapKeyRef
+			if _, ok := have[ref.Name][ref.Key]; !ok {
+				t.Fatalf("%s/%s references ConfigMap %s key %s that the base does not ship", c.Name, e.Name, ref.Name, ref.Key)
+			}
+		}
+	}
+	if have["goobers-cloud"]["database-auth"] != "entra" {
+		t.Fatal("reference database-auth must be entra")
+	}
+}
+
+const temporalHAChart = "GOOBERS_TEMPORAL_CHART_1_3_0" // path to the sha-pinned temporal-1.3.0.tgz
+
+// TestDeployReferenceTemporalHAValuesRender renders values-ha.yaml with the
+// pinned chart and asserts the effective configuration, so a key the chart
+// ignores (as 0.x did for user and maxConns) fails here. The nightly workflow
+// supplies the sha-verified chart; locally the test skips without it.
+func TestDeployReferenceTemporalHAValuesRender(t *testing.T) {
+	chart := os.Getenv(temporalHAChart)
+	if chart == "" {
+		t.Skipf("%s not set", temporalHAChart)
+	}
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("helm not installed")
+	}
+	out, err := exec.Command(helm, "template", "temporal", chart, "--namespace", "goobers-temporal",
+		"-f", "../../deploy/reference/temporal/values-ha.yaml").CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	rendered := string(out)
+	for _, want := range []string{"numHistoryShards: 512", "user: temporal_app", "maxConns: 12", "maxConns: 6", "maxIdleConns: 12", "unhealthyPodEvictionPolicy: AlwaysAllow"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered chart missing %q", want)
+		}
+	}
+	if strings.Contains(rendered, "user: temporal\n") {
+		t.Fatal("a datastore still uses the shared temporal role")
+	}
+	replicas := map[string]int{}
+	pdbs := 0
+	for _, doc := range strings.Split(rendered, "\n---") {
+		var obj struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Spec struct {
+				Replicas *int `json:"replicas"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			continue
+		}
+		switch obj.Kind {
+		case "PodDisruptionBudget":
+			pdbs++
+		case "Deployment":
+			if obj.Spec.Replicas != nil {
+				replicas[obj.Metadata.Labels["app.kubernetes.io/component"]] = *obj.Spec.Replicas
+			}
+		}
+	}
+	for svc, want := range map[string]int{"frontend": 3, "history": 3, "matching": 3, "worker": 2, "web": 2} {
+		if replicas[svc] != want {
+			t.Fatalf("%s replicas = %d, want %d (%v)", svc, replicas[svc], want, replicas)
+		}
+	}
+	if pdbs != 5 {
+		t.Fatalf("rendered %d PDBs, want 5", pdbs)
 	}
 }

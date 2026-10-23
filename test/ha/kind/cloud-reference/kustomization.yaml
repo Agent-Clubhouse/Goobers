@@ -1,6 +1,7 @@
-# Nightly overlay for deploy/reference/goobers-cloud (HA-P3-20). Adds what a
-# consumer supplies: the migration backup reference, password auth against the
-# kind CNPG cluster (no Entra in kind), and the locally loaded image.
+# Nightly overlay for deploy/reference/goobers-cloud (HA-P3-20). kind has no
+# Entra, so it sets database-auth to password in the shared ConfigMap (both
+# migrate and control read it from there); the Entra egress path is covered by
+# the rendered NetworkPolicy tests, not by this cluster.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -9,16 +10,21 @@ images:
   - name: goobers
     newName: goobers
     newTag: ha-nightly
-configMapGenerator:
-  - name: goobers-cloud-migration
-    namespace: goobers-cloud
-    literals:
-      - backup-ref=kind-nightly
-generatorOptions:
-  disableNameSuffixHash: true
 patches:
-  - target: {kind: Job, name: goobers-cloud-migrate}
+  - target: {kind: ConfigMap, name: goobers-cloud}
     patch: |-
-      - op: replace
-        path: /spec/template/spec/containers/0/env/1/value
-        value: password
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: goobers-cloud
+      data:
+        instance-id: nightly
+        database-auth: password
+  - target: {kind: ConfigMap, name: goobers-cloud-migration}
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: goobers-cloud-migration
+      data:
+        backup-ref: kind-nightly

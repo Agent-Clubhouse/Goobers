@@ -44,7 +44,7 @@ Local installs retain the compatible `allow` default.
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `goobers-cloud/` | cloud (P3) base: `control` Deployment, migrate Job, policies, worker/stage hooks (see its README) | HA design §14 |
-| `temporal/` | values (and the `values-ha.yaml` HA overlay) for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
+| `temporal/` | values (and `values-ha.yaml`, standalone HA values for chart 1.3.0) for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
 
 ## Migrating an existing `goobers-system` overlay (#3287)
 
