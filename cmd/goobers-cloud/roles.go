@@ -14,8 +14,6 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"go.temporal.io/sdk/client"
 
-	"github.com/goobers/goobers/internal/engine"
-
 	"github.com/goobers/goobers/internal/blobstore"
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
@@ -25,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/operatorcli"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
