@@ -99,10 +99,16 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 		}
 	})
 	temporal := &lostResponseClient{Client: server.Client()}
+	leaseTTL, renew, selfFence := 2*time.Second, 100*time.Millisecond, 800*time.Millisecond
+	retry, tick, takeoverBound := 20*time.Millisecond, 20*time.Millisecond, 2*time.Second
+	if os.Getenv("GOOBERS_CONTROL_RTO_PRODUCTION") == "1" {
+		leaseTTL, renew, selfFence = lease.DefaultTTL, lease.DefaultRenewInterval, lease.DefaultSelfFenceAfter
+		retry, tick, takeoverBound = 2*time.Second, time.Second, lease.DefaultTTL+5*time.Second
+	}
 	var active, restored atomic.Int32
 	var unsafeOverlap atomic.Bool
 	makeReplica := func(holder string) (*Host, *lease.Manager) {
-		manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "control-test", Name: "controller", Holder: holder, TTL: 2 * time.Second, RenewInterval: 100 * time.Millisecond, SelfFenceAfter: 800 * time.Millisecond})
+		manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "control-test", Name: "controller", Holder: holder, TTL: leaseTTL, RenewInterval: renew, SelfFenceAfter: selfFence})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -128,7 +134,7 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 			}
 			return services, nil
 		}}
-		host, err := New(Config{SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, BuildEpoch: runtime.Build, RetryInterval: 20 * time.Millisecond, TickInterval: 20 * time.Millisecond, StopTimeout: time.Second})
+		host, err := New(Config{SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil }, BuildEpoch: runtime.Build, RetryInterval: retry, TickInterval: tick, StopTimeout: time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +180,7 @@ func TestTwoReplicaPG16Failover(t *testing.T) {
 		r, err := store.Get(ctx, record.ID, "operator")
 		return err == nil && r.State == triggerqueue.Dispatched
 	})
-	if latency := time.Since(started); latency > 2*time.Second {
+	if latency := time.Since(started); latency > takeoverBound {
 		t.Fatalf("takeover exceeded bound: %v", latency)
 	} else {
 		t.Logf("RESTART-RTO: %s", latency)

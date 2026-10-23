@@ -56,5 +56,7 @@ The control suite uses a real Temporal dev server with no worker, simulates a
 lost response after Temporal accepts a start, transfers the lease between two
 replicas, verifies one start and restored observations, and reports RESTART-RTO.
 It also proves a released/taken-over owner stops within the self-fence bound.
-A repeated nightly environment is still needed for a meaningful p95 RTO result;
-a single test's elapsed time is not a production percentile.
+The HA nightly control-restart job runs 20 samples with production lease timings
+and reports the lifecycle p95 against 60 seconds. This isolates real PG/Temporal
+acceptance recovery; full provider/claim rebuild awaits the required composition
+seams. A single test's elapsed time is not a production percentile.
