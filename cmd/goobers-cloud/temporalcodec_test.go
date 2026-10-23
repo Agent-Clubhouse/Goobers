@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -54,12 +55,21 @@ func configureTestTemporalCodec(t *testing.T, root string) *instance.Config {
 	}
 	return cfg
 }
-func assertSealedConverter(t *testing.T, dc converter.DataConverter) {
+func assertCodecProtectsPayload(t *testing.T, dc converter.DataConverter) {
 	t.Helper()
 	if dc == nil {
 		t.Fatal("codec converter missing")
 	}
 	p, err := dc.ToPayload("private-input")
+	// The file-key backend requires POSIX private modes. Windows cannot
+	// represent those modes; the installed codec must refuse, never fall back
+	// to the SDK's plaintext converter. POSIX still proves actual encryption.
+	if runtime.GOOS == "windows" {
+		if !errors.Is(err, temporalcodec.ErrInvalidPayload) || p != nil {
+			t.Fatalf("file-key codec did not fail closed on Windows: payload=%v err=%v", p, err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +86,7 @@ func TestTemporalCodecWorkerWiring(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("worker=%d: %s", code, stderr.String())
 	}
-	assertSealedConverter(t, got.DataConverter)
+	assertCodecProtectsPayload(t, got.DataConverter)
 }
 
 func TestTemporalCodecOrphanSweepsKeepConverter(t *testing.T) {

@@ -140,7 +140,11 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 		}
 	}
 
-	workRoot := filepath.Join(t.TempDir(), strings.Repeat("w", 100))
+	// Keep the mirror (including Git's sample hooks) below MAX_PATH. The
+	// checkout prefix plus the tracked deep path must exceed it, so this
+	// exercises checkout preflight rather than failing inside git clone.
+	root := t.TempDir()
+	workRoot := filepath.Join(root, strings.Repeat("w", max(1, 150-len(root)-1)))
 	engineRuntime, err := workerEngineDepsForPlatform(workRoot, "windows", "test-worker")
 	if err != nil {
 		t.Fatalf("workerEngineDepsForPlatform: %v", err)
@@ -166,7 +170,7 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 	if err == nil {
 		t.Fatal("Provision succeeded, want path-length preflight failure")
 	}
-	if !strings.Contains(err.Error(), deepest) || !strings.Contains(err.Error(), "are available") {
+	if !strings.Contains(err.Error(), filepath.ToSlash(deepest)) || !strings.Contains(err.Error(), "are available") {
 		t.Fatalf("Provision error = %v, want offending path and available budget", err)
 	}
 	runDirs, err := filepath.Glob(filepath.Join(workRoot, "workcopies", "*", "runs"))
