@@ -121,7 +121,7 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lock lease heartbeat: %w", err)
 	}
-	if holder != "" && holder != m.config.Holder && !expired {
+	if holder != "" && !expired {
 		return nil, ErrHeld
 	}
 	if epoch > 0 && (holder != m.config.Holder || expired) {
