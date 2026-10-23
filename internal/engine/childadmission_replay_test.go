@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -66,46 +65,68 @@ func loadHistoryFixture(t *testing.T, path string) *historypb.History {
 	return &history
 }
 
-func TestEngineChildAdmissionRealHistoryReplays(t *testing.T) {
+func TestEngineChildFamilyRealHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	c := hitlReplayServer(t, ctx)
 	f := newChildFixture()
+	f.parkAckLoss, f.completeAckLoss = true, true
 	writer, _ := newLiveWriter(t)
-	w := temporalworker.New(c, "child-admission-replay", temporalworker.Options{Identity: "fixture-worker"})
+	w := temporalworker.New(c, "child-family-replay", temporalworker.Options{Identity: "fixture-worker"})
 	registerChildProtocol(w, &Activities{EngineChildren: f, Journal: writer, Auto: gate.NewAutomatedEvaluator()}, f)
 	if err := w.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer w.Stop()
 	in := childParentInput()
-	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: in.RunID, TaskQueue: "child-admission-replay"}, "Run", in)
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: in.RunID, TaskQueue: "child-family-replay"}, "Run", in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = run.Get(ctx, nil); err == nil || !strings.Contains(err.Error(), errChildExecutionUnavailable.Error()) {
-		t.Fatalf("admission crossed the activation boundary: %v", err)
+	if err = run.Get(ctx, nil); err != nil {
+		t.Fatal(err)
 	}
 	history := hitlFetchHistory(t, ctx, c, run.GetID(), run.GetRunID())
-	markers, activities := 0, map[string]int{}
+	markers, starts, childID, childRunID := map[string]int{}, 0, "", ""
 	for _, event := range history.Events {
-		if a := event.GetMarkerRecordedEventAttributes(); a != nil && a.MarkerName == "Version" &&
-			strings.Contains(string(a.Details["change-id"].GetPayloads()[0].GetData()), childWorkflowChangeID) {
-			markers++
+		if a := event.GetMarkerRecordedEventAttributes(); a != nil && a.MarkerName == "Version" {
+			markers[string(a.Details["change-id"].GetPayloads()[0].GetData())]++
 		}
-		if a := event.GetActivityTaskScheduledEventAttributes(); a != nil {
-			activities[a.ActivityType.Name]++
+		if a := event.GetStartChildWorkflowExecutionInitiatedEventAttributes(); a != nil {
+			starts++
+			childID = a.WorkflowId
+			if a.WorkflowType.Name != "Run" || a.ParentClosePolicy != enumspb.PARENT_CLOSE_POLICY_REQUEST_CANCEL || a.WorkflowIdReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE || a.RetryPolicy.GetMaximumAttempts() != 1 {
+				t.Fatalf("unsafe child start options: %+v", a)
+			}
 		}
-		if event.GetStartChildWorkflowExecutionInitiatedEventAttributes() != nil {
-			t.Fatal("HA-P4-08 started a child workflow")
+		if a := event.GetChildWorkflowExecutionStartedEventAttributes(); a != nil {
+			childRunID = a.WorkflowExecution.RunId
 		}
 	}
-	if markers != 1 || activities["AdmitEngineChild"] != 1 || activities["CancelEngineChild"] != 1 || activities[ActInvokeGoober] != 1 {
-		t.Fatalf("unexpected protocol commands markers=%d activities=%v", markers, activities)
+	if starts != 1 || markers[`"`+childWorkflowChangeID+`"`] != 1 || markers[`"`+childExecutionChangeID+`"`] != 1 {
+		t.Fatalf("unexpected protocol commands starts=%d markers=%v", starts, markers)
 	}
-	if boundaries := replayEveryWorkflowTask(t, history, replayChildEntry(run.GetID())); boundaries < 4 {
+	// Prefixes cover admission, parking (with a lost acknowledgement), child
+	// start, terminal return, continuation and the continued attempt.
+	if boundaries := replayEveryWorkflowTask(t, history, replayChildEntry(run.GetID())); boundaries < 8 {
 		t.Fatalf("history has too few workflow-task boundaries: %d", boundaries)
 	}
+	child := hitlFetchHistory(t, ctx, c, childID, childRunID)
+	t.Run("child", func(t *testing.T) {
+		replayer := temporalworker.NewWorkflowReplayer()
+		replayer.RegisterWorkflowWithOptions(runWithChildWorkflows, workflow.RegisterOptions{Name: "Run"})
+		if err := replayer.ReplayWorkflowHistoryWithOptions(nil, child, temporalworker.ReplayWorkflowHistoryOptions{OriginalExecution: workflow.Execution{ID: childID, RunID: childRunID}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// Captured from the HA-P4-08 protocol (#7864, 952c56873) on a real server:
+// admission followed by the fence, with no execution marker. A worker that
+// carries execution must take the default branch and reproduce the fence.
+func TestEngineChildAdmissionOnlyHistoryReplays(t *testing.T) {
+	history := loadHistoryFixture(t, "testdata/child-admission-p408.json")
+	replayEveryWorkflowTask(t, history, replayChildEntry("run-child-parent"))
 }
 
 // The N-1 fixture is a production Run refusing a child parent, captured on
