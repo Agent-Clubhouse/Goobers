@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -42,21 +43,11 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 			return fmt.Errorf("bound fenced transaction: %w", err)
 		}
 	}
-	var one int
-	err = tx.QueryRow(txCtx, `
-		SELECT 1 FROM control.lease
-		WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4
-		FOR SHARE`,
-		handle.InstanceID, handle.Name, handle.Holder, handle.Epoch,
-	).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrStale
-	}
-	if err != nil {
+	if err := shareEpoch(txCtx, tx, handle); err != nil {
 		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
 			return deadlineErr
 		}
-		return fmt.Errorf("validate fenced transaction: %w", err)
+		return err
 	}
 	if err := write(txCtx, tx); err != nil {
 		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
@@ -75,6 +66,44 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 			return deadlineErr
 		}
 		return fmt.Errorf("commit fenced transaction: %w", err)
+	}
+	return nil
+}
+
+// Confirm share-locks the acquired epoch inside a caller-owned transaction
+// that is about to commit. Unlike WithFence it does not bound the
+// transaction, so long-running work (such as migration DDL) can run first and
+// confirm ownership only at its end: a takeover that already committed makes
+// Confirm fail, and one still pending waits for this transaction to finish.
+func (m *Manager) Confirm(ctx context.Context, tx pgx.Tx, handle *Handle) error {
+	if handle == nil || tx == nil {
+		return errors.New("cloud lease confirmation requires a lease handle and transaction")
+	}
+	if m.SelfFenced(handle) {
+		return ErrSelfFenced
+	}
+	if err := shareEpoch(ctx, tx, handle); err != nil {
+		return err
+	}
+	if m.SelfFenced(handle) {
+		return ErrSelfFenced
+	}
+	return nil
+}
+
+func shareEpoch(ctx context.Context, tx pgx.Tx, handle *Handle) error {
+	var one int
+	err := tx.QueryRow(ctx, `
+		SELECT 1 FROM control.lease
+		WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4
+		FOR SHARE`,
+		handle.InstanceID, handle.Name, handle.Holder, handle.Epoch,
+	).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrStale
+	}
+	if err != nil {
+		return fmt.Errorf("validate fenced transaction: %w", err)
 	}
 	return nil
 }
@@ -122,6 +151,11 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 }
 
 func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handle *Handle) error {
+	return m.maintainRenewals(ctx, cancel, handle, m.Renew)
+}
+
+func (m *Manager) maintainRenewals(ctx context.Context, cancel context.CancelFunc, handle *Handle, renew func(context.Context, *Handle) error) error {
+	retry := false
 	for {
 		remaining := m.selfFenceRemaining(handle)
 		if remaining <= 0 {
@@ -129,6 +163,10 @@ func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handl
 			return fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter)
 		}
 		wait := min(m.config.RenewInterval, remaining)
+		if retry {
+			// Leave time for another attempt without moving the last-success deadline.
+			wait = min(max(time.Millisecond, min(m.config.RenewInterval/5, remaining/2)), remaining)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -141,7 +179,7 @@ func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handl
 		renewCtx, renewCancel := context.WithCancel(ctx)
 		renewed := make(chan error, 1)
 		go func() {
-			renewed <- m.Renew(renewCtx, handle)
+			renewed <- renew(renewCtx, handle)
 		}()
 		remaining = m.selfFenceRemaining(handle)
 		select {
@@ -158,6 +196,7 @@ func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handl
 				cancel()
 				return err
 			}
+			retry = err != nil
 			// Transient renew failures retry, but the next loop is capped by
 			// the unchanged last-success self-fence deadline.
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/operatorcli"
@@ -178,11 +179,17 @@ var (
 	}
 )
 
-type databaseRole func(context.Context, *cloudpg.Pools, error) error
+type databaseServices struct {
+	Pools               *cloudpg.Pools
+	SchemaCompatibility error
+	NewClaims           func(*cloudlease.Manager, *cloudlease.Handle) (cloudclaims.Services, error)
+}
+
+type databaseRole func(context.Context, databaseServices) error
 
 func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
-	return runDatabaseRole("migrate status", operatorcli.Help("migrate status"), args, stdout, stderr, func(ctx context.Context, pools *cloudpg.Pools, _ error) error {
-		status, err := loadMigrationStatus(ctx, pools.Transaction, version.Get().Version)
+	return runDatabaseRole("migrate status", operatorcli.Help("migrate status"), args, stdout, stderr, func(ctx context.Context, services databaseServices) error {
+		status, err := loadMigrationStatus(ctx, services.Pools.Transaction, version.Get().Version)
 		if err != nil {
 			return err
 		}
@@ -191,8 +198,8 @@ func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func runLeaseStatus(args []string, stdout, stderr io.Writer) int {
-	return runDatabaseRole("lease status", operatorcli.Help("lease status"), args, stdout, stderr, func(ctx context.Context, pools *cloudpg.Pools, _ error) error {
-		status, err := loadLeaseStatus(ctx, pools.Transaction)
+	return runDatabaseRole("lease status", operatorcli.Help("lease status"), args, stdout, stderr, func(ctx context.Context, services databaseServices) error {
+		status, err := loadLeaseStatus(ctx, services.Pools.Transaction)
 		if err != nil {
 			return err
 		}
@@ -202,7 +209,7 @@ func runLeaseStatus(args []string, stdout, stderr io.Writer) int {
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
-func unavailableDatabaseRole(context.Context, *cloudpg.Pools, error) error { return errRoleUnavailable }
+func unavailableDatabaseRole(context.Context, databaseServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -263,7 +270,17 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
-	if err := serve(ctx, pools, compatibilityErr); err != nil {
+	services := databaseServices{
+		Pools: pools, SchemaCompatibility: compatibilityErr,
+		NewClaims: func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
+			return cloudclaims.New(
+				pools.Transaction,
+				environmentOr("GOOBERS_INSTANCE_ID", "default"),
+				manager, handle,
+			)
+		},
+	}
+	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
 		return 1
 	}
