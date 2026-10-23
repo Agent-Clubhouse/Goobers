@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 // loadPinnedChildStage is shared by run-bound tool authority and queued child
@@ -83,7 +84,21 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 		Origin:    childworkflow.Origin{Gaggle: parent.Gaggle, RunID: parent.RunID, ConfigDigest: pinned.ConfigDigest, PolicyDigest: childworkflow.AuthorityPolicyDigest(pinned)},
 		Admission: pinned, ConfigGeneration: parent.ConfigGeneration,
 		ParentWorkflow: parent.Workflow, ParentWorkflowDigest: parent.WorkflowDigest, ParentGooberDigest: parent.GooberDigest,
+		Execution: childExecutionBinding(parent, pinned),
 	})
+}
+
+// childExecutionBinding is where an engine child acts, taken only from the
+// parent's durable identity and its pinned generation, never current config.
+func childExecutionBinding(parent journal.RunIdentity, pinned childworkflow.AdmissionContext) *childworkflow.ExecutionBinding {
+	if pinned.Backend != childworkflow.BackendEngine {
+		return nil
+	}
+	repo := pinned.Gaggle.Spec.Project
+	if parent.WorkspaceRepository != nil {
+		repo = *parent.WorkspaceRepository
+	}
+	return &childworkflow.ExecutionBinding{InstanceID: parent.InstanceID, RepoRef: repo, BranchNamespace: providers.NormalizeBranchNamespace(pinned.Gaggle.Spec.BranchNamespace)}
 }
 
 func snapshotChildAuthority(authority childworkflow.Authority) (childworkflow.Authority, error) {
