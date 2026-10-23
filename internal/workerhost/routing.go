@@ -21,8 +21,9 @@ const (
 	routingCheckDelay = 30 * time.Second
 	// routingCheckInterval re-checks for the life of the process: the current
 	// version is changed out-of-band by operators, not by this worker.
-	routingCheckInterval = 5 * time.Minute
-	routingCheckTimeout  = 10 * time.Second
+	routingCheckInterval             = 5 * time.Minute
+	routingRegistrationCheckInterval = 5 * time.Second
+	routingCheckTimeout              = 10 * time.Second
 )
 
 // checkRoutingLoop reports routing problems until ctx ends. It never fails the
@@ -39,8 +40,15 @@ func (h *Host) checkRoutingLoop(ctx context.Context, c client.Client) {
 		case <-timer.C:
 		}
 		reported = h.checkRoutingOnce(ctx, c, reported)
-		timer.Reset(h.routingInterval)
+		timer.Reset(h.nextRoutingCheckInterval())
 	}
+}
+
+func (h *Host) nextRoutingCheckInterval() time.Duration {
+	if h.cfg.VersionRetention > 0 && !h.routed.Load() {
+		return h.routingRegistrationInterval
+	}
+	return h.routingInterval
 }
 
 // checkRoutingOnce logs a current problem on every check, so it stays visible

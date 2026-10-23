@@ -824,8 +824,10 @@ block a target that would exceed three live versions. While blocked, workers
 leave the target blocked by default. `AUTO_UPGRADE` replays each pinned
 workflow's complete history on the current build, so enable automatic retention
 only after captured histories from every retained build replay successfully
-against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION=true` on the
-worker pod template to attest to that evidence; the worker then changes
+against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION` on the
+worker pod template to that release's exact `TEMPORAL_WORKER_BUILD_ID` to attest
+to the evidence. A stale build ID or the legacy value `true` logs an error and
+leaves retention disabled. The worker then changes
 workflows pinned to the oldest draining build to `AUTO_UPGRADE`. Their next
 workflow task replays on the current build, including a HITL run that resumes
 after the old Deployment has scaled down. At the cap, budget for at least six

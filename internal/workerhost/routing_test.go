@@ -43,8 +43,9 @@ func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
 	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
 	t.Setenv(podNamespaceEnv, "goobers-system")
 	h, err := New(Config{
-		TaskQueues:   []string{"goobers-engine"},
-		BuildVersion: "binary-version",
+		TaskQueues:           []string{"goobers-engine"},
+		BuildVersion:         "binary-version",
+		AutoUpgradeRetention: true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -66,17 +67,43 @@ func TestWorkerOptionsUseControllerDeploymentVersion(t *testing.T) {
 	}
 }
 
-func TestWorkerControllerAutoUpgradeRetentionRequiresAttestation(t *testing.T) {
-	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
-	t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
-	t.Setenv(podNamespaceEnv, "goobers-system")
-	t.Setenv(autoUpgradeRetentionEnv, "true")
-	h, err := New(Config{TaskQueues: []string{"goobers-engine"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !h.cfg.AutoUpgradeRetention {
-		t.Fatal("AUTO_UPGRADE retention compatibility attestation was ignored")
+func TestWorkerControllerAutoUpgradeRetentionAttestationIsBuildBound(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		attestation string
+		wantEnabled bool
+	}{
+		{name: "current build", attestation: "template-hash", wantEnabled: true},
+		{name: "stale build", attestation: "previous-hash"},
+		{name: "legacy boolean", attestation: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+			t.Setenv(temporalWorkerBuildIDEnv, "template-hash")
+			t.Setenv(podNamespaceEnv, "goobers-system")
+			t.Setenv(autoUpgradeRetentionEnv, tc.attestation)
+			sink := &logSink{}
+			h, err := New(Config{TaskQueues: []string{"goobers-engine"}, Logf: sink.logf})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.cfg.AutoUpgradeRetention != tc.wantEnabled {
+				t.Fatalf("AutoUpgradeRetention = %t, want %t", h.cfg.AutoUpgradeRetention, tc.wantEnabled)
+			}
+			lines := sink.snapshot()
+			if tc.wantEnabled {
+				if len(lines) != 0 {
+					t.Fatalf("valid attestation logged %q", lines)
+				}
+				return
+			}
+			if len(lines) != 1 ||
+				!strings.Contains(lines[0], autoUpgradeRetentionEnv+"="+fmt.Sprintf("%q", tc.attestation)) ||
+				!strings.Contains(lines[0], temporalWorkerBuildIDEnv+`="template-hash"`) ||
+				!strings.Contains(lines[0], "retention is disabled") {
+				t.Fatalf("mismatch log = %q", lines)
+			}
+		})
 	}
 }
 
@@ -336,16 +363,18 @@ func TestWorkerReadinessKeepsDrainingVersionReady(t *testing.T) {
 
 func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		routing workerrouting.Routing
-		want    int
+		name         string
+		routing      workerrouting.Routing
+		want         int
+		wantInterval time.Duration
 	}{
 		{
 			name: "first install registered without current",
 			routing: workerrouting.Routing{
 				Registered: map[string]bool{"v2": true},
 			},
-			want: http.StatusOK,
+			want:         http.StatusOK,
+			wantInterval: routingCheckInterval,
 		},
 		{
 			name: "newer registered build not current",
@@ -355,7 +384,8 @@ func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
 				},
 				Registered: map[string]bool{"v1": true, "v2": true},
 			},
-			want: http.StatusOK,
+			want:         http.StatusOK,
+			wantInterval: routingCheckInterval,
 		},
 		{
 			name: "unregistered build",
@@ -365,7 +395,8 @@ func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
 				},
 				Registered: map[string]bool{"v1": true},
 			},
-			want: http.StatusServiceUnavailable,
+			want:         http.StatusServiceUnavailable,
+			wantInterval: routingRegistrationCheckInterval,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -387,6 +418,9 @@ func TestRainbowWorkerReadinessRequiresRegistrationNotRouting(t *testing.T) {
 			h.healthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 			if response.Code != tc.want {
 				t.Fatalf("GET /readyz = %d, want %d; body=%s", response.Code, tc.want, response.Body.String())
+			}
+			if interval := h.nextRoutingCheckInterval(); interval != tc.wantInterval {
+				t.Fatalf("next routing check = %s, want %s", interval, tc.wantInterval)
 			}
 		})
 	}
