@@ -5,12 +5,14 @@ package projectorpg_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/blobstore"
@@ -126,7 +128,13 @@ func (f *fixture) runner(t *testing.T, batch int, health *projectorpg.Health, re
 	t.Helper()
 	handle := pgtest.Acquire(t, f.projector)
 	t.Cleanup(func() { _ = f.projector.Release(context.Background(), handle) })
-	projector, err := readmodelpg.NewProjector(t.Context(), f.controller, f.projector, handle, nil)
+	return f.runnerAs(t, f.projector, handle, batch, health, report)
+}
+
+// runnerAs builds a runner for an already-acquired projector lease handle.
+func (f *fixture) runnerAs(t *testing.T, manager *lease.Manager, handle *lease.Handle, batch int, health *projectorpg.Health, report func(error)) (*projectorpg.Runner, *readmodelpg.ActiveReader) {
+	t.Helper()
+	projector, err := readmodelpg.NewProjector(t.Context(), f.controller, manager, handle, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +248,19 @@ func TestServeProjectsUnderTheProjectorLeaseAndReleasesItOnShutdown(t *testing.T
 
 func TestProjectorWritesAreRefusedToTheAPIRole(t *testing.T) {
 	f := newFixture(t)
-	if _, err := f.api.Exec(t.Context(), `UPDATE readmodel_v1.source_watermark SET source_seq = 1`); err == nil {
-		t.Fatal("the API role obtained a read model write")
-	}
-	if _, err := f.api.Exec(t.Context(), `SELECT 1 FROM journal.run_seq`); err == nil {
-		t.Fatal("the API role read the journal counters the projector depends on")
+	for name, statement := range map[string]string{
+		"read model write":    `UPDATE readmodel_v1.source_watermark SET source_seq = 1`,
+		"watermark read":      `SELECT 1 FROM readmodel_v1.source_watermark`,
+		"journal counters":    `SELECT 1 FROM journal.run_seq`,
+		"journal events":      `SELECT 1 FROM journal.run_event`,
+		"journal delete":      `DELETE FROM journal.run_event`,
+		"read model deletion": `DELETE FROM readmodel_v1.run`,
+	} {
+		_, err := f.api.Exec(t.Context(), statement)
+		var refusal *pgconn.PgError
+		if !errors.As(err, &refusal) || refusal.Code != "42501" {
+			t.Fatalf("API role %s = %v, want insufficient_privilege (42501)", name, err)
+		}
 	}
 }
 
@@ -270,5 +286,138 @@ func TestHealthReportsOpenGapsOncePerDistinctFailureAndClearsThemWhenRepaired(t 
 	}
 	if len(reported) != 1 {
 		t.Fatalf("reported %d times over 3 passes, want once per distinct failure: %v", len(reported), reported)
+	}
+}
+
+// takeover expires the projector heartbeat on the database clock and acquires
+// the lease for a foreign holder at the next epoch.
+func (f *fixture) takeover(t *testing.T, holder string) (*lease.Manager, *lease.Handle) {
+	t.Helper()
+	if _, err := f.admin.Exec(t.Context(), `UPDATE control.lease_heartbeat SET expires_at=now()-interval '1 second' WHERE instance_id=$1 AND name=$2`, pgtest.InstanceID, projectorpg.LeaseName); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := lease.New(lease.Config{Pool: f.controller, InstanceID: pgtest.InstanceID, Name: projectorpg.LeaseName, Holder: holder, TTL: 2 * time.Minute, SelfFenceAfter: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := successor.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = successor.Release(context.Background(), handle) })
+	return successor, handle
+}
+
+func TestLeaseTakeoverEndsTheOldEpochCommitsNothingAndTheNewHolderProjects(t *testing.T) {
+	f := newFixture(t)
+	var reported []error
+	old, reader := f.runner(t, 0, nil, func(err error) { reported = append(reported, err) })
+	first := runID('a')
+	f.emit(t, first, true)
+	if n, err := old.Sync(t.Context()); err != nil || n != 1 {
+		t.Fatalf("holder projected %d (%v), want 1", n, err)
+	}
+	successor, successorHandle := f.takeover(t, "successor")
+	if successorHandle.Epoch < 2 {
+		t.Fatalf("successor epoch = %d, want a higher epoch", successorHandle.Epoch)
+	}
+	second := runID('b')
+	f.emit(t, second, true)
+
+	// The deposed epoch must stop with the authority error, not swallow it as a
+	// per-run failure and keep looping; and it must have committed nothing.
+	if n, err := old.Sync(t.Context()); !errors.Is(err, lease.ErrStale) || n != 0 {
+		t.Fatalf("deposed holder Sync = %d, %v; want lease.ErrStale and no projection", n, err)
+	}
+	if len(reported) != 0 {
+		t.Fatalf("authority loss was reported as a per-run failure: %v", reported)
+	}
+	if _, ok, err := reader.GetRun(t.Context(), second); err != nil || ok {
+		t.Fatalf("the deposed holder committed run %s: ok=%v err=%v", second, ok, err)
+	}
+
+	next, _ := f.runnerAs(t, successor, successorHandle, 0, nil, func(err error) { t.Errorf("successor failure: %v", err) })
+	if n, err := next.Sync(t.Context()); err != nil || n != 1 {
+		t.Fatalf("new holder projected %d (%v), want the one new run", n, err)
+	}
+	if _, ok, err := reader.GetRun(t.Context(), second); err != nil || !ok {
+		t.Fatalf("new holder did not project run %s: ok=%v err=%v", second, ok, err)
+	}
+}
+
+func TestAFailingRunAtAPageBoundaryDoesNotPinTheCatchUp(t *testing.T) {
+	f := newFixture(t)
+	good1, bad, good2 := runID('a'), runID('b'), runID('c')
+	f.emit(t, good1, true)
+	f.emitWithGraphDigest(t, bad, true, "sha256:other")
+	f.emit(t, good2, true)
+	var reported []error
+	runner, reader := f.runner(t, 1, nil, func(err error) { reported = append(reported, err) })
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	// Page size one puts the failing run alone on a page boundary: the cursor
+	// must advance past it, or this never returns.
+	n, err := runner.Sync(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("catch-up projected %d (%v), want the two good runs", n, err)
+	}
+	for _, id := range []string{good1, good2} {
+		if _, ok, err := reader.GetRun(t.Context(), id); err != nil || !ok {
+			t.Fatalf("good run %s missing: ok=%v err=%v", id, ok, err)
+		}
+	}
+	if _, ok, _ := reader.GetRun(t.Context(), bad); ok || len(reported) != 1 {
+		t.Fatalf("failing run: projected=%v reports=%d, want it skipped and reported once", ok, len(reported))
+	}
+}
+
+func TestServeStandbyRetriesWithoutReportingContentionAndTakesOverWhenReleased(t *testing.T) {
+	f := newFixture(t)
+	holder := pgtest.Acquire(t, f.projector) // the foreign replica holds the lease
+	reader, err := readmodelpg.NewActiveReader(t.Context(), f.api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var mu sync.Mutex
+	var reported []error
+	done := make(chan error, 1)
+	standby, err := lease.New(lease.Config{Pool: f.controller, InstanceID: pgtest.InstanceID, Name: projectorpg.LeaseName, Holder: "standby", TTL: 2 * time.Minute, SelfFenceAfter: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		done <- projectorpg.Serve(ctx, projectorpg.ServeConfig{
+			Manager: standby, Pool: f.controller, Journal: f.backend, InstanceID: pgtest.InstanceID, Wake: f.wake, Retry: 20 * time.Millisecond,
+			Report: func(err error) { mu.Lock(); reported = append(reported, err); mu.Unlock() },
+		})
+	}()
+	id := runID('e')
+	f.emit(t, id, true)
+	time.Sleep(500 * time.Millisecond) // many standby attempts at a 20ms retry
+	if _, ok, err := reader.GetRun(t.Context(), id); err != nil || ok {
+		t.Fatalf("a standby projected while another replica held the lease: ok=%v err=%v", ok, err)
+	}
+	mu.Lock()
+	contention := append([]error(nil), reported...)
+	mu.Unlock()
+	if len(contention) != 0 {
+		t.Fatalf("lease contention was reported as a failure (and would back off): %v", contention)
+	}
+	if err := f.projector.Release(t.Context(), holder); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, ok, err := reader.GetRun(t.Context(), id); err == nil && ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the standby never took over after the holder released")
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
