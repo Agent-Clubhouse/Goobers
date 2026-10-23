@@ -10,7 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -213,7 +213,7 @@ func (p *staticParallelWalk) target() string {
 
 func (r *runJournal) staticJoinInputs(stage string, inputs map[string]any) {
 	if s := r.staticWalk; s != nil && s.join == stage {
-		inputs[runner.BranchCompletenessInput] = s.completeness
+		inputs[runsemantics.BranchCompletenessInput] = s.completeness
 	}
 }
 

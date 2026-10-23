@@ -17,7 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -81,7 +81,7 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 					case <-timer.C:
 					}
 				}
-				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"value": "frozen-root", runner.BranchCompletenessInput: "FORGED"}}, nil
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"value": "frozen-root", runsemantics.BranchCompletenessInput: "FORGED"}}, nil
 			}}}
 			acts.Auto = automatedFunc(func(_ context.Context, _ apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 				return "pass", validateReplayJoinCompleteness(env)
@@ -158,7 +158,7 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 }
 
 func validateReplayJoinCompleteness(env apiv1.InvocationEnvelope) error {
-	data, err := json.Marshal(env.Inputs[runner.BranchCompletenessInput])
+	data, err := json.Marshal(env.Inputs[runsemantics.BranchCompletenessInput])
 	if err != nil {
 		return err
 	}

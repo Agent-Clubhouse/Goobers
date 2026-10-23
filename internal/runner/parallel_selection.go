@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -147,7 +148,7 @@ func resolveSelectionSource(ctx context.Context, jr *journal.Run, machine *workf
 func latestProducerAttempt(events []journal.Event, task string) (journal.Event, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type == journal.EventStageFinished && event.Branch == 0 && event.Stage == task && !isInterruptedAttemptMarker(event) {
+		if event.Type == journal.EventStageFinished && event.Branch == 0 && event.Stage == task && !runsemantics.IsInterruptedAttemptMarker(event) {
 			return event, true
 		}
 	}

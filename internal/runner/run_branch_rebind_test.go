@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -16,7 +17,7 @@ func TestReadOnlyRebindErrorNamesRebindingStage(t *testing.T) {
 		Tasks: []apiv1.Task{{
 			Name: "select", Type: apiv1.TaskDeterministic, Goal: "select",
 			Run:             &apiv1.DeterministicRun{Command: []string{"./select.sh"}},
-			ExpectedOutputs: []string{WorkspaceBranchOutput},
+			ExpectedOutputs: []string{runsemantics.WorkspaceBranchOutput},
 			Next:            "inspect",
 		}, {
 			Name: "inspect", Type: apiv1.TaskAgentic, Goal: "inspect", Goober: "reviewer",

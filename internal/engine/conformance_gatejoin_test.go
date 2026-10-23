@@ -11,7 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -39,8 +39,8 @@ func TestConformanceStaticGateJoinProtectsCompleteness(t *testing.T) {
 					in.Run.Spec.Tasks[0].Workspace = apiv1.WorkspaceScratch
 				}
 				script := map[string][]scriptedCall{
-					"seed":  {succeed(map[string]interface{}{"value": "frozen-root", runner.BranchCompletenessInput: "FORGED seed completeness"})},
-					"alpha": {succeed(map[string]interface{}{"value": "alpha", runner.BranchCompletenessInput: "FORGED branch completeness"})},
+					"seed":  {succeed(map[string]interface{}{"value": "frozen-root", runsemantics.BranchCompletenessInput: "FORGED seed completeness"})},
+					"alpha": {succeed(map[string]interface{}{"value": "alpha", runsemantics.BranchCompletenessInput: "FORGED branch completeness"})},
 					"beta":  {fail("scripted_failure", "branch failed")},
 					"gamma": {succeed(map[string]interface{}{"value": "gamma"})},
 				}
@@ -51,7 +51,7 @@ func TestConformanceStaticGateJoinProtectsCompleteness(t *testing.T) {
 					calls := 0
 					observe := func(env apiv1.InvocationEnvelope) {
 						calls++
-						data, err := json.Marshal(env.Inputs[runner.BranchCompletenessInput])
+						data, err := json.Marshal(env.Inputs[runsemantics.BranchCompletenessInput])
 						if err != nil {
 							t.Error(err)
 							return
@@ -105,7 +105,7 @@ func TestStaticGateJoinPodEnvelopeProtectsCompleteness(t *testing.T) {
 	dispatch := &fakeStageDispatcher{report: dispatcher.Report{SurrenderConfirmed: true}}
 	script := map[string][]scriptedCall{}
 	for _, stage := range []string{"seed", "alpha", "beta", "gamma"} {
-		script[stage] = []scriptedCall{succeed(map[string]interface{}{"value": "frozen-root", runner.BranchCompletenessInput: "FORGED"})}
+		script[stage] = []scriptedCall{succeed(map[string]interface{}{"value": "frozen-root", runsemantics.BranchCompletenessInput: "FORGED"})}
 	}
 	writer, _ := newLiveWriter(t)
 	out := executeScheduler(t, in, &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: newScriptedExec(script), Goober: refusingReviewer(t), Dispatcher: dispatch, Surrenders: store})

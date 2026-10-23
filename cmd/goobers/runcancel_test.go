@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -129,7 +130,7 @@ func TestSweepCancelAbortsLiveTrackedRun(t *testing.T) {
 	}
 	if len(events) < 2 ||
 		events[len(events)-2].Error == nil ||
-		events[len(events)-2].Error.Code != runner.RunCanceledErrorCode ||
+		events[len(events)-2].Error.Code != runsemantics.RunCanceledErrorCode ||
 		events[len(events)-1].Type != journal.EventRunFinished ||
 		events[len(events)-1].Status != string(journal.PhaseAborted) {
 		t.Fatalf("terminal events = %+v, want run_canceled + run.finished(aborted)", events)

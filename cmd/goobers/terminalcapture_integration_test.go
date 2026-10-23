@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -452,10 +453,10 @@ func appendTerminalReboundAnnotation(t *testing.T, run *journal.Run, boundSHA st
 	if err := run.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		Runner: map[string]any{
-			"annotation":                    runner.ReboundWorkspaceBranchAnnotation,
-			runner.WorkspaceBranchOutput:    terminalReboundBranch,
-			runner.ReboundBranchBoundSHAKey: boundSHA,
-			"repository":                    "github/example/example",
+			"annotation":                       runner.ReboundWorkspaceBranchAnnotation,
+			runsemantics.WorkspaceBranchOutput: terminalReboundBranch,
+			runner.ReboundBranchBoundSHAKey:    boundSHA,
+			"repository":                       "github/example/example",
 		},
 	}); err != nil {
 		t.Fatal(err)
