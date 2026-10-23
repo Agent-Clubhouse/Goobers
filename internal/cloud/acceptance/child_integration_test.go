@@ -113,7 +113,7 @@ func TestChildOccurrenceConcurrentClaimOneWinner(t *testing.T) {
 }
 
 func TestChildSuccessorAdoptionFencesPredecessor(t *testing.T) {
-	old, pool := childTestStore(t)
+	old, _ := childTestStore(t)
 	request := childRequest("parent", "stage", "call")
 	child, _, err := old.AcceptChild(t.Context(), request, time.Now())
 	if err != nil {
@@ -123,7 +123,7 @@ func TestChildSuccessorAdoptionFencesPredecessor(t *testing.T) {
 	if err := old.manager.Release(t.Context(), old.handle); err != nil {
 		t.Fatal(err)
 	}
-	current := successorStore(t, pool)
+	current := successorStore(t, old.pool)
 	current.BindChildBlobs(old.childBlobs)
 	if err := current.BeginDispatch(t.Context(), child.AcceptanceID); !errors.Is(err, triggerqueue.ErrTransition) {
 		t.Fatalf("dispatch before adoption = %v", err)
@@ -148,7 +148,7 @@ func TestChildSuccessorAdoptionFencesPredecessor(t *testing.T) {
 }
 
 func TestChildDigestCustodySurvivesStoreReopen(t *testing.T) {
-	store, pool := childTestStore(t)
+	store, _ := childTestStore(t)
 	request := childRequest("parent", "stage", "call")
 	proposal := []byte("workflow: child")
 	request.Proposal = &triggerqueue.ChildProposal{
@@ -166,7 +166,7 @@ func TestChildDigestCustodySurvivesStoreReopen(t *testing.T) {
 	if err := store.KeepChildSnapshot(t.Context(), child, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := New(pool, store.instanceID)
+	reopened, err := New(store.pool, store.instanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +220,8 @@ func TestChildPublicationCustodyIsIdempotent(t *testing.T) {
 }
 
 func TestChildStoreRejectsAnotherInstanceHandle(t *testing.T) {
-	store, pool := childTestStore(t)
-	other, err := New(pool, "other-instance")
+	store, _ := childTestStore(t)
+	other, err := New(store.pool, "other-instance")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +294,12 @@ func TestChildRetentionUsesDatabaseClockAndReleasesBlobPointers(t *testing.T) {
 func childTestStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
 	store, pool := testStore(t, 1)
+	if err := store.manager.Release(t.Context(), store.handle); err != nil {
+		t.Fatal(err)
+	}
+	// Only fixture backdating and lock orchestration use the owner connection.
+	// Every shipped child operation and its lease execute with inventory grants.
+	store = successorStore(t, childRolePool(t, pool, "goobers_controller"))
 	blobs, err := blobstore.NewDir(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

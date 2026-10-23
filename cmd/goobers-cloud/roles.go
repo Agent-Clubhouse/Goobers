@@ -304,7 +304,6 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
 		return 1
 	}
-	acceptances.BindChildBlobs(blobs)
 	objects, err := newObjectMetadata(pools.Direct, blobs, objstore.MetadataOptions{
 		ExperimentalPhysicalDelete: *experimentalPhysicalBlobGC,
 		PITRRetention:              *blobGCPITRRetention,
@@ -321,6 +320,7 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
 		return 1
 	}
+	acceptances.BindChildBlobs(blobs)
 	services = newDatabaseServices(pools, acceptances, compatibilityErr)
 	services.Blobs, services.Objects, services.Acceptances = blobs, objects, acceptances
 	services.Surrenders = objstore.SurrenderPlane{
