@@ -131,8 +131,9 @@ func (s Store) reserve(ctx context.Context, tx pgx.Tx, handle *lease.Handle, key
 	return nil
 }
 
-// Finish records the outcome once, by the live owner only. Repeating the
-// recorded result is idempotent; any other completion is ErrTransition.
+// Finish records the outcome once, by the live owner only. Any later
+// completion, including an identical one, is ErrTransition, as in the local
+// store: a caller that lost the reply resolves it through Begin.
 func (s Store) Finish(ctx context.Context, handle *lease.Handle, key string, result []byte) error {
 	if len(result) == 0 || len(result) > cancelreceipt.MaxBytes {
 		return cancelreceipt.ErrTransition
@@ -146,22 +147,29 @@ func (s Store) Finish(ctx context.Context, handle *lease.Handle, key string, res
 		if err != nil {
 			return fmt.Errorf("finish cancel receipt: %w", err)
 		}
-		if tag.RowsAffected() == 1 {
-			return nil
+		if tag.RowsAffected() != 1 {
+			return cancelreceipt.ErrTransition
 		}
-		var recorded []byte
-		err = tx.QueryRow(ctx, `
-			SELECT result FROM control.cancel_receipt WHERE instance_id=$1 AND key=$2`,
-			handle.InstanceID, key,
-		).Scan(&recorded)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("read cancel receipt: %w", err)
-		}
-		if recorded != nil && bytes.Equal(recorded, result) {
-			return nil
-		}
-		return cancelreceipt.ErrTransition
+		return nil
 	})
+}
+
+// Bind returns the store as cancelreceipt.Receipts for one acquired lease.
+func (s Store) Bind(handle *lease.Handle) cancelreceipt.Receipts {
+	return bound{store: s, handle: handle}
+}
+
+type bound struct {
+	store  Store
+	handle *lease.Handle
+}
+
+func (b bound) Begin(ctx context.Context, key, actor string, payload []byte) (cancelreceipt.Receipt, bool, error) {
+	return b.store.Begin(ctx, b.handle, key, actor, payload)
+}
+
+func (b bound) Finish(ctx context.Context, key string, result []byte) error {
+	return b.store.Finish(ctx, b.handle, key, result)
 }
 
 // Adopt moves a predecessor's unfinished receipts to the live epoch so the

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/cancelpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
+	"github.com/goobers/goobers/test/testsupport/conformance/receipts"
 )
 
 func TestCancelReceiptRetryResolvesBeforeCapacity(t *testing.T) {
@@ -37,8 +38,8 @@ func TestCancelReceiptRetryResolvesBeforeCapacity(t *testing.T) {
 	if err := store.Finish(t.Context(), handle, "k1", []byte("ok")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Finish(t.Context(), handle, "k1", []byte("ok")); err != nil {
-		t.Fatalf("identical finish retry = %v", err)
+	if err := store.Finish(t.Context(), handle, "k1", []byte("ok")); !errors.Is(err, cancelreceipt.ErrTransition) {
+		t.Fatalf("identical finish retry = %v, want ErrTransition", err)
 	}
 	if err := store.Finish(t.Context(), handle, "k1", []byte("other")); !errors.Is(err, cancelreceipt.ErrTransition) {
 		t.Fatalf("second outcome = %v, want ErrTransition", err)
@@ -46,6 +47,17 @@ func TestCancelReceiptRetryResolvesBeforeCapacity(t *testing.T) {
 	if receipt, fresh, err := store.Begin(t.Context(), handle, "k1", "alice", []byte("cancel run-1")); err != nil || fresh || string(receipt.Result) != "ok" {
 		t.Fatalf("completed retry = %+v fresh=%v err=%v", receipt, fresh, err)
 	}
+}
+
+func TestReceiptsConformance(t *testing.T) {
+	receipts.Run(t, func(t *testing.T) receipts.Backend {
+		pool := pgtest.Pool(t, "cancelpg")
+		manager := pgtest.Manager(t, pool, "holder", 0)
+		handle := pgtest.Acquire(t, manager)
+		return receipts.Backend{Open: func(*testing.T) cancelreceipt.Receipts {
+			return cancelpg.Store{Fence: manager}.Bind(handle)
+		}}
+	})
 }
 
 func TestCancelReceiptConcurrentBeginHasOneWinner(t *testing.T) {
