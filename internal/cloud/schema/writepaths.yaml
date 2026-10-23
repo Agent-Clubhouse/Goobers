@@ -197,7 +197,7 @@ tables:
   table: run_pin
   provisioned: true
   fence: owner_epoch
-  rationale: "Start-fence run pins (HA-P4 cloud child authority, migration 0022) are inserted only inside the controller
+  rationale: "Start-fence run pins (HA-P4 cloud child authority, migration 0023) are inserted only inside the controller
     lease fence that confirms or adopts the Temporal start, are immutable after insert, and are removed by cascade with
     their acceptance. API and worker paths never read or write them."
   readers:
