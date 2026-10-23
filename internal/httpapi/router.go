@@ -23,7 +23,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
@@ -675,7 +674,7 @@ type handlerConfig struct {
 	escalations               EscalationService
 	cancels                   CancelService
 	journal                   JournalService
-	engineChildren            engine.ChildAdmissions
+	engineChildren            EngineChildPlane
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService

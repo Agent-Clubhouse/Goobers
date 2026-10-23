@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/enginechildplane"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
@@ -52,7 +53,11 @@ func planeServer(t *testing.T, backend engine.ChildAdmissions) (*podauth.SignedK
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := httpapi.NewHandler(unusedReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithEngineChildAdmissions(backend))
+	plane, err := enginechildplane.New(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(unusedReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithEngineChildAdmissions(plane))
 	if err != nil {
 		t.Fatal(err)
 	}
