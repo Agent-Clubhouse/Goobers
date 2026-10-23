@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/pgroles"
 	"github.com/goobers/goobers/internal/version"
@@ -124,6 +126,9 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 	}
 	defer controller.Close()
 	databases, err := newControlDatabases(ctx, api, controller, db.instanceID)
+	if err == nil && o.objectStoreURL != "" {
+		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer)
+	}
 	if err == nil {
 		err = runControlWithDatabases(ctx, databases, o, log.New(stderr, "goobers-cloud control: ", log.LstdFlags))
 	}
@@ -183,6 +188,29 @@ func newControlDatabases(ctx context.Context, api, controller *cloudpg.Pools, in
 			return result, err
 		}
 		*target.services = newDatabaseServices(target.pools, store, compatibility)
+		target.services.InstanceID = instance
 	}
 	return result, nil
+}
+
+// bindControlObjectStore gives the controller role the object store that
+// generated-child custody and retained config generations live in.
+func bindControlObjectStore(controller *databaseServices, url, container string) error {
+	credential, err := newDefaultAzureCredential()
+	if err != nil {
+		return errors.New("object-store credential initialization failed")
+	}
+	blobs, err := newAzureObjectStore(url, container, credential)
+	if err != nil {
+		return errors.New("object-store initialization failed")
+	}
+	objects, err := newObjectMetadata(controller.Pools.Direct, blobs, objstore.MetadataOptions{})
+	if err != nil {
+		return errors.New("object metadata initialization failed")
+	}
+	if store, ok := controller.Acceptances.(*acceptance.Store); ok {
+		store.BindChildBlobs(blobs)
+	}
+	controller.Blobs, controller.Objects = blobs, objects
+	return nil
 }

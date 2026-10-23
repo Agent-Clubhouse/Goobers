@@ -103,7 +103,7 @@ func TestPinnedResolverRequiresItsDependencies(t *testing.T) {
 }
 
 func TestClassifyRefusesGenerationAndDriftFailures(t *testing.T) {
-	for _, err := range []error{objstore.ErrGenerationNotFound, objstore.ErrGenerationInvalid, childworkflow.ErrFrozenChildDrift, childworkflow.ErrAuthorityUnavailable} {
+	for _, err := range []error{objstore.ErrGenerationNotFound, objstore.ErrGenerationInvalid, childworkflow.ErrFrozenChildDrift, childworkflow.ErrAuthorityUnavailable, childworkflow.ErrSubmissionInvalid} {
 		if got := classify(fmt.Errorf("childengine: freeze accepted child: %w", err)); !errors.Is(got, engine.ErrChildCustodyRefused) {
 			t.Errorf("classify(%v) = %v, want refused", err, got)
 		}

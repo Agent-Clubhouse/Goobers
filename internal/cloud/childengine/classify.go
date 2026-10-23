@@ -35,7 +35,7 @@ func classify(err error) error {
 		errors.Is(err, triggerqueue.ErrParentCancelled), errors.Is(err, triggerqueue.ErrParentSettled),
 		errors.Is(err, triggerqueue.ErrChildAuthorityChanged), errors.Is(err, triggerqueue.ErrChildProposalUnavailable),
 		// The accepted child no longer reproduces from its pinned generation.
-		errors.Is(err, childworkflow.ErrFrozenChildDrift), errors.Is(err, childworkflow.ErrAuthorityUnavailable),
+		errors.Is(err, childworkflow.ErrFrozenChildDrift), errors.Is(err, childworkflow.ErrAuthorityUnavailable), errors.Is(err, childworkflow.ErrSubmissionInvalid),
 		errors.Is(err, objstore.ErrGenerationNotFound), errors.Is(err, objstore.ErrGenerationInvalid):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	default:

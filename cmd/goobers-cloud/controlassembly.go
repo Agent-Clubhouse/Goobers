@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/enginechildplane"
+	"github.com/goobers/goobers/internal/httpapi"
 )
 
-type controlPlaneConstructor func(context.Context, databaseServices, controlAuth, func() *lease.Handle, *controlPlanes) error
+type controlPlaneConstructor func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error
 
 type controlAssemblySeam struct {
 	field, issue string
@@ -24,8 +29,10 @@ type controlAssemblySeam struct {
 // hand-maintained list of implemented seams cannot claim success. Nil means
 // pending, never a successful no-op constructor.
 var controlAssembly = []controlAssemblySeam{
-	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }},
 	{field: "Configuration", label: "admission guard", issue: "#7860", controller: true, present: func(p controlPlanes) bool { return p.Configuration != nil }},
+	// After Configuration: freezing a child resolves its pinned generation
+	// against the applied configuration.
+	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }, construct: constructEngineChildAdmissions},
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7808", present: func(p controlPlanes) bool { return p.Claims != nil }},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }},
@@ -35,7 +42,7 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }},
 }
 
-func composeControlPlanes(ctx context.Context, db controlDatabases, auth controlAuth, owner func() *lease.Handle) (controlPlanes, error) {
+func composeControlPlanes(ctx context.Context, db controlDatabases, auth controlAuth, manager *lease.Manager, owner func() *lease.Handle) (controlPlanes, error) {
 	var planes controlPlanes
 	for _, seam := range controlAssembly {
 		if seam.construct == nil {
@@ -45,7 +52,7 @@ func composeControlPlanes(ctx context.Context, db controlDatabases, auth control
 		if seam.controller {
 			database = db.Controller
 		}
-		if err := seam.construct(ctx, database, auth, owner, &planes); err != nil {
+		if err := seam.construct(ctx, database, auth, manager, owner, &planes); err != nil {
 			return controlPlanes{}, fmt.Errorf("compose control %s: %w", seam.field, err)
 		}
 		if !seam.present(planes) {
@@ -90,4 +97,27 @@ func (s controlAssemblySeam) name() string {
 		return s.label
 	}
 	return s.field
+}
+
+// constructEngineChildAdmissions serves generated-child custody to engine
+// workers from the live controller lease (#7879).
+func constructEngineChildAdmissions(_ context.Context, db databaseServices, _ controlAuth, manager *lease.Manager, owner func() *lease.Handle, p *controlPlanes) error {
+	applied, ok := p.Configuration.(childengine.AppliedConfiguration)
+	if !ok {
+		return errors.New("engine child admissions require the applied configuration (#7860)")
+	}
+	if db.Pools == nil {
+		return errors.New("engine child admissions require the controller database")
+	}
+	admissions := childengine.Fenced{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Lease: manager, Owner: owner, Blobs: db.Blobs, Objects: db.Objects,
+		Applied: applied, Wait: childengine.MaxWait, Actor: "goobers-cloud/control", Now: time.Now}
+	if err := admissions.Validate(); err != nil {
+		return fmt.Errorf("%w (control needs --object-store-url)", err)
+	}
+	plane, err := enginechildplane.New(admissions)
+	if err != nil {
+		return err
+	}
+	p.EngineChildAdmissions = httpapi.WithEngineChildAdmissions(plane)
+	return nil
 }

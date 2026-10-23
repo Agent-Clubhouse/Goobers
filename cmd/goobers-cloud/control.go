@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -55,6 +56,8 @@ Options:
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
   --task-queue NAME              Remote engine task queue (default goobers)
+  --object-store-url URL         Azure Blob service URL for child custody (or GOOBERS_OBJECT_STORE_URL)
+  --object-store-container NAME  Azure Blob container (default goobers)
 
 Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.
@@ -62,6 +65,7 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue string
+	objectStoreURL, objectStoreContainer                             string
 	checkAssembly                                                    bool
 }
 
@@ -75,6 +79,8 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
 	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
+	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
+	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {
 	return runControlConfigured(args, stdout, stderr)
@@ -87,8 +93,7 @@ func validateControlOptions(options controlOptions) error {
 // controlPlanes is the composition seam for independently landing PG backends.
 // No local filesystem implementation or successful no-op recovery is installed.
 type controlPlanes struct {
-	// EngineChildAdmissions installs the service's HTTP plane once #7879's
-	// service and worker client composition land together.
+	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
 	Configuration         control.Configuration
 	Reader                readservice.Reader
@@ -137,7 +142,7 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
-	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, liveOwner)
+	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
 	}
