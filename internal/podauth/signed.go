@@ -31,7 +31,7 @@ var ErrMalformedToken = errors.New("podauth: malformed signed pod token")
 //
 // WHY THIS EXISTS (Goobers#3701): the in-memory Registry is daemon-local, which
 // is sound when the dispatcher shares the daemon's process. Mode-3 splits them:
-// `goobers up` and `goobers worker --dispatch-namespace` are separate processes
+// `goobers up` and `goobers-cloud worker --dispatch-namespace` are separate processes
 // (separate Deployments in-cluster), so a token minted in the worker's memory is
 // unverifiable by the daemon that receives the surrender.
 //
