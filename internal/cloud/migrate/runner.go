@@ -38,6 +38,9 @@ type Runner struct {
 	InstanceID       string
 	Holder           string
 	PartitionIndexes []PartitionIndexPlan
+	// Partitions defaults to DefaultPartitionPlans; plans whose table is not
+	// present yet are skipped.
+	Partitions       []PartitionPlan
 	Readmodels       []ReadmodelPlan
 	ReadmodelBuilder ReadmodelBuilder
 	// StepTimeout bounds each migration step; zero uses DefaultStepTimeout.
@@ -127,6 +130,18 @@ func (r Runner) Apply(ctx context.Context) error {
 // finish runs the steps after the versioned migrations: partition indexes,
 // read-model rebuilds, and the grant reconcile.
 func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, inventory cloudschema.Inventory) error {
+	plans := r.Partitions
+	if plans == nil {
+		plans = DefaultPartitionPlans
+	}
+	maintainer := PartitionMaintainer{Pool: r.Direct, Lease: manager,
+		Handle: func() *cloudlease.Handle { return handle }, Plans: plans,
+		DeferCurrentMonth: true}
+	// Another maintainer (the control role's periodic job) holding the lock
+	// is fine: it is doing this same work.
+	if err := maintainer.EnsureOn(ctx, conn); err != nil && !errors.Is(err, ErrMigrationBusy) {
+		return err
+	}
 	for _, index := range r.PartitionIndexes {
 		if err := CreatePartitionedIndex(ctx, conn, index.Parent, index.Columns, index.Partitions); err != nil {
 			return err
