@@ -222,7 +222,7 @@ func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 		name   string
 		insert string
 	}{
-		{"journal", "INSERT INTO journal.run_artifact (digest) VALUES ($1)"},
+		{"journal", ""},
 		{"recovery", `INSERT INTO control.recovery_record (
 			instance_id,repository_key,run_id,snapshot_sha,version,ref,
 			base_ref,base_sha,patch_digest,archive_digest,archive_bytes,
@@ -253,7 +253,9 @@ func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 			if err := metadata.PruneGeneration(t.Context(), "instance-"+test.name, digest); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := pool.Exec(t.Context(), test.insert, digest); err != nil {
+			if test.insert == "" {
+				insertJournalArtifact(t, pool, digest)
+			} else if _, err := pool.Exec(t.Context(), test.insert, digest); err != nil {
 				t.Fatal(err)
 			}
 			ageCandidate(t, pool, digest)
@@ -503,12 +505,7 @@ func TestPlainPutCannotCrossCollectorLeaseUnchanged(t *testing.T) {
 	if err := <-putDone; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(t.Context(), `
-		INSERT INTO journal.run_artifact (digest) VALUES ($1)`,
-		digest,
-	); err != nil {
-		t.Fatal(err)
-	}
+	insertJournalArtifact(t, pool, digest)
 	if has, err := store.Has(t.Context(), digest); err != nil || !has {
 		t.Fatalf("plain-Put referenced blob Has=%v err=%v", has, err)
 	}
@@ -983,13 +980,31 @@ func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Az
 	return metadata, pool, store
 }
 
+// insertJournalArtifact indexes digest the way journalpg does: an artifact row
+// keyed to its run event, which migration 0006's foreign keys require.
+func insertJournalArtifact(t *testing.T, pool *pgxpool.Pool, digest string) {
+	t.Helper()
+	runID := "run-" + digest
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO journal.run (instance_id,run_id,gaggle,workflow,run_yaml,created_at)
+		 VALUES ('instance',$1,'g','w','',clock_timestamp())`, []any{runID}},
+		{`INSERT INTO journal.run_event (instance_id,run_id,seq,type,at,body)
+		 VALUES ('instance',$1,1,'artifact.recorded',clock_timestamp(),'')`, []any{runID}},
+		{`INSERT INTO journal.run_artifact (instance_id,run_id,seq,digest,kind)
+		 VALUES ('instance',$1,1,$2,'artifact.recorded')`, []any{runID, digest}},
+	} {
+		if _, err := pool.Exec(t.Context(), statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func installBlobReferenceSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(t.Context(), `
-		CREATE SCHEMA IF NOT EXISTS journal;
-		CREATE TABLE IF NOT EXISTS journal.run_artifact (
-			digest text NOT NULL
-		);
 		CREATE TABLE IF NOT EXISTS control.recovery_record (
 			patch_digest text NOT NULL DEFAULT '',
 			archive_digest text NOT NULL DEFAULT '',

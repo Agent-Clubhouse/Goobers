@@ -361,6 +361,12 @@ func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goob
 		if err := engineadmission.RefusePlacedDefinition(wf.Name, wf.Spec, pins); err != nil {
 			return nil, refusal("backend", "", "spec", bounded(err.Error()))
 		}
+		// A generated child's family has no decision route for its own gates.
+		for _, g := range wf.Spec.Gates {
+			if err := engineadmission.RefuseHumanGate(g); err != nil {
+				return nil, refusal("backend", g.Name, "evaluator", bounded(err.Error()))
+			}
+		}
 	}
 	// Runner specs can contain slices borrowed from the pinned config. The
 	// returned proposal belongs to its caller and must not expose those slices.

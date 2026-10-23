@@ -44,7 +44,7 @@ func TestGateDecisionBoundToOccurrence(t *testing.T) {
 	in.TriggerKind = string(journal.TriggerManual)
 	in.LiveJournal = true
 	in.HITL = &HITLPolicy{Enabled: true, WaitSeconds: 60, Actors: []string{"operator"}}
-	env.ExecuteWorkflow(runHumanGateTestWorkflow, in)
+	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestHumanGateWindowExpiredIsJournaledWithOccurrence(t *testing.T) {
 	in.TriggerKind = string(journal.TriggerManual)
 	in.LiveJournal = true
 	in.HITL = &HITLPolicy{Enabled: true, WaitSeconds: 1}
-	env.ExecuteWorkflow(runHumanGateTestWorkflow, in)
+	env.ExecuteWorkflow(Run, in)
 	err := env.GetWorkflowError()
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) || appErr.Type() != HumanGateWindowExpiredCode {
