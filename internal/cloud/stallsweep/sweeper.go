@@ -60,12 +60,21 @@ type StallConfig struct {
 	Source     StallSource
 	// Events reads one run's journal events. It is called only for candidates
 	// whose timing already makes them due, so the read is bounded by the page.
-	Events         func(ctx context.Context, runID string) ([]journal.Event, error)
+	Events func(ctx context.Context, runID string) ([]journal.Event, error)
+	// Report receives non-fatal findings (a run history the sweep refuses to
+	// credit); nil drops them.
+	Report         func(error)
 	Engine         EngineControl
 	Terminalizer   RunTerminalizer
 	StalledTimeout time.Duration
 	MaxRunDuration time.Duration
 	BatchSize      int
+}
+
+func (s *StallSweeper) report(err error) {
+	if s.config.Report != nil {
+		s.config.Report(err)
+	}
 }
 
 // StallSweeper applies cloud stall and maximum-duration policy.
@@ -331,28 +340,42 @@ func (s *StallSweeper) due(
 		// are writer clocks while startedAt and now are the database clock, so
 		// the window is widened to cover events a mildly skewed writer stamped
 		// outside it; otherwise the child-wait projection rejects the history as
-		// invalid. The widening is bounded: an event further outside the
-		// database's window than maxEventClockSkew would inflate the elapsed
-		// time (a far-ahead stamp extends "now"), and over-escalating a run is
-		// the costly direction, so such a history is reported, not acted on.
+		// invalid.
+		//
+		// The widening is bounded by maxEventClockSkew and fails CLOSED. An
+		// event stamped further outside the database window (a return stamped a
+		// year ahead) would stretch both "now" and the subtracted wait and let a
+		// run evade its budget forever, and an unreadable wait history would do
+		// the same. In either case the child waits get no credit: the run is
+		// measured by its raw database-clock age, and the finding is reported.
 		startedAt, now := candidate.Identity.StartedAt, candidate.DatabaseNow
+		elapsed := now.Sub(startedAt)
+		credit := true
 		if len(events) > 0 {
 			if first := events[0].Time; first.Before(startedAt) {
 				if startedAt.Sub(first) > maxEventClockSkew {
-					return "", 0, false, fmt.Errorf("run event clock is %s before the run start", startedAt.Sub(first).Round(time.Second))
+					credit = false
+					s.report(fmt.Errorf("run event clock is %s before the run start; child waits get no credit", startedAt.Sub(first).Round(time.Second)))
+				} else {
+					startedAt = first
 				}
-				startedAt = first
 			}
-			if last := events[len(events)-1].Time; last.After(now) {
+			if last := events[len(events)-1].Time; credit && last.After(now) {
 				if last.Sub(now) > maxEventClockSkew {
-					return "", 0, false, fmt.Errorf("run event clock is %s ahead of the database", last.Sub(now).Round(time.Second))
+					credit = false
+					s.report(fmt.Errorf("run event clock is %s ahead of the database; child waits get no credit", last.Sub(now).Round(time.Second)))
+				} else {
+					now = last
 				}
-				now = last
 			}
 		}
-		elapsed, err := journal.ChildExecutionElapsed(events, startedAt, now, nil)
-		if err != nil {
-			return "", 0, false, fmt.Errorf("read run execution clock: %w", err)
+		if credit {
+			credited, err := journal.ChildExecutionElapsed(events, startedAt, now, nil)
+			if err != nil {
+				s.report(fmt.Errorf("read run execution clock: %w; child waits get no credit", err))
+			} else {
+				elapsed = credited
+			}
 		}
 		if elapsed > maxDuration {
 			return "max_duration", stallTimeout, true, nil

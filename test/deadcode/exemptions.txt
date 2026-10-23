@@ -608,4 +608,5 @@ github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.recordFailure 
 github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.retryTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.transition # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.withFence # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.report # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/stallsweep.changed # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22

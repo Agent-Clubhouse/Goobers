@@ -365,13 +365,14 @@ func cloudSweeper(
 	engine stallsweep.EngineControl,
 	stallTimeout time.Duration,
 	maxDuration time.Duration,
+	report ...func(error),
 ) *stallsweep.StallSweeper {
 	t.Helper()
 	sweeper, err := stallsweep.NewStallSweeper(stallsweep.StallConfig{
 		Pool: config.Pool, InstanceID: config.InstanceID,
 		Manager: config.Lease, Handle: config.LiveOwner(),
 		Source: backend, Events: stallEvents(backend), Engine: engine, Terminalizer: backend,
-		StalledTimeout: stallTimeout, MaxRunDuration: maxDuration,
+		StalledTimeout: stallTimeout, MaxRunDuration: maxDuration, Report: firstReport(report),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -596,4 +597,35 @@ func TestCloudMaxRunDurationExcludesChildWaits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A child-wait return stamped a year ahead by a skewed writer must not buy the
+// run extra time: the wait gets no credit and the raw database-clock age
+// (2h against a 1h budget) cancels it.
+func TestCloudMaxRunDurationIgnoresFutureStampedChildWait(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	runID := "00000000000000000000000000097816"
+	clock := &writerClock{}
+	handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-2*time.Hour), now.Add(-2*time.Hour), clock)
+	appendChildWait(t, backend, handle, owner, clock, runID, now.Add(-110*time.Minute), now.Add(365*24*time.Hour))
+	ageRun(t, config, runID, 2*time.Hour, 10*time.Minute)
+	engine := &stallEngine{}
+	var reported []error
+	sweeper := cloudSweeper(t, config, backend, engine, time.Hour, time.Hour, func(err error) { reported = append(reported, err) })
+	result, err := sweeper.Sweep(t.Context())
+	if err != nil || result.Cancelled != 1 {
+		t.Fatalf("future-stamped wait evaded the budget: %+v %v", result, err)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported = %v, want the skew finding", reported)
+	}
+}
+
+func firstReport(reports []func(error)) func(error) {
+	if len(reports) == 0 {
+		return nil
+	}
+	return reports[0]
 }
