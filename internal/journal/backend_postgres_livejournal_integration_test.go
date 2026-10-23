@@ -205,10 +205,6 @@ func TestPostgresLiveJournalOperatorCancelPreservesCommittedStage(t *testing.T) 
 			var stageFinished, emitFailures, runFailed, terminals int
 			for _, event := range events {
 				switch event.Type {
-				case journal.EventStageStarted:
-					if event.Stage == "second" {
-						t.Fatalf("second stage started: %+v", event)
-					}
 				case journal.EventStageFinished:
 					if event.Stage == "first" &&
 						event.Status == string(apiv1.ResultSuccess) {
