@@ -1,7 +1,6 @@
 //go:build integration
 
 package runner
-import "github.com/goobers/goobers/internal/runsemantics"
 
 import (
 	"context"
@@ -14,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
