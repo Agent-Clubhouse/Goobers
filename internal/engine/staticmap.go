@@ -36,6 +36,9 @@ func (r *runJournal) staticMap(
 	if r.owner == nil || r.stepBudget == nil {
 		return "", true, fmt.Errorf("engine: map requires commit owner and shared budget")
 	}
+	if r.staticWalk.seen == nil {
+		r.staticWalk.seen = map[string]bool{}
+	}
 	r.staticWalk.join, r.staticWalk.completeness, r.staticWalk.mapJoin = "", nil, nil
 	r.staticWalk.parallel, r.staticWalk.branches = "", nil
 	r.staticWalk.seen[def.Name] = true
