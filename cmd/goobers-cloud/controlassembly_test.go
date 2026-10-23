@@ -60,7 +60,7 @@ func TestControlCheckAssemblyIsOfflineAndListsPendingSeams(t *testing.T) {
 		return controlPlanes{}, nil
 	}
 	t.Cleanup(func() { assembleControlPlanes = prior })
-	code, stdout, stderr := runForTest("control", "--check-assembly")
+	code, stdout, stderr := runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
 	wantCode := 0
 	for _, seam := range controlAssembly {
 		state := "implemented"
@@ -90,7 +90,7 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 			return nil
 		}
 	}
-	code, stdout, stderr := runForTest("control", "--check-assembly")
+	code, stdout, stderr := runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
 	if code != 0 || stderr != "" || strings.Contains(stdout, "pending") || len(calls) != 0 {
 		t.Fatalf("compiled manifest code=%d stdout=%s stderr=%s calls=%v", code, stdout, stderr, calls)
 	}
@@ -104,7 +104,7 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 		}
 	}
 	controlAssembly[0].construct = nil
-	code, stdout, _ = runForTest("control", "--check-assembly")
+	code, stdout, _ = runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
 	if code != 1 || !strings.Contains(stdout, controlAssembly[0].name()+"\tpending") {
 		t.Fatalf("removing one constructor did not fail closed: code=%d %s", code, stdout)
 	}
@@ -128,5 +128,25 @@ func populatedControlPlanes() controlPlanes {
 		Epoch: func(context.Context, *lease.Handle) (control.EpochServices, error) {
 			return control.EpochServices{}, nil
 		},
+	}
+}
+
+func TestCheckAssemblyNamesTheOptionASeamCannotComposeWithout(t *testing.T) {
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "")
+	prior := controlAssembly
+	controlAssembly = append([]controlAssemblySeam(nil), prior...)
+	t.Cleanup(func() { controlAssembly = prior })
+	for i := range controlAssembly {
+		controlAssembly[i].construct = func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error {
+			return nil
+		}
+	}
+	code, stdout, _ := runForTest("control", "--check-assembly")
+	if code != 1 || !strings.Contains(stdout, "Journal\tpending\thttps://github.com/Agent-Clubhouse/Goobers/issues/7818\tneeds --object-store-url") {
+		t.Fatalf("a journal that cannot compose without the object store reported ready: code=%d %s", code, stdout)
+	}
+	code, stdout, _ = runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
+	if code != 0 || strings.Contains(stdout, "pending") {
+		t.Fatalf("a satisfied option still reports pending: code=%d %s", code, stdout)
 	}
 }

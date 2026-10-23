@@ -3,11 +3,13 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/blobstore"
@@ -91,7 +93,9 @@ func TestControlJournalWritesAsTheControllerRoleAndLeavesNoLocalFiles(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reader.OpenRun(t.Context(), journal.RunRef{ID: runID, ReadOnly: true}); err == nil {
-		t.Fatal("API role read the journal; journal reads must use the controller pool")
+	_, err = reader.OpenRun(t.Context(), journal.RunRef{ID: runID, ReadOnly: true})
+	var refusal *pgconn.PgError
+	if !errors.As(err, &refusal) || refusal.Code != "42501" {
+		t.Fatalf("API role journal read = %v, want insufficient_privilege (42501): journal reads must use the controller pool", err)
 	}
 }

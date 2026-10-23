@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -55,6 +57,9 @@ Options:
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
   --task-queue NAME              Remote engine task queue (default goobers)
+  --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
+                                 journal span source and config generations live there
+  --object-store-container NAME  Azure Blob container (default goobers)
 
 Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.
@@ -62,6 +67,7 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue string
+	objectStoreURL, objectStoreContainer                             string
 	checkAssembly                                                    bool
 }
 
@@ -75,6 +81,8 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
 	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
+	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
+	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {
 	return runControlConfigured(args, stdout, stderr)
@@ -82,6 +90,17 @@ func runControlRole(args []string, stdout, stderr io.Writer) int {
 
 func validateControlOptions(options controlOptions) error {
 	return control.ValidateBoot(options.selfExecution, nil)
+}
+
+// validateControlObjectStore refuses to boot without the object store. The
+// journal's span source and the retained config generations live there, so a
+// control role without it can never compose its planes; refuse at boot instead
+// of at the first lease.
+func validateControlObjectStore(options controlOptions) error {
+	if strings.TrimSpace(options.objectStoreURL) == "" || strings.TrimSpace(options.objectStoreContainer) == "" {
+		return errors.New("--object-store-url (or GOOBERS_OBJECT_STORE_URL) and --object-store-container are required")
+	}
+	return nil
 }
 
 // controlPlanes is the composition seam for independently landing PG backends.

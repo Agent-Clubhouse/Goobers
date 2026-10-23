@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -120,4 +122,50 @@ func TestControlAssemblyRoutesEachConstructorToItsRole(t *testing.T) {
 	if _, err := composeControlPlanes(t.Context(), db, controlAuth{}, nil, func() *lease.Handle { return nil }); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestControlRequiresAnObjectStoreAtBoot(t *testing.T) {
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "")
+	prior := newCloudPools
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
+		t.Fatal("opened a pool before the object store requirement was checked")
+		return nil, errors.New("unreachable")
+	}
+	t.Cleanup(func() { newCloudPools = prior })
+	t.Setenv("GOOBERS_API_DATABASE_URL", "postgres://goobers_api:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_API_DATABASE_DIRECT_URL", "postgres://goobers_api:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_CONTROLLER_DATABASE_URL", "postgres://goobers_controller:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_CONTROLLER_DATABASE_DIRECT_URL", "postgres://goobers_controller:secret@localhost/goobers_team_blue")
+	code, _, stderr := runForTest("control", "--instance-id", "team-blue")
+	if code != 2 || !strings.Contains(stderr, "--object-store-url") {
+		t.Fatalf("code=%d error=%s", code, stderr)
+	}
+}
+
+func TestBindControlObjectStoreIsRequiredAndControllerOnly(t *testing.T) {
+	controller := databaseServices{Pools: &cloudpg.Pools{Direct: &pgxpool.Pool{}}}
+	for name, tc := range map[string]struct{ url, container string }{
+		"no url":       {"", "goobers"},
+		"blank url":    {"  ", "goobers"},
+		"no container": {"https://store.invalid", ""},
+	} {
+		if err := bindControlObjectStore(&controller, tc.url, tc.container); err == nil || controller.Blobs != nil || controller.Objects != nil {
+			t.Fatalf("%s: bound an object store (%v)", name, err)
+		}
+	}
+	priorCredential := newDefaultAzureCredential
+	newDefaultAzureCredential = func() (azcore.TokenCredential, error) { return fakeTokenCredential{}, nil }
+	t.Cleanup(func() { newDefaultAzureCredential = priorCredential })
+	if err := bindControlObjectStore(&controller, "https://store.invalid", "goobers"); err != nil {
+		t.Fatal(err)
+	}
+	if controller.Blobs == nil || controller.Objects == nil {
+		t.Fatalf("controller blobs=%v objects=%v, want both bound", controller.Blobs != nil, controller.Objects != nil)
+	}
+}
+
+type fakeTokenCredential struct{}
+
+func (fakeTokenCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	return azcore.AccessToken{}, errors.New("not used")
 }

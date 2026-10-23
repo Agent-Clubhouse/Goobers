@@ -17,6 +17,16 @@ type controlAssemblySeam struct {
 	controller   bool
 	present      func(controlPlanes) bool
 	construct    controlPlaneConstructor
+	// requires names the role option the constructor cannot work without, so the
+	// offline check reports what this invocation could actually compose.
+	requires func(controlOptions) string
+}
+
+func requiresObjectStore(o controlOptions) string {
+	if strings.TrimSpace(o.objectStoreURL) == "" {
+		return "--object-store-url"
+	}
+	return ""
 }
 
 // This is both the compiled manifest and the real assembly registry. Backend
@@ -29,7 +39,7 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7808", present: func(p controlPlanes) bool { return p.Claims != nil }},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }},
-	{field: "Journal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Journal != nil }, construct: constructJournal},
+	{field: "Journal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Journal != nil }, construct: constructJournal, requires: requiresObjectStore},
 	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
 	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }},
@@ -57,15 +67,24 @@ func composeControlPlanes(ctx context.Context, db controlDatabases, auth control
 	return planes, nil
 }
 
-func checkControlAssembly(out io.Writer) int {
+// checkControlAssembly reports each seam as implemented only when its
+// constructor exists and the options of this invocation satisfy it; a seam that
+// would refuse at compose time for a missing option is pending, with the option
+// named in a fourth column.
+func checkControlAssembly(out io.Writer, o controlOptions) int {
 	code := 0
 	for _, seam := range controlAssembly {
-		state := "implemented"
+		state, needs := "implemented", ""
 		if seam.construct == nil {
 			state = "pending"
 			code = 1
+		} else if seam.requires != nil {
+			if missing := seam.requires(o); missing != "" {
+				state, needs = "pending", "\tneeds "+missing
+				code = 1
+			}
 		}
-		writef(out, "%s\t%s\thttps://github.com/Agent-Clubhouse/Goobers/issues/%s\n", seam.name(), state, strings.TrimPrefix(seam.issue, "#"))
+		writef(out, "%s\t%s\thttps://github.com/Agent-Clubhouse/Goobers/issues/%s%s\n", seam.name(), state, strings.TrimPrefix(seam.issue, "#"), needs)
 	}
 	return code
 }

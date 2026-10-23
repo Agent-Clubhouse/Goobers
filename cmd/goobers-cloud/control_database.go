@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/pgroles"
 	"github.com/goobers/goobers/internal/version"
@@ -79,7 +81,7 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if o.checkAssembly {
-		return checkControlAssembly(stdout)
+		return checkControlAssembly(stdout, o)
 	}
 	if err := validateControlOptions(o); err != nil {
 		writef(stderr, "goobers-cloud control: %v\n", err)
@@ -109,6 +111,10 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if err := validateControlObjectStore(o); err != nil {
+		writef(stderr, "goobers-cloud control: %v\n", err)
+		return 2
+	}
 	ctx, stop := signalContext()
 	defer stop()
 	api, err := openControlDatabase(ctx, apiConfig, "goobers_api", name)
@@ -124,6 +130,9 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 	}
 	defer controller.Close()
 	databases, err := newControlDatabases(ctx, api, controller, db.instanceID)
+	if err == nil {
+		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer)
+	}
 	if err == nil {
 		err = runControlWithDatabases(ctx, databases, o, log.New(stderr, "goobers-cloud control: ", log.LstdFlags))
 	}
@@ -186,4 +195,31 @@ func newControlDatabases(ctx context.Context, api, controller *cloudpg.Pools, in
 		target.services.InstanceID = instance
 	}
 	return result, nil
+}
+
+// bindControlObjectStore gives the controller role the object store that the
+// journal's span source, generated-child custody and retained config
+// generations live in. It is required: a control role without it cannot compose
+// its planes, so a missing URL is a boot error rather than a later lease-time one.
+func bindControlObjectStore(controller *databaseServices, url, container string) error {
+	if strings.TrimSpace(url) == "" || strings.TrimSpace(container) == "" {
+		return errors.New("object store is required: set --object-store-url and --object-store-container")
+	}
+	credential, err := newDefaultAzureCredential()
+	if err != nil {
+		return errors.New("object-store credential initialization failed")
+	}
+	blobs, err := newAzureObjectStore(url, container, credential)
+	if err != nil {
+		return errors.New("object-store initialization failed")
+	}
+	objects, err := newObjectMetadata(controller.Pools.Direct, blobs, objstore.MetadataOptions{})
+	if err != nil {
+		return errors.New("object metadata initialization failed")
+	}
+	if store, ok := controller.Acceptances.(*acceptance.Store); ok {
+		store.BindChildBlobs(blobs)
+	}
+	controller.Blobs, controller.Objects = blobs, objects
+	return nil
 }
