@@ -13,6 +13,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	"github.com/goobers/goobers/internal/blobstore"
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/objstore"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
@@ -176,19 +178,20 @@ var (
 	}
 )
 
-type cloudServices struct {
+type databaseServices struct {
 	Pools               *cloudpg.Pools
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata
 	SchemaCompatibility error
+	NewClaims           func(*cloudlease.Manager, *cloudlease.Handle) (cloudclaims.Services, error)
 }
 
-type databaseRole func(context.Context, cloudServices) error
+type databaseRole func(context.Context, databaseServices) error
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
-func unavailableDatabaseRole(context.Context, cloudServices) error { return errRoleUnavailable }
+func unavailableDatabaseRole(context.Context, databaseServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -276,11 +279,18 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
 		return 1
 	}
-	services := cloudServices{
+	services := databaseServices{
 		Pools: pools, Blobs: blobs, Objects: objects,
 		SchemaCompatibility: compatibilityErr,
 		Surrenders: objstore.SurrenderPlane{
 			Metadata: objects, InstanceID: environmentOr("GOOBERS_INSTANCE_ID", "default"),
+		},
+		NewClaims: func(manager *cloudlease.Manager, handle *cloudlease.Handle) (cloudclaims.Services, error) {
+			return cloudclaims.New(
+				pools.Transaction,
+				environmentOr("GOOBERS_INSTANCE_ID", "default"),
+				manager, handle,
+			)
 		},
 	}
 	if err := serve(ctx, services); err != nil {

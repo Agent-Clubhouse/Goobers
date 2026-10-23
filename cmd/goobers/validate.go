@@ -19,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/cloudreadiness"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/credreadiness"
 	"github.com/goobers/goobers/internal/executor"
@@ -78,7 +79,7 @@ const sourceTreeAdvisoryMessage = "--instance was not supplied; placement and ca
 
 var templateMarkers = []string{"your-org", "your-repo"}
 
-var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud] [--strict] [path]\n\n" +
+var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud [--format text|json]] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
 	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
@@ -88,7 +89,8 @@ var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--c
 	"--instance, the solve uses instance.yaml.example, is advisory-only\n" +
 	"(warnings, never errors), and the output states that limitation. " +
 	"--target cloud adds engine-only runtime eligibility findings; the default " +
-	"local target preserves local execution and exit behavior. " +
+	"local target preserves local execution and exit behavior. With --target " +
+	"cloud, --format json emits the versioned whole-instance cutover-readiness report. " +
 	strictHelpText() + " " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--github-annotations additionally writes each finding to stderr as a\n" +
@@ -183,6 +185,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	instancePath := fs.String("instance", "", "with --source-tree, solve placement and capabilities against this real instance.yaml")
 	target := fs.String("target", string(validateTargetLocal), "validate runtime eligibility for local or cloud execution")
+	format := fs.String("format", "text", "output format for cloud readiness (text or json)")
 	strict := fs.Bool("strict", false, strictFlagDescription())
 	fs.Usage = helpUsage(stderr, name)
 	if !parseFlagsBeforePath(fs, args, stderr) {
@@ -200,6 +203,18 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 		pf(stderr, "error: --target must be local or cloud, got %q\n", *target)
 		return 2
 	}
+	if *format != "text" && *format != "json" {
+		pf(stderr, "error: --format must be text or json, got %q\n", *format)
+		return 2
+	}
+	if *format == "json" && validateTarget(*target) != validateTargetCloud {
+		pf(stderr, "error: --format json requires --target cloud\n")
+		return 2
+	}
+	if *format == "json" && *asJSON {
+		pf(stderr, "error: --format json and --json are mutually exclusive\n")
+		return 2
+	}
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
@@ -207,12 +222,19 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 
 	var diagnostics *diagnosticCollector
 	humanOut, humanErr := stdout, stderr
+	var readiness cloudreadiness.Result
+	var readinessBuffer bytes.Buffer
 	if *asJSON {
 		diagnostics = &diagnosticCollector{}
 		humanOut = io.Discard
 		humanErr = io.Discard
 	} else if *githubAnnotations {
 		diagnostics = &diagnosticCollector{}
+	}
+	if *format == "json" {
+		diagnostics = &diagnosticCollector{}
+		humanOut = &readinessBuffer
+		humanErr = &readinessBuffer
 	}
 	code := runValidateConfig(validateOptions{
 		root:                    root,
@@ -225,11 +247,23 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 		deferModelDiscovery:     startupPreflight,
 		startupPreflight:        startupPreflight,
 		target:                  validateTarget(*target),
+		format:                  *format,
+		readinessResult:         &readiness,
 	}, humanOut, humanErr, diagnostics)
 	if *githubAnnotations {
 		emitGitHubAnnotations(stderr, diagnostics)
 	}
 	if !*asJSON {
+		if *format == "json" {
+			if readiness.SchemaVersion == "" {
+				_, _ = readinessBuffer.WriteTo(stderr)
+				return code
+			}
+			if err := encodeSchemaJSON(stdout, schemas.CloudReadiness, readiness); err != nil {
+				pf(stderr, "error: encode cloud readiness: %v\n", err)
+				return 1
+			}
+		}
 		return code
 	}
 	if err := encodeSchemaJSON(stdout, schemas.Diagnostics, diagnostics.envelope(code == 0)); err != nil {
@@ -255,6 +289,8 @@ type validateOptions struct {
 	// Never set from a CLI flag.
 	startupPreflight bool
 	target           validateTarget
+	format           string
+	readinessResult  *cloudreadiness.Result
 }
 
 func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
@@ -399,7 +435,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	printValidationWarnings(stdout, skillWarnings)
 
-	if code := emitConfiguredRuntimeFindings(options, configDir, cfg, set, report, stdout, diagnostics); code != 0 {
+	if code := emitConfiguredRuntimeFindings(options, configDir, cfg, set, report, stdout, stderr, diagnostics); code != 0 {
 		return code
 	}
 

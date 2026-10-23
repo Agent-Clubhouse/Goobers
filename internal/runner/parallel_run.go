@@ -415,7 +415,7 @@ func (r *Runner) runConcurrentParallel(
 				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel repository: conflicting configured repositories selected by parallel branches")
 			}
 		}
-		mergeBranchOutputs(mergedCompleted, outcome.completed, in.Machine, par.isMap())
+		mergeBranchOutputs(mergedCompleted, outcome.completed, in.Machine, p.Branches[outcome.index], par.isMap())
 		// A map's join subject stays the root's: an item's result is
 		// reachable only through mapResults, never as "the last stage".
 		if outcome.lastStage != "" && !par.isMap() {
@@ -456,11 +456,17 @@ func (r *Runner) runConcurrentParallel(
 }
 
 // mergeBranchOutputs folds one branch's completed-stage outputs into the
-// root's. A map's mapped task is skipped: its results are per item and live
-// only in the per-occurrence store (design §6.3).
-func mergeBranchOutputs(merged, branch stageOutputs, machine *workflow.Machine, isMap bool) {
+// root's. Inherited seed entries belong to the root or siblings and must not
+// overwrite a sibling's new output on a later visit. A map's mapped task is
+// skipped: its results are per item and live only in the per-occurrence store
+// (design §6.3).
+func mergeBranchOutputs(merged, branch stageOutputs, machine *workflow.Machine, owner apiv1.Branch, isMap bool) {
+	scope := apiv1.Parallel{Branches: []apiv1.Branch{owner}}
 	for stage, outputs := range branch {
 		if isMap && isMappedTask(machine, stage) {
+			continue
+		}
+		if !isMap && branchOwningState(machine, scope, stage) != owner.Name {
 			continue
 		}
 		merged.put(stage, outputs)
