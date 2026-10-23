@@ -1,0 +1,75 @@
+tables:
+  - schema: control
+    table: schema_migration
+    provisioned: true
+    fence: none-by-design
+    rationale: Only the owner migration job writes migration history while holding both migration locks.
+    readers:
+      - role: goobers_api
+        columns: [version, kind, binary_version, min_compatible_binary]
+      - role: goobers_controller
+        columns: [version, kind, binary_version, min_compatible_binary]
+    writers: []
+  - schema: control
+    table: readmodel_version
+    provisioned: true
+    fence: epoch
+    rationale: The controller flips read-model versions inside a projector-lease fenced transaction.
+    readers:
+      - role: goobers_controller
+        columns: [name, active_version, updated_at]
+    writers:
+      - role: goobers_controller
+        insert: [name, active_version, updated_at]
+        update: [active_version, updated_at]
+  - schema: control
+    table: lease
+    provisioned: true
+    fence: none-by-design
+    rationale: Authority is the fence itself and changes only during serialized takeover or voluntary release.
+    readers:
+      - role: goobers_controller
+        columns: [instance_id, name, holder, epoch]
+    writers:
+      - role: goobers_controller
+        insert: [instance_id, name, holder, epoch]
+        update: [holder, epoch]
+  - schema: control
+    table: lease_heartbeat
+    provisioned: true
+    fence: none-by-design
+    rationale: Liveness is isolated from fenced work and guarded by holder plus epoch compare-and-set.
+    readers:
+      - role: goobers_controller
+        columns: [instance_id, name, holder, epoch, expires_at]
+    writers:
+      - role: goobers_controller
+        insert: [instance_id, name, holder, epoch, expires_at]
+        update: [holder, epoch, expires_at]
+  - schema: control
+    table: lease_history
+    provisioned: true
+    fence: unique key
+    rationale: One audit row exists per lease epoch and its release fields are written once.
+    readers:
+      - role: goobers_controller
+        columns: [instance_id, name, epoch, released_at]
+    writers:
+      - role: goobers_controller
+        insert: [instance_id, name, epoch, holder, acquired_at]
+        update: [released_at, release_kind]
+  - schema: control
+    table: acceptance
+    provisioned: false
+    fence: owner_epoch
+    rationale: P3-05 provisions the table; API may insert only accepted rows while controller owns dispatch transitions.
+    readers:
+      - role: goobers_api
+        columns: [instance_id, id, kind, idem_key, actor, fingerprint, payload, state, run_id, accepted_at, finished_at]
+      - role: goobers_controller
+        columns: [instance_id, id, state, owner_epoch, run_id, accepted_at, finished_at]
+    writers:
+      - role: goobers_api
+        insert: [instance_id, id, kind, idem_key, actor, fingerprint, payload, run_id, accepted_at]
+      - role: goobers_controller
+        update: [state, owner_epoch, finished_at]

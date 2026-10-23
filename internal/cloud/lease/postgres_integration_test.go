@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 )
 
 func TestLeaseRenewNotBlockedByFencedTx(t *testing.T) {
@@ -546,6 +547,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(t.Context(), "DROP SCHEMA IF EXISTS control CASCADE"); err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	catalog, err := migrate.Catalog()
 	if err != nil {
 		t.Fatal(err)
