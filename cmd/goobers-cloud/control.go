@@ -99,6 +99,16 @@ type controlPlanes struct {
 	Resolve               acceptance.StartInputResolver
 	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
 	RunnerHosts           []string
+
+	// closers release resources the constructors opened, in reverse order.
+	closers []func()
+}
+
+// close releases every constructed plane's resources, newest first.
+func (p controlPlanes) close() {
+	for i := len(p.closers) - 1; i >= 0; i-- {
+		p.closers[i]()
+	}
 }
 
 func (p controlPlanes) complete() bool {
@@ -137,10 +147,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
-	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, liveOwner)
+	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
 	}
+	defer services.close()
 	if err := control.ValidateBoot(o.selfExecution, services.RunnerHosts); err != nil {
 		return err
 	}

@@ -183,6 +183,7 @@ func newControlDatabases(ctx context.Context, api, controller *cloudpg.Pools, in
 			return result, err
 		}
 		*target.services = newDatabaseServices(target.pools, store, compatibility)
+		target.services.InstanceID = instance
 	}
 	return result, nil
 }

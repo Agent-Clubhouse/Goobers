@@ -39,6 +39,9 @@ func TestControlAssemblyManifestCoversRealRequiredFields(t *testing.T) {
 	}
 	for i := range fields.NumField() {
 		field := fields.Field(i).Name
+		if !fields.Field(i).IsExported() {
+			continue
+		}
 		if field != "RunnerHosts" && !seen[field] {
 			t.Fatalf("required assembly field %s is absent from manifest", field)
 		}
@@ -52,7 +55,7 @@ func TestControlCheckAssemblyIsOfflineAndListsPendingSeams(t *testing.T) {
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "not a database URL")
 	t.Setenv("GOOBERS_POD_KEY_FILE", "/does-not-exist/keyring.json")
 	prior := assembleControlPlanes
-	assembleControlPlanes = func(context.Context, controlDatabases, controlAuth, func() *lease.Handle) (controlPlanes, error) {
+	assembleControlPlanes = func(context.Context, controlDatabases, controlAuth, *lease.Manager, func() *lease.Handle) (controlPlanes, error) {
 		t.Fatal("offline inspection invoked the real dependency constructors")
 		return controlPlanes{}, nil
 	}
@@ -80,7 +83,7 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 	calls := make(map[string]int)
 	for i := range controlAssembly {
 		fieldName := controlAssembly[i].field
-		controlAssembly[i].construct = func(_ context.Context, _ databaseServices, _ controlAuth, _ func() *lease.Handle, p *controlPlanes) error {
+		controlAssembly[i].construct = func(_ context.Context, _ databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
 			calls[fieldName]++
 			value := reflect.ValueOf(populatedControlPlanes()).FieldByName(fieldName)
 			reflect.ValueOf(p).Elem().FieldByName(fieldName).Set(value)
@@ -91,7 +94,7 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 	if code != 0 || stderr != "" || strings.Contains(stdout, "pending") || len(calls) != 0 {
 		t.Fatalf("compiled manifest code=%d stdout=%s stderr=%s calls=%v", code, stdout, stderr, calls)
 	}
-	assembled, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, func() *lease.Handle { return nil })
+	assembled, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, nil, func() *lease.Handle { return nil })
 	if err != nil || !assembled.complete() {
 		t.Fatalf("real composition diverged from manifest: %v", err)
 	}
@@ -105,10 +108,10 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout, controlAssembly[0].name()+"\tpending") {
 		t.Fatalf("removing one constructor did not fail closed: code=%d %s", code, stdout)
 	}
-	controlAssembly[0].construct = func(context.Context, databaseServices, controlAuth, func() *lease.Handle, *controlPlanes) error {
+	controlAssembly[0].construct = func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error {
 		return nil
 	}
-	if _, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, func() *lease.Handle { return nil }); err == nil {
+	if _, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, nil, func() *lease.Handle { return nil }); err == nil {
 		t.Fatal("runtime accepted a registered no-op constructor")
 	}
 }

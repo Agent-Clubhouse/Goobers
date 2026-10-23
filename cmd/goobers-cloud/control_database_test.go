@@ -99,14 +99,16 @@ func TestControlAssemblyRoutesEachConstructorToItsRole(t *testing.T) {
 	prior := controlAssembly
 	controlAssembly = append([]controlAssemblySeam(nil), prior...)
 	t.Cleanup(func() { controlAssembly = prior })
-	controllerFields := map[string]bool{"Configuration": true, "Resolve": true, "Epoch": true}
+	// journal.* is granted to goobers_controller only (writepaths.yaml), so the
+	// journal plane and everything that reads the journal runs on its pool.
+	controllerFields := map[string]bool{"Configuration": true, "Resolve": true, "Epoch": true, "Journal": true}
 	for i := range controlAssembly {
 		field := controlAssembly[i].field
 		want := api
 		if controllerFields[field] {
 			want = controller
 		}
-		controlAssembly[i].construct = func(_ context.Context, services databaseServices, _ controlAuth, _ func() *lease.Handle, p *controlPlanes) error {
+		controlAssembly[i].construct = func(_ context.Context, services databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
 			if services.Pools.Transaction != want || services.Pools.Direct != want {
 				t.Fatalf("%s received wrong role's pool", field)
 			}
@@ -115,7 +117,7 @@ func TestControlAssemblyRoutesEachConstructorToItsRole(t *testing.T) {
 			return nil
 		}
 	}
-	if _, err := composeControlPlanes(t.Context(), db, controlAuth{}, func() *lease.Handle { return nil }); err != nil {
+	if _, err := composeControlPlanes(t.Context(), db, controlAuth{}, nil, func() *lease.Handle { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
