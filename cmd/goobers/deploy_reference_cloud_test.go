@@ -305,8 +305,17 @@ func TestDeployReferenceCloudPoliciesCoverRequiredFlows(t *testing.T) {
 		t.Fatal("migrate needs HTTPS egress for Entra")
 	}
 	worker := cloudPolicy(t, "allow-worker-kube-apiserver")
-	if worker.Spec.PodSelector.MatchLabels["goobers.dev/role"] != "worker" || !policyAllowsPort(worker, 443) {
-		t.Fatal("workers need egress to the Kubernetes API server")
+	if worker.Spec.PodSelector.MatchLabels["goobers.dev/role"] != "worker" || !policyAllowsPort(worker, 443) || !policyAllowsPort(worker, 6443) {
+		t.Fatal("workers need egress to the Kubernetes API server on 443 and 6443")
+	}
+	// NetworkPolicy matches the post-DNAT endpoint (kind node IP, AKS public IP),
+	// so a private-range default would silently block workers.
+	for _, rule := range worker.Spec.Egress {
+		for _, to := range rule.To {
+			if to.IPBlock == nil || to.IPBlock.CIDR != "0.0.0.0/0" || len(to.IPBlock.Except) != 0 {
+				t.Fatalf("worker API-server default must allow any destination, got %+v", to.IPBlock)
+			}
+		}
 	}
 }
 

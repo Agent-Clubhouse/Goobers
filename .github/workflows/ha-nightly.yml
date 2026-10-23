@@ -109,16 +109,22 @@ jobs:
         run: go run ./test/ha/kind/cmd/nightly run
 
       # HA-P3-20: apply the goobers-cloud reference to the same kind cluster.
-      # Gated on the built CLI actually having the combined `control` role
-      # (#7850), so the step is a no-op before it lands.
+      # Gated on (1) the built CLI having the combined `control` role (#7850)
+      # and (2) its control-plane assembly being complete: `control` refuses to
+      # boot while assembleControlPlanes is the empty stub, which would crash-loop
+      # goobers-control. Replace (2) with a `control --check-assembly` exit code
+      # if the role grows one.
       - name: Detect goobers-cloud control role
         id: cloud
         run: |
-          if go run ./cmd/goobers-cloud help control >/dev/null 2>&1; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
+          if ! go run ./cmd/goobers-cloud help control >/dev/null 2>&1; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=cloud reference skipped::goobers-cloud control role not present yet"
+          elif grep -q 'return controlPlanes{}, nil' cmd/goobers-cloud/control.go; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=cloud reference skipped::control-plane assembly is still the empty stub (HA-P3-18)"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Apply goobers-cloud reference and check rollout
