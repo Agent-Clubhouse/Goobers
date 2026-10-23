@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/stageexec"
+
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 
@@ -78,7 +80,7 @@ func TestEngineDispatchRoutesQueueAndGooberIdentityThroughWorkerSeams(t *testing
 		gaggles: map[string]*builtGaggleSeams{
 			"web": {seams: &gaggleSeams{
 				cfg: runner.Config{
-					NewAgentic: func(name string, _ runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
+					NewAgentic: func(name string, _ stageexec.ArtifactRecorder, _ stageexec.SecretRegistrar) (invoke.Goober, error) {
 						return &routingCaptureGoober{
 							name: name,
 							onInvoke: func(ctx context.Context) {

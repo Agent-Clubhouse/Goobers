@@ -3,6 +3,8 @@ package main
 import (
 	"os/exec"
 
+	"github.com/goobers/goobers/providers"
+
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runtimewiring"
@@ -24,7 +26,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	input.ConfigureWorktree = func(manager *worktree.Manager) error {
 		cloneURL := runtimewiring.RepoCloneURL
 		if cloneURL == nil {
-			cloneURL = runner.DefaultRepoCloneURL
+			cloneURL = providers.CloneURL
 		}
 		option, err := runtimewiring.RecoveryCleanupOption(input.Layout, input.Config, manager.Root, cloneURL, input.SharedRegistry, input.Telemetry)
 		if err != nil {

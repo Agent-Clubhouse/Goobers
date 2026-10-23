@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/goobers/goobers/internal/stageexec"
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
@@ -142,7 +145,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	// each goober to its declared grants for that lookup; only agentic gates
 	// consult it (task stages carry their own stage-level capabilities).
 	gateGooberCaps := make(map[string][]string, len(goobers))
-	agentProvenance := make(map[string]runner.AgentProvenance, len(goobers))
+	agentProvenance := make(map[string]stageexec.AgentProvenance, len(goobers))
 	for name, spec := range goobers {
 		if len(spec.Capabilities) > 0 {
 			gateGooberCaps[name] = append([]string(nil), spec.Capabilities...)
@@ -151,7 +154,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 		if harnessName == "" {
 			harnessName = apiv1.HarnessCopilot
 		}
-		agentProvenance[name] = runner.AgentProvenance{
+		agentProvenance[name] = stageexec.AgentProvenance{
 			Model:          spec.Model,
 			HarnessVersion: harnessInfo[harnessName].Version,
 		}
@@ -169,7 +172,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 	rc := runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RunControls:      cfg.RunConditions.RunControls(),
-		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
+		NewDeterministic: func(rec stageexec.ArtifactRecorder, reg stageexec.SecretRegistrar) (invoke.Deterministic, error) {
 			exec, err := input.BuildDeterministic(DeterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
@@ -182,7 +185,7 @@ func BuildRunnerConfig(input RunnerCompositionInput) (runner.Config, *worktree.M
 			}
 			return ClaimFencedDeterministic{Deterministic: exec, Start: executionFence}, nil
 		},
-		NewAgenticWithMCPServers: func(gooberName string, servers []apiv1.MCPServer, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
+		NewAgenticWithMCPServers: func(gooberName string, servers []apiv1.MCPServer, rec stageexec.ArtifactRecorder, reg stageexec.SecretRegistrar) (invoke.Goober, error) {
 			ordinary := func() (invoke.Goober, error) {
 				return input.BuildAgentic(AgenticExecutorInput{
 					GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
@@ -295,7 +298,7 @@ func prepareRunnerInfrastructure(input RunnerCompositionInput) (runnerInfrastruc
 	// URLs the runner hands WorkingCopy.
 	cloneURLFn := RepoCloneURL
 	if cloneURLFn == nil {
-		cloneURLFn = runner.DefaultRepoCloneURL
+		cloneURLFn = providers.CloneURL
 	}
 	pathLimits, pathLimitsErr := PathLengthManagerLimits(cfg, cloneURLFn, runtime.GOOS)
 	if pathLimitsErr != nil {

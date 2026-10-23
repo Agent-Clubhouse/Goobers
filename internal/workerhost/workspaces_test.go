@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/stageexec"
+
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -219,7 +221,7 @@ func TestSelectedBranchRevisionMatchesLocalRunner(t *testing.T) {
 		t.Fatalf("new local manager: %v", err)
 	}
 	localRunner, err := runner.New(runner.Config{
-		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+		NewDeterministic: func(stageexec.ArtifactRecorder, stageexec.SecretRegistrar) (invoke.Deterministic, error) {
 			return localObserver, nil
 		},
 		Worktrees: localManager,

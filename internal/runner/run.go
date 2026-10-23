@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goobers/goobers/internal/stageexec"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
@@ -423,12 +424,8 @@ type ExistingFixOutcome struct {
 // on main (issue #3236).
 type ExistingFixHandler func(ctx context.Context, o ExistingFixOutcome) error
 
-// AgentProvenance identifies the configured model and preflighted harness
-// version for spans emitted before an agent executor is resolved or invoked.
-type AgentProvenance struct {
-	Model          string
-	HarnessVersion string
-}
+// AgentProvenance is the shared executor identity.
+type AgentProvenance = stageexec.AgentProvenance
 
 // Config wires a Runner's dependencies: the daemon-wide singletons (worktree
 // provisioning, gate evaluation) and the per-run executor factories
@@ -5199,35 +5196,8 @@ func DefaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 	return defaultRepoCloneURL(ref)
 }
 
-// defaultRepoCloneURL derives the git remote URL worktree.Manager clones from
-// a RepoRef.
 func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
-	switch ref.Provider {
-	case apiv1.ProviderGitHub:
-		return fmt.Sprintf("https://github.com/%s/%s.git", ref.Owner, ref.Name), nil
-	case apiv1.ProviderADO:
-		organization := ref.Owner
-		project := ref.Project
-		if project == "" {
-			organization, project, _ = strings.Cut(ref.Owner, "/")
-		}
-		if organization == "" || project == "" {
-			return "", fmt.Errorf("runner: ADO repo owner and project are required")
-		}
-		return fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
-			url.PathEscape(organization), url.PathEscape(project), url.PathEscape(ref.Name)), nil
-	case apiv1.ProviderGitea:
-		// BaseURL here is the forge host root (e.g. https://gitea.example.com),
-		// NOT the /api/v1 REST root: git clone/fetch speak smart-HTTP against
-		// <root>/<owner>/<name>.git. This URL keys the MGV-11 git-auth resolver.
-		base := strings.TrimSuffix(strings.TrimSpace(ref.BaseURL), "/")
-		if base == "" {
-			return "", fmt.Errorf("runner: gitea repo requires baseUrl")
-		}
-		return fmt.Sprintf("%s/%s/%s.git", base, ref.Owner, ref.Name), nil
-	default:
-		return "", fmt.Errorf("runner: unsupported repo provider %q", ref.Provider)
-	}
+	return providers.CloneURL(ref)
 }
 
 func (r *Runner) automatedGateEnvelope(in StartInput, g apiv1.Gate, gateLimits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {

@@ -7,6 +7,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/goobers/goobers/internal/stageexec"
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -21,9 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
-	"github.com/goobers/goobers/providers"
 	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
 
@@ -448,8 +449,8 @@ type DeterministicExecutorInput struct {
 	ConfiguredProject   instance.RepoRef
 	GaggleProject       apiv1.RepoRef
 	ProviderQuota       *localscheduler.ProviderQuotaState
-	ArtifactRecorder    runner.ArtifactRecorder
-	SecretRegistrar     runner.SecretRegistrar
+	ArtifactRecorder    stageexec.ArtifactRecorder
+	SecretRegistrar     stageexec.SecretRegistrar
 	Diagnostics         bool
 	DiagnosticsMaxBytes int64
 	// ScratchDir, when set, is wired onto the ShellExecutor's own field of the
@@ -575,8 +576,8 @@ type AgenticExecutorInput struct {
 	RunsDir          string
 	SandboxPosture   instance.SandboxPosture
 	Observer         harness.Observer
-	ArtifactRecorder runner.ArtifactRecorder
-	SecretRegistrar  runner.SecretRegistrar
+	ArtifactRecorder stageexec.ArtifactRecorder
+	SecretRegistrar  stageexec.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
 	ChildWorkflows   harness.ChildWorkflowAccessProvider
 	MCPServers       []apiv1.MCPServer
