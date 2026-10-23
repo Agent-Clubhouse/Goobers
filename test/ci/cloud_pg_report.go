@@ -30,11 +30,15 @@ type packageResult struct {
 	failedTests             []string
 }
 
+// cloudPGRoots are the trees the cloud-pg job tests; every package in them
+// with PostgreSQL-tagged tests (cloudintegration or cloudpg) must run.
+var cloudPGRoots = []string{"internal/cloud", "test/ha/invariants"}
+
 // runCloudPGReport reads the cloud-pg job's `go test -json` stream, prints
-// failing tests' output, and fails when any package with cloudintegration
-// tests under internal/cloud ran no passing test (missing, build failure,
-// zero tests, or skips only). A missing tag or environment variable then
-// fails the job instead of passing silently.
+// failing tests' output, and fails when any package with PostgreSQL-tagged
+// tests under cloudPGRoots ran no passing test (missing, build failure, zero
+// tests, or skips only). A missing tag or environment variable then fails the
+// job instead of passing silently.
 func runCloudPGReport(reportPath, root string, stdout, stderr io.Writer) int {
 	file, err := os.Open(reportPath)
 	if err != nil {
@@ -60,7 +64,7 @@ func runCloudPGReport(reportPath, root string, stdout, stderr io.Writer) int {
 	if len(problems) > 0 {
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "cloud-pg-report: %d cloudintegration packages each ran passing tests\n", len(required))
+	_, _ = fmt.Fprintf(stdout, "cloud-pg-report: %d PostgreSQL test packages each ran passing tests\n", len(required))
 	return 0
 }
 
@@ -109,12 +113,28 @@ func (r *packageResult) record(event testEvent) {
 	}
 }
 
-// cloudIntegrationPackages lists the import paths under internal/cloud that
-// have test files built only with the cloudintegration tag.
+// cloudIntegrationPackages lists the import paths under cloudPGRoots that
+// have test files built only with the cloudintegration or cloudpg tag.
 func cloudIntegrationPackages(root string) ([]string, error) {
 	seen := make(map[string]bool)
-	base := filepath.Join(root, "internal", "cloud")
-	err := filepath.WalkDir(base, func(file string, entry fs.DirEntry, err error) error {
+	for _, tree := range cloudPGRoots {
+		if err := collectTaggedPackages(root, filepath.Join(root, filepath.FromSlash(tree)), seen); err != nil {
+			return nil, err
+		}
+	}
+	packages := make([]string, 0, len(seen))
+	for pkg := range seen {
+		packages = append(packages, pkg)
+	}
+	sort.Strings(packages)
+	return packages, nil
+}
+
+func collectTaggedPackages(root, base string, seen map[string]bool) error {
+	if _, err := os.Stat(base); os.IsNotExist(err) {
+		return nil
+	}
+	return filepath.WalkDir(base, func(file string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || !strings.HasSuffix(file, "_test.go") {
 			return err
 		}
@@ -123,7 +143,8 @@ func cloudIntegrationPackages(root string) ([]string, error) {
 			return err
 		}
 		firstLine, _, _ := strings.Cut(string(data), "\n")
-		if strings.HasPrefix(firstLine, "//go:build") && strings.Contains(firstLine, "cloudintegration") {
+		if strings.HasPrefix(firstLine, "//go:build") &&
+			(strings.Contains(firstLine, "cloudintegration") || strings.Contains(firstLine, "cloudpg")) {
 			relative, err := filepath.Rel(root, filepath.Dir(file))
 			if err != nil {
 				return err
@@ -132,12 +153,6 @@ func cloudIntegrationPackages(root string) ([]string, error) {
 		}
 		return nil
 	})
-	packages := make([]string, 0, len(seen))
-	for pkg := range seen {
-		packages = append(packages, pkg)
-	}
-	sort.Strings(packages)
-	return packages, err
 }
 
 func cloudPGProblems(results map[string]*packageResult, required []string) []string {

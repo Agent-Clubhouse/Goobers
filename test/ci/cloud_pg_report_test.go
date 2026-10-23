@@ -14,6 +14,7 @@ func TestCloudPGReportRequiresPassingTestsInEveryIntegrationPackage(t *testing.T
 		"internal/cloud/alpha/pg_test.go":   "//go:build cloudintegration\n\npackage alpha\n",
 		"internal/cloud/beta/pg_test.go":    "//go:build cloudintegration\n\npackage beta\n",
 		"internal/cloud/gamma/unit_test.go": "package gamma\n",
+		"test/ha/invariants/schema_test.go": "//go:build integration && cloudpg\n\npackage invariants\n",
 	} {
 		file := filepath.Join(root, dir)
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
@@ -24,18 +25,23 @@ func TestCloudPGReportRequiresPassingTestsInEveryIntegrationPackage(t *testing.T
 		}
 	}
 	event := func(action, pkg, test string) string {
-		return `{"Action":"` + action + `","Package":"github.com/goobers/goobers/internal/cloud/` + pkg + `","Test":"` + test + `"}` + "\n"
+		if !strings.Contains(pkg, "/") {
+			pkg = "internal/cloud/" + pkg
+		}
+		return `{"Action":"` + action + `","Package":"github.com/goobers/goobers/` + pkg + `","Test":"` + test + `"}` + "\n"
 	}
+	invariants := event("pass", "test/ha/invariants", "TestSchema")
 	for name, tc := range map[string]struct {
 		events string
 		code   int
 		want   string
 	}{
-		"all ran":      {event("pass", "alpha", "TestA") + event("pass", "beta", "TestB"), 0, "2 cloudintegration packages"},
-		"skips only":   {event("pass", "alpha", "TestA") + event("skip", "beta", "TestB"), 1, "beta: no test passed (1 skipped"},
-		"missing tag":  {event("pass", "alpha", "TestA"), 1, "beta: did not run"},
-		"subtest only": {event("pass", "alpha", "TestA") + event("pass", "beta", "TestB/sub") + event("skip", "beta", "TestB"), 1, "beta: no test passed"},
-		"build failed": {event("pass", "alpha", "TestA") + event("fail", "beta", ""), 1, "beta: failed to build"},
+		"all ran":            {event("pass", "alpha", "TestA") + event("pass", "beta", "TestB") + invariants, 0, "3 PostgreSQL test packages"},
+		"invariants skipped": {event("pass", "alpha", "TestA") + event("pass", "beta", "TestB") + event("skip", "test/ha/invariants", "TestSchema"), 1, "test/ha/invariants: no test passed"},
+		"skips only":         {event("pass", "alpha", "TestA") + event("skip", "beta", "TestB") + invariants, 1, "beta: no test passed (1 skipped"},
+		"missing tag":        {event("pass", "alpha", "TestA") + invariants, 1, "beta: did not run"},
+		"subtest only":       {event("pass", "alpha", "TestA") + event("pass", "beta", "TestB/sub") + event("skip", "beta", "TestB") + invariants, 1, "beta: no test passed"},
+		"build failed":       {event("pass", "alpha", "TestA") + event("fail", "beta", "") + invariants, 1, "beta: failed to build"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			report := filepath.Join(t.TempDir(), "report.json")
