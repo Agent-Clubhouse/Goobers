@@ -83,9 +83,13 @@ Usage: goobers-cloud migrate apply [OPTIONS]
 Apply ordered cloud PostgreSQL migrations.
 
 Options:
-  --database-direct-url URL  Direct PostgreSQL URL (port 5432)
-  --database-auth MODE       password or entra (default password)
-  --backup-ref REF           Restorable backup identifier or PITR mark (required)
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE             password or entra (default password)
+  --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud worker`
