@@ -343,6 +343,7 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 	}
 	entered := make(chan struct{})
 	resume := make(chan struct{})
+	staleCommit := make(chan error, 1)
 	pausedDone := make(chan error, 1)
 	go func() {
 		pausedDone <- paused.WithFence(t.Context(), stale, func(ctx context.Context, tx pgx.Tx) error {
@@ -355,11 +356,8 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 			}
 			close(entered)
 			<-resume
-			_, err := tx.Exec(ctx, `
-				UPDATE control.fence_commit SET finished_at=clock_timestamp()
-				WHERE epoch=$1`,
-				stale.Epoch,
-			)
+			err := tx.Commit(context.Background())
+			staleCommit <- err
 			return err
 		})
 	}()
@@ -408,6 +406,14 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 		t.Fatal("contender took over before the paused holder self-fenced")
 	}
 	close(resume)
+	commitErr := <-staleCommit
+	if commitErr == nil {
+		t.Fatal("stale holder commit succeeded after takeover")
+	}
+	var commitPostgresError *pgconn.PgError
+	if errors.As(commitErr, &commitPostgresError) && commitPostgresError.Code != "25P03" {
+		t.Fatalf("stale commit SQLSTATE = %s, want 25P03", commitPostgresError.Code)
+	}
 	if err := <-pausedDone; !errors.Is(err, lease.ErrSelfFenced) {
 		t.Fatalf("paused holder error = %v, want ErrSelfFenced", err)
 	}
@@ -430,6 +436,30 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	var staleRow bool
+	if err := pool.QueryRow(t.Context(), `
+		SELECT EXISTS (SELECT 1 FROM control.fence_commit WHERE epoch=$1)`,
+		stale.Epoch,
+	).Scan(&staleRow); err != nil {
+		t.Fatal(err)
+	}
+	if staleRow {
+		t.Fatal("stale holder row committed after takeover")
+	}
+	staleVerifier, err := lease.New(lease.Config{
+		Pool: pool, InstanceID: "instance", Name: "control", Holder: stale.Holder,
+		Now: func() time.Time { return time.Now().Add(-time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = staleVerifier.WithFence(t.Context(), stale, func(context.Context, pgx.Tx) error {
+		t.Fatal("stale handle write callback ran")
+		return nil
+	})
+	if !errors.Is(err, lease.ErrStale) {
+		t.Fatalf("stale handle write error = %v, want ErrStale", err)
 	}
 	rows, err := pool.Query(t.Context(), `
 		SELECT epoch, started_at, finished_at
