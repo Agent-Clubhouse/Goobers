@@ -198,8 +198,8 @@ tables:
   provisioned: true
   fence: owner_epoch
   rationale: "Start-fence run pins (HA-P4 cloud child authority, migration 0023) are inserted only inside the controller
-    lease fence that confirms or adopts the Temporal start, are immutable after insert, and are removed by cascade with
-    their acceptance. API and worker paths never read or write them."
+    lease fence that confirms or adopts the Temporal start, are immutable after insert except terminal_at, which the controller
+    retention sweep sets once the run is closed, and are deleted only after that. API and worker paths never read or write them."
   readers:
   - role: goobers_controller
     columns:
@@ -216,6 +216,8 @@ tables:
     - branch_namespace
     - input_digest
     - owner_epoch
+    - created_at
+    - terminal_at
   writers:
   - role: goobers_controller
     insert:
@@ -232,6 +234,9 @@ tables:
     - branch_namespace
     - input_digest
     - owner_epoch
+    update:
+    - terminal_at
+    delete: true
 - schema: control
   table: source_receipt
   provisioned: true

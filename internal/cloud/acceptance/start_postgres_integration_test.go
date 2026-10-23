@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
@@ -341,3 +343,76 @@ func TestPGStartReadDoesNotAdoptAndDoubleAdoptRefuses(t *testing.T) {
 type testGenerationAdmission struct{}
 
 func (testGenerationAdmission) Admit(string, string, string) error { return nil }
+
+// A parent that is still running long after its start finished keeps its pins:
+// acceptance pruning does not cascade to them, and the retention sweep marks
+// and removes them only once the run's execution is closed.
+func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
+	store, pool := testStore(t, 1)
+	temporal := &pgStartClient{}
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
+	in := acceptedStartInput(t, store)
+	result, err := starter.Start(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The start finished eight days ago; the run is still going.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance SET accepted_at=accepted_at-interval '8 days', finished_at=finished_at-interval '8 days' WHERE instance_id=$1 AND id=$2`,
+		store.instanceID, in.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE control.run_pin SET created_at=created_at-interval '8 days' WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Prune(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var acceptances int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM control.acceptance WHERE instance_id=$1 AND id=$2`, store.instanceID, in.AcceptanceID).Scan(&acceptances); err != nil || acceptances != 0 {
+		t.Fatalf("aged acceptance not pruned: %d (%v)", acceptances, err)
+	}
+	pinState := func() (present bool, terminal bool) {
+		t.Helper()
+		var terminalAt *time.Time
+		err := pool.QueryRow(t.Context(), `SELECT terminal_at FROM control.run_pin WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID).Scan(&terminalAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return true, terminalAt != nil
+	}
+	if present, _ := pinState(); !present {
+		t.Fatal("pruning the acceptance removed the live run's pins")
+	}
+
+	if err := store.manager.Release(t.Context(), store.handle); err != nil {
+		t.Fatal(err)
+	}
+	controller := successorStore(t, childRolePool(t, pool, "goobers_controller"))
+	running := func(context.Context, string) (bool, error) { return false, nil }
+	if marked, deleted, err := controller.SweepRunPins(t.Context(), running); err != nil || marked != 0 || deleted != 0 {
+		t.Fatalf("sweep of a running parent = %d marked, %d deleted, %v", marked, deleted, err)
+	}
+	if present, terminal := pinState(); !present || terminal {
+		t.Fatalf("running parent's pins: present=%v terminal=%v, want kept and live", present, terminal)
+	}
+
+	closed := func(context.Context, string) (bool, error) { return true, nil }
+	if marked, deleted, err := controller.SweepRunPins(t.Context(), closed); err != nil || marked != 1 || deleted != 0 {
+		t.Fatalf("sweep of the closed run = %d marked, %d deleted, %v", marked, deleted, err)
+	}
+	if present, terminal := pinState(); !present || !terminal {
+		t.Fatalf("closed run's pins: present=%v terminal=%v, want kept and terminal", present, terminal)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE control.run_pin SET terminal_at=terminal_at-interval '8 days' WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, deleted, err := controller.SweepRunPins(t.Context(), closed); err != nil || deleted != 1 {
+		t.Fatalf("sweep after retention deleted %d (%v), want 1", deleted, err)
+	}
+	if present, _ := pinState(); present {
+		t.Fatal("pins outlived their retention after the run closed")
+	}
+}

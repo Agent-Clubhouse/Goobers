@@ -100,6 +100,11 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		if err := store.Prune(ctx); err != nil {
 			return err
 		}
+		// Run pins outlive their acceptance row: they are retained until the
+		// run's engine execution is closed, then for ReplayRetention more.
+		if _, _, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal)); err != nil {
+			return err
+		}
 		if err := podauth.PruneExpired(ctx, r.Lease, handle); err != nil {
 			return err
 		}
