@@ -3,6 +3,7 @@
 package cloudreadiness
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -162,8 +163,8 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 	def := workflow.Definition{
 		Name: current.Name, Version: 1, DSLVersion: current.DSLVersion, Spec: current.Spec,
 	}
-	blockers := unsupportedFeatureBlockers(current.Spec)
 	placements, err := bootstrap.PinChildStagePlacements(cloudAssessmentConfig(cfg), set, current.Spec.Gaggle, def)
+	blockers := unsupportedFeatureBlockers(current.Name, current.Spec, placements)
 	if err != nil {
 		// A workflow the inventory cannot place would fall back to the
 		// control-plane host, which the cloud does not have: fail closed.
@@ -194,11 +195,26 @@ func workflowBlockers(cfg *instance.Config, set *instance.ConfigSet, current *ap
 	return blockers
 }
 
-func unsupportedFeatureBlockers(spec apiv1.WorkflowSpec) []Blocker {
+func unsupportedFeatureBlockers(name string, spec apiv1.WorkflowSpec, placements []dispatcher.PinnedPlacement) []Blocker {
 	var blockers []Blocker
-	for _, refusal := range engineadmission.UnsupportedFeatures(spec) {
+	err := engineadmission.RefusePlacedDefinition(name, spec, placements)
+	if err == nil {
+		return blockers
+	}
+	var refused *engineadmission.UnsupportedFeaturesError
+	if !errors.As(err, &refused) {
+		return []Blocker{genericFeatureBlocker("", "", "/spec", err.Error())}
+	}
+	for _, refusal := range refused.Refusals {
+		if refusal.Feature == "task.limits.maxTokens/maxCostUSD" {
+			blockers = append(blockers, remoteLimitBlockers(spec, refusal.Stage)...)
+			continue
+		}
 		id, ok := featureIDForPath(refusal.Feature)
-		if !ok || engineRuntimeLevel(id) != workflow.RuntimeUnsupported {
+		if !ok {
+			blockers = append(blockers, genericFeatureBlocker(
+				refusal.Feature, refusal.Stage, genericFeaturePath(spec, refusal.Feature, refusal.Stage), refusal.Error(),
+			))
 			continue
 		}
 		if id == "workflow.spec.parallels" {
@@ -209,32 +225,61 @@ func unsupportedFeatureBlockers(spec apiv1.WorkflowSpec) []Blocker {
 		}
 		blockers = append(blockers, featureBlocker(id, refusal.Stage, featurePath(spec, id, refusal.Stage)))
 	}
-	for i, gate := range spec.Gates {
-		if gate.Evaluator == apiv1.EvaluatorHuman &&
-			engineRuntimeLevel("gate.evaluator.human") == workflow.RuntimeUnsupported {
-			blockers = append(blockers, featureBlocker(
-				"gate.evaluator.human", gate.Name, fmt.Sprintf("/spec/gates/%d/evaluator", i),
-			))
-		}
-	}
+	return blockers
+}
+
+func remoteLimitBlockers(spec apiv1.WorkflowSpec, stage string) []Blocker {
+	var blockers []Blocker
 	for i, task := range spec.Tasks {
-		if task.Type != apiv1.TaskAgentic || task.Limits == nil {
+		if task.Name != stage || task.Type != apiv1.TaskAgentic || task.Limits == nil {
 			continue
 		}
-		if task.Limits.MaxTokens > 0 &&
-			engineRuntimeLevel("task.limits.maxTokens") == workflow.RuntimeUnsupported {
+		if task.Limits.MaxTokens > 0 {
 			blockers = append(blockers, featureBlocker(
 				"task.limits.maxTokens", task.Name, fmt.Sprintf("/spec/tasks/%d/limits/maxTokens", i),
 			))
 		}
-		if task.Limits.MaxCostUSD > 0 &&
-			engineRuntimeLevel("task.limits.maxCostUSD") == workflow.RuntimeUnsupported {
+		if task.Limits.MaxCostUSD > 0 {
 			blockers = append(blockers, featureBlocker(
 				"task.limits.maxCostUSD", task.Name, fmt.Sprintf("/spec/tasks/%d/limits/maxCostUSD", i),
 			))
 		}
 	}
 	return blockers
+}
+
+func genericFeatureBlocker(feature, stage, path, message string) Blocker {
+	return Blocker{
+		Code: CodeFeature, Feature: feature, Stage: stage, Path: path,
+		Message: message,
+		Action: Action{
+			Kind:        "engine",
+			Description: "resolve the engine refusal before cloud cutover",
+		},
+	}
+}
+
+func genericFeaturePath(spec apiv1.WorkflowSpec, feature, stage string) string {
+	for i, mapped := range spec.Maps {
+		if feature == "spec.maps" && mapped.Name == stage {
+			return fmt.Sprintf("/spec/maps/%d", i)
+		}
+	}
+	for i, gate := range spec.Gates {
+		if feature == "gate.evaluator.human" && gate.Name == stage {
+			return fmt.Sprintf("/spec/gates/%d/evaluator", i)
+		}
+	}
+	for i, task := range spec.Tasks {
+		if task.Name == stage && strings.HasPrefix(feature, "task.") {
+			return fmt.Sprintf("/spec/tasks/%d/%s", i,
+				strings.ReplaceAll(strings.TrimPrefix(feature, "task."), ".", "/"))
+		}
+	}
+	if feature == "" {
+		return "/spec"
+	}
+	return "/" + strings.ReplaceAll(feature, ".", "/")
 }
 
 func featureBlocker(id workflow.FeatureID, stage, path string) Blocker {
@@ -260,6 +305,11 @@ func featurePath(spec apiv1.WorkflowSpec, id workflow.FeatureID, stage string) s
 	for i, mapped := range spec.Maps {
 		if mapped.Name == stage && id == "workflow.spec.maps" {
 			return fmt.Sprintf("/spec/maps/%d", i)
+		}
+	}
+	for i, gate := range spec.Gates {
+		if gate.Name == stage && id == "gate.evaluator.human" {
+			return fmt.Sprintf("/spec/gates/%d/evaluator", i)
 		}
 	}
 	for i, task := range spec.Tasks {
@@ -322,19 +372,6 @@ func featureIDForPath(path string) (workflow.FeatureID, bool) {
 		}
 	}
 	return "", false
-}
-
-func engineRuntimeLevel(id workflow.FeatureID) workflow.RuntimeSupportLevel {
-	feature, ok := workflow.LookupFeature(id)
-	if !ok {
-		return workflow.RuntimeUnsupported
-	}
-	for _, support := range feature.Runtimes {
-		if support.Runtime == workflow.RuntimeEngine {
-			return support.Level
-		}
-	}
-	return workflow.RuntimeUnsupported
 }
 
 func summarize(workflows []Workflow) (Summary, []BlockerGroup) {
