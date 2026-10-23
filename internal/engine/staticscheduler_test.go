@@ -94,11 +94,14 @@ func schedulerInput(name string, width int32) staticSchedulerInput {
 	return staticSchedulerInput{Run: in}
 }
 
-func executeScheduler(t *testing.T, in staticSchedulerInput, acts *Activities) staticSchedulerResult {
+func executeScheduler(t *testing.T, in staticSchedulerInput, acts *Activities, configure ...func(*testsuite.TestWorkflowEnvironment)) staticSchedulerResult {
 	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&suite)
 	env.RegisterActivity(acts)
+	for _, setup := range configure {
+		setup(env)
+	}
 	env.ExecuteWorkflow(staticScheduler, in)
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)

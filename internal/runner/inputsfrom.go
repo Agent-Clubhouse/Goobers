@@ -138,47 +138,26 @@ func splitBranchInput(value string) (branchInputRef, bool) {
 }
 
 func resolveBranchInput(value string, machine *workflow.Machine, completed stageOutputs, fanIn *parallelExec) (any, bool, bool, bool) {
-	ref, ok := splitBranchInput(value)
-	if !ok || fanIn == nil || ref.parallel != fanIn.spec.Name {
-		return nil, false, false, false
-	}
-	branch := fanIn.branch(ref.branch)
-	if branch == nil {
-		return nil, false, true, false
-	}
-	switch branch.status {
-	case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
-		return nil, false, true, true
-	case journal.BranchNoOutput, journal.BranchSkipped:
-		return nil, false, true, true
-	}
-	if ref.stage == "" {
-		ref.stage = singleJoinTerminalTask(machine, branch.start)
-	}
-	produced, seen := completed[ref.stage]
-	if !seen {
-		return nil, false, true, false
-	}
-	valueOut, found := produced.outputs[ref.key]
-	return valueOut, found, true, false
+	resolved := resolveRunnerBranchInput(value, machine, completed, fanIn)
+	return resolved.Value, resolved.Found, resolved.Recognized, resolved.Absent
 }
 
-// branchInputIntegrity returns the provenance of the branch output
-// resolveBranchInput would bind, or the zero grade when the reference does not
-// resolve to a recorded stage (which fails admission closed).
+// branchInputIntegrity uses the same resolution as the bound value.
 func branchInputIntegrity(value string, machine *workflow.Machine, completed stageOutputs, fanIn *parallelExec) apiv1.Integrity {
-	ref, ok := splitBranchInput(value)
-	if !ok || fanIn == nil || ref.parallel != fanIn.spec.Name {
-		return ""
+	return resolveRunnerBranchInput(value, machine, completed, fanIn).Integrity
+}
+
+func resolveRunnerBranchInput(value string, machine *workflow.Machine, completed stageOutputs, fanIn *parallelExec) BranchInputResolution {
+	if fanIn == nil {
+		return BranchInputResolution{}
 	}
-	branch := fanIn.branch(ref.branch)
-	if branch == nil {
-		return ""
+	fanIn.mu.Lock()
+	defer fanIn.mu.Unlock()
+	branches := make(map[string]BranchInputSource, len(fanIn.branches))
+	for _, branch := range fanIn.branches {
+		branches[branch.name] = BranchInputSource{Start: branch.start, Status: branch.status, Completed: completed}
 	}
-	if ref.stage == "" {
-		ref.stage = singleJoinTerminalTask(machine, branch.start)
-	}
-	return completed.integrityOf(ref.stage)
+	return ResolveBranchInput(value, machine, fanIn.spec.Name, branches)
 }
 
 func singleJoinTerminalTask(machine *workflow.Machine, start string) string {
@@ -489,8 +468,8 @@ func StageResultIntegrity(executorGrade, produced apiv1.Integrity) apiv1.Integri
 // value, grade it, and phrase the miss. Note that record and forget are NOT
 // exported individually — only the rule that chooses between them is, so the
 // two runners cannot disagree about which results become addressable.
-// Everything else here — branch fan-in, the parallel-branch refs — stays
-// runner-private because the engine has no counterpart for it.
+// Branch-qualified resolution is shared in branchinputs.go; each runner
+// supplies its own frozen branch outcomes and completed-stage view.
 
 // StageOutputs is every completed stage's Outputs keyed by stage name, the
 // state stage-qualified resolution reads. It is an alias rather than a defined
