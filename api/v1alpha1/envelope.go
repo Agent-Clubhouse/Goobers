@@ -57,6 +57,15 @@ type ChildWorkflowOrigin struct {
 	AttemptID       string `json:"attemptId"`
 }
 
+// PreparedReviewerDiff is trusted reviewer evidence committed by the engine
+// before dispatch. Absence selects the legacy capture path. A present value
+// with no artifact distinguishes observed-empty from unobservable workspaces.
+// +kubebuilder:object:generate=false
+type PreparedReviewerDiff struct {
+	Observed bool             `json:"observed"`
+	Artifact *ArtifactPointer `json:"artifact,omitempty"`
+}
+
 // InvocationEnvelope is the standard context block delivered to a stage at
 // invocation (agentic via the harness adapter, or to a deterministic stage
 // runner). It carries the goal, the isolated workspace, read-only context
@@ -70,7 +79,12 @@ type ChildWorkflowOrigin struct {
 // from controller-gen DeepCopy generation (its free-form Inputs map cannot be
 // deep-copied generically).
 // +kubebuilder:object:generate=false
+
 type InvocationEnvelope struct {
+	// PreparedReviewerDiff is authored only by the versioned engine preparation
+	// step, never by task inputs. Stage images are same-build pinned by VerifySkew.
+	PreparedReviewerDiff *PreparedReviewerDiff `json:"preparedReviewerDiff,omitempty"`
+
 	// ChildWorkflowOrigin is present only for an opted-in agentic task. The
 	// runner derives it from committed stage.started metadata, never Inputs.
 	ChildWorkflowOrigin *ChildWorkflowOrigin `json:"childWorkflowOrigin,omitempty"`

@@ -147,10 +147,14 @@ func TestPlacedAgenticGateEvaluatesThroughDispatchActivity(t *testing.T) {
 	if len(eligible) != 1 || len(eligible[0]) != 1 || eligible[0][0].Name != remoteEligible()[0].Name {
 		t.Fatalf("eligible = %+v, want the pinned eligible set", eligible)
 	}
+	preparations := 0
 	for _, req := range workspaces.provisioned() {
 		if req.Stage == "review" {
-			t.Fatalf("a worker-side workspace was provisioned for the placed gate (%+v); the reviewer must run in its pod only", req)
+			preparations++
 		}
+	}
+	if preparations != 1 {
+		t.Fatalf("review evidence workspaces=%d, want one preparation; reviewer execution remains pod-only", preparations)
 	}
 
 	started := gateStartedEvents(proj)
@@ -549,7 +553,7 @@ func TestPlacedGateQueueRoutingAndHistoryReplay(t *testing.T) {
 			scheduled = append(scheduled, attrs.ActivityType.Name+"@"+attrs.TaskQueue.Name)
 		}
 	}
-	if want := "InvokeGoober@" + workflowQueue + ",DispatchStage@" + remoteGatePin().Queue + ",RunDeterministic@" + workflowQueue; strings.Join(scheduled, ",") != want {
+	if want := "InvokeGoober@" + workflowQueue + ",PrepareReviewerDiff@" + remoteGatePin().Queue + ",DispatchStage@" + remoteGatePin().Queue + ",RunDeterministic@" + workflowQueue; strings.Join(scheduled, ",") != want {
 		t.Fatalf("scheduled activities = %v, want %s (no ReviewGoober anywhere)", scheduled, want)
 	}
 	replayer := temporalworker.NewWorkflowReplayer()
@@ -706,4 +710,8 @@ func (h *skewedDispatchHost) DispatchStage(context.Context, DispatchStageInput) 
 		ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
 		Verdict:        &apiv1.Verdict{Summary: "decision stripped by a skewed host"},
 	}, nil
+}
+
+func (h *skewedDispatchHost) PrepareReviewerDiff(ctx context.Context, env apiv1.InvocationEnvelope, branch, delta string, mode apiv1.WorkspaceMode, require bool) (ReviewerPreparation, error) {
+	return h.real.PrepareReviewerDiff(ctx, env, branch, delta, mode, require)
 }
