@@ -3,6 +3,7 @@ package claims
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	"github.com/jackc/pgx/v5"
 
@@ -114,7 +115,7 @@ func (p *Plane) renewRow(ctx context.Context, tx pgx.Tx, epoch int64, entry loca
 // (DS6). Unlike the local nil-safe gate, a nil gate refuses, because every
 // cloud epoch has a renewal duty.
 func (p *Plane) RecoverExpired(ctx context.Context, handle *cloudlease.Handle, gate RecoveryGate) ([]localscheduler.ClaimEntry, error) {
-	if gate == nil || !gate.RecoveryPermitted() {
+	if !recoveryPermitted(gate) {
 		return nil, nil
 	}
 	candidates, err := p.recoveryCandidates(ctx, false)
@@ -122,6 +123,19 @@ func (p *Plane) RecoverExpired(ctx context.Context, handle *cloudlease.Handle, g
 		return nil, err
 	}
 	return p.releaseCandidates(ctx, handle, candidates)
+}
+
+// recoveryPermitted refuses a nil gate, including a typed nil pointer: the
+// local *RecoveryGate's nil-safe method permits, which would reap before the
+// rebuild.
+func recoveryPermitted(gate RecoveryGate) bool {
+	if gate == nil {
+		return false
+	}
+	if value := reflect.ValueOf(gate); value.Kind() == reflect.Pointer && value.IsNil() {
+		return false
+	}
+	return gate.RecoveryPermitted()
 }
 
 var _ RecoveryGate = (*localscheduler.RecoveryGate)(nil)
