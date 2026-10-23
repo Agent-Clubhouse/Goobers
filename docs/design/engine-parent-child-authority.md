@@ -202,6 +202,24 @@ cannot bind; the plane answers 503, and the worker retries (#8074 classes).
 | in-process provider called by the harness launcher | **changed**: an HTTP route called by the worker at dispatch | the engine worker is not the API host |
 | `Endpoint` = the daemon API | **changed**: the control API endpoint | the pod talks to control |
 
+**Disposition revisions on attempt replacement (a gate for #8085 (c)).** A
+retried parent attempt gets a new `AttemptID`, and re-requests its child's
+disposition with `expected` = the current request digest. The SQLite store
+handles this as a revision: it archives the prior request in the disposition
+history and rebinds it to the new attempt. It returns
+`ErrChildDispositionReconcile` or `ErrChildDispositionHistoryFull` at its
+limits.
+
+The cloud store's `RequestChildDisposition` has no supersede or revision path,
+so the retried attempt gets `ErrConflict` forever. It never returns the
+reconcile or history-full sentinels, and its `ChildDispositionHistory` is a
+stub. Before (c) wires cloud custody behind `ChildQueue`, cloud custody must
+either implement the same revision semantics or refuse revisions with a
+**distinct** sentinel that the request path surfaces as an attempt-replacement
+refusal. Either way, one shared `ChildQueue` disposition contract test runs
+against both stores. Attempt replacement is otherwise not equivalent across
+backends.
+
 ## 6. Grant scope, TTL and keys
 
 - **Scope.** Unchanged `podauth.ChildWorkflowGrant`: `{Gaggle, RunID,
@@ -244,9 +262,14 @@ cannot bind; the plane answers 503, and the worker retries (#8074 classes).
 3. **#8085 (b).** The control authority route (bind, revoke, renew), worker
    dispatch acquire and release, Secret delivery, the harness provider, and
    `VerifyActiveStage` widened to `RunReader`.
-4. **#8085 (c).** `ChildWorkflowService` on control over `ChildQueue`, with
+4. **Disposition parity (gate before (c)).** Cloud `RequestChildDisposition`
+   either implements supersede/revision (archive, rebind, reconcile and
+   history-full sentinels, real `ChildDispositionHistory`) or refuses revisions
+   with a distinct sentinel. A single `ChildQueue` disposition contract test
+   runs against both the SQLite and the cloud store (§5).
+5. **#8085 (c).** `ChildWorkflowService` on control over `ChildQueue`, with
    `Resolve` = §5 checks, and per-child generation pins.
-5. **#8085 (d).** End-to-end, including a worker kill mid-stage (the grant goes
+6. **#8085 (d).** End-to-end, including a worker kill mid-stage (the grant goes
    inert at parent completion or TTL) and a lease takeover between bind and
    submit.
 
