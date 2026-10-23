@@ -184,6 +184,27 @@ func TestGoobersClosureExcludesCloudDeps(t *testing.T) {
 	}
 }
 
+func TestGoobersCloudClosureExcludesRunner(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	cfg, err := loadConfig(filepath.Join(root, "test", "architectureimports", "rules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, rule := range cfg.ClosureRules {
+		if rule.Name == "cloud-control-excludes-runner" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("cloud control runner exclusion is missing")
+	}
+	if err := checkClosures(context.Background(), root, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGoobersClosureRejectsPGXFixture(t *testing.T) {
 	root := syntheticModule(t, map[string]string{
 		"go.mod": `module example.com/architecture

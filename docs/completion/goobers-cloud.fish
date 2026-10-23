@@ -1,5 +1,6 @@
 complete -c goobers-cloud -f -a "api"
 complete -c goobers-cloud -f -a "completion"
+complete -c goobers-cloud -f -a "control"
 complete -c goobers-cloud -f -a "controller"
 complete -c goobers-cloud -f -a "help"
 complete -c goobers-cloud -f -a "migrate"

@@ -311,11 +311,3 @@ github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capt
 github.com/goobers/goobers/internal/gagglehealth.ExtendEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
 github.com/goobers/goobers/internal/gagglehealth.Rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
 
-# HA-P3-17 cloud assembly awaits HA-P3-18 role composition.
-github.com/goobers/goobers/internal/cloud/podauth.New # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Auth.Authenticate # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Auth.VerifyCredentialGrant # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Auth.RunKeyReload # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Revocations.Revoke # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Revocations.IsRevoked # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
-github.com/goobers/goobers/internal/cloud/podauth.Revocations.validate # HA-P3-17 auth/revocation library; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22

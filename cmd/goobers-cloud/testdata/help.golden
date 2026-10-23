@@ -5,6 +5,7 @@ Usage:
 
 Roles:
   api          Serve the cloud control-plane API.
+  control      Serve API and the single-active cloud controller.
   controller   Run cloud control-plane reconciliation.
   migrate      Apply cloud data-store migrations.
   worker       Run a Temporal engine worker.

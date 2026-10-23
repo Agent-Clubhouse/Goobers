@@ -211,6 +211,12 @@
       "reason": "Cloud control-plane policy has no Windows-specific seam; unit and PostgreSQL integration tests run on Linux."
     },
     {
+      "package": "internal/cloud/control",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud lease lifecycle and PostgreSQL failover tests run on Linux; no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",

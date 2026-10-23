@@ -81,6 +81,18 @@
           "rationale": "local runtimes must not depend on cloud-only packages"
         }
       ]
+    },
+    {
+      "name": "cloud-control-excludes-runner",
+      "roots": [
+        "github.com/goobers/goobers/cmd/goobers-cloud"
+      ],
+      "forbidden": [
+        {
+          "path": "github.com/goobers/goobers/internal/runner",
+          "rationale": "D-2: cloud control must never construct an in-process stage runner"
+        }
+      ]
     }
   ],
   "lanes": [

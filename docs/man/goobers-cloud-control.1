@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLOUD CONTROL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers-cloud control \- Serve API and the single-active cloud controller.
+.SH SYNOPSIS
+\fBgoobers-cloud control\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers-cloud control [DATABASE OPTIONS] [OPTIONS]
+
+Serve API and the single-active, fenced cloud controller. Never executes stages.
+Database options are the same as for the api role.
+
+Options:
+  --listen ADDRESS              API/probes address (default 127.0.0.1:8080)
+  --tls-cert FILE                API TLS certificate (required off loopback)
+  --tls-key FILE                 API TLS private key
+  --pod-key-file FILE            Shared signed pod-token key file (required)
+  --self-execution POLICY        Must be deny (default deny)
+  --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
+  --temporal-namespace NAME      Temporal namespace (default default)
+  --task-queue NAME              Remote engine task queue (default goobers)
+
+Readiness requires schema compatibility, complete plane/recovery wiring, and a
+live controller lease. SIGTERM stops controller loops and releases authority.
+.fi
+.SH SEE ALSO
+\fBgoobers-cloud\fR(1)

@@ -192,12 +192,19 @@ var errRoleUnavailable = errors.New("role wiring is not available yet")
 func unavailableDatabaseRole(context.Context, databaseServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
+	return runDatabaseRoleConfigured(role, help, args, stdout, stderr, serve, nil, nil)
+}
+
+func runDatabaseRoleConfigured(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole, register func(*flag.FlagSet), validate func() error) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		write(stdout, help)
 		return 0
 	}
 	flags := flag.NewFlagSet(role, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	if register != nil {
+		register(flags)
+	}
 	transactionURLArg := flags.String("database-url", "", "PgBouncer transaction-pool URL")
 	transactionURLFile := flags.String("database-url-file", "", "file containing the PgBouncer transaction-pool URL")
 	directURLArg := flags.String("database-direct-url", "", "direct PostgreSQL URL")
@@ -215,6 +222,12 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	if flags.NArg() != 0 {
 		flags.Usage()
 		return 2
+	}
+	if validate != nil {
+		if err := validate(); err != nil {
+			writef(stderr, "goobers-cloud %s: %v\n", role, err)
+			return 2
+		}
 	}
 	transactionURL, err := databaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
 	if err != nil {

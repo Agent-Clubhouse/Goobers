@@ -10,6 +10,7 @@
 | --- | --- |
 | [`goobers-cloud api`](#goobers-cloud-api) | Serve the cloud control-plane API. |
 | [`goobers-cloud completion`](#goobers-cloud-completion) | Generate a shell completion script. |
+| [`goobers-cloud control`](#goobers-cloud-control) | Serve API and the single-active cloud controller. |
 | [`goobers-cloud controller`](#goobers-cloud-controller) | Run cloud control-plane reconciliation. |
 | [`goobers-cloud migrate`](#goobers-cloud-migrate) | Apply cloud data-store migrations. |
 | [`goobers-cloud worker`](#goobers-cloud-worker) | Run a Temporal engine worker. |
@@ -59,6 +60,30 @@ Generate a shell completion script.
 Usage: goobers-cloud completion <bash|zsh|fish>
 
 Generate a shell completion script. Source the output in the target shell.
+~~~
+
+## `goobers-cloud control`
+
+Serve API and the single-active cloud controller.
+
+~~~text
+Usage: goobers-cloud control [DATABASE OPTIONS] [OPTIONS]
+
+Serve API and the single-active, fenced cloud controller. Never executes stages.
+Database options are the same as for the api role.
+
+Options:
+  --listen ADDRESS              API/probes address (default 127.0.0.1:8080)
+  --tls-cert FILE                API TLS certificate (required off loopback)
+  --tls-key FILE                 API TLS private key
+  --pod-key-file FILE            Shared signed pod-token key file (required)
+  --self-execution POLICY        Must be deny (default deny)
+  --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
+  --temporal-namespace NAME      Temporal namespace (default default)
+  --task-queue NAME              Remote engine task queue (default goobers)
+
+Readiness requires schema compatibility, complete plane/recovery wiring, and a
+live controller lease. SIGTERM stops controller loops and releases authority.
 ~~~
 
 ## `goobers-cloud controller`
