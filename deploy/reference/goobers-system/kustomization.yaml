@@ -24,9 +24,8 @@ resources:
   - api-service.yaml
   - api-ingress-example.yaml
   - journal-pvc.yaml
-  # Drop this (and the worker's --blob-store flag, mount, and volume) if you
-  # run a single worker. It exists so a run's stages can be served by more
-  # than one.
+  # The API owns this backing store and fronts it through the HTTP blob plane.
+  # Workers never mount it.
   - blobs-pvc.yaml
 
 # Image parameterization (§1: a registry the cluster can pull from). Containers

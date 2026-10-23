@@ -123,6 +123,7 @@ manifests-check: manifests
 .PHONY: docs
 docs:
 	$(GO) run ./cmd/goobers __generate-docs docs
+	$(GO) run ./cmd/goobers-cloud __generate-docs docs
 	$(GO) run ./test/designstatus -write
 	$(GO) run ./test/markdownlinks -write
 
@@ -346,9 +347,9 @@ test: schema-description-coverage
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
 
-## portal-audit: Fail when portal dependencies have known vulnerabilities.
+## portal-audit: Fail on known vulnerabilities; warn when advisory data remains unavailable.
 portal-audit: portal-install
-	$(NPM) --prefix portal audit --audit-level=low
+	$(GO) run ./test/ci portal-audit "$(NPM)"
 
 ## portal-typecheck: Install and type-check the portal.
 portal-typecheck: portal-install

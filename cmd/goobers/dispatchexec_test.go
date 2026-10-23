@@ -269,6 +269,9 @@ func TestRunDispatchExecContextSurrendersToTheWriteAPI(t *testing.T) {
 	if surrendered.Result.Status != apiv1.ResultSuccess {
 		t.Fatalf("surrendered status = %q, want success", surrendered.Result.Status)
 	}
+	if surrendered.ContractVersion != dispatcher.CurrentSurrenderContract {
+		t.Fatalf("surrender contract version = %d, want %d", surrendered.ContractVersion, dispatcher.CurrentSurrenderContract)
+	}
 }
 
 // #4260: the surrender retry deadline scales with the stage's own declared

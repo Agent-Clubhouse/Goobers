@@ -2279,6 +2279,9 @@ jobs:
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestWorkflowValidateChild|TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
+      - name: Windows cloud CLI
+        run: go test ./cmd/goobers-cloud
+
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
 

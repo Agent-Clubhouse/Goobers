@@ -22,7 +22,6 @@ github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema 
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
 github.com/goobers/goobers/internal/workflow.FeatureRegistry.Lookup # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.All for immutable lookup parity (#2981).
 github.com/goobers/goobers/internal/workflow.FeatureRegistry.All # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.Lookup for immutable lookup parity (#2981).
-github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lookup facade, exercised by coexistence_test.go and test/workflowupgrade/advisor_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow/v_2_0.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_2_0.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.

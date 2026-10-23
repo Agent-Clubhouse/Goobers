@@ -174,35 +174,39 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 	if v := volume(t, daemon, "journal"); v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "goobers-journal" {
 		t.Fatal("daemon lost authoritative volume")
 	}
-	if v := volume(t, worker, "journal"); v.EmptyDir == nil || v.PersistentVolumeClaim != nil {
-		t.Fatal("worker shares authoritative instance")
+	if worker.Spec.Replicas == nil || *worker.Spec.Replicas < 2 {
+		t.Fatal("prepared worker lost multi-replica topology")
+	}
+	for _, v := range worker.Spec.Template.Spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			t.Fatalf("worker retained shared PVC %q", v.PersistentVolumeClaim.ClaimName)
+		}
 	}
 	var paths map[string]string
 	if err := json.Unmarshal(bundle.Data["paths.json"], &paths); err != nil {
 		t.Fatal(err)
 	}
+	assetExecutable := false
+	for _, item := range volume(t, daemon, "config-bundle").Secret.Items {
+		if paths[item.Key] == "config/asset.sh" && item.Mode != nil && *item.Mode == 0550 {
+			assetExecutable = true
+		}
+	}
+	if !assetExecutable {
+		t.Fatal("Secret projection drops executable asset permissions before init copies them")
+	}
+	if daemon.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType || daemon.Spec.Replicas == nil || *daemon.Spec.Replicas != 1 {
+		t.Fatal("daemon is no longer the sole authoritative state owner")
+	}
+	if volume(t, daemon, "prepared-config").EmptyDir == nil ||
+		volume(t, daemon, "blobs").PersistentVolumeClaim.ClaimName != "goobers-blobs" {
+		t.Fatal("daemon lost prepared config or blob authority")
+	}
+	if daemon.Spec.Template.Annotations["goobers.dev/config-bundle"] != bundle.Name ||
+		volume(t, daemon, "config-bundle").Secret.SecretName != bundle.Name {
+		t.Fatal("daemon rollout template isn't pinned to its immutable bundle")
+	}
 	for _, dep := range deps {
-		assetExecutable := false
-		for _, item := range volume(t, dep, "config-bundle").Secret.Items {
-			if paths[item.Key] == "config/asset.sh" && item.Mode != nil && *item.Mode == 0550 {
-				assetExecutable = true
-			}
-		}
-		if !assetExecutable {
-			t.Fatal("Secret projection drops executable asset permissions before init copies them")
-		}
-		if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType || dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
-			t.Fatal("unsafe concurrent state owners")
-		}
-		if volume(t, dep, "prepared-config").EmptyDir == nil {
-			t.Fatal("prepared configs are not fresh per pod")
-		}
-		if volume(t, dep, "blobs").PersistentVolumeClaim.ClaimName != "goobers-blobs" {
-			t.Fatal("blob backing trees differ")
-		}
-		if dep.Spec.Template.Annotations["goobers.dev/config-bundle"] != bundle.Name || volume(t, dep, "config-bundle").Secret.SecretName != bundle.Name {
-			t.Fatal("rollout template isn't pinned to its bundle")
-		}
 		if got := volume(t, dep, "pod-auth").Secret; got.SecretName != o.TokenSecret || got.DefaultMode == nil || *got.DefaultMode != 0440 {
 			t.Fatal("missing shared key or overly broad permissions")
 		}
@@ -210,10 +214,17 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 		for _, m := range dep.Spec.Template.Spec.Containers[0].VolumeMounts {
 			mounts[m.MountPath] = m.ReadOnly
 		}
-		for _, path := range []string{"/var/lib/goobers/instance.yaml", "/var/lib/goobers/config", "/var/lib/goobers/goobers"} {
-			if !mounts[path] {
-				t.Fatalf("daemon/worker can mutate managed config at %s", path)
+		if dep.Name == daemon.Name {
+			for _, path := range []string{"/var/lib/goobers/instance.yaml", "/var/lib/goobers/config", "/var/lib/goobers/goobers"} {
+				if !mounts[path] {
+					t.Fatalf("daemon can mutate managed config at %s", path)
+				}
 			}
+		}
+	}
+	for _, v := range worker.Spec.Template.Spec.Volumes {
+		if v.Name == "prepared-config" || v.Name == "config-bundle" {
+			t.Fatal("worker retained boot-time config mount instead of live config plane")
 		}
 	}
 	for _, v := range worker.Spec.Template.Spec.Volumes {
@@ -237,17 +248,16 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 		t.Fatalf("prepared config is not valid: error=%v report=%v", err, report)
 	}
 	args := strings.Join(worker.Spec.Template.Spec.Containers[0].Args, " ")
-	if !strings.Contains(args, "--daemon-api "+apiURL) || !strings.Contains(args, "--dispatch-namespace "+o.StageNamespace) {
-		t.Fatal("worker cannot surrender")
-	}
-	found := false
-	for _, e := range worker.Spec.Template.Spec.Containers[0].Env {
-		if e.Name == "GOOBERS_BLOB_ENDPOINT" && e.Value == apiURL {
-			found = true
+	for _, want := range []string{
+		"--config-endpoint " + apiURL,
+		"--config-key-file /run/goobers/pod-auth/pod-token.key",
+		"--blob-endpoint " + apiURL,
+		"--daemon-api " + apiURL,
+		"--dispatch-namespace " + o.StageNamespace,
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("worker missing stateless plane argument %q: %s", want, args)
 		}
-	}
-	if !found {
-		t.Fatal("worker kit/output blob endpoint missing")
 	}
 }
 
@@ -270,7 +280,7 @@ func unpackBundle(t *testing.T, data map[string][]byte) string {
 	return root
 }
 
-func TestPreparedTopologyConfigChangeRollsBothPodsAndDropsRemovedFiles(t *testing.T) {
+func TestPreparedTopologyConfigChangeRollsDaemonAndWorkerUpdatesLive(t *testing.T) {
 	o := fixture(t)
 	asset := filepath.Join(o.Instance, "config", "notes.txt")
 	if err := os.WriteFile(asset, []byte("old"), 0600); err != nil {
@@ -293,7 +303,11 @@ func TestPreparedTopologyConfigChangeRollsBothPodsAndDropsRemovedFiles(t *testin
 			case "Deployment":
 				var dep appsv1.Deployment
 				decode(t, d, &dep)
-				n[dep.Name] = volume(t, dep, "config-bundle").Secret.SecretName
+				if dep.Name == "goobers-api" {
+					n[dep.Name] = volume(t, dep, "config-bundle").Secret.SecretName
+				} else {
+					n[dep.Name] = dep.Spec.Template.Annotations["goobers.dev/config-bundle"]
+				}
 			}
 		}
 		return n
@@ -302,10 +316,11 @@ func TestPreparedTopologyConfigChangeRollsBothPodsAndDropsRemovedFiles(t *testin
 	if a["bundle"] == b["bundle"] {
 		t.Fatal("config changes preserve bundle name")
 	}
-	for _, dep := range []string{"goobers-api", "goobers-worker"} {
-		if a[dep] == b[dep] || b[dep] != b["bundle"] {
-			t.Fatal("config update does not roll both deployments")
-		}
+	if a["goobers-api"] == b["goobers-api"] || b["goobers-api"] != b["bundle"] {
+		t.Fatal("config update does not roll the daemon onto its immutable bundle")
+	}
+	if a["goobers-worker"] != b["goobers-worker"] {
+		t.Fatal("live config update still forces a worker rollout")
 	}
 	for _, d := range second {
 		if d["kind"] == "Secret" {

@@ -114,7 +114,7 @@ func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqu
 	if err != nil {
 		var deferred *childStartDeferred
 		if errors.As(err, &deferred) {
-			return s.queue.RequeueChild(ctx, ref.Child.Identity, deferred.Reason, s.dispatch.now())
+			return s.queue.RequeueChild(ctx, ref.Child.Identity, deferred.Reason, s.dispatch.Now())
 		}
 		// Keep uncertain custody even for an unexpected local error: only observed
 		// durable evidence, or strong startup absence, can resolve a claimed start.

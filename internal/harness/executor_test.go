@@ -70,7 +70,8 @@ type recordedArtifact struct {
 
 type metricsFakeAdapter struct {
 	FakeAdapter
-	metrics map[string]float64
+	metrics      map[string]float64
+	sawUsageSink bool
 }
 
 type receiptFakeAdapter struct {
@@ -397,6 +398,10 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 }
 
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	f.sawUsageSink = req.UsageSink != nil
+	if req.UsageSink != nil {
+		req.UsageSink(f.metrics)
+	}
 	out, err := f.FakeAdapter.Run(ctx, req)
 	out.Metrics = f.metrics
 	return out, err
@@ -801,6 +806,9 @@ func TestExecutorUsesOnlyAdapterCanonicalUsage(t *testing.T) {
 			}
 			if reported[telemetry.AttrGenAIUsageInputTokens] != 42 {
 				t.Fatalf("reported usage = %v, want adapter input tokens 42", reported)
+			}
+			if adapter.sawUsageSink {
+				t.Fatal("local/final-only usage reporter enabled streaming UsageSink")
 			}
 			if !tc.wantErr && result.Metrics["custom"] != 7 {
 				t.Fatalf("result metrics = %v, want agent custom metric retained", result.Metrics)

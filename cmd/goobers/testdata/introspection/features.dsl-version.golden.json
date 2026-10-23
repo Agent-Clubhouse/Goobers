@@ -7,977 +7,3317 @@
     {
       "name": "gaggle.spec.additionalRepos",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.additionalRepos.baseUrl",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.additionalRepos.checkout.sparse",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.additionalRepos.provider.ado",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.additionalRepos.provider.gitea",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.additionalRepos.provider.github",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.baseUrl",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.fieldPredicate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.labelPredicate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.labels",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.provider.ado",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.provider.gitea",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.backlog.provider.github",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.branchNamespace",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.ciCommand",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.cost.enabled",
       "stability": "ga",
-      "sinceVersion": "v0.4.0"
+      "sinceVersion": "v0.4.0",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "v0.4.0"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "v0.4.0"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.displayName",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.enabled",
       "stability": "ga",
-      "sinceVersion": "v0.4.0"
+      "sinceVersion": "v0.4.0",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "v0.4.0"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "v0.4.0"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.health",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.isolation.identityRef",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.isolation.namespace",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.isolation.serviceAccount",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.issueOwnershipScope",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.issueOwnershipScope.assignees",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.issueOwnershipScope.unassigned",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.outboxMirrorPath",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.project",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.project.baseUrl",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.project.checkout.sparse",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.project.provider.ado",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.project.provider.gitea",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.project.provider.github",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.requireLabels",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.requiredCapabilities",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.runControls",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.runControls.maxRepasses",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.runControls.maxRunDuration",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.runControls.stalledRunTimeout",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.sandbox",
       "stability": "preview",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.selfIdentity",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.siblings",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gaggle.spec.workcopies.root",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.branch.escalate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.branches",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic.goober",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic.retry",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic.retry.backoff",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic.retry.maxAttempts",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic.timeoutSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.agentic.workspace",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.ci-status",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.failure-class",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.land-outcome",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.output-equals",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.output-matches",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.output-not-equals",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.output-numeric-gte",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.output-numeric-lt",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.output-numeric-lte",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.queue-outcome",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.check.status-equals",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.maxTimeoutPolls",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.params",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.pollIntervalSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.retry",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.retry.backoff",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.retry.maxAttempts",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.automated.timeoutSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.human",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "unsupported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.human.approvers",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.human.onTimeout.escalate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.human.onTimeout.reject",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.human.onTimeout.remind",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.evaluator.human.timeout",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.maxRepasses",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "gate.name",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.capabilities",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.conditionalPolicyActions",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.displayName",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.gaggle",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.harness.claude-code",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.harness.codex",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.harness.copilot",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.harnessOptions",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.instructions",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.mcpServers",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.model",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.policyActions",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.role",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.scaleFactor",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.skills",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.timeoutSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.tools",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "goober.spec.workflows",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.ci-poll",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.external-telemetry",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.resultFile",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.command",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.env",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.injectRunContext",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.network.none",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.script",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.syncBase",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.workspace.repo",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.run.workspace.scratch",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.shell",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.workspace",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "stage.workspace.repo-readonly",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.agentic",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.capabilities",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.contextFrom",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.continueOnError",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.deterministic",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.expectedOutputs",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.experiment",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "unsupported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.goal",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.goober",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.inputs",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.inputs.fieldOrder",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.inputsFrom",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.inputsFrom.stageQualified",
       "stability": "ga",
-      "sinceVersion": "v0.2.0"
+      "sinceVersion": "v0.2.0",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "v0.2.0"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "v0.2.0"
+        }
+      ]
     },
     {
       "name": "task.limits",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.limits.maxCostUSD",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "unsupported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.limits.maxDurationSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.limits.maxTokens",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "unsupported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.minimumIntegrity",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.name",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.nestedAgentPolicy",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.next",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.onTimeout.fail",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.onTimeout.salvage",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.outbox",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "unsupported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.outboxMirrorPath",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.policyActions",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.requiredCapabilities",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.retry",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.retry.backoff",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.retry.maxAttempts",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "task.timeoutSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.backlog-item",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.backlog-item.selector",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.backlog-item.trustLabel",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.enabled",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.fieldPredicate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.idleBackoff",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.idleBackoff.ceiling",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.idleBackoff.enabled",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.idleBackoff.floor",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.labelPredicate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.manual",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.priority",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.schedule",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.signal",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "trigger.webhook",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.displayName",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.docsRoots",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.enabled",
       "stability": "ga",
-      "sinceVersion": "v0.4.0"
+      "sinceVersion": "v0.4.0",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "v0.4.0"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "v0.4.0"
+        }
+      ]
     },
     {
       "name": "workflow.spec.gaggle",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.gates",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.outboxMirrorPath",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "unsupported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels.branchTimeoutSeconds",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels.branches",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels.failurePolicy",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels.join",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels.maxConcurrentBranches",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.parallels.onFailure",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.claimVisibility",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.desiredConcurrentRuns",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.maxChainDepth",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.maxConcurrentRuns",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.maxOpenPRs",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.maxRunsPerDay",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.maxRunsPerHour",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.readiness.requireProviderAuthorization",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.requires.capabilities",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.runControls",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.runControls.maxRepasses",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.runControls.maxRunDuration",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.runControls.stalledRunTimeout",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.scheduleCatchUp",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.start",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.tasks",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.triggers",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.tutorScope",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.tutorScope.target",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.spec.tutorScope.tier",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.terminal.abort",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.terminal.complete",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     },
     {
       "name": "workflow.terminal.escalate",
       "stability": "ga",
-      "sinceVersion": "dev"
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
     }
   ]
 }

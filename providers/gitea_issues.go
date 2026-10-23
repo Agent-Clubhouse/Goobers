@@ -27,6 +27,14 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return nil, err
 	}
+	values, pageSize := giteaWorkItemListValues(req)
+	if req.Page > 0 || req.Cursor != "" || req.PageInfo != nil {
+		return p.listWorkItemsPage(ctx, req, values, pageSize)
+	}
+	return p.listAllWorkItems(ctx, req, values, pageSize)
+}
+
+func giteaWorkItemListValues(req ListWorkItemsRequest) (url.Values, int) {
 	values := url.Values{"type": []string{"issues"}, "state": []string{"all"}}
 	if req.State != "" {
 		values.Set("state", req.State)
@@ -41,67 +49,74 @@ func (p *GiteaProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequ
 	if req.Limit > 0 {
 		pageSize = min(req.Limit, 50)
 	}
+	return values, pageSize
+}
 
-	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
-	if callerPaged {
-		page := max(req.Page, 1)
-		skip := 0
-		if req.Cursor != "" {
-			var err error
-			page, skip, err = parseGiteaWorkItemCursor(req.Cursor, pageSize)
-			if err != nil {
-				return nil, err
-			}
-		}
-		values.Set("page", strconv.Itoa(page))
-		values.Set("limit", strconv.Itoa(pageSize))
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
+func (p *GiteaProvider) listWorkItemsPage(
+	ctx context.Context, req ListWorkItemsRequest, values url.Values, pageSize int,
+) ([]WorkItem, error) {
+	page, skip := max(req.Page, 1), 0
+	if req.Cursor != "" {
+		var err error
+		page, skip, err = parseGiteaWorkItemCursor(req.Cursor, pageSize)
 		if err != nil {
 			return nil, err
 		}
-		endpoint, err = addQuery(endpoint, values)
-		if err != nil {
-			return nil, err
-		}
-		issues, total, err := p.listIssuesPage(ctx, endpoint)
-		if err != nil {
-			return nil, err
-		}
-		fetched := len(issues)
-		issues = issues[min(skip, fetched):]
-		budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
-		if budgetCapped {
-			issues = issues[:req.MaxCandidates]
-		}
-		if req.PageInfo != nil {
-			req.PageInfo.CandidateCount = len(issues)
-			req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, false)
-			req.PageInfo.HasNext = page*pageSize < total
-			req.PageInfo.NextCursor = ""
-			if req.PageInfo.HasNext {
-				req.PageInfo.NextCursor = strconv.Itoa(page + 1)
-			}
-			if budgetCapped {
-				// The raw-candidate budget cut this page short: resume
-				// inside it, after the last inspected candidate.
-				req.PageInfo.HasNext = true
-				req.PageInfo.NextCursor = fmt.Sprintf("%d:%d", page, skip+len(issues))
-			}
-		}
-		return giteaIssuesToWorkItems(issues, req)
 	}
+	values.Set("page", strconv.Itoa(page))
+	values.Set("limit", strconv.Itoa(pageSize))
+	endpoint, err := p.giteaWorkItemsEndpoint(req.Repository, values)
+	if err != nil {
+		return nil, err
+	}
+	issues, total, err := p.listIssuesPage(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	issues = issues[min(skip, len(issues)):]
+	budgetCapped := req.MaxCandidates > 0 && len(issues) > req.MaxCandidates
+	if budgetCapped {
+		issues = issues[:req.MaxCandidates]
+	}
+	updateGiteaWorkItemPageInfo(req, page, skip, pageSize, total, len(issues), budgetCapped)
+	return giteaIssuesToWorkItems(issues, req)
+}
 
+func updateGiteaWorkItemPageInfo(req ListWorkItemsRequest, page, skip, pageSize, total, count int, budgetCapped bool) {
+	if req.PageInfo == nil {
+		return
+	}
+	req.PageInfo.CandidateCount = count
+	req.PageInfo.QueryNarrowed = issueListQueryNarrowed(req, false)
+	req.PageInfo.HasNext = page*pageSize < total
+	req.PageInfo.NextCursor = ""
+	if req.PageInfo.HasNext {
+		req.PageInfo.NextCursor = strconv.Itoa(page + 1)
+	}
+	if budgetCapped {
+		req.PageInfo.HasNext = true
+		req.PageInfo.NextCursor = fmt.Sprintf("%d:%d", page, skip+count)
+	}
+}
+
+func (p *GiteaProvider) giteaWorkItemsEndpoint(repo RepositoryRef, values url.Values) (string, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
+	if err != nil {
+		return "", err
+	}
+	return addQuery(endpoint, values)
+}
+
+func (p *GiteaProvider) listAllWorkItems(
+	ctx context.Context, req ListWorkItemsRequest, values url.Values, pageSize int,
+) ([]WorkItem, error) {
 	// Ordinary call: page through until Limit is satisfied. OldestFirst sorts
 	// the accumulated window ascending so a Limit truncation drops the newest.
 	var raw []giteaIssue
 	values.Set("limit", strconv.Itoa(pageSize))
 	for page := 1; ; page++ {
 		values.Set("page", strconv.Itoa(page))
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues")
-		if err != nil {
-			return nil, err
-		}
-		endpoint, err = addQuery(endpoint, values)
+		endpoint, err := p.giteaWorkItemsEndpoint(req.Repository, values)
 		if err != nil {
 			return nil, err
 		}

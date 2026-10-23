@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const (
@@ -38,6 +39,7 @@ type agentToolkitManifest struct {
 	BundleVersion   string                      `json:"bundleVersion"`
 	Producer        agentToolkitProducer        `json:"producer"`
 	DSLVersions     []supportmatrix.Version     `json:"dslVersions"`
+	Features        []agentkit.FeatureSupport   `json:"features"`
 	Ownership       agentToolkitOwnership       `json:"ownership"`
 	Assets          []agentToolkitAsset         `json:"assets"`
 	Adapters        []agentToolkitAdapter       `json:"adapters"`
@@ -111,6 +113,7 @@ func packageAgentToolkit(repoRoot, version, commit, outDir string) (string, erro
 		BundleVersion: agentToolkitBundleVersion,
 		Producer:      producer,
 		DSLVersions:   dslVersions,
+		Features:      releaseToolkitFeatureSupport(),
 		Ownership: agentToolkitOwnership{
 			ProductRoot: agentToolkitProductRoot,
 			UserOwnedInstructionFiles: []string{
@@ -150,6 +153,7 @@ func packageAgentToolkit(repoRoot, version, commit, outDir string) (string, erro
 			},
 		},
 	}
+
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("encode agent toolkit manifest: %w", err)
@@ -168,6 +172,15 @@ func packageAgentToolkit(repoRoot, version, commit, outDir string) (string, erro
 		return "", err
 	}
 	return archivePath, nil
+}
+
+func releaseToolkitFeatureSupport() []agentkit.FeatureSupport {
+	features := workflow.AllFeatures()
+	out := make([]agentkit.FeatureSupport, len(features))
+	for i, feature := range features {
+		out[i] = agentkit.FeatureSupport{ID: feature.ID, Runtimes: feature.Runtimes}
+	}
+	return out
 }
 
 func agentToolkitArchiveName(version string) string {

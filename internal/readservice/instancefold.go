@@ -77,6 +77,11 @@ func (s *instanceState) apply(event journal.Event) {
 	s.applyProviderAuthHealth(event)
 	s.applyBlockerCleared(event)
 	s.applyWorkflowRefusal(event)
+	s.applySchedulingEvent(event)
+	s.applyLifecycleEvent(event)
+}
+
+func (s *instanceState) applySchedulingEvent(event journal.Event) {
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -116,42 +121,17 @@ func (s *instanceState) apply(event journal.Event) {
 		if blocking, ok := localscheduler.RefillBlockedReason(event.Reason); ok && event.Workflow != "" {
 			s.blockRefill(event.Gaggle, event.Workflow, blocking)
 		}
+	}
+}
+
+func (s *instanceState) applyLifecycleEvent(event journal.Event) {
+	switch event.Type {
 	case journal.EventDaemonDirtyRestart:
 		s.dirtyReason = event.Reason
 	case journal.EventTelemetryRetentionPass:
-		status := &TelemetryRetentionStatus{
-			LastPassMode:   runnerString(event.Runner, "mode"),
-			CandidateCount: runnerInt(event.Runner, "candidateCount"),
-		}
-		at := event.Time
-		if passAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "passAt")); err == nil {
-			at = passAt
-		}
-		if !at.IsZero() {
-			status.LastPassAt = &at
-		}
-		if enforceAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "enforceAt")); err == nil {
-			status.EnforceAt = &enforceAt
-		}
-		s.telemetryRetention = status
+		s.telemetryRetention = telemetryRetentionEventStatus(event)
 	case journal.EventDaemonStarted:
-		s.resetRefusals()
-		s.refillBlocked = nil
-		if s.sawDaemonStart || s.dirtyReason != "" {
-			reason := "clean restart"
-			if s.dirtyReason != "" {
-				reason = s.dirtyReason
-			}
-			s.restart = &DaemonRestartStatus{
-				At:      event.Time,
-				Reason:  reason,
-				PID:     runnerInt(event.Runner, "pid"),
-				Version: runnerString(event.Runner, "version"),
-				Root:    runnerString(event.Runner, "instanceRoot"),
-			}
-		}
-		s.sawDaemonStart = true
-		s.dirtyReason = ""
+		s.applyDaemonStarted(event)
 	case journal.EventRunnerAnnotation:
 		if s.restart != nil &&
 			runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
@@ -160,6 +140,40 @@ func (s *instanceState) apply(event journal.Event) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
 		}
 	}
+}
+
+func telemetryRetentionEventStatus(event journal.Event) *TelemetryRetentionStatus {
+	status := &TelemetryRetentionStatus{
+		LastPassMode: runnerString(event.Runner, "mode"), CandidateCount: runnerInt(event.Runner, "candidateCount"),
+	}
+	at := event.Time
+	if passAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "passAt")); err == nil {
+		at = passAt
+	}
+	if !at.IsZero() {
+		status.LastPassAt = &at
+	}
+	if enforceAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "enforceAt")); err == nil {
+		status.EnforceAt = &enforceAt
+	}
+	return status
+}
+
+func (s *instanceState) applyDaemonStarted(event journal.Event) {
+	s.resetRefusals()
+	s.refillBlocked = nil
+	if s.sawDaemonStart || s.dirtyReason != "" {
+		reason := "clean restart"
+		if s.dirtyReason != "" {
+			reason = s.dirtyReason
+		}
+		s.restart = &DaemonRestartStatus{
+			At: event.Time, Reason: reason, PID: runnerInt(event.Runner, "pid"),
+			Version: runnerString(event.Runner, "version"), Root: runnerString(event.Runner, "instanceRoot"),
+		}
+	}
+	s.sawDaemonStart = true
+	s.dirtyReason = ""
 }
 
 func (s *instanceState) applyClusterCheck(event journal.Event) {

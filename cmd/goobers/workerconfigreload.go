@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -208,8 +209,19 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	if settled != digest {
 		return workerReloadOutcome{Digest: settled, Unstable: true}, nil
 	}
+	return w.installSnapshotLocked(next), nil
+}
 
-	outcome := workerReloadOutcome{Digest: digest, Applied: true}
+func (w *workerSeams) installSnapshotLocked(next *workerConfigSnapshot) workerReloadOutcome {
+	current := w.snapshot.Load()
+	if current == nil {
+		w.snapshot.Store(next)
+		return workerReloadOutcome{Digest: next.digest, Applied: true}
+	}
+	if current.digest == next.digest {
+		return workerReloadOutcome{Digest: next.digest}
+	}
+	outcome := workerReloadOutcome{Digest: next.digest, Applied: true}
 	for gaggle, built := range current.gaggles {
 		fingerprint, err := w.gaggleFingerprint(next, gaggle)
 		// A fingerprint that cannot be computed against the new tree (the
@@ -235,7 +247,20 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	// One pointer store publishes the new tree and every carried-over kit
 	// together, so a concurrent reader sees whole-old or whole-new.
 	w.snapshot.Store(next)
-	return outcome, nil
+	return outcome
+}
+
+func (w *workerSeams) reloadFromLayout(layout instance.Layout) (workerReloadOutcome, error) {
+	next, stable, err := w.loadConfigSnapshotAt(layout)
+	if err != nil {
+		return workerReloadOutcome{}, err
+	}
+	if !stable {
+		return workerReloadOutcome{Digest: next.digest, Unstable: true}, errors.New("worker: immutable remote config snapshot changed while loading")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.installSnapshotLocked(next), nil
 }
 
 // historyDigestsLocked lists the retained superseded trees, newest first.

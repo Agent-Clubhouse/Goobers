@@ -1,0 +1,26 @@
+server:
+  config:
+    persistence:
+      default:
+        sql:
+          host: temporal-postgres-rw.goobers-temporal.svc
+          existingSecret: temporal-postgres-app
+          tls:
+            enabled: false
+            enableHostVerification: false
+      visibility:
+        sql:
+          host: temporal-postgres-rw.goobers-temporal.svc
+          existingSecret: temporal-postgres-app
+          tls:
+            enabled: false
+            enableHostVerification: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+web:
+  enabled: false

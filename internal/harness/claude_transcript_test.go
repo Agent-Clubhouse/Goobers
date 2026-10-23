@@ -22,6 +22,7 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	if !ok {
 		t.Fatal("convertClaudeStreams returned false")
 	}
+
 	if got := capture.metrics[telemetry.AttrGenAIUsageInputTokens]; got != 100 {
 		t.Fatalf("input tokens = %v, want 100", got)
 	}
@@ -71,6 +72,22 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	}
 	if !sawPrompt || !sawToolStart || !sawToolResult || !sawFinal {
 		t.Fatalf("canonical transcript missing expected events:\n%s", capture.data)
+	}
+}
+
+func TestClaudeTerminalCaptureReportsIncrementalUsage(t *testing.T) {
+	var observed map[string]float64
+	capture := &claudeTerminalCapture{
+		usageSink: func(metrics map[string]float64) { observed = metrics },
+	}
+	line := `{"type":"result","total_cost_usd":0.25,"usage":{"input_tokens":8,"output_tokens":3}}` + "\n"
+	if _, err := capture.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 8 ||
+		observed[telemetry.AttrGenAIUsageOutputTokens] != 3 ||
+		observed[telemetry.AttrUsageCostUSD] != 0.25 {
+		t.Fatalf("observed usage = %v", observed)
 	}
 }
 
