@@ -52,12 +52,12 @@ are bounded by the timeout. Database errors fail closed. Instances are isolated
 by `(instance_id, grant_id)`. Rows contain only random grant IDs, owner epochs,
 revocation times and expiry metadata, never bearer tokens or signing material.
 
-Writers obtain the current handle from `LiveOwner` for each operation and use
-`lease.WithFence`; the INSERT also predicates on that handle's instance, lease
-name, holder and epoch. Duplicate revocations are immutable and idempotent. Rows
-are retained until explicit future maintenance; expiry is metadata and never
-silently restores a revoked grant. Follower replicas may construct read-only
-stores without a manager or owner callback.
+Writers use the API pool for immutable, idempotent INSERTs. Revocation does not
+wait for controller ownership: it is a monotonic security fact. Both reads and
+writes use `goobers_api` credentials. The controller separately deletes only
+expired rows in a lease-fenced transaction using its own pool. The historical
+`owner_epoch` column remains nullable for rolling compatibility; new API facts
+have no controller epoch.
 
 Cloud integration tests use PostgreSQL 16 through `GOOBERS_TEST_POSTGRES_URL`
 and the `cloudintegration` build tag. They create isolated test databases; no

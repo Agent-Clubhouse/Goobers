@@ -26,6 +26,7 @@ var commands []command
 
 func init() {
 	commands = []command{
+		{name: "control", short: "Serve API and the single-active cloud controller.", long: controlHelp, run: runControlRole, role: true},
 		{name: "api", short: "Serve the cloud control-plane API.", long: apiHelp, run: runAPIRole, role: true},
 		{name: "controller", short: "Run cloud control-plane reconciliation.", long: controllerHelp, run: runControllerRole, role: true},
 		{name: "migrate", short: "Apply cloud data-store migrations.", long: migrateHelp, run: runMigrateRole, role: true},

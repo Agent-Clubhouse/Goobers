@@ -20,7 +20,7 @@
     ],
     "offline": "Provision a local file GOPROXY with all selected modules, version lists and metadata, plus cached checksum verification data. Put a compatible Go on PATH and set GOTOOLCHAIN=local. GOPROXY=off alone can fail even for cached go-run tools because their deprecation/version metadata lookup is disabled; a warm source tree alone is not sufficient.",
     "sites": [
-	  "integration-dependency/go:go-modules",
+      "integration-dependency/go:go-modules",
       ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}:go-modules",
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",
@@ -196,7 +196,8 @@
       ".github/workflows/ci.yml#unit/Record CI diagnostics:go-modules",
       ".github/workflows/ci.yml#unit-linux-coverage/Record CI diagnostics:go-modules",
       ".github/workflows/ci.yml#vulnerability-scan/Record CI diagnostics:go-modules",
-      ".github/workflows/ci.yml#windows-smoke/Record CI diagnostics:go-modules"
+      ".github/workflows/ci.yml#windows-smoke/Record CI diagnostics:go-modules",
+      ".github/workflows/ha-nightly.yml#control-restart/Measure controller takeover:go-modules"
     ]
   },
   {
@@ -378,7 +379,10 @@
       ".github/workflows/ci.yml#unit/Upload CI diagnostics:github-actions",
       ".github/workflows/ci.yml#unit-linux-coverage/Upload CI diagnostics:github-actions",
       ".github/workflows/ci.yml#vulnerability-scan/Upload CI diagnostics:github-actions",
-      ".github/workflows/ci.yml#windows-smoke/Upload CI diagnostics:github-actions"
+      ".github/workflows/ci.yml#windows-smoke/Upload CI diagnostics:github-actions",
+      ".github/workflows/ha-nightly.yml#control-restart/Checkout:github-actions",
+      ".github/workflows/ha-nightly.yml#control-restart/Set up Go:github-actions",
+      ".github/workflows/ha-nightly.yml#control-restart/Upload restart evidence:github-actions"
     ]
   },
   {
@@ -391,7 +395,8 @@
     "offline": "Preload the exact digest-pinned PostgreSQL 16 and Azurite 3.37.0 images into the runner container store before starting the job.",
     "sites": [
       ".github/workflows/ci.yml#cloud-pg/service azurite:service-containers",
-      ".github/workflows/ci.yml#cloud-pg/service postgres:service-containers"
+      ".github/workflows/ci.yml#cloud-pg/service postgres:service-containers",
+      ".github/workflows/ha-nightly.yml#control-restart/service postgres:service-containers"
     ]
   },
   {

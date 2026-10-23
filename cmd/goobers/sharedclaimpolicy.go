@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -12,7 +12,7 @@ import (
 // It must never substitute the latest config or a stage-provided mode. Provider
 // support is checked before shared coordination can mutate either ledger.
 func pinnedClaimVisibility(reader *journal.Reader, identity journal.RunIdentity, provider providers.ProviderKind) (string, error) {
-	machine, err := runner.PinnedWorkflowMachine(reader, identity)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, identity)
 	if err != nil {
 		return "", fmt.Errorf("claim visibility requires a verified workflow pin: %w", err)
 	}

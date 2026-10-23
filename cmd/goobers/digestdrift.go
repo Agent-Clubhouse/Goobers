@@ -7,12 +7,12 @@ import (
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runsemantics"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runcontrol"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -180,7 +180,7 @@ func inspectWorkflowDigestDrift(l instance.Layout, machines map[localscheduler.W
 			if machine.Digest() == id.WorkflowDigest {
 				continue
 			}
-			if _, err := runner.PinnedWorkflowMachine(rd, id); err != nil {
+			if _, err := runsemantics.PinnedWorkflowMachine(rd, id); err != nil {
 				drift.AtRisk = append(drift.AtRisk, id.RunID)
 				continue
 			}

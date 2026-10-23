@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workflowgraph"
 )
@@ -569,7 +570,7 @@ func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 	// tampered definition; if it is missing or invalid the current machine is
 	// kept and the runner's WF-016 verification refuses exactly as before.
 	if identity.WorkflowDigest != "" && machine.Digest() != identity.WorkflowDigest {
-		if pinned, pinErr := runner.PinnedWorkflowMachine(reader, identity); pinErr == nil {
+		if pinned, pinErr := runsemantics.PinnedWorkflowMachine(reader, identity); pinErr == nil {
 			machine = pinned
 		}
 	}

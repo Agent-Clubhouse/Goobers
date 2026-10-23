@@ -9,7 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // PinnedStageAdmission comes from the exact archived config generation in the
@@ -122,7 +122,7 @@ func checkedPinnedStage(rd *journal.Reader, id journal.RunIdentity, event journa
 	if pinned.ConfigGeneration != id.ConfigGeneration || pinned.WorkflowDigest != id.WorkflowDigest || pinned.GooberDigest != id.GooberDigest {
 		return AdmissionContext{}, ErrAuthorityUnavailable
 	}
-	machine, err := runner.PinnedWorkflowMachine(rd, id)
+	machine, err := runsemantics.PinnedWorkflowMachine(rd, id)
 	if err != nil {
 		return AdmissionContext{}, err
 	}

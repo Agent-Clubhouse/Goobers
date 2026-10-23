@@ -20,44 +20,31 @@ import (
 // There is no replica-local negative cache: every request observes the primary.
 const RevocationReadTimeout = 2 * time.Second
 
-// Revocations stores immutable revocation IDs. LiveOwner is read at each write,
-// rather than capturing an epoch at construction, so leadership handoffs cannot
-// silently reuse an old epoch. Reads also work on follower replicas.
+// Revocations stores immutable revocation IDs on the API pool. A revocation
+// takes effect immediately on any replica and does not require controller ownership.
 type Revocations struct {
 	Pool       *pgxpool.Pool
 	InstanceID string
-	Lease      *lease.Manager
-	LiveOwner  func() *lease.Handle
 }
 
 var _ planes.GrantRevocations = (*Revocations)(nil)
 
-// Revoke durably fences one revocation. Repeated writes are idempotent and never
-// shorten retention or undo a revocation. IDs are retained until explicit future
-// maintenance; expiry alone never makes a previously revoked grant valid again.
+// Revoke appends one monotonic security fact. Repeated writes are idempotent
+// and never shorten retention or undo a revocation. Only the controller can
+// delete a row after the signed grant expires.
 func (r *Revocations) Revoke(ctx context.Context, id string, expiresAt time.Time) error {
 	if err := r.validate(id); err != nil {
 		return err
 	}
-	if r.Lease == nil || r.LiveOwner == nil || expiresAt.IsZero() {
-		return errors.New("cloud grant revocation requires live ownership and expiry")
+	if expiresAt.IsZero() {
+		return errors.New("cloud grant revocation requires expiry")
 	}
-	owner := r.LiveOwner()
-	if owner == nil || owner.InstanceID != r.InstanceID {
-		return lease.ErrStale
+	_, err := r.Pool.Exec(ctx, `INSERT INTO control.grant_revocation (instance_id,grant_id,expires_at)
+ VALUES($1,$2,$3) ON CONFLICT(instance_id,grant_id) DO NOTHING`, r.InstanceID, id, expiresAt)
+	if err != nil {
+		return fmt.Errorf("revoke cloud credential grant: %w", err)
 	}
-	return r.Lease.WithFence(ctx, owner, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-   INSERT INTO control.grant_revocation (instance_id, grant_id, owner_epoch, expires_at)
-   SELECT instance_id, $2, $6, $3 FROM control.lease
-   WHERE instance_id=$1 AND name=$4 AND holder=$5 AND epoch=$6
-   ON CONFLICT (instance_id, grant_id) DO NOTHING`,
-			r.InstanceID, id, expiresAt, owner.Name, owner.Holder, owner.Epoch)
-		if err != nil {
-			return fmt.Errorf("revoke cloud credential grant: %w", err)
-		}
-		return nil
-	})
+	return nil
 }
 
 // IsRevoked checks the primary on every admission. Once Revoke commits, every
@@ -84,4 +71,21 @@ func (r *Revocations) validate(id string) error {
 		return errors.New("cloud grant revocation requires a pool, instance and bounded grant ID")
 	}
 	return nil
+}
+
+// PruneExpired is controller-only maintenance. The epoch lock prevents a stale
+// replica from deleting security facts after losing authority. Reads use the DB
+// clock, so cleanup never depends on a replica's clock skew.
+func PruneExpired(ctx context.Context, manager *lease.Manager, handle *lease.Handle) error {
+	if manager == nil || handle == nil {
+		return errors.New("grant revocation cleanup requires controller ownership")
+	}
+	return manager.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		// DELETE takes the needed row locks. A SELECT FOR UPDATE here would
+		// require UPDATE authority over immutable security facts.
+		_, err := tx.Exec(ctx, `DELETE FROM control.grant_revocation WHERE instance_id=$1 AND grant_id IN (
+   SELECT grant_id FROM control.grant_revocation WHERE instance_id=$1 AND expires_at<clock_timestamp()
+   ORDER BY expires_at,grant_id LIMIT 256)`, handle.InstanceID)
+		return err
+	})
 }

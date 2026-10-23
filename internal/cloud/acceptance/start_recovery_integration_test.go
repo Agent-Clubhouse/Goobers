@@ -39,7 +39,7 @@ func TestPGRecoveryQuarantinesOnlyUncertainStartAndBacksOff(t *testing.T) {
 		return engine.RunInput{AcceptanceID: r.ID, Gaggle: "web", WorkflowName: r.Key}, nil
 	}
 	temporal := &pgStartClient{}
-	real := startfence.New(temporal, "cloud", NewStartAdmission(store))
+	real := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
 	var uncertainCalls atomic.Int32
 	starter := recoveryStarter(func(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
 		if in.AcceptanceID == uncertain.ID {
@@ -151,5 +151,51 @@ func TestPGRecoverySkipsLockedRowsAndBoundsReservations(t *testing.T) {
 	last, err := store.reserveStartRetries(t.Context())
 	if err != nil || len(last) != 1 || last[0].ID != "trigger-retry-1" {
 		t.Fatalf("released lock=%+v err=%v", last, err)
+	}
+}
+
+func TestPGFreshPredecessorRetriesOnceThenBacksOffAcrossLeaseChurn(t *testing.T) {
+	first, pool := testStore(t, 1)
+	record, _, err := first.Accept(t.Context(), "fresh-predecessor", "operator", []byte("pinned"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.BeginDispatch(t.Context(), record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.manager.Release(t.Context(), first.handle); err != nil {
+		t.Fatal(err)
+	}
+	second := successorStore(t, pool)
+	rows, err := second.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("fresh predecessor was not retried: %v %v", rows, err)
+	}
+	rows, err = second.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("same epoch bypassed backoff: %v %v", rows, err)
+	}
+	status, err := second.StartStatusPage(t.Context(), "", 100)
+	if err != nil || len(status) != 1 {
+		t.Fatalf("fresh quarantined start missing from status: %v %v", status, err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE control.acceptance SET start_retry_at=clock_timestamp()-interval '1 second' WHERE id=$1", record.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = second.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("elapsed backoff still waited for initial grace: %v %v", rows, err)
+	}
+	if err := second.manager.Release(t.Context(), second.handle); err != nil {
+		t.Fatal(err)
+	}
+	third := successorStore(t, pool)
+	rows, err = third.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("new epoch bypassed predecessor backoff: %v %v", rows, err)
+	}
+	row, err := third.Get(t.Context(), record.ID, "operator")
+	if err != nil || row.State != triggerqueue.Dispatching {
+		t.Fatalf("recovery read changed custody: %+v %v", row, err)
 	}
 }

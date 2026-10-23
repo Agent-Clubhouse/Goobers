@@ -4,10 +4,12 @@ package acceptance
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -26,9 +28,17 @@ func TestPGStartCustodyUsesInventoryControllerGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(pool.Close)
+		var currentUser string
+		if err := pool.QueryRow(t.Context(), "SELECT current_user").Scan(&currentUser); err != nil {
+			t.Fatal(err)
+		}
+		if currentUser != role {
+			t.Fatalf("current_user=%q, want %q", currentUser, role)
+		}
 		return pool
 	}
-	api, err := New(rolePool("goobers_api"), "test-instance")
+	apiPool := rolePool("goobers_api")
+	api, err := New(apiPool, "test-instance")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,12 +64,32 @@ func TestPGStartCustodyUsesInventoryControllerGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, statement := range []string{
+		"UPDATE control.acceptance SET dispatch_started_at=clock_timestamp() WHERE id=$1",
+		"UPDATE control.acceptance SET start_retry_count=1 WHERE id=$1",
+		"SELECT start_retry_count FROM control.acceptance WHERE id=$1",
+	} {
+		_, err := apiPool.Exec(t.Context(), statement, receipt.ID)
+		var denied *pgconn.PgError
+		if !errors.As(err, &denied) || denied.Code != "42501" {
+			t.Fatalf("API query %q: want insufficient_privilege, got %v", statement, err)
+		}
+	}
 	custody := &startCustody{store: controller}
 	identity, err := custody.ReadStart(t.Context(), receipt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.Exec(t.Context(), `UPDATE control.acceptance SET dispatch_started_at=clock_timestamp()-interval '2 minutes' WHERE id=$1`, receipt.ID); err != nil {
+	if err := first.WithFence(t.Context(), handle, func(ctx context.Context, tx pgx.Tx) error {
+		var count int
+		err := tx.QueryRow(ctx, `UPDATE control.acceptance
+   SET dispatch_started_at=clock_timestamp()-interval '2 minutes', start_retry_count=0
+   WHERE id=$1 RETURNING start_retry_count`, receipt.ID).Scan(&count)
+		if err == nil && count != 0 {
+			t.Fatalf("controller retry count=%d, want 0", count)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	retries, err := controller.reserveStartRetries(t.Context())

@@ -48,7 +48,7 @@ func TestSchedulerPolicyStoreSuite(t *testing.T) {
 
 func TestAcceptanceKeyReuseAfterRetentionStartsNewRun(t *testing.T) {
 	store, _ := testStore(t, 1)
-	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	now := time.Now().Add(-triggerqueue.ReplayRetention - time.Hour)
 	first, _, err := store.Accept(t.Context(), "manual/key", "operator", []byte("payload"), now)
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +57,9 @@ func TestAcceptanceKeyReuseAfterRetentionStartsNewRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Finish(t.Context(), first.ID, triggerqueue.Rejected, "", "rejected", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Prune(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	second, repeated, err := store.Accept(
