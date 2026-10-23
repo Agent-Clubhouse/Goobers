@@ -31,6 +31,7 @@ server:
             driverName: postgres12
             databaseName: temporal
             # connectAddr: injected by the bootstrap pipeline as HOST:5432.
+            connectProtocol: tcp
             user: gooberadmin
             existingSecret: temporal-postgres-credentials
             tls:
@@ -46,6 +47,7 @@ server:
             driverName: postgres12
             databaseName: temporal_visibility
             # connectAddr: injected by the bootstrap pipeline as HOST:5432.
+            connectProtocol: tcp
             user: gooberadmin
             existingSecret: temporal-postgres-credentials
             tls:

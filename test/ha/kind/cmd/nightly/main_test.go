@@ -49,8 +49,10 @@ func TestTemporalLadderValuesPinVersioningAndSchemaFirst(t *testing.T) {
 			if !strings.Contains(text, "update:\n    enabled: true") {
 				t.Errorf("%s does not enable the legacy schema update job", path)
 			}
-		} else if !strings.Contains(text, "manageSchema: true") || !strings.Contains(text, "useHelmHooks: true") {
-			t.Errorf("%s does not require the chart 1.x pre-upgrade schema hook", path)
+		} else if !strings.Contains(text, "manageSchema: true") ||
+			!strings.Contains(text, "useHelmHooks: true") ||
+			strings.Count(text, "connectProtocol: tcp") != 2 {
+			t.Errorf("%s does not carry the complete chart 1.x schema and SQL connection contract", path)
 		}
 	}
 }

@@ -48,6 +48,7 @@ server:
             driverName: postgres12
             databaseName: temporal
             connectAddr: CHANGE-ME.postgres.example.com:5432 # customer-managed PG (§4)
+            connectProtocol: tcp
             user: temporal # CHANGE-ME
             existingSecret: temporal-postgres-credentials # CHANGE-ME
             tls:
@@ -63,6 +64,7 @@ server:
             driverName: postgres12
             databaseName: temporal_visibility
             connectAddr: CHANGE-ME.postgres.example.com:5432 # customer-managed PG (§4)
+            connectProtocol: tcp
             user: temporal # CHANGE-ME
             existingSecret: temporal-postgres-credentials # CHANGE-ME
             tls:
