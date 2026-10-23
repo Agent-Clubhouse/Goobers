@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -22,6 +23,18 @@ import (
 // is replaced. Custody crosses the recorded activity boundary; no branch or
 // scheduler is restarted. The activity's pod implementation remains a fixture.
 func TestStaticBranchDispatchWorkerReplacementReplays(t *testing.T) {
+	testStaticBranchWorkerReplacement(t, false)
+}
+
+// Abandoning an activity without reporting completion models a disappeared
+// worker at the service boundary. The real server, not a mocked TimeoutError,
+// expires its heartbeat and delivers its last custody details to the workflow.
+func TestStaticBranchHeartbeatLossReplacementReplays(t *testing.T) {
+	testStaticBranchWorkerReplacement(t, true)
+}
+
+func testStaticBranchWorkerReplacement(t *testing.T, heartbeatLoss bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
@@ -66,6 +79,14 @@ func TestStaticBranchDispatchWorkerReplacementReplays(t *testing.T) {
 	old.RegisterActivityWithOptions(func(ctx context.Context, input DispatchStageInput) (DispatchStageResult, error) {
 		oldCalls.Add(1)
 		first = input
+		if heartbeatLoss {
+			custody := recoveryCustody()
+			activity.RecordHeartbeat(ctx, dispatchHeartbeatDetails{Namespace: custody.Namespace, Pod: custody.Pod, UID: custody.UID, Attempt: custody.Attempt, Custody: true})
+			ready <- struct{}{}
+			// No completion, graceful handoff, or further heartbeat reaches the
+			// service. Stop this worker only after the activity is abandoned.
+			return DispatchStageResult{}, activity.ErrResultPending
+		}
 		ready <- struct{}{}
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
@@ -94,6 +115,9 @@ func TestStaticBranchDispatchWorkerReplacementReplays(t *testing.T) {
 		awaitRecoverySignal(t, ctx, ready)
 	}
 	stopOld()
+	if heartbeatLoss {
+		close(draining)
+	}
 	// The sibling can settle while no dispatch worker is available; the join
 	// cannot start until the replacement returns the held branch's result.
 	awaitRecoverySignal(t, ctx, sink.settled)
@@ -122,6 +146,9 @@ func TestStaticBranchDispatchWorkerReplacementReplays(t *testing.T) {
 	}
 	assertRecoveryBarrier(t, liveEvents(t, dir, in.Run.RunID))
 	history := hitlFetchHistory(t, ctx, server.Client(), run.GetID(), run.GetRunID())
+	if heartbeatLoss {
+		assertStaticRecoveryHeartbeatLoss(t, history)
+	}
 	identities := map[string]bool{}
 	for i, event := range history.Events {
 		if started := event.GetActivityTaskStartedEventAttributes(); started != nil {
@@ -135,4 +162,26 @@ func TestStaticBranchDispatchWorkerReplacementReplays(t *testing.T) {
 		t.Fatalf("history did not record both dispatch workers: %v", identities)
 	}
 	replayStaticRecovery(t, history)
+}
+
+func assertStaticRecoveryHeartbeatLoss(t *testing.T, history *historypb.History) {
+	t.Helper()
+	timeouts := 0
+	for _, event := range history.Events {
+		if failed := event.GetActivityTaskFailedEventAttributes(); failed != nil && failureHasType(failed.GetFailure(), failureTypeWorkerHandoff) {
+			t.Fatal("silent worker loss unexpectedly used graceful handoff")
+		}
+		if timedOut := event.GetActivityTaskTimedOutEventAttributes(); timedOut != nil {
+			info := timedOut.GetFailure().GetTimeoutFailureInfo()
+			if info.GetTimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT {
+				timeouts++
+				if info.GetLastHeartbeatDetails() == nil {
+					t.Fatal("heartbeat loss history omitted custody details")
+				}
+			}
+		}
+	}
+	if timeouts != 1 {
+		t.Fatalf("heartbeat timeouts=%d want=1", timeouts)
+	}
 }
