@@ -90,7 +90,11 @@ func (s Store) Publish(ctx context.Context, handle *lease.Handle, record recover
 		if err != nil {
 			return fmt.Errorf("insert recovery record: %w", err)
 		}
-		return nil
+		// Re-check after the INSERT. A concurrent Reap of the record that held
+		// this location may have deleted it and tombstoned the location without
+		// committing; the INSERT waits on the unique index until that Reap
+		// commits, and only this fresh read sees its tombstone.
+		return bundleAvailable(ctx, tx, handle, bundle)
 	})
 	return indexed, err
 }

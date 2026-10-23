@@ -199,3 +199,34 @@ func TestCancelReceiptSurvivesTwoTakeovers(t *testing.T) {
 		t.Fatalf("orphaned epochs after adoption = %v, %v", epochs, err)
 	}
 }
+
+// TestAdoptAllAdoptsEveryOrphanedEpoch: receipts left by two different dead
+// epochs are both adopted, not only the newest epoch's.
+func TestAdoptAllAdoptsEveryOrphanedEpoch(t *testing.T) {
+	pool := pgtest.Pool(t, "cancelpg")
+	first := pgtest.Manager(t, pool, "one", 0)
+	firstHandle := pgtest.Acquire(t, first)
+	if _, _, err := (cancelpg.Store{Fence: first}).Begin(t.Context(), firstHandle, "k1", "alice", []byte("cancel 1")); err != nil {
+		t.Fatal(err)
+	}
+	second := pgtest.Manager(t, pool, "two", 0)
+	secondHandle := pgtest.Takeover(t, pool, second)
+	if _, _, err := (cancelpg.Store{Fence: second}).Begin(t.Context(), secondHandle, "k2", "alice", []byte("cancel 2")); err != nil {
+		t.Fatal(err)
+	}
+	third := pgtest.Manager(t, pool, "three", 0)
+	thirdHandle := pgtest.Takeover(t, pool, third)
+	store := cancelpg.Store{Fence: third}
+	epochs, err := store.OrphanedEpochs(t.Context(), thirdHandle)
+	if err != nil || len(epochs) != 2 || epochs[0] != firstHandle.Epoch || epochs[1] != secondHandle.Epoch {
+		t.Fatalf("orphaned epochs = %v, %v; want [%d %d]", epochs, err, firstHandle.Epoch, secondHandle.Epoch)
+	}
+	if adopted, err := store.AdoptAll(t.Context(), thirdHandle); err != nil || adopted != 2 {
+		t.Fatalf("AdoptAll = %d, %v; want 2", adopted, err)
+	}
+	for _, key := range []string{"k1", "k2"} {
+		if err := store.Finish(t.Context(), thirdHandle, key, []byte("ok")); err != nil {
+			t.Fatalf("Finish(%s) after AdoptAll: %v", key, err)
+		}
+	}
+}

@@ -3,6 +3,7 @@
 package recoverypg_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -226,5 +229,102 @@ func TestReapedBundleIsRetiredUntilReleased(t *testing.T) {
 	}
 	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-1", time.Hour); err != nil {
 		t.Fatalf("re-publication after release: %v", err)
+	}
+}
+
+// TestReapPublishRaceOnSharedBundle is reviewer-3's D2 probe, kept as a
+// regression test. Publish checks the tombstone, then inserts. If a
+// concurrent Reap has deleted the record holding the same bundle but not yet
+// committed, Publish's tombstone read misses the uncommitted tombstone, its
+// INSERT waits on the unique index, and once Reap commits the INSERT succeeds:
+// a live record now references a bundle Reap handed back for deletion.
+// Deterministic: a test-only trigger parks Reap's tombstone INSERT on an
+// advisory lock; pg_locks confirms both transactions are waiting.
+func TestReapPublishRaceOnSharedBundle(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := recoverypg.Store{Pool: pool, Fence: manager}
+	expiring, other := record("expiring"), record("other")
+	if _, err := store.Publish(t.Context(), handle, expiring, "bundles/b", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{
+		`ALTER TABLE control.recovery_record DISABLE TRIGGER recovery_record_guard`,
+		`UPDATE control.recovery_record SET retain_until=now()-interval '1 second'`,
+		`ALTER TABLE control.recovery_record ENABLE TRIGGER recovery_record_guard`,
+		`CREATE FUNCTION control.race_park() RETURNS trigger LANGUAGE plpgsql AS $$
+		 BEGIN PERFORM pg_advisory_xact_lock(78660); RETURN NEW; END $$`,
+		`CREATE TRIGGER race_park BEFORE INSERT ON control.recovery_bundle_tombstone
+		 FOR EACH ROW EXECUTE FUNCTION control.race_park()`,
+	} {
+		if _, err := pool.Exec(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	holder, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_lock(78660)`); err != nil {
+		t.Fatal(err)
+	}
+	reapDone := make(chan error, 1)
+	go func() {
+		reaped, err := store.Reap(context.Background(), handle, 10)
+		if err == nil && len(reaped) != 1 {
+			err = fmt.Errorf("reaped %d", len(reaped))
+		}
+		reapDone <- err
+	}()
+	waitFor(t, pool, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=78660 AND NOT granted`, 1)
+	publishDone := make(chan error, 1)
+	go func() {
+		_, err := store.Publish(context.Background(), handle, other, "bundles/b", 48*time.Hour)
+		publishDone <- err
+	}()
+	// Publish is parked on the unique index behind Reap's uncommitted delete.
+	waitFor(t, pool, `SELECT count(*) FROM pg_locks WHERE locktype='transactionid' AND NOT granted`, 1)
+	if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_unlock(78660)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reapDone; err != nil {
+		t.Fatal(err)
+	}
+	publishErr := <-publishDone
+	var live, tomb int
+	if err := pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM control.recovery_record WHERE bundle_key='bundles/b'),
+		(SELECT count(*) FROM control.recovery_bundle_tombstone WHERE bundle_key='bundles/b')`).Scan(&live, &tomb); err != nil {
+		t.Fatal(err)
+	}
+	if publishErr == nil && live == 1 && tomb == 1 {
+		t.Fatalf("Publish succeeded with bundles/b while Reap handed it back for deletion (live=%d tombstoned=%d)", live, tomb)
+	}
+	if publishErr != nil && !errors.Is(publishErr, recovery.ErrBundleUnavailable) {
+		t.Fatalf("publish err = %v", publishErr)
+	}
+}
+
+// waitFor polls a catalog count until it reaches want (a barrier on observed
+// lock state, not a timing assumption); it fails after 10s.
+func waitFor(t *testing.T, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, query string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(t.Context(), query).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("barrier %q never reached %d (at %d)", query, want, n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
