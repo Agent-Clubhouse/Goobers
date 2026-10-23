@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // WithFence executes one bounded transaction while share-locking the acquired
@@ -62,12 +63,24 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 		return ErrSelfFenced
 	}
 	if err := tx.Commit(txCtx); err != nil {
-		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
-			return deadlineErr
-		}
-		return fmt.Errorf("commit fenced transaction: %w", err)
+		return commitError(txCtx, err)
 	}
 	return nil
+}
+
+// commitError classifies a failed COMMIT. A server error is a definite
+// rollback. Anything else (a lost connection, or the deadline passing while
+// COMMIT was in flight) leaves the outcome unknown, so it never reports a
+// self-fence or timeout, whose contract is that nothing committed.
+func commitError(ctx context.Context, err error) error {
+	var serverErr *pgconn.PgError
+	if errors.As(err, &serverErr) {
+		return fmt.Errorf("commit fenced transaction: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return fmt.Errorf("%w: %v (deadline: %v)", ErrCommitUnknown, err, cause)
+	}
+	return fmt.Errorf("%w: %v", ErrCommitUnknown, err)
 }
 
 // Confirm share-locks the acquired epoch inside a caller-owned transaction

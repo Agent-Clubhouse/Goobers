@@ -97,20 +97,25 @@ func (p *Plane) fencedWith(ctx context.Context, handle *cloudlease.Handle, write
 	return fenceError(err)
 }
 
-// fenceError maps lease failures to the plane's retry contract. A stale or
-// self-fenced handle aborts before commit, so the request had no effect and
-// the client may replay it (503 recovering, the code planehttp treats as
-// refused early). A fenced-transaction timeout may have reached commit, so it
-// is reported as an ambiguous budget overrun instead.
+// fenceError maps lease failures to the plane's retry contract. A lost commit
+// outcome may have committed, so it is an ambiguous budget overrun
+// (request_budget_exceeded), never a safe replay. A stale or self-fenced
+// handle aborted before commit, so the request had no effect and the client
+// may replay it (503 recovering, the code planehttp treats as refused early).
+// A fenced-transaction timeout also aborted before commit; it reports the
+// budget overrun.
 func fenceError(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, cloudlease.ErrCommitUnknown):
+		return httpapi.NewInterventionError(http.StatusServiceUnavailable, "request_budget_exceeded",
+			"claims write lost its commit outcome; it may have committed", err)
 	case errors.Is(err, cloudlease.ErrStale), errors.Is(err, cloudlease.ErrSelfFenced):
 		return errAuthorityMoving(err)
 	case errors.Is(err, cloudlease.ErrFencedTransactionTimeout):
 		return httpapi.NewInterventionError(http.StatusServiceUnavailable, "request_budget_exceeded",
-			"claims write exceeded the fenced transaction budget; it may have committed", err)
+			"claims write exceeded the fenced transaction budget", err)
 	}
 	return err
 }

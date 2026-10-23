@@ -36,10 +36,18 @@ var (
 	ErrHeld = errors.New("cloud lease is held")
 	// ErrStale means the holder or epoch no longer owns the lease.
 	ErrStale = errors.New("cloud lease epoch is stale")
-	// ErrSelfFenced means renew has not succeeded inside the monotonic safety window.
+	// ErrSelfFenced means renew has not succeeded inside the monotonic safety
+	// window. From WithFence it means the transaction did not commit.
 	ErrSelfFenced = errors.New("cloud lease self-fenced")
-	// ErrFencedTransactionTimeout means a fenced transaction exceeded its bound.
+	// ErrFencedTransactionTimeout means a fenced transaction exceeded its
+	// bound. From WithFence it means the transaction did not commit.
 	ErrFencedTransactionTimeout = errors.New("cloud fenced transaction timed out")
+	// ErrCommitUnknown means WithFence sent COMMIT but lost its outcome (the
+	// connection failed or the deadline passed while committing): the write
+	// may have committed. It deliberately wraps neither ErrSelfFenced nor
+	// ErrFencedTransactionTimeout, which promise that nothing committed, so a
+	// caller treating those as safe to replay stays correct.
+	ErrCommitUnknown = errors.New("cloud fenced transaction commit outcome is unknown")
 )
 
 // Config identifies a single named lease.
