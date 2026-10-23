@@ -19,10 +19,11 @@ func TestLeaseStatusUsesDatabaseClockAndIncludesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Leases) != 1 || status.Leases[0].Holder != handle.Holder ||
-		status.Leases[0].Epoch != handle.Epoch || status.Leases[0].Expired ||
-		status.Leases[0].ExpiresAt == nil || len(status.History) != 1 ||
-		status.History[0].ReleasedAt != nil {
+	current, found := findCurrent(status, handle.InstanceID, handle.Name)
+	history, historyFound := findHistory(status, handle.InstanceID, handle.Name, handle.Epoch)
+	if !found || current.Holder != handle.Holder ||
+		current.Epoch != handle.Epoch || current.Expired ||
+		current.ExpiresAt == nil || !historyFound || history.ReleasedAt != nil {
 		t.Fatalf("active lease status = %+v", status)
 	}
 	if err := manager.Release(t.Context(), handle); err != nil {
@@ -32,10 +33,30 @@ func TestLeaseStatusUsesDatabaseClockAndIncludesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Leases) != 1 || status.Leases[0].Holder != "" ||
-		status.Leases[0].Epoch != handle.Epoch+1 || !status.Leases[0].Expired ||
-		len(status.History) != 1 || status.History[0].ReleasedAt == nil ||
-		status.History[0].ReleaseKind != "voluntary" {
+	current, found = findCurrent(status, handle.InstanceID, handle.Name)
+	history, historyFound = findHistory(status, handle.InstanceID, handle.Name, handle.Epoch)
+	if !found || current.Holder != "" ||
+		current.Epoch != handle.Epoch+1 || !current.Expired ||
+		!historyFound || history.ReleasedAt == nil ||
+		history.ReleaseKind != "voluntary" {
 		t.Fatalf("released lease status = %+v", status)
 	}
+}
+
+func findCurrent(status lease.StatusReport, instanceID, name string) (lease.Current, bool) {
+	for _, current := range status.Leases {
+		if current.InstanceID == instanceID && current.Name == name {
+			return current, true
+		}
+	}
+	return lease.Current{}, false
+}
+
+func findHistory(status lease.StatusReport, instanceID, name string, epoch int64) (lease.HistoryEntry, bool) {
+	for _, history := range status.History {
+		if history.InstanceID == instanceID && history.Name == name && history.Epoch == epoch {
+			return history, true
+		}
+	}
+	return lease.HistoryEntry{}, false
 }
