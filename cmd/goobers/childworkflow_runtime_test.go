@@ -9,12 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -83,8 +86,8 @@ func TestChildWorkflowConfiguredHarnessRegistersAndRevokesGrant(t *testing.T) {
 	}
 	var token string
 	calls := 0
-	previous := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previous := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(ctx context.Context, req harness.RunRequest) error {
 			calls++
 			if req.ChildWorkflows == nil {
@@ -107,9 +110,9 @@ func TestChildWorkflowConfiguredHarnessRegistersAndRevokesGrant(t *testing.T) {
 			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		}}
 	}
-	t.Cleanup(func() { newAgenticAdapter = previous })
+	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previous })
 	authority := f.load(t)
-	instructions, err := loadGooberInstructions(f.layout.ConfigDir(), f.applied, authority.Admission.Goobers)
+	instructions, err := runtimewiring.LoadGooberInstructions(f.layout.ConfigDir(), f.applied, authority.Admission.Goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,15 +134,15 @@ func TestChildWorkflowConfiguredHarnessRegistersAndRevokesGrant(t *testing.T) {
 	if _, err := agent.Invoke(t.Context(), env); err == nil || calls != 0 {
 		t.Fatal("unowned parent reached the host harness", err)
 	}
-	resolver, grants, err := buildGaggleCredentials(f.cfg, nil, apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, shared)
+	resolver, grants, err := runtimewiring.BuildGaggleCredentials(f.cfg, nil, apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, shared)
 	if err != nil {
 		t.Fatal(err)
 	}
 	adapters := harness.NewRegistry()
-	if err := adapters.RegisterAs(string(authority.Admission.Goobers[f.stage.Goober].Harness), newAgenticAdapter(f.stage.Goober, nil)); err != nil {
+	if err := adapters.RegisterAs(string(authority.Admission.Goobers[f.stage.Goober].Harness), runtimewiring.NewAgenticAdapter(f.stage.Goober, nil)); err != nil {
 		t.Fatal(err)
 	}
-	agent, err = buildAgenticExecutor(agenticExecutorInput{
+	agent, err = runtimewiring.BuildAgenticExecutor(runtimewiring.AgenticExecutorInput{
 		GooberName: f.stage.Goober, Goobers: authority.Admission.Goobers,
 		Instructions: instructions, AdapterRegistry: adapters, Resolver: resolver, Grants: grants,
 		SharedRegistry: shared, RunsDir: f.layout.ForGaggle(f.parent.Gaggle).RunsDir(),

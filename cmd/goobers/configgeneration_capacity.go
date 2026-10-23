@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const appliedGenerationAnnotation = journal.ConfigGenerationAppliedAnnotation
@@ -86,7 +87,7 @@ func recoverStartupGeneration(ctx context.Context, input schedulerDefinitionsInp
 	if err != nil {
 		return input, "", err
 	}
-	digest, err := configDirectoryDigest(directory)
+	digest, err := runtimewiring.ConfigDirectoryDigest(directory)
 	if err != nil {
 		return input, "", err
 	}

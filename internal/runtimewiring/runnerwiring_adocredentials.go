@@ -1,0 +1,197 @@
+package runtimewiring
+
+import (
+	"context"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
+)
+
+// NewADOCredentialSource builds the configured Azure DevOps credential source
+// for one repository. A package var so CLI tests substitute a fake per auth
+// kind (an Azure CLI runner, a workload or managed identity) without a live
+// Azure login; production resolves exactly as adoauth.Source does everywhere
+// else.
+var NewADOCredentialSource = func(repo instance.RepoRef, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+	return adoauth.Source(repo, nil, stores)
+}
+
+// AdoRepositoryMintsCredential reports whether repo is an Azure DevOps
+// repository whose configured credential the daemon resolves and grants: every
+// Microsoft Entra identity kind, and a PAT with a configured token. A PAT repo
+// with no token, or an unsupported kind (both rejected by config validation),
+// keeps the prior behaviour of backing no grant rather than failing every
+// caller of buildCredentials.
+func AdoRepositoryMintsCredential(repo instance.RepoRef) bool {
+	switch adoauth.AuthScheme(repo) {
+	case adoauth.SchemeBearer:
+		return true
+	case adoauth.SchemeBasic:
+		return repo.Token.Configured()
+	default:
+		return false
+	}
+}
+
+// adoCredentialSourceIsDeferred reports whether building repo's source reads
+// the host's Azure identity environment. Workload identity fails construction
+// without its AZURE_* variables, and managed identity depends on the host, so
+// both are built at first mint: display-path callers of buildCredentials
+// (status, parked-run listing, counters) never mint and must not fail on a
+// host that has no Azure identity. A PAT and the Azure CLI source are built at
+// once, so a store-backed PAT with no store resolver still fails closed at
+// construction.
+func adoCredentialSourceIsDeferred(repo instance.RepoRef) bool {
+	if repo.Auth == nil {
+		return false
+	}
+	return repo.Auth.Kind == instance.ADOAuthWorkloadIdentity || repo.Auth.Kind == instance.ADOAuthManagedIdentity
+}
+
+// NewADORepositoryTokenSource is the daemon-side minting source that backs an
+// Azure DevOps repository's grants (docs/design/ado-parity-dsl-2-0.md §4.1),
+// the ADO counterpart of newGitHubAppTokenSource. Each resolve asks the
+// repository's configured credential source for a value — cached Entra tokens
+// refresh before expiry, a PAT re-reads its env, file, keychain or store ref —
+// and registers every form the value can travel in (the raw secret, the
+// "Bearer" value, the base64 Basic value) with registrar before returning it,
+// so a captured header is redacted as well as the bare token. The returned
+// expiry is the Entra token's; a PAT states none, which the Injector and the
+// credential plane treat as unbounded rather than expired.
+//
+// A package var, like newGitHubAppTokenSource, so CLI tests substitute it.
+var NewADORepositoryTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	source := &lazyADOCredentialSource{Build: func() (providers.ADOCredentialSource, error) {
+		return NewADOCredentialSource(repo, stores)
+	}}
+	if !adoCredentialSourceIsDeferred(repo) {
+		if _, err := source.Get(); err != nil {
+			return nil, err
+		}
+	}
+	deliver := func(credential providers.ADOCredential) (string, time.Time, error) {
+		if registrar != nil {
+			for _, form := range credential.ScrubForms() {
+				registrar.Register([]byte(form))
+			}
+		}
+		return credential.Secret, credential.ExpiresAt, nil
+	}
+	current := credentials.ExpiringResolveFunc(func(ctx context.Context) (string, time.Time, error) {
+		held, err := source.Get()
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		credential, err := held.Credential(ctx)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return deliver(credential)
+	})
+	// The delivery floor (#5905): an Entra token with less than
+	// credentials.MinDeliveredLifetime left is fetched again from a rebuilt
+	// source before it reaches a stage, locally or through the credential
+	// plane. Rebuilding (not just clearing this cache) matters for the
+	// workload and managed identity kinds, whose Azure SDK credential keeps a
+	// token cache of its own. A PAT states no expiry and is never refreshed.
+	return current.WithLifetimeFloor(credentials.LifetimeFloor{
+		Refresh: func(ctx context.Context) (string, time.Time, error) {
+			credential, err := source.Refresh(ctx)
+			if err != nil {
+				return "", time.Time{}, err
+			}
+			return deliver(credential)
+		},
+		OnShortDelivery: logShortCredentialDelivery("Azure DevOps token for repository " + repo.Owner + "/" + repo.Name),
+	}), nil
+}
+
+// lazyADOCredentialSource builds its source on first use and keeps it, so a
+// cached Entra token is reused across resolves. A failed build is not kept: a
+// later resolve retries it, so a transient identity-environment fault does not
+// poison the source for the daemon's lifetime.
+type lazyADOCredentialSource struct {
+	Mu     sync.Mutex
+	Build  func() (providers.ADOCredentialSource, error)
+	Source providers.ADOCredentialSource
+}
+
+// Get resolves the deferred credential on first use.
+func (l *lazyADOCredentialSource) Get() (providers.ADOCredentialSource, error) {
+	l.Mu.Lock()
+	defer l.Mu.Unlock()
+	if l.Source != nil {
+		return l.Source, nil
+	}
+	source, err := l.Build()
+	if err != nil {
+		return nil, err
+	}
+	l.Source = source
+	return source, nil
+}
+
+// Refresh builds a new source and fetches a credential from it, bypassing
+// any cache the kept source holds. The new source replaces the kept one only
+// once it has produced a credential: a failed build or fetch (a brief Entra,
+// IMDS or az outage) leaves the kept source, and its still-valid cached
+// token, in place for later resolves.
+func (l *lazyADOCredentialSource) Refresh(ctx context.Context) (providers.ADOCredential, error) {
+	candidate, err := l.Build()
+	if err != nil {
+		return providers.ADOCredential{}, err
+	}
+	credential, err := candidate.Credential(ctx)
+	if err != nil {
+		return providers.ADOCredential{}, err
+	}
+	if strings.TrimSpace(credential.Secret) == "" {
+		return providers.ADOCredential{}, credentials.ErrTokenRefEmpty
+	}
+	l.Mu.Lock()
+	l.Source = candidate
+	l.Mu.Unlock()
+	return credential, nil
+}
+
+// logShortCredentialDelivery returns the credentials.LifetimeFloor observer
+// for a daemon minting source: it logs, without the value, each delivery of a
+// still-valid token below credentials.MinDeliveredLifetime, so an operator
+// can see a refresh that keeps failing (or a source whose cache cannot be
+// bypassed) rather than only a later mid-stage authentication failure.
+func logShortCredentialDelivery(what string) func(time.Time, error) {
+	return func(expiresAt time.Time, err error) {
+		until := expiresAt.UTC().Format(time.RFC3339)
+		if err != nil {
+			log.Printf("credentials: %s expires at %s, inside the %s delivery floor; refresh failed, delivering the still-valid token: %v", what, until, credentials.MinDeliveredLifetime, err)
+			return
+		}
+		log.Printf("credentials: %s expires at %s, inside the %s delivery floor; the source returned no longer-lived token, delivering it", what, until, credentials.MinDeliveredLifetime)
+	}
+}
+
+// ReferenceReadBindings returns bindings with the token ref cleared for every
+// Azure DevOps repository that authenticates as a Microsoft Entra identity.
+// bindings is index-aligned with repos (buildCredentials appends one binding
+// per configured repo, in order).
+//
+// A reference repository's read grant (MGV-10, #1285) feeds the worktree
+// resolver's x-access-token Basic header (buildWorktreeGitEnv), which carries a
+// PAT or a GitHub token but not an Entra bearer. Such a reference repository
+// keeps authenticating through the gaggle's own ADO source, as it did before
+// every ADO kind backed the repository grants, so its checkout is unchanged.
+func ReferenceReadBindings(repos []instance.RepoRef, bindings []credentials.RepoBinding) []credentials.RepoBinding {
+	out := append([]credentials.RepoBinding(nil), bindings...)
+	for i := range out {
+		if i < len(repos) && adoauth.AuthScheme(repos[i]) == adoauth.SchemeBearer {
+			out[i].TokenRef = ""
+		}
+	}
+	return out
+}

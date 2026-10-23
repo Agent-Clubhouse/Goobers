@@ -7,6 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func recoveryRunEvents(layout instance.Layout) func(context.Context, string) ([]journal.Event, int, error) {
@@ -20,7 +21,7 @@ func recoveryRunEvents(layout instance.Layout) func(context.Context, string) ([]
 		// The read is bounded by the structural ceiling and not by the
 		// operator cap it reports back: that bound is what the caller checks
 		// the observation count against, and it is still the operator's.
-		entries, _, limit, err := observeRecoveryInventory(ctx, layout)
+		entries, _, limit, err := runtimewiring.ObserveRecoveryInventory(ctx, layout)
 		if err != nil {
 			// The shared inventory, not this run's records (#5404).
 			return nil, limit, &runner.RecoveryInventoryError{Err: err}

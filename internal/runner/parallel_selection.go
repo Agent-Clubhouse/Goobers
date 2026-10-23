@@ -21,7 +21,7 @@ import (
 // FanOutSourceInvalidCode is the typed failure of a fan-out state whose
 // source document cannot be frozen. It takes the fan-out's onFailure route,
 // or @abort when none is declared; it is never a silent empty fan-out.
-const FanOutSourceInvalidCode = "fanout_source_invalid"
+const FanOutSourceInvalidCode = runsemantics.FanOutSourceInvalidCode
 
 // WorkflowIntegrityCode is the typed refusal for a journal whose recorded
 // fan-out state is missing, extra, duplicated or self-contradictory.

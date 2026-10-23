@@ -10,9 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -229,7 +232,7 @@ func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T
 		return &harness.CopilotAdapter{
 			Command:           []string{program},
 			Runner:            runner,
-			AuthCheckArgs:     copilotAuthCheckArgs,
+			AuthCheckArgs:     runtimewiring.CopilotAuthCheckArgs,
 			ExtraEnvAllowlist: []string{"COPILOT_HOME"},
 		}, nil
 	})
@@ -265,7 +268,7 @@ func TestHarnessAuthCopilotStatusRefusesSignedOutWithoutInteractivePrompt(t *tes
 	}
 	runner := &authPreflightRunner{authExit: 1, authTranscript: "not signed in"}
 	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: copilotAuthCheckArgs}, nil
+		return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs}, nil
 	})
 	code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
 	if code != 1 {
@@ -288,7 +291,7 @@ func TestHarnessAuthCopilotStatusClassifiesExpiredAndInaccessiblePreflightState(
 		t.Run(transcript, func(t *testing.T) {
 			runner := &authPreflightRunner{authExit: 1, authTranscript: transcript}
 			withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
-				return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: copilotAuthCheckArgs}, nil
+				return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs}, nil
 			})
 			code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
 			if code != 1 || !strings.Contains(stdout, "HARNESS copilot auth: signed-out") {
@@ -308,7 +311,7 @@ func TestHarnessAuthCopilotStatusUsesExplicitCredentialFallback(t *testing.T) {
 		return &harness.CopilotAdapter{
 			Command:       []string{program},
 			Runner:        runner,
-			AuthCheckArgs: copilotAuthCheckArgs,
+			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			ModelCredential: func(context.Context) (string, error) {
 				return "explicit-token", nil
 			},

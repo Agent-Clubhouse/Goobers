@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -103,7 +105,7 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 		t.Fatal("daemon did not shut down")
 	}
 	stderrText := stderr.String()
-	statusRoot := canonicalStatusRoot(root)
+	statusRoot := runtimewiring.CanonicalStatusRoot(root)
 	hasID := strings.Contains(stderrText, rootID)
 	hasRoot := strings.Contains(stderrText, strconv.Quote(statusRoot))
 	if !hasID || !hasRoot {

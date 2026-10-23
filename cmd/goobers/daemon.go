@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configgeneration"
@@ -29,8 +31,10 @@ import (
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/workcopyroot"
 	"github.com/goobers/goobers/internal/workflow"
@@ -191,7 +195,7 @@ type schedulerDefinitions struct {
 	GenerationResolver  executionGenerationResolver
 	Set                 *instance.ConfigSet
 	Validation          *validate.Report
-	HarnessPreflight    harnessPreflightInfo
+	HarnessPreflight    runtimewiring.HarnessPreflightInfo
 	Runner              *runner.Runner
 	Runners             map[string]*runner.Runner
 	Entries             []localscheduler.WorkflowEntry
@@ -535,7 +539,7 @@ func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger)
 
 // Generated local definitions inherit the parent's selected authentication and
 // are compiled offline. Invocation probes use the delegated launch context.
-func preflightDefinitionHarnesses(input schedulerDefinitionsInput, goobers map[string]apiv1.GooberSpec) (harnessPreflightInfo, *harnessPreflightFailures, error) {
+func preflightDefinitionHarnesses(input schedulerDefinitionsInput, goobers map[string]apiv1.GooberSpec) (runtimewiring.HarnessPreflightInfo, *runtimewiring.HarnessPreflightFailures, error) {
 	if input.TrustedLocalChildRuntime {
 		return nil, nil, nil
 	}
@@ -550,12 +554,12 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	// Resolve gaggle CI commands on every compilation path.
 	instance.ApplyGaggleCICommand(input.Definitions)
 	instance.ApplyGaggleOutboxMirror(input.Definitions)
-	goobers := goobersByName(input.Definitions)
-	if err := validateStoredCopilotAuthBoundaries(input.Config, input.Definitions, goobers); err != nil {
+	goobers := runtimewiring.GoobersByName(input.Definitions)
+	if err := runtimewiring.ValidateStoredCopilotAuthBoundaries(input.Config, input.Definitions, goobers); err != nil {
 		return nil, err
 	}
 	instructions, instructionFailures, instructionRefusals, quarantinedGaggles := prepareSchedulerInstructionQuarantine(l.ConfigDir(), input, goobers)
-	modelCredential, _, err := agentModelCredentialResolver(input.Config, input.CredentialStores, "")
+	modelCredential, _, err := runtimewiring.AgentModelCredentialResolver(input.Config, input.CredentialStores, "")
 	if err != nil {
 		return nil, err
 	}
@@ -573,17 +577,17 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		return nil, err
 	}
 
-	repoRefs, err := repoRefsByWorkflow(input.Definitions)
+	repoRefs, err := runtimewiring.RepoRefsByWorkflow(input.Definitions)
 	if err != nil {
 		return nil, err
 	}
 
 	input.WorktreeManagers = clonedWorktreeManagers(input.WorktreeManagers)
-	branchNamespaces := branchNamespacesByGaggle(input.Definitions)
-	selfIdentities := selfIdentitiesByGaggle(input.Config, input.Definitions)
-	requireLabelsDefaults := requireLabelsByGaggle(input.Definitions)
-	backlogLabelsDefaults := backlogLabelsByGaggle(input.Definitions)
-	backlogLabelPredicateDefaults, ownershipDefaults := backlogLabelPredicatesByGaggle(input.Definitions), issueOwnershipDefaultsByGaggle(input.Definitions)
+	branchNamespaces := runtimewiring.BranchNamespacesByGaggle(input.Definitions)
+	selfIdentities := runtimewiring.SelfIdentitiesByGaggle(input.Config, input.Definitions)
+	requireLabelsDefaults := runtimewiring.RequireLabelsByGaggle(input.Definitions)
+	backlogLabelsDefaults := runtimewiring.BacklogLabelsByGaggle(input.Definitions)
+	backlogLabelPredicateDefaults, ownershipDefaults := runtimewiring.BacklogLabelPredicatesByGaggle(input.Definitions), runtimewiring.IssueOwnershipDefaultsByGaggle(input.Definitions)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
@@ -601,7 +605,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			return nil, fmt.Errorf("gaggle %s: %w", gaggle.Name, layoutErr)
 		}
 		managerRoot := scoped.WorkcopiesDir()
-		if configuredProject, ok := configuredRepoForProject(input.Config, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+		if configuredProject, ok := runtimewiring.ConfiguredRepoForProject(input.Config, gaggle.Spec.Project); ok && configuredProject.Pinned() {
 			managerRoot = scoped.WorkcopiesBaseDir()
 		}
 		alternateRoot := input.Config.Workcopies != nil && input.Config.Workcopies.Root != ""
@@ -613,7 +617,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		}
 		workcopyLayouts[gaggle.Name] = scoped
 	}
-	sandboxPostures := sandboxPosturesByGaggle(input.Config, input.Definitions)
+	sandboxPostures := runtimewiring.SandboxPosturesByGaggle(input.Config, input.Definitions)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(input.Definitions) {
 		if skipQuarantinedGaggleRuntime(gaggle, quarantinedGaggles, input.StartupProgress) {
@@ -637,7 +641,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			TerminalNotifier:             input.TerminalNotifier,
 			BranchNamespaces:             branchNamespaces,
 			GaggleProject:                gaggleProjects[gaggle],
-			GaggleBacklog:                gaggleBacklogRef(input.Definitions, gaggle),
+			GaggleBacklog:                runtimewiring.GaggleBacklogRef(input.Definitions, gaggle),
 			AdditionalRepos:              gaggleAdditionalRepos[gaggle],
 			HarnessInfo:                  harnessInfo,
 			CredentialStores:             input.CredentialStores,
@@ -646,8 +650,8 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			RequireLabelsDefault:         requireLabelsDefaults[gaggle],
 			BacklogLabelsDefault:         backlogLabelsDefaults[gaggle],
 			BacklogLabelPredicateDefault: backlogLabelPredicateDefaults[gaggle],
-			OwnershipAssigneesDefault:    ownershipDefaults.assignees[gaggle],
-			OwnershipUnassignedDefault:   ownershipDefaults.unassigned[gaggle],
+			OwnershipAssigneesDefault:    ownershipDefaults.Assignees[gaggle],
+			OwnershipUnassignedDefault:   ownershipDefaults.Unassigned[gaggle],
 			Generations:                  []string{generation},
 		})
 		if err != nil {
@@ -666,7 +670,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(input.Config, input.CredentialStores, "", "", nil, input.SharedRegistry)
+	credResolver, _, err := runtimewiring.BuildCredentials(input.Config, input.CredentialStores, "", "", nil, input.SharedRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -752,7 +756,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			entries = append(entries, instructionRefusalWorkflowEntry(wf, machine, gooberDigests[identity], scheds, scheduleBackoffs, webhookBackoff, sigs, pollFallbackCause, repoRefs[identity], requiredCaps, refusal, gagglesByName[wf.Spec.Gaggle]))
 			continue
 		}
-		if err := validateScheduledWorkflowCredentialsIfNeeded(len(scheds) > 0, machine, input.Config, gaggleProjects[wf.Spec.Gaggle], gaggleBacklogRef(input.Definitions, wf.Spec.Gaggle)); err != nil {
+		if err := validateScheduledWorkflowCredentialsIfNeeded(len(scheds) > 0, machine, input.Config, gaggleProjects[wf.Spec.Gaggle], runtimewiring.GaggleBacklogRef(input.Definitions, wf.Spec.Gaggle)); err != nil {
 			return nil, err
 		}
 		// Resolve the local runner's pinned run-control policy.
@@ -804,8 +808,8 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			RepoRef:              repoRefs[identity],
 			RequiredCapabilities: placements[identity].parentCoordinatorHostCapabilities(requiredCaps),
 			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
-			HarnessRefusal:       harnessRefusals.reason(identity),  // Broken harnesses refuse only their dependent workflows (#5163).
-			HarnessRecheck:       harnessRefusals.recheck(identity), // A transient refusal clears once the provider recovers (#6017).
+			HarnessRefusal:       harnessRefusals.Reason(identity),  // Broken harnesses refuse only their dependent workflows (#5163).
+			HarnessRecheck:       harnessRefusals.Recheck(identity), // A transient refusal clears once the provider recovers (#6017).
 			PlacementRefusal:     placement.Refusals[identity],
 		})
 		entries[len(entries)-1].GooberDigest, entries[len(entries)-1].ProviderAuth = gooberDigests[identity], authGates.forWorkflow(input.Config, wf, repoRefs[identity])
@@ -849,7 +853,7 @@ func preflightSchedulerHarnessesWithProgress(
 	goobers map[string]apiv1.GooberSpec,
 	stores credentials.StoreResolver,
 	startupProgress func(string),
-) (harnessPreflightInfo, *harnessPreflightFailures, error) {
+) (runtimewiring.HarnessPreflightInfo, *runtimewiring.HarnessPreflightFailures, error) {
 	reportStartupProgress(startupProgress, "preflighting agentic harnesses")
 	started := time.Now()
 	harnessInfo, harnessRefusals, err := preflightSchedulerHarnesses(cfg, set, goobers, stores)
@@ -871,9 +875,9 @@ func loadSchedulerGooberInstructions(configDir string, set *instance.ConfigSet, 
 	instructions := make(map[string]string, len(goobers))
 	failures := make(map[string]string)
 	for _, name := range names {
-		content, err := os.ReadFile(resolvedInstructionsPath(configDir, set, goobers[name], name))
+		content, err := os.ReadFile(runtimewiring.ResolvedInstructionsPath(configDir, set, goobers[name], name))
 		if err != nil {
-			failures[name] = (&gooberInstructionsError{Goober: name, Err: err}).Error()
+			failures[name] = (&runtimewiring.GooberInstructionsError{Goober: name, Err: err}).Error()
 			continue
 		}
 		instructions[name] = string(content)
@@ -1041,10 +1045,10 @@ func compileSchedulerMachinesWithProgress(
 	instructionRefusals map[localscheduler.WorkflowIdentity]string,
 	modelCredential func(context.Context) (string, error),
 	startupProgress func(string),
-) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []runtimewiring.GooberHarnessWarning, error) {
 	reportStartupProgress(startupProgress, "compiling workflow machines")
-	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
-		set, goobers, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
+	machines, resolvedGoobers, warnings, err := runtimewiring.CompiledMachinesWithWarnings(
+		set, goobers, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		true, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
@@ -1069,13 +1073,13 @@ func computeSchedulerGooberDigests(
 		if instructionRefusals[identity] != "" {
 			continue
 		}
-		skillPackages, err := loadGooberSkillPackages(configDir, identity.Gaggle, resolvedGoobers)
+		skillPackages, err := runtimewiring.LoadGooberSkillPackages(configDir, identity.Gaggle, resolvedGoobers)
 		if err != nil {
 			return nil, err
 		}
 		digest, err := workflow.ComputeGooberDigest(machine.Def, resolvedGoobers, instructions, skillPackages)
 		if err != nil {
-			return nil, &workflowDigestError{
+			return nil, &runtimewiring.WorkflowDigestError{
 				Gaggle:   identity.Gaggle,
 				Workflow: identity.Workflow,
 				Err:      err,
@@ -1134,22 +1138,22 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: tokenRef})
 	}
 
-	role := gaggleBacklogRole(project, backlog)
-	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
+	role := runtimewiring.GaggleBacklogRole(project, backlog)
+	overrides := make([]credentials.Grant, 0, len(runtimewiring.DaemonIdentityCapabilities)+len(cfg.Credentials))
 	if cfg.DaemonIdentity != nil {
-		overrides = append(overrides, daemonIdentityOverrides(role)...)
+		overrides = append(overrides, runtimewiring.DaemonIdentityOverrides(role)...)
 		if cfg.DaemonIdentity.Token != nil && cfg.DaemonIdentity.Token.Env != "" {
-			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
+			envByRef[runtimewiring.DaemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
 		} else if cfg.DaemonIdentity.GitHubApp() && cfg.DaemonIdentity.PrivateKey != nil && cfg.DaemonIdentity.PrivateKey.Env != "" {
-			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.PrivateKey.Env
+			envByRef[runtimewiring.DaemonIdentityRefName] = cfg.DaemonIdentity.PrivateKey.Env
 		}
 	}
 	for _, grant := range cfg.Credentials {
-		key, err := credentialGrantKey(grant)
+		key, err := runtimewiring.CredentialGrantKey(grant)
 		if err != nil {
 			return nil, fmt.Errorf("build scheduled workflow credential preflight: %w", err)
 		}
-		ref := credentialRefName(key)
+		ref := runtimewiring.CredentialRefName(key)
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: ref})
 		if grant.Token.Env != "" {
 			envByRef[ref] = grant.Token.Env
@@ -1160,7 +1164,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, repoCredentialedCapabilityNames(), overrides))
+	grants := runtimewiring.WithoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, runtimewiring.RepoCredentialedCapabilityNames(), overrides))
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
 		if env := envByRef[grant.Ref]; env != "" {
@@ -1248,7 +1252,7 @@ func buildRetainedLegacyRunner(input retainedLegacyRunnerInput) (*runner.Runner,
 		ProviderQuota:        input.ProviderQuota,
 		Watermarks:           input.Watermarks,
 		TerminalNotifier:     input.TerminalNotifier,
-		BranchNamespaces:     branchNamespacesByGaggle(input.Definitions),
+		BranchNamespaces:     runtimewiring.BranchNamespacesByGaggle(input.Definitions),
 		GaggleProject:        apiv1.RepoRef{},
 		GaggleBacklog:        apiv1.BacklogRef{},
 		AdditionalRepos:      nil,
@@ -1300,7 +1304,7 @@ func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
 func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Manager, error) {
 	manager := input.WorktreeManager
 
-	appliedConfigDigest, err := deterministicStageConfigDigest(input.Layout.ConfigDir(), input.Layout.Gaggle())
+	appliedConfigDigest, err := runtimewiring.DeterministicStageConfigDigest(input.Layout.ConfigDir(), input.Layout.Gaggle())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1926,7 +1930,7 @@ func bootstrapAndDigestConfigDir(l instance.Layout, cfg *instance.Config) (strin
 	if err := ensureBootstrapConfigDir(l, cfg); err != nil {
 		return "", err
 	}
-	return configDirectoryDigest(l.ConfigDir())
+	return runtimewiring.ConfigDirectoryDigest(l.ConfigDir())
 }
 
 // ensureBootstrapConfigDir seeds a config directory on a first boot whose
@@ -2077,7 +2081,7 @@ type retainedLegacyRunnerInput struct {
 	ProviderQuota        *localscheduler.ProviderQuotaState
 	Watermarks           *intake.Store
 	TerminalNotifier     runner.TerminalNotifier
-	HarnessInfo          harnessPreflightInfo
+	HarnessInfo          runtimewiring.HarnessPreflightInfo
 	CredentialStores     credentials.StoreResolver
 }
 
@@ -2099,7 +2103,7 @@ type runtimeRunnerInput struct {
 	GaggleProject                apiv1.RepoRef
 	GaggleBacklog                apiv1.BacklogRef
 	AdditionalRepos              []apiv1.RepoRef
-	HarnessInfo                  harnessPreflightInfo
+	HarnessInfo                  runtimewiring.HarnessPreflightInfo
 	CredentialStores             credentials.StoreResolver
 	SandboxPosture               instance.SandboxPosture
 	SelfIdentity                 string
@@ -2124,7 +2128,7 @@ func loadSchedulerConfig(l instance.Layout, allowInvalid bool) (*instance.Config
 }
 
 func verifyStartupConfigUnchanged(l instance.Layout, expected string) error {
-	digest, err := configDirectoryDigest(l.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(l.ConfigDir())
 	if err != nil {
 		return err
 	}

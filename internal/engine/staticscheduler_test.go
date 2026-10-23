@@ -40,7 +40,7 @@ func staticScheduler(ctx workflow.Context, input staticSchedulerInput) (staticSc
 		return staticSchedulerResult{}, fmt.Errorf("engine: static parallel execution is refused")
 	}
 	in := input.Run
-	if !in.previewFeaturesEnabled() || !in.LiveJournal || len(in.Spec.Parallels) != 1 || len(in.Spec.Maps) != 0 || in.Spec.Parallels[0].Selection != nil {
+	if !in.previewFeaturesEnabled() || !in.LiveJournal || len(in.Spec.Parallels) != 1 || len(in.Spec.Maps) != 0 {
 		return staticSchedulerResult{}, fmt.Errorf("fixture requires preview, live journal and one static parallel")
 	}
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil {

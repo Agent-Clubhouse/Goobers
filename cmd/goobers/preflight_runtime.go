@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -188,8 +190,8 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 		}
 		return runtimePreflightReport{}, fmt.Errorf("load config: %w", err)
 	}
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(layout.ConfigDir(), set, goobers)
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(layout.ConfigDir(), set, goobers)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}

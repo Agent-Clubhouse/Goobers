@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -44,7 +46,7 @@ func (s *daemonRunJournalService) MergeAuthority(ctx context.Context, request jo
 	} else {
 		set, report, loadErr := loadConfigDirectory(s.layout.ConfigDir())
 		if loadErr != nil {
-			return denied, fmt.Errorf("load merge authority definitions: %w (%s)", loadErr, validationIssueSummary(report))
+			return denied, fmt.Errorf("load merge authority definitions: %w (%s)", loadErr, runtimewiring.ValidationIssueSummary(report))
 		}
 		defs = credentialPlaneDefinitionsFromSet(set)
 	}
@@ -59,7 +61,7 @@ func (s *daemonRunJournalService) MergeAuthority(ctx context.Context, request jo
 	}
 	// Remote runs, including legacy runs, always consult current authority.
 	env := apiv1.InvocationEnvelope{RunID: request.RunID, TaskID: request.Stage, Gaggle: identity.Gaggle, WorkflowID: identity.Workflow, Capabilities: []string{request.Capability}}
-	if err := checkCurrentMergeAuthority(s.layout, env); err != nil {
+	if err := runtimewiring.CheckCurrentMergeAuthority(s.layout, env); err != nil {
 		return denied, httpapi.NewInterventionError(http.StatusForbidden, "merge_authority_revoked", err.Error(), nil)
 	}
 	return journalclient.MergeAuthorityResponse{Allowed: true}, nil

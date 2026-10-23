@@ -63,17 +63,12 @@ func (p StartupLocalRunLiveness) RunLive(ctx context.Context, runID string) (boo
 	return phase == journal.PhaseRunning, err
 }
 
-// RebuildRenewalSet opens the recovery gate only after durable renewal.
-//
-// rebuildClaimRenewalSet runs one DS6 renewal rebuild pass — the LEDGER's
-// claims renewed for every holder the probe reports (or fails) live — and
-// opens gate exactly when the pass's ledger write durably completed: from
-// then on RecoverExpired-style reaping is permitted. probeErr carries a
-// fail-live probe degradation (those holders WERE renewed); a non-nil
-// renewErr means the pass did not complete and the gate stays closed. Shared
-// by `goobers up` (startup rebuild + periodic-tick self-heal) and the
-// one-shot paths (oneShotClaimRecovery.finish) so the machinery cannot
-// drift apart.
+// RebuildRenewalSet renews the ledger claims for every holder the probe reports
+// live or cannot conclusively classify. It opens gate only after the renewal
+// write completes durably, permitting expired-claim recovery. probeErr reports
+// degraded liveness probes whose holders were still renewed; renewErr means the
+// renewal did not complete and the gate stays closed. Startup, periodic and
+// one-shot recovery use this same renewal gate.
 func (c ClaimLifecycle) RebuildRenewalSet(ctx context.Context, l instance.Layout, probe localscheduler.RunLivenessProbe, gate *localscheduler.RecoveryGate, leaseDuration time.Duration) (probeErr, renewErr error) {
 	_, probeErr, renewErr = c.RenewLive(ctx, l, probe, leaseDuration)
 	if renewErr != nil {

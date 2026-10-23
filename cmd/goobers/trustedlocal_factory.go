@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/credentials"
@@ -248,11 +250,11 @@ func (s *daemonCredentialService) localChildAuthentication(ctx context.Context, 
 	if err != nil {
 		return empty, err
 	}
-	goobers, err := resolveGoobersForGaggle(set, start.Envelope.Gaggle)
+	goobers, err := runtimewiring.ResolveGoobersForGaggle(set, start.Envelope.Gaggle)
 	if err != nil {
 		return empty, err
 	}
-	_, grants, err := buildGaggleCredentials(s.config, s.stores, gaggleProjectRef(set, start.Envelope.Gaggle), gaggleBacklogRef(set, start.Envelope.Gaggle), nil, s.shared)
+	_, grants, err := runtimewiring.BuildGaggleCredentials(s.config, s.stores, runtimewiring.GaggleProjectRef(set, start.Envelope.Gaggle), runtimewiring.GaggleBacklogRef(set, start.Envelope.Gaggle), nil, s.shared)
 	if err != nil {
 		return empty, err
 	}
@@ -283,7 +285,7 @@ func (s *daemonCredentialService) localChildAuthentication(ctx context.Context, 
 func (s *daemonCredentialService) loadTrustedLocalChildConfig(directory string) (*instance.ConfigSet, error) {
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return nil, fmt.Errorf("load trusted-local child generation: %w (%s)", err, validationIssueSummary(report))
+		return nil, fmt.Errorf("load trusted-local child generation: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	// Match daemon startup/reload: warnings remain nonfatal, but must reach
 	// the instance journal before child admission continues.

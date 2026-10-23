@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 )
 
@@ -34,7 +35,7 @@ func openRecoveryCustodyPruneGuard(layout instance.Layout, dryRun bool) (func(re
 	// (#5354). Fail-closed is preserved where it matters — a reservation no
 	// scan can interpret may still name a run that owns live recovery state,
 	// so the guard refuses rather than pruning journals it cannot rule out.
-	entries, unreadable, _, err := observeRecoveryInventory(ctx, layout)
+	entries, unreadable, _, err := runtimewiring.ObserveRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, noop, err
 	}
