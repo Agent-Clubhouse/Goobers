@@ -68,7 +68,9 @@ func (s *SignedKey) MintWorkerSurrender(workerID string, ttl time.Duration) (str
 
 // MintWorkerChildAdmission grants a resident engine worker access only to the
 // engine child-admission plane. Its wire prefix and MAC domain are separate
-// from every pod and other worker credential.
+// from every pod and other worker credential. The grant is instance-wide: it
+// names the worker, not a run or child, so it reaches every generated child of
+// the instance (see docs/design/worker-blob-transport.md).
 func (s *SignedKey) MintWorkerChildAdmission(workerID string, ttl time.Duration) (string, error) {
 	return s.mintWorkerToken(workerChildKind, workerID, ttl)
 }

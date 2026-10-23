@@ -93,3 +93,29 @@ missing/malformed presence, and applies a 30-second HTTP timeout. Responses use
 `Cache-Control: no-store`. Server error bodies are never copied into client
 errors. A worker read client rejects Put locally; the only write credential is
 still the stage pod's run-scoped bearer.
+
+
+## Engine child-admission authentication
+
+The resident engine worker reaches generated-child custody through the engine
+child-admission plane (`/api/v1/engine/children/{admit,load,cancel}`) with a
+fourth dedicated bearer, `goobers-worker-child-admission.`, under its own HMAC
+domain. The authorizer refuses every other issuer on those paths before any
+role or scope rule runs, and the handlers re-check the issuer. Pod, blob,
+surrender, config-digest, generated-child and human credentials, including
+administrators, cannot call the plane.
+
+The credential is **instance-wide**: it names a worker, not a run, family or
+child, so any worker holding the shared signing key can admit, load or cancel
+any generated child of the instance. Its blast radius is the instance's child
+custody, bounded by the custody checks the control plane applies to each
+request (live accepted lineage, open parent family, the exact recorded start
+intent). Treat the signing key accordingly.
+
+The worker mints a fresh two-minute token per call from the supervisor-loaded
+`api.podTokenKeyFile`. The key and the bearer are never placed in the worker's
+environment, because stage processes inherit it, and are never passed to stage
+pods, startup output or journals. Plane answers are classified for the engine:
+503 while no controller holds custody (a failover) is retried for the child
+activity's whole budget, a 4xx refusal is final, and anything else gets a
+bounded retry.

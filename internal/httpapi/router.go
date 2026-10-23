@@ -176,7 +176,8 @@ const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 // WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
 const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
 
-// WorkerChildAdmissionPrincipalIssuer can only call the engine child-admission plane.
+// WorkerChildAdmissionPrincipalIssuer can only call the engine child-admission
+// plane. The grant is instance-wide: it is not bound to a run or child.
 const WorkerChildAdmissionPrincipalIssuer = "goobers/worker-child-admission"
 
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
@@ -433,6 +434,11 @@ func RequireRoles() Authorizer {
 		principal, ok := PrincipalFromRequest(request)
 		if !ok {
 			return errors.New("no authenticated principal")
+		}
+		// Defence in depth: no role, scope or other issuer reaches the engine
+		// child-admission plane, whatever later rules would grant.
+		if engineChildPlanePath(request.URL.Path) && principal.Issuer != WorkerChildAdmissionPrincipalIssuer {
+			return errors.New("only the engine worker child-admission credential may call the child-admission plane")
 		}
 		if request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
 			if principal.Issuer == WorkerPrincipalIssuer {
