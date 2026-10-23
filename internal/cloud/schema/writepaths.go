@@ -30,6 +30,35 @@ const (
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// ReadModelSchemaPattern is the one schema pattern the inventory accepts: a
+// table row with this schema applies to every read-model version schema
+// (readmodel_v1, readmodel_v2, ...), so a rebuild into a new version needs no
+// new rows. No other wildcard is allowed.
+const ReadModelSchemaPattern = "readmodel_v*"
+
+var readModelSchema = regexp.MustCompile(`^readmodel_v[1-9][0-9]*$`)
+
+// Expand replaces each ReadModelSchemaPattern table row with one row per
+// existing read-model version schema in schemas.
+func (inventory Inventory) Expand(schemas []string) Inventory {
+	expanded := inventory
+	expanded.Tables = nil
+	for _, table := range inventory.Tables {
+		if table.Schema != ReadModelSchemaPattern {
+			expanded.Tables = append(expanded.Tables, table)
+			continue
+		}
+		for _, schema := range schemas {
+			if readModelSchema.MatchString(schema) {
+				version := table
+				version.Schema = schema
+				expanded.Tables = append(expanded.Tables, version)
+			}
+		}
+	}
+	return expanded
+}
+
 //go:embed writepaths.yaml
 var inventoryYAML []byte
 
@@ -111,7 +140,7 @@ func (inventory Inventory) Validate() error {
 	seen := make(map[string]struct{}, len(inventory.Tables))
 	for _, table := range inventory.Tables {
 		key := table.Schema + "." + table.Name
-		if !identifier.MatchString(table.Schema) || !identifier.MatchString(table.Name) {
+		if (!identifier.MatchString(table.Schema) && table.Schema != ReadModelSchemaPattern) || !identifier.MatchString(table.Name) {
 			return fmt.Errorf("cloud write-path inventory has invalid table %q", key)
 		}
 		if _, exists := seen[key]; exists {

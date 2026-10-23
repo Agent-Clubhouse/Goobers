@@ -181,7 +181,15 @@ func assertPrivilegesMatch(t *testing.T, pool *pgxpool.Pool, inventory schema.In
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := inventory.ExpectedPrivileges(); !reflect.DeepEqual(effective, want) {
+	rows, err := pool.Query(t.Context(), "SELECT nspname FROM pg_namespace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := inventory.Expand(schemas).ExpectedPrivileges(); !reflect.DeepEqual(effective, want) {
 		t.Fatalf("effective privileges differ from inventory\nactual: %v\nwant:   %v", effective, want)
 	}
 }
@@ -442,5 +450,49 @@ func TestReconcileRevokesFunctionExecute(t *testing.T) {
 		if got != check.want {
 			t.Fatalf("%s EXECUTE %s = %v, want %v", check.role, check.function, got, check.want)
 		}
+	}
+}
+
+// TestReconcileAppliesReadModelPatternToEveryVersion: one readmodel_v* row
+// governs every version schema, so a rebuild into a new version needs no new
+// rows, while a schema outside the pattern is still refused.
+func TestReconcileAppliesReadModelPatternToEveryVersion(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `
+		CREATE SCHEMA readmodel_v1; CREATE TABLE readmodel_v1.runs (id text, secret text);
+		CREATE SCHEMA readmodel_v7; CREATE TABLE readmodel_v7.runs (id text, secret text)`); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := schema.LoadWritePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory.Tables = append(inventory.Tables, schema.Table{
+		Schema: schema.ReadModelSchemaPattern, Name: "runs", Provisioned: true, Fence: schema.FenceNoneByDesign, Rationale: "test",
+		Readers: []schema.Reader{{Role: "goobers_api", Columns: []string{"id"}}},
+	})
+	if err := reconcile(t, pool, inventory); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		table, column string
+		want          bool
+	}{
+		{"readmodel_v1.runs", "id", true}, {"readmodel_v7.runs", "id", true},
+		{"readmodel_v1.runs", "secret", false}, {"readmodel_v7.runs", "secret", false},
+	} {
+		var got bool
+		if err := pool.QueryRow(t.Context(), "SELECT has_column_privilege('goobers_api', $1, $2, 'SELECT')", check.table, check.column).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != check.want {
+			t.Fatalf("goobers_api SELECT %s.%s = %v, want %v", check.table, check.column, got, check.want)
+		}
+	}
+	if _, err := pool.Exec(t.Context(), `CREATE SCHEMA readmodel_vx; CREATE TABLE readmodel_vx.runs (id text)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(t, pool, inventory); err == nil || !strings.Contains(err.Error(), "readmodel_vx.runs has no write-path inventory entry") {
+		t.Fatalf("a schema outside the pattern = %v", err)
 	}
 }
