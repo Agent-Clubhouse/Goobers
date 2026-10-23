@@ -932,7 +932,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./test/ha/invariants/... \
+          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... \
             | tee "$RUNNER_TEMP/cloud-pg-test.json" > /dev/null || status=$?
           go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1
           exit "$status"

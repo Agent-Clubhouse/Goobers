@@ -3,6 +3,7 @@ package journalpg
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"sync"
 
@@ -45,7 +46,13 @@ func (b *Backend) BeginTranscript(ctx context.Context, h journal.RunHandle, o jo
 	if err := b.RepairAppendBoundary(ctx, h, o); err != nil {
 		return nil, err
 	}
-	return &capture{backend: b, handle: h, owner: o, id: rand.Text(), stage: stage, name: name, branch: branch, streams: map[string]*captureStream{}}, nil
+	// Match the shared file-journal capture identity accepted by livejournal's
+	// durable transcript adoption protocol.
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		return nil, err
+	}
+	return &capture{backend: b, handle: h, owner: o, id: hex.EncodeToString(identity[:]), stage: stage, name: name, branch: branch, streams: map[string]*captureStream{}}, nil
 }
 func (c *capture) Append(delta journal.TranscriptCheckpoint) error {
 	c.mu.Lock()
