@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -99,7 +99,7 @@ func (inventory Inventory) Validate() error {
 			return fmt.Errorf("cloud write-path inventory has invalid fence %q for %s", table.Fence, key)
 		}
 		for _, reader := range table.Readers {
-			if !identifier.MatchString(reader.Role) || len(reader.Columns) == 0 {
+			if !slices.Contains(RuntimeRoles, reader.Role) || len(reader.Columns) == 0 {
 				return fmt.Errorf("cloud write-path inventory has invalid reader %q on %s", reader.Role, key)
 			}
 			for _, column := range reader.Columns {
@@ -109,7 +109,7 @@ func (inventory Inventory) Validate() error {
 			}
 		}
 		for _, writer := range table.Writers {
-			if !identifier.MatchString(writer.Role) {
+			if !slices.Contains(RuntimeRoles, writer.Role) {
 				return fmt.Errorf("cloud write-path inventory has invalid role %q", writer.Role)
 			}
 			if len(writer.Insert) == 0 && len(writer.Update) == 0 && !writer.Delete {
@@ -123,44 +123,6 @@ func (inventory Inventory) Validate() error {
 		}
 	}
 	return nil
-}
-
-// GrantMigrationSQL deterministically renders the owner-applied role migration.
-func GrantMigrationSQL(inventory Inventory) string {
-	var output strings.Builder
-	output.WriteString("-- goobers:binary-version 0.7.0\n")
-	output.WriteString("-- goobers:min-compatible-binary 0.6.0\n\n")
-	for _, role := range []string{"goobers_api", "goobers_controller"} {
-		fmt.Fprintf(&output, "DO $$ BEGIN CREATE ROLE %s NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;\n", role)
-	}
-	output.WriteString("\nGRANT USAGE ON SCHEMA control TO goobers_api, goobers_controller;\n\n")
-	tables := append([]Table(nil), inventory.Tables...)
-	sort.Slice(tables, func(i, j int) bool {
-		return tables[i].Schema+"."+tables[i].Name < tables[j].Schema+"."+tables[j].Name
-	})
-	for _, table := range tables {
-		if !table.Provisioned {
-			continue
-		}
-		qualified := table.Schema + "." + table.Name
-		fmt.Fprintf(&output, "REVOKE SELECT, INSERT, UPDATE, DELETE ON %s FROM goobers_api, goobers_controller;\n", qualified)
-		for _, reader := range table.Readers {
-			fmt.Fprintf(&output, "GRANT SELECT (%s) ON %s TO %s;\n", strings.Join(reader.Columns, ", "), qualified, reader.Role)
-		}
-		for _, writer := range table.Writers {
-			if len(writer.Insert) > 0 {
-				fmt.Fprintf(&output, "GRANT INSERT (%s) ON %s TO %s;\n", strings.Join(writer.Insert, ", "), qualified, writer.Role)
-			}
-			if len(writer.Update) > 0 {
-				fmt.Fprintf(&output, "GRANT UPDATE (%s) ON %s TO %s;\n", strings.Join(writer.Update, ", "), qualified, writer.Role)
-			}
-			if writer.Delete {
-				fmt.Fprintf(&output, "GRANT DELETE ON %s TO %s;\n", qualified, writer.Role)
-			}
-		}
-		output.WriteByte('\n')
-	}
-	return strings.TrimRight(output.String(), "\n") + "\n"
 }
 
 // WriterFor returns a role's policy for one table.
