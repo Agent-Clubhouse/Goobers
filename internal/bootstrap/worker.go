@@ -47,6 +47,9 @@ type EngineDeps struct {
 	// Surrenders is the plane the dispatch activity reads surrendered stage
 	// results from; required alongside Dispatcher.
 	Surrenders dispatcher.SurrenderPlane
+	// EngineChildren is the generated-child custody client (#7879). Nil keeps
+	// child admission failing closed with "not configured".
+	EngineChildren engine.ChildService
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -65,6 +68,7 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		Canary:                  deps.Canary,
 		Dispatcher:              deps.Dispatcher,
 		Surrenders:              deps.Surrenders,
+		EngineChildren:          deps.EngineChildren,
 	})
 }
 
