@@ -252,7 +252,7 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 }
 
 func run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil {
+	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && !childProtocolEnabled(ctx) {
 		return RunResult{}, err
 	}
 	if err := wf.RefuseUnsupportedFanOut(in.Spec); err != nil {
