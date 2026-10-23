@@ -1,8 +1,24 @@
 # Design: Child-workflow authority for engine parents on the cloud
 
-> Status: draft — for adversarial review before any code (#8085 step b)
+> Status: draft — trust model approved by the product owner 2026-10-23; F1–F3 revisions in review before any code (#8085 step b)
 > Area: cloud control plane, engine worker, child-workflow grants, threat model
 > Related: #8085, #7758, #7818, docs/design/engine-child-workflows.md, docs/design/control-plane-ha.md
+
+## Decision record
+
+| Date | Decision | Approved by | Summary | Alternative rejected |
+|---|---|---|---|---|
+| 2026-10-23 | Engine-native child-workflow authority (option B) | **Product owner** | See below | See below |
+
+**Summary.** The engine worker is a **trusted host**, the same class as the local daemon and the HA-P4-13 trusted supervisor. It requests child authority from the control plane and never asserts it. Control builds the parent identity **only** from `control.run_pin`, which the start fence writes, and its own state:
+- the instance;
+- `Driver = engine`;
+- `Child = nil`;
+- the pinned repository.
+
+The worker-written journal is used only to verify the active stage attempt, and it must agree with the pins. A compromised worker can request children only for its own instance's stages, within the parent stage's pinned policy. It cannot redirect where children act, widen policy, or revive finished attempts (§3).
+
+**Alternative rejected.** Porting the daemon's contained-parent machinery to the engine (option A): workflow-parent pod identities, retained parent contracts, and about 5.7k lines of `cmd/goobers` parent-pod code. It is faithful to the local model, but it is large and contradicts the HA design's direction ("parents on the engine, removing `containedParentSelection`").
 
 ## 1. Problem
 
@@ -152,7 +168,7 @@ any disagreement refuses.
 | Stage occurrence, attempt ID, attempt number, branch | committed `ChildOriginReceipt` in the journal | written by the control-side journal writer, not asserted by the worker |
 
 **The `run_pin` row is required.** If it's missing (for example, a run started
-before migration 0022), or a field the bind needs is empty (`config_generation`,
+before migration 0023), or a field the bind needs is empty (`config_generation`,
 `workflow_digest`, `goober_digest`, `repo_ref`), the bind refuses
 (`ErrAuthorityUnavailable`). The journal is read for **two** things only:
 - the active attempt (§5);
@@ -164,7 +180,7 @@ before migration 0022), or a field the bind needs is empty (`config_generation`,
 Any disagreement refuses. A worker that journals a different repository, digest
 or generation gets nothing.
 
-**Gap closed by migration 0022 (`control.run_pin`).** The start-fence row
+**Gap closed by migration 0023 (`control.run_pin`).** The start-fence row
 (`control.acceptance`) holds only the trigger payload, `state` and `run_id`, and
 the journal identity is the worker's `CreateRun`. Control resolves the run's
 `engine.RunInput` immediately before `starter.Start`
@@ -311,7 +327,7 @@ backends.
 
 1. **#7818.** The journal plane is composed in control. This is required for the
    origin receipt (step 1), and for `journalpg` reads.
-2. **Start-fence pins** (§4). Migration 0022 `control.run_pin`, written in the
+2. **Start-fence pins** (§4). Migration 0023 `control.run_pin`, written in the
    start fence's confirm/adopt transaction. Built on a branch; its PR opens when
    this note is approved, and can land before #7818.
 3. **#8085 (b).** The control authority route (bind, revoke, renew), worker
