@@ -754,12 +754,14 @@ func TestPlaneHistoryRetentionMatchesFileLedger(t *testing.T) {
 	if _, err := p.Acquire(ctx, request("held", "active")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.owner.Exec(ctx, `
-		UPDATE control.claim_history
-		SET claimed_at=claimed_at-$2::interval, renewed_at=renewed_at-$2::interval, released_at=released_at-$2::interval
-		WHERE instance_id=$1 AND external_id LIKE 'old-%'`,
-		pgtest.InstanceID, localscheduler.ClaimHistoryTTL+time.Hour); err != nil {
-		t.Fatal(err)
+	for _, table := range []string{"claim_history", "claim_run_history"} {
+		if _, err := f.owner.Exec(ctx, `
+			UPDATE control.`+table+`
+			SET claimed_at=claimed_at-$2::interval, renewed_at=renewed_at-$2::interval, released_at=released_at-$2::interval
+			WHERE instance_id=$1 AND external_id LIKE 'old-%'`,
+			pgtest.InstanceID, localscheduler.ClaimHistoryTTL+time.Hour); err != nil {
+			t.Fatal(err)
+		}
 	}
 	items := func(run string) map[string]bool {
 		t.Helper()
@@ -785,10 +787,17 @@ func TestPlaneHistoryRetentionMatchesFileLedger(t *testing.T) {
 	if _, err := p.Acquire(ctx, request("trigger-prune", "other")); err != nil {
 		t.Fatal(err)
 	}
-	var stored int
-	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim_history WHERE instance_id=$1 AND run_id='quiet'`,
-		pgtest.InstanceID).Scan(&stored); err != nil || stored != 0 {
-		t.Fatalf("quiet run rows after prune = %d (%v), want 0", stored, err)
+	for _, table := range []string{"claim_history", "claim_run_history"} {
+		var stored int
+		if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.`+table+` WHERE instance_id=$1 AND run_id='quiet'`,
+			pgtest.InstanceID).Scan(&stored); err != nil || stored != 0 {
+			t.Fatalf("quiet run %s rows after prune = %d (%v), want 0", table, stored, err)
+		}
+	}
+	var kept int
+	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim_run_history WHERE instance_id=$1 AND run_id='active'`,
+		pgtest.InstanceID).Scan(&kept); err != nil || kept != 2 {
+		t.Fatalf("active run records after prune = %d (%v), want both kept", kept, err)
 	}
 }
 
@@ -830,5 +839,43 @@ func TestPlaneReleaseRunIsTheTerminalRelease(t *testing.T) {
 	}
 	if other, err := second.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-live", Scope: httpapi.ClaimListScopeRun}); err != nil || len(other.Entries) != 1 {
 		t.Fatalf("other run = %+v, %v; want untouched", other, err)
+	}
+}
+
+// TestPlaneHistorySeesPredecessorRelease: during a rolling upgrade the
+// previous binary releases by appending to control.claim_history only. The
+// current plane's history must still show that run's record released.
+func TestPlaneHistorySeesPredecessorRelease(t *testing.T) {
+	f := newPlaneFixture(t)
+	r := f.leader(t, "a")
+	ctx := t.Context()
+	if got, err := r.plane.Acquire(ctx, request("42", "run-a")); err != nil || !got.Ok {
+		t.Fatalf("acquire = %+v, %v", got, err)
+	}
+	// The previous claims.Store.ReleaseScoped, verbatim, as the controller.
+	tag, err := f.controller.Exec(ctx, `
+		WITH moved AS (
+			DELETE FROM control.claim
+			WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
+			  AND run_id=$5 AND owner_epoch=$6
+			RETURNING *
+		)
+		INSERT INTO control.claim_history
+			(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
+			 claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
+		SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
+		       claimed_at,renewed_at,expires_at,clock_timestamp(),$7,verification
+		FROM moved`,
+		pgtest.InstanceID, "g", "github", "42", "run-a", r.handle.Load().Epoch, []byte(`{"disposition":"abandoned"}`))
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("predecessor release = %v, %v", tag, err)
+	}
+	got, err := r.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-a", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 0 || len(got.History) != 1 || got.History[0].ReleasedAt == nil ||
+		got.History[0].ReleaseReason.Disposition != claimrelease.Abandoned {
+		t.Fatalf("history after a predecessor release = %+v, want one released record", got)
 	}
 }

@@ -343,9 +343,7 @@ tables:
   table: claim_history
   provisioned: true
   fence: epoch
-  rationale: One record per run and key, as the file ledger keeps, recorded on every grant, renewal and verification and
-    completed on release; retention prunes runs that hold nothing and went quiet. All under the controller-lease fence.
-    The upserts take every column from EXCLUDED, which needs SELECT on each.
+  rationale: Released claims are appended once and expired history is pruned, both under the controller-lease fence.
   readers:
   - role: goobers_controller
     columns:
@@ -355,7 +353,6 @@ tables:
     - external_id
     - run_id
     - workflow
-    - owner_token
     - owner_epoch
     - claimed_at
     - renewed_at
@@ -371,6 +368,48 @@ tables:
     - provider
     - external_id
     - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    delete: true
+- schema: control
+  table: claim_run_history
+  provisioned: true
+  fence: epoch
+  rationale: One record per run and key, as the file ledger keeps, recorded on every grant, renewal and verification and
+    completed on release; retention prunes runs that hold nothing and went quiet. All under the controller-lease fence.
+    The upserts take every column from EXCLUDED, which needs SELECT on each.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - gaggle
+    - provider
+    - external_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - gaggle
+    - provider
+    - external_id
     - workflow
     - owner_token
     - owner_epoch

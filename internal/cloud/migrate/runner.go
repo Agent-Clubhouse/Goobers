@@ -42,6 +42,9 @@ type Runner struct {
 	ReadmodelBuilder ReadmodelBuilder
 	// StepTimeout bounds each migration step; zero uses DefaultStepTimeout.
 	StepTimeout time.Duration
+	// writePaths overrides the write-path inventory for tests that model an
+	// install made by an older binary; nil loads the current inventory.
+	writePaths func() (cloudschema.Inventory, error)
 }
 
 // PartitionIndexPlan describes one parent index and all child indexes.
@@ -72,7 +75,11 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err := ValidateCatalog(r.Catalog); err != nil {
 		return err
 	}
-	inventory, err := cloudschema.LoadWritePaths()
+	loadWritePaths := cloudschema.LoadWritePaths
+	if r.writePaths != nil {
+		loadWritePaths = r.writePaths
+	}
+	inventory, err := loadWritePaths()
 	if err != nil {
 		return err
 	}
