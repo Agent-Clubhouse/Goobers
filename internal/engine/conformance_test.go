@@ -82,8 +82,10 @@ type conformanceFixture struct {
 	usesRepo bool
 	// Optional observers/evaluators exercise the actual gate envelopes on
 	// both runners, including protected host-authored join inputs.
-	automated invoke.Automated
-	goober    invoke.Goober
+	automated     invoke.Automated
+	deterministic invoke.Deterministic
+	dslVersion    string
+	goober        invoke.Goober
 }
 
 func failureClassGate(name string, branches map[string]string) apiv1.Gate {
@@ -326,6 +328,9 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 	runsDir := filepath.Join(instanceRoot, "runs")
 	cfg := runner.Config{
 		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			if fx.deterministic != nil {
+				return fx.deterministic, nil
+			}
 			return exec, nil
 		},
 		NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
@@ -352,7 +357,7 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 		t.Fatalf("runner.New: %v", err)
 	}
 	machine, err := wf.Compile(
-		wf.Definition{Name: "conformance", Version: 1, Spec: fx.spec},
+		wf.Definition{Name: "conformance", Version: 1, DSLVersion: fx.dslVersion, Spec: fx.spec},
 		wf.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -384,6 +389,7 @@ func runEngineFixture(t *testing.T, fx conformanceFixture, runID string) []journ
 		Gaggle:                 "web",
 		WorkflowName:           "conformance",
 		Version:                1,
+		DSLVersion:             fx.dslVersion,
 		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   fx.spec,
 		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
@@ -400,10 +406,14 @@ func runEngineFixture(t *testing.T, fx conformanceFixture, runID string) []journ
 	if automated == nil {
 		automated = gate.NewAutomatedEvaluator()
 	}
+	deterministic := fx.deterministic
+	if deterministic == nil {
+		deterministic = exec
+	}
 	env.RegisterActivity(&Activities{
 		Journal:    writer,
 		Goober:     goober,
-		Det:        exec,
+		Det:        deterministic,
 		Auto:       &flakyAutomated{inner: automated, transientFailures: fx.gateTransientFailures},
 		Workspaces: testWorkspaces(t),
 	})

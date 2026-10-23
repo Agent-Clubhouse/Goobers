@@ -16,11 +16,13 @@ import (
 
 // staticWalkSession is assembled only by the versioned test entry. Production
 // Run still refuses fan-out before the walk. Visits cannot yet be repeated:
-// per-visit dispatch identity and branch-qualified joins are separate slices.
+// per-visit dispatch identity remains a separate slice.
 type staticWalkSession struct {
 	seen         map[string]bool
 	join         string
 	completeness []journal.BranchOutcome
+	parallel     string
+	branches     map[string]runsemantics.BranchInputSource
 }
 
 type staticBranchOutcome struct {
@@ -58,8 +60,11 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if r.owner == nil || r.stepBudget == nil || p.Selection != nil {
 		return "", true, fmt.Errorf("engine: static parallel requires commit owner, shared budget and static branches")
 	}
-	if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
-		return "", true, err
+	branchInputs := workflow.GetVersion(ctx, staticBranchInputsVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	if !branchInputs {
+		if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
+			return "", true, err
+		}
 	}
 	if r.staticWalk.seen == nil {
 		r.staticWalk.seen = map[string]bool{}
@@ -70,6 +75,10 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 		return "", true, err
 	}
 	r.staticWalk.join, r.staticWalk.completeness = p.Join, pwalk.completeness()
+	if branchInputs {
+		r.staticWalk.parallel = p.Name
+		r.staticWalk.branches = pwalk.joinSources()
+	}
 	pwalk.merge()
 	return result.Target, true, nil
 }

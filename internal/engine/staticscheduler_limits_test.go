@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
@@ -38,7 +41,11 @@ func TestStaticSchedulerUnsupportedVisitAndBindingFailClosed(t *testing.T) {
 			}
 			writer, dir := newLiveWriter(t)
 			exec := newScriptedExec(map[string][]scriptedCall{"seed": {succeed(map[string]interface{}{"value": "frozen-root", "parallel.alpha.alpha.value": "must not bind a literal root key"})}})
-			out := executeScheduler(t, in, &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: exec})
+			out := executeScheduler(t, in, &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: exec}, func(env *testsuite.TestWorkflowEnvironment) {
+				if mode == "binding" {
+					env.OnGetVersion(staticBranchInputsVersion, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+				}
+			})
 			if !strings.Contains(out.Error, want) {
 				t.Fatalf("error=%s want=%s", out.Error, want)
 			}
