@@ -242,15 +242,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 					// thrown away with its pod, and building the next stage on
 					// it would resurrect abandoned work.
 					if deltaOut != nil {
-						*deltaOut = deltaPublication{
-							Attempt:   int(attempt),
-							Digest:    activityResult.WorkspaceDelta,
-							Base:      activityResult.WorkspaceDeltaBase,
-							Tip:       activityResult.WorkspaceDeltaTip,
-							Unchanged: activityResult.WorkspaceDeltaUnchanged,
-
-							PushedBranches: pushedBranches(activityResult.Mutations),
-						}
+						*deltaOut = winningAttemptDelta(int(attempt), activityResult)
 					}
 					return res, nil
 				}
@@ -322,6 +314,14 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func winningAttemptDelta(attempt int, result stageActivityResult) deltaPublication {
+	return deltaPublication{
+		Attempt: attempt, Digest: result.WorkspaceDelta, Base: result.WorkspaceDeltaBase,
+		Tip: result.WorkspaceDeltaTip, Unchanged: result.WorkspaceDeltaUnchanged,
+		PushedBranches: pushedBranches(result.Mutations),
+	}
 }
 
 func usageRequired(usage AttemptUsage, err error) bool {
