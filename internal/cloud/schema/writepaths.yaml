@@ -990,7 +990,7 @@ tables:
   table: run_event
   provisioned: true
   fence: owner_token
-  rationale: Events are appended once at a counter-allocated seq by the current writer token. Dedup, atomic-occurrence, notification, operator and progress-window checks read the indexed keys; replay and readers page bodies.
+  rationale: Events are appended once at a counter-allocated seq by the current writer token. Dedup, atomic-occurrence, notification, operator and progress-window checks read the indexed keys; replay and readers page bodies, with the database-clock recorded_at for stall accounting.
   readers:
   - role: goobers_controller
     columns:
@@ -1012,6 +1012,7 @@ tables:
     - at
     - at_submicro
     - body
+    - recorded_at
   writers:
   - role: goobers_controller
     insert:
