@@ -177,6 +177,7 @@ func (b *fileBackend) recoverRun(ctx context.Context, key RunKey, options RunWri
 		return "", "", RecoverReport{}, err
 	}
 	dir := filepath.Join(root, key.RunID)
+	deadline := time.Now().Add(journalLockTimeout)
 	for {
 		run, report, err := TryRecover(dir, fileRunOptions(options)...)
 		if err == nil {
@@ -186,7 +187,11 @@ func (b *fileBackend) recoverRun(ctx context.Context, key RunKey, options RunWri
 		if !errors.Is(err, ErrRecoveryBusy) {
 			return "", "", report, err
 		}
-		timer := time.NewTimer(10 * time.Millisecond)
+		wait := min(journalLockPollInterval, time.Until(deadline))
+		if wait <= 0 {
+			return "", "", report, errors.Join(ErrRunOwned, ErrLockTimeout)
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
