@@ -19,6 +19,10 @@ import (
 // acquire the Temporal CLI binary. See StartDevServer for the two modes.
 const CLIEnvVar = temporalcli.EnvVar
 
+// ServerAddressEnvVar points real-history tests at an already-running server.
+// When unset they retain their hermetic pinned-CLI dev-server behavior.
+const ServerAddressEnvVar = "GOOBERS_TEMPORAL_ADDRESS"
+
 // CLIVersion pins the Temporal CLI the cached download fetches. "default" on
 // temporal.download floats to the newest release: v1.9.1 (Server 1.32.0),
 // published 2026-09-14, rejects this suite's schedule reconciliation with
@@ -49,6 +53,7 @@ func StartDevServer(ctx context.Context, t testing.TB, opts testsuite.DevServerO
 	if err != nil {
 		return nil, err
 	}
+
 	t.Logf("temporaltest: %s", acquisition.mode)
 	if acquisition.download {
 		if err := temporalcli.Download(ctx, acquisition.path); err != nil {

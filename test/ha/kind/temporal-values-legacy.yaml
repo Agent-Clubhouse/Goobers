@@ -30,6 +30,7 @@ server:
       cpu: 500m
       memory: 1Gi
   config:
+    numHistoryShards: 4
     persistence:
       defaultStore: default
       visibilityStore: visibility

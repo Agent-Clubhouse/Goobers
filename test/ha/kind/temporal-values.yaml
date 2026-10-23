@@ -1,6 +1,7 @@
 server:
   config:
     persistence:
+      numHistoryShards: 4
       datastores:
         default:
           sql:

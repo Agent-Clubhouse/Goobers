@@ -30,14 +30,15 @@ env:
   CNPG_SHA256: 7be449085a4c5941ff05d2c4aca47d4f1c4c87698181fe2c19c47a9f6a43b268
   TEMPORAL_CHART_VERSION: 0.62.0
   TEMPORAL_CHART_SHA256: c2f01baeef60ed96335948640a8ac30fb49a10b906e20c259b92f81f2cba5c04
-  TEMPORAL_128_CHART_SHA256: 86243f06cc2b7913174348b1ef5c6ab2997b51e983d3962006d8a7253d1a94e4
-  TEMPORAL_129_CHART_SHA256: 9fc190f143e4614492443c61051f225770ca69756652e556e0193fa7e6b8f3d6
+  TEMPORAL_128_CHART_SHA256: 3eab4146399c541962a7d6ad70c6f8117c21776a96432b9571e3fe43c0e86dde
+  TEMPORAL_129_CHART_SHA256: e501c958abb73c0b5038b00bebe234c101b6777580dbc69600dbab01f30be66e
   TEMPORAL_130_CHART_SHA256: 14a8efe1cc92c91befac151db91f20f9a13962788e9d710c86655add6d966d37
   TEMPORAL_131_CHART_SHA256: 83a98858961b3d085060c9c2a12b0777e06a619aca9f780ffd2b7d092a72ddfa
   TEMPORAL_CLI_SHA256: 2c01b78e980d932bf609fbd44f6998a9eda2281952d4c8d7216905c845aaa071
   TOXIPROXY_VERSION: v2.13.0
   TOXIPROXY_SHA256: bf529e8bb9a05cd293f45a3f1d0aa66ff9469680dcdca7e0ebeae21f1b83de89
   TOXIPROXY_API_URL: http://127.0.0.1:8474/version
+  TEMPORAL_UPGRADE_ADDRESS: 127.0.0.1:17233
 
 jobs:
   smoke:
@@ -75,11 +76,11 @@ jobs:
             "https://github.com/temporalio/helm-charts/releases/download/temporal-${TEMPORAL_CHART_VERSION}/temporal-${TEMPORAL_CHART_VERSION}.tgz" \
             --output "$RUNNER_TEMP/ha-nightly/assets/temporal.tgz"
           curl --fail --location --retry 5 --retry-all-errors \
-            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.64.0/temporal-0.64.0.tgz" \
-            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.64.0.tgz"
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.67.0/temporal-0.67.0.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.67.0.tgz"
           curl --fail --location --retry 5 --retry-all-errors \
-            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.68.1/temporal-0.68.1.tgz" \
-            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.68.1.tgz"
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.73.2/temporal-0.73.2.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.73.2.tgz"
           curl --fail --location --retry 5 --retry-all-errors \
             "https://github.com/temporalio/helm-charts/releases/download/temporal-0.74.0/temporal-0.74.0.tgz" \
             --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.74.0.tgz"
@@ -98,8 +99,8 @@ jobs:
             "$CALICO_SHA256" "$RUNNER_TEMP/ha-nightly/assets/calico.yaml" \
             "$CNPG_SHA256" "$RUNNER_TEMP/ha-nightly/assets/cnpg.yaml" \
             "$TEMPORAL_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal.tgz" \
-            "$TEMPORAL_128_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.64.0.tgz" \
-            "$TEMPORAL_129_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.68.1.tgz" \
+            "$TEMPORAL_128_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.67.0.tgz" \
+            "$TEMPORAL_129_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.73.2.tgz" \
             "$TEMPORAL_130_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.74.0.tgz" \
             "$TEMPORAL_131_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-1.3.0.tgz" \
             "$TEMPORAL_CLI_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-cli.tgz" \

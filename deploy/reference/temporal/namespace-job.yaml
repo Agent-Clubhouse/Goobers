@@ -52,11 +52,12 @@ spec:
           args:
             - |
               set -eu
-              if tctl --address "$TEMPORAL_ADDRESS" --namespace "$TEMPORAL_NAMESPACE" namespace describe >/dev/null 2>&1; then
+              if temporal --address "$TEMPORAL_ADDRESS" operator namespace describe --namespace "$TEMPORAL_NAMESPACE" >/dev/null 2>&1; then
                 echo "namespace $TEMPORAL_NAMESPACE already registered"
                 exit 0
               fi
-              tctl --address "$TEMPORAL_ADDRESS" --namespace "$TEMPORAL_NAMESPACE" namespace register --retention "$RETENTION"
+              temporal --address "$TEMPORAL_ADDRESS" operator namespace create \
+                --namespace "$TEMPORAL_NAMESPACE" --retention "$RETENTION"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

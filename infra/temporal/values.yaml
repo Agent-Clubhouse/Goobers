@@ -3,9 +3,9 @@
 # the bundled Cassandra/Postgres/Elasticsearch are all disabled. Visibility uses the
 # SQL store (basic visibility) — advanced (Elasticsearch) visibility is deferred.
 #
-# The PostgreSQL `host` is NOT set here — it is a per-instance infra output (the Bicep
+# The PostgreSQL `connectAddr` is NOT set here — it is a per-instance infra output (the Bicep
 # `postgresFqdn`), injected by the bootstrap pipeline as an Argo Helm parameter
-# (`server.config.persistence.{default,visibility}.sql.host`) before the Temporal
+# (`server.config.persistence.datastores.{default,visibility}.sql.connectAddr`) before the Temporal
 # Application is synced. The DB password is never stored here either: it is supplied via
 # the `temporal-postgres-credentials` secret the pipeline creates from Key Vault (SEC-010).
 

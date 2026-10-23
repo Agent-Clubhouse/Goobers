@@ -270,19 +270,22 @@ reference's original 1.27.2 installation one minor at a time:
 
 | Step | Chart | Server | Before changing server pods | Validation | Rollback |
 |---|---:|---:|---|---|---|
-| baseline | 0.62.0 | 1.27.2 | Record a database backup and current Helm values | cluster health, D11 reference smoke, E2/E4/E11 replay | restore the backup and chart 0.62.0 |
-| 1 | 0.64.0 | 1.28.0 | Delete any Worker Deployments created on 1.27, then let the chart's pre-upgrade schema hook finish | same | restore the pre-step backup and chart 0.62.0 |
-| 2 | 0.68.1 | 1.29.0 | Let the pre-upgrade schema hook finish | same | restore the pre-step backup and chart 0.64.0 |
-| 3 | 0.74.0 | 1.30.3 | Let the pre-upgrade schema hook finish; select the chart's `sprig` config because 1.30 removes `dockerize` | same | restore the pre-step backup and chart 0.68.1 |
-| 4 | 1.3.0 | 1.31.0 | Migrate to chart 1.x datastore values and let the pre-upgrade schema hook finish | same; Worker Deployment APIs are GA | restore the pre-step backup and chart 0.74.0 with legacy values |
+| baseline | 0.62.0 | 1.27.2 | Record a database backup and current Helm values | cluster health; start a held workflow | restore the backup and chart 0.62.0 |
+| patch | 0.62.0 | 1.27.4 | Run and await the schema-only Job before changing server pods | continue and replay the 1.27.2 history; start the next held workflow | restore the baseline backup and chart 0.62.0 |
+| 1 | 0.67.0 | 1.28.4 | Delete any Worker Deployments created on 1.27; run and await the schema-only Job | continue and replay the 1.27.4 history; start the next held workflow | restore the pre-step backup and 1.27.4 values |
+| 2 | 0.73.2 | 1.29.7 | Run and await the schema-only Job | continue and replay the 1.28.4 history; start the next held workflow | restore the pre-step backup and chart 0.67.0 |
+| 3 | 0.74.0 | 1.30.8 | Run and await the schema-only Job; select the chart's `sprig` config because 1.30 removes `dockerize` | continue and replay the 1.29.7 history; start the next held workflow | restore the pre-step backup and chart 0.73.2 |
+| 4 | 1.3.0 | 1.31.0 | Migrate to chart 1.x datastore values; its pre-upgrade hook must finish | continue and replay the 1.30.8 history, then execute and replay a 1.31 workflow; Worker Deployment APIs are GA | restore the pre-step backup and chart 0.74.0 with legacy values |
 
 Database schema migrations are not downgraded in place. A rollback restores the
 backup taken immediately before that step, then installs the preceding chart
 and its values. Never skip a minor or roll only the server image backward over
 a newer schema. Both shipped values files explicitly enable
 `frontend.workerVersioningWorkflowAPIs` and `system.enableDeploymentVersions`.
-The nightly kind lane runs this full ladder and retains per-step smoke and
-replay evidence.
+Quiesce Temporal writers before taking or restoring a production backup, and
+record the backup identity with the step evidence. The nightly kind lane runs
+this full ladder on disposable CNPG state and retains per-step real-workflow
+continuation and replay evidence.
 
 For consumer overlay pins and actual image contents, add `--overlay-dir` and
 the image requirements described in [overlay/image preflight](../../docs/guides/overlay-image-preflight.md).

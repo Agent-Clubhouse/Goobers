@@ -15,9 +15,10 @@ func TestTemporalLadderAdvancesOneMinorToWorkerDeploymentGA(t *testing.T) {
 	}
 	want := []string{
 		"1.27.2/temporal.tgz",
-		"1.28.0/temporal-0.64.0.tgz",
-		"1.29.0/temporal-0.68.1.tgz",
-		"1.30.3/temporal-0.74.0.tgz",
+		"1.27.4/temporal.tgz",
+		"1.28.4/temporal-0.67.0.tgz",
+		"1.29.7/temporal-0.73.2.tgz",
+		"1.30.8/temporal-0.74.0.tgz",
 		"1.31.0/temporal-1.3.0.tgz",
 	}
 	if !slices.Equal(got, want) {
