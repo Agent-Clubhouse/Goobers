@@ -8,16 +8,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/providers"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workspaceauthority"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 // RecoveryCleanupOption installs recovery capture before disposable workspace cleanup.
@@ -84,7 +85,7 @@ func RecoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
-	if err := runner.VerifyChildWorkspaceCleanup(reader, identity, target); err != nil {
+	if err := workspaceauthority.VerifyChildWorkspaceCleanup(reader, identity, target); err != nil {
 		return err
 	}
 	retired, err := cleanupHooks(hooks).retiredParent(ctx, layout, cfg, manager, reader, key, target)
@@ -292,7 +293,7 @@ func InstallTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		}
 		cloneURL := RepoCloneURL
 		if cloneURL == nil {
-			cloneURL = runner.DefaultRepoCloneURL
+			cloneURL = providers.CloneURL
 		}
 		identities, err := RecoveryRepositoryIdentities(cfg, cloneURL)
 		if err != nil {

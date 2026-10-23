@@ -240,7 +240,7 @@ func TestIntegrationParallelForkRecoversHoldBeforeReadyWithoutPriorParent(t *tes
 		t.Fatal(err)
 	}
 	states, err := readParentForkStates(reader, events)
-	if err != nil || len(states[plan.Sequence].ready) != 3 {
+	if err != nil || len(states[plan.Sequence].Ready) != 3 {
 		t.Fatal("recovery did not acknowledge both forks", err)
 	}
 	join, err := r.createStageWorkspace(t.Context(), frame.in, "join", apiv1.WorkspaceRepo, false, "")

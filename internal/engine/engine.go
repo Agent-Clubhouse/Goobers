@@ -265,9 +265,6 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	if err := refuseRemoteUsage(in.WorkflowName, in.Spec, in.Placements); err != nil {
-		return RunResult{}, err
-	}
 	if err := refuseUnreadyHumanGates(ctx, in); err != nil {
 		return RunResult{}, err
 	}

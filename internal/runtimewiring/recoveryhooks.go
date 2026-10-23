@@ -7,7 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspaceauthority"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -28,7 +28,7 @@ func (h RecoveryCleanupHooks) retiredParent(ctx context.Context, layout instance
 	if h.RetiredParent != nil {
 		return h.RetiredParent(ctx, layout, cfg, manager, reader, key, target)
 	}
-	_, found, err := runner.ParentCleanupArchive(reader, target)
+	_, found, err := workspaceauthority.ParentCleanupArchive(reader, target)
 	if err != nil || !found {
 		return found, err
 	}
@@ -38,7 +38,7 @@ func (h RecoveryCleanupHooks) parentPolicy(ctx context.Context, reader *journal.
 	if h.ParentPolicy != nil {
 		return h.ParentPolicy(ctx, reader, target, key)
 	}
-	_, found, err := runner.ParentCleanupWorkspace(reader, target)
+	_, found, err := workspaceauthority.ParentCleanupWorkspace(reader, target)
 	if err != nil || !found {
 		return nil, err
 	}

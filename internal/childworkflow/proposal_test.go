@@ -300,7 +300,7 @@ func TestEngineAndRunnerPinRemoteExecutablePlacement(t *testing.T) {
 	}
 }
 
-func TestEngineRefusesUnsupportedFeaturesBeforeProposalAcceptance(t *testing.T) {
+func TestEngineAdmissionRefusesHumanGateAndAcceptsRemoteUsageLimits(t *testing.T) {
 	context := testContext()
 	context.Backend = BackendEngine
 	human := strings.Replace(validProposal, "next: \"\"", "next: approval", 1) + `  gates:
@@ -316,7 +316,14 @@ func TestEngineRefusesUnsupportedFeaturesBeforeProposalAcceptance(t *testing.T) 
 	}
 	agentic := strings.Replace(validProposal, "type: deterministic", "type: agentic\n      goober: coder\n      capabilities: [agent:model]\n      limits: {maxTokens: 1000}\n      runsOn: {capabilities: [special-tool]}", 1)
 	agentic = strings.Replace(agentic, "      run:\n        command: [\"true\"]\n", "", 1)
-	requireCode(t, validator(t, context), agentic, "backend")
+	result, err := validator(t, context).Validate([]byte(agentic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Placements) != 1 || result.Placements[0].Stage != "check" ||
+		result.Placements[0].Self || result.Placements[0].Eligible[0].Name != "agents" {
+		t.Fatalf("remote budgeted child placement = %+v", result.Placements)
+	}
 }
 
 func TestNormalAdmissionRejectsMissingHarnessProviderAndPlacement(t *testing.T) {
