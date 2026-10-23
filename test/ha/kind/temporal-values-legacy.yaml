@@ -37,7 +37,7 @@ server:
           host: temporal-postgres-rw.goobers-temporal.svc
           port: 5432
           database: temporal
-          user: app
+          user: temporal
           existingSecret: temporal-postgres-app
           tls:
             enabled: false
@@ -49,7 +49,7 @@ server:
           host: temporal-postgres-rw.goobers-temporal.svc
           port: 5432
           database: temporal_visibility
-          user: app
+          user: temporal
           existingSecret: temporal-postgres-app
           tls:
             enabled: false
