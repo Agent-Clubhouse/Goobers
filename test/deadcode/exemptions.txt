@@ -601,3 +601,6 @@ github.com/goobers/goobers/internal/cloud/journalpg.monthFloor # HA-P3-10 instan
 github.com/goobers/goobers/internal/cloud/migrate.DropInstanceEventPartition # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Ensure # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Run # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
+
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.RunRecorded # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.OpenRunReader # HA-P3-09 backend read seam; #7818 composes the PG livejournal writer. Remove when that composition is wired. expires=2026-11-22

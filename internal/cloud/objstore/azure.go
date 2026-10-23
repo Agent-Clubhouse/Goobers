@@ -139,6 +139,43 @@ func (a *Azure) Get(ctx context.Context, digest string) ([]byte, error) {
 	return data, nil
 }
 
+// GetBounded downloads and verifies at most limit bytes.
+func (a *Azure) GetBounded(
+	ctx context.Context,
+	digest string,
+	limit int64,
+) ([]byte, error) {
+	if limit <= 0 || limit > 64<<20 {
+		return nil, blobstore.ErrTooLarge
+	}
+	key, err := blobKey(digest)
+	if err != nil {
+		return nil, err
+	}
+	response, err := a.client.DownloadStream(ctx, a.container, key, nil)
+	if err != nil {
+		if hasStatus(err, 404) {
+			return nil, fmt.Errorf("%w: %s", blobstore.ErrNotFound, digest)
+		}
+		return nil, fmt.Errorf("cloud object store get %s: %w", digest, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.ContentLength != nil && *response.ContentLength > limit {
+		return nil, blobstore.ErrTooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("cloud object store read %s: %w", digest, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, blobstore.ErrTooLarge
+	}
+	if digestFor(data) != digest {
+		return nil, fmt.Errorf("%w: %s", ErrDigestMismatch, digest)
+	}
+	return data, nil
+}
+
 // Has reports whether a verified object exists.
 func (a *Azure) Has(ctx context.Context, digest string) (bool, error) {
 	_, err := a.Get(ctx, digest)

@@ -287,9 +287,28 @@ func waitForShardSettlementWithQuery(
 		serverVersion, dwell, last)
 }
 
+// currentPrimary names the CNPG primary instance; a failover moves it, so the
+// pod name must not be hardcoded.
+func currentPrimary(ctx context.Context, env []string) (string, error) {
+	name, err := output(ctx, env, "kubectl", "get", "cluster", "temporal-postgres", "-n", "goobers-temporal",
+		"-o", "jsonpath={.status.currentPrimary}")
+	if err != nil {
+		return "", err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("temporal-postgres has no current primary")
+	}
+	return name, nil
+}
+
 func readShardRanges(ctx context.Context, env []string) (map[int64]int64, string, error) {
 	const query = "SELECT shard_id, range_id FROM shards ORDER BY shard_id;"
-	result, err := output(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", "temporal-postgres-1",
+	primary, err := currentPrimary(ctx, env)
+	if err != nil {
+		return nil, "", err
+	}
+	result, err := output(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", primary,
 		"--", "psql", "-U", "postgres", "-d", "temporal", "-Atc", query)
 	if err != nil {
 		return nil, "", err

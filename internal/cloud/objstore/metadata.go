@@ -38,6 +38,7 @@ type blobMutation interface {
 
 type metadataBlobStore interface {
 	blobstore.Store
+	blobstore.BoundedReader
 	AcquireMutation(context.Context, string, []byte) (blobMutation, error)
 	TryAcquireMutation(context.Context, string) (blobMutation, bool, error)
 }
@@ -177,8 +178,80 @@ func (m *Metadata) ApplyConfig(ctx context.Context, tx pgx.Tx, instanceID, diges
 	return tag.RowsAffected() == 1, nil
 }
 
+// RecordAndApplyGeneration publishes an archive and advances the applied pointer
+// under the live controller fence. applied_config retains the generation.
+func (m *Metadata) RecordAndApplyGeneration(
+	ctx context.Context,
+	manager *cloudlease.Manager,
+	handle *cloudlease.Handle,
+	instanceID string,
+	digest string,
+	archive []byte,
+) error {
+	if manager == nil || handle == nil {
+		return cloudlease.ErrStale
+	}
+	if err := m.RecordGeneration(ctx, instanceID, digest, archive); err != nil {
+		return err
+	}
+	return manager.WithFence(ctx, handle, func(
+		txCtx context.Context,
+		tx pgx.Tx,
+	) error {
+		var currentDigest string
+		var currentGeneration int64
+		err := tx.QueryRow(txCtx, `
+			SELECT digest,generation FROM control.applied_config
+			WHERE instance_id=$1 FOR UPDATE`,
+			instanceID,
+		).Scan(&currentDigest, &currentGeneration)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			currentGeneration = 0
+		case err != nil:
+			return fmt.Errorf("lock applied config: %w", err)
+		case currentDigest == digest:
+			return nil
+		}
+		applied, err := m.ApplyConfig(
+			txCtx, tx, instanceID, digest, currentGeneration+1)
+		if err != nil {
+			return err
+		}
+		if !applied {
+			return errors.New("applied config did not advance")
+		}
+		return nil
+	})
+}
+
 // PinGeneration prevents pruning while owner references the generation.
 func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner string) error {
+	return m.pinGeneration(ctx, instanceID, digest, owner, nil)
+}
+
+// PinGenerationReader pins one short-lived reader to a live controller epoch.
+func (m *Metadata) PinGenerationReader(
+	ctx context.Context,
+	instanceID string,
+	digest string,
+	owner string,
+	handle *cloudlease.Handle,
+) error {
+	if handle == nil || handle.InstanceID != instanceID ||
+		handle.Name != cloudlease.ControllerName {
+		return cloudlease.ErrStale
+	}
+	return m.pinGeneration(ctx, instanceID, digest, owner, handle)
+}
+
+func (m *Metadata) pinGeneration(
+	ctx context.Context,
+	instanceID string,
+	digest string,
+	owner string,
+	reader *cloudlease.Handle,
+) error {
 	mutation, err := m.blobs.AcquireMutation(ctx, digest, nil)
 	if err != nil {
 		return err
@@ -192,13 +265,32 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 	}
 	defer func() { _ = tx.Rollback(opCtx) }()
 	var inserted bool
-	err = tx.QueryRow(opCtx, `
-		INSERT INTO control.config_generation_pin (instance_id, digest, owner)
-		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
-		RETURNING true`,
-		instanceID, digest, owner,
-	).Scan(&inserted)
+	if reader == nil {
+		err = tx.QueryRow(opCtx, `
+			INSERT INTO control.config_generation_pin (
+				instance_id,digest,owner,reader_holder,reader_epoch
+			) VALUES ($1,$2,$3,NULL,NULL)
+			ON CONFLICT DO NOTHING RETURNING true`,
+			instanceID, digest, owner,
+		).Scan(&inserted)
+	} else {
+		err = tx.QueryRow(opCtx, `
+			INSERT INTO control.config_generation_pin (
+				instance_id,digest,owner,reader_holder,reader_epoch
+			)
+			SELECT $1,$2,$3,$4,$5
+			FROM control.lease_heartbeat
+			WHERE instance_id=$1 AND name=$6 AND holder=$4 AND epoch=$5
+			  AND expires_at>clock_timestamp()
+			ON CONFLICT DO NOTHING RETURNING true`,
+			instanceID, digest, owner, reader.Holder, reader.Epoch,
+			cloudlease.ControllerName,
+		).Scan(&inserted)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
+		if reader != nil {
+			return cloudlease.ErrStale
+		}
 		inserted, err = false, nil
 	}
 	if err != nil {
@@ -235,6 +327,62 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 	return nil
 }
 
+// UnpinGeneration releases one owner's retained-generation reference.
+func (m *Metadata) UnpinGeneration(
+	ctx context.Context,
+	instanceID string,
+	digest string,
+	owner string,
+) error {
+	tag, err := m.pool.Exec(ctx, `
+		DELETE FROM control.config_generation_pin
+		WHERE instance_id=$1 AND digest=$2 AND owner=$3`,
+		instanceID, digest, owner,
+	)
+	if err != nil {
+		return fmt.Errorf("unpin config generation: %w", err)
+	}
+	if tag.RowsAffected() > 1 {
+		return errors.New("unpin config generation removed multiple rows")
+	}
+	return nil
+}
+
+// GenerationArchive returns a bounded, digest-verified archive for this instance.
+func (m *Metadata) GenerationArchive(
+	ctx context.Context,
+	instanceID string,
+	digest string,
+	limit int64,
+) ([]byte, error) {
+	var blobDigest string
+	err := m.pool.QueryRow(ctx, `
+		SELECT blob_digest FROM control.config_generation
+		WHERE instance_id=$1 AND digest=$2`,
+		instanceID, digest,
+	).Scan(&blobDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrGenerationNotFound, digest)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load config generation pointer: %w", err)
+	}
+	if blobDigest != digest {
+		return nil, fmt.Errorf("%w: generation pointer digest mismatch", ErrGenerationInvalid)
+	}
+	archive, err := m.blobs.GetBounded(ctx, digest, limit)
+	switch {
+	case errors.Is(err, blobstore.ErrNotFound):
+		return nil, fmt.Errorf("%w: %s", ErrGenerationNotFound, digest)
+	case errors.Is(err, blobstore.ErrTooLarge):
+		return nil, fmt.Errorf("%w: archive exceeds limit", ErrGenerationInvalid)
+	case err != nil:
+		return nil, fmt.Errorf("load config generation blob: %w", err)
+	default:
+		return archive, nil
+	}
+}
+
 // PruneGeneration removes an unpinned pointer and marks newly unreferenced
 // content for a later retention-gated GC sweep.
 func (m *Metadata) PruneGeneration(ctx context.Context, instanceID, digest string) error {
@@ -243,6 +391,22 @@ func (m *Metadata) PruneGeneration(ctx context.Context, instanceID, digest strin
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM control.config_generation_pin AS pin
+		WHERE pin.instance_id=$1 AND pin.digest=$2
+		  AND pin.reader_holder IS NOT NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM control.lease_heartbeat AS lease
+		    WHERE lease.instance_id=pin.instance_id
+		      AND lease.name=$3
+		      AND lease.holder=pin.reader_holder
+		      AND lease.epoch=pin.reader_epoch
+		      AND lease.expires_at>clock_timestamp()
+		  )`,
+		instanceID, digest, cloudlease.ControllerName,
+	); err != nil {
+		return fmt.Errorf("clear stale generation reader pins: %w", err)
+	}
 	var pinned bool
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS (

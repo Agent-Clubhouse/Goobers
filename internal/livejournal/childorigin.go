@@ -182,7 +182,7 @@ func (w *Writer) reconcileChildAppend(run *liveRun) error {
 	if err != nil {
 		return err
 	}
-	reader, err := journal.OpenReadOnly(run.dir)
+	reader, err := w.runReader(context.Background(), run)
 	if err != nil {
 		return err
 	}

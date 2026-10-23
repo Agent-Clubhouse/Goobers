@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+
+	"github.com/goobers/goobers/internal/blobstore"
 )
 
 func TestCreateOnlyPutConflict(t *testing.T) {
@@ -99,6 +101,24 @@ func TestIdempotentPutAdvancesETag(t *testing.T) {
 	if first.ETag == nil || second.ETag == nil || *first.ETag == *second.ETag {
 		t.Fatalf("idempotent Put ETags = %v / %v, want change",
 			first.ETag, second.ETag)
+	}
+}
+
+func TestAzureBoundedRead(t *testing.T) {
+	store := testAzureStore(t, "goobers-bounded-read")
+	data := []byte("bounded generation archive")
+	digest := digestFor(data)
+	if err := store.Put(t.Context(), digest, data); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetBounded(t.Context(), digest, int64(len(data)))
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("GetBounded = %q, %v", got, err)
+	}
+	if _, err := store.GetBounded(
+		t.Context(), digest, int64(len(data)-1),
+	); !errors.Is(err, blobstore.ErrTooLarge) {
+		t.Fatalf("undersized GetBounded = %v, want ErrTooLarge", err)
 	}
 }
 

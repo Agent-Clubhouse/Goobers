@@ -15,6 +15,11 @@ spec:
   # Creates temporal-postgres-superuser: the administrator URL for the instance
   # database provisioning step (and, later, goobers-cloud bootstrap --admin-url).
   enableSuperuserAccess: true
+  postgresql:
+    parameters:
+      # CNPG sends CREATE/ALTER ROLE ... PASSWORD '<plaintext>' for the managed
+      # roles; a failing statement must not be logged with its text.
+      log_min_error_statement: panic
   bootstrap:
     initdb:
       database: temporal
@@ -23,6 +28,14 @@ spec:
         name: temporal-postgres-app
       postInitSQL:
         - CREATE DATABASE temporal_visibility OWNER temporal_app
+        # As production (pgroles): only the owner reaches the Temporal databases.
+        # The instance database gets its CONNECT grants in the nightly's flip
+        # point. The maintenance database is left as initdb creates it: CNPG's
+        # pg_rewind connects to it as streaming_replica, which does not exist yet
+        # here and must keep PUBLIC's CONNECT for a failed-over primary to rejoin.
+        - REVOKE ALL ON DATABASE temporal_visibility FROM PUBLIC
+      postInitApplicationSQL:
+        - REVOKE ALL ON DATABASE temporal FROM PUBLIC
   managed:
     roles:
       - name: goobers_owner
