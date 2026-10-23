@@ -234,6 +234,11 @@ func cloudStartInput(epoch int64) RunInput {
 
 func existingStart(t *testing.T, owner StartOwnerMemo) *TemporalStarter {
 	t.Helper()
+	identity, err := startOwner(cloudStartInput(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.InputDigest, owner.InstanceID = identity.InputDigest, identity.InstanceID
 	payload, err := converter.GetDefaultDataConverter().ToPayload(owner)
 	if err != nil {
 		t.Fatal(err)
@@ -246,5 +251,13 @@ func existingStart(t *testing.T, owner StartOwnerMemo) *TemporalStarter {
 			},
 		},
 	}
-	return &TemporalStarter{client: fake, taskQueue: "cloud"}
+	return &TemporalStarter{client: fake, taskQueue: "cloud", admission: testStartAdmission{}}
 }
+
+// Unit-test custody seam; PostgreSQL tests exercise the real admission adapter.
+type testStartAdmission struct{}
+
+func (testStartAdmission) AdmitStart(_ context.Context, in RunInput) (RunInput, error) {
+	return in, nil
+}
+func (testStartAdmission) ConfirmStart(context.Context, RunInput, StartResult) error { return nil }

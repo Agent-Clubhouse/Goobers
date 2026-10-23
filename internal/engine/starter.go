@@ -69,6 +69,8 @@ type StartOwnerMemo struct {
 	AcceptanceID string `json:"acceptanceId,omitempty"`
 	OwnerEpoch   int64  `json:"ownerEpoch,omitempty"`
 	StarterID    string `json:"starterId,omitempty"`
+	InstanceID   string `json:"instanceId,omitempty"`
+	InputDigest  string `json:"inputDigest,omitempty"`
 }
 
 // Starter is the engine's start API: it begins a workflow run for a pinned
@@ -112,6 +114,8 @@ type workflowDescriber interface {
 type TemporalStarter struct {
 	client    workflowStarter
 	taskQueue string
+	admission StartAdmission
+	cloud     bool
 }
 
 // NewTemporalStarter builds a TemporalStarter for the given Temporal client and
@@ -140,19 +144,24 @@ func (s *TemporalStarter) StartWithInputDigest(ctx context.Context, in RunInput,
 }
 
 func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string) (StartResult, error) {
+	var err error
+	in, err = s.admit(ctx, in)
+	if err != nil {
+		return StartResult{}, err
+	}
 	if in.RunID == "" {
 		return StartResult{}, errors.New("engine: RunInput.RunID is required to start a run")
 	}
-	if in.SelfExecutionDenied &&
-		(in.AcceptanceID != "trigger-"+in.RunID || in.OwnerEpoch < 1 || in.StarterID == "") {
-		return StartResult{}, errors.New("engine: cloud start requires an acceptance-assigned run ID and owner")
+	memo, err := runMemo(in)
+	if err != nil {
+		return StartResult{}, err
 	}
 	opts := client.StartWorkflowOptions{
 		ID:                                       in.RunID,
 		TaskQueue:                                s.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
-		Memo:                                     runMemo(in),
+		Memo:                                     memo,
 	}
 	if digest != "" {
 		opts.Memo[RunInputDigestMemoKey] = digest
@@ -160,15 +169,19 @@ func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string)
 	run, err := s.client.ExecuteWorkflow(ctx, opts, Run, in)
 	if err != nil {
 		if isAlreadyStarted(err) {
-			return s.classifyExisting(ctx, in)
+			result, classifyErr := s.classifyExisting(ctx, in)
+			if classifyErr != nil {
+				return StartResult{}, classifyErr
+			}
+			return s.confirm(ctx, in, result)
 		}
 		return StartResult{}, err
 	}
-	return StartResult{RunID: run.GetID()}, nil
+	return s.confirm(ctx, in, StartResult{RunID: run.GetID()})
 }
 
 func (s *TemporalStarter) classifyExisting(ctx context.Context, in RunInput) (StartResult, error) {
-	if in.OwnerEpoch == 0 {
+	if in.OwnerEpoch == 0 && in.InstanceID == "" {
 		return StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
 	}
 	describer, ok := s.client.(workflowDescriber)
@@ -185,14 +198,24 @@ func (s *TemporalStarter) classifyExisting(ctx context.Context, in RunInput) (St
 	fields := description.GetWorkflowExecutionInfo().GetMemo().GetFields()
 	payload, exists := fields[StartOwnerMemoKey]
 	if !exists {
-		return StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, nil
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
 	}
 	var owner StartOwnerMemo
 	if err := converter.GetDefaultDataConverter().FromPayload(payload, &owner); err != nil {
 		return StartResult{}, errors.New("engine: existing start-owner memo is invalid")
 	}
+	expected, err := startOwner(in)
+	if err != nil {
+		return StartResult{}, err
+	}
+	if owner.InstanceID != expected.InstanceID || owner.InputDigest != expected.InputDigest {
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+	}
+	if in.OwnerEpoch != 0 && (owner.AcceptanceID == "" || owner.OwnerEpoch < 1 || owner.StarterID == "") {
+		return StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+	}
 	switch {
-	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch == in.OwnerEpoch:
+	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch == in.OwnerEpoch && owner.StarterID == in.StarterID:
 		return StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
 	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch < in.OwnerEpoch:
 		return StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, nil
@@ -212,19 +235,34 @@ func isAlreadyStarted(err error) bool {
 // is independently omittable so a run with no backlog item (a manual or
 // scheduled trigger) carries no RunBacklogItemMemoKey at all rather than an
 // empty placeholder.
-func runMemo(in RunInput) map[string]interface{} {
+func runMemo(in RunInput) (map[string]interface{}, error) {
+	owner, err := startOwner(in)
+	if err != nil {
+		return nil, err
+	}
 	memo := map[string]interface{}{
 		RunGaggleMemoKey:          in.Gaggle,
 		RunWorkflowMemoKey:        in.WorkflowName,
 		RunWorkflowVersionMemoKey: strconv.Itoa(in.Version),
-		StartOwnerMemoKey: StartOwnerMemo{
-			AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID,
-		},
+		StartOwnerMemoKey:         owner,
 	}
 	if in.Item != nil {
 		memo[RunBacklogItemMemoKey] = BacklogItemMemo{
 			ID: in.Item.ID, Provider: string(in.Item.Provider), URL: in.Item.URL,
 		}
 	}
-	return memo
+	return memo, nil
+}
+
+// startOwner binds immutable input identity while allowing a successor epoch.
+func startOwner(in RunInput) (StartOwnerMemo, error) {
+	owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID, InstanceID: in.InstanceID}
+	in.OwnerEpoch, in.StarterID = 0, ""
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return StartOwnerMemo{}, err
+	}
+	sum := sha256.Sum256(raw)
+	owner.InputDigest = "sha256:" + hex.EncodeToString(sum[:])
+	return owner, nil
 }
