@@ -61,8 +61,35 @@ func newAzure(client *azblob.Client, container string) (*Azure, error) {
 func (a *Azure) Describe() string { return "azure-blob:" + a.container }
 
 // Put creates a blob with If-None-Match. An identical existing object is an
-// idempotent success; an object whose bytes do not match its key is a conflict.
+// idempotent success, but still takes and touches the mutation lease so a
+// reference writer cannot cross a collector's conditional delete unchanged.
+// An object whose bytes do not match its key is a conflict.
 func (a *Azure) Put(ctx context.Context, digest string, data []byte) error {
+	mutation, err := a.AcquireMutation(ctx, digest, data)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation(mutation)
+	if err := mutation.Touch(ctx); err != nil {
+		return fmt.Errorf("touch published blob: %w", err)
+	}
+	return nil
+}
+
+// TouchReference serializes a digest-only database reference with collection.
+func (a *Azure) TouchReference(ctx context.Context, digest string) error {
+	mutation, err := a.AcquireMutation(ctx, digest, nil)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation(mutation)
+	if err := mutation.Touch(ctx); err != nil {
+		return fmt.Errorf("touch blob reference: %w", err)
+	}
+	return nil
+}
+
+func (a *Azure) putUnleased(ctx context.Context, digest string, data []byte) error {
 	key, err := blobKey(digest)
 	if err != nil {
 		return err
@@ -194,7 +221,7 @@ func (a *Azure) AcquireMutation(
 ) (blobMutation, error) {
 	for {
 		if data != nil {
-			if err := a.Put(ctx, digest, data); err != nil {
+			if err := a.putUnleased(ctx, digest, data); err != nil {
 				return nil, err
 			}
 		}

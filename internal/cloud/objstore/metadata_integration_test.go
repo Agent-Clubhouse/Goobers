@@ -120,7 +120,7 @@ func TestPruneDefersBlobUntilRetentionSweep(t *testing.T) {
 func TestPhysicalBlobDeleteIsDisabledByDefault(t *testing.T) {
 	_, pool, store := testMetadata(t, "goobers-config-gc-disabled")
 	metadata, err := NewMetadataWithOptions(pool, store, MetadataOptions{
-		PITRRetention: time.Hour,
+		PITRRetention: DefaultPITRRetention,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestPhysicalBlobDeleteIsDisabledByDefault(t *testing.T) {
 	}
 	if _, err := pool.Exec(t.Context(), `
 		UPDATE control.blob_gc_candidate
-		SET unreferenced_at=clock_timestamp()-interval '2 hours'
+		SET unreferenced_at=clock_timestamp()-interval '40 days'
 		WHERE digest=$1`,
 		digest,
 	); err != nil {
@@ -174,7 +174,12 @@ func TestPhysicalBlobDeleteIsDisabledByDefault(t *testing.T) {
 }
 
 func TestConfiguredPITRRetentionIsTheDeletionFloor(t *testing.T) {
-	metadata, pool, _ := testMetadata(t, "goobers-config-gc-pitr-floor")
+	metadata, pool, store := testMetadata(t, "goobers-config-gc-pitr-floor")
+	if _, err := NewMetadataWithOptions(pool, store, MetadataOptions{
+		PITRRetention: 34 * 24 * time.Hour,
+	}); err == nil {
+		t.Fatal("PITR retention below the 35-day backup window was accepted")
+	}
 	archive := []byte("PITR retained archive")
 	digest := digestFor(archive)
 	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
@@ -211,23 +216,17 @@ func TestConfiguredPITRRetentionIsTheDeletionFloor(t *testing.T) {
 
 func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 	metadata, pool, store := testMetadata(t, "goobers-config-gc-census")
-	if _, err := pool.Exec(t.Context(), `
-		CREATE SCHEMA IF NOT EXISTS journal;
-		CREATE TABLE journal.run_artifact (digest text NOT NULL);
-		CREATE TABLE control.recovery_record (
-			patch_digest text NOT NULL, archive_digest text NOT NULL
-		);
-		CREATE TABLE control.child_blob (digest text NOT NULL)`,
-	); err != nil {
-		t.Fatal(err)
-	}
 	tests := []struct {
 		name   string
 		insert string
 	}{
 		{"journal", "INSERT INTO journal.run_artifact (digest) VALUES ($1)"},
-		{"recovery", "INSERT INTO control.recovery_record (patch_digest,archive_digest) VALUES ($1,'')"},
+		{"recovery", "INSERT INTO control.recovery_record (patch_digest) VALUES ($1)"},
 		{"pending-adoption", "INSERT INTO control.child_blob (digest) VALUES ($1)"},
+		{"child-grant", "INSERT INTO control.child_authority (config_digest) VALUES ($1)"},
+		{"child-result", "INSERT INTO control.child_lineage (result_ref) VALUES ($1)"},
+		{"child-workspace", "INSERT INTO control.child_lineage (workspace_ref) VALUES ($1)"},
+		{"disposition-result", "INSERT INTO control.child_disposition (result_ref) VALUES ($1)"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -268,6 +267,61 @@ func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestBlobReferenceCensusFailsClosedAndExcludesRecoveryBundleKey(t *testing.T) {
+	_, pool, _ := testMetadata(t, "goobers-config-gc-census-closed")
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO control.recovery_record (bundle_key) VALUES ($1)`,
+		digest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var referenced bool
+	if err := pool.QueryRow(t.Context(), `
+		SELECT control.blob_is_referenced($1)`,
+		digest,
+	).Scan(&referenced); err != nil {
+		t.Fatal(err)
+	}
+	if referenced {
+		t.Fatal("recovery bundle_key was treated as a blobs/sha256 reference")
+	}
+	if _, err := pool.Exec(t.Context(), `
+		DELETE FROM control.blob_reference_writer_protocol
+		WHERE writer_class='child-custody'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT control.blob_is_referenced($1)`,
+		digest,
+	).Scan(&referenced); err != nil {
+		t.Fatal(err)
+	}
+	if !referenced {
+		t.Fatal("unqualified digest-only child referencer did not fail closed")
+	}
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO control.blob_reference_writer_protocol (
+			writer_class,protocol_version
+		) VALUES ('child-custody',1)`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), "DROP TABLE journal.run_artifact"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT control.blob_is_referenced($1)`,
+		digest,
+	).Scan(&referenced); err != nil {
+		t.Fatal(err)
+	}
+	if !referenced {
+		t.Fatal("missing journal.run_artifact made the census fail open")
 	}
 }
 
@@ -382,6 +436,116 @@ func TestLostDatabaseAuthorityCannotDeleteRepublishedGeneration(t *testing.T) {
 	}
 	if pins != 1 {
 		t.Fatalf("new generation pins = %d, want 1", pins)
+	}
+}
+
+func TestPlainPutCannotCrossCollectorLeaseUnchanged(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-gc-plain-put")
+	archive := []byte("journal artifact shared with config")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "old-instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PruneGeneration(t.Context(), "old-instance", digest); err != nil {
+		t.Fatal(err)
+	}
+	manager, handle := gcLease(t, pool)
+	ageCandidate(t, pool, digest)
+	if _, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	ageObservation(t, pool, digest)
+	pausing := &pausingMutationStore{
+		Azure: store, removing: make(chan struct{}), resume: make(chan struct{}),
+		publishing: make(chan struct{}),
+	}
+	metadata.blobs = pausing
+	sweepDone := make(chan error, 1)
+	go func() {
+		_, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
+		sweepDone <- err
+	}()
+	<-pausing.removing
+
+	putDone := make(chan error, 1)
+	go func() { putDone <- store.Put(t.Context(), digest, archive) }()
+	select {
+	case err := <-putDone:
+		t.Fatalf("plain Put crossed the collector lease: %v", err)
+	default:
+	}
+	close(pausing.resume)
+	if err := <-sweepDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-putDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO journal.run_artifact (digest) VALUES ($1)`,
+		digest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := store.Has(t.Context(), digest); err != nil || !has {
+		t.Fatalf("plain-Put referenced blob Has=%v err=%v", has, err)
+	}
+}
+
+func TestDigestReferenceTouchCannotCrossCollectorLeaseUnchanged(t *testing.T) {
+	metadata, pool, store := testMetadata(t, "goobers-config-gc-reference-touch")
+	archive := []byte("config shared with child authority")
+	digest := digestFor(archive)
+	if err := metadata.RecordGeneration(t.Context(), "old-instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.PruneGeneration(t.Context(), "old-instance", digest); err != nil {
+		t.Fatal(err)
+	}
+	manager, handle := gcLease(t, pool)
+	ageCandidate(t, pool, digest)
+	if _, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	ageObservation(t, pool, digest)
+	pausing := &pausingMutationStore{
+		Azure: store, removing: make(chan struct{}), resume: make(chan struct{}),
+		publishing: make(chan struct{}),
+	}
+	metadata.blobs = pausing
+	sweepDone := make(chan error, 1)
+	go func() {
+		_, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
+		sweepDone <- err
+	}()
+	<-pausing.removing
+
+	touchDone := make(chan error, 1)
+	go func() {
+		touchDone <- blobstore.TouchReference(t.Context(), store, digest)
+	}()
+	select {
+	case err := <-touchDone:
+		t.Fatalf("reference touch crossed the collector lease: %v", err)
+	default:
+	}
+	close(pausing.resume)
+	if err := <-sweepDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-touchDone; !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("reference touch after collection = %v, want ErrNotFound", err)
+	}
+	var references int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM control.child_authority
+		WHERE config_digest=$1`,
+		digest,
+	).Scan(&references); err != nil {
+		t.Fatal(err)
+	}
+	if references != 0 {
+		t.Fatalf("failed reference touch committed %d authority rows", references)
 	}
 }
 
@@ -593,7 +757,7 @@ func ageCandidate(t *testing.T, pool *pgxpool.Pool, digest string) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `
 		UPDATE control.blob_gc_candidate
-		SET unreferenced_at=clock_timestamp()-interval '2 hours'
+		SET unreferenced_at=clock_timestamp()-interval '40 days'
 		WHERE digest=$1`,
 		digest,
 	); err != nil {
@@ -778,11 +942,12 @@ func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Az
 	}).Apply(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	installBlobReferenceSchema(t, pool)
 	store := testAzureStore(t, container)
 	metadata, err := NewMetadataWithOptions(pool, store, MetadataOptions{
 		ExperimentalPhysicalDelete: true,
 		MaxPublishLatency:          time.Hour,
-		PITRRetention:              time.Hour,
+		PITRRetention:              DefaultPITRRetention,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -793,4 +958,64 @@ func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Az
 		admin.Close()
 	})
 	return metadata, pool, store
+}
+
+func installBlobReferenceSchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(t.Context(), `
+		CREATE SCHEMA IF NOT EXISTS journal;
+		CREATE TABLE IF NOT EXISTS journal.run_artifact (
+			digest text NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS control.recovery_record (
+			patch_digest text NOT NULL DEFAULT '',
+			archive_digest text NOT NULL DEFAULT '',
+			bundle_key text NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS control.child_lineage (
+			actor_digest text NOT NULL DEFAULT '',
+			payload_digest text NOT NULL DEFAULT '',
+			proposal_digest text NOT NULL DEFAULT '',
+			snapshot_receipt_digest text NOT NULL DEFAULT '',
+			snapshot_bundle_digest text NOT NULL DEFAULT '',
+			result_receipt_digest text NOT NULL DEFAULT '',
+			result_bundle_digest text NOT NULL DEFAULT '',
+			result_ref text NOT NULL DEFAULT '',
+			workspace_ref text NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS control.child_authority (
+			config_digest text NOT NULL DEFAULT '',
+			policy_digest text NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS control.child_blob (
+			digest text NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS control.child_blob_read (
+			contract_digest text NOT NULL DEFAULT '',
+			digest text NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS control.child_publication (
+			intent_digest text NOT NULL DEFAULT '',
+			receipt_digest text NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS control.child_disposition (
+			request_digest text NOT NULL DEFAULT '',
+			previous_digest text NOT NULL DEFAULT '',
+			plan_digest text NOT NULL DEFAULT '',
+			result_ref text NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS control.child_disposition_history (
+			request_digest text NOT NULL DEFAULT '',
+			previous_digest text NOT NULL DEFAULT '',
+			plan_digest text NOT NULL DEFAULT '',
+			result_ref text NOT NULL DEFAULT ''
+		);
+		INSERT INTO control.blob_reference_writer_protocol (
+			writer_class, protocol_version
+		) VALUES ('journal',1),('recovery',1),('child-custody',1)
+		ON CONFLICT (writer_class) DO UPDATE
+		SET protocol_version=excluded.protocol_version`)
+	if err != nil {
+		t.Fatal(err)
+	}
 }

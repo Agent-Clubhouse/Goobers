@@ -22,8 +22,8 @@ var ErrPinned = errors.New("config generation is pinned")
 const (
 	// DefaultMaxPublishLatency is the minimum gap between GC observations.
 	DefaultMaxPublishLatency = 30 * time.Second
-	// DefaultPITRRetention preserves blobs for the supported restore window.
-	DefaultPITRRetention = 30 * 24 * time.Hour
+	// DefaultPITRRetention matches the maximum configured PostgreSQL restore window.
+	DefaultPITRRetention = 35 * 24 * time.Hour
 	blobMutationTimeout  = 15 * time.Second
 )
 
@@ -81,8 +81,10 @@ func NewMetadataWithOptions(
 	if options.PITRRetention == 0 {
 		options.PITRRetention = DefaultPITRRetention
 	}
-	if options.PITRRetention <= 0 {
-		return nil, errors.New("cloud object metadata PITR retention must be positive")
+	if options.PITRRetention < DefaultPITRRetention {
+		return nil, fmt.Errorf(
+			"cloud object metadata PITR retention must be at least %s",
+			DefaultPITRRetention)
 	}
 	return &Metadata{
 		pool: pool, blobs: blobs,

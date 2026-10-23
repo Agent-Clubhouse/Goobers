@@ -40,7 +40,7 @@ Database options:
   --database-auth MODE             password or entra (default password)
   --object-store-url URL           Azure Blob service URL
   --object-store-container NAME    Blob container (default goobers)
-  --blob-gc-pitr-retention DURATION  Minimum restore retention (default 720h)
+  --blob-gc-pitr-retention DURATION  Minimum restore retention (default 840h)
   --experimental-physical-blob-gc  Enable storage-leased physical deletion (#7843)
 
 Environment:

@@ -21,7 +21,9 @@ DECLARE
 BEGIN
     relation := to_regclass(table_name);
     IF relation IS NULL THEN
-        RETURN false;
+        -- A missing reference class is an incompatible schema, not evidence
+        -- that the digest is unreferenced. Retain every candidate fail-closed.
+        RETURN true;
     END IF;
     EXECUTE format(
         'SELECT EXISTS (SELECT 1 FROM %s WHERE %I=$1)',
@@ -32,10 +34,31 @@ BEGIN
 END;
 $$;
 
+-- A writer class is registered only after every path that creates its
+-- references participates in the storage mutation protocol. Until then its
+-- ability to name an arbitrary digest makes every candidate unsafe.
+CREATE TABLE control.blob_reference_writer_protocol (
+    writer_class text PRIMARY KEY,
+    protocol_version integer NOT NULL CHECK (protocol_version >= 1),
+    qualified_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
 CREATE FUNCTION control.blob_is_referenced(candidate_digest text)
 RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT
-        control.blob_column_referenced(
+        NOT EXISTS (
+            SELECT 1 FROM control.blob_reference_writer_protocol
+            WHERE writer_class='journal' AND protocol_version >= 1
+        )
+        OR NOT EXISTS (
+            SELECT 1 FROM control.blob_reference_writer_protocol
+            WHERE writer_class='recovery' AND protocol_version >= 1
+        )
+        OR NOT EXISTS (
+            SELECT 1 FROM control.blob_reference_writer_protocol
+            WHERE writer_class='child-custody' AND protocol_version >= 1
+        )
+        OR control.blob_column_referenced(
             'control.config_generation', 'blob_digest', candidate_digest
         )
         OR control.blob_column_referenced(
@@ -69,6 +92,12 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
             'control.child_lineage', 'result_bundle_digest', candidate_digest
         )
         OR control.blob_column_referenced(
+            'control.child_lineage', 'result_ref', candidate_digest
+        )
+        OR control.blob_column_referenced(
+            'control.child_lineage', 'workspace_ref', candidate_digest
+        )
+        OR control.blob_column_referenced(
             'control.child_authority', 'config_digest', candidate_digest
         )
         OR control.blob_column_referenced(
@@ -99,6 +128,9 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
             'control.child_disposition', 'plan_digest', candidate_digest
         )
         OR control.blob_column_referenced(
+            'control.child_disposition', 'result_ref', candidate_digest
+        )
+        OR control.blob_column_referenced(
             'control.child_disposition_history', 'request_digest', candidate_digest
         )
         OR control.blob_column_referenced(
@@ -106,5 +138,8 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
         )
         OR control.blob_column_referenced(
             'control.child_disposition_history', 'plan_digest', candidate_digest
+        )
+        OR control.blob_column_referenced(
+            'control.child_disposition_history', 'result_ref', candidate_digest
         );
 $$;
