@@ -34,8 +34,10 @@ func TestMinCompatibleBinaryIsFirstNonReader(t *testing.T) {
 		{Version: 1, Kind: Expand, BinaryVersion: "1.0.0", MinCompatibleBinary: "1.0.0"},
 		{Version: 2, Kind: Contract, BinaryVersion: "3.0.0", MinCompatibleBinary: "2.0.0"},
 	}
-	if err := CheckCompatibility("2.0.0", applied, oldCatalog); !errors.Is(err, ErrSchemaNewer) || !IsIncompatible(err) {
-		t.Fatalf("unknown contract error = %v, want ErrSchemaNewer", err)
+	// Binary 2.0.0 predates the contract migration (its catalog is a strict
+	// prefix) but is the recorded first non-reader, so it must keep serving.
+	if err := CheckCompatibility("2.0.0", applied, oldCatalog); err != nil {
+		t.Fatalf("first non-reader rejected the contract it is the floor for: %v", err)
 	}
 	if err := CheckCompatibility("1.9.9", applied, oldCatalog); !errors.Is(err, ErrBinaryTooOld) || !IsIncompatible(err) {
 		t.Fatalf("last reader error = %v, want ErrBinaryTooOld", err)

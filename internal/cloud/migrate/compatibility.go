@@ -12,8 +12,6 @@ import (
 var (
 	// ErrBinaryTooOld means the database has contracted beyond this binary.
 	ErrBinaryTooOld = errors.New("cloud database requires a newer binary")
-	// ErrSchemaNewer means the database contains an unknown contract migration.
-	ErrSchemaNewer = errors.New("cloud database schema is newer than this binary")
 )
 
 // Applied records schema compatibility metadata persisted by a migration.
@@ -25,6 +23,11 @@ type Applied struct {
 }
 
 // CheckCompatibility verifies whether a binary may serve the applied schema.
+// Every applied migration records the first binary that no longer reads the
+// shape it replaced; a binary at or above every recorded floor may serve, even
+// when the migration is newer than its own catalog. A contract migration that
+// ships after binary N with floor N is the case this exists for: N already
+// stopped reading the old shape, so it serves the contracted schema.
 func CheckCompatibility(binary string, applied []Applied, catalog []Migration) error {
 	return checkCompatibility(binary, applied, catalog, false)
 }
@@ -40,10 +43,6 @@ func checkCompatibility(binary string, applied []Applied, catalog []Migration, a
 	if err != nil {
 		return fmt.Errorf("parse binary version %q: %w", binary, err)
 	}
-	known := make(map[int]struct{}, len(catalog))
-	for _, migration := range catalog {
-		known[migration.Version] = struct{}{}
-	}
 	ordered := append([]Applied(nil), applied...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Version < ordered[j].Version })
 	for _, migration := range ordered {
@@ -54,9 +53,6 @@ func checkCompatibility(binary string, applied []Applied, catalog []Migration, a
 		if self.LessThan(minimum) {
 			return fmt.Errorf("%w: migration %d requires %s", ErrBinaryTooOld, migration.Version, minimum)
 		}
-		if _, ok := known[migration.Version]; !ok && migration.Kind != Expand {
-			return fmt.Errorf("%w: unknown %s migration %d", ErrSchemaNewer, migration.Kind, migration.Version)
-		}
 	}
 	return nil
 }
@@ -64,7 +60,7 @@ func checkCompatibility(binary string, applied []Applied, catalog []Migration, a
 // IsIncompatible reports a schema state that should make a serving process
 // unready without terminating it.
 func IsIncompatible(err error) bool {
-	return errors.Is(err, ErrBinaryTooOld) || errors.Is(err, ErrSchemaNewer)
+	return errors.Is(err, ErrBinaryTooOld)
 }
 
 // ReadmodelBuilder rebuilds and atomically activates a versioned read model.
