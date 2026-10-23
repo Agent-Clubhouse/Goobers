@@ -30,7 +30,8 @@ func classify(err error) error {
 		return err
 	case errors.Is(err, cloudlease.ErrStale), errors.Is(err, cloudlease.ErrSelfFenced),
 		errors.Is(err, cloudlease.ErrFencedTransactionTimeout), errors.Is(err, cloudlease.ErrHeld),
-		errors.Is(err, acceptance.ErrStaleChildEpoch), pgconn.SafeToRetry(err):
+		errors.Is(err, acceptance.ErrStaleChildEpoch), errors.Is(err, objstore.ErrGenerationUnavailable),
+		pgconn.SafeToRetry(err):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, err)
 	case errors.Is(err, errNotLiveChild), errors.Is(err, errBindingDiffers), errors.Is(err, sql.ErrNoRows),
 		errors.Is(err, triggerqueue.ErrParentCancelled), errors.Is(err, triggerqueue.ErrParentSettled),

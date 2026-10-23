@@ -160,3 +160,55 @@ func TestFencedAdmissionsAdoptPredecessorCustodyAfterTakeover(t *testing.T) {
 		t.Fatalf("second adoption = %d, %v; want 0, nil", adopted, err)
 	}
 }
+
+// One Fenced, one process: it served epoch 1, lost the lease to a foreign
+// controller that served epoch 2 and wrote custody, then reacquired epoch 3.
+// It must adopt epoch 2's rows, not stop at its own first adoption.
+func TestFencedAdmissionsReadoptOnEveryNewEpochInTheSameProcess(t *testing.T) {
+	f := newFamily(t)
+	ours, first := f.manager, f.handle
+	first1 := acceptChild(t, f, "parent-e1", "call-1")
+	b1, err := activities(f.service(time.Hour)).AdmitEngineChild(t.Context(), first1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := first
+	controller := controllerPool(t, f.pool)
+	fenced := fencedOn(t, f, controller, func() *cloudlease.Handle { return current })
+	fenced.Lease = ours
+	if _, err := fenced.Load(t.Context(), b1); err != nil {
+		t.Fatalf("epoch 1 load: %v", err)
+	}
+
+	// A foreign controller takes over and writes its own custody.
+	if err := ours.Release(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	f.takeOver(t, "foreign-controller")
+	foreign := acceptChild(t, f, "parent-e2", "call-1")
+	b2, err := activities(f.service(time.Hour)).AdmitEngineChild(t.Context(), foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.manager.Release(t.Context(), f.handle); err != nil {
+		t.Fatal(err)
+	}
+
+	// This process reacquires: a new epoch on the same Fenced.
+	third, err := ours.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Epoch <= f.handle.Epoch {
+		t.Fatalf("reacquired epoch %d did not pass the foreign epoch %d", third.Epoch, f.handle.Epoch)
+	}
+	current = third
+	if err := fenced.Cancel(t.Context(), b2); err != nil {
+		t.Fatalf("epoch 3 could not fence the foreign epoch's family: %v", err)
+	}
+	var stale int
+	if err := f.pool.QueryRow(t.Context(), `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1 AND owner_epoch<>$2`,
+		testInstance, third.Epoch).Scan(&stale); err != nil || stale != 0 {
+		t.Fatalf("%d lineage rows left on an earlier epoch (%v)", stale, err)
+	}
+}
