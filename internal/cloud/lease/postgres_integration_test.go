@@ -330,7 +330,13 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 	}
 	defer observer.Release()
 
-	paused := testManager(t, pool, "paused-holder")
+	paused, err := lease.New(lease.Config{
+		Pool: pool, InstanceID: "instance", Name: "control", Holder: "paused-holder",
+		TTL: 2 * time.Second, SelfFenceAfter: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	stale, err := paused.Acquire(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -392,9 +398,16 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 		}(i)
 	}
 	waitForTakeoverLock(t, observer)
+	selfFenceDeadline := time.Now().Add(time.Second)
+	for !paused.SelfFenced(stale) {
+		if time.Now().After(selfFenceDeadline) {
+			t.Fatal("paused holder did not cross its self-fence deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	close(resume)
-	if err := <-pausedDone; err != nil {
-		t.Fatalf("paused holder commit: %v", err)
+	if err := <-pausedDone; !errors.Is(err, lease.ErrSelfFenced) {
+		t.Fatalf("paused holder error = %v, want ErrSelfFenced", err)
 	}
 	wg.Wait()
 	close(results)
@@ -438,11 +451,11 @@ func TestLeaseContendersNeverOverlapEpochs(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(commits) != 2 {
-		t.Fatalf("fenced commits = %d, want paused and successor epochs", len(commits))
+	if len(commits) != 1 {
+		t.Fatalf("fenced commits = %d, want only the successor epoch", len(commits))
 	}
-	if commits[0].epoch >= commits[1].epoch || commits[0].finish.After(commits[1].started) {
-		t.Fatalf("overlapping fenced commits: %+v", commits)
+	if commits[0].epoch != winner.handle.Epoch || commits[0].epoch <= stale.Epoch {
+		t.Fatalf("stale or overlapping epoch committed: %+v", commits)
 	}
 }
 
