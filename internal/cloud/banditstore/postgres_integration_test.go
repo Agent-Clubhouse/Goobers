@@ -3,10 +3,12 @@
 package banditstore_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/banditstore"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestPostgresObservationStore(t *testing.T) {
@@ -73,29 +76,118 @@ func TestObservationStoreFencesZombieAndRetriesLostResponse(t *testing.T) {
 	}
 }
 
-func TestFilePostgresObservationOrderingEquivalent(t *testing.T) {
+func TestJournalImportMatchesLocalSamplingAndIsIdempotent(t *testing.T) {
 	_, _, cloud := acquireStore(t, testPool(t), "instance", "first")
-	local, err := bandit.NewFileStore(t.TempDir())
+	runsDir := observationJournals(t)
+	want, err := bandit.LoadFileObservations(runsDir, "build")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Equal assignment sequences deliberately exercise the backend tie-break.
-	for _, runID := range []string{"run-c", "run-a", "run-b"} {
-		r := conformance.Record(runID, "build", 0, 1, 1)
-		for _, store := range []bandit.ObservationStore{cloud, local} {
-			if err := store.Record(t.Context(), r); err != nil {
-				t.Fatal(err)
-			}
-		}
+	if result, err := cloud.ImportLocalJournals(t.Context(), runsDir); err != nil || result.Imported != 6 || result.Existing != 0 {
+		t.Fatalf("initial import = %+v, %v", result, err)
 	}
-	want, err := local.Observations(t.Context(), "build")
-	if err != nil {
-		t.Fatal(err)
+	if result, err := cloud.ImportLocalJournals(t.Context(), runsDir); err != nil || result.Imported != 0 || result.Existing != 6 {
+		t.Fatalf("repeated import = %+v, %v", result, err)
 	}
 	got, err := cloud.Observations(t.Context(), "build")
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("cloud %v != local %v: %v", got, want, err)
 	}
+	// Historical sample identity is separate from a future native attempt,
+	// even if its occurrence number happens to equal an old event sequence.
+	if err := cloud.Record(t.Context(), conformance.Record("run-a", "build", 0, 2, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cloud.Observations(t.Context(), "build"); err != nil || len(got) != 7 {
+		t.Fatalf("native/import collision: %v, %v", got, err)
+	}
+}
+
+func TestJournalImportResumesAfterPartialFailureAndTakeover(t *testing.T) {
+	pool := testPool(t)
+	first, handle, cloud := acquireStore(t, pool, "instance", "first")
+	runsDir := observationJournals(t)
+	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION control.fail_bandit_import() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.payload#>>'{key,runId}'='run-b' THEN RAISE EXCEPTION 'injected import failure'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER fail_bandit_import BEFORE INSERT ON control.runner_bandit FOR EACH ROW EXECUTE FUNCTION control.fail_bandit_import()`); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := cloud.ImportLocalJournals(t.Context(), runsDir); err == nil || result.Imported != 2 {
+		t.Fatalf("partial import = %+v, %v", result, err)
+	}
+	if _, err := pool.Exec(t.Context(), `DROP TRIGGER fail_bandit_import ON control.runner_bandit`); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Release(t.Context(), handle); err != nil {
+		t.Fatal(err)
+	}
+	_, _, next := acquireStore(t, pool, "instance", "second")
+	if _, err := cloud.ImportLocalJournals(t.Context(), runsDir); !errors.Is(err, lease.ErrStale) {
+		t.Fatalf("stale import = %v", err)
+	}
+	if result, err := next.ImportLocalJournals(t.Context(), runsDir); err != nil || result.Imported != 4 || result.Existing != 2 {
+		t.Fatalf("resumed import = %+v, %v", result, err)
+	}
+	if got, err := next.Observations(t.Context(), "build"); err != nil || len(got) != 6 {
+		t.Fatalf("partial retry duplicated samples: %v, %v", got, err)
+	}
+}
+
+func TestJournalImportRejectsChangedDurableEvent(t *testing.T) {
+	_, _, cloud := acquireStore(t, testPool(t), "instance", "first")
+	runsDir := observationJournals(t)
+	path := filepath.Join(runsDir, "run-a", "events.jsonl")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cloud.ImportLocalJournals(t.Context(), runsDir); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("import altered source journal: %v", err)
+	}
+	// A corrupt/replaced source reuses its durable event identity with another
+	// valid outcome. Import must not overwrite the already committed fact.
+	changed := bytes.Replace(before, []byte(`"arm":"control"`), []byte(`"arm":"different"`), 1)
+	if bytes.Equal(before, changed) {
+		t.Fatal("fixture did not contain the expected observation")
+	}
+	if err := os.WriteFile(path, changed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cloud.ImportLocalJournals(t.Context(), runsDir); !errors.Is(err, bandit.ErrObservationConflict) {
+		t.Fatalf("changed event import = %v", err)
+	}
+	got, err := cloud.Observations(t.Context(), "build")
+	if err != nil || len(got) != 6 || got[0].Arm != "control" {
+		t.Fatalf("conflict changed committed history: %v, %v", got, err)
+	}
+}
+
+func observationJournals(t *testing.T) string {
+	t.Helper()
+	runsDir := t.TempDir()
+	// Equal assignment sequences deliberately exercise the backend tie-break.
+	for _, runID := range []string{"run-c", "run-a", "run-b"} {
+		run, err := journal.Create(runsDir, journal.RunIdentity{RunID: runID, Workflow: "experiment", WorkflowVersion: 1, WorkflowDigest: "sha256:fixture", Gaggle: "test", Trigger: journal.Trigger{Kind: journal.TriggerManual}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := bandit.Config{Stage: "build"}
+		for _, arm := range []string{"control", "treatment"} {
+			o := conformance.Record(runID, "build", 0, 1, 1).Observation
+			o.Arm = arm
+			if err := config.RecordObservation(o, run); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return runsDir
 }
 
 func acquireStore(t *testing.T, pool *pgxpool.Pool, instance, holder string) (*lease.Manager, *lease.Handle, *banditstore.Store) {

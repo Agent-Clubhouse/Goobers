@@ -8,8 +8,8 @@ import (
 )
 
 // BanditService owns the observation backend. Cloud composition binds it to the
-// active lease; local composition supplies the file store. Workers only receive
-// the HTTP client, never a database or filesystem configuration.
+// active lease. The local runner continues to sample its run journals directly.
+// Workers only receive the HTTP client, never database credentials.
 type BanditService struct{ store bandit.ObservationStore }
 
 // NewBanditService requires the host's explicitly selected backend.

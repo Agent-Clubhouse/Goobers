@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,10 +26,7 @@ func (m *minter) Mint(runID string, _ time.Duration) (string, error) {
 }
 
 func TestObservationHTTPRetriesAmbiguousCommitWithoutDuplicatingSample(t *testing.T) {
-	store, err := bandit.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := &memoryObservationStore{records: make(map[string]bandit.ObservationRecord)}
 	service, err := planes.NewBanditService(store)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +87,39 @@ func TestObservationHTTPRetriesAmbiguousCommitWithoutDuplicatingSample(t *testin
 	if len(m.runs) != 3 {
 		t.Fatalf("minted %d tokens for three operations", len(m.runs))
 	}
+}
+
+// This transport test double models the backend's already-qualified immutable
+// record contract; production cloud assembly only uses PostgreSQL.
+type memoryObservationStore struct {
+	mu      sync.Mutex
+	records map[string]bandit.ObservationRecord
+}
+
+func (s *memoryObservationStore) Record(_ context.Context, record bandit.ObservationRecord) error {
+	key, _, err := bandit.EncodeRecord(record)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.records[key]; ok && existing != record {
+		return bandit.ErrObservationConflict
+	}
+	s.records[key] = record
+	return nil
+}
+
+func (s *memoryObservationStore) Observations(_ context.Context, stage string) ([]bandit.Observation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var observations []bandit.Observation
+	for _, record := range s.records {
+		if record.Key.Stage == stage {
+			observations = append(observations, record.Observation)
+		}
+	}
+	return observations, nil
 }
 
 func TestObservationHTTPRequiresBearerBeforeNetwork(t *testing.T) {
