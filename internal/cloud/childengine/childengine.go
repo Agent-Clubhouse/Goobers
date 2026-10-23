@@ -1,0 +1,167 @@
+// Package childengine maps the engine's generated-child admission contract
+// onto the cloud control plane's PostgreSQL child custody. It runs
+// control-side: workers hold no database credentials and reach it through
+// the child-admission plane route (#7879). The engine never imports this
+// package; this package imports both.
+package childengine
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/triggerqueue"
+)
+
+// MaxWait is the longest durable child wait an admission may pin.
+const MaxWait = 24 * time.Hour
+
+// Custody is the subset of the fenced acceptance store the adapter needs.
+// *acceptance.Store implements it.
+type Custody interface {
+	GetChild(context.Context, triggerqueue.ChildIdentity) (triggerqueue.ChildRecord, error)
+	CheckChildParentOpen(context.Context, triggerqueue.ChildParent) error
+	ChildStart(context.Context, triggerqueue.ChildIdentity) (triggerqueue.Record, error)
+	ChildProposal(context.Context, triggerqueue.ChildIdentity) (triggerqueue.ChildProposal, error)
+	KeepChildBlob(context.Context, triggerqueue.ChildIdentity, string, []byte) error
+	ChildBlob(context.Context, triggerqueue.ChildIdentity, string) ([]byte, error)
+	BindChildEngineStart(context.Context, triggerqueue.ChildIdentity, acceptance.ChildEngineStart) (acceptance.ChildEngineStart, error)
+	ChildEngineStart(context.Context, triggerqueue.ChildIdentity) (acceptance.ChildEngineStart, error)
+	FenceChildParent(context.Context, triggerqueue.ChildParent, string, time.Time) error
+}
+
+// Accepted is the immutable input a freezer may read: the verified handoff,
+// the accepted lineage, its original start envelope and the exact source.
+type Accepted struct {
+	Request journal.ChildHandoffRequest
+	Child   triggerqueue.ChildRecord
+	Payload []byte
+	Source  []byte
+}
+
+// Freezer compiles accepted inputs into the frozen manifest. It MUST be a
+// pure function of Accepted: retries and lease successors re-run it and must
+// produce byte-identical manifests. Live policy may refuse, never rewrite.
+type Freezer func(context.Context, Accepted) (engine.FrozenChildManifest, error)
+
+// Service implements engine.ChildAdmissions over Custody.
+type Service struct {
+	Custody Custody
+	Freeze  Freezer
+	// Wait pins the durable child wait from acceptance time, at most MaxWait.
+	Wait time.Duration
+	// Actor attributes parent fences to the control plane.
+	Actor string
+	Now   func() time.Time
+}
+
+var _ engine.ChildAdmissions = (*Service)(nil)
+
+func identityOf(r journal.ChildHandoffRequest) triggerqueue.ChildIdentity {
+	return triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: r.Gaggle, ParentRunID: r.ParentRunID}, StageOccurrence: r.Origin.StageOccurrence, InvocationKey: r.InvocationKey}
+}
+
+func (s *Service) configured() error {
+	if s == nil || s.Custody == nil || s.Freeze == nil || s.Wait <= 0 || s.Wait > MaxWait || s.Actor == "" || s.Now == nil {
+		return errors.New("childengine: service is not configured")
+	}
+	return nil
+}
+
+// acceptedChild verifies the handoff names exactly one accepted, live lineage
+// in an open family.
+func (s *Service) acceptedChild(ctx context.Context, r journal.ChildHandoffRequest) (triggerqueue.ChildRecord, error) {
+	identity := identityOf(r)
+	child, err := s.Custody.GetChild(ctx, identity)
+	if err != nil {
+		return child, err
+	}
+	if child.Identity != identity || child.AcceptanceID != r.AcceptanceID || child.RunID != r.ChildRunID || child.ProposalDigest != r.SourceDigest ||
+		!child.TombstonedAt.IsZero() || !child.AcknowledgedAt.IsZero() || child.CancellationRequested {
+		return child, errors.New("childengine: handoff does not name a live accepted child")
+	}
+	return child, s.Custody.CheckChildParentOpen(ctx, identity.ChildParent)
+}
+
+func binding(in engine.ChildAdmissionInput, child triggerqueue.ChildRecord, start acceptance.ChildEngineStart) engine.ChildRunBinding {
+	return engine.ChildRunBinding{Request: in.Request, Child: child, ManifestDigest: start.ManifestDigest, ParentWorkflow: start.ParentWorkflow,
+		ParentWorkflowID: start.ParentWorkflowID, ParentTemporalRunID: start.ParentTemporalRunID, Deadline: start.Deadline}
+}
+
+// Admit freezes and binds one child start. A child already bound to another
+// parent execution returns that owner's receipt unchanged; the engine refuses
+// it as a sealed-child restart rather than re-binding.
+func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (engine.ChildRunBinding, error) {
+	if err := s.configured(); err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	child, err := s.acceptedChild(ctx, in.Request)
+	if err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	identity := identityOf(in.Request)
+	if start, err := s.Custody.ChildEngineStart(ctx, identity); err == nil {
+		return binding(in, child, start), nil
+	}
+	receipt, err := s.Custody.ChildStart(ctx, identity)
+	if err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	proposal, err := s.Custody.ChildProposal(ctx, identity)
+	if err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	manifest, err := s.Freeze(ctx, Accepted{Request: in.Request, Child: child, Payload: receipt.Payload, Source: proposal.Source})
+	if err != nil {
+		return engine.ChildRunBinding{}, fmt.Errorf("childengine: freeze accepted child: %w", err)
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	digest := journal.Digest(data)
+	if err := s.Custody.KeepChildBlob(ctx, identity, digest, data); err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	start, err := s.Custody.BindChildEngineStart(ctx, identity, acceptance.ChildEngineStart{ManifestDigest: digest, ParentWorkflow: in.ParentWorkflow,
+		ParentWorkflowID: in.ParentWorkflowID, ParentTemporalRunID: in.ParentTemporalRunID, Deadline: child.AcceptedAt.Add(s.Wait)})
+	if errors.Is(err, acceptance.ErrChildEngineStartOwned) {
+		// A concurrent or earlier parent execution won the bind.
+		start, err = s.Custody.ChildEngineStart(ctx, identity)
+	}
+	if err != nil {
+		return engine.ChildRunBinding{}, err
+	}
+	return binding(in, child, start), nil
+}
+
+// Load reads the manifest the binding's own start intent recorded. A receipt
+// for another parent execution or manifest is refused.
+func (s *Service) Load(ctx context.Context, b engine.ChildRunBinding) ([]byte, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	identity := identityOf(b.Request)
+	start, err := s.Custody.ChildEngineStart(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	if start.ManifestDigest != b.ManifestDigest || start.ParentWorkflowID != b.ParentWorkflowID || start.ParentTemporalRunID != b.ParentTemporalRunID || !start.Deadline.Equal(b.Deadline) {
+		return nil, errors.New("childengine: binding differs from the recorded start intent")
+	}
+	return s.Custody.ChildBlob(ctx, identity, start.ManifestDigest)
+}
+
+// Cancel durably fences the exact parent family: no later admission or
+// queued start. It retains every custody record.
+func (s *Service) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	return s.Custody.FenceChildParent(ctx, identityOf(b.Request).ChildParent, s.Actor, s.Now())
+}
