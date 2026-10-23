@@ -459,7 +459,7 @@ func recordAttemptArtifacts(
 	if err := rec.recordUnpushedDiff(ctx, in, stage, attempt, class, result.UnpushedDiff); err != nil {
 		return fmt.Errorf("engine: journal unpushed diff for stage %q: %w", stage, err)
 	}
-	return nil
+	return rec.outbox(ctx, stage, attempt, class, result.Outbox)
 }
 
 // dispatchChargedAttempt dispatches one attempt under its usage allowance

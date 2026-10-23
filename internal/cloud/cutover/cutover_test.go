@@ -139,7 +139,8 @@ func TestBootstrapPrecheckRefusesBeforeAnyMutation(t *testing.T) {
 }
 
 func TestShippedPGStepsHaveChecks(t *testing.T) {
-	for _, s := range PGSteps(nil, "i", ControllerLeaseName, "b", "h") {
+	steps, _ := PGSteps(Connect{}, "i", ControllerLeaseName, "b", "h", nil)
+	for _, s := range steps {
 		if s.Issue == 0 && s.Check == nil {
 			t.Errorf("shipped step %q has no Check; bootstrap could mutate before probing it", s.Name)
 		}

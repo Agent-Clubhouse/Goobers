@@ -102,7 +102,6 @@ var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
 	"workflow.spec.maps":      {Path: "spec.maps", Issue: 7755},
 	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758},
 	"gate.evaluator.human":    {Path: "gate.evaluator.human", Issue: 7760},
-	"task.outbox":             {Path: "task.outbox", Issue: 7762},
 	"task.experiment":         {Path: "task.experiment", Issue: 7763},
 }
 

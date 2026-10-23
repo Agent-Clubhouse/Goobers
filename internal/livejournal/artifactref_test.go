@@ -111,6 +111,49 @@ func TestArtifactRefAdoptsBoundedBytesAndDeduplicatesAfterRestart(t *testing.T) 
 	}
 }
 
+func TestArtifactRefAdoptsOutboxPathAndOccurrence(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("outbox report")
+	ref, err := journal.ArtifactRef(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newArtifactBlobDir(t)
+	if err := store.Put(ctx, ref.Digest, data); err != nil {
+		t.Fatal(err)
+	}
+	writer, runsDir := testArtifactWriter(t, WithArtifactSource(store))
+	request := EmitRequest{
+		RunID: "ref-run", Gaggle: "web",
+		Ops: []Op{{
+			Kind: OpArtifact, Key: "ref-run|0|build|2|outbox-1", Time: time.Now().UTC(),
+			Artifact: &ArtifactOp{
+				Stage: "build", Attempt: 2, Class: journal.AttemptInfra,
+				Name: "outbox/reports/result.json", Ref: &ref,
+				OutboxRelPath: "reports/result.json", OutboxOccurrence: 7,
+				Integrity: apiv1.IntegrityDerived,
+			},
+		}},
+	}
+	if _, err := writer.Emit(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, "ref-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	want := "artifacts/outbox/build/attempt-2/occurrence-7/reports/result.json"
+	if last.Type != journal.EventArtifactRecorded || last.Name != "outbox/reports/result.json" ||
+		last.Ref == nil || filepath.ToSlash(last.Ref.Path) != want {
+		t.Fatalf("outbox event=%+v, want path %q", last, want)
+	}
+}
+
 func TestArtifactRefRejectsInvalidOrUnavailableEvidenceWithoutApplyingKey(t *testing.T) {
 	data := []byte("exact artifact bytes")
 	for _, tc := range []struct {

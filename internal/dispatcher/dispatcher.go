@@ -436,6 +436,9 @@ type Attempt struct {
 	// surrendered stdout instead of its result file, which silently changed
 	// gate outcomes rather than failing (Goobers#3699 v1 cut).
 	Inputs map[string]string
+	// Outbox is the runner-owned set of workspace-relative paths the pod
+	// supervisor exports after execution. It is never stage-authored env.
+	Outbox []string
 
 	// CheckoutCapability is the capability the pod may mint solely to provision
 	// a repo workspace (#3770) — never exported to the stage's environment.
