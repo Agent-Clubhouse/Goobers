@@ -123,7 +123,7 @@ func resolve(ctx context.Context, tx pgx.Tx, handle *lease.Handle, r Record, ret
 	if err != nil {
 		return false, fmt.Errorf("read recovery record: %w", err)
 	}
-	if existing.Record.normalized() != r {
+	if existing.normalized() != r {
 		return true, ErrConflict
 	}
 	*stored, err = renew(ctx, tx, handle, r.RunID, retention)
