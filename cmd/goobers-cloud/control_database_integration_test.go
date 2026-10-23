@@ -41,6 +41,10 @@ func TestControlDatabaseRolesAreSeparated(t *testing.T) {
 		if db.InstanceID != instance {
 			t.Fatalf("instance source drift: %s", db.InstanceID)
 		}
+		// The real entry path binds the object store to the controller role only.
+		if db.Controller.Blobs == nil || db.Controller.Objects == nil || db.API.Blobs != nil || db.API.Objects != nil {
+			t.Fatalf("object store binding: controller blobs=%v objects=%v api blobs=%v", db.Controller.Blobs != nil, db.Controller.Objects != nil, db.API.Blobs != nil)
+		}
 		for role, pool := range map[string]*pgxpool.Pool{"goobers_api": db.API.Pools.Transaction, "goobers_controller": db.Controller.Pools.Transaction} {
 			var user string
 			if err := pool.QueryRow(ctx, "SELECT current_user").Scan(&user); err != nil {
@@ -79,14 +83,14 @@ func TestControlDatabaseRolesAreSeparated(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { runControlWithDatabases = prior })
-	args := []string{"control", "--instance-id", instance, "--api-database-url", apiURL, "--api-database-direct-url", apiURL, "--controller-database-url", controllerURL, "--controller-database-direct-url", controllerURL}
+	args := []string{"control", "--object-store-url", "https://store.invalid", "--instance-id", instance, "--api-database-url", apiURL, "--api-database-direct-url", apiURL, "--controller-database-url", controllerURL, "--controller-database-direct-url", controllerURL}
 	code, _, stderr := runForTest(args...)
 	if code != 0 || !called {
 		t.Fatalf("code=%d called=%v error=%s", code, called, stderr)
 	}
 	// Authenticating both surfaces with controller credentials must fail before assembly.
 	called = false
-	args[4] = controllerURL
+	args[6] = controllerURL
 	code, _, stderr = runForTest(args...)
 	if code != 1 || called || !strings.Contains(stderr, "API database") {
 		t.Fatalf("cross-role connection accepted: code=%d called=%v error=%s", code, called, stderr)
