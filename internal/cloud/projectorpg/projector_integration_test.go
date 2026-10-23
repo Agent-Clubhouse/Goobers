@@ -92,8 +92,15 @@ func runID(c byte) string { return strings.Repeat(string(c), 32) }
 // emit appends events to a run: the first call opens it.
 func (f *fixture) emit(t *testing.T, id string, open bool, events ...journal.Event) {
 	t.Helper()
+	f.emitWithGraphDigest(t, id, open, "sha256:abc", events...)
+}
+
+// emitWithGraphDigest pins a graph digest that may disagree with the run
+// identity's, which the projection refuses: an unprojectable run.
+func (f *fixture) emitWithGraphDigest(t *testing.T, id string, open bool, graphDigest string, events ...journal.Event) {
+	t.Helper()
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	graph, err := json.Marshal(workflow.Graph{Name: "wf", Version: 1, Digest: "sha256:abc"})
+	graph, err := json.Marshal(workflow.Graph{Name: "wf", Version: 1, Digest: graphDigest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +122,7 @@ func (f *fixture) emit(t *testing.T, id string, open bool, events ...journal.Eve
 	}
 }
 
-func (f *fixture) runner(t *testing.T, batch int) (*projectorpg.Runner, *readmodelpg.ActiveReader) {
+func (f *fixture) runner(t *testing.T, batch int, health *projectorpg.Health, report func(error)) (*projectorpg.Runner, *readmodelpg.ActiveReader) {
 	t.Helper()
 	handle := pgtest.Acquire(t, f.projector)
 	t.Cleanup(func() { _ = f.projector.Release(context.Background(), handle) })
@@ -123,7 +130,7 @@ func (f *fixture) runner(t *testing.T, batch int) (*projectorpg.Runner, *readmod
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := projectorpg.New(projectorpg.Config{Projector: projector, Journal: f.backend, InstanceID: pgtest.InstanceID, Batch: batch, Report: func(err error) { t.Errorf("projection failure: %v", err) }})
+	runner, err := projectorpg.New(projectorpg.Config{Projector: projector, Journal: f.backend, InstanceID: pgtest.InstanceID, Batch: batch, Report: report, Health: health})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +144,7 @@ func (f *fixture) runner(t *testing.T, batch int) (*projectorpg.Runner, *readmod
 
 func TestSyncProjectsJournalHistoryAsTheControllerAndTheAPIRoleReadsIt(t *testing.T) {
 	f := newFixture(t)
-	runner, reader := f.runner(t, 0)
+	runner, reader := f.runner(t, 0, nil, func(err error) { t.Errorf("projection failure: %v", err) })
 	id := runID('a')
 	f.emit(t, id, true, journal.Event{Type: journal.EventStageStarted, Stage: "build", Attempt: 1})
 
@@ -174,7 +181,7 @@ func TestCatchUpAfterARestartPagesThroughEveryStaleRun(t *testing.T) {
 	}
 	// A fresh runner stands for a restarted process: nothing was notified, and the
 	// page size of one forces the cursor to carry across pages.
-	runner, reader := f.runner(t, 1)
+	runner, reader := f.runner(t, 1, nil, func(err error) { t.Errorf("projection failure: %v", err) })
 	if n, err := runner.Sync(t.Context()); err != nil || n != len(ids) {
 		t.Fatalf("catch-up projected %d (%v), want %d", n, err, len(ids))
 	}
@@ -238,5 +245,30 @@ func TestProjectorWritesAreRefusedToTheAPIRole(t *testing.T) {
 	}
 	if _, err := f.api.Exec(t.Context(), `SELECT 1 FROM journal.run_seq`); err == nil {
 		t.Fatal("the API role read the journal counters the projector depends on")
+	}
+}
+
+func TestHealthReportsOpenGapsOncePerDistinctFailureAndClearsThemWhenRepaired(t *testing.T) {
+	f := newFixture(t)
+	var reported []error
+	health := &projectorpg.Health{}
+	runner, _ := f.runner(t, 0, health, func(err error) { reported = append(reported, err) })
+	if snap := health.Snapshot(); snap.ApplyFailures != 0 || !snap.LastDrainAt.IsZero() {
+		t.Fatalf("health before any pass = %+v", snap)
+	}
+	good, bad := runID('a'), runID('b')
+	f.emit(t, good, true)
+	f.emitWithGraphDigest(t, bad, true, "sha256:other")
+	for range 3 {
+		if _, err := runner.Sync(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap := health.Snapshot()
+	if snap.ApplyFailures != 1 || snap.LastDrainAt.IsZero() {
+		t.Fatalf("health with one unprojectable run = %+v, want one open gap and a completed pass", snap)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported %d times over 3 passes, want once per distinct failure: %v", len(reported), reported)
 	}
 }

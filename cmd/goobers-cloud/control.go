@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
+	"github.com/goobers/goobers/internal/cloud/projectorpg"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -125,6 +126,9 @@ type controlPlanes struct {
 	// nudged by the latter when an append commits.
 	journalReader journal.ReaderBackend
 	projectorWake chan struct{}
+	// projectorHealth is the projector's progress, shared across lease epochs, for
+	// the read service to report.
+	projectorHealth *projectorpg.Health
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }

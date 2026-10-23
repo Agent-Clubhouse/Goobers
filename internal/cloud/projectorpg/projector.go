@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -32,6 +33,43 @@ const (
 	DefaultPoll = time.Second
 )
 
+// Health is the projector's process-lifetime progress, shared across lease
+// epochs: it is what a read service reports as projection health.
+type Health struct {
+	mu            sync.Mutex
+	applyFailures int
+	lastDrainAt   time.Time
+}
+
+// HealthSnapshot is a point-in-time copy of Health.
+type HealthSnapshot struct {
+	// ApplyFailures counts runs the projector could not project and has not
+	// projected since: open gaps, dropped once a later pass repairs them.
+	ApplyFailures int
+	// LastDrainAt is when the last catch-up pass completed; zero until one has.
+	LastDrainAt time.Time
+}
+
+// Snapshot returns the current health. It is safe on a nil receiver, which
+// reports a projector that has not run.
+func (h *Health) Snapshot() HealthSnapshot {
+	if h == nil {
+		return HealthSnapshot{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return HealthSnapshot{ApplyFailures: h.applyFailures, LastDrainAt: h.lastDrainAt}
+}
+
+func (h *Health) record(failures int, at time.Time) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.applyFailures, h.lastDrainAt = failures, at
+	h.mu.Unlock()
+}
+
 // Config binds one projector epoch.
 type Config struct {
 	// Projector commits projections under the live projector lease handle.
@@ -46,6 +84,8 @@ type Config struct {
 	Poll  time.Duration
 	// Report receives per-run projection failures that do not stop the loop.
 	Report func(error)
+	// Health, when set, is updated after every completed pass.
+	Health *Health
 }
 
 // Runner projects journal history into the read model for one lease epoch.
@@ -125,6 +165,7 @@ func (r *Runner) Sync(ctx context.Context) (int, error) {
 			projected++
 		}
 		if len(stale) < r.config.Batch {
+			r.config.Health.record(len(r.failing), time.Now())
 			return projected, nil
 		}
 	}

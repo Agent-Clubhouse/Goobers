@@ -29,6 +29,8 @@ type ServeConfig struct {
 	Wake <-chan struct{}
 	// Report receives lease, epoch and per-run failures.
 	Report func(error)
+	// Health is shared across epochs and may be nil.
+	Health *Health
 	// Retry is the standby/backoff base interval (default 2s, capped at 1m).
 	Retry time.Duration
 }
@@ -56,7 +58,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 			if err != nil {
 				return err
 			}
-			runner, err := New(Config{Projector: projector, Journal: config.Journal, InstanceID: config.InstanceID, Wake: config.Wake, Report: report})
+			runner, err := New(Config{Projector: projector, Journal: config.Journal, InstanceID: config.InstanceID, Wake: config.Wake, Report: report, Health: config.Health})
 			if err != nil {
 				return err
 			}

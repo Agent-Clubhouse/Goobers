@@ -23,7 +23,7 @@ func projectorService(db databaseServices, services controlPlanes, report func(e
 	return func(ctx context.Context) error {
 		return projectorpg.Serve(ctx, projectorpg.ServeConfig{
 			Manager: manager, Pool: db.Pools.Transaction, Journal: services.journalReader,
-			InstanceID: db.InstanceID, Wake: services.projectorWake, Report: report,
+			InstanceID: db.InstanceID, Wake: services.projectorWake, Report: report, Health: services.projectorHealth,
 		})
 	}, nil
 }

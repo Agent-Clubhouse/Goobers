@@ -6,6 +6,7 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/projectorpg"
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
@@ -55,7 +56,7 @@ func constructJournal(_ context.Context, db databaseServices, _ controlAuth, man
 		return err
 	}
 	p.Journal = writer
-	p.journalReader, p.projectorWake = backend, wake
+	p.journalReader, p.projectorWake, p.projectorHealth = backend, wake, &projectorpg.Health{}
 	p.closers = append(p.closers, writer.Close)
 	return nil
 }
