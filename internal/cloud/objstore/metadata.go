@@ -38,6 +38,7 @@ type blobMutation interface {
 
 type metadataBlobStore interface {
 	blobstore.Store
+	blobstore.BoundedReader
 	AcquireMutation(context.Context, string, []byte) (blobMutation, error)
 	TryAcquireMutation(context.Context, string) (blobMutation, bool, error)
 }
@@ -177,6 +178,53 @@ func (m *Metadata) ApplyConfig(ctx context.Context, tx pgx.Tx, instanceID, diges
 	return tag.RowsAffected() == 1, nil
 }
 
+// RecordAndApplyGeneration publishes an archive and advances the applied pointer
+// under the live controller fence. applied_config retains the generation.
+func (m *Metadata) RecordAndApplyGeneration(
+	ctx context.Context,
+	manager *cloudlease.Manager,
+	handle *cloudlease.Handle,
+	instanceID string,
+	digest string,
+	archive []byte,
+) error {
+	if manager == nil || handle == nil {
+		return cloudlease.ErrStale
+	}
+	if err := m.RecordGeneration(ctx, instanceID, digest, archive); err != nil {
+		return err
+	}
+	return manager.WithFence(ctx, handle, func(
+		txCtx context.Context,
+		tx pgx.Tx,
+	) error {
+		var currentDigest string
+		var currentGeneration int64
+		err := tx.QueryRow(txCtx, `
+			SELECT digest,generation FROM control.applied_config
+			WHERE instance_id=$1 FOR UPDATE`,
+			instanceID,
+		).Scan(&currentDigest, &currentGeneration)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			currentGeneration = 0
+		case err != nil:
+			return fmt.Errorf("lock applied config: %w", err)
+		case currentDigest == digest:
+			return nil
+		}
+		applied, err := m.ApplyConfig(
+			txCtx, tx, instanceID, digest, currentGeneration+1)
+		if err != nil {
+			return err
+		}
+		if !applied {
+			return errors.New("applied config did not advance")
+		}
+		return nil
+	})
+}
+
 // PinGeneration prevents pruning while owner references the generation.
 func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner string) error {
 	mutation, err := m.blobs.AcquireMutation(ctx, digest, nil)
@@ -233,6 +281,62 @@ func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner 
 		return fmt.Errorf("touch pinned config generation: %w", err)
 	}
 	return nil
+}
+
+// UnpinGeneration releases one owner's retained-generation reference.
+func (m *Metadata) UnpinGeneration(
+	ctx context.Context,
+	instanceID string,
+	digest string,
+	owner string,
+) error {
+	tag, err := m.pool.Exec(ctx, `
+		DELETE FROM control.config_generation_pin
+		WHERE instance_id=$1 AND digest=$2 AND owner=$3`,
+		instanceID, digest, owner,
+	)
+	if err != nil {
+		return fmt.Errorf("unpin config generation: %w", err)
+	}
+	if tag.RowsAffected() > 1 {
+		return errors.New("unpin config generation removed multiple rows")
+	}
+	return nil
+}
+
+// GenerationArchive returns a bounded, digest-verified archive for this instance.
+func (m *Metadata) GenerationArchive(
+	ctx context.Context,
+	instanceID string,
+	digest string,
+	limit int64,
+) ([]byte, error) {
+	var blobDigest string
+	err := m.pool.QueryRow(ctx, `
+		SELECT blob_digest FROM control.config_generation
+		WHERE instance_id=$1 AND digest=$2`,
+		instanceID, digest,
+	).Scan(&blobDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrGenerationNotFound, digest)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load config generation pointer: %w", err)
+	}
+	if blobDigest != digest {
+		return nil, fmt.Errorf("%w: generation pointer digest mismatch", ErrGenerationInvalid)
+	}
+	archive, err := m.blobs.GetBounded(ctx, digest, limit)
+	switch {
+	case errors.Is(err, blobstore.ErrNotFound):
+		return nil, fmt.Errorf("%w: %s", ErrGenerationNotFound, digest)
+	case errors.Is(err, blobstore.ErrTooLarge):
+		return nil, fmt.Errorf("%w: archive exceeds limit", ErrGenerationInvalid)
+	case err != nil:
+		return nil, fmt.Errorf("load config generation blob: %w", err)
+	default:
+		return archive, nil
+	}
 }
 
 // PruneGeneration removes an unpinned pointer and marks newly unreferenced

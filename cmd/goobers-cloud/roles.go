@@ -15,8 +15,11 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/childworkflow"
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
+	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
+	"github.com/goobers/goobers/internal/cloud/generationpg"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/objstore"
@@ -180,6 +183,8 @@ type databaseServices struct {
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata
+	Generations         childworkflow.GenerationSource
+	ConfigActivator     cloudconfig.Activator
 	Acceptances         triggerqueue.SchedulerPolicyStore
 	SchemaCompatibility error
 	NewClaims           func(*cloudlease.Manager, *cloudlease.Handle) (cloudclaims.Services, error)
@@ -330,8 +335,27 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		return 1
 	}
 	acceptances.BindChildBlobs(blobs)
+	generations, err := objstore.NewGenerationSource(objects, *instanceID, "")
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: generation source initialization failed\n", role)
+		return 1
+	}
+	configActivator, err := generationpg.NewActivator(objects, *instanceID)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: generation activator initialization failed\n", role)
+		return 1
+	}
 	services = newDatabaseServices(pools, acceptances, compatibilityErr)
 	services.Blobs, services.Objects, services.Acceptances = blobs, objects, acceptances
+	services.Generations, services.ConfigActivator = generations, configActivator
+	bindAcceptanceFence := services.BindControllerFence
+	services.BindControllerFence = func(
+		manager *cloudlease.Manager,
+		handle *cloudlease.Handle,
+	) {
+		bindAcceptanceFence(manager, handle)
+		configActivator.BindFence(manager, handle)
+	}
 	services.Surrenders = objstore.SurrenderPlane{
 		Metadata: objects, InstanceID: *instanceID,
 	}
