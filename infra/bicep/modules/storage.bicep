@@ -10,12 +10,32 @@ param name string
 @description('Tags applied to the storage account.')
 param tags object = {}
 
+@description('Blob soft-delete retention used as a backstop after fenced GC (must cover the database PITR window).')
+@minValue(1)
+@maxValue(365)
+param blobSoftDeleteDays int = 30
+
 resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: name
   location: location
   tags: tags
   sku: {
     name: 'Standard_LRS'
+  }
+
+  resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
+    parent: storage
+    name: 'default'
+    properties: {
+      deleteRetentionPolicy: {
+        enabled: true
+        days: blobSoftDeleteDays
+      }
+      containerDeleteRetentionPolicy: {
+        enabled: true
+        days: blobSoftDeleteDays
+      }
+    }
   }
   kind: 'StorageV2'
   properties: {

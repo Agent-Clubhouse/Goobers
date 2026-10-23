@@ -3,6 +3,8 @@ package objstore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -23,6 +25,9 @@ type Metadata struct {
 	blobs interface {
 		blobstore.Store
 		Remove(context.Context, string) error
+		StampGCIntent(context.Context, string, string) (string, error)
+		Touch(context.Context, string, []byte) error
+		RemoveIfMatch(context.Context, string, string) (bool, error)
 	}
 }
 
@@ -30,6 +35,9 @@ type Metadata struct {
 func NewMetadata(pool *pgxpool.Pool, blobs interface {
 	blobstore.Store
 	Remove(context.Context, string) error
+	StampGCIntent(context.Context, string, string) (string, error)
+	Touch(context.Context, string, []byte) error
+	RemoveIfMatch(context.Context, string, string) (bool, error)
 }) (*Metadata, error) {
 	if pool == nil || blobs == nil {
 		return nil, errors.New("cloud object metadata requires PostgreSQL and blob storage")
@@ -73,7 +81,7 @@ func (m *Metadata) RecordGeneration(ctx context.Context, instanceID, digest stri
 		return err
 	}
 	defer m.releaseBlobLock(connection, digest)
-	if err := m.blobs.Put(ctx, digest, archive); err != nil {
+	if err := m.blobs.Touch(ctx, digest, archive); err != nil {
 		return fmt.Errorf("publish config generation blob: %w", err)
 	}
 	tx, err := connection.Begin(ctx)
@@ -117,15 +125,30 @@ func (m *Metadata) ApplyConfig(ctx context.Context, tx pgx.Tx, instanceID, diges
 
 // PinGeneration prevents pruning while owner references the generation.
 func (m *Metadata) PinGeneration(ctx context.Context, instanceID, digest, owner string) error {
-	_, err := m.pool.Exec(ctx, `
+	connection, err := m.acquireBlobLock(ctx, digest)
+	if err != nil {
+		return err
+	}
+	defer m.releaseBlobLock(connection, digest)
+	if err := m.blobs.Touch(ctx, digest, nil); err != nil {
+		return fmt.Errorf("touch pinned config generation: %w", err)
+	}
+	tx, err := connection.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO control.config_generation_pin (instance_id, digest, owner)
 		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
 		instanceID, digest, owner,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("pin config generation: %w", err)
 	}
-	return nil
+	if _, err := tx.Exec(ctx, "DELETE FROM control.blob_gc_candidate WHERE digest=$1", digest); err != nil {
+		return fmt.Errorf("cancel pinned blob GC: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // PruneGeneration removes an unpinned pointer and marks newly unreferenced
@@ -241,6 +264,11 @@ func (m *Metadata) sweepCandidate(
 	}
 	defer m.releaseBlobLock(connection, digest)
 	eligible := false
+	intentID, err := randomIntentID()
+	if err != nil {
+		return false, err
+	}
+	var intentETag string
 	err = manager.WithFence(ctx, handle, func(txCtx context.Context, tx pgx.Tx) error {
 		var referenced bool
 		if err := tx.QueryRow(txCtx, `
@@ -255,12 +283,20 @@ func (m *Metadata) sweepCandidate(
 			_, err := tx.Exec(txCtx, "DELETE FROM control.blob_gc_candidate WHERE digest=$1", digest)
 			return err
 		}
+		intentETag, err = m.blobs.StampGCIntent(txCtx, digest, intentID)
+		if err != nil {
+			if errors.Is(err, blobstore.ErrNotFound) {
+				intentETag = ""
+			} else {
+				return err
+			}
+		}
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.blob_gc_candidate
-			SET delete_started_at=clock_timestamp()
+			SET delete_started_at=clock_timestamp(), intent_id=$3, intent_etag=$4
 			WHERE digest=$1
 			  AND unreferenced_at <= (clock_timestamp()-$2::interval)`,
-			digest, retention,
+			digest, retention, intentID, intentETag,
 		)
 		eligible = err == nil && tag.RowsAffected() == 1
 		return err
@@ -268,21 +304,36 @@ func (m *Metadata) sweepCandidate(
 	if err != nil || !eligible {
 		return false, err
 	}
-	if err := m.blobs.Remove(ctx, digest); err != nil {
-		return false, fmt.Errorf("delete unreferenced blob: %w", err)
+	deleted := true
+	if intentETag != "" {
+		deleted, err = m.blobs.RemoveIfMatch(ctx, digest, intentETag)
+		if err != nil {
+			return false, fmt.Errorf("delete unreferenced blob: %w", err)
+		}
+	}
+	if !deleted {
+		return false, nil
 	}
 	if _, err := connection.Exec(ctx, `
 		DELETE FROM control.blob_gc_candidate AS candidate
 		WHERE candidate.digest=$1
-		  AND candidate.delete_started_at IS NOT NULL
+		  AND candidate.intent_id=$2
 		  AND NOT EXISTS (
 			SELECT 1 FROM control.config_generation WHERE blob_digest=$1
 		  )`,
-		digest,
+		digest, intentID,
 	); err != nil {
 		return false, fmt.Errorf("complete blob GC candidate: %w", err)
 	}
-	return true, nil
+	return deleted, nil
+}
+
+func randomIntentID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("create blob GC intent: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func (m *Metadata) acquireBlobLock(ctx context.Context, digest string) (*pgxpool.Conn, error) {

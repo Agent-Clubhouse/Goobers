@@ -142,7 +142,13 @@ func TestGCSweepRepublishRaceKeepsPinnedBlob(t *testing.T) {
 		_, err := metadata.SweepGC(t.Context(), manager, handle, time.Hour)
 		sweepDone <- err
 	}()
-	<-pausing.removing
+	select {
+	case <-pausing.removing:
+	case err := <-sweepDone:
+		t.Fatalf("GC failed before conditional remove: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("GC never reached conditional remove")
+	}
 
 	republishDone := make(chan error, 1)
 	go func() {
@@ -152,16 +158,23 @@ func TestGCSweepRepublishRaceKeepsPinnedBlob(t *testing.T) {
 		}
 		republishDone <- metadata.PinGeneration(t.Context(), "new-instance", digest, "active-run")
 	}()
-	select {
-	case err := <-republishDone:
-		t.Fatalf("republish escaped blob lock before delete completed: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	var backendPID int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT pid FROM pg_stat_activity
+		WHERE datname=current_database()
+		  AND state='idle'
+		  AND query LIKE '%pg_advisory_lock(hashtextextended%'
+		ORDER BY query_start DESC LIMIT 1`).Scan(&backendPID); err != nil {
+		t.Fatal(err)
 	}
-	close(pausing.resume)
-	if err := <-sweepDone; err != nil {
+	if _, err := pool.Exec(t.Context(), "SELECT pg_terminate_backend($1)", backendPID); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-republishDone; err != nil {
+		t.Fatal(err)
+	}
+	close(pausing.resume)
+	if err := <-sweepDone; err != nil {
 		t.Fatal(err)
 	}
 	if has, err := store.Has(t.Context(), digest); err != nil || !has {
@@ -209,6 +222,16 @@ func (s *pausingStore) Remove(ctx context.Context, digest string) error {
 	case <-s.resume:
 	}
 	return s.Azure.Remove(ctx, digest)
+}
+
+func (s *pausingStore) RemoveIfMatch(ctx context.Context, digest, etag string) (bool, error) {
+	close(s.removing)
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-s.resume:
+	}
+	return s.Azure.RemoveIfMatch(ctx, digest, etag)
 }
 
 func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Azure) {

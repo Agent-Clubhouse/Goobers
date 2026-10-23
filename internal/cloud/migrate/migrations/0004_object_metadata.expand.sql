@@ -43,5 +43,7 @@ CREATE TABLE control.applied_config (
 CREATE TABLE control.blob_gc_candidate (
     digest text PRIMARY KEY,
     unreferenced_at timestamptz NOT NULL,
-    delete_started_at timestamptz
+    delete_started_at timestamptz,
+    intent_id text,
+    intent_etag text
 );

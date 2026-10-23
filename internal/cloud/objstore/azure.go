@@ -131,6 +131,73 @@ func (a *Azure) Remove(ctx context.Context, digest string) error {
 	return nil
 }
 
+// StampGCIntent records a storage-side delete intent and returns its new ETag.
+func (a *Azure) StampGCIntent(ctx context.Context, digest, intentID string) (string, error) {
+	key, err := blobKey(digest)
+	if err != nil {
+		return "", err
+	}
+	client := a.client.ServiceClient().NewContainerClient(a.container).NewBlobClient(key)
+	response, err := client.SetMetadata(ctx, map[string]*string{"gc_intent": to.Ptr(intentID)}, nil)
+	if err != nil {
+		if hasStatus(err, 404) {
+			return "", fmt.Errorf("%w: %s", blobstore.ErrNotFound, digest)
+		}
+		return "", fmt.Errorf("stamp blob GC intent %s: %w", digest, err)
+	}
+	if response.ETag == nil {
+		return "", errors.New("cloud object store GC intent returned no ETag")
+	}
+	return string(*response.ETag), nil
+}
+
+// Touch clears a pending GC intent and changes the blob ETag. Supplying data
+// recreates a missing content-addressed blob before the caller publishes a row.
+func (a *Azure) Touch(ctx context.Context, digest string, data []byte) error {
+	if data != nil {
+		if err := a.Put(ctx, digest, data); err != nil {
+			return err
+		}
+	} else if _, err := a.Get(ctx, digest); err != nil {
+		return err
+	}
+	key, err := blobKey(digest)
+	if err != nil {
+		return err
+	}
+	client := a.client.ServiceClient().NewContainerClient(a.container).NewBlobClient(key)
+	if _, err := client.SetMetadata(ctx, map[string]*string{}, nil); err != nil {
+		if hasStatus(err, 404) {
+			return fmt.Errorf("%w: %s", blobstore.ErrNotFound, digest)
+		}
+		return fmt.Errorf("touch blob %s: %w", digest, err)
+	}
+	return nil
+}
+
+// RemoveIfMatch deletes only while the blob still carries the captured ETag.
+// False means another writer touched the blob after the GC intent was stamped.
+func (a *Azure) RemoveIfMatch(ctx context.Context, digest, etag string) (bool, error) {
+	key, err := blobKey(digest)
+	if err != nil {
+		return false, err
+	}
+	match := azcore.ETag(etag)
+	_, err = a.client.DeleteBlob(ctx, a.container, key, &azblob.DeleteBlobOptions{
+		AccessConditions: &blob.AccessConditions{
+			ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfMatch: &match},
+		},
+	})
+	switch {
+	case err == nil, hasStatus(err, 404):
+		return true, nil
+	case hasStatus(err, 412):
+		return false, nil
+	default:
+		return false, fmt.Errorf("conditionally delete blob %s: %w", digest, err)
+	}
+}
+
 func blobKey(digest string) (string, error) {
 	if !blobstore.ValidDigest(digest) {
 		return "", errors.New("cloud object store digest is invalid")
