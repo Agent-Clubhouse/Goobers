@@ -51,6 +51,7 @@ Options:
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
   --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
   --self-execution POLICY        Must be deny (default deny)
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
@@ -62,6 +63,7 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue string
+	webhookSecretFile                                                string
 	checkAssembly                                                    bool
 }
 
@@ -71,6 +73,7 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.cert, "tls-cert", "", "TLS certificate")
 	f.StringVar(&o.key, "tls-key", "", "TLS private key")
 	f.StringVar(&o.podKey, "pod-key-file", environmentOr("GOOBERS_POD_KEY_FILE", ""), "signed pod key file")
+	f.StringVar(&o.webhookSecretFile, "github-webhook-secret-file", environmentOr("GOOBERS_GITHUB_WEBHOOK_SECRET_FILE", ""), "GitHub webhook HMAC secret file")
 	f.StringVar(&o.selfExecution, "self-execution", "deny", "must be deny")
 	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
 	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
@@ -165,6 +168,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	handler, stopWebhook, err := mountWebhook(ctx, o, db, services.Configuration, handler, logger)
+	if err != nil {
+		return err
+	}
+	defer stopWebhook()
 	var opts []httpapi.ServerOption
 	if o.cert != "" || o.key != "" {
 		opts = append(opts, httpapi.WithTLS(o.cert, o.key))

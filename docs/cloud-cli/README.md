@@ -213,6 +213,7 @@ Options:
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
   --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
   --self-execution POLICY        Must be deny (default deny)
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)

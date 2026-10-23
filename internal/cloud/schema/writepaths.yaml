@@ -196,9 +196,20 @@ tables:
 - schema: control
   table: source_receipt
   provisioned: true
-  fence: epoch
-  rationale: The controller records one immutable receipt per source delivery inside the controller-lease fence.
+  fence: unique key
+  rationale: One immutable receipt per source delivery, unique by (instance_id, source_key). The controller records
+    schedule and signal receipts inside the controller-lease fence. An API replica records authenticated webhook
+    deliveries without a lease; its transaction serialises on the source key, so concurrent redelivery resolves to
+    one receipt.
   readers:
+  - role: goobers_api
+    columns:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
   - role: goobers_controller
     columns:
     - instance_id
@@ -208,6 +219,14 @@ tables:
     - acceptance_ids
     - accepted_at
   writers:
+  - role: goobers_api
+    insert:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
   - role: goobers_controller
     insert:
     - instance_id
