@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
@@ -19,11 +21,11 @@ func childCurrentCustodyPolicy(cfg *instance.Config, source *instance.ConfigSet,
 	}
 	instance.ApplyGaggleCICommand(selected)
 	instance.ApplyGaggleOutboxMirror(selected)
-	admitted, err := admitChildValidationGoobers(cfg, goobersByName(selected))
+	admitted, err := admitChildValidationGoobers(cfg, runtimewiring.GoobersByName(selected))
 	if err != nil {
 		return childworkflow.AdmissionContext{}, err
 	}
-	machines, err := compileWorkflowMachines(selected, goobersByName(selected), admitted.HarnessNames, cfg.ExternalTelemetryConnectorNames())
+	machines, err := runtimewiring.CompileWorkflowMachines(selected, runtimewiring.GoobersByName(selected), admitted.HarnessNames, cfg.ExternalTelemetryConnectorNames())
 	if err != nil {
 		return childworkflow.AdmissionContext{}, err
 	}

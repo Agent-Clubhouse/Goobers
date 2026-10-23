@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/escalationnotify"
@@ -68,7 +70,7 @@ func replayTerminalReport(ctx context.Context, l instance.Layout, registrar term
 	if e.Kind == terminalreport.AbortLabel {
 		return replayTerminalAbortLabel(ctx, scoped, cfg, registrar, stores, project, e)
 	}
-	resolver, _, err := buildCredentials(cfg, stores, credentialBindingOwner(project), project.Name, nil, registrar)
+	resolver, _, err := runtimewiring.BuildCredentials(cfg, stores, runtimewiring.CredentialBindingOwner(project), project.Name, nil, registrar)
 	if err != nil {
 		return err
 	}

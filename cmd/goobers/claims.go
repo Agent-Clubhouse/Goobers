@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const (
@@ -249,7 +250,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -289,7 +290,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 
 	// Tier 1 local filesystem access is the authorization boundary. Route this
 	// mutation through the tier-2 access-control seam when #172/#469 lands.
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(root), stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(root), stderr)
 	defer stopTelemetry()
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation:         claimAdminOperationRelease,

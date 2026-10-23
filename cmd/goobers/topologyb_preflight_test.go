@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
@@ -63,7 +65,7 @@ func TestConfiguredCredentialGrantsTopologyB(t *testing.T) {
 	cfg := topologyBDaemonIdentityConfig(instance.TokenRef{})
 	project, backlog := topologyBProjectAndBacklog()
 
-	got, err := configuredCredentialGrants(cfg, project, backlog)
+	got, err := runtimewiring.ConfiguredCredentialGrants(cfg, project, backlog)
 	if err != nil {
 		t.Fatal(err)
 	}

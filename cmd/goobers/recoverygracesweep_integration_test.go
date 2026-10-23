@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -93,11 +94,11 @@ func TestIntegrationRecoveryGraceWindowDeletesContentlessDespiteGrace(t *testing
 	}
 
 	nodiffJustification, found := f.reclamationJustification("nodiff-grace")
-	if !found || nodiffJustification != reclaimStoredNoDiff {
+	if !found || nodiffJustification != runtimewiring.ReclaimStoredNoDiff {
 		t.Fatalf("stored-no-diff retirement was not journaled: found=%v justification=%q", found, nodiffJustification)
 	}
 	bookkeepingJustification, found := f.reclamationJustification("bookkeeping-grace")
-	if !found || bookkeepingJustification != reclaimBookkeepingOnly {
+	if !found || bookkeepingJustification != runtimewiring.ReclaimBookkeepingOnly {
 		t.Fatalf("bookkeeping-only retirement was not journaled: found=%v justification=%q", found, bookkeepingJustification)
 	}
 
@@ -148,7 +149,7 @@ func TestIntegrationRecoveryGraceWindowOperatorDryRunHoldsEverything(t *testing.
 	if _, err := os.Stat(stale); err != nil {
 		t.Fatalf("operator dry-run reclaimed a stale incomplete reservation: %v", err)
 	}
-	for _, want := range []string{reclaimStoredNoDiff, reclaimBookkeepingOnly} {
+	for _, want := range []string{runtimewiring.ReclaimStoredNoDiff, runtimewiring.ReclaimBookkeepingOnly} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("operator dry-run output did not name candidate rule %q: %s", want, stdout)
 		}

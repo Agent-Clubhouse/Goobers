@@ -2,22 +2,16 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
-
-func validateStartupRoot(layout instance.Layout) error {
-	if _, err := os.Stat(layout.ConfigFile()); err != nil {
-		return fmt.Errorf("%s not found (not an instance root — run `goobers init` first)", layout.ConfigFile())
-	}
-	return instance.RequireCurrentRoot(layout.Root)
-}
 
 type statusRootIdentity struct {
 	DecommissionedAt   *time.Time `json:"decommissionedAt,omitempty"`
@@ -33,19 +27,8 @@ type statusRootIdentity struct {
 	DaemonProblem      string     `json:"daemonProblem,omitempty"`
 }
 
-func canonicalStatusRoot(path string) string {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
-		return resolved
-	}
-	return absolute
-}
-
 func inspectStatusRoot(layout instance.Layout, now time.Time) statusRootIdentity {
-	result := statusRootIdentity{Path: canonicalStatusRoot(layout.Root), DaemonState: "not-running"}
+	result := statusRootIdentity{Path: runtimewiring.CanonicalStatusRoot(layout.Root), DaemonState: "not-running"}
 	readStatusRootLifecycle(&result, layout.Root)
 	id, err := instance.ReadRootIdentity(layout.Root)
 	switch {
@@ -67,7 +50,7 @@ func inspectStatusRoot(layout instance.Layout, now time.Time) statusRootIdentity
 	if !running {
 		return result
 	}
-	if owner == nil || owner.PID <= 0 || owner.InstanceRoot == "" || canonicalStatusRoot(owner.InstanceRoot) != result.Path {
+	if owner == nil || owner.PID <= 0 || owner.InstanceRoot == "" || runtimewiring.CanonicalStatusRoot(owner.InstanceRoot) != result.Path {
 		result.DaemonState, result.DaemonProblem = "ownership-unverified", "The held daemon lock does not identify this root and a valid owning PID."
 		return result
 	}

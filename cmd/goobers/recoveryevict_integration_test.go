@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -44,9 +46,9 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 	}
 
 	cloneURL := func(apiv1.RepoRef) (string, error) { return source, nil }
-	previous := repoCloneURL
-	repoCloneURL = cloneURL
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = cloneURL
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 
 	// Cap the inventory at exactly 2: one slot for a run still in flight
 	// (must survive eviction untouched) and one for a terminal, landed run
@@ -56,7 +58,7 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 		Retention: instance.RetentionConfig{Recovery: &instance.RecoverySnapshotConfig{MaxSnapshots: 2}},
 	}
 	key := (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}).CanonicalKey()
-	root, err := prepareRecoveryInventory(layout.Root)
+	root, err := runtimewiring.PrepareRecoveryInventory(layout.Root)
 	if err != nil {
 		t.Fatal(err)
 	}

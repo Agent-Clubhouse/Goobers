@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -41,18 +43,18 @@ func TestRecoveryRestoreSelectsProviderCompleteIdentity(t *testing.T) {
 	}}
 	for _, expected := range config.Repos {
 		key := (providers.RepositoryRef{Provider: providers.ProviderKind(expected.Provider), URL: expected.BaseURL, Owner: expected.Owner, Project: expected.Project, Name: expected.Name}).CanonicalKey()
-		got, err := recoveryConfiguredProject(config, key)
+		got, err := runtimewiring.RecoveryConfiguredProject(config, key)
 		if err != nil || !sameConfiguredRepo(expected, got) {
 			t.Fatalf("selected wrong recovery destination: %+v %v", got, err)
 		}
 	}
 	for _, key := range []string{"github|||other|repo|", "ado||unknown|team|repo|", "gitea|other.example||team|repo|"} {
-		if _, err := recoveryConfiguredProject(config, key); err == nil {
+		if _, err := runtimewiring.RecoveryConfiguredProject(config, key); err == nil {
 			t.Fatal("unconfigured recovery identity accepted")
 		}
 	}
 	config.Repos = append(config.Repos, config.Repos[0])
-	if _, err := recoveryConfiguredProject(config, "github|||team|repo|"); err == nil {
+	if _, err := runtimewiring.RecoveryConfiguredProject(config, "github|||team|repo|"); err == nil {
 		t.Fatal("ambiguous recovery configuration accepted")
 	}
 }
@@ -259,7 +261,7 @@ func TestRecoveryConfiguredGitEnvironmentSupportsStoreAndAppSources(t *testing.T
 			Name:     "Goobers",
 			Token:    instance.TokenRef{Store: "vault/recovery"},
 		}
-		resolver, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registry, recoveryTestSecretStore{value: "store-recovery-token"})
+		resolver, err := runtimewiring.GithubWorktreeGitEnvironment(t.TempDir(), repo, registry, recoveryTestSecretStore{value: "store-recovery-token"})
 		if err != nil {
 			t.Fatalf("githubWorktreeGitEnvironment: %v", err)
 		}
@@ -276,9 +278,9 @@ func TestRecoveryConfiguredGitEnvironmentSupportsStoreAndAppSources(t *testing.T
 	})
 
 	t.Run("github app", func(t *testing.T) {
-		previous := newGitHubAppTokenSource
-		t.Cleanup(func() { newGitHubAppTokenSource = previous })
-		newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		previous := runtimewiring.NewGitHubAppTokenSource
+		t.Cleanup(func() { runtimewiring.NewGitHubAppTokenSource = previous })
+		runtimewiring.NewGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 			return func(context.Context) (string, time.Time, error) {
 				return "app-recovery-token", time.Time{}, nil
 			}, nil
@@ -295,7 +297,7 @@ func TestRecoveryConfiguredGitEnvironmentSupportsStoreAndAppSources(t *testing.T
 				PrivateKey:     &instance.TokenRef{File: filepath.Join(t.TempDir(), "app.pem")},
 			},
 		}
-		resolver, err := githubWorktreeGitEnvironment(t.TempDir(), repo, registry, nil)
+		resolver, err := runtimewiring.GithubWorktreeGitEnvironment(t.TempDir(), repo, registry, nil)
 		if err != nil {
 			t.Fatalf("githubWorktreeGitEnvironment: %v", err)
 		}

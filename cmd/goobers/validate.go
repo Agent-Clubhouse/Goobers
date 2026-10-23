@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -34,43 +36,6 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
-
-// copilotAuthCheckArgs is the confirmed non-interactive Copilot authentication
-// probe (#284/#271). The Copilot CLI has no auth-status subcommand, and
-// `--version` succeeds even when signed out, so authentication is verified by a
-// minimal, tool-disabled prompt: it exits 0 when the token is valid AND has the
-// "Copilot Requests" fine-grained permission, and non-zero with an actionable
-// auth error otherwise. `--available-tools=` (empty allowlist) disables every
-// tool so the probe can never touch the filesystem or run shell commands;
-// `--allow-all-tools` is still required to enable non-interactive mode.
-// Configured forwarding launchers use a headless completion posture
-// (`--silent --no-ask-user --autopilot`) and expose only `view` plus
-// `task_complete`; no filesystem mutation or shell tool is exposed.
-//
-// This runs in BOTH the operator-invoked `goobers validate --check-harness` and
-// the automatic daemon-startup preflight (adapterFor wires it into every
-// CopilotAdapter, so preflightAgenticHarnesses picks it up too — #238). Direct
-// Copilot and version-1 forwarding launchers use this model-request fallback;
-// version-2 launchers can replace it with their declared non-agentic auth probe.
-// The fallback runs once per process lifetime (once per `up` daemon boot, once
-// per `run`), only for harnesses an agentic stage actually references.
-var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
-
-// copilotAuthCheckSuccessLine is the reply copilotAuthCheckArgs asks for. The
-// probe passes as soon as the CLI prints it, without waiting out the CLI's own
-// shutdown, which on slow hosts took long enough after a valid reply to push
-// the probe past harnessPreflightTimeout (#5165).
-const copilotAuthCheckSuccessLine = "ok"
-
-// harnessPreflightTimeout bounds a single harness preflight (its version check
-// plus the auth probe's real API round-trip) so a hung CLI or network can't
-// hang `goobers validate` or `goobers up`/`run` startup. One value serves all
-// three so they cannot disagree about whether the same harness is healthy.
-// It is deliberately generous: a valid Copilot probe was measured at 92-100s
-// end to end on Windows (#5165), so the former 90s cap failed healthy hosts.
-// The probe returns as soon as its reply arrives, so the cap only costs time
-// when a CLI or network is genuinely hung.
-const harnessPreflightTimeout = 180 * time.Second
 
 const placeholderFindingCode = "PLACEHOLDER001"
 const sourceTreeAdvisoryCode = "SOURCE001"
@@ -365,12 +330,12 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// at daemon startup — including WithKnownChecks, which nothing else here
 	// validates (#124). A config that fails this would also fail to start
 	// the daemon; catching that now, at `validate` time, is the whole point.
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, set, goobers)
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		file := diagnosticFile(root, configDir)
-		var instructionsErr *gooberInstructionsError
+		var instructionsErr *runtimewiring.GooberInstructionsError
 		if errors.As(err, &instructionsErr) {
 			file = gooberDiagnosticFile(root, configDir, set, instructionsErr.Goober)
 		}
@@ -388,14 +353,14 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
 		return 1
 	}
-	modelCredential, _, err := agentModelCredentialResolver(cfg, harnessStores, "")
+	modelCredential, _, err := runtimewiring.AgentModelCredentialResolver(cfg, harnessStores, "")
 	if err != nil {
 		pf(stdout, "INVALID credentials:\n  %v\n", err)
 		diagnostics.add(diagnosticFile(root, configFile), "/credentials", "INSTANCE003", string(validate.Error), err.Error())
 		return 1
 	}
-	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
+	_, _, _, harnessWarnings, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		options.deferModelDiscovery, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
@@ -514,7 +479,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, perHarnessModelCredential(cfg, harnessStores), diagnostics) {
+		}, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, perHarnessModelCredential(cfg, harnessStores), diagnostics) {
 			return 1
 		}
 	}
@@ -831,7 +796,7 @@ func checkGaggleRepositoryBindings(
 			pf(stdout, "INFO Gaggle/%s: %s\n", gaggle.Name, message)
 			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
 				"/spec/project", "REPO003", diagnosticSeverityInfo, message)
-		} else if _, found := configuredRepoForProject(cfg, project); !found {
+		} else if _, found := runtimewiring.ConfiguredRepoForProject(cfg, project); !found {
 			message := unmatchedGaggleRepoMessage("spec.project", project, cfg.Repos)
 			pf(stdout, "ERROR Gaggle/%s: %s\n", gaggle.Name, message)
 			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
@@ -839,7 +804,7 @@ func checkGaggleRepositoryBindings(
 			ok = false
 		}
 		for i, repo := range gaggle.Spec.AdditionalRepos {
-			if _, found := configuredRepoForProject(cfg, repo); found {
+			if _, found := runtimewiring.ConfiguredRepoForProject(cfg, repo); found {
 				continue
 			}
 			field := fmt.Sprintf("spec.additionalRepos[%d]", i)
@@ -917,16 +882,16 @@ func instanceRepoName(repo instance.RepoRef) string {
 }
 
 func compiledConfigDiagnostic(root, configDir string, set *instance.ConfigSet, err error) (file, path, code string) {
-	var harnessErr *gooberHarnessConfigError
+	var harnessErr *runtimewiring.GooberHarnessConfigError
 	if errors.As(err, &harnessErr) {
 		return gooberDiagnosticFile(root, configDir, set, harnessErr.Goober), "/spec/harness", "HARNESS002"
 	}
-	var compileErr *workflowCompileError
+	var compileErr *runtimewiring.WorkflowCompileError
 	if errors.As(err, &compileErr) {
 		source, _ := set.WorkflowSource(compileErr.Gaggle, compileErr.Workflow)
 		return configSourceDiagnosticFile(root, configDir, source), "/", "COMPILE001"
 	}
-	var digestErr *workflowDigestError
+	var digestErr *runtimewiring.WorkflowDigestError
 	if errors.As(err, &digestErr) {
 		source, _ := set.WorkflowSource(digestErr.Gaggle, digestErr.Workflow)
 		return configSourceDiagnosticFile(root, configDir, source), "/", "COMPILE002"
@@ -1312,7 +1277,7 @@ func checkTargetRepositoriesAtFile(
 // preflight the exact credential path a real run would use.
 func resolveRepoToken(repo instance.RepoRef, refName string, stores credentials.StoreResolver) (string, error) {
 	if repo.GitHubAppAuth() {
-		mint, err := newGitHubAppTokenSource(repo, nil, stores)
+		mint, err := runtimewiring.NewGitHubAppTokenSource(repo, nil, stores)
 		if err != nil {
 			return "", err
 		}
@@ -1470,20 +1435,15 @@ func scrubRepositoryError(err error, token string) string {
 	return string(scrubber.Scrub([]byte(err.Error())))
 }
 
-// harnessAdapterFor is the harness-adapter lookup checkHarnessesAtSources uses.
-// Package-level so tests can substitute a fake lookup without depending on a
-// real, installed, signed-in Copilot CLI.
-var harnessAdapterFor = adapterFor
-
 // perHarnessModelCredential adapts agentModelCredentialResolver to the
 // per-harness resolver shape checkHarnessesAtSources takes (#5148).
 func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreResolver) func(apiv1.Harness) (harnessModelCredential, error) {
 	return func(h apiv1.Harness) (harnessModelCredential, error) {
-		resolve, label, err := agentModelCredentialExpiringResolver(cfg, stores, h)
+		resolve, label, err := runtimewiring.AgentModelCredentialExpiringResolver(cfg, stores, h)
 		if err != nil {
 			return harnessModelCredential{}, err
 		}
-		grant, _ := agentModelGrant(cfg, h)
+		grant, _ := runtimewiring.AgentModelGrant(cfg, h)
 		if grant != nil && grant.GitHubApp != nil {
 			return harnessModelCredential{
 				ResolveExpiring: credreadiness.ExpiringResolve(resolve),
@@ -1493,7 +1453,7 @@ func perHarnessModelCredential(cfg *instance.Config, stores credentials.StoreRes
 				Label:           label,
 			}, nil
 		}
-		ref, ok := agentModelCredentialRef(cfg, h)
+		ref, ok := runtimewiring.AgentModelCredentialRef(cfg, h)
 		return harnessModelCredential{ResolveExpiring: credreadiness.ExpiringResolve(resolve), Ref: ref, RefFound: ok, Label: label}, nil
 	}
 }
@@ -1623,7 +1583,7 @@ func checkHarnessesAtSources(
 			}
 		}
 
-		adapter, err := harnessAdapterFor(h, environment, harnessCommand, modelCredential)
+		adapter, err := runtimewiring.HarnessAdapterFor(h, environment, harnessCommand, modelCredential)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
@@ -1634,8 +1594,8 @@ func checkHarnessesAtSources(
 		// check and the automatic daemon-startup preflight verify sign-in, not
 		// just CLI presence — a fine-grained PAT lacking the "Copilot Requests"
 		// permission (#284) passes --version but fails the probe.
-		ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
-		info, err := preflightAdapterConfig(ctx, adapter, g.Spec)
+		ctx, cancel := context.WithTimeout(context.Background(), runtimewiring.HarnessPreflightTimeout)
+		info, err := runtimewiring.PreflightAdapterConfig(ctx, adapter, g.Spec)
 		cancel()
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
@@ -1656,7 +1616,7 @@ func checkHarnessesAtSources(
 			// from and whether it can be observed under the identity running
 			// the check -- which is not the identity a scheduled run uses
 			// (#5261).
-			readinessCtx, cancelReadiness := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+			readinessCtx, cancelReadiness := context.WithTimeout(context.Background(), runtimewiring.HarnessPreflightTimeout)
 			check := credential.readiness(readinessCtx, readiness.CheckedAt)
 			cancelReadiness()
 			readiness.Checks = append(readiness.Checks, check)
@@ -1704,21 +1664,4 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 	if len(collectors) > 0 {
 		collectors[0].add(file, path, code, severity, message)
 	}
-}
-
-// adapterFor returns the registered adapter for a goober-declared harness kind,
-// including the instance's configured ambient environment passthrough.
-//
-// The CopilotAdapter carries copilotAuthCheckArgs so every preflight — the
-// operator-invoked `validate --check-harness` AND the automatic daemon-startup
-// preflight (preflightAgenticHarnesses) — verifies sign-in, not just CLI
-// presence (#238). Both look the harness up through here, so wiring the probe
-// once here is what closes #238's "catch a signed-out harness at startup, not
-// mid-run" criterion.
-func adapterFor(h apiv1.Harness, environment harness.EnvironmentConfig, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, environment, harnessCommand, "", "", false, modelCredential, false)
-	if err != nil {
-		return nil, err
-	}
-	return registry.Get(string(h))
 }

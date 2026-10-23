@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -170,7 +172,7 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: create continuation run id: %v\n", err)
 		return 2
 	}
-	stopTelemetry := startCommandJournalTelemetry(layoutFor(root), stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(layoutFor(root), stderr)
 	defer stopTelemetry()
 	request := journal.ContinuationRequest{
 		RunID: runID, SourceRunID: sourceID, ExpectedTerminalSeq: *terminalSeq,

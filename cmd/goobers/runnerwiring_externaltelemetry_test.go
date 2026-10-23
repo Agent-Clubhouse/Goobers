@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -21,7 +23,7 @@ import (
 
 func TestBuildExternalTelemetryExecutorRunsConfiguredFake(t *testing.T) {
 	recorder := &externalTelemetryTestRecorder{}
-	deterministic, err := buildExternalTelemetryExecutor(externaltelemetry.Configuration{
+	deterministic, err := runtimewiring.BuildExternalTelemetryExecutor(externaltelemetry.Configuration{
 		Connectors: []externaltelemetry.ConnectorConfig{{
 			Name:    "fixture",
 			Kind:    externaltelemetry.FakeKind,
@@ -63,7 +65,7 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 	if err != nil {
 		t.Fatalf("load fixture workflow: %v (report: %+v)", err, report)
 	}
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil, nil)
+	machines, _, _, err := runtimewiring.CompiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil, nil)
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}
@@ -72,7 +74,7 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 	if machine == nil {
 		t.Fatalf("compiled workflows do not contain %+v", identity)
 	}
-	repos, err := repoRefsByWorkflow(set)
+	repos, err := runtimewiring.RepoRefsByWorkflow(set)
 	if err != nil {
 		t.Fatalf("resolve fixture repository: %v", err)
 	}
@@ -192,7 +194,7 @@ func TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector(t *testin
 		{name: "no connectors configured", cfg: configured(), wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil,
+			_, _, _, err := runtimewiring.CompiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil,
 				tc.cfg.ExternalTelemetryConnectorNames())
 			if !tc.wantErr {
 				if err != nil {
@@ -200,7 +202,7 @@ func TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector(t *testin
 				}
 				return
 			}
-			var compileErr *workflowCompileError
+			var compileErr *runtimewiring.WorkflowCompileError
 			if !errors.As(err, &compileErr) || compileErr.Workflow != "query-health" {
 				t.Fatalf("compile error = %v, want a workflowCompileError for query-health", err)
 			}
@@ -212,7 +214,7 @@ func TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector(t *testin
 }
 
 func TestBuildExternalTelemetryRegistryValidatesPluginConfigBeforeRun(t *testing.T) {
-	_, err := buildExternalTelemetryRegistry(externaltelemetry.Configuration{
+	_, err := runtimewiring.BuildExternalTelemetryRegistry(externaltelemetry.Configuration{
 		Connectors: []externaltelemetry.ConnectorConfig{{
 			Name:    "fixture",
 			Kind:    externaltelemetry.FakeKind,
@@ -226,7 +228,7 @@ func TestBuildExternalTelemetryRegistryValidatesPluginConfigBeforeRun(t *testing
 }
 
 func TestBuildExternalTelemetryExecutorRejectsUnregisteredPlugin(t *testing.T) {
-	_, err := buildExternalTelemetryExecutor(externaltelemetry.Configuration{
+	_, err := runtimewiring.BuildExternalTelemetryExecutor(externaltelemetry.Configuration{
 		Connectors: []externaltelemetry.ConnectorConfig{{
 			Name:    "metrics",
 			Kind:    "organization-plugin",

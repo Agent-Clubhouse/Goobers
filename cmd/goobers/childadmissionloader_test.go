@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/configgeneration"
@@ -46,8 +48,8 @@ func newPinnedChildFixture(t *testing.T, editConfig ...func(string)) pinnedChild
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(layout.ConfigDir(), set, goobers)
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(layout.ConfigDir(), set, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}

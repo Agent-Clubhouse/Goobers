@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -20,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/runner"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -792,7 +795,7 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 		}
 	}
 
-	cloneURLFn := repoCloneURL
+	cloneURLFn := runtimewiring.RepoCloneURL
 	if cloneURLFn == nil {
 		cloneURLFn = runner.DefaultRepoCloneURL
 	}
@@ -819,7 +822,7 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 			return nil, fmt.Errorf("resolve workcopies root for gaggle %q: %w", gaggle.Name, err)
 		}
 		workcopiesRoot := scoped.WorkcopiesDir()
-		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+		if configuredProject, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
 			workcopiesRoot = scoped.WorkcopiesBaseDir()
 		}
 		if seenRoots[workcopiesRoot] {

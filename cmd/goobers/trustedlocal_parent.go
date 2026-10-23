@@ -117,7 +117,7 @@ func (p *trustedLocalParent) guidance(ctx context.Context, env apiv1.InvocationE
 		return nil, nil, err
 	}
 	defer release()
-	kit, err := (agenticKitWriter{registrar: p.source.service.shared}).buildSnapshotKit(p.source.service.layout, snapshot, env, agentickit.ModeInvoke)
+	kit, err := snapshot.BuildAgenticKit(p.source.service.layout, env, agentickit.ModeInvoke, p.source.service.shared)
 	if err != nil {
 		return nil, nil, err
 	}

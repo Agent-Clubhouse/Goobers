@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // selectIssueRecovery resolves a retained candidate for an already-authorized
@@ -16,7 +17,7 @@ import (
 // authorize access from another run's pod. Callers must provide those checks.
 // Archive integrity and availability are verified again by restoration.
 func selectIssueRecovery(ctx context.Context, layout instance.Layout, repositoryKey, issueID string, now time.Time) (recovery.InventoryEntry, error) {
-	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
+	entries, _, err := runtimewiring.ReadConfiguredRecoveryInventory(ctx, layout)
 	if err != nil {
 		return recovery.InventoryEntry{}, err
 	}

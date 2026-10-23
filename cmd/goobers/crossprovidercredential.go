@@ -7,6 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providerconfig"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -46,7 +47,7 @@ func stageCredentialIsBacklogFamily(cfg stageProviderConfig) bool {
 	if cfg.token == "" {
 		return isBacklogRoleCapability(cfg.capability)
 	}
-	for _, c := range backlogRoleCapabilities {
+	for _, c := range runtimewiring.BacklogRoleCapabilities {
 		if delivered := os.Getenv(executor.CredentialEnvVar(string(c))); delivered != "" && delivered == cfg.token {
 			return true
 		}
@@ -72,7 +73,7 @@ func decompositionIssueRepo(root string) (providers.RepositoryRef, error) {
 // isBacklogRoleCapability reports whether c is in the capability family that
 // routes to a gaggle's backlog provider.
 func isBacklogRoleCapability(c capability.Capability) bool {
-	for _, backlog := range backlogRoleCapabilities {
+	for _, backlog := range runtimewiring.BacklogRoleCapabilities {
 		if c == backlog {
 			return true
 		}

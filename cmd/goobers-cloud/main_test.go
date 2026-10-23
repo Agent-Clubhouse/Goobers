@@ -37,46 +37,6 @@ func TestHelpGolden(t *testing.T) {
 	}
 }
 
-func TestWorkerUsesWorkerHost(t *testing.T) {
-	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
-	t.Cleanup(func() {
-		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
-	})
-	var got workerhost.Config
-	newWorkerHost = func(cfg workerhost.Config) (*workerhost.Host, error) {
-		got = cfg
-		return &workerhost.Host{}, nil
-	}
-	runWorkerHost = func(context.Context, *workerhost.Host) error { return nil }
-	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
-
-	code, stdout, stderr := runForTest("worker", "--task-queue", "one", "--task-queue", "two", "--health-addr", ":8080")
-	if code != 0 || stderr != "" {
-		t.Fatalf("worker: code=%d stderr=%q", code, stderr)
-	}
-	if strings.Join(got.TaskQueues, ",") != "one,two" || got.HealthAddr != ":8080" {
-		t.Fatalf("worker host config = %+v", got)
-	}
-	if !strings.Contains(stdout, "drained cleanly") {
-		t.Fatalf("worker output = %q", stdout)
-	}
-}
-
-func TestWorkerMapsHostErrors(t *testing.T) {
-	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
-	t.Cleanup(func() {
-		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
-	})
-	newWorkerHost = func(workerhost.Config) (*workerhost.Host, error) { return &workerhost.Host{}, nil }
-	runWorkerHost = func(context.Context, *workerhost.Host) error { return workerhost.ErrAbandonedWork }
-	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
-
-	code, _, stderr := runForTest("worker")
-	if code != 3 || !strings.Contains(stderr, "drain timeout") {
-		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
-	}
-}
-
 func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	const password = "do-not-log-this-password"
 	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
@@ -165,5 +125,45 @@ func TestCompletionCommand(t *testing.T) {
 	code, stdout, stderr := runForTest("completion", "bash")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "goobers-cloud") {
 		t.Fatalf("completion bash: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestWorkerUsesWorkerHost(t *testing.T) {
+	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
+	t.Cleanup(func() {
+		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
+	})
+	var got workerhost.Config
+	newWorkerHost = func(cfg workerhost.Config) (*workerhost.Host, error) {
+		got = cfg
+		return &workerhost.Host{}, nil
+	}
+	runWorkerHost = func(context.Context, *workerhost.Host) error { return nil }
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+
+	code, stdout, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir(), "--task-queue", "one", "--task-queue", "two", "--health-addr", ":8080")
+	if code != 0 || strings.Contains(stderr, "error:") {
+		t.Fatalf("worker: code=%d stderr=%q", code, stderr)
+	}
+	if strings.Join(got.TaskQueues, ",") != "one,two" || got.HealthAddr != ":8080" {
+		t.Fatalf("worker host config = %+v", got)
+	}
+	if !strings.Contains(stdout, "drained cleanly") {
+		t.Fatalf("worker output = %q", stdout)
+	}
+}
+
+func TestWorkerMapsHostErrors(t *testing.T) {
+	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
+	t.Cleanup(func() {
+		newWorkerHost, runWorkerHost, signalContext = originalNew, originalRun, originalSignal
+	})
+	newWorkerHost = func(workerhost.Config) (*workerhost.Host, error) { return &workerhost.Host{}, nil }
+	runWorkerHost = func(context.Context, *workerhost.Host) error { return workerhost.ErrAbandonedWork }
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+
+	code, _, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir())
+	if code != 3 || !strings.Contains(stderr, "drain timeout") {
+		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
 	}
 }

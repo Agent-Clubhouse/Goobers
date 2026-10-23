@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/daemonclient"
@@ -106,7 +108,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// heartbeat must cover exactly the window in which there is something alive
 	// to report on, and no longer. Stop() waits for the goroutine, so nothing
 	// is still emitting when the surrender PUT below runs.
-	fence := remoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
+	fence := runtimewiring.RemoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
 	stageCtx, stopFence, fenceErr := fence(ctx, apiv1.InvocationEnvelope{RunID: runID})
 	defer stopFence()
 	if fenceErr != nil {

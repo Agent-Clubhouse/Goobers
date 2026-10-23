@@ -6,16 +6,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
-type executionFenceStart func(context.Context, apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error)
-
-func localSharedExecutionFence(layout instance.Layout) executionFenceStart {
+func localSharedExecutionFence(layout instance.Layout) runtimewiring.ExecutionFenceStart {
 	return func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 		mode, err := localExecutionClaimVisibility(layout, env)
 		if err != nil || mode != "shared" {
@@ -52,50 +51,4 @@ func localExecutionClaimVisibility(layout instance.Layout, env apiv1.InvocationE
 	resolver := pinnedSharedClaimResolver{layout: layout}
 	_, _, mode, err := resolver.claimPolicy(claimsclient.Key{Gaggle: env.Gaggle, Provider: "github"}, env.RunID, env.WorkflowID)
 	return mode, err
-}
-
-type claimFencedDeterministic struct {
-	invoke.Deterministic
-	start executionFenceStart
-}
-
-func (e claimFencedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	ctx, stop, err := e.start(ctx, env)
-	defer stop()
-	if err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	result, err := e.Deterministic.Run(ctx, env, run)
-	return result, errors.Join(err, context.Cause(ctx))
-}
-
-type claimFencedGoober struct {
-	invoke.Goober
-	start executionFenceStart
-}
-
-// Preserve the runner's asset protection contract across the wrapper.
-func (e claimFencedGoober) HasAssetBundle() bool {
-	assets, ok := e.Goober.(interface{ HasAssetBundle() bool })
-	return ok && assets.HasAssetBundle()
-}
-
-func (e claimFencedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	ctx, stop, err := e.start(ctx, env)
-	defer stop()
-	if err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	result, err := e.Goober.Invoke(ctx, env)
-	return result, errors.Join(err, context.Cause(ctx))
-}
-
-func (e claimFencedGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	ctx, stop, err := e.start(ctx, env)
-	defer stop()
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	result, err := e.Goober.Review(ctx, env)
-	return result, errors.Join(err, context.Cause(ctx))
 }
