@@ -624,7 +624,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.enabled` | 3.1 | ga | supported | supported | preview | v0.4.0 |
 | `workflow.spec.gaggle` | 3.1 | ga | supported | supported | preview | dev |
 | `workflow.spec.gates` | 3.1 | ga | supported | supported | preview | dev |
-| `workflow.spec.maps` | 3.1 | preview | supported | unsupported | preview | dev |
+| `workflow.spec.maps` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.maps.bindings` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.maps.failurePolicy` | 3.1 | preview | supported | supported | preview | dev |
 | `workflow.spec.maps.itemTimeoutSeconds` | 3.1 | preview | supported | supported | preview | dev |

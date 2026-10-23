@@ -4,12 +4,11 @@
   "cloudReady": false,
   "summary": {
     "blockedWorkflows": 2,
-    "totalBlockers": 8,
+    "totalBlockers": 7,
     "configFixes": 4,
-    "waitingOnP4": 4,
+    "waitingOnP4": 3,
     "p4Issues": [
       7753,
-      7755,
       7758,
       7763
     ]
@@ -31,19 +30,6 @@
             "description": "wait for engine parity in #7753",
             "issue": 7753,
             "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7753"
-          }
-        },
-        {
-          "code": "RUNTIME001",
-          "feature": "spec.maps",
-          "stage": "map",
-          "path": "/spec/maps/0",
-          "message": "engine does not support spec.maps",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7755",
-            "issue": 7755,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7755"
           }
         },
         {
@@ -123,25 +109,6 @@
     }
   ],
   "blockers": [
-    {
-      "key": "RUNTIME001:spec.maps",
-      "code": "RUNTIME001",
-      "feature": "spec.maps",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7755",
-        "issue": 7755,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7755"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "map",
-          "path": "/spec/maps/0"
-        }
-      ]
-    },
     {
       "key": "RUNTIME001:spec.parallels",
       "code": "RUNTIME001",

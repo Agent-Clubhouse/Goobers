@@ -10,7 +10,6 @@ import (
 var (
 	ErrExperimentUnsupported = engineadmission.ErrExperimentUnsupported
 	ErrParallelsUnsupported  = engineadmission.ErrParallelsUnsupported
-	ErrMapsUnsupported       = engineadmission.ErrMapsUnsupported
 )
 
 // UnsupportedFeatureError names a refused declaration and wraps its sentinel.
