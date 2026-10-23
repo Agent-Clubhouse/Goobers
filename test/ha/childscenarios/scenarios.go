@@ -22,9 +22,14 @@ type ChildFamilyObservation struct {
 	// means the sealed child was restarted rather than adopted.
 	ChildTemporalRunID string
 	Attempt            int
-	StagePod           string
-	Adopted            bool
-	ChargedAttempts    int
+	// StagePodUID is the stage pod's Kubernetes UID. Pod names can be
+	// deterministic, so only the UID tells adoption from recreation.
+	StagePodUID string
+	// OwnerWorker identifies the worker pod (by UID) that owns the child's
+	// execution; eviction must move ownership to a different worker.
+	OwnerWorker     string
+	Adopted         bool
+	ChargedAttempts int
 	// AdmittedChildren counts accepted lineage rows for the parent stage
 	// occurrence; anything but one is a duplicate admission.
 	AdmittedChildren int
@@ -52,7 +57,8 @@ func RunCHAOS13Child(ctx context.Context, fixture Fixture) error {
 	}
 	if before.ParentRunID == "" || before.ChildID == "" ||
 		before.ChildTemporalRunID == "" || before.Attempt < 1 ||
-		before.StagePod == "" || before.AdmittedChildren != 1 {
+		before.StagePodUID == "" || before.OwnerWorker == "" ||
+		before.ChargedAttempts < 1 || before.AdmittedChildren != 1 {
 		return fmt.Errorf("CHAOS-13-CHILD: incomplete initial observation: %+v", before)
 	}
 	if err := fixture.EvictOwningWorker(ctx, before); err != nil {
@@ -74,11 +80,14 @@ func compare(before, after ChildFamilyObservation) error {
 	case after.ChildTemporalRunID != before.ChildTemporalRunID:
 		return fmt.Errorf("CHAOS-13-CHILD: child restarted as run %q (was %q)",
 			after.ChildTemporalRunID, before.ChildTemporalRunID)
+	case after.OwnerWorker == "" || after.OwnerWorker == before.OwnerWorker:
+		return fmt.Errorf("CHAOS-13-CHILD: owner worker %q did not change from %q; eviction was a no-op",
+			after.OwnerWorker, before.OwnerWorker)
 	case !after.Adopted:
 		return fmt.Errorf("CHAOS-13-CHILD: child stage was not adopted: %+v", after)
-	case after.StagePod != before.StagePod:
-		return fmt.Errorf("CHAOS-13-CHILD: second stage pod %q replaced %q",
-			after.StagePod, before.StagePod)
+	case after.StagePodUID != before.StagePodUID:
+		return fmt.Errorf("CHAOS-13-CHILD: stage pod %q replaced %q",
+			after.StagePodUID, before.StagePodUID)
 	case after.Attempt != before.Attempt:
 		return fmt.Errorf("CHAOS-13-CHILD: attempt changed %d -> %d", before.Attempt, after.Attempt)
 	case after.ChargedAttempts != before.ChargedAttempts:

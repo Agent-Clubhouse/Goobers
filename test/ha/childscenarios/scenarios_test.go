@@ -28,9 +28,11 @@ func (f *fakeFixture) WaitForChildFamily(_ context.Context, parent string) (Chil
 func settled() *fakeFixture {
 	before := ChildFamilyObservation{
 		ParentRunID: "parent", ChildID: "child", ChildTemporalRunID: "child-run",
-		Attempt: 1, StagePod: "stage-pod", ChargedAttempts: 1, AdmittedChildren: 1,
+		Attempt: 1, StagePodUID: "stage-pod-uid", OwnerWorker: "worker-a-uid",
+		ChargedAttempts: 1, AdmittedChildren: 1,
 	}
 	after := before
+	after.OwnerWorker = "worker-b-uid"
 	after.Adopted, after.ChildTerminal, after.ParentTerminal = true, true, true
 	return &fakeFixture{before: before, after: after}
 }
@@ -57,7 +59,9 @@ func TestCHAOS13ChildRejectsIncompleteInitialEvidence(t *testing.T) {
 		"no child":          func(o *ChildFamilyObservation) { o.ChildID = "" },
 		"no child run":      func(o *ChildFamilyObservation) { o.ChildTemporalRunID = "" },
 		"no attempt":        func(o *ChildFamilyObservation) { o.Attempt = 0 },
-		"no stage pod":      func(o *ChildFamilyObservation) { o.StagePod = "" },
+		"no stage pod uid":  func(o *ChildFamilyObservation) { o.StagePodUID = "" },
+		"no owner worker":   func(o *ChildFamilyObservation) { o.OwnerWorker = "" },
+		"nothing charged":   func(o *ChildFamilyObservation) { o.ChargedAttempts = 0 },
 		"not yet admitted":  func(o *ChildFamilyObservation) { o.AdmittedChildren = 0 },
 		"already duplicate": func(o *ChildFamilyObservation) { o.AdmittedChildren = 2 },
 	} {
@@ -80,7 +84,9 @@ func TestCHAOS13ChildRejectsEveryRecoveryRegression(t *testing.T) {
 		"duplicate admitted": func(o *ChildFamilyObservation) { o.AdmittedChildren = 2 },
 		"child restarted":    func(o *ChildFamilyObservation) { o.ChildTemporalRunID = "second-run" },
 		"not adopted":        func(o *ChildFamilyObservation) { o.Adopted = false },
-		"second stage pod":   func(o *ChildFamilyObservation) { o.StagePod = "second-pod" },
+		"recreated pod":      func(o *ChildFamilyObservation) { o.StagePodUID = "recreated-uid" },
+		"owner unchanged":    func(o *ChildFamilyObservation) { o.OwnerWorker = "worker-a-uid" },
+		"owner unobserved":   func(o *ChildFamilyObservation) { o.OwnerWorker = "" },
 		"attempt changed":    func(o *ChildFamilyObservation) { o.Attempt = 2 },
 		"charge changed":     func(o *ChildFamilyObservation) { o.ChargedAttempts = 2 },
 		"child unsettled":    func(o *ChildFamilyObservation) { o.ChildTerminal = false },
