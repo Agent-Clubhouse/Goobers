@@ -1040,6 +1040,67 @@ tables:
     - emit_key
     - epoch
     - body
+- schema: journal
+  table: health_event
+  provisioned: true
+  fence: owner_token
+  rationale: Health transitions are appended by the current health-stream token under the controller-lease fence, deduplicated per month by emit key, and paged by cursor. Partitions inherit the parent's policy.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - emit_key
+    - body
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - type
+    - gaggle
+    - emit_key
+    - epoch
+    - body
+- schema: journal
+  table: instance_emit_key
+  provisioned: true
+  fence: owner_token
+  rationale: Cross-month scheduler dedup keys are inserted with ON CONFLICT DO NOTHING by the appender under the instance_seq row lock, and by the instance_event row trigger, which runs as the inserting role.
+  readers: []
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - emit_key
+    - seq
+- schema: journal
+  table: consumer_cursor
+  provisioned: true
+  fence: none-by-design
+  rationale: Each consumer advances its own stream cursor with an exact monotonic compare-and-swap on seq; a cursor is a read position, not lease-owned state.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+    update:
+    - seq
+    - updated_at
 sequences:
 - schema: control
   sequence: terminal_report_generation
@@ -1067,3 +1128,10 @@ functions:
   security_definer: false
   execute:
   - goobers_controller
+- schema: journal
+  function: instance_event_record_emit_key
+  arguments: ""
+  rationale: Row trigger on journal.instance_event that records scheduler emit keys for writers that predate the key table.
+    PostgreSQL does not check EXECUTE when a trigger fires, so no role is granted it.
+  security_definer: false
+  execute: []
