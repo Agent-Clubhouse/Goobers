@@ -113,7 +113,8 @@ func runBootstrapRole(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 	connect := cutover.Connect{
-		Admin: func(ctx context.Context) (*pgx.Conn, error) { return pgx.Connect(ctx, adminURL) },
+		Report: migrationWarning(stderr, "bootstrap"),
+		Admin:  func(ctx context.Context) (*pgx.Conn, error) { return pgx.Connect(ctx, adminURL) },
 		Owner: func(ctx context.Context) (*pgxpool.Pool, error) {
 			pools, err := newCloudPools(ctx, config)
 			if err != nil {
