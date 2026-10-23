@@ -12,6 +12,7 @@ package startinput
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -72,9 +73,17 @@ func (r *Resolver) Resolve(ctx context.Context, record triggerqueue.Record) (eng
 	if r.Generations == nil || r.Config == nil || r.InstanceID == "" {
 		return engine.RunInput{}, errors.New("cloud start resolver requires a generation source, instance config and instance identity")
 	}
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(record.Payload, &header) != nil || header.Kind != startintent.Kind {
+		// Not an ordinary start (a generated child's custody, for one): leave it
+		// to its owner. Never permanent: rejecting it would destroy that custody.
+		return engine.RunInput{}, fmt.Errorf("%w: kind %q", acceptance.ErrNotOrdinaryStart, header.Kind)
+	}
 	envelope, err := startintent.Parse(record.Payload)
 	if err != nil {
-		// An envelope that does not parse can never become valid.
+		// An ordinary start envelope that does not parse can never become valid.
 		return engine.RunInput{}, permanent("invalid start envelope: %v", err)
 	}
 	target := envelope.Target
@@ -91,7 +100,10 @@ func (r *Resolver) Resolve(ctx context.Context, record triggerqueue.Record) (eng
 	if r.Now != nil {
 		now = r.Now
 	}
-	if !envelope.Deadline.IsZero() && !now().Before(envelope.Deadline) {
+	// The deadline bounds ADMISSION (accepted -> dispatch). A dispatching row is
+	// an uncertain start that may already run; refusing it here would strand it
+	// past starter.Start's mine/adopt confirmation.
+	if record.State == triggerqueue.Accepted && !envelope.Deadline.IsZero() && !now().Before(envelope.Deadline) {
 		return engine.RunInput{}, permanent("admission deadline %s has passed", envelope.Deadline.UTC().Format(time.RFC3339))
 	}
 	cfg := r.Config()

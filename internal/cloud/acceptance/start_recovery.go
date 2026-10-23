@@ -21,6 +21,11 @@ const startRecoveryTimeout = 10 * time.Second
 // with the reason instead of re-acquiring the generation on every sweep.
 var ErrPermanentStart = errors.New("cloud start is permanently refused")
 
+// ErrNotOrdinaryStart marks an accepted row whose payload is not an ordinary
+// workflow-start envelope (a generated child's custody, for one). The ordinary
+// start loop must leave such a row alone: it is neither started nor rejected.
+var ErrNotOrdinaryStart = errors.New("accepted row is not an ordinary workflow start")
+
 // StartInputResolver reconstructs pinned workflow input from durable acceptance.
 // The controller supplies configuration-generation resolution; admission still
 // replaces all start authority from the bound store before contacting Temporal.

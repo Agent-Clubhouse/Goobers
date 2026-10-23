@@ -111,7 +111,7 @@ func (f *fixtureEnv) record(t *testing.T, generation, workflow string, mutate fu
 	if err != nil {
 		t.Fatal(err)
 	}
-	return triggerqueue.Record{ID: "trigger-run-1", RunID: "run-1", Payload: raw}
+	return triggerqueue.Record{ID: "trigger-run-1", RunID: "run-1", State: triggerqueue.Accepted, Payload: raw}
 }
 
 func (f *fixtureEnv) balanced(t *testing.T, label string) {
@@ -327,5 +327,37 @@ func TestResolveCompilesEachGenerationOnce(t *testing.T) {
 	}
 	if len(f.resolver.compiled) != 1 {
 		t.Fatalf("compiled generations = %d, want 1", len(f.resolver.compiled))
+	}
+}
+
+func TestAChildCustodyPayloadIsNotMineAndNeverPermanent(t *testing.T) {
+	f := newFixture(t)
+	record := f.record(t, "gen-1", "implementation", nil)
+	record.Payload = []byte(`{"kind":"goobers.child-start/v1","gaggle":"goobers"}`)
+	_, err := f.resolver.Resolve(t.Context(), record)
+	if !errors.Is(err, acceptance.ErrNotOrdinaryStart) || permanentRefusal(err) {
+		t.Fatalf("a non-start payload = %v, want ErrNotOrdinaryStart and never permanent", err)
+	}
+	record.Payload = []byte(`not json`)
+	if _, err := f.resolver.Resolve(t.Context(), record); !errors.Is(err, acceptance.ErrNotOrdinaryStart) || permanentRefusal(err) {
+		t.Fatalf("an unreadable payload = %v, want not-mine", err)
+	}
+	if f.src.acquires != 0 {
+		t.Fatal("a payload that is not a start acquired a generation")
+	}
+}
+
+// TestTheDeadlineBoundsAdmissionNotRecovery: an accepted row past its deadline
+// is refused, but an uncertain dispatching row may already run and must reach
+// starter.Start's mine/adopt confirmation.
+func TestTheDeadlineBoundsAdmissionNotRecovery(t *testing.T) {
+	f := newFixture(t)
+	expired := f.record(t, "gen-1", "implementation", func(e *startintent.Envelope) { e.Deadline = time.Now().Add(-time.Hour) })
+	if _, err := f.resolver.Resolve(t.Context(), expired); !permanentRefusal(err) {
+		t.Fatalf("an expired accepted start = %v, want a permanent refusal", err)
+	}
+	expired.State = triggerqueue.Dispatching
+	if _, err := f.resolver.Resolve(t.Context(), expired); err != nil {
+		t.Fatalf("an expired dispatching (uncertain) start = %v, want it resolved for recovery", err)
 	}
 }

@@ -148,6 +148,9 @@ func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter eng
 			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			in, err := r.resolve(attempt, record)
+			if errors.Is(err, acceptance.ErrNotOrdinaryStart) {
+				return // a generated child's custody: its own lifecycle owns it
+			}
 			if errors.Is(err, acceptance.ErrPermanentStart) {
 				// Retrying can never succeed and would re-pin the generation on
 				// every sweep: finish the row as rejected with the reason.

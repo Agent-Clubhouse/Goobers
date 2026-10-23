@@ -262,16 +262,18 @@ func (s *Store) Finish(ctx context.Context, id string, state triggerqueue.State,
 // RejectAccepted finishes a row that was never dispatched as rejected with a
 // reason, under the controller fence. It is the terminal outcome for an
 // accepted start the resolver refuses permanently; it cannot touch a row that
-// has begun dispatching.
+// has begun dispatching or one a generated child owns (child custody ends only
+// through its own lifecycle).
 func (s *Store) RejectAccepted(ctx context.Context, id, reason string, now time.Time) error {
 	if _, assigned := strings.CutPrefix(id, "trigger-"); !assigned || len(reason) > 1024 || now.IsZero() {
 		return triggerqueue.ErrTransition
 	}
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
-			UPDATE control.acceptance
-			SET state='rejected', reason=$4, owner_epoch=$3, finished_at=GREATEST(accepted_at, $5)
-			WHERE instance_id=$1 AND id=$2 AND state='accepted' AND finished_at IS NULL`,
+			UPDATE control.acceptance AS a
+			SET state='rejected', reason=$4, owner_epoch=$3, finished_at=GREATEST(a.accepted_at, $5)
+			WHERE a.instance_id=$1 AND a.id=$2 AND a.state='accepted' AND a.finished_at IS NULL
+			  AND NOT EXISTS (`+childLineageOwned+`)`,
 			s.instanceID, id, epoch, reason, now.UTC(),
 		)
 		return changed(tag.RowsAffected(), err)

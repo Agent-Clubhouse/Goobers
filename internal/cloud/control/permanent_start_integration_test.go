@@ -59,11 +59,18 @@ func TestPermanentResolveRefusalFinishesTheRowOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	child, _, err := store.Accept(t.Context(), "child-like", "operator", []byte(`{"kind":"goobers.child-start/v1"}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var resolves atomic.Int32
 	var reports []error
 	var reportsMu sync.Mutex
 	runtime := Runtime{Resolve: func(_ context.Context, r triggerqueue.Record) (engine.RunInput, error) {
 		resolves.Add(1)
+		if r.ID == child.ID {
+			return engine.RunInput{}, fmt.Errorf("%w: kind child", acceptance.ErrNotOrdinaryStart)
+		}
 		if r.ID == permanent.ID {
 			return engine.RunInput{}, fmt.Errorf("%w: retained generation differs from the pinned digests", acceptance.ErrPermanentStart)
 		}
@@ -93,9 +100,12 @@ func TestPermanentResolveRefusalFinishesTheRowOnce(t *testing.T) {
 	if s, _ := state(transient.ID); s != "accepted" {
 		t.Fatalf("transient row = %q, want accepted and retried", s)
 	}
-	// permanent: resolved once; transient: resolved on both sweeps.
-	if resolves.Load() != 3 || starter.starts.Load() != 0 {
-		t.Fatalf("resolves = %d starts = %d, want 3 resolves (1 permanent + 2 transient) and no start", resolves.Load(), starter.starts.Load())
+	if s, _ := state(child.ID); s != "accepted" {
+		t.Fatalf("child-like row = %q, want it left alone by the ordinary start loop", s)
+	}
+	// permanent: resolved once; transient and child-like: resolved on both sweeps.
+	if resolves.Load() != 5 || starter.starts.Load() != 0 {
+		t.Fatalf("resolves = %d starts = %d, want 5 resolves and no start", resolves.Load(), starter.starts.Load())
 	}
 	if len(reports) != 3 {
 		t.Fatalf("reports = %v, want every refusal surfaced", reports)
