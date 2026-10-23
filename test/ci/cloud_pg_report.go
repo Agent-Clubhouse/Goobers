@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -24,10 +27,11 @@ type testEvent struct {
 }
 
 type packageResult struct {
-	passed, skipped, failed int
-	buildFailed             bool
-	output                  map[string]*strings.Builder
-	failedTests             []string
+	buildFailed bool
+	output      map[string]*strings.Builder
+	failedTests []string
+	// outcomes maps each top-level test to its final action.
+	outcomes map[string]string
 }
 
 // cloudPGRoots are the trees the cloud-pg job tests; every package in them
@@ -64,7 +68,7 @@ func runCloudPGReport(reportPath, root string, stdout, stderr io.Writer) int {
 	if len(problems) > 0 {
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "cloud-pg-report: %d PostgreSQL test packages each ran passing tests\n", len(required))
+	_, _ = fmt.Fprintf(stdout, "cloud-pg-report: %d PostgreSQL test packages each passed their tagged tests with none skipped\n", len(required))
 	return 0
 }
 
@@ -79,7 +83,7 @@ func readTestEvents(r io.Reader) (map[string]*packageResult, error) {
 		}
 		result := results[event.Package]
 		if result == nil {
-			result = &packageResult{output: make(map[string]*strings.Builder)}
+			result = &packageResult{output: make(map[string]*strings.Builder), outcomes: make(map[string]string)}
 			results[event.Package] = result
 		}
 		switch event.Action {
@@ -101,36 +105,32 @@ func (r *packageResult) record(event testEvent) {
 		r.buildFailed = true
 	case event.Test == "" || strings.Contains(event.Test, "/"):
 		// Package summaries and subtests do not count as top-level tests.
-	case event.Action == "pass":
-		r.passed++
-	case event.Action == "skip":
-		r.skipped++
-	case event.Action == "fail":
-		r.failed++
+	default:
+		r.outcomes[event.Test] = event.Action
 	}
 	if event.Action == "fail" && event.Test != "" {
 		r.failedTests = append(r.failedTests, event.Test)
 	}
 }
 
-// cloudIntegrationPackages lists the import paths under cloudPGRoots that
-// have test files built only with the cloudintegration or cloudpg tag.
-func cloudIntegrationPackages(root string) ([]string, error) {
-	seen := make(map[string]bool)
+// cloudIntegrationPackages maps each package under cloudPGRoots to the
+// top-level tests defined in its cloudintegration- or cloudpg-tagged files.
+// Only those tests prove the PostgreSQL suites ran: a package's untagged unit
+// tests pass without any database.
+func cloudIntegrationPackages(root string) (map[string][]string, error) {
+	tagged := make(map[string][]string)
 	for _, tree := range cloudPGRoots {
-		if err := collectTaggedPackages(root, filepath.Join(root, filepath.FromSlash(tree)), seen); err != nil {
+		if err := collectTaggedTests(root, filepath.Join(root, filepath.FromSlash(tree)), tagged); err != nil {
 			return nil, err
 		}
 	}
-	packages := make([]string, 0, len(seen))
-	for pkg := range seen {
-		packages = append(packages, pkg)
+	for pkg := range tagged {
+		sort.Strings(tagged[pkg])
 	}
-	sort.Strings(packages)
-	return packages, nil
+	return tagged, nil
 }
 
-func collectTaggedPackages(root, base string, seen map[string]bool) error {
+func collectTaggedTests(root, base string, tagged map[string][]string) error {
 	if _, err := os.Stat(base); os.IsNotExist(err) {
 		return nil
 	}
@@ -143,30 +143,81 @@ func collectTaggedPackages(root, base string, seen map[string]bool) error {
 			return err
 		}
 		firstLine, _, _ := strings.Cut(string(data), "\n")
-		if strings.HasPrefix(firstLine, "//go:build") &&
-			(strings.Contains(firstLine, "cloudintegration") || strings.Contains(firstLine, "cloudpg")) {
-			relative, err := filepath.Rel(root, filepath.Dir(file))
-			if err != nil {
-				return err
-			}
-			seen[path.Join(modulePath, filepath.ToSlash(relative))] = true
+		pgTagged := strings.Contains(firstLine, "cloudintegration") || strings.Contains(firstLine, "cloudpg")
+		if !strings.HasPrefix(firstLine, "//go:build") || !pgTagged {
+			return nil
 		}
+		names, err := topLevelTests(file, data)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, filepath.Dir(file))
+		if err != nil {
+			return err
+		}
+		pkg := path.Join(modulePath, filepath.ToSlash(relative))
+		tagged[pkg] = append(tagged[pkg], names...)
 		return nil
 	})
 }
 
-func cloudPGProblems(results map[string]*packageResult, required []string) []string {
+// topLevelTests lists the TestXxx(t *testing.T) functions in a test file.
+func topLevelTests(file string, data []byte) ([]string, error) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), file, data, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", file, err)
+	}
+	var names []string
+	for _, decl := range parsed.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") || fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
+			continue
+		}
+		if star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
+			if sel, ok := star.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "T" {
+				names = append(names, fn.Name.Name)
+			}
+		}
+	}
+	return names, nil
+}
+
+// cloudPGProblems requires, per package, that at least one PostgreSQL-tagged
+// test passed and that none was skipped: a skipped tagged test means its
+// database or service was missing, which must fail the job.
+func cloudPGProblems(results map[string]*packageResult, required map[string][]string) []string {
+	packages := make([]string, 0, len(required))
+	for pkg := range required {
+		packages = append(packages, pkg)
+	}
+	sort.Strings(packages)
 	var problems []string
-	for _, pkg := range required {
+	for _, pkg := range packages {
 		result := results[pkg]
-		switch {
-		case result == nil:
+		if result == nil {
 			problems = append(problems, pkg+": did not run")
-		case result.buildFailed && result.passed == 0 && result.failed == 0:
+			continue
+		}
+		var passed int
+		var skipped, missing []string
+		for _, test := range required[pkg] {
+			switch result.outcomes[test] {
+			case "pass":
+				passed++
+			case "skip":
+				skipped = append(skipped, test)
+			case "":
+				missing = append(missing, test)
+			}
+		}
+		switch {
+		case len(skipped) > 0:
+			problems = append(problems, fmt.Sprintf("%s: PostgreSQL-tagged tests skipped (%s); is a tag, GOOBERS_TEST_POSTGRES_URL or a service env var missing?",
+				pkg, strings.Join(skipped, ", ")))
+		case passed == 0 && result.buildFailed:
 			problems = append(problems, pkg+": failed to build or set up")
-		case result.passed == 0:
-			problems = append(problems, fmt.Sprintf("%s: no test passed (%d skipped, %d failed); is the cloudintegration tag or GOOBERS_TEST_POSTGRES_URL missing?",
-				pkg, result.skipped, result.failed))
+		case passed == 0:
+			problems = append(problems, fmt.Sprintf("%s: no PostgreSQL-tagged test passed (%d did not run)", pkg, len(missing)))
 		}
 	}
 	return problems
@@ -180,7 +231,7 @@ func printFailures(results map[string]*packageResult, w io.Writer) {
 	sort.Strings(packages)
 	for _, pkg := range packages {
 		result := results[pkg]
-		if result.failed == 0 && !result.buildFailed {
+		if len(result.failedTests) == 0 && !result.buildFailed {
 			continue
 		}
 		tests := append([]string(nil), result.failedTests...)
