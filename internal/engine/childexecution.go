@@ -32,6 +32,12 @@ const childExecutionChangeID = "engine-child-execution-v1"
 // retry allowance is consumed, exactly as the runner continues after a yield.
 var errChildContinued = errors.New("engine: stage continues after its child")
 
+// errSealedChildRestart is the explicit phase-1 refusal for any attempt to
+// run an accepted child again from another parent execution, such as a parent
+// reset. The retained result is untouched; restart needs a separately
+// qualified execution-epoch adapter.
+var errSealedChildRestart = errors.New("engine: restarting an accepted generated child is unsupported")
+
 // ChildService adds parking, terminal custody and continuation to admission.
 // Park stops/joins parent writers, snapshots to blobs, durably parks the parent
 // after verifying the committed wait marker, and releases its capacity slot.
@@ -260,6 +266,9 @@ func waitEngineChild(ctx workflow.Context, b ChildRunBinding, wait livejournal.A
 	}
 	var result RunResult
 	if err = future.Get(owned, &result); err != nil {
+		if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+			err = errors.Join(errSealedChildRestart, err)
+		}
 		return cleanup(err)
 	}
 	if result.ChildResult == nil {
