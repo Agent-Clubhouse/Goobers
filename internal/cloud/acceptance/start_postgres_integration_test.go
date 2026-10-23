@@ -92,6 +92,12 @@ func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {
 		t.Fatal("missing row caused a Temporal start")
 	}
 	in := acceptedStartInput(t, store)
+	temporal.before = func() {
+		provisional, err := store.Get(t.Context(), in.AcceptanceID, "operator")
+		if err != nil || provisional.State != "dispatching" || provisional.RunID == "" {
+			t.Fatalf("Temporal reached before durable provisional reservation: %+v %v", provisional, err)
+		}
+	}
 	result, err := starter.Start(t.Context(), in)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +105,9 @@ func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {
 	record, err := store.Get(t.Context(), in.AcceptanceID, "operator")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if record.State != "dispatched" {
+		t.Fatalf("owned start not confirmed: %+v", record)
 	}
 	if result.RunID != record.RunID || temporal.input.RunID != record.RunID || temporal.input.OwnerEpoch != store.handle.Epoch || temporal.input.StarterID != store.handle.Holder || temporal.input.InstanceID != store.instanceID {
 		t.Fatalf("start not sourced from durable custody: result=%+v input=%+v row=%+v", result, temporal.input, record)
@@ -112,6 +121,10 @@ func TestPGLostStartResponseIsMine(t *testing.T) {
 	in := acceptedStartInput(t, store)
 	if _, err := starter.Start(t.Context(), in); err == nil {
 		t.Fatal("lost response unexpectedly succeeded")
+	}
+	provisional, readErr := store.Get(t.Context(), in.AcceptanceID, "operator")
+	if readErr != nil || provisional.State != "dispatching" {
+		t.Fatalf("lost response lost provisional custody: %+v %v", provisional, readErr)
 	}
 	result, err := starter.Start(t.Context(), in)
 	if err != nil || !result.AlreadyRunning || result.NotMine || result.Adopt || temporal.executions != 1 {
