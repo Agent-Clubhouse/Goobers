@@ -17,6 +17,38 @@ type signingOrderCase struct {
 	markers []string
 }
 
+func TestReleaseWorkflowEnforcesPlannedReleaseAtTagTime(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]yaml.Node `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var build ciJob
+	node := workflow.Jobs["build"]
+	if err := node.Decode(&build); err != nil {
+		t.Fatal(err)
+	}
+	step := build.step(t, "Check NextPlannedRelease covers this release")
+	if step.If != "" || step.ContinueOnError || step.Env["GOOBERS_RELEASE_TAG"] != "${{ github.ref_name }}" {
+		t.Fatal("release freshness must run unconditionally against the release tag")
+	}
+	markers := []string{
+		"set -euo pipefail",
+		"go test -count=1 -v -run '^TestReleaseTagWithinNextPlannedRelease$' ./internal/supportmatrix",
+		`| tee "$RUNNER_TEMP/next-planned-release.log"`,
+		`grep -q -- '--- PASS: TestReleaseTagWithinNextPlannedRelease' "$RUNNER_TEMP/next-planned-release.log"`,
+	}
+	if marker, ok := firstUnorderedMarker(step.Run, markers); !ok {
+		t.Fatalf("release freshness must fail on a missing, skipped, or failing test: missing %q", marker)
+	}
+}
+
 // Publication must depend on execution of the final signed archives. A signing
 // success alone cannot detect an executable that never starts on its target OS.
 func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
