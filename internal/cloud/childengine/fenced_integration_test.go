@@ -5,12 +5,17 @@ package childengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/engine"
@@ -27,16 +32,21 @@ func (unusedCredential) GetToken(context.Context, policy.TokenRequestOptions) (a
 
 func fencedFor(t *testing.T, f *family, owner func() *cloudlease.Handle) Fenced {
 	t.Helper()
+	return fencedOn(t, f, f.pool, owner)
+}
+
+func fencedOn(t *testing.T, f *family, pool *pgxpool.Pool, owner func() *cloudlease.Handle) Fenced {
+	t.Helper()
 	azure, err := objstore.NewAzure("http://127.0.0.1:1", "unused", unusedCredential{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects, err := objstore.NewMetadataWithOptions(f.pool, azure, objstore.MetadataOptions{})
+	objects, err := objstore.NewMetadataWithOptions(pool, azure, objstore.MetadataOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fenced := Fenced{Pool: f.pool, InstanceID: testInstance, Lease: f.manager, Owner: owner, Blobs: f.blobs, Objects: objects,
-		Applied: appliedConfig{}, Wait: time.Hour, Actor: "control-plane", Now: time.Now}
+	fenced := Fenced{Pool: pool, InstanceID: testInstance, Lease: f.manager, Owner: owner, Blobs: f.blobs, Objects: objects,
+		Applied: appliedConfig{}, Wait: time.Hour, Actor: "control-plane", Now: time.Now, Adoption: &EpochAdoption{}}
 	if err := fenced.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -84,5 +94,69 @@ func TestFencedAdmissionsBindEveryCallToTheLiveLease(t *testing.T) {
 	}
 	if err := fenced.Cancel(t.Context(), engine.ChildRunBinding{Request: other.Request}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
 		t.Fatalf("cancel under a released lease = %v, want unavailable", err)
+	}
+}
+
+// controllerPool runs every statement as the controller runtime role, so the
+// write-path inventory's grants are what the test exercises.
+func controllerPool(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := owner.Config()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// A controller that takes over the lease serves its predecessor's families
+// without any explicit adoption call: the first call of the new epoch adopts
+// every earlier epoch's custody, fenced, as the controller role.
+func TestFencedAdmissionsAdoptPredecessorCustodyAfterTakeover(t *testing.T) {
+	f := newFamily(t)
+	in := acceptChild(t, f, "parent-takeover", "call-1")
+	binding, err := activities(f.service(time.Hour)).AdmitEngineChild(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor := f.handle.Epoch
+	if err := f.manager.Release(t.Context(), f.handle); err != nil {
+		t.Fatal(err)
+	}
+	f.takeOver(t, "controller-2")
+	if f.handle.Epoch <= predecessor {
+		t.Fatalf("takeover epoch %d did not advance past %d", f.handle.Epoch, predecessor)
+	}
+	controller := controllerPool(t, f.pool)
+	fenced := fencedOn(t, f, controller, func() *cloudlease.Handle { return f.handle })
+	if _, err := fenced.Load(t.Context(), binding); err != nil {
+		t.Fatalf("successor could not load its predecessor's manifest: %v", err)
+	}
+	if err := fenced.Cancel(t.Context(), binding); err != nil {
+		t.Fatalf("successor could not fence its predecessor's family: %v", err)
+	}
+	for _, table := range []string{"child_parent", "child_occurrence", "child_lineage", "child_blob", "child_engine_start"} {
+		var stale int
+		if err := f.pool.QueryRow(t.Context(), fmt.Sprintf(`SELECT count(*) FROM control.%s WHERE instance_id=$1 AND owner_epoch<>$2`, table),
+			testInstance, f.handle.Epoch).Scan(&stale); err != nil {
+			t.Fatal(err)
+		}
+		if stale != 0 {
+			t.Fatalf("control.%s kept %d rows owned by an earlier epoch", table, stale)
+		}
+	}
+	// Adoption is idempotent: a second pass finds nothing to adopt.
+	store, err := acceptance.New(controller, testInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.BindFence(f.manager, f.handle)
+	if adopted, err := store.AdoptStaleChildCustody(t.Context()); err != nil || adopted != 0 {
+		t.Fatalf("second adoption = %d, %v; want 0, nil", adopted, err)
 	}
 }
