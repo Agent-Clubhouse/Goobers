@@ -75,10 +75,10 @@ type recordingActivator struct {
 	digests []string
 }
 
-func (a *recordingActivator) Activate(_ context.Context, digest string) error {
+func (a *recordingActivator) Activate(_ context.Context, candidate cloudconfig.Candidate) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.digests = append(a.digests, digest)
+	a.digests = append(a.digests, candidate.Digest)
 	return nil
 }
 
@@ -254,7 +254,8 @@ type orderedActivator struct {
 	active         string
 }
 
-func (a *orderedActivator) Activate(_ context.Context, digest string) error {
+func (a *orderedActivator) Activate(_ context.Context, candidate cloudconfig.Candidate) error {
+	digest := candidate.Digest
 	a.active = digest
 	if digest == "A" {
 		close(a.first)

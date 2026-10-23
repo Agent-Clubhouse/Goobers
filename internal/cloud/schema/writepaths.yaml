@@ -654,19 +654,23 @@ tables:
   table: config_generation_pin
   provisioned: true
   fence: unique key
-  rationale: Owners pin a generation with an idempotent insert and remove only their own pin.
+  rationale: 'Owners pin a generation with an idempotent insert and remove only their own pin. Ephemeral readers bind holder+epoch so prune can clear crashed controller pins (#8075).'
   readers:
   - role: goobers_controller
     columns:
     - instance_id
     - digest
     - owner
+    - reader_holder
+    - reader_epoch
   writers:
   - role: goobers_controller
     insert:
     - instance_id
     - digest
     - owner
+    - reader_holder
+    - reader_epoch
     delete: true
 - schema: control
   table: applied_config
