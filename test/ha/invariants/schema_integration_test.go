@@ -18,7 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // cleanData is a history that satisfies every invariant.
@@ -125,7 +125,8 @@ func newSchemaDB(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func TestInvariantsAgainstRealSchema(t *testing.T) {
+func TestIntegrationInvariantsAgainstRealSchema(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEST_POSTGRES_URL")
 	pool := newSchemaDB(t)
 	ctx := context.Background()
 	inTx := func(t *testing.T, seed bool, stmts ...string) Report {
@@ -185,7 +186,8 @@ func TestInvariantsAgainstRealSchema(t *testing.T) {
 	}
 }
 
-func TestQueryErrorIsNotAPass(t *testing.T) {
+func TestIntegrationQueryErrorIsNotAPass(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEST_POSTGRES_URL")
 	pool := newSchemaDB(t)
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, "DROP TABLE control.claim_history"); err != nil {
