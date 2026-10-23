@@ -12,7 +12,7 @@ func TestPlacedDefinitionRefusalsPropagateAndAggregate(t *testing.T) {
 	feature := &UnsupportedFeaturesError{
 		Workflow: "flow",
 		Refusals: []*UnsupportedFeatureError{{
-			Feature: "task.outbox", Stage: "agent", Err: ErrOutboxUnsupported,
+			Feature: "task.experiment", Stage: "agent", Err: ErrExperimentUnsupported,
 		}},
 	}
 	spec := apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
@@ -48,13 +48,25 @@ func TestRefusePlacedDefinitionAggregatesFeatureAndHumanGate(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Tasks: []apiv1.Task{{
 			Name: "agent", Type: apiv1.TaskAgentic,
-			Outbox: []string{"result.json"}, Limits: &apiv1.Limits{MaxTokens: 1},
+			Experiment: &apiv1.BanditExperiment{},
+			Outbox:     []string{"result.json"}, Limits: &apiv1.Limits{MaxTokens: 1},
 		}},
 		Gates: []apiv1.Gate{{Name: "approval", Evaluator: apiv1.EvaluatorHuman}},
 	}
 	err := RefusePlacedDefinition("flow", spec, nil)
 	var refused *UnsupportedFeaturesError
 	if !errors.As(err, &refused) || len(refused.Refusals) != 2 {
-		t.Fatalf("refusal = %#v, want outbox and human gate only", err)
+		t.Fatalf("refusal = %#v, want experiment and human gate only", err)
+	}
+	want := []string{"task.experiment", "gate.evaluator.human"}
+	for i, r := range refused.Refusals {
+		if r.Feature != want[i] {
+			t.Fatalf("refusal[%d] = %q, want %q", i, r.Feature, want[i])
+		}
+	}
+	for _, r := range refused.Refusals {
+		if r.Feature == "task.outbox" {
+			t.Fatalf("task.outbox is supported on the engine but was refused: %#v", r)
+		}
 	}
 }

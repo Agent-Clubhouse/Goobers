@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/config/readiness"
 )
@@ -48,7 +49,7 @@ func TestConfigurationSeam(t *testing.T) {
 	// A hot reload to an unsupported workflow is refused atomically: the
 	// running generation keeps admitting, the refused one admits nothing.
 	bad := eligible()
-	bad.Spec.Tasks[0].Outbox = []string{"report.txt"}
+	bad.Spec.Tasks[0].Experiment = &apiv1.BanditExperiment{}
 	next = cloudconfig.Candidate{Digest: "v2", Config: denyConfig(), Set: workflowSet(bad)}
 	if err := cfg.Reload(ctx); !errors.Is(err, cloudconfig.ErrIneligible) {
 		t.Fatalf("unsupported reload = %v, want ErrIneligible", err)

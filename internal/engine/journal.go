@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
@@ -78,13 +80,18 @@ type JournalOp struct {
 // journal.Run.RecordStageArtifact; a bare artifact (gate verdicts) leaves them
 // zero.
 type JournalArtifactOp struct {
-	Branch    int                  `json:"branch,omitempty"`
-	Stage     string               `json:"stage,omitempty"`
-	Attempt   int                  `json:"attempt,omitempty"`
-	Class     journal.AttemptClass `json:"class,omitempty"`
-	Name      string               `json:"name"`
-	Data      []byte               `json:"data"`
-	Integrity apiv1.Integrity      `json:"integrity"`
+	Branch  int                  `json:"branch,omitempty"`
+	Stage   string               `json:"stage,omitempty"`
+	Attempt int                  `json:"attempt,omitempty"`
+	Class   journal.AttemptClass `json:"class,omitempty"`
+	Name    string               `json:"name"`
+	Data    []byte               `json:"data,omitempty"`
+	Ref     *journal.Ref         `json:"ref,omitempty"`
+	// OutboxRelPath and OutboxOccurrence route a referenced artifact into the
+	// path-preserving outbox namespace rather than stages/.
+	OutboxRelPath    string          `json:"outboxRelPath,omitempty"`
+	OutboxOccurrence uint64          `json:"outboxOccurrence,omitempty"`
+	Integrity        apiv1.Integrity `json:"integrity"`
 }
 
 // JournalSpanOp records one within-stage span (a harness transcript) the
@@ -291,6 +298,33 @@ func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {
 	}
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opArtifact, Artifact: &o, Time: at})
 	r.trackOwnedOp()
+}
+
+func (r *runJournal) outbox(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, files []dispatcher.SurrenderedOutboxFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	occurrence := uint64(len(r.projectionSnapshot().Ops) + 1)
+	at := workflow.Now(ctx)
+	for _, file := range files {
+		artifactPath, err := journal.ArtifactPath(file.Digest)
+		if err != nil {
+			return fmt.Errorf("engine: address outbox file %q: %w", file.RelPath, err)
+		}
+		ref := journal.Ref{
+			Path:      artifactPath,
+			Digest:    file.Digest,
+			Size:      file.Size,
+			Integrity: apiv1.IntegrityDerived,
+		}
+		r.artifactAt(at, JournalArtifactOp{
+			Stage: stage, Attempt: attempt, Class: class,
+			Name: path.Join("outbox", file.RelPath), Ref: &ref,
+			OutboxRelPath: file.RelPath, OutboxOccurrence: occurrence,
+			Integrity: apiv1.IntegrityDerived,
+		})
+	}
+	return nil
 }
 
 func (r *runJournal) spanAt(at time.Time, op JournalSpanOp) {

@@ -209,7 +209,6 @@ func ensureRuntimeSupport(features []Feature) []Feature {
 			"workflow.spec.maps",
 			"task.childWorkflows",
 			"gate.evaluator.human",
-			"task.outbox",
 			"task.experiment":
 			engineLevel = RuntimeUnsupported
 		}

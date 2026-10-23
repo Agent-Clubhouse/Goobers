@@ -171,12 +171,18 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 
 	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
+	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, checkoutCreds, runsDir)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
+	executionStarted := false
+	defer func() {
+		out.OutboxScrubber = scrubber
+		out.OutboxEligible = executionStarted
+	}()
 
 	if kit.IsReview() {
+		executionStarted = true
 		// The SAME executor and the SAME constructor as an invocation — only
 		// the completion contract differs: harness.Executor.Review drives
 		// ModeReview and validates the verdict against the shared schema.
@@ -204,6 +210,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		}
 	}
 
+	executionStarted = true
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
 		return fail("agentic_invocation_failed", err)
@@ -480,8 +487,15 @@ func podAgenticExecutorInput(w runtimewiring.PodExecutorWiring) runtimewiring.Ag
 	input.ChildWorkflows = parentPodAccess(w.Registry)
 	return input
 }
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
-	return runtimewiring.BuildPodAgenticExecutor(kit, stderr, minted, runsDir, func(input runtimewiring.AgenticExecutorInput) runtimewiring.AgenticExecutorInput {
+
+// buildPodAgenticExecutor also returns the scrubber chained over the
+// executor's own secret registry, so the outbox export redacts every value the
+// executor registered (minted credentials included).
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, journal.Scrubber, error) {
+	var scrubber journal.Scrubber
+	exec, err := runtimewiring.BuildPodAgenticExecutor(kit, stderr, minted, runsDir, func(input runtimewiring.AgenticExecutorInput) runtimewiring.AgenticExecutorInput {
+		scrubber = journal.Chain(input.SharedRegistry, journal.NewPatternScrubber())
 		return podAgenticExecutorInput(runtimewiring.PodExecutorWiring{Kit: kit, RunsDir: runsDir, Stderr: stderr, Scrubber: input.SharedRegistry, Registry: input.SharedRegistry, Resolver: input.Resolver, Grants: input.Grants, AdapterRegistry: input.AdapterRegistry, HarnessInfo: input.HarnessInfo})
 	})
+	return exec, scrubber, err
 }
