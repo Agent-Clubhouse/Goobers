@@ -82,7 +82,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.automated.retry.backoff` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.automated.retry.maxAttempts` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.automated.timeoutSeconds` | 2.0 | ga | supported | supported | supported | dev |
-| `gate.evaluator.human` | 2.0 | ga | supported | unsupported | supported | dev |
+| `gate.evaluator.human` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.human.approvers` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.human.onTimeout.escalate` | 2.0 | ga | supported | supported | supported | dev |
 | `gate.evaluator.human.onTimeout.reject` | 2.0 | ga | supported | supported | supported | dev |
@@ -281,7 +281,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.automated.retry.backoff` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.retry.maxAttempts` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.timeoutSeconds` | 3.0 | ga | supported | supported | preview | dev |
-| `gate.evaluator.human` | 3.0 | ga | supported | unsupported | preview | dev |
+| `gate.evaluator.human` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.approvers` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.escalate` | 3.0 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.reject` | 3.0 | ga | supported | supported | preview | dev |
@@ -499,7 +499,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.automated.retry.backoff` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.retry.maxAttempts` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.automated.timeoutSeconds` | 3.1 | ga | supported | supported | preview | dev |
-| `gate.evaluator.human` | 3.1 | ga | supported | unsupported | preview | dev |
+| `gate.evaluator.human` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.approvers` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.escalate` | 3.1 | ga | supported | supported | preview | dev |
 | `gate.evaluator.human.onTimeout.reject` | 3.1 | ga | supported | supported | preview | dev |
