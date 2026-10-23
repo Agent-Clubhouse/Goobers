@@ -455,19 +455,6 @@ github.com/goobers/goobers/internal/enginedecision.Router.Intend # Engine HITL d
 github.com/goobers/goobers/internal/enginedecision.Router.update # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
 
 # HA-P3-27 engine-only admission lands ahead of the control-role wiring (#7850). Remove on wiring.
-github.com/goobers/goobers/internal/cloud/config.NewApplier # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Applier.Apply # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Applier.Status # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.NewGuard # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Guard.Admit # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Generation.Digest # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Generation.Refusal # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Applier.Guard # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Guard.Replace # Engine-only admission (HA-P3-27) landed ahead of its first consumer in the control role; exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.NewConfiguration # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Configuration.Admit # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Configuration.Reload # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
-github.com/goobers/goobers/internal/cloud/config.Configuration.Status # Engine-only admission seam (HA-P3-27) for the control role (#7850); exercised by internal/cloud/config tests. expires=2026-11-30
 github.com/goobers/goobers/internal/childworkflow.EngineFreezer.Freeze # Production engine child freezer (#7758): its only caller is the childengine.Service Freezer composed with the cloud api role's assembleControlPlanes in the #7879 composition PR after #7850; until then only the freeze, golden and engine-load tests call it. expires=2026-11-20
 
 github.com/goobers/goobers/internal/cloud/childengine.Service.Admit # Control-side engine child-admission adapter (#7758); its only production caller is the child-admission plane route and worker client tracked in #7879, which lands before the task.childWorkflows refusal flip. expires=2026-11-20
