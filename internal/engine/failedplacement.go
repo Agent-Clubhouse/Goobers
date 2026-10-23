@@ -17,6 +17,7 @@ import (
 // instant; slot one is an explicitly versioned extension. Older consumers can
 // still read slot zero.
 type dispatchFailureEvidence struct {
+	Domain            *domainFailure           `json:"domain,omitempty"`
 	RecordedArtifacts []invoke.ArtifactReceipt `json:"recordedArtifacts,omitempty"`
 	SchemaVersion     int                      `json:"schemaVersion"`
 	Placement         *StagePlacement          `json:"placement,omitempty"`
