@@ -120,25 +120,31 @@ func (r Runner) Apply(ctx context.Context) error {
 				return err
 			}
 		}
-		for _, index := range r.PartitionIndexes {
-			if err := CreatePartitionedIndex(runCtx, session.conn, index.Parent, index.Columns, index.Partitions); err != nil {
-				return err
-			}
+		return r.finish(runCtx, manager, handle, session.conn, inventory)
+	})
+}
+
+// finish runs the steps after the versioned migrations: partition indexes,
+// read-model rebuilds, and the grant reconcile.
+func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, inventory cloudschema.Inventory) error {
+	for _, index := range r.PartitionIndexes {
+		if err := CreatePartitionedIndex(ctx, conn, index.Parent, index.Columns, index.Partitions); err != nil {
+			return err
 		}
-		if len(r.Readmodels) > 0 && r.ReadmodelBuilder == nil {
-			return errors.New("cloud migration read-model builder is required")
+	}
+	if len(r.Readmodels) > 0 && r.ReadmodelBuilder == nil {
+		return errors.New("cloud migration read-model builder is required")
+	}
+	for _, readmodel := range r.Readmodels {
+		if err := RebuildReadmodel(ctx, r.ReadmodelBuilder, readmodel.Name, readmodel.Version); err != nil {
+			return err
 		}
-		for _, readmodel := range r.Readmodels {
-			if err := RebuildReadmodel(runCtx, r.ReadmodelBuilder, readmodel.Name, readmodel.Version); err != nil {
-				return err
-			}
-		}
-		// Grants are not a versioned migration: every apply converges the
-		// runtime roles to the current write-path inventory, so a new table's
-		// grants never require rewriting an applied migration.
-		return manager.WithFence(runCtx, handle, func(txCtx context.Context, tx pgx.Tx) error {
-			return cloudschema.ReconcileGrants(txCtx, tx, inventory)
-		})
+	}
+	// Grants are not a versioned migration: every apply converges the
+	// runtime roles to the current write-path inventory, so a new table's
+	// grants never require rewriting an applied migration.
+	return manager.WithFence(ctx, handle, func(txCtx context.Context, tx pgx.Tx) error {
+		return cloudschema.ReconcileGrants(txCtx, tx, inventory)
 	})
 }
 
