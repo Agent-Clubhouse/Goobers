@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -152,7 +153,7 @@ func runBranchesFromEvents(events []journal.Event) []runBranchTarget {
 			events[i].Runner["annotation"] != runner.ReboundWorkspaceBranchAnnotation {
 			continue
 		}
-		branch, _ := events[i].Runner[runner.WorkspaceBranchOutput].(string)
+		branch, _ := events[i].Runner[runsemantics.WorkspaceBranchOutput].(string)
 		boundSHA, _ := events[i].Runner[runner.ReboundBranchBoundSHAKey].(string)
 		add(branch, boundSHA)
 	}

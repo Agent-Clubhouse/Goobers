@@ -16,7 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runcontrol"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
@@ -254,7 +254,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 			Definition:             definition,
 			GateGooberCapabilities: gateGooberCapabilities,
 		},
-		usesRepo: runner.MachineUsesRepo(m),
+		usesRepo: runsemantics.MachineUsesRepo(m),
 		live:     in.LiveJournal,
 		branchRef: &journal.ExternalRef{
 			Provider: string(in.RepoRef.Provider),
@@ -624,7 +624,7 @@ func (r *runJournal) lastFinishedAttempt(stage string) (int, journal.AttemptClas
 func (r *runJournal) workspaceHeadMoved(ctx workflow.Context, stage, message string) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: runner.WorkspaceHeadMovedErrorCode, Message: message},
+		Error: &journal.ErrorDetail{Code: runsemantics.WorkspaceHeadMovedErrorCode, Message: message},
 	})
 }
 

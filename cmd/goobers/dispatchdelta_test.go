@@ -15,7 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workspacedelta"
@@ -815,8 +815,8 @@ func TestReboundBranchMovedUnderTheRunIsRefusedAndNamed(t *testing.T) {
 		}
 		// #6019: the pod surrenders the refusal under its own code, so the
 		// engine ends the run superseded instead of failed.
-		if got := workspaceProvisionFailureCode(err); got != runner.WorkspaceHeadMovedErrorCode {
-			t.Errorf("surrendered code = %q, want %q", got, runner.WorkspaceHeadMovedErrorCode)
+		if got := workspaceProvisionFailureCode(err); got != runsemantics.WorkspaceHeadMovedErrorCode {
+			t.Errorf("surrendered code = %q, want %q", got, runsemantics.WorkspaceHeadMovedErrorCode)
 		}
 	})
 

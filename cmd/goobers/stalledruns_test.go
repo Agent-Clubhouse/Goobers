@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -464,7 +465,7 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 	for _, event := range events {
 		if event.Type == journal.EventRunFinished && event.RunID == staleID &&
 			event.Status == string(journal.PhaseEscalated) &&
-			event.Error != nil && event.Error.Code == runner.RunStalledErrorCode {
+			event.Error != nil && event.Error.Code == runsemantics.RunStalledErrorCode {
 			found = true
 		}
 	}
@@ -673,7 +674,7 @@ func TestSweepStalledRunsAbortsOverAgeRunWithFreshHeartbeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(events) < 2 || events[len(events)-2].Error == nil ||
-		events[len(events)-2].Error.Code != runner.RunDurationExceededErrorCode {
+		events[len(events)-2].Error.Code != runsemantics.RunDurationExceededErrorCode {
 		t.Fatalf("terminal events = %+v, want duration-exceeded error", events)
 	}
 }

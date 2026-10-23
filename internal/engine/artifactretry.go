@@ -5,7 +5,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const declaredArtifactRetryChange = "declared-artifact-retry-v1"
@@ -23,7 +23,7 @@ func declaredArtifactRetryError(ctx workflow.Context, taskType apiv1.TaskType, r
 	if taskType != apiv1.TaskAgentic || !policyRetryRemains {
 		return nil
 	}
-	retryErr := runner.DeclaredArtifactRetryFailure(res)
+	retryErr := runsemantics.DeclaredArtifactRetryFailure(res)
 	if retryErr == nil {
 		return nil
 	}

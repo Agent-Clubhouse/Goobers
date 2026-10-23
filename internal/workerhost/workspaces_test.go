@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -171,7 +172,7 @@ func (d *revisionObservingDeterministic) Run(_ context.Context, env apiv1.Invoca
 	d.mu.Unlock()
 	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
 	if stage == "select" {
-		result.Outputs = map[string]interface{}{runner.WorkspaceBranchOutput: d.selected}
+		result.Outputs = map[string]interface{}{runsemantics.WorkspaceBranchOutput: d.selected}
 	}
 	return result, nil
 }
