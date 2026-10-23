@@ -23,7 +23,7 @@ func (s *daemonCredentialService) enableChildWorkflows(queue *triggerqueue.Store
 		return childworkflow.ErrAuthorityUnavailable
 	}
 	runtime, err := childworkflow.NewRuntime(childworkflow.RuntimeConfig{
-		Queue: queue, Grants: s.grants.key, Endpoint: s.grants.endpoint, Definitions: definitions,
+		Queue: queue, Grants: s.grants.Key(), Endpoint: s.grants.Endpoint(), Definitions: definitions,
 		OpenJournal: func(ctx context.Context, runID string) (*journal.Reader, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
