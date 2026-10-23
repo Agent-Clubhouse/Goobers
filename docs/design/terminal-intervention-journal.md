@@ -98,3 +98,15 @@ fully committed reopening, cancellation response loss, and late retries. File
 recovery additionally tests a crash after the cancellation marker. Workflow
 retry state, operator cancellation routing and durable-before-ack handling are
 the next layer; this seam does not change Update acceptance on its own.
+
+Cancellation of a completed reopening is permitted only while the originating
+Update has failed or remains delivery-uncertain and the workflow has not taken
+up the resumed plan. It is reconciliation of that unacknowledged Update, not a
+general abort operation for an already acknowledged/resumed run. PR-b must
+retain that pending-intent binding until reconciliation completes.
+
+Ordinary emits also refuse `intervention.idempotency`. The local intervention
+service writes its marker with `journal.Recover`/`Append`; the legacy engine
+still emits `escalation.resolution`, which stays allowed. For journals written
+before this guard, `run.finished` clears pre-terminal pending annotations: they
+cannot reserve an intervention against the newly committed terminal.

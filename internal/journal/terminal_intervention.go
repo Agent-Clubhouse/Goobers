@@ -171,6 +171,8 @@ func (c *TerminalInterventionCheck) observe(event Event) {
 	}
 	switch event.Type {
 	case EventRunFinished:
+		// A pre-terminal annotation cannot reserve an intervention against this terminal.
+		c.pending = ""
 		c.generation++
 		c.terminalSeq = event.Seq
 		c.terminal = event.Status == string(PhaseEscalated) || event.Status == string(PhaseFailed)

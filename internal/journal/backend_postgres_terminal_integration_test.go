@@ -305,3 +305,32 @@ func TestPostgresTerminalInterventionCancellationBlocksLateRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestPostgresTerminalInterventionIgnoresPreTerminalMarkers(t *testing.T) {
+	config := postgresJournalConfig(t)
+	var role string
+	if err := config.Pool.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != "goobers_controller" {
+		t.Fatalf("role=%s err=%v", role, err)
+	}
+	backend := postgresBackend(t, config)
+	for i, kind := range []string{"intervention.idempotency", "escalation.resolution"} {
+		t.Run(kind, func(t *testing.T) {
+			id := fmt.Sprintf("planted-marker-%d", i)
+			h, o, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: journal.RunIdentity{RunID: id, Gaggle: "web", Workflow: "wf"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Simulate legacy history before ordinary Emit reserved the marker.
+			if _, err := backend.AppendBatch(t.Context(), h, o, []journal.Event{
+				{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": kind, "idempotencyKey": "planted", "emitKey": "pod-op"}},
+				{Type: journal.EventRunFinished, Status: "failed"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := backend.CommitTerminalIntervention(t.Context(), h, o, pgTerminalIntent("legitimate", 3, 1))
+			if err != nil || !receipt.Resumed || receipt.Seq != 5 {
+				t.Fatalf("receipt=%+v err=%v", receipt, err)
+			}
+		})
+	}
+}

@@ -33,6 +33,8 @@ func TestTerminalInterventionChecksGenerationAndExactPrefix(t *testing.T) {
 		skip int
 	}{
 		{name: "new"},
+		{name: "completed terminal", edit: func(_ *TerminalIntervention, h *[]Event) { (*h)[1].Status = string(PhaseCompleted) }, want: ErrInterventionStale},
+		{name: "aborted terminal", edit: func(_ *TerminalIntervention, h *[]Event) { (*h)[1].Status = string(PhaseAborted) }, want: ErrInterventionStale},
 		{name: "partial", edit: func(r *TerminalIntervention, h *[]Event) { *h = append(*h, stampedPrefix(*r, 1)...) }, skip: 1},
 		{name: "duplicate", edit: func(r *TerminalIntervention, h *[]Event) { *h = append(*h, stampedPrefix(*r, 2)...) }, skip: 2},
 		{name: "duplicate after next terminal", edit: func(r *TerminalIntervention, h *[]Event) {
@@ -117,6 +119,21 @@ func TestTerminalInterventionFileRecoveryAndDenial(t *testing.T) {
 			denied, err := run.CommitTerminalIntervention(deny)
 			if err != nil || denied.Resumed || denied.Segment != 2 || run.Phase() != PhaseEscalated {
 				t.Fatalf("deny=%+v err=%v phase=%v", denied, err, run.Phase())
+			}
+		})
+	}
+}
+
+func TestPreTerminalMarkersCannotReserveLaterInterventions(t *testing.T) {
+	for _, kind := range []string{"intervention.idempotency", "escalation.resolution"} {
+		t.Run(kind, func(t *testing.T) {
+			history := []Event{{Seq: 1, Type: EventRunStarted}, {Seq: 2, Type: EventRunnerAnnotation, Runner: map[string]any{"kind": kind, "idempotencyKey": "planted-by-pod", "emitKey": "pod-op"}}, {Seq: 3, Type: EventRunFinished, Status: string(PhaseFailed)}}
+			check, err := NewTerminalInterventionCheck(terminalRequest("operator-resume", 3, 1), history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := check.Remaining(); err != nil {
+				t.Fatalf("pre-terminal %s blocked recovery: %v", kind, err)
 			}
 		})
 	}

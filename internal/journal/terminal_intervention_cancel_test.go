@@ -105,3 +105,22 @@ func TestTerminalInterventionTombstoneClosesOtherIntents(t *testing.T) {
 		t.Fatal("a different request reopened past incomplete cancellation")
 	}
 }
+
+func TestCancellationTombstoneMustBindItsOwnTerminal(t *testing.T) {
+	for _, field := range []string{"terminalGeneration", "terminalSeq"} {
+		t.Run(field, func(t *testing.T) {
+			original := terminalRequest("original", 2, 1)
+			cancel := cancelTerminalRequest(original)
+			marker := cancel.Cancellation[0]
+			marker.Seq = 3
+			marker.Runner[field] = "999"
+			check, err := NewTerminalInterventionCheck(original, append(terminalHistory(), marker))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := check.Remaining(); !errors.Is(err, ErrInterventionConflict) {
+				t.Fatalf("forged %s=%v", field, err)
+			}
+		})
+	}
+}

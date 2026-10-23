@@ -152,3 +152,34 @@ func TestOrdinaryEmitCannotForgeInterventionCancellation(t *testing.T) {
 		t.Fatalf("forgery closed active run: %v", err)
 	}
 }
+
+func TestOrdinaryEmitCannotPlantPendingInterventionMarker(t *testing.T) {
+	w, root := testWriter(t)
+	const id = "planted-marker"
+	now := time.Now()
+	if _, err := w.Emit(t.Context(), openBatch(id, now)); err != nil {
+		t.Fatal(err)
+	}
+	planted := EmitRequest{RunID: id, Gaggle: "web", Ops: []Op{appendOp("pod-op", now, journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "intervention.idempotency", "idempotencyKey": "planted-by-pod"}})}}
+	if _, err := w.Emit(t.Context(), planted); !errors.Is(err, journal.ErrInterventionInvalid) {
+		t.Fatalf("ordinary emit planted marker: %v", err)
+	}
+	// Legacy engine denial annotations remain ordinary emits while live.
+	planted.Ops = []Op{appendOp("legacy-deny", now, journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "escalation.resolution", "resolution": "deny"}})}
+	if _, err := w.Emit(t.Context(), planted); err != nil {
+		t.Fatalf("legacy denial refused: %v", err)
+	}
+	finish := EmitRequest{RunID: id, Gaggle: "web", Ops: []Op{appendOp("finish", now, journal.Event{Type: journal.EventRunFinished, Status: "failed"})}}
+	response, err := w.Emit(t.Context(), finish)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.CommitTerminalIntervention(t.Context(), liveTerminalRequest(id, response.Seq, 1)); err != nil {
+		t.Fatalf("legitimate intervention blocked: %v", err)
+	}
+	for _, event := range readEvents(t, root, id) {
+		if event.Runner["idempotencyKey"] == "planted-by-pod" {
+			t.Fatal("forged marker reached journal")
+		}
+	}
+}

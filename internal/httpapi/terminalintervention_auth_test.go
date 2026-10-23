@@ -25,3 +25,22 @@ func TestTerminalInterventionIdentityCannotReachOtherPlanes(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalInterventionRouteAuthorizerRequiresItsOwnIssuer(t *testing.T) {
+	// Exercise the authorizer alone: the handler's independent check must not
+	// conceal a regression in this earlier trust boundary.
+	for _, issuer := range []string{"", PodPrincipalIssuer, WorkerPrincipalIssuer, WorkerChildAdmissionPrincipalIssuer, WorkerTerminalInterventionPrincipalIssuer} {
+		t.Run(issuer, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/runs/run-1/journal/terminal-intervention", nil)
+			principal := Principal{Subject: "actor", Issuer: issuer, Roles: []Role{RoleAdmin}, Scopes: knownPodScopes()}
+			handled, err := authorizeIssuerBoundRoute(request, principal)
+			if issuer == WorkerTerminalInterventionPrincipalIssuer {
+				if handled || err != nil {
+					t.Fatalf("dedicated issuer should proceed to its route rule: handled=%v err=%v", handled, err)
+				}
+			} else if !handled || err == nil {
+				t.Fatalf("wrong issuer passed route boundary: handled=%v err=%v", handled, err)
+			}
+		})
+	}
+}
