@@ -80,9 +80,9 @@ func (f StateFiles) Lock(l instance.Layout) func(key, operation string, fn func(
 	return func(key, operation string, fn func() error) error {
 		switch {
 		case key == stateclient.KeyPostMergeReconcileLedger:
-			return f.FileLock(filepath.Join(schedulerDir, "post-merge-reconcile.lock"), fn)
+			return f.FileLock(filepath.Join(schedulerDir, PostMergeReconcileLockFile), fn)
 		case key == stateclient.KeySiblingContextCache:
-			return f.FileLock(filepath.Join(schedulerDir, "sibling-context-cache.lock"), fn)
+			return f.FileLock(filepath.Join(schedulerDir, SiblingCacheLockFileName), fn)
 		case strings.HasPrefix(key, stateclient.BacklogHealthCursorKeyPrefix):
 			return f.BoundedLock(
 				filepath.Join(schedulerDir, BacklogHealthCursorLockFile), operation, fn)
@@ -99,7 +99,7 @@ func (f StateFiles) Lock(l instance.Layout) func(key, operation string, fn func(
 			// break the lease's mutual exclusion WITH the claim transaction
 			// it is observed inside, which is what makes a candidate's wait
 			// and the claim that ends it one atomic step.
-			return f.ClaimLock(filepath.Join(schedulerDir, "claims.lock"), operation, fn)
+			return f.ClaimLock(filepath.Join(schedulerDir, ClaimLockFileName), operation, fn)
 		}
 	}
 }

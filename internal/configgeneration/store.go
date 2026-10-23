@@ -32,11 +32,17 @@ var ErrCapacity = errors.New("config generation retention capacity exhausted by 
 // cache; shared leases protect concurrent readers from catalogue pruning.
 type Store struct {
 	Root  string
-	Blobs *blobstore.Dir
+	Blobs BlobStore
 	// LocalCache retains fetched archives without publishing or deleting shared blobs.
 	LocalCache bool
 	// DurablePins is re-read only after exclusive ownership excludes live readers.
 	DurablePins func(context.Context) (map[string]bool, error)
+}
+
+// BlobStore is the shared content store capability needed by generations.
+type BlobStore interface {
+	blobstore.Store
+	Remove(context.Context, string) error
 }
 
 // Keep captures a generation before run admission. Protected includes all

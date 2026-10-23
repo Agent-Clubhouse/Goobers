@@ -793,6 +793,10 @@ func writePlaneError(w http.ResponseWriter, errorLog *log.Logger, operation stri
 	if budgetExceeded(w, err) {
 		return
 	}
+	if errors.Is(err, apicontract.ErrWriteConflict) {
+		writeError(w, http.StatusConflict, "write_conflict", operation+" conflicts with existing content")
+		return
+	}
 	var planeErr *InterventionError
 	if errors.As(err, &planeErr) {
 		status := planeErr.Status

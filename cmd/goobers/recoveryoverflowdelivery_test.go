@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -41,7 +42,7 @@ func TestRecoveryOverflowClaimsRestoreReportsPromotionState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			overflowPath := filepath.Join(recoveryOverflowRoot(layout), filepath.Base(filepath.Dir(path)), recovery.RecordFileName)
+			overflowPath := filepath.Join(runtimewiring.RecoveryOverflowRoot(layout), filepath.Base(filepath.Dir(path)), recovery.RecordFileName)
 			if err := os.MkdirAll(filepath.Dir(overflowPath), 0700); err != nil {
 				t.Fatal(err)
 			}

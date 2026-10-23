@@ -243,7 +243,10 @@ Every platform archive carries `README.md` and the tagged checkout's complete
 `docs/` tree beside the binary. Before packaging, the release engine invokes the
 release-stamped binary's hidden documentation generator, which uses the same
 registry-backed writer as `make docs` to replace `docs/cli/`, `docs/man/`, and
-`docs/completion/`. `docs/RELEASE.md` records the release version and commit.
+`docs/completion/`. These staged directories are cleared before generation so
+references owned by other binaries, such as `goobers-cloud`, cannot leak into
+the archive. The source documentation tree is unchanged.
+`docs/RELEASE.md` records the release version and commit.
 The same staging pass adapts the bundled README and quickstarts to the installed
 archive: the README's installer step and the quickstarts' build steps become a
 tagged binary check, and walkthrough commands invoke `goobers` from `PATH`.

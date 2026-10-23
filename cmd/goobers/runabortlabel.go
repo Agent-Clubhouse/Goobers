@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -120,7 +122,7 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		gaggleOwner += "/" + project.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +136,7 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 		required = string(capability.ProviderPRWrite)
 	}
 	resolvedProject := apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
-	adoScheme := adoCredentialSchemes(cfg, resolvedProject, grants)[required]
+	adoScheme := runtimewiring.AdoCredentialSchemes(cfg, resolvedProject, grants)[required]
 	label := func(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 		set, err := injector.Materialize(ctx, []string{required})
 		if err != nil {

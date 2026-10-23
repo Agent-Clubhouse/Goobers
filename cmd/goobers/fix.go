@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/goobers/goobers/internal/dslmigrate"
@@ -101,7 +103,7 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if *write {
-		if err := prepareManualRoot(layout, stderr); err != nil {
+		if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}

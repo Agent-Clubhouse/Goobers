@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -23,7 +25,7 @@ func TestPinnedGenerationKeepsMergeRevocationLive(t *testing.T) {
 			writeFixture(t, path, admitted)
 			env := apiv1.InvocationEnvelope{RunID: "pinned-run", TaskID: "pinned-run:local-ci", Gaggle: "example", WorkflowID: "default-implement", ConfigGeneration: "sha256:" + strings.Repeat("a", 64), Capabilities: []string{string(grant)}}
 			calls := 0
-			fence := withCurrentMergeAuthority(layout, func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
+			fence := runtimewiring.WithCurrentMergeAuthority(layout, func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 				calls++
 				return ctx, func() {}, nil
 			})
@@ -33,7 +35,7 @@ func TestPinnedGenerationKeepsMergeRevocationLive(t *testing.T) {
 				t.Fatalf("admitted merge refused: %v calls=%d", err, calls)
 			}
 			writeFixture(t, path, strings.ReplaceAll(admitted, "24h", "12h"))
-			if err := requireCurrentMergeAuthority(layout, env); err != nil {
+			if err := runtimewiring.RequireCurrentMergeAuthority(layout, env); err != nil {
 				t.Fatalf("unrelated edit revoked merge: %v", err)
 			}
 			writeFixture(t, path, deterministicWorkflowYAML)
@@ -53,7 +55,7 @@ func TestPinnedGenerationKeepsMergeRevocationLive(t *testing.T) {
 				t.Fatal("already-injected merge credential survived revocation")
 			}
 			env.Capabilities = []string{"repo:push"}
-			if err := requireCurrentMergeAuthority(layout, env); err != nil {
+			if err := runtimewiring.RequireCurrentMergeAuthority(layout, env); err != nil {
 				t.Fatalf("revocation invalidated ordinary pinned stage: %v", err)
 			}
 		})

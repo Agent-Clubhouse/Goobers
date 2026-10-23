@@ -71,10 +71,6 @@ func seedCrossRunRun(t *testing.T, layout instance.Layout, gaggle, runID string,
 	if err := run.Close(); err != nil {
 		t.Fatalf("close run %s: %v", runID, err)
 	}
-	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"),
-		[]byte("runId: "+runID+"\ngaggle: "+gaggle+"\n"), 0o644); err != nil {
-		t.Fatalf("write run.yaml for %s: %v", runID, err)
-	}
 }
 
 // TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle is the containment
@@ -304,12 +300,8 @@ func seedBranchOwningRun(t *testing.T, layout instance.Layout, gaggle, runID, wo
 // TestDaemonConflictTouchesStaysInsideTheGaggle proves for its own route.
 func TestDaemonEscalationCandidatesStaysInsideTheGaggle(t *testing.T) {
 	layout := crossRunTestLayout(t)
-	// journal.Create writes a real, schema-valid run.yaml on its own;
-	// seedCrossRunRun's is deliberately minimal for the routes that only
-	// check its EXISTENCE, but EscalationCandidates is the first cross-run
-	// route that also LISTS runs (readservice.OfflineRuns.ListRuns), which
-	// validates every run.yaml's schema — so the asking run is built the
-	// same way seedEscalatedRun's candidates are, not via seedCrossRunRun.
+	// Keep the asking run active while the candidates are terminal. All plane
+	// readers validate the schema and gaggle from the identity journal.Create writes.
 	askingRun, err := journal.Create(layout.ForGaggle(crossRunTestGaggle).RunsDir(), journal.RunIdentity{
 		RunID: "asking-run", Workflow: "implementation", WorkflowVersion: 1, Gaggle: crossRunTestGaggle,
 		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
@@ -553,5 +545,26 @@ func seedConflictRunWith(t *testing.T, layout instance.Layout, gaggle, runID, fi
 	}
 	if err := os.WriteFile(filepath.Join(runsDir, runID, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBackendJournalPlaneUsesIdentityWithoutLocalRoots(t *testing.T) {
+	authoritative := crossRunTestLayout(t)
+	seedCrossRunRun(t, authoritative, "g", "run-asking", journal.PhaseCompleted)
+	seedCrossRunRun(t, authoritative, "g", "run-target", journal.PhaseFailed)
+	seedCrossRunRun(t, authoritative, "foreign", "run-foreign", journal.PhaseFailed)
+	backend := journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: []string{authoritative.ForGaggle("g").RunsDir(), authoritative.ForGaggle("foreign").RunsDir()}})
+	service := NewRunJournalService(crossRunTestLayout(t), nil, backend)
+	response, err := service.RunPhase(t.Context(), journalclient.RunPhaseRequest{RunID: "run-asking", TargetRunID: "run-target", Gaggle: "g"})
+	if err != nil || response.Phase != "failed" {
+		t.Fatalf("backend phase=%+v error=%v", response, err)
+	}
+	for _, req := range []journalclient.RunPhaseRequest{
+		{RunID: "run-asking", TargetRunID: "run-foreign", Gaggle: "g"},
+		{RunID: "run-foreign", TargetRunID: "run-target", Gaggle: "g"},
+	} {
+		if _, err := service.RunPhase(t.Context(), req); err == nil {
+			t.Fatal("cross-gaggle identity accepted")
+		}
 	}
 }

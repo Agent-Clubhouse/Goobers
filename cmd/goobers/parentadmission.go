@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
@@ -29,7 +31,7 @@ func containedParentAdmission(layout instance.Layout, generation string) func(co
 		defer func() { _ = lease.Release() }()
 		set, report, err := loadConfigDirectory(directory)
 		if err != nil {
-			return fmt.Errorf("parent archive: %w (%s)", err, validationIssueSummary(report))
+			return fmt.Errorf("parent archive: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 		}
 		var stage string
 		for _, task := range machine.Def.Spec.Tasks {

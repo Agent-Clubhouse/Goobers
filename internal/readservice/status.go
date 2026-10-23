@@ -780,7 +780,7 @@ func (s *Local) earliestPROpen(ctx context.Context, runIDs []string, initComplet
 		if err := ctx.Err(); err != nil {
 			return time.Time{}, err
 		}
-		run, err := s.openRun(runID)
+		run, err := s.openRun(ctx, runID)
 		if err != nil {
 			return time.Time{}, fmt.Errorf(
 				"read run %q for time to first PR: %w",
@@ -1005,7 +1005,7 @@ func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidate, ok := s.restartRunCandidate(runID, restartedAt)
+		candidate, ok := s.restartRunCandidate(ctx, runID, restartedAt)
 		if !ok {
 			continue
 		}
@@ -1031,8 +1031,8 @@ func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) 
 	return result, nil
 }
 
-func (s *Local) restartRunCandidate(runID string, restartedAt time.Time) (restartRun, bool) {
-	run, err := s.openRun(runID)
+func (s *Local) restartRunCandidate(ctx context.Context, runID string, restartedAt time.Time) (restartRun, bool) {
+	run, err := s.openRun(ctx, runID)
 	if err != nil || run.identity.Trigger.Kind != journal.TriggerItem || run.identity.Trigger.Ref == "" {
 		return restartRun{}, false
 	}

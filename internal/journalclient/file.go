@@ -140,7 +140,8 @@ var _ Reader = (*File)(nil)
 // implementation behind the plane routes, so the two cannot drift: the plane
 // handler contains the request to a gaggle and then asks exactly this.
 type FileCrossRun struct {
-	layout instance.Layout
+	backend journal.ReaderBackend
+	layout  instance.Layout
 	// Warn receives non-fatal discovery notes (a corrupt sidecar, an
 	// unreadable blob). Nil discards them.
 	Warn func(string)
@@ -176,11 +177,7 @@ var ErrRunNotFound = errors.New("journalclient: run journal not found")
 // backlog-query's failure-streak walk must be able to tell "this run did not
 // fail" from "this run could not be read".
 func (f *FileCrossRun) RunPhase(ctx context.Context, targetRunID string) (journal.RunPhase, error) {
-	dir, err := f.layout.FindRunDir(targetRunID)
-	if err != nil {
-		return "", fmt.Errorf("%w: %s: %w", ErrRunNotFound, targetRunID, err)
-	}
-	reader, err := journal.OpenRead(dir)
+	reader, err := f.openRun(ctx, targetRunID, "")
 	if err != nil {
 		return "", fmt.Errorf("%w: %s: %w", ErrRunNotFound, targetRunID, err)
 	}
@@ -264,7 +261,7 @@ func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister,
 	if gaggle == "" || since.IsZero() {
 		return nil, errors.New("journalclient: a gaggle and a since are required to narrow the run set")
 	}
-	runDirs, err := f.scoped(gaggle).RunDirs()
+	runDirs, err := f.candidateRoots(gaggle)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +300,10 @@ func (f *FileCrossRun) activeRunCandidates(ctx context.Context, reads RunLister,
 	sort.Strings(ids)
 	candidates := make([]runCandidate, 0, len(ids))
 	for _, id := range ids {
+		if f.backend != nil {
+			candidates = append(candidates, runCandidate{name: id})
+			continue
+		}
 		for _, runsDir := range runDirs {
 			dir := filepath.Join(runsDir, id)
 			if info, err := os.Lstat(dir); err == nil && info.IsDir() {
@@ -399,10 +400,10 @@ func (f *FileCrossRun) conflictTouchesFrom(ctx context.Context, candidates []run
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if journalQuiescentBefore(candidate.dir, req.Since) {
+		if f.backend == nil && journalQuiescentBefore(candidate.dir, req.Since) {
 			continue
 		}
-		reader, err := journal.OpenRead(candidate.dir)
+		reader, err := f.openCandidate(ctx, candidate, req.Gaggle)
 		if err != nil {
 			continue
 		}
@@ -526,12 +527,7 @@ func (f *FileCrossRun) BranchOwnership(ctx context.Context, req BranchOwnershipR
 	unreadable := func(detail string) (BranchOwnershipResponse, error) {
 		return BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: detail}, nil
 	}
-	layout := f.scoped(req.Gaggle)
-	dir, err := layout.FindRunDir(req.TargetRunID)
-	if err != nil {
-		return ambiguous(fmt.Sprintf("open owning run %s: %v", req.TargetRunID, err))
-	}
-	reader, err := journal.OpenRead(dir)
+	reader, err := f.openRun(ctx, req.TargetRunID, req.Gaggle)
 	if err != nil {
 		return ambiguous(fmt.Sprintf("open owning run %s: %v", req.TargetRunID, err))
 	}
@@ -668,10 +664,10 @@ func (f *FileCrossRun) unpushedWorkFrom(ctx context.Context, candidates []runCan
 		if ctx.Err() != nil {
 			return nil
 		}
-		if c.name == req.RunID || journalQuiescentBefore(c.dir, req.Since) {
+		if c.name == req.RunID || (f.backend == nil && journalQuiescentBefore(c.dir, req.Since)) {
 			continue
 		}
-		candidate := f.unpushedWorkFromRun(c.dir, req.ItemIDs, req.Since, limit)
+		candidate := f.unpushedWorkFromRun(ctx, c, req.Gaggle, req.ItemIDs, req.Since, limit)
 		if candidate == nil {
 			continue
 		}
@@ -684,8 +680,9 @@ func (f *FileCrossRun) unpushedWorkFrom(ctx context.Context, candidates []runCan
 
 // unpushedWorkFromRun inspects one run journal for a stranded diff matching
 // itemIDs; nil when the run has none, published its work, or cannot be read.
-func (f *FileCrossRun) unpushedWorkFromRun(runDir string, itemIDs []string, since time.Time, maxInline int) *UnpushedWork {
-	reader, err := journal.OpenRead(runDir)
+func (f *FileCrossRun) unpushedWorkFromRun(ctx context.Context, candidate runCandidate, gaggle string, itemIDs []string, since time.Time, maxInline int) *UnpushedWork {
+	runDir := candidate.dir
+	reader, err := f.openCandidate(ctx, candidate, gaggle)
 	if err != nil {
 		return nil // not a run journal (partial/foreign directory) — skip silently
 	}

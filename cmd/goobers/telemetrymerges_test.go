@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -242,7 +243,7 @@ func TestTelemetryMergesReadCredentialIsExplicitAndDoesNotInheritWriteToken(t *t
 	t.Setenv("MERGE_REPORT_WRITE_TEST", "write-token")
 	t.Setenv("MERGE_REPORT_READ_TEST", "read-token")
 	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "app", Token: instance.TokenRef{Env: "MERGE_REPORT_WRITE_TEST"}}}}
-	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestTelemetryMergesReadCredentialIsExplicitAndDoesNotInheritWriteToken(t *t
 		t.Fatal("read inventory silently inherits repo write token")
 	}
 	cfg.Credentials = []instance.CredentialGrant{{Capability: string(capability.GitHubPRRead), Token: instance.TokenRef{Env: "MERGE_REPORT_READ_TEST"}}}
-	resolver, grants, err = buildCredentials(cfg, nil, "", "", nil, nil)
+	resolver, grants, err = runtimewiring.BuildCredentials(cfg, nil, "", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

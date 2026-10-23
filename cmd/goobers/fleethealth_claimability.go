@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimability"
@@ -237,7 +239,7 @@ func observationSharedClaimStore(ctx context.Context, setup *schedulerSetup, pol
 	if err != nil {
 		return nil, err
 	}
-	accounting := &providerQuotaAccounting{state: setup.ProviderQuota}
+	accounting := &runtimewiring.ProviderQuotaAccounting{State: setup.ProviderQuota}
 	for _, option := range []func(*providers.GitHubProvider){
 		providers.WithQuotaObserver(accounting), providers.WithQuotaRequestGate(accounting),
 		providers.WithMaxRateLimitRetries(0), providers.WithMaxTransientRetries(0),

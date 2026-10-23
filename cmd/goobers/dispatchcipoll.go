@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -258,8 +260,8 @@ func podCIPollPoller(token string, source providers.TokenSource, adoSource provi
 			repo.Provider,
 		)
 	}
-	if newPRPoller != nil {
-		return newPRPoller(token), nil
+	if runtimewiring.NewPRPoller != nil {
+		return runtimewiring.NewPRPoller(token), nil
 	}
 	// Through the shared stage-provider seam: this runs IN a pod, which is
 	// exactly where the configured bot login has to come from the dispatcher's

@@ -160,7 +160,7 @@ func (p *parentStagePod) prepareSource(ctx context.Context, env apiv1.Invocation
 	if err != nil {
 		return request, pin, err
 	}
-	pins, err := containedParentPlacements(p.service.config, snapshot.set, machine)
+	pins, err := containedParentPlacements(p.service.config, snapshot.Definitions, machine)
 	if err != nil {
 		return request, pin, err
 	}

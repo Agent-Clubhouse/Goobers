@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/worktree"
@@ -48,7 +50,7 @@ func TestUpAPIReadyBeforeRetentionSweepCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	repo, err := repoCloneURL(apiv1.RepoRef{})
+	repo, err := runtimewiring.RepoCloneURL(apiv1.RepoRef{})
 	if err != nil {
 		t.Fatalf("repoCloneURL: %v", err)
 	}
