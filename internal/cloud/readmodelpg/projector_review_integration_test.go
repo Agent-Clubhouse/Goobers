@@ -5,6 +5,8 @@ package readmodelpg_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,4 +170,87 @@ func waitForNotifierHealth(t *testing.T, notifier *readmodelpg.Notifier) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("notifier did not recover: %+v", notifier.Health())
+}
+
+type freezeNotifierProxy struct {
+	listener net.Listener
+	frozen   atomic.Bool
+}
+
+func newFreezeNotifierProxy(t *testing.T, target string) *freezeNotifierProxy {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &freezeNotifierProxy{listener: listener}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			server, err := net.Dial("tcp", target)
+			if err != nil {
+				_ = client.Close()
+				continue
+			}
+			pipe := func(destination net.Conn, source net.Conn) {
+				buffer := make([]byte, 32*1024)
+				for {
+					count, err := source.Read(buffer)
+					if err != nil {
+						return
+					}
+					if proxy.frozen.Load() {
+						continue
+					}
+					if _, err := destination.Write(buffer[:count]); err != nil {
+						return
+					}
+				}
+			}
+			go pipe(server, client)
+			go pipe(client, server)
+		}
+	}()
+	return proxy
+}
+
+func TestCommitDoesNotBlockOnBlackholedNotifier(t *testing.T) {
+	pool := testPool(t)
+	applyMigrations(t, pool)
+	resetReadmodel(t, pool)
+	direct := pool.Config().ConnConfig.Copy()
+	proxy := newFreezeNotifierProxy(
+		t, fmt.Sprintf("%s:%d", direct.Host, direct.Port))
+	address := proxy.listener.Addr().(*net.TCPAddr)
+	direct.Host, direct.Port = "127.0.0.1", uint16(address.Port)
+	notifier, err := readmodelpg.NewNotifier(
+		t.Context(), readmodelpg.NotifierConfig{
+			Direct: direct, NotifyTimeout: 100 * time.Millisecond,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { go func() { _ = notifier.Close() }() }()
+	projector, _, _ := testProjector(
+		t, pool, "notifier-blackhole-"+t.Name(), "holder", notifier)
+	proxy.frozen.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		done <- projector.Commit(
+			context.Background(), testProjection("blackholed", 1))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		_, committed, _ := projector.Store().GetRun(
+			t.Context(), "blackholed")
+		t.Fatalf("Commit blocked on black-holed NOTIFY (committed=%v)", committed)
+	}
 }

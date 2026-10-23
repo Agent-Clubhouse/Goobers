@@ -14,6 +14,7 @@ import (
 const (
 	changeChannel         = "goobers_readmodel_change"
 	defaultNotifyCoalesce = 250 * time.Millisecond
+	defaultNotifyTimeout  = 2 * time.Second
 	defaultReconnectMin   = 100 * time.Millisecond
 	defaultReconnectMax   = 5 * time.Second
 )
@@ -21,11 +22,12 @@ const (
 // NotifierConfig requires a direct PostgreSQL connection. LISTEN is not valid
 // through a transaction-pooled PgBouncer endpoint.
 type NotifierConfig struct {
-	Direct       *pgx.ConnConfig
-	Logger       *slog.Logger
-	Coalesce     time.Duration
-	ReconnectMin time.Duration
-	ReconnectMax time.Duration
+	Direct        *pgx.ConnConfig
+	Logger        *slog.Logger
+	Coalesce      time.Duration
+	ReconnectMin  time.Duration
+	ReconnectMax  time.Duration
+	NotifyTimeout time.Duration
 }
 
 // NotifierHealth exposes notification degradation without making wakeups part
@@ -85,6 +87,9 @@ func NewNotifier(ctx context.Context, config NotifierConfig) (*Notifier, error) 
 	}
 	if config.ReconnectMax < config.ReconnectMin {
 		return nil, errors.New("readmodelpg: invalid notifier reconnect bounds")
+	}
+	if config.NotifyTimeout <= 0 {
+		config.NotifyTimeout = defaultNotifyTimeout
 	}
 	listener, err := connectListener(ctx, config.Direct)
 	if err != nil {
@@ -147,32 +152,12 @@ func (n *Notifier) Subscribe() (<-chan struct{}, func()) {
 // Notify issues a best-effort, coalesced latency hint. Projection commits never
 // fail because NOTIFY is unavailable; the feed poll is the correctness path.
 func (n *Notifier) Notify(ctx context.Context) error {
+	_ = ctx
 	n.mu.Lock()
 	closed := n.closed
 	n.mu.Unlock()
 	if closed {
 		return nil
-	}
-	n.publisherMu.Lock()
-	var failed *pgx.Conn
-	var publishErr error
-	if n.publisher != nil && time.Since(n.lastPublish) >= n.config.Coalesce {
-		_, publishErr = n.publisher.Exec(ctx, `SELECT pg_notify($1, '')`, changeChannel)
-		n.lastPublish = time.Now()
-		if publishErr == nil {
-			n.publisherMu.Unlock()
-			return nil
-		}
-		failed = n.publisher
-		n.publisher = nil
-	}
-	n.publisherMu.Unlock()
-	if failed != nil {
-		_ = failed.Close(context.Background())
-		n.mu.Lock()
-		n.health.PublisherConnected = false
-		n.recordErrorLocked(publishErr)
-		n.mu.Unlock()
 	}
 	n.requestPublish()
 	return nil
@@ -252,10 +237,14 @@ func (n *Notifier) publishLoop() {
 				connection = reconnected
 				backoff = n.config.ReconnectMin
 			}
+			notifyCtx, cancel := context.WithTimeout(
+				n.ctx, n.config.NotifyTimeout)
 			n.publisherMu.Lock()
-			_, err := connection.Exec(n.ctx, `SELECT pg_notify($1, '')`, changeChannel)
+			_, err := connection.Exec(notifyCtx,
+				`SELECT pg_notify($1, '')`, changeChannel)
 			n.lastPublish = time.Now()
 			n.publisherMu.Unlock()
+			cancel()
 			if err != nil {
 				n.setPublisher(nil, err)
 				continue
