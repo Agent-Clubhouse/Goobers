@@ -40,7 +40,8 @@ Database options:
   --database-auth MODE             password or entra (default password)
   --object-store-url URL           Azure Blob service URL
   --object-store-container NAME    Blob container (default goobers)
-  --experimental-physical-blob-gc  Enable unqualified physical deletion (#7843)
+  --blob-gc-pitr-retention DURATION  Minimum restore retention (default 720h)
+  --experimental-physical-blob-gc  Enable storage-leased physical deletion (#7843)
 
 Environment:
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
@@ -187,9 +188,13 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	authMode := flags.String("database-auth", "password", "database authentication mode: password or entra")
 	objectStoreURL := flags.String("object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	objectStoreContainer := flags.String("object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	blobGCPITRRetention := flags.Duration(
+		"blob-gc-pitr-retention", objstore.DefaultPITRRetention,
+		"minimum restore retention before blob deletion",
+	)
 	experimentalPhysicalBlobGC := flags.Bool(
 		"experimental-physical-blob-gc", false,
-		"enable experimental physical blob deletion (#7843)",
+		"enable storage-leased experimental physical blob deletion (#7843)",
 	)
 	flags.Usage = func() { write(stderr, help) }
 	if err := flags.Parse(args); err != nil {
@@ -252,6 +257,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	}
 	objects, err := newObjectMetadata(pools.Direct, blobs, objstore.MetadataOptions{
 		ExperimentalPhysicalDelete: *experimentalPhysicalBlobGC,
+		PITRRetention:              *blobGCPITRRetention,
 	})
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)

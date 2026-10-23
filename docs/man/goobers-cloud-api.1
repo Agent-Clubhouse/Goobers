@@ -20,7 +20,8 @@ Database options:
   --database-auth MODE             password or entra (default password)
   --object-store-url URL           Azure Blob service URL
   --object-store-container NAME    Blob container (default goobers)
-  --experimental-physical-blob-gc  Enable unqualified physical deletion (#7843)
+  --blob-gc-pitr-retention DURATION  Minimum restore retention (default 720h)
+  --experimental-physical-blob-gc  Enable storage-leased physical deletion (#7843)
 
 Environment:
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
