@@ -81,6 +81,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	const password = "do-not-log-this-password"
 	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
 	code, _, stderr := runForTest("api")
 	if code != 1 {
 		t.Fatalf("api code = %d, stderr = %q", code, stderr)
@@ -108,12 +109,13 @@ func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
 		newCloudPools, runCloudMigrations, signalContext = originalPools, originalRun, originalSignal
 	})
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
 	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
 	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
 		return &cloudpg.Pools{}, nil
 	}
 	var backupRef string
-	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup string) error {
+	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string) error {
 		backupRef = backup
 		return nil
 	}

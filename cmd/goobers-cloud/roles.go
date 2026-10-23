@@ -12,9 +12,14 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
+	"github.com/goobers/goobers/internal/blobstore"
+	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -32,10 +37,14 @@ Database options:
   --database-max-conns N           Total connection budget (default 16)
   --database-direct-max-conns N    Direct-pool reservation (default 2)
   --database-auth MODE             password or entra (default password)
+  --object-store-url URL           Azure Blob service URL
+  --object-store-container NAME    Blob container (default goobers)
+  --experimental-physical-blob-gc  Enable unqualified physical deletion (#7843)
 
 Environment:
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+  GOOBERS_OBJECT_STORE_URL     Azure Blob service URL
 `
 	controllerHelp = `Usage: goobers-cloud controller [DATABASE OPTIONS]
 
@@ -52,6 +61,8 @@ Options:
   --database-direct-url-file PATH  Read direct URL from a mounted Secret
   --database-auth MODE             password or entra (default password)
   --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --instance-id ID                 Goobers instance owning the migration lease (required)
+  --holder ID                      Unique migration pod/process identity
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
@@ -93,6 +104,8 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 	directURLFile := flags.String("database-direct-url-file", "", "file containing the direct PostgreSQL URL")
 	authMode := flags.String("database-auth", environmentOr("GOOBERS_DATABASE_AUTH", "password"), "database authentication mode: password or entra")
 	backupRef := flags.String("backup-ref", os.Getenv("GOOBERS_MIGRATION_BACKUP_REF"), "restorable backup identifier or PITR mark")
+	instanceID := flags.String("instance-id", os.Getenv("GOOBERS_INSTANCE_ID"), "Goobers instance identifier")
+	holder := flags.String("holder", environmentOr("GOOBERS_REPLICA_ID", defaultMigrationHolder()), "migration pod/process identity")
 	flags.Usage = func() { write(stderr, migrateHelp) }
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,7 +113,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*backupRef) == "" {
+	if flags.NArg() != 0 || strings.TrimSpace(*backupRef) == "" || strings.TrimSpace(*instanceID) == "" {
 		flags.Usage()
 		return 2
 	}
@@ -121,7 +134,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pools.Close()
-	if err := runCloudMigrations(ctx, pools, *backupRef); err != nil {
+	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder); err != nil {
 		writef(stderr, "goobers-cloud migrate: %s\n", cloudpg.SafeDiagnostic(err))
 		return 1
 	}
@@ -145,26 +158,41 @@ var (
 	runWorkerHost             = func(ctx context.Context, host *workerhost.Host) error { return host.Run(ctx) }
 	signalContext             = signals.SetupSignalContext
 	newCloudPools             = cloudpg.NewPools
+	newAcceptanceStore        = cloudacceptance.New
+	newAzureObjectStore       = objstore.NewAzure
+	newObjectMetadata         = objstore.NewMetadataWithOptions
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
 	runAPIHost         = unavailableDatabaseRole
 	runControllerHost  = unavailableDatabaseRole
 	checkCloudSchema   = cloudmigrate.CheckPoolCompatibility
-	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef string) error {
+	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef, instanceID, holder string) error {
 		catalog, err := cloudmigrate.Catalog()
 		if err != nil {
 			return err
 		}
-		return (cloudmigrate.Runner{Direct: pools.Direct, Catalog: catalog, BackupRef: backupRef}).Apply(ctx)
+		return (cloudmigrate.Runner{
+			Direct: pools.Direct, Catalog: catalog, BackupRef: backupRef,
+			InstanceID: instanceID, Holder: holder,
+		}).Apply(ctx)
 	}
 )
 
-type databaseRole func(context.Context, *cloudpg.Pools, error) error
+type cloudServices struct {
+	Pools               *cloudpg.Pools
+	Acceptances         triggerqueue.SchedulerPolicyStore
+	Blobs               blobstore.Store
+	Surrenders          dispatcher.SurrenderPlane
+	Objects             *objstore.Metadata
+	SchemaCompatibility error
+}
+
+type databaseRole func(context.Context, cloudServices) error
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
-func unavailableDatabaseRole(context.Context, *cloudpg.Pools, error) error { return errRoleUnavailable }
+func unavailableDatabaseRole(context.Context, cloudServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -180,6 +208,12 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	maxConnections := flags.Int("database-max-conns", int(cloudpg.DefaultMaxConnections), "total database connection budget")
 	directConnections := flags.Int("database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct-pool connection reservation")
 	authMode := flags.String("database-auth", "password", "database authentication mode: password or entra")
+	objectStoreURL := flags.String("object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
+	objectStoreContainer := flags.String("object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	experimentalPhysicalBlobGC := flags.Bool(
+		"experimental-physical-blob-gc", false,
+		"enable experimental physical blob deletion (#7843)",
+	)
 	flags.Usage = func() { write(stderr, help) }
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -187,7 +221,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		}
 		return 2
 	}
-	if flags.NArg() != 0 {
+	if flags.NArg() != 0 || strings.TrimSpace(*objectStoreURL) == "" || strings.TrimSpace(*objectStoreContainer) == "" {
 		flags.Usage()
 		return 2
 	}
@@ -229,7 +263,40 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
-	if err := serve(ctx, pools, compatibilityErr); err != nil {
+	acceptances, err := newAcceptanceStore(
+		pools.Transaction,
+		environmentOr("GOOBERS_INSTANCE_ID", "default"),
+	)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
+		return 1
+	}
+	objectCredential, err := newDefaultAzureCredential()
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: object-store credential initialization failed\n", role)
+		return 1
+	}
+	blobs, err := newAzureObjectStore(*objectStoreURL, *objectStoreContainer, objectCredential)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
+		return 1
+	}
+	acceptances.BindChildBlobs(blobs)
+	objects, err := newObjectMetadata(pools.Direct, blobs, objstore.MetadataOptions{
+		ExperimentalPhysicalDelete: *experimentalPhysicalBlobGC,
+	})
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
+		return 1
+	}
+	services := cloudServices{
+		Pools: pools, Acceptances: acceptances, Blobs: blobs, Objects: objects,
+		SchemaCompatibility: compatibilityErr,
+		Surrenders: objstore.SurrenderPlane{
+			Metadata: objects, InstanceID: environmentOr("GOOBERS_INSTANCE_ID", "default"),
+		},
+	}
+	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
 		return 1
 	}
@@ -281,6 +348,14 @@ func environmentOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func defaultMigrationHolder() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "unknown-host"
+	}
+	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
 func runWorkerRole(args []string, stdout, stderr io.Writer) int {

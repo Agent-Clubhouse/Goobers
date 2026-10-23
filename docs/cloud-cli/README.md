@@ -45,10 +45,14 @@ Database options:
   --database-max-conns N           Total connection budget (default 16)
   --database-direct-max-conns N    Direct-pool reservation (default 2)
   --database-auth MODE             password or entra (default password)
+  --object-store-url URL           Azure Blob service URL
+  --object-store-container NAME    Blob container (default goobers)
+  --experimental-physical-blob-gc  Enable unqualified physical deletion (#7843)
 
 Environment:
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+  GOOBERS_OBJECT_STORE_URL     Azure Blob service URL
 ~~~
 
 ## `goobers-cloud completion`
@@ -87,6 +91,8 @@ Options:
   --database-direct-url-file PATH  Read direct URL from a mounted Secret
   --database-auth MODE             password or entra (default password)
   --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --instance-id ID                 Goobers instance owning the migration lease (required)
+  --holder ID                      Unique migration pod/process identity
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
