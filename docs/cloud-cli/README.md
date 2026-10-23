@@ -124,7 +124,7 @@ Apply cloud configuration.
 ~~~text
 Usage: goobers-cloud config apply [OPTIONS]
 
-Apply a cloud configuration generation. Reserved until #7827.
+Apply a cloud configuration generation. Reserved until #7834.
 ~~~
 
 ## `goobers-cloud config status`
@@ -134,7 +134,7 @@ Show cloud configuration status.
 ~~~text
 Usage: goobers-cloud config status [OPTIONS]
 
-Show cloud configuration generation and eligibility status. Reserved until #7827.
+Show cloud configuration generation and eligibility status. Reserved until #7834.
 ~~~
 
 ## `goobers-cloud controller`
@@ -164,9 +164,10 @@ Deny one escalated run through the control-plane API.
 Show cloud controller lease status.
 
 ~~~text
-Usage: goobers-cloud lease status [OPTIONS]
+Usage: goobers-cloud lease status [DATABASE OPTIONS]
 
-Show the active cloud controller lease and fence epoch. Reserved until #7803.
+Show active cloud controller leases, fence epochs, DB-clock expiry, and recent
+lease history.
 ~~~
 
 ## `goobers-cloud migrate`
@@ -195,9 +196,9 @@ Environment:
 Show cloud schema migration status.
 
 ~~~text
-Usage: goobers-cloud migrate status [OPTIONS]
+Usage: goobers-cloud migrate status [DATABASE OPTIONS]
 
-Show cloud schema migration compatibility. Reserved until #7802.
+Show applied cloud schema migrations and binary compatibility.
 ~~~
 
 ## `goobers-cloud override`

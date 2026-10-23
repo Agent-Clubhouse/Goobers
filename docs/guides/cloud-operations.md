@@ -20,16 +20,16 @@ run those stages. The table maps the instance-root and operator commands.
 | `runs list` | `goobers-cloud runs list --api URL` | Supports gaggle, workflow, phase and limit filters. |
 | `trace RUN` | `goobers-cloud runs logs --api URL RUN` | Reads journal events; use `runs show` for summary state. |
 | `claims active`, `claims list` | `goobers-cloud claims list --api URL` | Active cloud claims. |
-| `claims release` | `goobers-cloud claims release` | Fails closed until #7808. |
+| `claims release` | `goobers-cloud claims release` | Fails closed until #7845. |
 | `run`, `signal` | `goobers-cloud triggers --api URL ...` | Durable API trigger with an idempotency key. |
 | `approve` | `goobers-cloud approve --api URL ...` | Runtime intervention. |
 | `override` | `goobers-cloud override --api URL ...` | Runtime intervention. |
 | `escalations resolve --resolution=deny` | `goobers-cloud deny --api URL ...` | Denies an escalated run. |
 | `run cancel` | `goobers-cloud cancel --api URL ...` | Idempotent live-run cancellation. |
-| `apply` | `goobers-cloud config apply` | Fails closed until #7827. |
-| `config` | `goobers-cloud config status` | Fails closed until #7827. |
-| migration inspection | `goobers-cloud migrate status` | Fails closed until #7802. |
-| daemon ownership/status | `goobers-cloud lease status` | Fails closed until #7803. |
+| `apply` | `goobers-cloud config apply` | Fails closed until #7834. |
+| `config` | `goobers-cloud config status` | Fails closed until #7834. |
+| migration inspection | `goobers-cloud migrate status` | Reads applied migrations and minimum-compatible binary state. |
+| daemon ownership/status | `goobers-cloud lease status` | Reads holder, epoch, DB-clock expiry and recent lease history. |
 | `worker` | `goobers-cloud worker` | Cloud role, normally run by the deployment. |
 | `completion` | `goobers-cloud completion` | Generates Bash, Fish or Zsh completion. |
 | `version`, `versions` | deployment image/version metadata | No instance-root operation. |
