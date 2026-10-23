@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	azurelease "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/lease"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -23,6 +25,11 @@ var (
 	ErrConflict = fmt.Errorf("cloud object store conflict: %w", apicontract.ErrWriteConflict)
 	// ErrDigestMismatch means downloaded bytes do not match their address.
 	ErrDigestMismatch = errors.New("cloud object store digest mismatch")
+)
+
+const (
+	blobLeaseDurationSeconds int32 = 60
+	blobLeaseRetryInterval         = 50 * time.Millisecond
 )
 
 // Azure is a content-addressed blobstore.Store backed by Azure Blob Storage.
@@ -54,8 +61,35 @@ func newAzure(client *azblob.Client, container string) (*Azure, error) {
 func (a *Azure) Describe() string { return "azure-blob:" + a.container }
 
 // Put creates a blob with If-None-Match. An identical existing object is an
-// idempotent success; an object whose bytes do not match its key is a conflict.
+// idempotent success, but still takes and touches the mutation lease so a
+// reference writer cannot cross a collector's conditional delete unchanged.
+// An object whose bytes do not match its key is a conflict.
 func (a *Azure) Put(ctx context.Context, digest string, data []byte) error {
+	mutation, err := a.AcquireMutation(ctx, digest, data)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation(mutation)
+	if err := mutation.Touch(ctx); err != nil {
+		return fmt.Errorf("touch published blob: %w", err)
+	}
+	return nil
+}
+
+// TouchReference serializes a digest-only database reference with collection.
+func (a *Azure) TouchReference(ctx context.Context, digest string) error {
+	mutation, err := a.AcquireMutation(ctx, digest, nil)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation(mutation)
+	if err := mutation.Touch(ctx); err != nil {
+		return fmt.Errorf("touch blob reference: %w", err)
+	}
+	return nil
+}
+
+func (a *Azure) putUnleased(ctx context.Context, digest string, data []byte) error {
 	key, err := blobKey(digest)
 	if err != nil {
 		return err
@@ -173,6 +207,163 @@ func (a *Azure) Touch(ctx context.Context, digest string, data []byte) error {
 		return fmt.Errorf("touch blob %s: %w", digest, err)
 	}
 	return nil
+}
+
+type azureMutation struct {
+	blob  *blob.Client
+	lease *azurelease.BlobClient
+}
+
+// AcquireMutation waits for exclusive storage authority over one digest.
+func (a *Azure) AcquireMutation(
+	ctx context.Context,
+	digest string,
+	data []byte,
+) (blobMutation, error) {
+	for {
+		if data != nil {
+			if err := a.putUnleased(ctx, digest, data); err != nil {
+				return nil, err
+			}
+		}
+		mutation, busy, err := a.tryAcquireMutation(ctx, digest)
+		switch {
+		case err == nil && !busy:
+			return mutation, nil
+		case err != nil && errors.Is(err, blobstore.ErrNotFound) && data != nil:
+		case err != nil:
+			return nil, err
+		}
+		timer := time.NewTimer(blobLeaseRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// TryAcquireMutation attempts exclusive storage authority without waiting.
+func (a *Azure) TryAcquireMutation(
+	ctx context.Context,
+	digest string,
+) (blobMutation, bool, error) {
+	return a.tryAcquireMutation(ctx, digest)
+}
+
+func (a *Azure) tryAcquireMutation(
+	ctx context.Context,
+	digest string,
+) (*azureMutation, bool, error) {
+	key, err := blobKey(digest)
+	if err != nil {
+		return nil, false, err
+	}
+	client := a.client.ServiceClient().NewContainerClient(a.container).NewBlobClient(key)
+	leaseClient, err := azurelease.NewBlobClient(client, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("create blob mutation lease %s: %w", digest, err)
+	}
+	if _, err := leaseClient.AcquireLease(ctx, blobLeaseDurationSeconds, nil); err != nil {
+		switch {
+		case hasStatus(err, 404):
+			return nil, false, fmt.Errorf("%w: %s", blobstore.ErrNotFound, digest)
+		case hasStatus(err, 409, 412):
+			return nil, true, nil
+		default:
+			return nil, false, fmt.Errorf("acquire blob mutation lease %s: %w", digest, err)
+		}
+	}
+	return &azureMutation{blob: client, lease: leaseClient}, false, nil
+}
+
+func (m *azureMutation) ETag(ctx context.Context) (string, error) {
+	response, err := m.blob.GetProperties(ctx, &blob.GetPropertiesOptions{
+		AccessConditions: m.accessConditions(nil),
+	})
+	if err != nil {
+		if hasStatus(err, 404) {
+			return "", blobstore.ErrNotFound
+		}
+		return "", err
+	}
+	if response.ETag == nil {
+		return "", errors.New("cloud object store properties returned no ETag")
+	}
+	return string(*response.ETag), nil
+}
+
+func (m *azureMutation) Renew(ctx context.Context) error {
+	if _, err := m.lease.RenewLease(ctx, nil); err != nil {
+		return fmt.Errorf("renew blob mutation lease: %w", err)
+	}
+	return nil
+}
+
+func (m *azureMutation) Touch(ctx context.Context) error {
+	_, err := m.blob.SetMetadata(ctx, map[string]*string{}, &blob.SetMetadataOptions{
+		AccessConditions: m.accessConditions(nil),
+	})
+	if err != nil {
+		return fmt.Errorf("touch leased blob: %w", err)
+	}
+	return nil
+}
+
+func (m *azureMutation) StampGCIntent(
+	ctx context.Context,
+	intentID string,
+) (string, error) {
+	response, err := m.blob.SetMetadata(
+		ctx,
+		map[string]*string{"gc_intent": to.Ptr(intentID)},
+		&blob.SetMetadataOptions{AccessConditions: m.accessConditions(nil)},
+	)
+	if err != nil {
+		return "", fmt.Errorf("stamp leased blob GC intent: %w", err)
+	}
+	if response.ETag == nil {
+		return "", errors.New("cloud object store GC intent returned no ETag")
+	}
+	return string(*response.ETag), nil
+}
+
+func (m *azureMutation) RemoveIfMatch(
+	ctx context.Context,
+	etag string,
+) (bool, error) {
+	match := azcore.ETag(etag)
+	_, err := m.blob.Delete(ctx, &blob.DeleteOptions{
+		AccessConditions: m.accessConditions(&match),
+	})
+	switch {
+	case err == nil, hasStatus(err, 404):
+		return true, nil
+	case hasStatus(err, 409, 412):
+		return false, nil
+	default:
+		return false, fmt.Errorf("conditionally delete leased blob: %w", err)
+	}
+}
+
+func (m *azureMutation) Release(ctx context.Context) error {
+	_, err := m.lease.ReleaseLease(ctx, nil)
+	if err != nil && !hasStatus(err, 404, 409, 412) {
+		return fmt.Errorf("release blob mutation lease: %w", err)
+	}
+	return nil
+}
+
+func (m *azureMutation) accessConditions(etag *azcore.ETag) *blob.AccessConditions {
+	return &blob.AccessConditions{
+		LeaseAccessConditions: &blob.LeaseAccessConditions{
+			LeaseID: m.lease.LeaseID(),
+		},
+		ModifiedAccessConditions: &blob.ModifiedAccessConditions{
+			IfMatch: etag,
+		},
+	}
 }
 
 // RemoveIfMatch deletes only while the blob still carries the captured ETag.
