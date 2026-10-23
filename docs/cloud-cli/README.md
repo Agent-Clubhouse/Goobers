@@ -33,10 +33,16 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 Serve the cloud control-plane API.
 
 ~~~text
-Usage: goobers-cloud api
+Usage: goobers-cloud api [DATABASE OPTIONS]
 
-Serve the cloud control-plane API. The P1 skeleton reserves this role while
-the extracted API host is wired into the cloud composition root.
+Serve the cloud control-plane API.
+
+Database options:
+  --database-url URL               PgBouncer transaction-pool URL
+  --database-direct-url URL        Direct PostgreSQL URL for session-bound work
+  --database-max-conns N           Total connection budget (default 16)
+  --database-direct-max-conns N    Direct-pool reservation (default 2)
+  --database-auth MODE             password or entra (default password)
 ~~~
 
 ## `goobers-cloud completion`
@@ -54,10 +60,11 @@ Generate a shell completion script. Source the output in the target shell.
 Run cloud control-plane reconciliation.
 
 ~~~text
-Usage: goobers-cloud controller
+Usage: goobers-cloud controller [DATABASE OPTIONS]
 
-Run cloud control-plane reconciliation. The P1 skeleton reserves this role
-while the extracted controller host is wired into the cloud composition root.
+Run cloud control-plane reconciliation.
+
+Database options are the same as for the api role.
 ~~~
 
 ## `goobers-cloud migrate`
