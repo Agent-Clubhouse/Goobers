@@ -18,6 +18,15 @@ import (
 )
 
 func TestStaticRepeatedVisitsRealHistoryReplay(t *testing.T) {
+	testRepeatedVisitsRealHistory(t, false)
+}
+
+func TestProductionRunRepeatedVisitsRealHistoryReplay(t *testing.T) {
+	testRepeatedVisitsRealHistory(t, true)
+}
+
+func testRepeatedVisitsRealHistory(t *testing.T, production bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
@@ -57,18 +66,27 @@ func TestStaticRepeatedVisitsRealHistoryReplay(t *testing.T) {
 		return "pass", nil
 	})
 	w := worker.New(server.Client(), "repeated-static-visits", worker.Options{})
-	w.RegisterWorkflow(staticScheduler)
+	var workflowFn any = staticScheduler
+	var workflowInput any = in
+	if production {
+		workflowFn, workflowInput = Run, in.Run
+	}
+	w.RegisterWorkflow(workflowFn)
 	w.RegisterActivity(acts)
 	if err := w.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer w.Stop()
-	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: in.Run.RunID, TaskQueue: "repeated-static-visits"}, staticScheduler, in)
+	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: in.Run.RunID, TaskQueue: "repeated-static-visits"}, workflowFn, workflowInput)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out staticSchedulerResult
-	if err := run.Get(ctx, &out); err != nil {
+	var target any = &out
+	if production {
+		target = &out.Result
+	}
+	if err := run.Get(ctx, target); err != nil {
 		t.Fatal(err)
 	}
 	if out.Error != "" || out.Result.Status != StatusCompleted {
@@ -78,7 +96,7 @@ func TestStaticRepeatedVisitsRealHistoryReplay(t *testing.T) {
 	history := hitlFetchHistory(t, ctx, server.Client(), run.GetID(), run.GetRunID())
 	replay := func(h *historypb.History) {
 		r := worker.NewWorkflowReplayer()
-		r.RegisterWorkflow(staticScheduler)
+		r.RegisterWorkflow(workflowFn)
 		if err := r.ReplayWorkflowHistory(nil, h); err != nil {
 			t.Fatal(err)
 		}
