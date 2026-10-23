@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/config/readiness"
 	"github.com/goobers/goobers/internal/cloud/generationpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 )
 
 // constructConfiguration composes the control role's single configuration owner:
@@ -34,7 +36,12 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	if err != nil {
 		return err
 	}
+	source, err := objstore.NewGenerationSource(db.Objects, db.InstanceID, "")
+	if err != nil {
+		return err
+	}
 	p.Configuration = configuration
+	p.generations = leasedGenerations{inner: source, owner: owner}
 	return nil
 }
 
@@ -55,6 +62,25 @@ func (a leasedActivator) Activate(ctx context.Context, candidate cloudconfig.Can
 	a.inner.BindFence(a.manager, handle)
 	return a.inner.Activate(ctx, candidate)
 }
+
+// leasedGenerations reads retained generations under the live controller epoch:
+// the read pin is fenced, so each acquire binds the handle that is live now. The
+// later composition seams (child admissions, start resolution) share it.
+type leasedGenerations struct {
+	inner *objstore.Source
+	owner func() *lease.Handle
+}
+
+func (g leasedGenerations) Acquire(ctx context.Context, generation string) (childworkflow.Generation, error) {
+	handle := g.owner()
+	if handle == nil {
+		return childworkflow.Generation{}, lease.ErrStale
+	}
+	g.inner.BindFence(handle)
+	return g.inner.Acquire(ctx, generation)
+}
+
+var _ childworkflow.GenerationSource = leasedGenerations{}
 
 // bindControlConfiguration gives the controller role its mounted config
 // directory. The directory must exist at boot: a control plane with no

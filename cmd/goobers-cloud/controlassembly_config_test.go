@@ -78,3 +78,10 @@ func TestControlCommandRequiresAConfigDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestLeasedGenerationsRefuseToPinWithoutALiveHandle(t *testing.T) {
+	source := leasedGenerations{owner: func() *lease.Handle { return nil }}
+	if _, err := source.Acquire(t.Context(), "sha256:x"); err != lease.ErrStale {
+		t.Fatalf("Acquire without a live handle = %v, want ErrStale", err)
+	}
+}

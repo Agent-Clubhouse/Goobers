@@ -14,6 +14,7 @@ import (
 
 	"go.temporal.io/sdk/client"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -122,6 +123,9 @@ type controlPlanes struct {
 	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
 	RunnerHosts           []string
 
+	// generations reads retained config generations under the live epoch; the
+	// Configuration constructor owns it and later seams consume it.
+	generations childworkflow.GenerationSource
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }
