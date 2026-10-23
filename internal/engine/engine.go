@@ -309,6 +309,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 	gateDecisions := newGateDecisionSession(in, m, func() uint64 { return hitl.generation })
 	hitl.gateDecisions = gateDecisions
+	bindOperatorRequestLedger(ctx, hitl, gateDecisions)
 	if err := gateDecisions.register(ctx); err != nil {
 		return RunResult{}, fmt.Errorf("engine: register human-gate decision handler: %w", err)
 	}

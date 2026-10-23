@@ -394,7 +394,8 @@ type hitlSession struct {
 	// fingerprints pins the payload each request id was first seen with, so a
 	// key reused for a DIFFERENT intent is refused instead of replaying the
 	// first one's ack.
-	fingerprints map[string]string
+	fingerprints      map[string]string
+	sharedRequestKeys bool
 
 	// wroteTerminal reports that settle journaled the run's FINAL terminal,
 	// so run() does not write a second one for the same outcome.
@@ -539,6 +540,9 @@ func (s *hitlSession) validate(intent HITLIntent) error {
 	// handler can answer it idempotently — replaying the first delivery's ack,
 	// or refusing a key reused for a different payload. Everything else must
 	// be in the accepting phase.
+	if operatorKeyOwnedByOther(s.sharedRequestKeys, s.fingerprints, HITLProtocol, intent.RequestID) {
+		return hitlRefusal(HITLErrKeyReused, "requestId %q belongs to the gate-decision protocol", intent.RequestID)
+	}
 	if _, seen := s.fingerprints[intent.RequestID]; seen {
 		return nil
 	}
@@ -621,7 +625,7 @@ func validateHITLShape(intent HITLIntent) error {
 // actually taken the intent up — so the ack the daemon reports success on
 // means "this run has resumed", not "this run was told to".
 func (s *hitlSession) handle(ctx workflow.Context, intent HITLIntent) (HITLAck, error) {
-	fingerprint := hitlFingerprint(intent)
+	fingerprint := operatorRequestFingerprint(s.sharedRequestKeys, HITLProtocol, hitlFingerprint(intent))
 	if ack, err, decided := s.replay(intent.RequestID, fingerprint); decided {
 		return ack, err
 	}

@@ -140,6 +140,19 @@ it is not copied into the query response or a second unbounded generation map.
 The request query is registered only for the new versioned capability, preserving
 N-1 query and command behavior.
 
+Query results are snapshots, not authorization. Under
+`operator-request-key-ledger-v1`, the terminal-intervention and human-gate
+handlers share one request-key/fingerprint ledger. Each stored fingerprint
+includes its owning protocol. The validator refuses a key owned by the other
+protocol, and the handler checks again after acquiring its mutex, then claims
+without yielding before journal delivery or gate consumption. This prevents an
+in-flight duplicate whose lookup preceded the original acknowledgement from
+approving a later same-name human gate. The inverse cross-protocol reuse is
+also refused with the protocol's existing typed key-reuse error. Pending claims
+are protected too. The shared map replaces the separate fingerprint maps; it
+does not add another unbounded key index. N-1 histories retain their original
+independent ledgers and replay unchanged.
+
 Only one terminal delivery can be pending. The workflow holds terminal settlement
 while it is pending, even after the original operator hold deadline. The activity
 uses server-side retries with exponential backoff capped at 30 seconds, so retries
