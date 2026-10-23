@@ -5,6 +5,7 @@ package migrate
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgroles"
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 func TestPostgresMigrationApply(t *testing.T) {
@@ -171,14 +173,16 @@ func TestMigrationUpgradesLiveInstanceEventTable(t *testing.T) {
 	}
 	var before []Migration
 	for _, migration := range catalog {
-		if migration.Version < 15 {
+		if migration.Version != 15 {
 			before = append(before, migration)
 		}
 	}
-	// A non-nil empty plan list is exactly what #7853's runner did.
-	legacy := Runner{Direct: pool, Catalog: before, BackupRef: "test", InstanceID: "upgrade", Holder: "test", Partitions: []PartitionPlan{}}
+	// A non-nil empty plan list is exactly what #7853's runner did, and its
+	// grant inventory had no 0015 objects.
+	legacy := Runner{Direct: pool, Catalog: before, BackupRef: "test", InstanceID: "upgrade", Holder: "test",
+		Partitions: []PartitionPlan{}, writePaths: writePathsBefore0015}
 	if err := legacy.Apply(t.Context()); err != nil {
-		t.Fatalf("apply pre-0015 catalog: %v", err)
+		t.Fatalf("apply catalog without 0015: %v", err)
 	}
 	var partitions int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_inherits WHERE inhparent='journal.instance_event'::regclass`).Scan(&partitions); err != nil || partitions != 1 {
@@ -528,4 +532,21 @@ func TestPartitionMaintenanceStopsOnLostLease(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_inherits WHERE inhparent='journal.instance_event'::regclass`).Scan(&partitions); err != nil || partitions != 1 {
 		t.Fatalf("partitions after unfenced attempt = %d err=%v, want DEFAULT only", partitions, err)
 	}
+}
+
+// writePathsBefore0015 is the current inventory without the objects migration
+// 0015 creates.
+func writePathsBefore0015() (cloudschema.Inventory, error) {
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
+		return inventory, err
+	}
+	added := map[string]bool{"health_event": true, "instance_emit_key": true, "consumer_cursor": true}
+	inventory.Tables = slices.DeleteFunc(inventory.Tables, func(table cloudschema.Table) bool {
+		return table.Schema == "journal" && added[table.Name]
+	})
+	inventory.Functions = slices.DeleteFunc(inventory.Functions, func(function cloudschema.Function) bool {
+		return function.Schema == "journal" && function.Name == "instance_event_record_emit_key"
+	})
+	return inventory, nil
 }
