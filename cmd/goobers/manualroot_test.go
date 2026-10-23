@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -43,19 +45,19 @@ func TestManualRootBannerIdentifiesTargetAndFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var banner bytes.Buffer
-	if err := prepareManualRoot(layout, &banner); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, &banner); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(banner.String(), id) || !strings.Contains(banner.String(), canonicalStatusRoot(root)) {
+	if !strings.Contains(banner.String(), id) || !strings.Contains(banner.String(), runtimewiring.CanonicalStatusRoot(root)) {
 		t.Fatalf("wrong target: %s", banner.String())
 	}
-	if err := prepareManualRoot(layout, brokenRootBannerWriter{}); !errors.Is(err, io.ErrClosedPipe) {
+	if err := runtimewiring.PrepareManualRoot(layout, brokenRootBannerWriter{}); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("failed display did not stop command: %v", err)
 	}
 	if _, err := instance.DecommissionRoot(context.Background(), root, "migrated", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareManualRoot(layout, &banner); !errors.Is(err, instance.ErrHistoricalRoot) {
+	if err := runtimewiring.PrepareManualRoot(layout, &banner); !errors.Is(err, instance.ErrHistoricalRoot) {
 		t.Fatalf("historical mutation allowed: %v", err)
 	}
 	code, _, stderr := runArgs(t, "run", "example/scheduled", root)

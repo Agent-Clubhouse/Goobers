@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func TestConfigSeedCLIInitializesDispatchInputs(t *testing.T) {
@@ -15,7 +16,7 @@ func TestConfigSeedCLIInitializesDispatchInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	config.ConfigMirrorPath = t.TempDir()
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func TestConfigSeedCLIInitializesDispatchInputs(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("seed exit=%d: %s", code, stderr.String())
 		}
-		if err := validateSeededWorkerConfig(destination); err != nil {
+		if err := runtimewiring.ValidateSeededWorkerConfig(destination); err != nil {
 			t.Fatal(err)
 		}
 	}

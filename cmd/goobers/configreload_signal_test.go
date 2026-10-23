@@ -8,6 +8,7 @@ import (
 
 	"github.com/goobers/goobers/internal/configsignal"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func TestConfigPollSignalTracksAllDigestInputs(t *testing.T) {
@@ -35,7 +36,7 @@ func TestConfigPollSignalTracksAllDigestInputs(t *testing.T) {
 		t.Helper()
 		result, err := cache.Digest(now, []string{root, filepath.Join(home, "goobers"), filepath.Join(home, "skills")}, func(observe func(string)) (string, error) {
 			calls++
-			return configDirectoryDigestObserved(root, "", observe)
+			return runtimewiring.ConfigDirectoryDigestObserved(root, "", observe)
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -94,7 +95,7 @@ func TestConfigPollSignalPreservesRejectedGeneration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(layout.ConfigDir(), "invalid.yaml"), []byte("kind: Invalid\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	rejected, err := configDirectoryDigest(layout.ConfigDir())
+	rejected, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}

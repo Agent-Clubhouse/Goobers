@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 type stalledSweepDeps = scheduling.StalledSweepDeps
@@ -17,7 +18,7 @@ type stalledSweepDeps = scheduling.StalledSweepDeps
 var cleanDaemonDowntime = scheduling.CleanDaemonDowntime
 
 func stalledServices() scheduling.StallServices {
-	return scheduling.StallServices{Candidates: recoveryRunCandidates, CleanupGuard: mutationCleanupGuard, FinalizeTerminal: finalizeTerminalRun, Clock: scheduling.JournalActivityClock{}}
+	return scheduling.StallServices{Candidates: recoveryRunCandidates, CleanupGuard: runtimewiring.MutationCleanupGuard, FinalizeTerminal: finalizeTerminalRun, Clock: scheduling.JournalActivityClock{}}
 }
 func sweepStalledRuns(
 	ctx context.Context,

@@ -2381,6 +2381,9 @@ jobs:
       - name: Windows cloud CLI
         run: go test ./cmd/goobers-cloud
 
+      - name: Windows shared runtime wiring
+        run: go test ./internal/runtimewiring
+
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
 

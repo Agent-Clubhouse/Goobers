@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/workspacedelta"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -37,13 +38,13 @@ import (
 // If EnvCapabilities ever stops carrying agent:model, an agentic pod fails at
 // preflight with an error about GitHub auth that says nothing about kits.
 func TestKitCarriesTheHarnessCredentialMapping(t *testing.T) {
-	envCaps := buildEnvCapabilities()
+	envCaps := runtimewiring.BuildEnvCapabilities()
 	got, ok := envCaps["agent:model"]
 	if !ok {
 		t.Fatal("agent:model has no env mapping; an agentic pod cannot authenticate its harness")
 	}
-	if got != copilotModelEnv {
-		t.Fatalf("agent:model maps to %q, want %q", got, copilotModelEnv)
+	if got != runtimewiring.CopilotModelEnv {
+		t.Fatalf("agent:model maps to %q, want %q", got, runtimewiring.CopilotModelEnv)
 	}
 }
 
@@ -52,7 +53,7 @@ func TestKitCarriesTheHarnessCredentialMapping(t *testing.T) {
 func TestEnvCapabilitiesSurviveTheKit(t *testing.T) {
 	kit := &agentickit.Kit{
 		Envelope:        apiv1.InvocationEnvelope{RunID: "r", Goober: "g"},
-		EnvCapabilities: buildEnvCapabilities(),
+		EnvCapabilities: runtimewiring.BuildEnvCapabilities(),
 	}
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
@@ -62,7 +63,7 @@ func TestEnvCapabilitiesSurviveTheKit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back.EnvCapabilities["agent:model"] != copilotModelEnv {
+	if back.EnvCapabilities["agent:model"] != runtimewiring.CopilotModelEnv {
 		t.Fatalf("mapping lost in transport: %v", back.EnvCapabilities)
 	}
 }
@@ -140,15 +141,15 @@ func TestPodCredentialResolverHandlesOneRefBackingManyCapabilities(t *testing.T)
 		{Capability: "github:pr:merge", Ref: ref},
 		{Capability: "ado:pr:complete", Ref: ref},
 	}
-	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
+	resolver := runtimewiring.PodCredentialResolver{ByRef: map[string][]string{}, Vals: map[string]string{}}
 	for _, g := range grants {
 		if g.Ref != "" && g.Capability != "" {
-			resolver.byRef[g.Ref] = append(resolver.byRef[g.Ref], g.Capability)
+			resolver.ByRef[g.Ref] = append(resolver.ByRef[g.Ref], g.Capability)
 		}
 	}
 	// The plane materialises ONLY what the stage declared — never the whole
 	// credentialed set. This is the asymmetry the bug lived in.
-	resolver.vals["repo:push"] = "ghs_stage_token"
+	resolver.Vals["repo:push"] = "ghs_stage_token"
 
 	got, err := resolver.Resolve(context.Background(), ref)
 	if err != nil {
@@ -158,7 +159,7 @@ func TestPodCredentialResolverHandlesOneRefBackingManyCapabilities(t *testing.T)
 		t.Fatalf("Resolve(%q) = %q, want the materialised token", ref, got)
 	}
 	expiresAt := time.Date(2026, 10, 2, 20, 45, 0, 0, time.UTC)
-	resolver.expiries = map[string]time.Time{"repo:push": expiresAt}
+	resolver.Expiries = map[string]time.Time{"repo:push": expiresAt}
 	got, expiry, err := resolver.ResolveWithExpiry(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("ResolveWithExpiry(%q) = error %v", ref, err)
@@ -174,7 +175,7 @@ func TestPodCredentialResolverHandlesOneRefBackingManyCapabilities(t *testing.T)
 
 	// A granted ref whose capabilities were all withheld must name them all,
 	// so the operator sees which grant to look at.
-	resolver.vals = map[string]string{}
+	resolver.Vals = map[string]string{}
 	_, err = resolver.Resolve(context.Background(), ref)
 	if err == nil {
 		t.Fatal("Resolve succeeded with nothing materialised")

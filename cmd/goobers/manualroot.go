@@ -6,27 +6,10 @@ import (
 	"io"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
-
-// prepareManualRoot identifies the actual resolved target before command
-// mutations. Identity adoption is the sole bootstrap write; normal inspection
-// never calls this helper. Use stderr so JSON command output stays machine-readable.
-func prepareManualRoot(layout instance.Layout, diagnostic io.Writer) error {
-	if err := validateStartupRoot(layout); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	id, err := instance.EnsureRootIdentity(ctx, layout.Root)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(diagnostic, "Instance root: %q; instance ID: %q\n", canonicalStatusRoot(layout.Root), id); err != nil {
-		return fmt.Errorf("display mutation target: %w", err)
-	}
-	return nil
-}
 
 // Remote commands must obtain identity from their remote daemon, never label
 // that mutation with the unrelated local default directory.
@@ -34,12 +17,12 @@ func prepareLocalManualRoot(layout instance.Layout, endpoint string, diagnostic 
 	if endpoint != "" {
 		return prepareRemoteRoot(context.Background(), endpoint, diagnostic)
 	}
-	return prepareManualRoot(layout, diagnostic)
+	return runtimewiring.PrepareManualRoot(layout, diagnostic)
 }
 
 func prepareMaintenanceRoot(layout instance.Layout, dryRun bool, diagnostic io.Writer) error {
 	if !dryRun {
-		return prepareManualRoot(layout, diagnostic)
+		return runtimewiring.PrepareManualRoot(layout, diagnostic)
 	}
 	// A preview must neither adopt a legacy root nor reject historical data
 	// merely because an actual mutation would be refused.

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -1014,7 +1016,7 @@ func acquireClaimLockContext(ctx context.Context, lockPath, operation string, ti
 }
 
 func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration time.Duration) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
@@ -1040,7 +1042,7 @@ func recordSlowClaimLock(lockPath, operation string, waitDuration, holdDuration 
 }
 
 func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext, timeoutErr *claimsLockTimeoutError) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(filepath.Dir(filepath.Dir(lockPath))), os.Stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(filepath.Dir(lockPath))
 	if err != nil {
