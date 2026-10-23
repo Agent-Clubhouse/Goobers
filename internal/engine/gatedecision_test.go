@@ -52,7 +52,7 @@ func TestGateDecisionValidatorBindsOccurrenceAndGeneration(t *testing.T) {
 			request := valid
 			test.edit(&request)
 			err := session.validate(request)
-			code, _, ok := GateDecisionRefusalCode(err)
+			code, _, ok := gateDecisionRefusalCode(err)
 			if !ok || code != test.code {
 				t.Fatalf("error=%v code=%q, want %q", err, code, test.code)
 			}
@@ -89,7 +89,7 @@ func TestGateDecisionValidatorRequiresEnabledPendingHumanGate(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.session.validate(request)
-			code, _, ok := GateDecisionRefusalCode(err)
+			code, _, ok := gateDecisionRefusalCode(err)
 			if !ok || code != test.code {
 				t.Fatalf("error=%v code=%q, want %q", err, code, test.code)
 			}
@@ -110,7 +110,7 @@ func TestGateDecisionValidatorRequiresEnabledPendingHumanGate(t *testing.T) {
 	}
 }
 
-func TestGateDecisionRequestDeduplication(t *testing.T) {
+func TestGateDecisionDedupByUpdateID(t *testing.T) {
 	session := newGateDecisionSession(
 		RunInput{RunID: "gate-run", HITL: &HITLPolicy{Enabled: true}},
 		gateDecisionMachine(t),
@@ -132,7 +132,7 @@ func TestGateDecisionRequestDeduplication(t *testing.T) {
 	changed := request
 	changed.Decision = "reject"
 	_, err, done = session.replay(request.RequestID, gateDecisionFingerprint(changed))
-	code, _, ok := GateDecisionRefusalCode(err)
+	code, _, ok := gateDecisionRefusalCode(err)
 	if !done || !ok || code != GateDecisionErrKeyReused {
 		t.Fatalf("changed replay=(%v, %v, %q), want key-reused refusal", err, done, code)
 	}

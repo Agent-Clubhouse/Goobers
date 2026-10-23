@@ -22,10 +22,6 @@ type UnsupportedFeatureError = engineadmission.UnsupportedFeatureError
 // UnsupportedFeaturesError groups a workflow's refused declarations.
 type UnsupportedFeaturesError = engineadmission.UnsupportedFeaturesError
 
-func refuseHumanGate(g apiv1.Gate) error {
-	return engineadmission.RefuseHumanGate(g)
-}
-
 func refuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []PinnedPlacement) error {
 	return engineadmission.RefuseRemoteUsage(name, spec, placements)
 }

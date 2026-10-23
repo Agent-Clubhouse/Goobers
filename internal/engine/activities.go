@@ -764,6 +764,8 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 // artifact, no digest, no short-circuit.
 type GateReviewResult struct {
 	apiv1.Verdict
+	// Actor is populated only by the workflow-side human decision protocol.
+	Actor string `json:"actor,omitempty"`
 	// Diff is the subject patch, recorded by the workflow as the reviewer-diff
 	// artifact. Empty when the branch has not moved or the workspace cannot
 	// report one.

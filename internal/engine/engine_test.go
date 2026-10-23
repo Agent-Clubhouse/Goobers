@@ -375,7 +375,7 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 	}
 }
 
-func TestHumanGateRejectedBeforeSignal(t *testing.T) {
+func TestHumanGateRequiresEnabledDecisionPolicy(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -394,8 +394,8 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 	env.ExecuteWorkflow(Run, runInput("human", spec))
 
 	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), temporalHumanGateUnsupported) {
-		t.Fatalf("workflow error = %v, want occurrence-bound signal rejection", err)
+	if err == nil || !strings.Contains(err.Error(), GateDecisionErrNotEnabled) {
+		t.Fatalf("workflow error = %v, want disabled gate-decision refusal", err)
 	}
 }
 

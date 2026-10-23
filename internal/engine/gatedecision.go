@@ -13,6 +13,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -24,10 +26,14 @@ const (
 	// GateDecisionUpdateName is registered beside older update handlers during
 	// rolling worker upgrades.
 	GateDecisionUpdateName = GateDecisionProtocol
+	// GateDecisionStateQuery reports the currently committed pending occurrence.
+	GateDecisionStateQuery = "goobers.gate-decision-state.v1"
 	// HumanGateWindowExpiredCode is the fail-closed terminal error produced
 	// when no decision arrives within the pinned HITL window.
 	HumanGateWindowExpiredCode = "human_gate_window_expired"
 )
+
+const humanGateDecisionChange = "human-gate-decision-v1"
 
 const (
 	// GateDecisionErrProtocol refuses an incompatible protocol.
@@ -49,18 +55,6 @@ const (
 	// GateDecisionErrKeyReused refuses changed content under a used request ID.
 	GateDecisionErrKeyReused = "gate_decision_request_id_reused"
 )
-
-var gateDecisionRefusalCodes = map[string]bool{
-	GateDecisionErrProtocol:     true,
-	GateDecisionErrRunMismatch:  true,
-	GateDecisionErrInvalid:      true,
-	GateDecisionErrUnauthorized: true,
-	GateDecisionErrNotEnabled:   true,
-	GateDecisionErrNotPending:   true,
-	GateDecisionErrOccurrence:   true,
-	GateDecisionErrGeneration:   true,
-	GateDecisionErrKeyReused:    true,
-}
 
 // GateDecisionRequest resolves one committed human-gate occurrence.
 type GateDecisionRequest struct {
@@ -94,13 +88,15 @@ type GateDecisionAck struct {
 	Duplicate          bool   `json:"duplicate,omitempty"`
 }
 
-// GateDecisionRefusalCode extracts a stable gate-decision refusal.
-func GateDecisionRefusalCode(err error) (code, message string, ok bool) {
-	var appErr *temporal.ApplicationError
-	if !errors.As(err, &appErr) || !gateDecisionRefusalCodes[appErr.Type()] {
-		return "", "", false
-	}
-	return appErr.Type(), appErr.Message(), true
+// GateDecisionState is the query-visible pending human-gate identity.
+type GateDecisionState struct {
+	Protocol           string `json:"protocol"`
+	Version            int    `json:"version"`
+	RunID              string `json:"runId"`
+	Pending            bool   `json:"pending"`
+	Gate               string `json:"gate,omitempty"`
+	GateOccurrence     uint64 `json:"gateOccurrence,omitempty"`
+	TerminalGeneration uint64 `json:"terminalGeneration"`
 }
 
 type gateDecision struct {
@@ -142,14 +138,37 @@ func newGateDecisionSession(in RunInput, m *wf.Machine, terminalGeneration func(
 	}
 }
 
+func gateDecisionSessionFor(hitl *hitlSession) *gateDecisionSession {
+	if hitl == nil {
+		return nil
+	}
+	return hitl.gateDecisions
+}
+
 func (s *gateDecisionSession) register(ctx workflow.Context) error {
 	s.mu = workflow.NewMutex(ctx)
-	return workflow.SetUpdateHandlerWithOptions(
+	if err := workflow.SetUpdateHandlerWithOptions(
 		ctx,
 		GateDecisionUpdateName,
 		s.handle,
 		workflow.UpdateHandlerOptions{Validator: s.validate},
-	)
+	); err != nil {
+		return err
+	}
+	return workflow.SetQueryHandler(ctx, GateDecisionStateQuery, s.state)
+}
+
+func (s *gateDecisionSession) state() (GateDecisionState, error) {
+	state := GateDecisionState{
+		Protocol: GateDecisionProtocol, Version: GateDecisionProtocolVersion,
+		RunID: s.runID, TerminalGeneration: s.terminalGeneration(),
+	}
+	if s.active != nil {
+		state.Pending = true
+		state.Gate = s.active.gate
+		state.GateOccurrence = s.active.occurrence
+	}
+	return state, nil
 }
 
 // activate opens exactly one committed gate occurrence for decisions.
@@ -346,4 +365,67 @@ func humanGateWindowExpired(gateName string, occurrence uint64) error {
 		HumanGateWindowExpiredCode,
 		nil,
 	)
+}
+
+func commitGatePause(ctx workflow.Context, rec *runJournal, gate apiv1.Gate, session *gateDecisionSession) (livejournal.AppendReceipt, error) {
+	if gate.Evaluator != apiv1.EvaluatorHuman ||
+		workflow.GetVersion(ctx, humanGateDecisionChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		rec.gatePaused(ctx, gate.Name)
+		return livejournal.AppendReceipt{}, nil
+	}
+	if session == nil || !session.policy.enabled() {
+		return livejournal.AppendReceipt{}, gateDecisionRefusal(
+			GateDecisionErrNotEnabled, "run did not enable human-gate decisions",
+		)
+	}
+	receipt, err := rec.commitLifecycle(ctx, journal.Event{Type: journal.EventGatePaused, Gate: gate.Name})
+	if err != nil {
+		return livejournal.AppendReceipt{}, err
+	}
+	if err := session.activate(gate, receipt.Seq); err != nil {
+		return livejournal.AppendReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func enableHumanGateDecisionOwner(ctx workflow.Context, rec *runJournal, in RunInput) {
+	for _, gate := range in.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorHuman {
+			continue
+		}
+		if in.HITL.enabled() && rec.live &&
+			workflow.GetVersion(ctx, humanGateDecisionChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			rec.owner = &journalCommitOwner{root: rec, mu: workflow.NewMutex(ctx)}
+		}
+		return
+	}
+}
+
+func evaluateHumanGate(
+	ctx workflow.Context,
+	session *gateDecisionSession,
+	rec *runJournal,
+	gate apiv1.Gate,
+	receipt livejournal.AppendReceipt,
+) (string, GateReviewResult, error) {
+	if workflow.GetVersion(ctx, humanGateDecisionChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		var decision string
+		workflow.GetSignalChannel(ctx, HumanGateSignal(gate.Name)).Receive(ctx, &decision)
+		return decision, GateReviewResult{}, nil
+	}
+	if receipt.Seq == 0 {
+		return "", GateReviewResult{}, errors.New("engine: human gate has no committed occurrence identity")
+	}
+	decision, err := session.await(ctx)
+	if err != nil {
+		var appErr *temporal.ApplicationError
+		if errors.As(err, &appErr) && appErr.Type() == HumanGateWindowExpiredCode {
+			rec.humanGateExpired(ctx, gate.Name, receipt.Seq, err)
+			if emitErr := rec.emitPending(ctx); emitErr != nil {
+				return "", GateReviewResult{}, errors.Join(err, emitErr)
+			}
+		}
+		return "", GateReviewResult{}, err
+	}
+	return decision.decision, GateReviewResult{Actor: decision.actor}, nil
 }
