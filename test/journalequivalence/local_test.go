@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -56,7 +58,7 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 type corpusScenario struct {
 	name    string
 	runID   string
-	machine func(*testing.T) *workflow.Machine
+	fixture string
 	run     func(*testing.T, context.Context, *runner.Runner, *workflow.Machine, string) runner.Result
 	script  deterministicConfig
 }
@@ -65,7 +67,7 @@ func localCorpus() []corpusScenario {
 	return []corpusScenario{
 		{
 			name: "retry-artifact-inputs-and-gates", runID: strings.Repeat("1", 32),
-			machine: completedMachine,
+			fixture: "retry-gates.yaml",
 			script: deterministicConfig{
 				failFirst: true, artifact: []byte(`{"result":"stable"}`),
 			},
@@ -73,12 +75,12 @@ func localCorpus() []corpusScenario {
 		},
 		{
 			name: "human-gate", runID: strings.Repeat("2", 32),
-			machine: humanMachine,
+			fixture: "human-gate.yaml",
 			run:     startAndApproveHumanGate,
 		},
 		{
 			name: "stage-boundary-cancellation", runID: strings.Repeat("3", 32),
-			machine: cancellationMachine,
+			fixture: "cancellation.yaml",
 			script:  deterministicConfig{cancelAfter: "first"},
 			run:     startToCancellationBoundary,
 		},
@@ -105,7 +107,7 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r, runsDir := newCorpusRunner(t, newDeterministicScript(scenario.script), cancel)
-	machine := scenario.machine(t)
+	machine := loadMachine(t, scenario.fixture)
 	result := scenario.run(t, ctx, r, machine, scenario.runID)
 	if result.Phase == "" {
 		t.Fatal("runner returned an empty phase")
@@ -308,58 +310,18 @@ func newCorpusRunner(t *testing.T, script *deterministicScript, cancel context.C
 	return r, runsDir
 }
 
-func completedMachine(t *testing.T) *workflow.Machine {
+func loadMachine(t *testing.T, fixture string) *workflow.Machine {
 	t.Helper()
-	return compileMachine(t, "completed", apiv1.WorkflowSpec{
-		Gaggle: "equivalence", Start: "implement",
-		Tasks: []apiv1.Task{{
-			Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce stable output",
-			Run:    &apiv1.DeterministicRun{Command: []string{"fixture"}},
-			Inputs: map[string]string{"fixture": "pinned-input"},
-			Retry:  &apiv1.RetryPolicy{MaxAttempts: 2}, Next: "automated",
-		}},
-		Gates: []apiv1.Gate{
-			{
-				Name: "automated", Evaluator: apiv1.EvaluatorAutomated,
-				Automated: &apiv1.AutomatedGate{Check: "fixture"},
-				Branches:  map[string]string{"pass": "review", "fail": workflow.TargetAbort},
-			},
-			{
-				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
-				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
-				Branches: map[string]string{"pass": workflow.TerminalComplete, "needs-changes": "implement", "fail": workflow.TargetAbort},
-			},
-		},
-	})
-}
-
-func humanMachine(t *testing.T) *workflow.Machine {
-	t.Helper()
-	return compileMachine(t, "human", apiv1.WorkflowSpec{
-		Gaggle: "equivalence", Start: "approval",
-		Gates: []apiv1.Gate{{
-			Name: "approval", Evaluator: apiv1.EvaluatorHuman,
-			Human:    &apiv1.HumanGate{Approvers: []string{"operator:fixture"}},
-			Branches: map[string]string{"pass": workflow.TerminalComplete, "reject": workflow.TargetAbort},
-		}},
-	})
-}
-
-func cancellationMachine(t *testing.T) *workflow.Machine {
-	t.Helper()
-	return compileMachine(t, "cancellation", apiv1.WorkflowSpec{
-		Gaggle: "equivalence", Start: "first",
-		Tasks: []apiv1.Task{
-			{Name: "first", Type: apiv1.TaskDeterministic, Goal: "finish before drain", Run: &apiv1.DeterministicRun{Command: []string{"fixture"}}, Next: "second"},
-			{Name: "second", Type: apiv1.TaskDeterministic, Goal: "pause at drain boundary", Run: &apiv1.DeterministicRun{Command: []string{"fixture"}}},
-		},
-	})
-}
-
-func compileMachine(t *testing.T, name string, spec apiv1.WorkflowSpec) *workflow.Machine {
-	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document apiv1.Workflow
+	if err := yaml.UnmarshalStrict(data, &document); err != nil {
+		t.Fatal(err)
+	}
 	machine, err := workflow.Compile(workflow.Definition{
-		Name: name, Version: 1, DSLVersion: "3.0", Spec: spec,
+		Name: document.Name, Version: 1, DSLVersion: document.DSLVersion, Spec: document.Spec,
 	}, workflow.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatal(err)
