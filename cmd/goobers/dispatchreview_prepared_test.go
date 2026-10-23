@@ -47,11 +47,11 @@ func TestReviewPodConsumesPreparedEvidenceWithoutRecordingAgain(t *testing.T) {
 		reviews++
 		ptr, err := runsemantics.PreparedReviewerDiffPointer(req.Envelope)
 		if err != nil || ptr == nil || ptr.Artifact.Digest != pointer.Artifact.Digest {
-			return fmt.Errorf("prepared pointer changed: %v", err)
+			return fmt.Errorf("prepared pointer changed: %w", err)
 		}
 		matches, err := filepath.Glob(filepath.Join(req.Workspace, ".goobers", "context", "*review.diff"))
 		if err != nil || len(matches) != 1 {
-			return fmt.Errorf("prepared context: %v %v", matches, err)
+			return fmt.Errorf("prepared context: %v %w", matches, err)
 		}
 		data, err := os.ReadFile(matches[0])
 		if err != nil {

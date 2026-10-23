@@ -13,7 +13,8 @@ import (
 
 const (
 	reviewerPreparationChange = "reviewer-diff-before-dispatch-v1"
-	ActPrepareReviewerDiff    = "PrepareReviewerDiff"
+	// ActPrepareReviewerDiff captures scrubbed evidence before reviewer dispatch.
+	ActPrepareReviewerDiff = "PrepareReviewerDiff"
 )
 
 // ReviewerPreparation contains only scrubbed evidence plus source digests and

@@ -79,7 +79,6 @@ type PreparedReviewerDiff struct {
 // from controller-gen DeepCopy generation (its free-form Inputs map cannot be
 // deep-copied generically).
 // +kubebuilder:object:generate=false
-
 type InvocationEnvelope struct {
 	// PreparedReviewerDiff is authored only by the versioned engine preparation
 	// step, never by task inputs. Stage images are same-build pinned by VerifySkew.
