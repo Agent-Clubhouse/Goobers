@@ -92,6 +92,13 @@
           "path": "github.com/goobers/goobers/internal/runner",
           "rationale": "D-2: cloud control must never construct an in-process stage runner"
         }
+      ],
+      "reviewedEdges": [
+        {
+          "from": "github.com/goobers/goobers/internal/workerhost",
+          "to": "github.com/goobers/goobers/internal/runner",
+          "rationale": "Existing worker workspace default only; remove under #7848 after #7837 runtimewiring extraction. No engine or controller exception."
+        }
       ]
     }
   ],

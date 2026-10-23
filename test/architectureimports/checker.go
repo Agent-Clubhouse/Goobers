@@ -34,9 +34,16 @@ type boundary struct {
 }
 
 type closureRule struct {
-	Name      string     `json:"name"`
-	Roots     []string   `json:"roots"`
-	Forbidden []boundary `json:"forbidden"`
+	Name          string         `json:"name"`
+	Roots         []string       `json:"roots"`
+	Forbidden     []boundary     `json:"forbidden"`
+	ReviewedEdges []reviewedEdge `json:"reviewedEdges,omitempty"`
+}
+
+type reviewedEdge struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Rationale string `json:"rationale"`
 }
 
 type lane struct {
@@ -186,6 +193,10 @@ func validateClosureRules(module string, rules []closureRule) error {
 		if _, duplicate := closureNames[rule.Name]; duplicate {
 			return fmt.Errorf("duplicate closure rule %q", rule.Name)
 		}
+		if err := validateReviewedEdges(module, rule); err != nil {
+			return err
+		}
+
 		closureNames[rule.Name] = struct{}{}
 		roots := make(map[string]struct{}, len(rule.Roots))
 		for _, root := range rule.Roots {
@@ -376,10 +387,30 @@ func loadPackageGraph(ctx context.Context, root string, build buildContext, impo
 	return graph, nil
 }
 
+func validateReviewedEdges(module string, rule closureRule) error {
+	seen := make(map[string]bool)
+	for _, edge := range rule.ReviewedEdges {
+		key := edge.From + " -> " + edge.To
+		if !isWithin(edge.From, module) || edge.To == "" || edge.Rationale == "" || seen[key] {
+			return fmt.Errorf("invalid reviewed closure edge %s", key)
+		}
+		denied := false
+		for _, boundary := range rule.Forbidden {
+			denied = denied || isWithin(edge.To, boundary.Path)
+		}
+		if !denied {
+			return fmt.Errorf("reviewed closure edge %s does not target a forbidden dependency", key)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
 func checkClosure(rule closureRule, root string, graph map[string]listedPackage) error {
 	if _, ok := graph[root]; !ok {
 		return fmt.Errorf("root is missing from the Go package graph")
 	}
+	seenEdges := make(map[string]bool)
 	queue := []graphStep{{path: root, chain: []string{root}}}
 	visited := make(map[string]bool)
 	for len(queue) > 0 {
@@ -396,6 +427,10 @@ func checkClosure(rule closureRule, root string, graph map[string]listedPackage)
 			chain := append(append([]string(nil), current.chain...), imported)
 			for _, denied := range rule.Forbidden {
 				if isWithin(imported, denied.Path) {
+					if reviewedClosureEdge(rule, current.path, imported) {
+						seenEdges[current.path+" -> "+imported] = true
+						continue
+					}
 					return fmt.Errorf("forbidden cloud dependency %s (%s); chain: %s", imported, denied.Rationale, strings.Join(chain, " -> "))
 				}
 			}
@@ -404,7 +439,22 @@ func checkClosure(rule closureRule, root string, graph map[string]listedPackage)
 			}
 		}
 	}
+	for _, edge := range rule.ReviewedEdges {
+		if !seenEdges[edge.From+" -> "+edge.To] {
+			return fmt.Errorf("obsolete reviewed closure edge %s -> %s; remove its exception", edge.From, edge.To)
+		}
+	}
+
 	return nil
+}
+
+func reviewedClosureEdge(rule closureRule, from, to string) bool {
+	for _, edge := range rule.ReviewedEdges {
+		if edge.From == from && edge.To == to {
+			return true
+		}
+	}
+	return false
 }
 
 func formatPackageError(importPath string, problem packageError) error {

@@ -383,3 +383,24 @@ func syntheticModule(t *testing.T, files map[string]string) string {
 	}
 	return root
 }
+
+func TestCloudRunnerRatchetRejectsNewEdgesAndStaleExceptions(t *testing.T) {
+	rule := closureRule{Name: "cloud", Roots: []string{"module/cloud"}, Forbidden: []boundary{{Path: "module/runner", Rationale: "D-2"}}, ReviewedEdges: []reviewedEdge{{From: "module/worker", To: "module/runner", Rationale: "existing worker; #7848"}}}
+	graph := map[string]listedPackage{
+		"module/cloud":  {Imports: []string{"module/worker", "module/engine"}},
+		"module/worker": {Imports: []string{"module/runner"}},
+		"module/engine": {}, "module/runner": {},
+	}
+	if err := checkClosure(rule, "module/cloud", graph); err != nil {
+		t.Fatal(err)
+	}
+	graph["module/engine"] = listedPackage{Imports: []string{"module/runner"}}
+	if err := checkClosure(rule, "module/cloud", graph); err == nil || !strings.Contains(err.Error(), "module/engine -> module/runner") {
+		t.Fatalf("new edge was allowed: %v", err)
+	}
+	graph["module/engine"] = listedPackage{}
+	graph["module/worker"] = listedPackage{}
+	if err := checkClosure(rule, "module/cloud", graph); err == nil || !strings.Contains(err.Error(), "obsolete reviewed closure edge") {
+		t.Fatalf("stale exception retained: %v", err)
+	}
+}
