@@ -35,7 +35,7 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 		}
 	})
 	c := server.Client()
-	for _, mode := range []string{"bounded", "budget", "timeout", "cancel", "gate-join", "review-join", "legacy"} {
+	for _, mode := range []string{"bounded", "budget", "timeout", "cancel", "gate-join", "review-join", "branch-inputs", "legacy"} {
 		t.Run(mode, func(t *testing.T) {
 			in := schedulerInput("replay-scheduler-"+mode, 2)
 			if mode == "gate-join" {
@@ -43,6 +43,10 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 			}
 			if mode == "review-join" {
 				in = gateJoinInput("replay-scheduler-"+mode, apiv1.EvaluatorAgentic)
+			}
+			if mode == "branch-inputs" {
+				in.Run.Spec.Tasks[1].ExpectedOutputs = []string{"value"}
+				in.Run.Spec.Tasks[3].InputsFrom = map[string]string{"implicit": "parallel.alpha.value", "explicit": "parallel.alpha.alpha.value"}
 			}
 			if mode == "budget" {
 				in.Limit = 3
@@ -59,6 +63,9 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 			started := make(chan struct{}, 3)
 			acts := &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: &fakeRunner{run: func(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 				stage := stageOfTaskID(env.TaskID)
+				if mode == "branch-inputs" && stage == "join" && (env.Inputs["implicit"] != "frozen-root" || env.Inputs["explicit"] != "frozen-root") {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("branch-qualified join lost its settled products")
+				}
 				if mode == "cancel" && stage != "seed" && stage != "join" {
 					started <- struct{}{}
 					ticker := time.NewTicker(100 * time.Millisecond)
@@ -125,7 +132,7 @@ func TestStaticSchedulerRealHistoryReplay(t *testing.T) {
 			if (err != nil) != (mode == "legacy") {
 				t.Fatalf("workflow error=%v", err)
 			}
-			if (mode == "bounded" || mode == "gate-join" || mode == "review-join") && (out.Result.Status != StatusCompleted || out.Error != "" || out.Result.Steps != 6) {
+			if (mode == "bounded" || mode == "gate-join" || mode == "review-join" || mode == "branch-inputs") && (out.Result.Status != StatusCompleted || out.Error != "" || out.Result.Steps != 6) {
 				t.Fatalf("result=%+v error=%s", out.Result, out.Error)
 			}
 			if mode == "budget" && (out.Error == "" || out.Result.Steps != 4) {

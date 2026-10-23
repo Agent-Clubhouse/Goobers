@@ -930,7 +930,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q branch inputs: %w", t.Name, err)
 	}
-	inputGrades := engineInputGrades(t, upstreamResult, completed, qualifiedInputs)
+	inputGrades := rec.taskInputGrades(t, machine, upstreamResult, completed, qualifiedInputs)
 	inputGrades = bindings.addGrades(inputGrades)
 	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
 	if integrityErr == nil {
@@ -952,13 +952,8 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// preceding stage. A declared outputKey that resolves nowhere fails the
 	// stage closed: the declaration is a contract, not a hint. Keys are walked
 	// sorted so the first-missing error is deterministic under replay.
-	for _, inputKey := range sortedKeys(t.InputsFrom) {
-		outputKey := t.InputsFrom[inputKey]
-		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualifiedInputs)
-		if !ok {
-			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, upstreamResult, completed, qualifiedInputs)
-		}
-		env.Inputs[inputKey] = v
+	if err := rec.bindTaskInputs(t, machine, upstreamResult, completed, qualifiedInputs, env.Inputs); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	bindings.apply(env.Inputs)
 	rec.staticJoinInputs(t.Name, env.Inputs)
