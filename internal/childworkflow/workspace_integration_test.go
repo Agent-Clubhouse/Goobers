@@ -42,6 +42,7 @@ func childSnapshotWrite(t *testing.T, dir, name, text string) {
 func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T) {
 	testdep.Require(t, "git")
 	service, authority, databasePath := submissionFixture(t)
+	store := service.Queue.(*triggerqueue.Store)
 	submission, err := service.Submit(t.Context(), authority.current.Origin, SubmissionRequest{InvocationKey: "child", Source: []byte(validProposal)})
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +60,7 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 	if _, err := manager.WorkingCopy(t.Context(), parent); err != nil {
 		t.Fatal(err)
 	}
-	coordinator := &WorkspaceCoordinator{Queue: service.Queue, Worktrees: manager}
+	coordinator := &WorkspaceCoordinator{Queue: store, Worktrees: manager}
 	if _, err := coordinator.Prepare(t.Context(), submission.Child, parent); !errors.Is(err, triggerqueue.ErrChildSnapshotPending) {
 		t.Fatalf("live parent prepared before yield: %v", err)
 	}
@@ -88,14 +89,14 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 		t.Fatal("capture changed parent HEAD")
 	}
 	childSnapshotWrite(t, parent, "main.txt", "later parent state must not be recaptured")
-	if err := service.Queue.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	service.Queue, err = triggerqueue.Open(databasePath)
+	store, err = triggerqueue.Open(databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator.Queue = service.Queue
+	service.Queue, coordinator.Queue = store, store
 	if err := coordinator.Capture(t.Context(), submission.Child, yielded); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 	if err != nil || repeated.ResultRef != result.ResultRef {
 		t.Fatalf("result recaptured: %+v %v", repeated, err)
 	}
-	storedResult, err := service.Queue.ChildResult(t.Context(), submission.Child.Identity)
+	storedResult, err := store.ChildResult(t.Context(), submission.Child.Identity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,13 +171,13 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 	if got := childSnapshotGit(t, parent, "diff", "--name-only", admission.ForkSHA, result.Snapshot.Record.SnapshotSHA); !strings.Contains(got, "main.txt") || !strings.Contains(got, "later.txt") {
 		t.Fatalf("result delta lost commits or dirty work: %s", got)
 	}
-	if err := service.Queue.BeginDispatch(t.Context(), submission.Child.AcceptanceID); err != nil {
+	if err := store.BeginDispatch(t.Context(), submission.Child.AcceptanceID); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Queue.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildRunning}, submission.Child.AcceptedAt); err != nil {
+	if err := store.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildRunning}, submission.Child.AcceptedAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Queue.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildRunning, State: triggerqueue.ChildCompleted, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, terminal.FinishedAt); err != nil {
+	if err := store.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildRunning, State: triggerqueue.ChildCompleted, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, terminal.FinishedAt); err != nil {
 		t.Fatal(err)
 	}
 	service.Now = func() time.Time { return terminal.FinishedAt.Add(time.Second) }
