@@ -572,3 +572,23 @@ github.com/goobers/goobers/internal/cloud/journalpg.monthFloor # HA-P3-10 instan
 github.com/goobers/goobers/internal/cloud/migrate.DropInstanceEventPartition # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Ensure # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Run # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
+
+# HA-P3-15 telemetry store awaits controller composition; no package-pattern exemptions supported.
+github.com/goobers/goobers/internal/cloud/telemetrypg.New # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.AdvanceStreamCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.Apply # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.BindFence # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.DefectAggregates # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.LoadStreamCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.TimeToFirstPR # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.advanceCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.applyMilestones # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.checkApplyCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.checkCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.withFence # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.collapseAggregates # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.normalizeAggregate # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.normalizeTimestamp # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.nullableTime # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.telemetryBatchFingerprint # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/telemetryclient.FindingPassesThresholds # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
