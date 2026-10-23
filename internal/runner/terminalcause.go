@@ -42,7 +42,7 @@ func captureTerminalCause(jr *journal.Run, phase journal.RunPhase, finalState st
 		if input.Name != journal.PinnedWorkflowDefinitionInputName {
 			continue
 		}
-		machine, err = PinnedWorkflowMachine(rd, id)
+		machine, err = runsemantics.PinnedWorkflowMachine(rd, id)
 		if err != nil {
 			return nil, err
 		}

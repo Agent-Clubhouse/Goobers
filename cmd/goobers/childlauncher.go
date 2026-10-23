@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -136,7 +137,7 @@ func (l *queuedChildLauncher) Start(ctx context.Context, start childExecutionSta
 	return l.handoff(ctx, start, runtime, workspace, releaseCapacity, releaseRuntime)
 }
 
-func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime) (*runner.ChildWorkspaceAdmission, error) {
+func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime) (*runsemantics.ChildWorkspaceAdmission, error) {
 	required := false
 	for _, task := range runtime.machine.Def.Spec.Tasks {
 		required = required || task.EffectiveWorkspace() != apiv1.WorkspaceScratch
@@ -168,7 +169,7 @@ func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childE
 	return workspace, err
 }
 
-func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime, workspace *runner.ChildWorkspaceAdmission, releaseCapacity, releaseRuntime func()) error {
+func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime, workspace *runsemantics.ChildWorkspaceAdmission, releaseCapacity, releaseRuntime func()) error {
 	published := make(chan struct{})
 	permission := make(chan error, 1)
 	done := make(chan error, 1)

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // MergeAuthority derives workflow and generation from the daemon's journal;
@@ -29,7 +30,7 @@ func (s *daemonRunJournalService) MergeAuthority(ctx context.Context, request jo
 	if err != nil {
 		return denied, err
 	}
-	machine, err := runner.PinnedWorkflowMachine(reader, identity)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, identity)
 	if err != nil {
 		return denied, err
 	}

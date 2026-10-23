@@ -588,7 +588,7 @@ func (r *Runner) verifyResumePin(jr *journal.Run, in *ResumeInput, rd *journal.R
 		return res, true, err
 	}
 	if in.Machine == nil {
-		machine, err := PinnedWorkflowMachine(rd, id)
+		machine, err := runsemantics.PinnedWorkflowMachine(rd, id)
 		if err != nil {
 			res, refuseErr := r.refuseResume(jr, in.RunID, "resume_refused_pinned_definition",
 				fmt.Sprintf("run %q cannot reconstruct pinned workflow digest %q: %v; refusing to resume (WF-016)", in.RunID, id.WorkflowDigest, err))
@@ -1270,73 +1270,11 @@ func gateRepassAttempt(e journal.Event) int {
 	return e.RepassAttempt()
 }
 
-// PinnedWorkflowMachine reconstructs the historical machine from the trusted,
-// content-addressed Definition snapshot journaled at Start and verifies every
-// identity boundary: the input's trusted integrity, the definition's
-// name/version, and — twice, once over the raw snapshot and once over the
-// compiled machine — the run's pinned WorkflowDigest (WF-016). A caller that
-// resumes or intervenes on a run whose pin no longer matches the current
-// config should prefer this machine over the current one (#3376): the run
-// keeps walking the definition it started under, while any snapshot that is
-// missing, untrusted, corrupt, or mismatched still fails closed here and the
-// WF-016 refusal stands.
-func PinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
-	var definitionRef *journal.InputRef
-	for i := range id.Inputs {
-		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
-			definitionRef = &id.Inputs[i]
-			break
-		}
-	}
-	if definitionRef == nil {
-		return nil, fmt.Errorf("immutable input %q is missing", journal.PinnedWorkflowDefinitionInputName)
-	}
-	if definitionRef.Integrity != apiv1.IntegrityTrusted {
-		return nil, fmt.Errorf("immutable input %q has integrity %q, want %q",
-			journal.PinnedWorkflowDefinitionInputName, definitionRef.Integrity, apiv1.IntegrityTrusted)
-	}
-	data, err := rd.ArtifactBytes(definitionRef.Ref)
-	if err != nil {
-		return nil, fmt.Errorf("read immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
-	}
-	var def workflow.Definition
-	if err := json.Unmarshal(data, &def); err != nil {
-		return nil, fmt.Errorf("parse immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
-	}
-	if def.Name != id.Workflow || def.Version != id.WorkflowVersion {
-		return nil, fmt.Errorf(
-			"immutable input %q identifies workflow %q version %d, want %q version %d",
-			journal.PinnedWorkflowDefinitionInputName, def.Name, def.Version, id.Workflow, id.WorkflowVersion,
-		)
-	}
-	digest, err := workflow.ComputeDigest(def)
-	if err != nil {
-		return nil, fmt.Errorf("digest immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
-	}
-	if digest != id.WorkflowDigest {
-		return nil, fmt.Errorf(
-			"immutable input %q digest %q does not match run pin %q",
-			journal.PinnedWorkflowDefinitionInputName, digest, id.WorkflowDigest,
-		)
-	}
-	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
-	if err != nil {
-		return nil, fmt.Errorf("compile immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
-	}
-	if machine.Digest() != id.WorkflowDigest {
-		return nil, fmt.Errorf(
-			"compiled immutable input %q digest %q does not match run pin %q",
-			journal.PinnedWorkflowDefinitionInputName, machine.Digest(), id.WorkflowDigest,
-		)
-	}
-	return machine, nil
-}
-
 // PinnedGateGooberCapabilities reads the run's pinned reviewer-goober
 // capability state: the GateGooberCapabilities map the starter pinned into
 // the run at start (#294) and Start journaled as the trusted
 // journal.PinnedGateGooberCapabilitiesInputName input. It is the gate-path
-// counterpart of PinnedWorkflowMachine — an agentic reviewer gate's grants
+// counterpart of runsemantics.PinnedWorkflowMachine — an agentic reviewer gate's grants
 // are instance policy, not part of the pinned workflow definition, so a
 // post-start consumer (the daemon credential plane, PR #3528) must resolve
 // them from this pin rather than the currently-served config, or a config
@@ -2421,7 +2359,7 @@ func (r *Runner) admitChildWorkflowResume(ctx context.Context, machine *workflow
 	if err != nil {
 		return nil
 	}
-	machine, err = PinnedWorkflowMachine(rd, id)
+	machine, err = runsemantics.PinnedWorkflowMachine(rd, id)
 	if err != nil {
 		return nil
 	}

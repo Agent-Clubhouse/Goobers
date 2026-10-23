@@ -841,7 +841,7 @@ type StartInput struct {
 	ChildCredentials *credentials.ChildCeiling
 	// ChildWorkspace selects a launcher-provisioned managed fork. It is
 	// trusted admission metadata, never a workflow input or arbitrary path.
-	ChildWorkspace *ChildWorkspaceAdmission
+	ChildWorkspace *runsemantics.ChildWorkspaceAdmission
 	// OnJournalPublished is a host-only admission barrier, never persisted or
 	// accepted from workflow inputs. It runs after immutable identity and inputs
 	// are durable, before stage execution. Failure preserves the journal for

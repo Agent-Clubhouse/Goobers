@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func TestReconcileChildWriterClosesOnlyNestedOriginalScope(t *testing.T) {
@@ -14,7 +15,7 @@ func TestReconcileChildWriterClosesOnlyNestedOriginalScope(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			id := journal.RunIdentity{RunID: "child-proof", Gaggle: "web", Workflow: "generated", ConfigGeneration: journal.Digest([]byte("config")), WorkflowDigest: journal.Digest([]byte("workflow")), GooberDigest: journal.Digest([]byte("goobers")), Child: childWorkspaceStart(nil).Child}
 			id.Child.AcceptanceID = "trigger-" + id.RunID
-			admission, _ := json.Marshal(ChildWorkspaceAdmission{WorkspaceID: "child-owned", ForkSHA: strings.Repeat("1", 40), RepositoryDigest: strings.Repeat("2", 64)})
+			admission, _ := json.Marshal(runsemantics.ChildWorkspaceAdmission{WorkspaceID: "child-owned", ForkSHA: strings.Repeat("1", 40), RepositoryDigest: strings.Repeat("2", 64)})
 			jr, err := journal.Create(t.TempDir(), id, map[string][]byte{childWriterPolicyInput: []byte(childWriterPolicy), ChildWorkspaceInputName: admission}, journal.WithInputIntegrity(map[string]apiv1.Integrity{childWriterPolicyInput: apiv1.IntegrityTrusted, ChildWorkspaceInputName: apiv1.IntegrityTrusted}))
 			if err != nil {
 				t.Fatal(err)

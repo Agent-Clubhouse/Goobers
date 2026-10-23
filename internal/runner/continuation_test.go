@@ -144,9 +144,9 @@ func TestValidateContinuationTargetUsesHistoricalSourceDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconstructed, err := PinnedWorkflowMachine(reader, identity)
+	reconstructed, err := runsemantics.PinnedWorkflowMachine(reader, identity)
 	if err != nil {
-		t.Fatalf("PinnedWorkflowMachine: %v", err)
+		t.Fatalf("runsemantics.PinnedWorkflowMachine: %v", err)
 	}
 	if err := ValidateContinuationTarget(reconstructed, candidate, "infra"); err == nil {
 		t.Fatal("incompatible historical continuation was admitted")

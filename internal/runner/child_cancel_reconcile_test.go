@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 func TestChildCancellationRequiresRepositoryWriterProof(t *testing.T) {
@@ -15,7 +16,7 @@ func TestChildCancellationRequiresRepositoryWriterProof(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			id := journal.RunIdentity{RunID: "child-proof", Gaggle: "web", Workflow: "generated", ConfigGeneration: journal.Digest([]byte("config")), WorkflowDigest: journal.Digest([]byte("workflow")), GooberDigest: journal.Digest([]byte("goobers")), Child: childWorkspaceStart(nil).Child}
 			id.Child.AcceptanceID = "trigger-" + id.RunID
-			admission, err := json.Marshal(ChildWorkspaceAdmission{WorkspaceID: "child-owned", ForkSHA: strings.Repeat("1", 40), RepositoryDigest: strings.Repeat("2", 64)})
+			admission, err := json.Marshal(runsemantics.ChildWorkspaceAdmission{WorkspaceID: "child-owned", ForkSHA: strings.Repeat("1", 40), RepositoryDigest: strings.Repeat("2", 64)})
 			if err != nil {
 				t.Fatal(err)
 			}

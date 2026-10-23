@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -44,7 +45,7 @@ type childKitFixtureOptions struct {
 	queued             bool
 	parent             string
 	source             string
-	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *runner.ChildWorkspaceAdmission
+	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *runsemantics.ChildWorkspaceAdmission
 }
 
 func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
@@ -175,7 +176,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var workspace *runner.ChildWorkspaceAdmission
+	var workspace *runsemantics.ChildWorkspaceAdmission
 	if options.workspace != nil {
 		workspace = options.workspace(service, ref.Child, manager)
 	}

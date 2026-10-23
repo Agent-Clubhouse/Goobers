@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -104,7 +105,7 @@ func testProductionChildPublication(t *testing.T, drive bool) {
 	var project apiv1.RepoRef
 	parentSource := strings.ReplaceAll(childValidationParent, "[agent:model]", "[agent:model, repo:push, provider:pr:write]")
 	parentSource = strings.ReplaceAll(parentSource, "[agent:model, repo:push]", "[agent:model, repo:push, provider:pr:write]")
-	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, gooberCapabilities: []string{"agent:model", "repo:push", "provider:pr:write"}, parent: parentSource, source: publicationChildSource, workspace: func(s *daemonCredentialService, c triggerqueue.ChildRecord, m *worktree.Manager) *runner.ChildWorkspaceAdmission {
+	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, gooberCapabilities: []string{"agent:model", "repo:push", "provider:pr:write"}, parent: parentSource, source: publicationChildSource, workspace: func(s *daemonCredentialService, c triggerqueue.ChildRecord, m *worktree.Manager) *runsemantics.ChildWorkspaceAdmission {
 		set, report, err := loadConfigDirectory(s.layout.ConfigDir())
 		if err != nil {
 			t.Fatalf("load publication fixture: %v (%s)", err, validationIssueSummary(report))

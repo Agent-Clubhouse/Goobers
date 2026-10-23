@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -138,7 +139,7 @@ type daemonCredentialService struct {
 	// nil uses buildCredentials — the same composition the runner wiring uses.
 	buildSources func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error)
 	// pinnedMachine overrides pinned-definition reconstruction in tests; nil
-	// uses runner.PinnedWorkflowMachine (full WF-016 digest verification).
+	// uses runsemantics.PinnedWorkflowMachine (full WF-016 digest verification).
 	pinnedMachine func(reader *journal.Reader, identity journal.RunIdentity) (*workflow.Machine, error)
 	// pinnedGateCapabilities overrides pinned gate-goober capability loading
 	// in tests; nil uses runner.PinnedGateGooberCapabilities.
@@ -365,7 +366,7 @@ func openRunIdentity(runDir string) (*journal.Reader, journal.RunIdentity, error
 func (s *daemonCredentialService) pinnedStageProfile(reader *journal.Reader, pinned pinnedStage, stage string) (stageProfile, error) {
 	pinnedMachine := s.pinnedMachine
 	if pinnedMachine == nil {
-		pinnedMachine = runner.PinnedWorkflowMachine
+		pinnedMachine = runsemantics.PinnedWorkflowMachine
 	}
 	machine, err := pinnedMachine(reader, pinned.identity)
 	if err != nil {
