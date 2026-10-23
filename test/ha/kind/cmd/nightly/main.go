@@ -114,8 +114,7 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 	if !strings.HasSuffix(strings.TrimSpace(image), ":"+step.server) {
 		return fmt.Errorf("temporal frontend image = %q after %s step", strings.TrimSpace(image), step.server)
 	}
-	if err := command(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", "deployment/temporal-admintools",
-		"--", "temporal", "--address", "temporal-frontend:7233", "operator", "cluster", "health"); err != nil {
+	if err := waitForTemporalHealth(ctx, env); err != nil {
 		return fmt.Errorf("temporal %s cluster smoke: %w", step.server, err)
 	}
 	if err := command(ctx, env, "kubectl", "delete", "job/goobers-reference-smoke", "-n", "goobers-system", "--ignore-not-found"); err != nil {
@@ -140,6 +139,23 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 	}
 	return os.WriteFile(filepath.Join(evidence, "temporal-"+step.server+"-smoke.txt"),
 		[]byte("schema hook, server rollout, cluster health, reference smoke, and E2/E4/E11 replay passed\n"), 0o644)
+}
+
+func waitForTemporalHealth(ctx context.Context, env []string) error {
+	args := []string{"kubectl", "exec", "-n", "goobers-temporal", "deployment/temporal-admintools",
+		"--", "temporal", "--address", "temporal-frontend:7233", "operator", "cluster", "health"}
+	var lastErr error
+	for range 30 {
+		if lastErr = command(ctx, env, args...); lastErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), lastErr)
+		case <-time.After(5 * time.Second):
+		}
+	}
+	return fmt.Errorf("frontend did not become healthy after 30 probes: %w", lastErr)
 }
 
 func toxiproxySmoke(ctx context.Context, env []string, bin, evidence, endpoint string) error {
