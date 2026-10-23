@@ -354,6 +354,15 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		return "", nil, err
 	}
 
+	// The repository also carries docs for other binaries. Only this
+	// release's generator may populate its CLI reference directories.
+	for _, sub := range []string{"cli", "man", "completion"} {
+		if err := os.RemoveAll(filepath.Join(docsDir, sub)); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("clear staged release %s docs: %w", sub, err)
+		}
+	}
+
 	generate := exec.Command(generator, "__generate-docs", docsDir)
 	if output, err := generate.CombinedOutput(); err != nil {
 		cleanup()
