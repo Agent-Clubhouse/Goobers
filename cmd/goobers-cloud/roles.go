@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
+	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -149,6 +152,7 @@ var (
 	runWorkerHost             = func(ctx context.Context, host *workerhost.Host) error { return host.Run(ctx) }
 	signalContext             = signals.SetupSignalContext
 	newCloudPools             = cloudpg.NewPools
+	newAcceptanceStore        = cloudacceptance.New
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
@@ -167,11 +171,17 @@ var (
 	}
 )
 
-type databaseRole func(context.Context, *cloudpg.Pools, error) error
+type databaseServices struct {
+	Pools               *cloudpg.Pools
+	Acceptances         triggerqueue.SchedulerPolicyStore
+	SchemaCompatibility error
+}
+
+type databaseRole func(context.Context, databaseServices) error
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
-func unavailableDatabaseRole(context.Context, *cloudpg.Pools, error) error { return errRoleUnavailable }
+func unavailableDatabaseRole(context.Context, databaseServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -236,7 +246,24 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: check database schema compatibility: %s\n", role, cloudpg.SafeDiagnostic(compatibilityErr))
 		return 1
 	}
-	if err := serve(ctx, pools, compatibilityErr); err != nil {
+	ownerEpoch, err := strconv.ParseInt(environmentOr("GOOBERS_OWNER_EPOCH", "1"), 10, 64)
+	if err != nil || ownerEpoch < 1 {
+		writef(stderr, "goobers-cloud %s: invalid GOOBERS_OWNER_EPOCH\n", role)
+		return 2
+	}
+	acceptances, err := newAcceptanceStore(
+		pools.Transaction,
+		environmentOr("GOOBERS_INSTANCE_ID", "default"),
+		ownerEpoch,
+	)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
+		return 1
+	}
+	services := databaseServices{
+		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
+	}
+	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
 		return 1
 	}
