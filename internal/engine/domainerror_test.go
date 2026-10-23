@@ -13,6 +13,7 @@ import (
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -53,7 +54,9 @@ func TestDomainFailureSurvivesTemporalTransport(t *testing.T) {
 			if !errors.As(original, &before) || !errors.As(err, &after) || before.Type() != after.Type() || before.Message() != after.Message() || before.NonRetryable() != after.NonRetryable() {
 				t.Fatal("Temporal failure semantics changed")
 			}
-			if got, want := infrastructureRetryDelay(err, time.Second, time.Time{}), infrastructureRetryDelay(original, time.Second, time.Time{}); got != want {
+			now := time.Date(2025, 12, 31, 23, 0, 0, 0, time.UTC)
+			baseline := domainFailureTransport(classifySeamTransportError(domain))
+			if got, want := infrastructureRetryDelay(err, time.Second, now), infrastructureRetryDelay(baseline, time.Second, now); got != want {
 				t.Fatalf("retry delay=%v want=%v", got, want)
 			}
 		})
@@ -117,5 +120,51 @@ func TestDomainFailureDoesNotMasqueradeAsAttemptIdentity(t *testing.T) {
 		if identity := attemptIdentityFromError(err); identity != nil {
 			t.Fatalf("domain evidence invented identity: %+v", identity)
 		}
+	}
+}
+
+// Match workerhost's trackedActivityInbound: the outer application error
+// carries attempt identity, while its cause retains the classified evidence.
+func TestDomainFailureSurvivesWorkerhostIdentityWrapper(t *testing.T) {
+	domain := invoke.InfrastructureFailure(errors.New("provider unavailable"))
+	inner := classifySeamError(domain)
+	var app *temporal.ApplicationError
+	if !errors.As(inner, &app) {
+		t.Fatal("classified error is not an ApplicationError")
+	}
+	outer := temporal.NewApplicationErrorWithOptions(inner.Error(), app.Type(), temporal.ApplicationErrorOptions{
+		NonRetryable: app.NonRetryable(), Cause: inner, NextRetryDelay: app.NextRetryDelay(), Category: app.Category(),
+		Details: []interface{}{attemptidentity.Identity{WorkerIdentity: "worker-a", BuildID: "b1"}},
+	})
+	err := domainFailureTransport(outer)
+	if id := attemptIdentityFromError(err); id == nil || id.WorkerIdentity != "worker-a" || id.BuildID != "b1" {
+		t.Fatalf("identity wrapper not visible: %+v", id)
+	}
+	event := executorErrorEvent("work", 1, "", journal.AttemptInfra, err, nil)
+	if want := journal.ErrorDetailFor("executor_error", domain); !reflect.DeepEqual(event.Error, want) {
+		t.Fatalf("journal recorded wrapper instead of domain: got %+v want %+v", event.Error, want)
+	}
+	if event.Runner["errorCode"] != telemetry.ErrCodeInfraFailure || event.Runner["errorClass"] != string(telemetry.ErrorClassInfra) {
+		t.Fatalf("domain classification lost: %v", event.Runner)
+	}
+}
+
+func domainFailureTransport(err error) error {
+	converter := temporal.GetDefaultFailureConverter()
+	return converter.FailureToError(&failurepb.Failure{Message: "activity transport", Cause: converter.ErrorToFailure(err),
+		FailureInfo: &failurepb.Failure_ActivityFailureInfo{ActivityFailureInfo: &failurepb.ActivityFailureInfo{
+			ActivityType: &commonpb.ActivityType{Name: "InvokeGoober"}, RetryState: enumspb.RETRY_STATE_MAXIMUM_ATTEMPTS_REACHED}}})
+}
+
+func TestDomainFailurePreservesRetryAt(t *testing.T) {
+	retryAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	domain := invoke.InfrastructureFailureUntil(errors.New("rate limited"), retryAt)
+	now := retryAt.Add(-time.Hour)
+	want := infrastructureRetryDelay(domainFailureTransport(classifySeamTransportError(domain)), time.Second, now)
+	if want != time.Hour {
+		t.Fatalf("pre-envelope delay=%v want one hour", want)
+	}
+	if got := infrastructureRetryDelay(domainFailureTransport(classifySeamError(domain)), time.Second, now); got != want {
+		t.Fatalf("enveloped retry delay=%v want %v", got, want)
 	}
 }
