@@ -32,10 +32,10 @@ func TestGateDecisionBoundToOccurrence(t *testing.T) {
 		emits++
 		switch emits {
 		case 2:
-			env.UpdateWorkflow(GateDecisionUpdateName, first.RequestID, gateDecisionCallbacks(t, nil, nil), first)
+			env.UpdateWorkflow(GateDecisionUpdateName, GateDecisionUpdateID(first), gateDecisionCallbacks(t, nil, nil), first)
 		case 4:
-			env.UpdateWorkflow(GateDecisionUpdateName, stale.RequestID, gateDecisionCallbacks(t, nil, &staleErr), stale)
-			env.UpdateWorkflow(GateDecisionUpdateName, current.RequestID, gateDecisionCallbacks(t, nil, nil), current)
+			env.UpdateWorkflow(GateDecisionUpdateName, GateDecisionUpdateID(stale), gateDecisionCallbacks(t, nil, &staleErr), stale)
+			env.UpdateWorkflow(GateDecisionUpdateName, GateDecisionUpdateID(current), gateDecisionCallbacks(t, nil, nil), current)
 		}
 	})
 
@@ -44,7 +44,7 @@ func TestGateDecisionBoundToOccurrence(t *testing.T) {
 	in.TriggerKind = string(journal.TriggerManual)
 	in.LiveJournal = true
 	in.HITL = &HITLPolicy{Enabled: true, WaitSeconds: 60, Actors: []string{"operator"}}
-	env.ExecuteWorkflow(Run, in)
+	env.ExecuteWorkflow(runHumanGateTestWorkflow, in)
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestHumanGateWindowExpiredIsJournaledWithOccurrence(t *testing.T) {
 	in.TriggerKind = string(journal.TriggerManual)
 	in.LiveJournal = true
 	in.HITL = &HITLPolicy{Enabled: true, WaitSeconds: 1}
-	env.ExecuteWorkflow(Run, in)
+	env.ExecuteWorkflow(runHumanGateTestWorkflow, in)
 	err := env.GetWorkflowError()
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) || appErr.Type() != HumanGateWindowExpiredCode {

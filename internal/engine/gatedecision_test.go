@@ -147,7 +147,7 @@ func TestGateDecisionUpdateCompletesAfterWalkConsumesDecision(t *testing.T) {
 	env.RegisterDelayedCallback(func() {
 		env.UpdateWorkflow(
 			GateDecisionUpdateName,
-			request.RequestID,
+			GateDecisionUpdateID(request),
 			&testsuite.TestUpdateCallback{
 				OnReject: func(err error) { updateErr = err },
 				OnComplete: func(value interface{}, err error) {

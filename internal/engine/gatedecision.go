@@ -35,6 +35,13 @@ const (
 
 const humanGateDecisionChange = "human-gate-decision-v1"
 
+type humanGateImplementationKey struct{}
+
+func humanGateImplementationEnabled(ctx workflow.Context) bool {
+	enabled, _ := ctx.Value(humanGateImplementationKey{}).(bool)
+	return enabled
+}
+
 const (
 	// GateDecisionErrProtocol refuses an incompatible protocol.
 	GateDecisionErrProtocol = "gate_decision_protocol_unsupported"
@@ -61,7 +68,8 @@ type GateDecisionRequest struct {
 	Protocol string `json:"protocol"`
 	Version  int    `json:"version"`
 	RunID    string `json:"runId"`
-	// RequestID is also the Temporal UpdateID.
+	// RequestID is the caller's stable idempotency identity. The Temporal
+	// UpdateID is GateDecisionUpdateID(request), which also binds the payload.
 	RequestID string `json:"requestId"`
 	Actor     string `json:"actor"`
 	Gate      string `json:"gate"`
@@ -86,6 +94,29 @@ type GateDecisionAck struct {
 	TerminalGeneration uint64 `json:"terminalGeneration"`
 	Decision           string `json:"decision"`
 	Duplicate          bool   `json:"duplicate,omitempty"`
+}
+
+// GateDecisionUpdateID binds Temporal transport deduplication to both the
+// caller's request identity and its canonical decision payload.
+func GateDecisionUpdateID(request GateDecisionRequest) string {
+	sum := sha256.Sum256([]byte(request.RequestID + "\x00" + gateDecisionFingerprint(request)))
+	return GateDecisionUpdateName + ":" + hex.EncodeToString(sum[:])
+}
+
+// ValidateRequest rejects a server-replayed acknowledgement for different
+// content under a reused transport UpdateID.
+func (ack GateDecisionAck) ValidateRequest(request GateDecisionRequest) error {
+	if ack.Protocol != GateDecisionProtocol || ack.Version != GateDecisionProtocolVersion ||
+		request.Protocol != GateDecisionProtocol || request.Version != GateDecisionProtocolVersion ||
+		ack.RunID != strings.TrimSpace(request.RunID) || ack.RequestID != request.RequestID ||
+		ack.Actor != strings.TrimSpace(request.Actor) || ack.Gate != strings.TrimSpace(request.Gate) ||
+		ack.GateOccurrence != request.GateOccurrence ||
+		ack.TerminalGeneration != request.ExpectedTerminalGeneration ||
+		ack.Decision != request.Decision {
+		return gateDecisionRefusal(GateDecisionErrKeyReused,
+			"requestId %q returned an acknowledgement for different gate-decision content", request.RequestID)
+	}
+	return nil
 }
 
 // GateDecisionState is the query-visible pending human-gate identity.
@@ -151,11 +182,20 @@ func (s *gateDecisionSession) register(ctx workflow.Context) error {
 		ctx,
 		GateDecisionUpdateName,
 		s.handle,
-		workflow.UpdateHandlerOptions{Validator: s.validate},
+		workflow.UpdateHandlerOptions{Validator: s.validateUpdate},
 	); err != nil {
 		return err
 	}
 	return workflow.SetQueryHandler(ctx, GateDecisionStateQuery, s.state)
+}
+
+func (s *gateDecisionSession) validateUpdate(ctx workflow.Context, request GateDecisionRequest) error {
+	info := workflow.GetCurrentUpdateInfo(ctx)
+	if info == nil || info.ID != GateDecisionUpdateID(request) {
+		return gateDecisionRefusal(GateDecisionErrInvalid,
+			"Temporal UpdateID does not bind requestId %q to its gate-decision payload", request.RequestID)
+	}
+	return s.validate(request)
 }
 
 func (s *gateDecisionSession) state() (GateDecisionState, error) {
@@ -296,17 +336,24 @@ func (s *gateDecisionSession) validateCurrent(request GateDecisionRequest, actor
 	return nil
 }
 
+func validateGateDecisionReplay(request GateDecisionRequest, ack GateDecisionAck, err error) (GateDecisionAck, error) {
+	if err != nil {
+		return GateDecisionAck{}, err
+	}
+	return ack, ack.ValidateRequest(request)
+}
+
 func (s *gateDecisionSession) handle(ctx workflow.Context, request GateDecisionRequest) (GateDecisionAck, error) {
 	fingerprint := gateDecisionFingerprint(request)
 	if ack, err, done := s.replay(request.RequestID, fingerprint); done {
-		return ack, err
+		return validateGateDecisionReplay(request, ack, err)
 	}
 	if err := s.mu.Lock(ctx); err != nil {
 		return GateDecisionAck{}, err
 	}
 	defer s.mu.Unlock()
 	if ack, err, done := s.replay(request.RequestID, fingerprint); done {
-		return ack, err
+		return validateGateDecisionReplay(request, ack, err)
 	}
 	actor := strings.TrimSpace(request.Actor)
 	if err := s.validateCurrent(request, actor); err != nil {
@@ -323,7 +370,8 @@ func (s *gateDecisionSession) handle(ctx workflow.Context, request GateDecisionR
 		delete(s.fingerprints, request.RequestID)
 		return GateDecisionAck{}, err
 	}
-	return s.acks[request.RequestID], nil
+	ack := s.acks[request.RequestID]
+	return ack, ack.ValidateRequest(request)
 }
 
 func (s *gateDecisionSession) replay(requestID, fingerprint string) (GateDecisionAck, error, bool) {
@@ -346,6 +394,9 @@ func (s *gateDecisionSession) replay(requestID, fingerprint string) (GateDecisio
 
 func gateDecisionFingerprint(request GateDecisionRequest) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
+		"protocol=" + request.Protocol,
+		"version=" + strconv.Itoa(request.Version),
+		"run=" + strings.TrimSpace(request.RunID),
 		"actor=" + strings.TrimSpace(request.Actor),
 		"gate=" + strings.TrimSpace(request.Gate),
 		"occurrence=" + strconv.FormatUint(request.GateOccurrence, 10),

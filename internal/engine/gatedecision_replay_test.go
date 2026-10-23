@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
@@ -33,7 +34,8 @@ func TestGateDecisionAcceptedHistoryAndPrefixesReplay(t *testing.T) {
 	writer, _ := newLiveWriter(t)
 	const queue = "gate-decision-replay"
 	worker := temporalworker.New(server.Client(), queue, temporalworker.Options{})
-	RegisterWith(worker, &Activities{Journal: writer})
+	worker.RegisterWorkflowWithOptions(runHumanGateTestWorkflow, workflow.RegisterOptions{Name: "Run"})
+	worker.RegisterActivity(&Activities{Journal: writer})
 	if err := worker.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -46,16 +48,16 @@ func TestGateDecisionAcceptedHistoryAndPrefixesReplay(t *testing.T) {
 	in.HITL = &HITLPolicy{Enabled: true, WaitSeconds: 60, Actors: []string{"operator"}}
 	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: in.RunID, TaskQueue: queue,
-	}, Run, in)
+	}, "Run", in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	occurrence := waitForGateDecisionState(t, ctx, server.Client(), run)
-	request := engineGateDecisionRequest("replay-decision", occurrence, "pass")
+	request := engineGateDecisionRequest("replay-decision", occurrence, "needs-changes")
 	request.RunID = in.RunID
 	handle, err := server.Client().UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID: run.GetID(), RunID: run.GetRunID(),
-		UpdateID: request.RequestID, UpdateName: GateDecisionUpdateName,
+		UpdateID: GateDecisionUpdateID(request), UpdateName: GateDecisionUpdateName,
 		Args: []interface{}{request}, WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -65,8 +67,52 @@ func TestGateDecisionAcceptedHistoryAndPrefixesReplay(t *testing.T) {
 	if err := handle.Get(ctx, &ack); err != nil {
 		t.Fatal(err)
 	}
-	if ack.GateOccurrence != occurrence || ack.Decision != "pass" {
+	if ack.GateOccurrence != occurrence || ack.Decision != "needs-changes" {
 		t.Fatalf("ack=%+v occurrence=%d", ack, occurrence)
+	}
+	nextOccurrence := waitForGateDecisionState(t, ctx, server.Client(), run)
+	changed := request
+	changed.GateOccurrence = nextOccurrence
+	changed.Decision = "pass"
+	staleHandle, err := server.Client().UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID: run.GetID(), RunID: run.GetRunID(),
+		UpdateID: GateDecisionUpdateID(request), UpdateName: GateDecisionUpdateName,
+		Args: []interface{}{changed}, WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleAck GateDecisionAck
+	if err := staleHandle.Get(ctx, &staleAck); err != nil {
+		t.Fatal(err)
+	}
+	if err := staleAck.ValidateRequest(changed); err == nil {
+		t.Fatalf("server-replayed stale ack matched changed request: %+v", staleAck)
+	}
+	changedHandle, err := server.Client().UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID: run.GetID(), RunID: run.GetRunID(),
+		UpdateID: GateDecisionUpdateID(changed), UpdateName: GateDecisionUpdateName,
+		Args: []interface{}{changed}, WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedErr := changedHandle.Get(ctx, &GateDecisionAck{})
+	if code, _, ok := gateDecisionRefusalCode(changedErr); !ok || code != GateDecisionErrKeyReused {
+		t.Fatal("changed payload under reused requestId was accepted")
+	}
+	final := changed
+	final.RequestID = "replay-final"
+	finalHandle, err := server.Client().UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID: run.GetID(), RunID: run.GetRunID(),
+		UpdateID: GateDecisionUpdateID(final), UpdateName: GateDecisionUpdateName,
+		Args: []interface{}{final}, WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finalHandle.Get(ctx, &GateDecisionAck{}); err != nil {
+		t.Fatal(err)
 	}
 	var result RunResult
 	if err := run.Get(ctx, &result); err != nil {
@@ -74,14 +120,14 @@ func TestGateDecisionAcceptedHistoryAndPrefixesReplay(t *testing.T) {
 	}
 
 	history := hitlFetchHistory(t, ctx, server.Client(), run.GetID(), run.GetRunID())
-	hitlReplay(t, history)
+	replayGateDecisionHistory(t, history)
 	prefixes := 0
 	for i, event := range history.Events {
 		if event.EventType != enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED {
 			continue
 		}
 		prefixes++
-		hitlReplay(t, &historypb.History{
+		replayGateDecisionHistory(t, &historypb.History{
 			Events: append([]*historypb.HistoryEvent(nil), history.Events[:i+1]...),
 		})
 	}
