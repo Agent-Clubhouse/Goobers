@@ -25,7 +25,7 @@ const scrubbedOperatorMessageIdentifierPrefix = "scrubbed:sha256:"
 // existing idempotency key to its original record. Expired requests are not
 // accepted; they receive a typed terminal record containing the rejected input.
 func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
-	request, err := r.prepareOperatorMessageRequest(request)
+	request, err := PrepareOperatorMessageRequest(r.scrubber, request)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
@@ -79,7 +79,7 @@ func (r *Run) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1
 // RejectOperatorMessage durably records a pre-acceptance request denial while
 // preserving the verified principal stamped by the caller.
 func (r *Run) RejectOperatorMessage(request apiv1.OperatorMessageRequest, code, detail string) (apiv1.OperatorMessageRecord, bool, error) {
-	request, err := r.prepareOperatorMessageRequest(request)
+	request, err := PrepareOperatorMessageRequest(r.scrubber, request)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
@@ -128,19 +128,9 @@ func (r *Run) RejectOperatorMessage(request apiv1.OperatorMessageRequest, code, 
 
 // AcknowledgeOperatorMessage appends at most one acknowledgement for a request.
 func (r *Run) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error) {
-	if err := ack.Validate(); err != nil {
-		return apiv1.OperatorMessageRecord{}, err
-	}
-	ack.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", ack.RequestID)
-	ack.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", ack.IdempotencyKey)
-	requestID, idempotencyKey := ack.RequestID, ack.IdempotencyKey
-	ack, err := scrubOperatorMessage(r.scrubber, ack)
+	ack, err := PrepareOperatorMessageAcknowledgement(r.scrubber, ack)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, err
-	}
-	ack.RequestID, ack.IdempotencyKey = requestID, idempotencyKey
-	if err := ack.Validate(); err != nil {
-		return apiv1.OperatorMessageRecord{}, fmt.Errorf("operator message: scrubbed acknowledgement is invalid: %w", err)
 	}
 
 	r.mu.Lock()
@@ -171,22 +161,13 @@ func (r *Run) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgemen
 
 // CompleteOperatorMessage records the request's terminal delivery disposition.
 func (r *Run) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error) {
-	if err := outcome.Validate(); err != nil {
-		return apiv1.OperatorMessageRecord{}, err
-	}
 	if outcome.Request != nil {
 		return apiv1.OperatorMessageRecord{}, errors.New("operator message: accepted-request outcome must not embed a request")
 	}
-	outcome.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", outcome.RequestID)
-	outcome.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", outcome.IdempotencyKey)
-	requestID, idempotencyKey := outcome.RequestID, outcome.IdempotencyKey
-	outcome, err := scrubOperatorMessage(r.scrubber, outcome)
+
+	outcome, err := PrepareOperatorMessageOutcome(r.scrubber, outcome)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, err
-	}
-	outcome.RequestID, outcome.IdempotencyKey = requestID, idempotencyKey
-	if err := outcome.Validate(); err != nil {
-		return apiv1.OperatorMessageRecord{}, fmt.Errorf("operator message: scrubbed outcome is invalid: %w", err)
 	}
 
 	r.mu.Lock()
@@ -227,24 +208,6 @@ func (r *Run) operatorMessageLocked(idempotencyKey, requestID string) (apiv1.Ope
 		}
 	}
 	return apiv1.OperatorMessageRecord{}, ErrOperatorMessageNotFound
-}
-
-func (r *Run) prepareOperatorMessageRequest(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRequest, error) {
-	if err := request.Validate(); err != nil {
-		return apiv1.OperatorMessageRequest{}, err
-	}
-	request.RequestID = canonicalOperatorMessageIdentifier(r.scrubber, "request-id", request.RequestID)
-	request.IdempotencyKey = canonicalOperatorMessageIdentifier(r.scrubber, "idempotency-key", request.IdempotencyKey)
-	requestID, idempotencyKey := request.RequestID, request.IdempotencyKey
-	request, err := scrubOperatorMessage(r.scrubber, request)
-	if err != nil {
-		return apiv1.OperatorMessageRequest{}, err
-	}
-	request.RequestID, request.IdempotencyKey = requestID, idempotencyKey
-	if err := request.Validate(); err != nil {
-		return apiv1.OperatorMessageRequest{}, fmt.Errorf("operator message: scrubbed request is invalid: %w", err)
-	}
-	return request, nil
 }
 
 func scrubOperatorMessage[T any](scrubber Scrubber, value T) (T, error) {

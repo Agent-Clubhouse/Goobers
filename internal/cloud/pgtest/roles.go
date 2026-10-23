@@ -18,7 +18,7 @@ import (
 // never create them ad hoc and never drop them; tests isolate themselves with
 // per-test databases instead. CI runs these packages with -p 1 so no two
 // packages converge roles concurrently.
-func EnsureRoles(t *testing.T, pool *pgxpool.Pool) {
+func EnsureRoles(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	conn, err := pool.Acquire(t.Context())
 	if err != nil {
