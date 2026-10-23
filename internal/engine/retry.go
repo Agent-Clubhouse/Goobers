@@ -174,7 +174,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if stopsAttemptLoop(ctx, err) &&
-				!(cancelSafeStageJournal(ctx) && err == nil) {
+				(!cancelSafeStageJournal(ctx) || err != nil) {
 				return apiv1.ResultEnvelope{}, err
 			}
 			if errors.Is(err, errChildContinued) {

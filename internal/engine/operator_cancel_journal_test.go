@@ -2,10 +2,14 @@ package engine
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	temporalworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -46,6 +50,62 @@ func TestCancelSafeStageJournalVersionReplaysLegacyHistory(t *testing.T) {
 	}
 	if finished != 2 {
 		t.Fatalf("legacy replay stage.finished count = %d, want 2", finished)
+	}
+}
+
+func TestCancelSafeStageJournalReplaysN1CancellationHistories(t *testing.T) {
+	for _, fixture := range []struct {
+		name       string
+		path       string
+		workflowID string
+	}{
+		{
+			name: "stage-boundary",
+			path: filepath.Join(
+				"testdata", "cancel-stage-boundary-n1.json"),
+			workflowID: "cancel-8088-n1-boundary",
+		},
+		{
+			name: "mid-executor",
+			path: filepath.Join(
+				"testdata", "cancel-mid-executor-n1.json"),
+			workflowID: "cancel-8088-n1-mid-executor",
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			history := loadHistoryFixture(t, fixture.path)
+			for _, event := range history.Events {
+				if event.GetEventType() !=
+					enumspb.EVENT_TYPE_MARKER_RECORDED {
+					continue
+				}
+				attributes := event.GetMarkerRecordedEventAttributes()
+				if attributes.GetMarkerName() == "Version" &&
+					string(attributes.GetDetails()["change-id"].
+						GetPayloads()[0].GetData()) ==
+						`"`+cancelSafeStageJournalChange+`"` {
+					t.Fatal("N-1 cancellation history contains the new marker")
+				}
+			}
+			replayEveryWorkflowTask(
+				t, history,
+				func(t *testing.T, prefix *historypb.History) {
+					t.Helper()
+					replayer := temporalworker.NewWorkflowReplayer()
+					replayer.RegisterWorkflow(Run)
+					err := replayer.ReplayWorkflowHistoryWithOptions(
+						nil, prefix,
+						temporalworker.ReplayWorkflowHistoryOptions{
+							OriginalExecution: originalExecution(
+								fixture.workflowID, prefix),
+						},
+					)
+					if err != nil {
+						t.Fatalf("replay: %v", err)
+					}
+				},
+			)
+		})
 	}
 }
 
