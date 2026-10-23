@@ -97,15 +97,14 @@ type FeatureBlocker struct {
 }
 
 var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
-	"workflow.spec.parallels":           {Path: "spec.parallels", Issue: 7753},
-	"workflow.spec.parallels.selection": {Path: "spec.parallels.selection", Issue: 7754},
-	"workflow.spec.maps":                {Path: "spec.maps", Issue: 7755},
-	"task.childWorkflows":               {Path: "task.childWorkflows", Issue: 7758},
-	"gate.evaluator.human":              {Path: "gate.evaluator.human", Issue: 7760},
-	"task.limits.maxTokens":             {Path: "task.limits.maxTokens", Issue: 7761},
-	"task.limits.maxCostUSD":            {Path: "task.limits.maxCostUSD", Issue: 7761},
-	"task.outbox":                       {Path: "task.outbox", Issue: 7762},
-	"task.experiment":                   {Path: "task.experiment", Issue: 7763},
+	"workflow.spec.parallels": {Path: "spec.parallels", Issue: 7753},
+	"workflow.spec.maps":      {Path: "spec.maps", Issue: 7755},
+	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758},
+	"gate.evaluator.human":    {Path: "gate.evaluator.human", Issue: 7760},
+	"task.limits.maxTokens":   {Path: "task.limits.maxTokens", Issue: 7761},
+	"task.limits.maxCostUSD":  {Path: "task.limits.maxCostUSD", Issue: 7761},
+	"task.outbox":             {Path: "task.outbox", Issue: 7762},
+	"task.experiment":         {Path: "task.experiment", Issue: 7763},
 }
 
 // EngineFeatureBlocker returns the P4 metadata for one refused feature.
