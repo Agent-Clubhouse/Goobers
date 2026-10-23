@@ -20,6 +20,7 @@ import (
 // The walk copies seed collections before mutation, then stores its own
 // continuation back into the frame; siblings never write into the seed.
 type branchWalkFrame struct {
+	visited         map[string]bool
 	results         map[string]apiv1.ResultEnvelope
 	bind            func(fanOutBindingContext) (fanOutBindings, error)
 	started         livejournal.AppendReceipt
@@ -96,6 +97,10 @@ func walkTaskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result a
 	if f == nil {
 		return taskOutcome(ctx, m, t, result, upstream, evaluated, steps, rec)
 	}
+	if f.visited == nil {
+		f.visited = make(map[string]bool)
+	}
+	f.visited[t.Name] = true
 	if f.results == nil {
 		f.results = make(map[string]apiv1.ResultEnvelope)
 	}
