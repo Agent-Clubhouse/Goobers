@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -58,13 +59,16 @@ func Status(ctx context.Context, pool *pgxpool.Pool) (StatusReport, error) {
 	}
 	for rows.Next() {
 		var lease Current
+		var expiry pgtype.Timestamptz
+		var expired bool
 		if err := rows.Scan(
 			&lease.InstanceID, &lease.Name, &lease.Holder, &lease.Epoch,
-			&lease.HeartbeatHolder, &lease.HeartbeatEpoch, &lease.ExpiresAt, &lease.Expired,
+			&lease.HeartbeatHolder, &lease.HeartbeatEpoch, &expiry, &expired,
 		); err != nil {
 			rows.Close()
 			return StatusReport{}, fmt.Errorf("decode cloud lease: %w", err)
 		}
+		applyExpiry(&lease, expiry, expired)
 		report.Leases = append(report.Leases, lease)
 	}
 	if err := rows.Err(); err != nil {
@@ -107,4 +111,12 @@ func Status(ctx context.Context, pool *pgxpool.Pool) (StatusReport, error) {
 		report.History = []HistoryEntry{}
 	}
 	return report, nil
+}
+
+func applyExpiry(lease *Current, expiry pgtype.Timestamptz, expired bool) {
+	lease.Expired = expired
+	if expiry.Valid && expiry.InfinityModifier == pgtype.Finite {
+		value := expiry.Time
+		lease.ExpiresAt = &value
+	}
 }
