@@ -212,6 +212,7 @@ command instead. **CI:** each validation job maps to the same contract:
 | `dead-code analysis` | Reachability checks for Go and portal production code |
 | `checks (portal UX · contracts · package)` | Portal, canvas-extension, generated-contract, embedded-asset, package, and manifest slice of `make ci` |
 | `CI scope (portal-only or full)` | Classifies the complete PR merge-base diff; uncertainty retains full CI |
+| `cloud PostgreSQL and Azurite integration` | Path-conditional cloud package and shared-store integration smoke against PostgreSQL 16 and Azurite |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
 | `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
 | `darwin gate (build · vet)` | Linux cross-compile `go build` + `go vet` (tests included) of the whole tree for darwin/arm64 and darwin/amd64, built with cgo off as the release builds macOS binaries; the only pre-merge macOS gate |

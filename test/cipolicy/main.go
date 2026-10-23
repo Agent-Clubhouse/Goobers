@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,6 +24,8 @@ var backendJobs = []string{
 	"unit", "unit-linux-coverage", "shipped", "deadcode", "windows-smoke",
 	"vulnerability-scan", "integration", "sandbox", "linux-validation",
 }
+
+var cloudJobs = []string{"cloud-pg"}
 
 var commitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
@@ -50,9 +53,10 @@ func run(args []string, getenv func(string) string, git gitRunner, stdout, stder
 	}
 	switch args[0] {
 	case "classify":
-		profile, reason, err := classify(getenv("CI_EVENT_NAME"), getenv("BASE_SHA"), getenv("HEAD_SHA"), git)
+		profile, cloud, reason, err := classifyScopes(getenv("CI_EVENT_NAME"), getenv("BASE_SHA"), getenv("HEAD_SHA"), git)
 		if err != nil {
 			profile = fullProfile
+			cloud = true
 			reason = fmt.Sprintf("classification failed; retaining full validation: %v", err)
 			_, _ = fmt.Fprintf(stderr, "::warning::%q\n", reason)
 		}
@@ -63,7 +67,7 @@ func run(args []string, getenv func(string) string, git gitRunner, stdout, stder
 				return 1
 			}
 		}
-		if _, err := fmt.Fprintf(stdout, "profile=%s\n", profile); err != nil {
+		if _, err := fmt.Fprintf(stdout, "profile=%s\ncloud=%t\n", profile, cloud); err != nil {
 			_, _ = fmt.Fprintf(stderr, "cipolicy: write profile: %v\n", err)
 			return 1
 		}
@@ -91,33 +95,61 @@ func run(args []string, getenv func(string) string, git gitRunner, stdout, stder
 }
 
 func classify(event, base, head string, git gitRunner) (string, string, error) {
-	if event != "pull_request" {
-		return fullProfile, "only pull requests qualify for portal-only validation", nil
+	profile, _, reason, err := classifyScopes(event, base, head, git)
+	return profile, reason, err
+}
+
+func classifyScopes(event, base, head string, git gitRunner) (string, bool, string, error) {
+	if event != "pull_request" && (!commitSHA.MatchString(base) || !commitSHA.MatchString(head)) {
+		return fullProfile, true, "event has no classifiable diff; retaining full and cloud validation", nil
 	}
 	if !commitSHA.MatchString(base) || !commitSHA.MatchString(head) {
-		return "", "", fmt.Errorf("base and head must be full commit SHAs")
+		return "", false, "", fmt.Errorf("base and head must be full commit SHAs")
 	}
 	output, err := git("merge-base", base, head)
 	if err != nil {
-		return "", "", err
+		return "", false, "", err
 	}
 	mergeBase := strings.TrimSpace(string(output))
 	if !commitSHA.MatchString(mergeBase) {
-		return "", "", fmt.Errorf("merge-base did not return one full commit SHA")
+		return "", false, "", fmt.Errorf("merge-base did not return one full commit SHA")
 	}
 	// Disabling rename detection exposes both deleted and added paths, so a
 	// backend file moved into portal/ still requires the full gate.
 	output, err = git("diff", "--raw", "-z", "--no-abbrev", "--no-ext-diff", "--no-renames", mergeBase, head, "--")
 	if err != nil {
-		return "", "", err
+		return "", false, "", err
 	}
-	return classifyDiff(string(output))
+	profile, reason, err := classifyDiff(string(output))
+	if err != nil {
+		return "", false, "", err
+	}
+	if event != "pull_request" {
+		profile = fullProfile
+		reason = "non-pull-request event retains full validation"
+	}
+	cloud, err := classifyCloudDiff(string(output))
+	return profile, cloud, reason, err
+}
+
+func classifyCloudDiff(raw string) (bool, error) {
+	paths, err := changedPaths(raw)
+	if err != nil {
+		return false, err
+	}
+	for _, name := range paths {
+		if cloudPath(name) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func classifyDiff(raw string) (string, string, error) {
 	if raw == "" {
 		return fullProfile, "empty diff", nil
 	}
+
 	fields := strings.Split(raw, "\x00")
 	if fields[len(fields)-1] != "" || len(fields)%2 != 1 {
 		return "", "", fmt.Errorf("incomplete NUL-delimited raw diff")
@@ -147,6 +179,47 @@ func classifyDiff(raw string) (string, string, error) {
 	return portalProfile, "all changed files are regular portal files", nil
 }
 
+func changedPaths(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	fields := strings.Split(raw, "\x00")
+	if fields[len(fields)-1] != "" || len(fields)%2 != 1 {
+		return nil, fmt.Errorf("incomplete NUL-delimited raw diff")
+	}
+	paths := make([]string, 0, len(fields)/2)
+	for i := 0; i < len(fields)-1; i += 2 {
+		header := strings.Fields(fields[i])
+		if len(header) != 5 {
+			return nil, fmt.Errorf("invalid raw diff header %q", fields[i])
+		}
+		paths = append(paths, fields[i+1])
+	}
+	return paths, nil
+}
+
+func cloudPath(name string) bool {
+	for _, prefix := range []string{
+		"cmd/goobers-cloud/",
+		"internal/cloud/",
+		"deploy/cloud/",
+		"migrations/",
+		"internal/localscheduler/",
+		"internal/triggerqueue/",
+		"internal/journal/",
+		"internal/livejournal/",
+		"internal/readmodel/",
+		"internal/engine/",
+		"internal/engineadmission/",
+		"internal/startintent/",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func regularChangeModes(status, oldMode, newMode string) (bool, error) {
 	switch status {
 	case "A":
@@ -173,7 +246,7 @@ func regularChangeModes(status, oldMode, newMode string) (bool, error) {
 }
 
 func requiredJobs() []string {
-	return append([]string{"scope", "preflight", "checks"}, backendJobs...)
+	return slices.Concat([]string{"scope", "preflight", "checks"}, backendJobs, cloudJobs)
 }
 
 func validateGate(event string, needs map[string]jobResult) error {
@@ -195,6 +268,13 @@ func validateGate(event string, needs map[string]jobResult) error {
 	if profile == portalProfile && event != "pull_request" {
 		return fmt.Errorf("portal-only profile is not permitted for %s", event)
 	}
+	cloud := scope.Outputs["cloud"]
+	if cloud != "true" && cloud != "false" {
+		return fmt.Errorf("missing or unknown cloud scope %q", cloud)
+	}
+	if profile == portalProfile && cloud != "false" {
+		return errors.New("portal-only profile cannot select cloud validation")
+	}
 	var failures []string
 	for _, name := range expected {
 		job, exists := needs[name]
@@ -206,6 +286,9 @@ func validateGate(event string, needs map[string]jobResult) error {
 			continue
 		}
 		if profile == portalProfile && slices.Contains(backendJobs, name) && job.Result == "skipped" {
+			continue
+		}
+		if slices.Contains(cloudJobs, name) && cloud == "false" && job.Result == "skipped" {
 			continue
 		}
 		failures = append(failures, fmt.Sprintf("%s did not pass (result: %q)", name, job.Result))
@@ -223,7 +306,8 @@ func writeSummary(filename, profile string) error {
 	}
 	_, writeErr := fmt.Fprintf(file, "## CI profile: `%s`\n\n", profile)
 	if writeErr == nil && profile == portalProfile {
-		_, writeErr = fmt.Fprintln(file, "Preflight and portal UX/component, real-daemon, contract, embedded-asset, and package checks remain required. Only the explicitly listed backend jobs are excluded:\n\n`"+strings.Join(backendJobs, "`, `")+"`")
+		excluded := slices.Concat(backendJobs, cloudJobs)
+		_, writeErr = fmt.Fprintln(file, "Preflight and portal UX/component, real-daemon, contract, embedded-asset, and package checks remain required. Only the explicitly listed backend jobs are excluded:\n\n`"+strings.Join(excluded, "`, `")+"`")
 	}
 	closeErr := file.Close()
 	if writeErr != nil {
