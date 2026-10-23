@@ -503,7 +503,8 @@
       "Makefile#deploy-validate:[6]:kubernetes-schemas",
       "Makefile#deploy-validate:[7]:kubernetes-schemas",
       "Makefile#deploy-validate:[8]:kubernetes-schemas",
-      "Makefile#deploy-validate:[9]:kubernetes-schemas"
+      "Makefile#deploy-validate:[9]:kubernetes-schemas",
+      "Makefile#deploy-validate:[10]:kubernetes-schemas"
     ]
   },
   {
