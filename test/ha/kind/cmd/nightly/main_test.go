@@ -37,6 +37,7 @@ func TestTemporalLadderValuesPinVersioningAndSchemaFirst(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
 		text := string(data)
 		for _, want := range []string{
 			"frontend.workerVersioningWorkflowAPIs:",
@@ -46,6 +47,7 @@ func TestTemporalLadderValuesPinVersioningAndSchemaFirst(t *testing.T) {
 				t.Errorf("%s is missing %q", path, want)
 			}
 		}
+
 		if strings.Contains(path, "values-legacy") {
 			if !strings.Contains(text, "update:\n    enabled: true") {
 				t.Errorf("%s does not enable the legacy schema update job", path)
@@ -55,5 +57,27 @@ func TestTemporalLadderValuesPinVersioningAndSchemaFirst(t *testing.T) {
 			strings.Count(text, "connectProtocol: tcp") != 2 {
 			t.Errorf("%s does not carry the complete chart 1.x schema and SQL connection contract", path)
 		}
+	}
+
+}
+
+func TestShardRangesAdvancedRequiresEveryShardToMove(t *testing.T) {
+	t.Parallel()
+	before := map[int64]int64{0: 17, 1: 22, 2: 9, 3: 41}
+	for _, test := range []struct {
+		name    string
+		current map[int64]int64
+		want    bool
+	}{
+		{"all advanced", map[int64]int64{0: 18, 1: 23, 2: 10, 3: 42}, true},
+		{"pre-existing rows", map[int64]int64{0: 17, 1: 22, 2: 9, 3: 41}, false},
+		{"one stale shard", map[int64]int64{0: 18, 1: 22, 2: 10, 3: 42}, false},
+		{"missing shard", map[int64]int64{0: 18, 1: 23, 2: 10}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shardRangesAdvanced(before, test.current); got != test.want {
+				t.Fatalf("shardRangesAdvanced() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }

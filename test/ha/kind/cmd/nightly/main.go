@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -93,9 +94,8 @@ func run() error {
 			return err
 		}
 	}
-	var priorMinRange int64
 	for index, step := range temporalLadder {
-		if err := runTemporalStep(ctx, env, assets, evidence, step, &priorMinRange); err != nil {
+		if err := runTemporalStep(ctx, env, assets, evidence, step, index == 0); err != nil {
 			return err
 		}
 		if index == 0 {
@@ -110,7 +110,23 @@ func run() error {
 	return verifyAndSummarize(ctx, env, evidence)
 }
 
-func runTemporalStep(ctx context.Context, env []string, assets, evidence string, step temporalStep, priorMinRange *int64) error {
+func runTemporalStep(ctx context.Context, env []string, assets, evidence string, step temporalStep, baseline bool) error {
+	before := map[int64]int64{}
+	if !baseline {
+		var raw string
+		var err error
+		before, raw, err = readShardRanges(ctx, env)
+		if err != nil {
+			return fmt.Errorf("snapshot temporal %s shard ranges before rollout: %w", step.server, err)
+		}
+		if len(before) != 4 {
+			return fmt.Errorf("snapshot temporal %s shard ranges before rollout: got %d rows, want 4", step.server, len(before))
+		}
+		if err := os.WriteFile(filepath.Join(evidence, "temporal-"+step.server+"-shards-before.txt"),
+			[]byte("shard_id|range_id\n"+raw+"\n"), 0o644); err != nil {
+			return err
+		}
+	}
 	legacy := step.chart != "temporal-1.6.0.tgz"
 	if legacy {
 		if err := runLegacySchema(ctx, env, assets, step); err != nil {
@@ -143,11 +159,9 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 	if err := waitForTemporalHealth(ctx, env); err != nil {
 		return fmt.Errorf("temporal %s cluster smoke: %w", step.server, err)
 	}
-	minRange, err := waitForShardSettlement(ctx, env, evidence, step.server, *priorMinRange)
-	if err != nil {
+	if err := waitForShardSettlement(ctx, env, evidence, step.server, before); err != nil {
 		return err
 	}
-	*priorMinRange = minRange
 	if err := command(ctx, env, "kubectl", "delete", "job/goobers-temporal-namespace",
 		"-n", "goobers-temporal", "--ignore-not-found"); err != nil {
 		return err
@@ -176,40 +190,72 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 		[]byte("schema-first migration, server rollout, cluster health, cross-version workflow continuation, and history replay passed\n"), 0o644)
 }
 
-func waitForShardSettlement(ctx context.Context, env []string, evidence, serverVersion string, priorMinRange int64) (int64, error) {
-	query := "SELECT count(*), min(range_id) FROM shards;"
+func waitForShardSettlement(ctx context.Context, env []string, evidence, serverVersion string, before map[int64]int64) error {
 	var last string
-	var candidate int64
+	var candidate map[int64]int64
 	var stableSince time.Time
 	for range 120 {
-		result, err := output(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", "temporal-postgres-1",
-			"--", "psql", "-U", "postgres", "-d", "temporal", "-Atc", query)
+		current, raw, err := readShardRanges(ctx, env)
 		if err == nil {
-			last = strings.TrimSpace(result)
-			fields := strings.Split(last, "|")
-			current, parseErr := strconv.ParseInt(fields[len(fields)-1], 10, 64)
-			if len(fields) == 2 && parseErr == nil && fields[0] == "4" && current > priorMinRange {
-				if current != candidate {
-					candidate, stableSince = current, time.Now()
+			last = raw
+			if shardRangesAdvanced(before, current) {
+				if !maps.Equal(current, candidate) {
+					candidate, stableSince = maps.Clone(current), time.Now()
 				} else if time.Since(stableSince) >= 30*time.Second {
-					data := fmt.Sprintf("count|min_range_id\n%s\nprior_min_range_id=%d\nstable_seconds=30\n", last, priorMinRange)
+					data := "shard_id|range_id\n" + raw + "\nstable_seconds=30\n"
 					if err := os.WriteFile(filepath.Join(evidence, "temporal-"+serverVersion+"-shards.txt"), []byte(data), 0o644); err != nil {
-						return 0, err
+						return err
 					}
-					return current, nil
+					return nil
 				}
 			} else {
-				candidate, stableSince = 0, time.Time{}
+				candidate, stableSince = nil, time.Time{}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return 0, errors.Join(ctx.Err(), err)
+			return errors.Join(ctx.Err(), err)
 		case <-time.After(5 * time.Second):
 		}
 	}
-	return 0, fmt.Errorf("temporal %s shards did not advance beyond %d and remain stable for 30s (last=%q)",
-		serverVersion, priorMinRange, last)
+	return fmt.Errorf("temporal %s shards did not all advance beyond their snapshots and remain stable for 30s (last=%q)",
+		serverVersion, last)
+}
+
+func readShardRanges(ctx context.Context, env []string) (map[int64]int64, string, error) {
+	const query = "SELECT shard_id, range_id FROM shards ORDER BY shard_id;"
+	result, err := output(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", "temporal-postgres-1",
+		"--", "psql", "-U", "postgres", "-d", "temporal", "-Atc", query)
+	if err != nil {
+		return nil, "", err
+	}
+	raw := strings.TrimSpace(result)
+	ranges := make(map[int64]int64)
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Split(line, "|")
+		if len(fields) != 2 {
+			return nil, raw, fmt.Errorf("malformed shard range row %q", line)
+		}
+		shardID, idErr := strconv.ParseInt(fields[0], 10, 64)
+		rangeID, rangeErr := strconv.ParseInt(fields[1], 10, 64)
+		if idErr != nil || rangeErr != nil {
+			return nil, raw, fmt.Errorf("malformed shard range row %q", line)
+		}
+		ranges[shardID] = rangeID
+	}
+	return ranges, raw, nil
+}
+
+func shardRangesAdvanced(before, current map[int64]int64) bool {
+	if len(current) != 4 || (len(before) != 0 && len(before) != len(current)) {
+		return false
+	}
+	for shardID, currentRange := range current {
+		if currentRange <= before[shardID] {
+			return false
+		}
+	}
+	return true
 }
 
 func runUpgradeProbe(ctx context.Context, env []string, evidence string, step temporalStep, final bool) error {
