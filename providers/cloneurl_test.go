@@ -58,11 +58,3 @@ func TestCloneURL(t *testing.T) {
 		})
 	}
 }
-
-// unchangingAfterFirstDeterministic commits once and then produces no further
-// changes — used for testing infrastructure failure scenarios where the
-// implementer cannot fix the underlying issue.
-type unchangingAfterFirstDeterministic struct {
-	t     *testing.T
-	calls int
-}

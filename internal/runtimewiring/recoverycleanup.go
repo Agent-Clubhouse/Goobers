@@ -16,8 +16,8 @@ import (
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workspaceauthority"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -85,7 +85,7 @@ func RecoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
-	if err := runner.VerifyChildWorkspaceCleanup(reader, identity, target); err != nil {
+	if err := workspaceauthority.VerifyChildWorkspaceCleanup(reader, identity, target); err != nil {
 		return err
 	}
 	retired, err := cleanupHooks(hooks).retiredParent(ctx, layout, cfg, manager, reader, key, target)

@@ -25,11 +25,20 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// Shared executor contracts keep local callers source-compatible.
+// ArtifactRecorder uses the shared stageexec.ArtifactRecorder contract.
+// ArtifactRecorder uses the shared stageexec.ArtifactRecorder contract.
 type ArtifactRecorder = stageexec.ArtifactRecorder
+
+// SecretRegistrar uses the shared stageexec.SecretRegistrar contract.
 type SecretRegistrar = stageexec.SecretRegistrar
+
+// NewDeterministicFunc uses the shared stageexec.NewDeterministicFunc contract.
 type NewDeterministicFunc = stageexec.NewDeterministicFunc
+
+// NewAgenticFunc uses the shared stageexec.NewAgenticFunc contract.
 type NewAgenticFunc = stageexec.NewAgenticFunc
+
+// NewAgenticWithMCPServersFunc uses the shared stageexec.NewAgenticWithMCPServersFunc contract.
 type NewAgenticWithMCPServersFunc = stageexec.NewAgenticWithMCPServersFunc
 
 type assetBundleGoober interface {

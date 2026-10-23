@@ -8789,6 +8789,14 @@ func TestRunnerFailTerminalJournalsCause(t *testing.T) {
 	}
 }
 
+// unchangingAfterFirstDeterministic commits once and then produces no further
+// changes — used for testing infrastructure failure scenarios where the
+// implementer cannot fix the underlying issue.
+type unchangingAfterFirstDeterministic struct {
+	t     *testing.T
+	calls int
+}
+
 func (c *unchangingAfterFirstDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	c.t.Helper()
 	c.calls++

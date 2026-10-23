@@ -919,6 +919,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/stageexec",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Shared executor contracts contain no platform-specific behavior; exercised by the Windows runtimewiring and worker tests."
+    },
+    {
       "package": "internal/startuphint",
       "coverage": "none",
       "category": "not-selected",
@@ -1133,6 +1139,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/workspaceauthority",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure journal custody validation is exercised by Linux unit and race suites; no Windows-specific seam."
     },
     {
       "package": "internal/workspacedelta",
