@@ -30,7 +30,7 @@ func TestFanOutContractRealHistoryReplay(t *testing.T) {
 		}
 	})
 	c := server.Client()
-	for _, mode := range []string{"skip", "all-skip", "empty-map", "binding", "legacy"} {
+	for _, mode := range []string{"skip", "all-skip", "empty-map", "binding", "map-binding", "legacy"} {
 		t.Run(mode, func(t *testing.T) {
 			input := fanOutContractInput{Run: branchBodyInput("replay-contract-"+mode, false, false).Run, Mode: mode}
 			writer, _ := newLiveWriter(t)

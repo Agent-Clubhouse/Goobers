@@ -31,7 +31,7 @@ type fanOutBranch struct {
 	// PreSettled is only for optional branches skipped by recorded selection.
 	PreSettled *journal.BranchOutcome
 	Optional   bool
-	Bind       func(stage string) (fanOutBindings, error)
+	Bind       func(fanOutBindingContext) (fanOutBindings, error)
 }
 
 // fanOutSettlement keeps results and their provenance in descriptor order.
@@ -111,6 +111,7 @@ func (r *runJournal) fanOut(ctx workflow.Context, in RunInput, m *wf.Machine, pl
 	if err != nil {
 		return p, result, err
 	}
+	p.started = result.Started
 	p.run(ctx)
 	result.Target = p.target()
 	finish := plan.Finished

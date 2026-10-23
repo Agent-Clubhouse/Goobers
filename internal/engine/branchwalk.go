@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -20,7 +21,8 @@ import (
 // continuation back into the frame; siblings never write into the seed.
 type branchWalkFrame struct {
 	results         map[string]apiv1.ResultEnvelope
-	bind            func(stage string) (fanOutBindings, error)
+	bind            func(fanOutBindingContext) (fanOutBindings, error)
+	started         livejournal.AppendReceipt
 	start           string
 	deadline        time.Time
 	upstream        map[string]apiv1.ResultEnvelope

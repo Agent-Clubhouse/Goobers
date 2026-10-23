@@ -79,11 +79,17 @@ func fanOutContractWorkflow(ctx workflow.Context, input fanOutContractInput) (fa
 		plan.Started = journal.Event{Type: journal.EventMapStarted, MapRoster: &journal.MapRoster{Items: []journal.MapItem{}}}
 		plan.Finished = journal.Event{Type: journal.EventMapFinished}
 	}
-	if input.Mode == "binding" || input.Mode == "integrity" {
+	if input.Mode == "map-binding" {
+		plan = contractMapPlan(plan)
+	}
+	if input.Mode == "binding" || input.Mode == "map-binding" || input.Mode == "integrity" {
 		for i := range plan.Branches {
 			identity := plan.Branches[i].Name
-			plan.Branches[i].Bind = func(string) (fanOutBindings, error) {
-				return fanOutBindings{Values: map[string]any{"item": map[string]any{"identity": identity, "number": json.Number("9007199254740993")}}, Grades: map[string]apiv1.Integrity{"item": apiv1.IntegrityUnapproved}}, nil
+			plan.Branches[i].Bind = func(binding fanOutBindingContext) (fanOutBindings, error) {
+				if binding.Started.Seq == 0 || binding.Started.Type != plan.Started.Type || binding.Started.Branch != 0 || binding.Branch != i+1 || binding.Stage != identity {
+					return fanOutBindings{}, fmt.Errorf("body dispatched without committed visit context: %+v", binding)
+				}
+				return fanOutBindings{Values: map[string]any{"item": map[string]any{"identity": identity, "number": json.Number("9007199254740993")}, "visit": fmt.Sprint(binding.Started.Seq)}, Grades: map[string]apiv1.Integrity{"item": apiv1.IntegrityUnapproved, "visit": apiv1.IntegrityTrusted}}, nil
 			}
 		}
 	}
@@ -113,7 +119,7 @@ func executeFanOutContract(t *testing.T, in fanOutContractInput, acts *Activitie
 }
 
 func TestFanOutDescriptorContract(t *testing.T) {
-	for _, mode := range []string{"skip", "all-skip", "empty-map", "binding", "integrity"} {
+	for _, mode := range []string{"skip", "all-skip", "empty-map", "binding", "map-binding", "integrity"} {
 		t.Run(mode, func(t *testing.T) {
 			in := fanOutContractInput{Run: branchBodyInput("contract-"+mode, false, false).Run, Mode: mode}
 			if mode == "integrity" {
@@ -125,7 +131,8 @@ func TestFanOutDescriptorContract(t *testing.T) {
 			var calls atomic.Int32
 			acts := &Activities{Journal: w, Workspaces: testWorkspaces(t), Det: &fakeRunner{run: func(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 				calls.Add(1)
-				if mode == "binding" {
+				if mode == "binding" || mode == "map-binding" {
+					assertDispatchedVisitIdentity(t, env, liveEvents(t, dir, in.Run.RunID))
 					item := env.Inputs["item"].(map[string]any)
 					if item["identity"] != stageOfTaskID(env.TaskID) {
 						return apiv1.ResultEnvelope{}, fmt.Errorf("wrong branch item: %v", item)
@@ -175,7 +182,7 @@ func TestFanOutDescriptorContract(t *testing.T) {
 						}
 					}
 				}
-				if mode == "binding" {
+				if mode == "binding" || mode == "map-binding" {
 					for _, result := range s.Results {
 						if result.Integrity != apiv1.IntegrityUnapproved {
 							t.Fatalf("binding grade lost: %+v", result)
@@ -189,7 +196,7 @@ func TestFanOutDescriptorContract(t *testing.T) {
 
 func TestBranchBindingsDoNotShareMutableItems(t *testing.T) {
 	values := map[string]any{"item": map[string]any{"number": json.Number("9007199254740993")}}
-	r := &runJournal{branchWalk: &branchWalkFrame{bind: func(string) (fanOutBindings, error) {
+	r := &runJournal{branchWalk: &branchWalkFrame{bind: func(fanOutBindingContext) (fanOutBindings, error) {
 		return fanOutBindings{Values: values, Grades: map[string]apiv1.Integrity{"item": apiv1.IntegrityMaintainer}}, nil
 	}}}
 	first, err := r.branchBindings("a")
@@ -317,4 +324,31 @@ func TestFanOutLostAcknowledgementRetainsLifecycleIdentity(t *testing.T) {
 	if starts != 1 {
 		t.Fatalf("duplicated start: %d", starts)
 	}
+}
+
+func assertDispatchedVisitIdentity(t *testing.T, env apiv1.InvocationEnvelope, events []journal.Event) {
+	t.Helper()
+	for _, event := range events {
+		if event.Type == journal.EventParallelStarted || event.Type == journal.EventMapStarted {
+			if env.Inputs["visit"] != fmt.Sprint(event.Seq) {
+				t.Errorf("dispatch visit = %v; committed start = %d", env.Inputs["visit"], event.Seq)
+			}
+			return
+		}
+	}
+	t.Error("body dispatched before committed lifecycle start")
+}
+
+func contractMapPlan(plan fanOutPlan) fanOutPlan {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	roster := &journal.MapRoster{Source: journal.FanOutSourceRef{Task: "seed", Slot: "items", Visit: 1, Attempt: 1, Digest: digest, Integrity: apiv1.IntegrityUnapproved},
+		FailurePolicy: plan.FailurePolicy, MaxConcurrent: plan.MaxConcurrentBranches, Items: []journal.MapItem{}}
+	for i := range plan.Branches {
+		branch := &plan.Branches[i]
+		branch.ItemIdentity, branch.ItemDigest = branch.Name, digest
+		roster.Items = append(roster.Items, journal.MapItem{Identity: branch.Name, Digest: digest, Item: json.RawMessage(`{}`)})
+	}
+	plan.Started = journal.Event{Type: journal.EventMapStarted, MapRoster: roster}
+	plan.Finished = journal.Event{Type: journal.EventMapFinished}
+	return plan
 }

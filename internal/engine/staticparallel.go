@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -35,6 +36,7 @@ type staticParallelWalk struct {
 	in           RunInput
 	machine      *wf.Machine
 	spec         fanOutPlan
+	started      livejournal.AppendReceipt
 	seed         *branchWalkFrame
 	outcomes     []*staticBranchOutcome
 	results      workflow.Channel
@@ -110,6 +112,7 @@ func (p *staticParallelWalk) launch() {
 	frame := *p.seed // walk clones every mutable seed collection before use.
 	frame.start = branch.Start
 	frame.bind = branch.Bind
+	frame.started = p.started
 	frame.results = nil
 	if p.spec.BranchTimeoutSeconds > 0 {
 		frame.deadline = workflow.Now(p.ctx).Add(time.Duration(p.spec.BranchTimeoutSeconds) * time.Second)

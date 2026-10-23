@@ -8,8 +8,17 @@ import (
 	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
 )
+
+// fanOutBindingContext identifies the admitted visit before any body dispatch.
+// Started is the acknowledged lifecycle event, never a projection ordinal.
+type fanOutBindingContext struct {
+	Stage   string
+	Branch  int
+	Started livejournal.AppendReceipt
+}
 
 // fanOutBindings is the inseparable value/provenance result of an adapter.
 // Adapters read frozen workflow state only; retries never refetch a roster.
@@ -22,7 +31,7 @@ func (r *runJournal) branchBindings(stage string) (fanOutBindings, error) {
 	if r.branchWalk == nil || r.branchWalk.bind == nil {
 		return fanOutBindings{}, nil
 	}
-	bound, err := r.branchWalk.bind(stage)
+	bound, err := r.branchWalk.bind(fanOutBindingContext{Stage: stage, Branch: r.branch, Started: r.branchWalk.started})
 	if err != nil {
 		return fanOutBindings{}, err
 	}
