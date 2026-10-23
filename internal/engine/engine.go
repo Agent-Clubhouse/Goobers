@@ -36,6 +36,10 @@ const (
 	StatusFailed = "failed"
 )
 
+const cancelSafeStageJournalChange = "cancel-safe-stage-journal-v1"
+
+type cancelSafeStageJournalKey struct{}
+
 const (
 	// maxSteps bounds the number of state transitions in a single run, a
 	// last-resort guard against a definition that loops (WF-015 within a
@@ -284,6 +288,11 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	ctx = workflow.WithValue(ctx, cancelSafeStageJournalKey{},
+		workflow.GetVersion(
+			ctx, cancelSafeStageJournalChange,
+			workflow.DefaultVersion, 1,
+		) != workflow.DefaultVersion)
 	enableHumanGateDecisionOwner(ctx, rec, in)
 	if err := rec.initializeFanOut(ctx, in); err != nil {
 		return RunResult{}, err
