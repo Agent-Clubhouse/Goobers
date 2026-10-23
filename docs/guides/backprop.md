@@ -529,6 +529,8 @@ actually received.
 ## Inspect one run in Portal
 
 Open a run and select **Backprop** to inspect its persisted `attribution.json`.
+This view is also available from the read-only standalone `goobers dashboard`;
+it does not require a running daemon.
 The table orders contributions by signed score, highest first, and pages 50 rows
 at a time. Responsibility share is unsigned; it does not indicate whether a
 contribution helped or hurt. Expand a row to inspect its path, uncertainty,

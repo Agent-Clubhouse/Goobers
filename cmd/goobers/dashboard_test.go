@@ -33,6 +33,55 @@ import (
 
 const dashboardTestIndex = `<!doctype html><html><head><meta name="goobers-dashboard-mode" content="daemon" /></head><body>portal</body></html>`
 
+func TestStandaloneDashboardForwardsRunAttribution(t *testing.T) {
+	root := initDemo(t)
+	isolateStandaloneReadModelCache(t)
+	layout := instance.NewLayout(root)
+	const runID = "0123456789abcdef0123456789abcdef"
+	createStandaloneTestRun(t, layout, runID, true)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := api.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, tc := range []struct {
+		runID string
+		query string
+		want  int
+	}{
+		{runID, "?gaggle=example", http.StatusOK},
+		{"11111111111111111111111111111111", "?gaggle=example", http.StatusNotFound},
+		{runID, "", http.StatusBadRequest},
+		{runID, "?gaggle=example&gaggle=foreign", http.StatusBadRequest},
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet,
+			apicontract.RunsPath+"/"+tc.runID+"/attribution"+tc.query, nil)
+		api.handler.ServeHTTP(response, request)
+		if response.Code != tc.want {
+			t.Errorf("attribution%s: status=%d want=%d body=%s",
+				tc.query, response.Code, tc.want, response.Body)
+		}
+		if tc.want == http.StatusOK {
+			var result readservice.RunAttributionResult
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.RunID != runID || result.Gaggle != "example" || result.Availability != "absent" {
+				t.Errorf("unexpected attribution result: %+v", result)
+			}
+		}
+	}
+}
+
 func TestStandaloneDashboardDiscoveryUsesDurableRootIdentity(t *testing.T) {
 	var previousInstanceID string
 	for range 2 {
