@@ -59,8 +59,11 @@ func freezeSmoke() error {
 	lines, err := chaos.FreezeSmoke(context.Background(), chaos.OSExecutor{}, time.Sleep)
 	text := strings.Join(lines, "\n") + "\n"
 	fmt.Print(text)
-	if werr := os.MkdirAll(evidence, 0o755); werr == nil {
-		_ = os.WriteFile(filepath.Join(evidence, "freeze-smoke.txt"), []byte(text), 0o644)
+	if werr := os.MkdirAll(evidence, 0o755); werr != nil {
+		return errors.Join(err, werr)
+	}
+	if werr := os.WriteFile(filepath.Join(evidence, "freeze-smoke.txt"), []byte(text), 0o644); werr != nil {
+		return errors.Join(err, werr)
 	}
 	return err
 }

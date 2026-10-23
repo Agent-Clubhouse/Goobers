@@ -113,12 +113,20 @@ func FreezeSmoke(ctx context.Context, exec Executor, sleep func(time.Duration)) 
 	if err := Sweep(ctx, exec, DefaultChaosNamespace); err != nil {
 		return evidence, fmt.Errorf("sweep at end: %w", err)
 	}
-	left, err := exec.Run(ctx, "", "kubectl", "get", "pods", "-n", DefaultChaosNamespace, "-l", helperLabel, "--ignore-not-found", "-o", "name")
-	if err != nil {
-		return evidence, err
-	}
-	if strings.TrimSpace(left) != "" {
-		return evidence, fmt.Errorf("helper pods remain after sweep: %s", strings.TrimSpace(left))
+	// Sweep deletes with --wait=false, so give terminating helpers time to go.
+	var left string
+	for attempt := 0; ; attempt++ {
+		out, err := exec.Run(ctx, "", "kubectl", "get", "pods", "-n", DefaultChaosNamespace, "-l", helperLabel, "--ignore-not-found", "-o", "name")
+		if err != nil {
+			return evidence, err
+		}
+		if left = strings.TrimSpace(out); left == "" {
+			break
+		}
+		if attempt >= 30 {
+			return evidence, fmt.Errorf("helper pods remain after sweep: %s", left)
+		}
+		sleep(2 * time.Second)
 	}
 	note("sweep at end: no helper pods remain")
 	return evidence, nil

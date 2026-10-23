@@ -11,7 +11,7 @@ import (
 type smokeExec struct {
 	fakeExec
 	beats   []string
-	helpers string // pods listed by the final helper query
+	helpers []string // successive answers to the final helper query; the last repeats
 }
 
 func (s *smokeExec) Run(ctx context.Context, stdin, name string, args ...string) (string, error) {
@@ -24,7 +24,14 @@ func (s *smokeExec) Run(ctx context.Context, stdin, name string, args ...string)
 		return b + "\n", nil
 	case strings.HasPrefix(line, "kubectl get pods -n goobers-chaos") && strings.HasSuffix(line, "-o name"):
 		s.calls = append(s.calls, call{stdin, line})
-		return s.helpers, nil
+		out := ""
+		if len(s.helpers) > 0 {
+			out = s.helpers[0]
+			if len(s.helpers) > 1 {
+				s.helpers = s.helpers[1:]
+			}
+		}
+		return out, nil
 	}
 	return s.fakeExec.Run(ctx, stdin, name, args...)
 }
@@ -91,9 +98,18 @@ func TestFreezeSmokeFailsWhenHeartbeatDoesNotResume(t *testing.T) {
 func TestFreezeSmokeFailsWhenHelperRemains(t *testing.T) {
 	t.Parallel()
 	ex := newSmokeExec("100", "103", "103", "108")
-	ex.helpers = "pod/chaos-freezer-x\n"
+	ex.helpers = []string{"pod/chaos-freezer-x\n"}
 	_, err := FreezeSmoke(context.Background(), &thawOnRevert{smokeExec: ex}, noSleep)
 	if err == nil || !strings.Contains(err.Error(), "helper pods remain") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFreezeSmokeWaitsForTerminatingHelper(t *testing.T) {
+	t.Parallel()
+	ex := newSmokeExec("100", "103", "103", "108")
+	ex.helpers = []string{"pod/chaos-freezer-x\n", "pod/chaos-freezer-x\n", ""}
+	if _, err := FreezeSmoke(context.Background(), &thawOnRevert{smokeExec: ex}, noSleep); err != nil {
+		t.Fatal(err)
 	}
 }
