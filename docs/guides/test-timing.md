@@ -122,7 +122,7 @@ packages, each with a piece count and relative per-test seconds:
   "schemaVersion": 1,
   "source": {"run": 1, "commit": "<sha>", "generatedAt": "...", "timingJobs": ["unit"], "platform": "linux"},
   "packages": {
-    "github.com/goobers/goobers/cmd/goobers": {"pieces": 3, "tests": {"TestExample": 0.12}}
+    "github.com/goobers/goobers/cmd/goobers": {"pieces": 4, "tests": {"TestExample": 0.12}}
   }
 }
 ```
@@ -173,7 +173,7 @@ gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" > "$TIMING_DIR/run.json"
 go run ./test/testtiming splits \
   $(find "$TIMING_DIR" -name 'unit-race.part*.json' -exec printf -- '-timing %s ' {} \;) \
   -run-metadata "$TIMING_DIR/run.json" \
-  -split github.com/goobers/goobers/cmd/goobers=3 \
+  -split github.com/goobers/goobers/cmd/goobers=4 \
   -split github.com/goobers/goobers/release=2 \
   -out .github/unit-shard-splits.json
 ```
@@ -184,7 +184,9 @@ parts, and no test measured twice, and records the run's branch. Refresh from
 artifacts. Revisit the piece counts and the matrix's shard count together:
 splitting helps until the largest single tests and per-job setup (checkout,
 module download, and compiling the piece's test binary before it can start)
-become the floor.
+become the floor. The checked-in weighted shard plan must stay within a
+1.10× max/min ratio; a large unsplit package may require an additional split
+to meet that static balance check after regeneration.
 
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and

@@ -12,7 +12,7 @@
   },
   "packages": {
     "github.com/goobers/goobers/cmd/goobers": {
-      "pieces": 3,
+      "pieces": 4,
       "tests": {
         "TestADOBacklogProbeUsesBoardsEndpointAndScrubsPAT": 0,
         "TestADOBacklogProjectUsesIndependentBoardsProject": 0,
