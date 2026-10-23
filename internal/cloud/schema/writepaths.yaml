@@ -903,7 +903,9 @@ tables:
   provisioned: true
   fence: owner_epoch
   rationale: Child custody mutations, exact-predecessor adoption and bounded retention run inside the controller lease fence.
-    Controller reads also cover every blob reference probe; The API temporarily reads only instance_id/acceptance_id to exclude retained children from ordinary acceptance pruning; #7850 moves that prune to the controller. The worker has no custody privileges.
+    Controller reads also cover every blob reference probe. The API reads only instance_id/acceptance_id to exclude children
+    from generic start status and, until #7850 moves pruning to the controller, ordinary acceptance retention.
+    The status exclusion permanently requires this minimal grant. The worker has no custody privileges.
   readers:
   - role: goobers_controller
     columns:
