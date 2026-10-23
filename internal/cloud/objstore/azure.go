@@ -14,12 +14,13 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 )
 
 var (
 	// ErrConflict means an existing content address contains different bytes.
-	ErrConflict = errors.New("cloud object store create-only conflict")
+	ErrConflict = fmt.Errorf("cloud object store conflict: %w", apicontract.ErrWriteConflict)
 	// ErrDigestMismatch means downloaded bytes do not match their address.
 	ErrDigestMismatch = errors.New("cloud object store digest mismatch")
 )
