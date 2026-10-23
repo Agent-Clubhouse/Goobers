@@ -80,7 +80,7 @@ func TestDefinitionInvalidationFollowsExplicitReadModelCommit(t *testing.T) {
 	if err := stream.PublishDefinitionsChanged(); err != nil {
 		t.Fatalf("publish definitions change: %v", err)
 	}
-	stream.feed.Notify()
+	store.Feed().Notify()
 
 	select {
 	case event := <-events:

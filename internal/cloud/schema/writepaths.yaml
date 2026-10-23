@@ -427,9 +427,11 @@ tables:
   - role: goobers_controller
     columns:
     - singleton
+    - epoch
     - ready
     - min_change_seq
     - next_change_seq
+    - built_at
     - owner_epoch
   writers:
   - role: goobers_controller
@@ -460,9 +462,21 @@ tables:
     - any_retry_waste
   - role: goobers_controller
     columns:
+    - any_cost_measured
+    - any_premium_measured
+    - any_retry_waste
+    - any_token_measured
+    - disposition
+    - gaggle
+    - last_activity_at
+    - phase
     - run_id
     - source_seq
+    - stages
+    - started_at
+    - terminal
     - projection
+    - workflow
     - owner_epoch
   writers:
   - role: goobers_controller
@@ -519,7 +533,16 @@ tables:
     - retry_waste
   - role: goobers_controller
     columns:
+    - cost_measured
+    - had_failure
+    - had_other
+    - had_success
+    - premium_measured
+    - retry_waste
     - run_id
+    - run_terminal
+    - stage
+    - token_measured
     - owner_epoch
   writers:
   - role: goobers_controller
@@ -553,6 +576,11 @@ tables:
   - role: goobers_controller
     columns:
     - seq
+    - changed_at
+    - kind
+    - run_id
+    - gaggle
+    - workflow
     - owner_epoch
   writers:
   - role: goobers_controller
