@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -50,7 +51,7 @@ func TestIntegrationQualificationDaemonProcess(t *testing.T) {
 	if !filepath.IsAbs(source) || !strings.Contains(source, "TestIntegrationContainedParentSurvivesDaemonProcessLoss") {
 		t.Fatal("explicit local source fixture required")
 	}
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
 	t.Setenv("GOOBERS_DISABLE_FSYNC", "")
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
 	if err != nil {

@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	"google.golang.org/protobuf/encoding/prototext"
-
-	"sigs.k8s.io/yaml"
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/telemetry"
+	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	"google.golang.org/protobuf/encoding/prototext"
+	"sigs.k8s.io/yaml"
 )
 
 func TestConfigureOTLPJournalLogsGate(t *testing.T) {
@@ -35,7 +35,7 @@ func TestConfigureOTLPJournalLogsGate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := telemetry.Config{}
-			if err := configureOTLP(context.Background(), &cfg, tc.otlp, journal.NewRegistryScrubber(), nil); err != nil {
+			if err := runtimewiring.ConfigureOTLP(context.Background(), &cfg, tc.otlp, journal.NewRegistryScrubber(), nil); err != nil {
 				t.Fatal(err)
 			}
 			if cfg.JournalLogs != tc.want {
@@ -231,7 +231,7 @@ func TestClaimLockDiagnosticsExportLiveOTLPLogs(t *testing.T) {
 			var existing *telemetry.Client
 			if mode == "existing owner" {
 				export := telemetry.Config{JournalLogsOnly: true, JournalRoot: root}
-				if err := configureOTLP(context.Background(), &export, *cfg.Telemetry.OTLP, journal.NewRegistryScrubber(), nil); err != nil {
+				if err := runtimewiring.ConfigureOTLP(context.Background(), &export, *cfg.Telemetry.OTLP, journal.NewRegistryScrubber(), nil); err != nil {
 					t.Fatal(err)
 				}
 				existing, err = telemetry.New(context.Background(), export)
@@ -350,8 +350,8 @@ func TestCommandJournalTelemetrySharesRootLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stderr bytes.Buffer
-	first := startCommandJournalTelemetry(layout, &stderr)
-	second := startCommandJournalTelemetry(layout, &stderr)
+	first := runtimewiring.StartCommandJournalTelemetry(layout, &stderr)
+	second := runtimewiring.StartCommandJournalTelemetry(layout, &stderr)
 	defer first()
 	defer second()
 	first()

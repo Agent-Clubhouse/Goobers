@@ -11,6 +11,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -188,7 +190,7 @@ func (c terminalFinalization) finalize(log *journal.InstanceLog) error {
 	if c.runner != nil {
 		err = c.runner.FinalizeTerminal(c.identity.RunID, c.phase)
 	} else {
-		manager, managerErr := worktree.NewManager(c.layout.WorkcopiesDir(), mutationCleanupGuard(c.runsDir))
+		manager, managerErr := worktree.NewManager(c.layout.WorkcopiesDir(), runtimewiring.MutationCleanupGuard(c.runsDir))
 		if managerErr != nil {
 			err = managerErr
 		} else {

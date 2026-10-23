@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -503,7 +504,7 @@ func TestVerifyTutorHoldoutUsesPinnedTransitionNotLatest(t *testing.T) {
 		instance.NewLayout(root).ConfigDir(),
 		"example",
 		[]string{workflowName},
-		harnessEnvironmentPolicy(instance.RunnerConfig{}),
+		runtimewiring.HarnessEnvironmentPolicy(instance.RunnerConfig{}),
 		nil,
 		nil,
 	)
@@ -614,7 +615,7 @@ func TestVerifyTutorHoldoutUsesFinalAmendedTransitionAfterInterveningPromotion(t
 	if err := os.WriteFile(workflowPath, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	finalVersions, err := tutorConfigVersions(liveConfig, "example", []string{workflowName}, harnessEnvironmentPolicy(instance.RunnerConfig{}), nil, nil)
+	finalVersions, err := tutorConfigVersions(liveConfig, "example", []string{workflowName}, runtimewiring.HarnessEnvironmentPolicy(instance.RunnerConfig{}), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1134,7 +1135,7 @@ func testLiveTutorAxes(t *testing.T, root, workflow string) tutorVersionAxes {
 		instance.NewLayout(root).ConfigDir(),
 		"example",
 		[]string{workflow},
-		harnessEnvironmentPolicy(instance.RunnerConfig{}),
+		runtimewiring.HarnessEnvironmentPolicy(instance.RunnerConfig{}),
 		nil,
 		nil,
 	)

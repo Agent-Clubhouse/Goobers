@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/localscheduler"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,9 +45,9 @@ func (c *fakeHarnessClock) Advance(d time.Duration) time.Time {
 func withHarnessProbeThrottle(t *testing.T) *fakeHarnessClock {
 	t.Helper()
 	clock := &fakeHarnessClock{now: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)}
-	previous := harnessProbeThrottle
-	harnessProbeThrottle = harness.NewProbeBackoff(clock.Now)
-	t.Cleanup(func() { harnessProbeThrottle = previous })
+	previous := runtimewiring.HarnessProbeThrottle
+	runtimewiring.HarnessProbeThrottle = harness.NewProbeBackoff(clock.Now)
+	t.Cleanup(func() { runtimewiring.HarnessProbeThrottle = previous })
 	return clock
 }
 
@@ -128,26 +131,26 @@ func TestPreflightBacksOffATransientHarnessFailure(t *testing.T) {
 	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
 	goobers, workflows := transientPreflightFixture()
 
-	_, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
-	var failures *harnessPreflightFailures
+	_, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	var failures *runtimewiring.HarnessPreflightFailures
 	if !errors.As(err, &failures) {
 		t.Fatalf("error = %T %v, want scoped *harnessPreflightFailures", err, err)
 	}
-	refusal := failures.transientRefusal(copilotOnly)
-	if refusal == nil || !refusal.retryAt.Equal(clock.Now().Add(time.Minute)) {
+	refusal := failures.TransientRefusal(copilotOnly)
+	if refusal == nil || !refusal.RetryAt.Equal(clock.Now().Add(time.Minute)) {
 		t.Fatalf("transient refusal = %+v, want a retry one backoff (1m) out", refusal)
 	}
 	if reason := failures.Refusals[copilotOnly]; !strings.Contains(reason, "API rate limit exceeded") || !strings.Contains(reason, "transient provider failure; next probe after 2026-10-14T12:01:00Z") {
 		t.Fatalf("refusal = %q, want the provider cause and the next probe time", reason)
 	}
-	if failures.recheck(copilotOnly) == nil || failures.recheck(bothHarnesses) == nil {
+	if failures.Recheck(copilotOnly) == nil || failures.Recheck(bothHarnesses) == nil {
 		t.Fatal("a wholly transient refusal carries no recheck")
 	}
 
 	// Within the backoff, the preflight refuses again WITHOUT probing.
 	for range 3 {
 		clock.Advance(15 * time.Second)
-		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil); err == nil {
+		if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil); err == nil {
 			t.Fatal("a backed-off harness was admitted without a probe")
 		}
 	}
@@ -161,26 +164,26 @@ func TestPreflightBacksOffATransientHarnessFailure(t *testing.T) {
 	// Once it elapses the probe runs again; a second transient failure
 	// doubles the wait.
 	clock.Advance(15 * time.Second)
-	_, err = preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	_, err = runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
 	if !errors.As(err, &failures) || adapters.count(apiv1.HarnessCopilot) != 2 {
 		t.Fatalf("after the backoff: err=%v probes=%d, want a second probe", err, adapters.count(apiv1.HarnessCopilot))
 	}
-	if refusal := failures.transientRefusal(copilotOnly); refusal == nil || !refusal.retryAt.Equal(clock.Now().Add(2*time.Minute)) {
+	if refusal := failures.TransientRefusal(copilotOnly); refusal == nil || !refusal.RetryAt.Equal(clock.Now().Add(2*time.Minute)) {
 		t.Fatalf("second transient refusal = %+v, want a doubled 2m backoff", refusal)
 	}
 
 	// Recovery admits the harness and clears the backoff.
 	adapters.set(nil, nil)
 	clock.Advance(2 * time.Minute)
-	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil); err != nil {
+	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil); err != nil {
 		t.Fatalf("recovered harness still refused: %v", err)
 	}
 	adapters.set(rateLimitedPreflight(0), nil)
-	_, err = preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	_, err = runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
 	if !errors.As(err, &failures) {
 		t.Fatalf("error = %v, want a refusal", err)
 	}
-	if refusal := failures.transientRefusal(copilotOnly); refusal == nil || !refusal.retryAt.Equal(clock.Now().Add(time.Minute)) {
+	if refusal := failures.TransientRefusal(copilotOnly); refusal == nil || !refusal.RetryAt.Equal(clock.Now().Add(time.Minute)) {
 		t.Fatalf("refusal after recovery = %+v, want the backoff restarted at 1m", refusal)
 	}
 }
@@ -191,12 +194,12 @@ func TestPreflightHonoursProviderRetryAfter(t *testing.T) {
 	clock := withHarnessProbeThrottle(t)
 	installCountingHarnessAdapters(t, rateLimitedPreflight(7*time.Minute))
 	goobers, workflows := transientPreflightFixture()
-	_, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
-	var failures *harnessPreflightFailures
+	_, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	var failures *runtimewiring.HarnessPreflightFailures
 	if !errors.As(err, &failures) {
 		t.Fatalf("error = %v, want a refusal", err)
 	}
-	if refusal := failures.transientRefusal(copilotOnly); refusal == nil || !refusal.retryAt.Equal(clock.Now().Add(7*time.Minute)) {
+	if refusal := failures.TransientRefusal(copilotOnly); refusal == nil || !refusal.RetryAt.Equal(clock.Now().Add(7*time.Minute)) {
 		t.Fatalf("refusal = %+v, want the provider's 7m Retry-After", refusal)
 	}
 }
@@ -211,22 +214,22 @@ func TestPreflightKeepsPermanentHarnessFailuresPermanent(t *testing.T) {
 	adapters.set(rateLimitedPreflight(0), errors.New("claude auth status exited 1: not logged in"))
 	goobers, workflows := transientPreflightFixture()
 
-	_, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
-	var failures *harnessPreflightFailures
+	_, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	var failures *runtimewiring.HarnessPreflightFailures
 	if !errors.As(err, &failures) {
 		t.Fatalf("error = %v, want a refusal", err)
 	}
-	if failures.recheck(copilotOnly) == nil {
+	if failures.Recheck(copilotOnly) == nil {
 		t.Fatal("the copilot-only workflow's refusal is wholly transient and must carry a recheck")
 	}
-	if failures.transientRefusal(bothHarnesses) != nil || failures.recheck(bothHarnesses) != nil {
+	if failures.TransientRefusal(bothHarnesses) != nil || failures.Recheck(bothHarnesses) != nil {
 		t.Fatal("a workflow refused for a signed-out harness was treated as transient")
 	}
 	if reason := failures.Refusals[bothHarnesses]; !strings.Contains(reason, "not logged in") || !strings.Contains(reason, "API rate limit exceeded") {
 		t.Fatalf("refusal = %q, want both causes named", reason)
 	}
 	// The permanent failure is re-probed on the next preflight, as before.
-	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil); err == nil {
+	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil); err == nil {
 		t.Fatal("expected the second preflight to refuse")
 	}
 	if got := adapters.count(apiv1.HarnessClaudeCode); got != 2 {
@@ -241,18 +244,18 @@ func TestPreflightKeepsPermanentHarnessFailuresPermanent(t *testing.T) {
 func TestDaemonTransientHarnessRefusalRechecks(t *testing.T) {
 	clock := withHarnessProbeThrottle(t)
 	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
-	previous := preflightHarnesses
-	preflightHarnesses = preflightAgenticHarnesses
-	t.Cleanup(func() { preflightHarnesses = previous })
+	previous := runtimewiring.PreflightHarnesses
+	runtimewiring.PreflightHarnesses = runtimewiring.PreflightAgenticHarnesses
+	t.Cleanup(func() { runtimewiring.PreflightHarnesses = previous })
 	goobers, workflows := transientPreflightFixture()
 
 	_, failures, err := preflightDaemonHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recheck, ok := failures.recheck(copilotOnly).(*harnessWorkflowRecheck)
-	if !ok || failures.reason(copilotOnly) == "" {
-		t.Fatalf("daemon refusal = %q recheck=%T, want a transient refusal with a recheck", failures.reason(copilotOnly), failures.recheck(copilotOnly))
+	recheck, ok := failures.Recheck(copilotOnly).(*runtimewiring.HarnessWorkflowRecheck)
+	if !ok || failures.Reason(copilotOnly) == "" {
+		t.Fatalf("daemon refusal = %q recheck=%T, want a transient refusal with a recheck", failures.Reason(copilotOnly), failures.Recheck(copilotOnly))
 	}
 	synchronousRecheck(recheck)
 
@@ -292,16 +295,16 @@ func TestDaemonTransientHarnessRefusalRechecks(t *testing.T) {
 func TestDaemonHarnessRecheckStopsOnPermanentFailure(t *testing.T) {
 	clock := withHarnessProbeThrottle(t)
 	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
-	previous := preflightHarnesses
-	preflightHarnesses = preflightAgenticHarnesses
-	t.Cleanup(func() { preflightHarnesses = previous })
+	previous := runtimewiring.PreflightHarnesses
+	runtimewiring.PreflightHarnesses = runtimewiring.PreflightAgenticHarnesses
+	t.Cleanup(func() { runtimewiring.PreflightHarnesses = previous })
 	goobers, workflows := transientPreflightFixture()
 
 	_, failures, err := preflightDaemonHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recheck := failures.recheck(copilotOnly).(*harnessWorkflowRecheck)
+	recheck := failures.Recheck(copilotOnly).(*runtimewiring.HarnessWorkflowRecheck)
 	synchronousRecheck(recheck)
 	adapters.set(&harness.AuthRequiredError{Err: errors.New("not signed in")}, nil)
 	recheck.HarnessRefusal(context.Background(), clock.Advance(time.Minute))
@@ -318,9 +321,9 @@ func TestDaemonHarnessRecheckStopsOnPermanentFailure(t *testing.T) {
 }
 
 // synchronousRecheck runs a recheck's re-probes on the caller's goroutine.
-func synchronousRecheck(recheck *harnessWorkflowRecheck) {
-	for _, use := range recheck.uses {
-		use.group.start = func(probe func()) { probe() }
+func synchronousRecheck(recheck *runtimewiring.HarnessWorkflowRecheck) {
+	for _, use := range recheck.Uses {
+		use.Group.Start = func(probe func()) { probe() }
 	}
 }
 
@@ -333,9 +336,9 @@ type mintingCredential struct {
 	failNext error
 }
 
-func (m *mintingCredential) source() *modelCredentialSource {
-	return &modelCredentialSource{
-		resolve: func(apiv1.Harness) (func(context.Context) (string, error), error) {
+func (m *mintingCredential) source() *runtimewiring.ModelCredentialSource {
+	return &runtimewiring.ModelCredentialSource{
+		Resolve: func(apiv1.Harness) (func(context.Context) (string, error), error) {
 			return func(context.Context) (string, error) {
 				m.mu.Lock()
 				defer m.mu.Unlock()
@@ -346,7 +349,7 @@ func (m *mintingCredential) source() *modelCredentialSource {
 				return fmt.Sprintf("ghs_installation_token_%d", m.mints), nil
 			}, nil
 		},
-		identity: func(apiv1.Harness) string {
+		Identity: func(apiv1.Harness) string {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			return m.grant
@@ -371,7 +374,7 @@ func TestHarnessBackoffHoldsForAMintingCredential(t *testing.T) {
 	goobers, workflows := transientPreflightFixture()
 	app := &mintingCredential{grant: "app-1"}
 	for range 4 {
-		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
+		if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
 			t.Fatal("expected a refusal")
 		}
 	}
@@ -393,19 +396,19 @@ func TestHarnessBackoffBoundsTransientCredentialFailures(t *testing.T) {
 	adapters := installCountingHarnessAdapters(t, nil)
 	goobers, workflows := transientPreflightFixture()
 	app := &mintingCredential{grant: "app-1", failNext: rateLimitedPreflight(0)}
-	only := &modelCredentialSource{
-		resolve: func(h apiv1.Harness) (func(context.Context) (string, error), error) {
+	only := &runtimewiring.ModelCredentialSource{
+		Resolve: func(h apiv1.Harness) (func(context.Context) (string, error), error) {
 			if h != apiv1.HarnessCopilot {
 				return nil, nil
 			}
-			return app.source().resolve(h)
+			return app.source().Resolve(h)
 		},
-		identity: app.source().identity,
+		Identity: app.source().Identity,
 	}
 	for range 3 {
-		_, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, only)
-		var failures *harnessPreflightFailures
-		if !errors.As(err, &failures) || failures.transientRefusal(copilotOnly) == nil {
+		_, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, only)
+		var failures *runtimewiring.HarnessPreflightFailures
+		if !errors.As(err, &failures) || failures.TransientRefusal(copilotOnly) == nil {
 			t.Fatalf("error = %v, want a transient refusal", err)
 		}
 	}
@@ -425,14 +428,14 @@ func TestHarnessBackoffIsKeyedByGrant(t *testing.T) {
 	goobers, workflows := transientPreflightFixture()
 	app := &mintingCredential{grant: "app-1"}
 	for range 2 {
-		if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
+		if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
 			t.Fatal("expected a refusal")
 		}
 	}
 	app.mu.Lock()
 	app.grant = "app-2"
 	app.mu.Unlock()
-	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
+	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, app.source()); err == nil {
 		t.Fatal("expected a refusal")
 	}
 	if got := adapters.count(apiv1.HarnessCopilot); got != 2 {
@@ -446,15 +449,15 @@ func TestHarnessBackoffIsKeyedByGrant(t *testing.T) {
 func TestDaemonHarnessRecheckStopsWithTheScheduler(t *testing.T) {
 	clock := withHarnessProbeThrottle(t)
 	adapters := installCountingHarnessAdapters(t, rateLimitedPreflight(0))
-	previous := preflightHarnesses
-	preflightHarnesses = preflightAgenticHarnesses
-	t.Cleanup(func() { preflightHarnesses = previous })
+	previous := runtimewiring.PreflightHarnesses
+	runtimewiring.PreflightHarnesses = runtimewiring.PreflightAgenticHarnesses
+	t.Cleanup(func() { runtimewiring.PreflightHarnesses = previous })
 	goobers, workflows := transientPreflightFixture()
 	_, failures, err := preflightDaemonHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recheck := failures.recheck(copilotOnly).(*harnessWorkflowRecheck)
+	recheck := failures.Recheck(copilotOnly).(*runtimewiring.HarnessWorkflowRecheck)
 	synchronousRecheck(recheck)
 	stopped, stop := context.WithCancel(context.Background())
 	stop()

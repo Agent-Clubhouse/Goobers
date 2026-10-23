@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -54,9 +55,9 @@ func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, own
 	server.addOpenPR(number, branch, "main", "head", "base", false, nil, nil)
 
 	repo := newDaemonFixtureRepo(t)
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 
 	layout := layoutFor(root)
 	if pinned {

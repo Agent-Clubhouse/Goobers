@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -60,6 +62,6 @@ func wireWorkerJournalAuthority(seams *workerSeams, emitter *livejournal.HTTPEmi
 	}
 	seams.recoveryEmitter = emitter
 	seams.checkpointEmitter = emitter
-	seams.executionFence = remoteSharedExecutionFence(emitter.BaseURL, func(runID string) (string, error) { return workerExecutionBearer(emitter, runID) })
+	seams.executionFence = runtimewiring.RemoteSharedExecutionFence(emitter.BaseURL, func(runID string) (string, error) { return workerExecutionBearer(emitter, runID) })
 	return nil
 }

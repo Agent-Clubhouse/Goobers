@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -78,16 +80,16 @@ func newReclaimFixtureAt(t *testing.T, capacity int, aliased bool) *reclaimFixtu
 	}
 	f.manager = manager
 	f.cloneURL = func(apiv1.RepoRef) (string, error) { return f.source, nil }
-	previous := repoCloneURL
-	repoCloneURL = f.cloneURL
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = f.cloneURL
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 
 	f.cfg = &instance.Config{
 		Repos:     []instance.RepoRef{{Provider: "github", Owner: "team", Name: "repo"}},
 		Retention: instance.RetentionConfig{Recovery: &instance.RecoverySnapshotConfig{MaxSnapshots: capacity}},
 	}
 	f.key = (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}).CanonicalKey()
-	root, err := prepareRecoveryInventory(f.layout.Root)
+	root, err := runtimewiring.PrepareRecoveryInventory(f.layout.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +199,7 @@ func (f *reclaimFixture) abandon(record recovery.Record) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	log := recoveryCleanupJournal{directory: f.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
+	log := runtimewiring.RecoveryCleanupJournal{directory: f.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
 	if err := log.Append(event); err != nil {
 		f.t.Fatal(err)
 	}

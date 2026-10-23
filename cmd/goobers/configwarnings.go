@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/harness"
@@ -71,7 +73,7 @@ func printValidationWarnings(w io.Writer, warnings []validate.CodedWarning) {
 	}
 }
 
-func appendGooberHarnessWarnings(report *validate.Report, warnings []gooberHarnessWarning) ([]validate.CodedWarning, error) {
+func appendGooberHarnessWarnings(report *validate.Report, warnings []runtimewiring.GooberHarnessWarning) ([]validate.CodedWarning, error) {
 	if len(warnings) == 0 {
 		return nil, nil
 	}
@@ -126,7 +128,7 @@ func appendSkillPackageCollisionWarnings(configDir string, report *validate.Repo
 	seen := map[collision]struct{}{}
 	for _, goober := range goobers {
 		for _, skill := range goober.Skills {
-			scoped, shared, ok := skillPackageDirs(configDir, goober.Gaggle, skill)
+			scoped, shared, ok := runtimewiring.SkillPackageDirs(configDir, goober.Gaggle, skill)
 			if !ok || scoped == shared {
 				continue
 			}

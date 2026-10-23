@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -178,7 +179,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 		t.Fatalf("load config: %v (%s)", err, validationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*proposal.Workflow.DeepCopy()}
-	instructions, skills, err := loadSnapshotGooberInputs(f.retainedPath, set)
+	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(f.retainedPath, set)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	if options.workspace != nil {
 		workspace = options.workspace(service, ref.Child, manager)
 	}
-	driver, err := runner.New(runner.Config{RepoCloneURL: repoCloneURL, Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
+	driver, err := runner.New(runner.Config{RepoCloneURL: runtimewiring.RepoCloneURL, Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sigs.k8s.io/yaml"
-
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
+	"sigs.k8s.io/yaml"
 )
 
 func TestConfigMirrorPublishesOnlyAppliedGeneration(t *testing.T) {
@@ -21,7 +21,7 @@ func TestConfigMirrorPublishesOnlyAppliedGeneration(t *testing.T) {
 	}
 	config.ConfigMirrorPath = t.TempDir()
 	config.WorkflowSource = &instance.WorkflowSource{Kind: instance.WorkflowSourceKindGit}
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestConfigureWorkerConfigPlaneDefersPublishingUntilBackgroundReload(t *test
 	}
 	config.API.PodTokenKeyFile = filepath.Join(t.TempDir(), "key")
 	config.ConfigMirrorPath = t.TempDir()
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestConfigMirrorRetriesUnchangedAppliedDigestAfterShareFailure(t *testing.T
 	if err := os.WriteFile(config.ConfigMirrorPath, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}

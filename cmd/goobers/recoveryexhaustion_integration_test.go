@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -95,9 +97,9 @@ func testPrePRRecovery(t *testing.T, mode string, pinned bool) {
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	cloneURL := func(apiv1.RepoRef) (string, error) { return source, nil }
-	previous := repoCloneURL
-	repoCloneURL = cloneURL
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = cloneURL
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 	manager, err := worktree.NewManager(layout.WorkcopiesDir())
 	if err != nil {
 		t.Fatal(err)

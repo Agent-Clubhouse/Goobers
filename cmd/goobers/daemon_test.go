@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -131,9 +133,9 @@ func initDeterministicDemo(t *testing.T) string {
 	// daemon-starting test so none collides with a co-located `goobers up`.
 
 	fixtureRepo := newDaemonFixtureRepo(t)
-	prev := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
-	t.Cleanup(func() { repoCloneURL = prev })
+	prev := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = prev })
 
 	return root
 }

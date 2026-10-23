@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const recoveryAbandonHelp = "Usage: goobers recovery-abandon --run <run-id> --ref <recovery-ref> --confirm-digest <patch-digest> [instance]\n\n" +
@@ -45,7 +46,7 @@ func runRecoveryAbandon(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(layout, stderr)
 	defer stopTelemetry()
 	if err := abandonRecoveryRecord(ctx, layout, *runID, *ref, *digest); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -56,7 +57,7 @@ func runRecoveryAbandon(args []string, stdout, stderr io.Writer) int {
 }
 
 func abandonRecoveryRecord(ctx context.Context, layout instance.Layout, runID, ref, digest string) error {
-	entries, _, err := readConfiguredRecoveryInventory(ctx, layout)
+	entries, _, err := runtimewiring.ReadConfiguredRecoveryInventory(ctx, layout)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -54,7 +56,7 @@ func stageADOBacklogScope(root string, stderr io.Writer) []string {
 	if ado && len(labels) == 0 {
 		pf(stderr, "warning: gaggle %q has an Azure DevOps backlog but declares no spec.backlog.labels; "+
 			"it selects matching work items from the whole project %q, including items meant for other gaggles\n",
-			gaggle, gaggleBacklogRef(set, gaggle).Project)
+			gaggle, runtimewiring.GaggleBacklogRef(set, gaggle).Project)
 	}
 	return labels
 }
@@ -63,7 +65,7 @@ func stageADOBacklogScope(root string, stderr io.Writer) []string {
 // whether its backlog is on Azure DevOps. A gaggle that is absent or whose
 // backlog is not ADO reports false and no labels.
 func gaggleADOBacklogLabels(set *instance.ConfigSet, gaggle string) ([]string, bool) {
-	backlog := gaggleBacklogRef(set, gaggle)
+	backlog := runtimewiring.GaggleBacklogRef(set, gaggle)
 	if backlog.Provider != apiv1.ProviderADO {
 		return nil, false
 	}

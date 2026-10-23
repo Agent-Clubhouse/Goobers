@@ -15,13 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
+	"github.com/goobers/goobers/api/schemas"
 	stageexecutor "github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/worktree"
-
-	"github.com/goobers/goobers/api/schemas"
 )
 
 // demoNetworkNoneProbe is stageexecutor.ProbeNoNetwork, overridable in tests
@@ -394,7 +395,7 @@ func printDefaultedTargetNote(stderr io.Writer, err error, narg int) {
 }
 
 func ensureInitCompleted(root string) error {
-	stopTelemetry := startCommandJournalTelemetry(instance.NewLayout(root), os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(instance.NewLayout(root), os.Stderr)
 	defer stopTelemetry()
 	instanceLog, _, err := journal.OpenInstanceLog(instance.NewLayout(root).SchedulerDir())
 	if err != nil {

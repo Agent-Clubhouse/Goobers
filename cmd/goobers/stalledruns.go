@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -331,7 +332,7 @@ func newStalledTerminalizer(
 		}
 		terminalPreparer = prepared
 	}
-	manager, err := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
+	manager, err := worktree.NewManager(runLayout.WorkcopiesDir(), runtimewiring.MutationCleanupGuard(runsDir))
 	if err != nil {
 		return nil, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, err)
 	}

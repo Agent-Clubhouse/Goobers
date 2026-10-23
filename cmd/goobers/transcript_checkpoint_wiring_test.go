@@ -4,6 +4,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -17,7 +19,7 @@ func TestPodTranscriptCheckpointRecorderWiring(t *testing.T) {
 	t.Setenv(dispatcher.EnvPodToken, "run-scoped-token")
 	t.Setenv(dispatcher.EnvRunID, "run-pod")
 	t.Setenv(dispatcher.EnvGaggle, "gaggle-pod")
-	wiring := podExecutorWiring{Kit: &agentickit.Kit{Envelope: apiv1.InvocationEnvelope{RunID: "run-pod"}},
+	wiring := runtimewiring.PodExecutorWiring{Kit: &agentickit.Kit{Envelope: apiv1.InvocationEnvelope{RunID: "run-pod"}},
 		RunsDir: t.TempDir(), Stderr: io.Discard, Scrubber: journal.NewPatternScrubber()}
 	recorder := podAgenticExecutorInput(wiring).ArtifactRecorder
 	wired, ok := recorder.(checkpointPodArtifacts)

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -472,13 +474,13 @@ func TestBuildTerminalClaimMarkerReleaseForwardsConfiguredLogin(t *testing.T) {
 		},
 	}}}
 
-	prevAppSource := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	prevAppSource := runtimewiring.NewGitHubAppTokenSource
+	runtimewiring.NewGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		return func(context.Context) (string, time.Time, error) {
 			return "app-token", time.Now().Add(time.Hour), nil
 		}, nil
 	}
-	t.Cleanup(func() { newGitHubAppTokenSource = prevAppSource })
+	t.Cleanup(func() { runtimewiring.NewGitHubAppTokenSource = prevAppSource })
 
 	var sawUserCall bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

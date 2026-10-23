@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -122,11 +124,11 @@ func TestDoctorAVExclusionsEnumeratesGaggleWorkcopiesRoots(t *testing.T) {
 	writeAVExclusionGaggle(t, root, "builders", fastSSD)
 	relocated := filepath.Join(fastSSD, "builders")
 
-	deps := avExclusionDeps{
-		hostOS:  "windows",
-		tempDir: filepath.Join(root, "tmp"),
+	deps := runtimewiring.AvExclusionDeps{
+		HostOS:  "windows",
+		TempDir: filepath.Join(root, "tmp"),
 		// An operator who excluded everything the previous list named.
-		query: func(context.Context) ([]string, error) {
+		Query: func(context.Context) ([]string, error) {
 			return []string{root, filepath.Join(root, "tmp")}, nil
 		},
 	}
@@ -191,7 +193,7 @@ func TestDaemonAVExclusionDirectoriesResolveBothWorkcopiesOverrides(t *testing.T
 		{ObjectMeta: metav1.ObjectMeta{Name: "inherits"}},
 	}}
 
-	dirs := avexclusion.Dedupe(daemonAVExclusionDirectories(layout, cfg, set, avExclusionDeps{tempDir: filepath.Join(root, "tmp")}))
+	dirs := avexclusion.Dedupe(daemonAVExclusionDirectories(layout, cfg, set, runtimewiring.AvExclusionDeps{TempDir: filepath.Join(root, "tmp")}))
 	paths := map[string]string{}
 	for _, d := range dirs {
 		paths[d.Path] = d.Purpose
@@ -207,7 +209,7 @@ func TestDaemonAVExclusionDirectoriesResolveBothWorkcopiesOverrides(t *testing.T
 	}
 	// With no config set the per-gaggle entries are simply absent — the
 	// caller is responsible for saying so, and both do.
-	without := avexclusion.Dedupe(daemonAVExclusionDirectories(layout, cfg, nil, avExclusionDeps{tempDir: filepath.Join(root, "tmp")}))
+	without := avexclusion.Dedupe(daemonAVExclusionDirectories(layout, cfg, nil, runtimewiring.AvExclusionDeps{TempDir: filepath.Join(root, "tmp")}))
 	if len(without) >= len(dirs) {
 		t.Errorf("nil config set produced %d entries, want fewer than %d", len(without), len(dirs))
 	}
@@ -224,7 +226,7 @@ func TestDoctorAVExclusionsSaysWhenGagglesCouldNotBeEnumerated(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "manifest.yaml"), []byte(":\n\tnot yaml at all\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deps := avExclusionDeps{hostOS: "darwin", tempDir: filepath.Join(root, "tmp")}
+	deps := runtimewiring.AvExclusionDeps{HostOS: "darwin", TempDir: filepath.Join(root, "tmp")}
 	var stdout, stderr bytes.Buffer
 	if code := runDoctorAVExclusions(root, filepath.Join(root, "worker"), "text", &stdout, &stderr, deps); code != 0 {
 		t.Fatalf("code = %d, want 0 (advisory); stderr=%s", code, stderr.String())
@@ -244,10 +246,10 @@ func TestDoctorAVExclusionsWindowsReport(t *testing.T) {
 	root := writeAVExclusionInstance(t)
 	workRoot := filepath.Join(root, "worker")
 	calls := 0
-	deps := avExclusionDeps{
-		hostOS:  "windows",
-		tempDir: filepath.Join(root, "tmp"),
-		query: func(context.Context) ([]string, error) {
+	deps := runtimewiring.AvExclusionDeps{
+		HostOS:  "windows",
+		TempDir: filepath.Join(root, "tmp"),
+		Query: func(context.Context) ([]string, error) {
 			calls++
 			return []string{root, `C:\Users\*\AppData\Local\Temp`}, nil
 		},
@@ -317,10 +319,10 @@ func TestDoctorAVExclusionsWindowsReport(t *testing.T) {
 // unknown with the reason, exit 0.
 func TestDoctorAVExclusionsOffWindowsListsWithoutQuerying(t *testing.T) {
 	root := writeAVExclusionInstance(t)
-	deps := avExclusionDeps{
-		hostOS:  "darwin",
-		tempDir: filepath.Join(root, "tmp"),
-		query: func(context.Context) ([]string, error) {
+	deps := runtimewiring.AvExclusionDeps{
+		HostOS:  "darwin",
+		TempDir: filepath.Join(root, "tmp"),
+		Query: func(context.Context) ([]string, error) {
 			t.Fatal("exclusion list must not be read off Windows")
 			return nil, nil
 		},
@@ -333,7 +335,7 @@ func TestDoctorAVExclusionsOffWindowsListsWithoutQuerying(t *testing.T) {
 	for _, want := range []string{
 		"verification: unknown — verification runs on Windows only (this host is darwin)",
 		"UNKNOWN       daemon       " + root,
-		"UNKNOWN       worker       " + defaultWorkerRoot(deps.tempDir),
+		"UNKNOWN       worker       " + runtimewiring.DefaultWorkerRoot(deps.TempDir),
 		"UNKNOWN       stage-pod    " + dispatcher.WindowsWorkspacePath,
 	} {
 		if !strings.Contains(text, want) {
@@ -347,10 +349,10 @@ func TestDoctorAVExclusionsOffWindowsListsWithoutQuerying(t *testing.T) {
 // the list, with the failure quoted — never a silent pass, never exit 1.
 func TestDoctorAVExclusionsQueryFailureIsReportedNotFatal(t *testing.T) {
 	root := t.TempDir() // no instance.yaml: the layout defaults stand
-	deps := avExclusionDeps{
-		hostOS:  "windows",
-		tempDir: filepath.Join(root, "tmp"),
-		query: func(context.Context) ([]string, error) {
+	deps := runtimewiring.AvExclusionDeps{
+		HostOS:  "windows",
+		TempDir: filepath.Join(root, "tmp"),
+		Query: func(context.Context) ([]string, error) {
 			return nil, errors.New("Get-MpPreference: exit status 1: The term 'Get-MpPreference' is not recognized")
 		},
 	}
@@ -415,7 +417,7 @@ func TestStagePodAVExclusionAdvisory(t *testing.T) {
 	getenv := func(k string) string { return env[k] }
 	getwd := func() (string, error) { return dispatcher.WindowsWorkspacePath, nil }
 
-	deps := avExclusionDeps{hostOS: "windows", query: func(context.Context) ([]string, error) {
+	deps := runtimewiring.AvExclusionDeps{HostOS: "windows", Query: func(context.Context) ([]string, error) {
 		return []string{`C:\workspace`, `C:\instance`}, nil
 	}}
 	line := stagePodAVExclusionAdvisory(context.Background(), deps, getwd, getenv)
@@ -445,14 +447,14 @@ func TestStagePodAVExclusionAdvisory(t *testing.T) {
 	}
 
 	// Off Windows: silent, and the reader is never invoked.
-	linux := avExclusionDeps{hostOS: "linux", query: func(context.Context) ([]string, error) {
+	linux := runtimewiring.AvExclusionDeps{HostOS: "linux", Query: func(context.Context) ([]string, error) {
 		t.Fatal("exclusion list must not be read off Windows")
 		return nil, nil
 	}}
 	if line := stagePodAVExclusionAdvisory(context.Background(), linux, getwd, getenv); line != "" {
 		t.Errorf("linux advisory = %q, want empty", line)
 	}
-	if line := hostAVExclusionAdvisory(context.Background(), "daemon", nil, linux); line != "" {
+	if line := runtimewiring.HostAVExclusionAdvisory(context.Background(), "daemon", nil, linux); line != "" {
 		t.Errorf("linux host advisory = %q, want empty", line)
 	}
 }

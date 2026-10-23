@@ -6,6 +6,8 @@ import (
 	"os"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -44,7 +46,7 @@ func checkCurrentMergeAuthority(layout instance.Layout, env apiv1.InvocationEnve
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
-	goobers, err := resolveGoobersForGaggle(set, env.Gaggle)
+	goobers, err := runtimewiring.ResolveGoobersForGaggle(set, env.Gaggle)
 	if err != nil {
 		return fmt.Errorf("merge authority revoked: %w", err)
 	}
@@ -73,7 +75,7 @@ func checkCurrentMergeAuthority(layout instance.Layout, env apiv1.InvocationEnve
 	return fmt.Errorf("merge authority revoked: workflow %q is no longer configured", env.WorkflowID)
 }
 
-func withCurrentMergeAuthority(layout instance.Layout, next executionFenceStart) executionFenceStart {
+func withCurrentMergeAuthority(layout instance.Layout, next runtimewiring.ExecutionFenceStart) runtimewiring.ExecutionFenceStart {
 	return func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 		ctx = executor.WithConfigDirectory(ctx, layout.ConfigDir())
 		if err := requireInvocationMergeAuthority(ctx, layout, env); err != nil {
@@ -96,7 +98,7 @@ func requireCurrentStageMergeAuthorityContext(ctx context.Context, cap capabilit
 	})
 }
 
-func runnerExecutionFence(input runnerCompositionInput) executionFenceStart {
+func runnerExecutionFence(input runnerCompositionInput) runtimewiring.ExecutionFenceStart {
 	next := input.ExecutionFence
 	if next == nil {
 		next = localSharedExecutionFence(input.Layout)

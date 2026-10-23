@@ -37,13 +37,16 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/sweepreport"
 	"github.com/goobers/goobers/internal/telemetry"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/version"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
 	"github.com/goobers/goobers/internal/worktree"
@@ -805,8 +808,8 @@ func (u *upSession) prepare() int {
 	// the gaggle inventory the daemon itself is about to provision from. Read
 	// off instance.yaml alone, the advisory would have reported an
 	// affirmative all-clear over directories it never enumerated.
-	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
-		if line := hostAVExclusionAdvisory(u.ctx, "daemon",
+	if avDeps := runtimewiring.RealAVExclusionDeps(); avDeps.HostOS == "windows" {
+		if line := runtimewiring.HostAVExclusionAdvisory(u.ctx, "daemon",
 			daemonAVExclusionDirectories(u.l, u.setup.Config, u.setup.Definitions, avDeps), avDeps); line != "" {
 			pln(u.stdout, line)
 		}
@@ -1721,7 +1724,7 @@ func (u *upSession) configureSource() int {
 	// loop below, so both draw on one near-expiry-refreshing token cache.
 	var workflowSourceAppTokens instance.GitTokenSource
 	if source := u.setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
-		minted, mintErr := newWorkflowSourceAppTokenSource(*source, u.setup.SharedRegistry, u.setup.SecretStores)
+		minted, mintErr := runtimewiring.NewWorkflowSourceAppTokenSource(*source, u.setup.SharedRegistry, u.setup.SecretStores)
 		if mintErr != nil {
 			pf(u.stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
 			return 1

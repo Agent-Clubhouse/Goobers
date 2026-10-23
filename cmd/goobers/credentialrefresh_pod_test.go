@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -119,7 +120,7 @@ func TestLocalCIPollNoLongerSnapshotsItsToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	poller, err := localCIPollGitHubPoller(context.Background(), injector, "provider:pr:write", nil)
+	poller, err := runtimewiring.LocalCIPollGitHubPoller(context.Background(), injector, "provider:pr:write", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,15 +150,15 @@ func TestMintedValueAndExpiry(t *testing.T) {
 		{Capability: "repo:push", Value: "push-value"},
 		{Capability: "provider:pr:write", Value: "pr-value", ExpiresAt: &expiry},
 	}
-	value, expiresAt, err := mintedValueAndExpiry(creds, "provider:pr:write")
+	value, expiresAt, err := runtimewiring.MintedValueAndExpiry(creds, "provider:pr:write")
 	if err != nil || value != "pr-value" || !expiresAt.Equal(expiry) {
 		t.Fatalf("mintedValueAndExpiry = %q, %v, %v; want the named capability's value and expiry", value, expiresAt, err)
 	}
-	value, expiresAt, err = mintedValueAndExpiry(creds, "repo:push")
+	value, expiresAt, err = runtimewiring.MintedValueAndExpiry(creds, "repo:push")
 	if err != nil || value != "push-value" || !expiresAt.IsZero() {
 		t.Fatalf("mintedValueAndExpiry = %q, %v, %v; want the value with no stated expiry", value, expiresAt, err)
 	}
-	value, _, err = mintedValueAndExpiry(creds[:1], "provider:pr:write")
+	value, _, err = runtimewiring.MintedValueAndExpiry(creds[:1], "provider:pr:write")
 	if err == nil || err.Error() != `the credential plane returned no value for "provider:pr:write"` || value != "" {
 		t.Fatalf("mintedValueAndExpiry = %q, %v; want the missing capability named", value, err)
 	}
@@ -327,11 +328,11 @@ func TestLocalCIPollTokenSourceResolveFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			token, source, err := ciPollTokenSource(context.Background(), injector, capabilityName, nil)
+			token, source, err := runtimewiring.CiPollTokenSource(context.Background(), injector, capabilityName, nil)
 			if err == nil || !tc.check(err) || token != "" || source != nil {
 				t.Fatalf("ciPollTokenSource = %q, %v, %v; want the classified resolve error", token, source, err)
 			}
-			poller, err := localCIPollGitHubPoller(context.Background(), injector, capabilityName, nil)
+			poller, err := runtimewiring.LocalCIPollGitHubPoller(context.Background(), injector, capabilityName, nil)
 			if err == nil || !tc.check(err) || poller != nil {
 				t.Fatalf("localCIPollGitHubPoller = %v, %v; want the same error and no poller", poller, err)
 			}

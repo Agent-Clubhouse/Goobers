@@ -68,8 +68,6 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	cmd/goobers/openpr.go	runOpenPR	262
 !body-length	cmd/goobers/prsiblingcontext.go	runGatherSiblingContextCore	373
 !body-length	cmd/goobers/reconcilebranches.go	reconcileRemoteBranches	245
-!body-length-justification	cmd/goobers/runnerwiring.go	buildRunnerConfig	278	#4962 threads the applied config digest into each deterministic executor
-!body-length	cmd/goobers/runnerwiring.go	buildRunnerConfig	278
 !body-length	cmd/goobers/runtime_capabilities.go	init	724
 !body-length	cmd/goobers/status.go	runRunTable	382
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206

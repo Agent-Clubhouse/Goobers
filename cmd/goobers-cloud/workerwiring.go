@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -48,7 +49,7 @@ import (
 // is what conformance between the two tiers rests on.
 type workerSeams struct {
 	journalMinter  dispatcher.ScopedTokenMinter
-	executionFence executionFenceStart
+	executionFence runtimewiring.ExecutionFenceStart
 	root           string
 	scrubber       journal.Scrubber
 	shared         *journal.RegistryScrubber
@@ -210,7 +211,7 @@ func (g *gaggleSeams) refuseUnavailableHarness(env apiv1.InvocationEnvelope) err
 		return nil
 	}
 	if env.WorkflowID == "" {
-		return invoke.InfrastructureFailure(fmt.Errorf("worker: harness preflight: %w", &harnessPreflightFailures{Refusals: g.harnessRefusals}))
+		return invoke.InfrastructureFailure(fmt.Errorf("worker: harness preflight: %w", &runtimewiring.HarnessPreflightFailures{Refusals: g.harnessRefusals}))
 	}
 	identity := localscheduler.WorkflowIdentity{Gaggle: env.Gaggle, Workflow: env.WorkflowID}
 	reason, refused := g.harnessRefusals[identity]
@@ -310,11 +311,11 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	}
 	cfg, set := snapshot.cfg, snapshot.set
 
-	goobers, err := resolveGoobersForGaggle(set, gaggle)
+	goobers, err := runtimewiring.ResolveGoobersForGaggle(set, gaggle)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
+	if err := runtimewiring.ValidateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
 		return nil, fmt.Errorf("worker: credential admission: %w", err)
 	}
 	instructions, err := snapshot.instructionsFor(goobers)
@@ -346,7 +347,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if !ok {
 		return nil, fmt.Errorf("worker: deterministic-stage config digest for gaggle %q is missing from snapshot", gaggle)
 	}
-	project := gaggleProjectRef(set, gaggle)
+	project := runtimewiring.GaggleProjectRef(set, gaggle)
 	runnerCfg, credentialedMgr, err := buildRunnerConfig(runnerCompositionInput{
 		ExecutionFence: func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 			if w.executionFence != nil {
@@ -372,11 +373,11 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		// for 'https://github.com'".
 		SharedRegistry:           w.shared,
 		WorktreeManager:          nil,
-		BranchNamespaces:         branchNamespacesByGaggle(set),
+		BranchNamespaces:         runtimewiring.BranchNamespacesByGaggle(set),
 		GaggleProject:            project,
-		GaggleBacklog:            gaggleBacklogRef(set, gaggle),
-		IssueOwnershipAssignees:  issueOwnershipAssigneesByGaggle(set)[gaggle],
-		IssueOwnershipUnassigned: issueOwnershipUnassignedByGaggle(set)[gaggle],
+		GaggleBacklog:            runtimewiring.GaggleBacklogRef(set, gaggle),
+		IssueOwnershipAssignees:  runtimewiring.IssueOwnershipAssigneesByGaggle(set)[gaggle],
+		IssueOwnershipUnassigned: runtimewiring.IssueOwnershipUnassignedByGaggle(set)[gaggle],
 		HarnessInfo:              harnessInfo,
 		CredentialStores:         stores,
 		SandboxPosture:           instance.EffectiveAgenticSandbox(cfg, nil),
@@ -405,19 +406,19 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 // failed every unrelated workflow's activity that triggered the build
 // (#5949). Any other preflight error still fails the build closed. retryAt
 // holds the refused workflows whose refusal is wholly transient (#6017).
-func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (info harnessPreflightInfo, refusals map[localscheduler.WorkflowIdentity]string, retryAt map[localscheduler.WorkflowIdentity]time.Time, err error) {
-	info, err = preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
+func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (info runtimewiring.HarnessPreflightInfo, refusals map[localscheduler.WorkflowIdentity]string, retryAt map[localscheduler.WorkflowIdentity]time.Time, err error) {
+	info, err = runtimewiring.PreflightHarnesses(goobers, set.Workflows, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, runtimewiring.HarnessModelCredentialResolver(cfg, stores))
 	if err == nil {
 		return info, nil, nil, nil
 	}
-	var failures *harnessPreflightFailures
+	var failures *runtimewiring.HarnessPreflightFailures
 	if !errors.As(err, &failures) || len(failures.Refusals) == 0 {
 		return nil, nil, nil, err
 	}
 	retryAt = make(map[localscheduler.WorkflowIdentity]time.Time)
 	for identity := range failures.Refusals {
-		if refusal := failures.transientRefusal(identity); refusal != nil {
-			retryAt[identity] = refusal.retryAt
+		if refusal := failures.TransientRefusal(identity); refusal != nil {
+			retryAt[identity] = refusal.RetryAt
 		}
 	}
 	return info, maps.Clone(failures.Refusals), retryAt, nil
@@ -494,6 +495,9 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	// through: the RWX volume the daemon's blob plane serves pods from, so a
 	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
 	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store}
+	if err := p.seams.installRemoteRecoveryGuard(g.manager); err != nil {
+		return nil, err
+	}
 	return delegate.Provision(ctx, req)
 }
 
@@ -620,44 +624,4 @@ func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (in
 		return nil, fmt.Errorf("worker: construct agentic executor for goober %q: %w", env.Goober, err)
 	}
 	return exec, nil
-}
-
-// gaggleProjectRef is the gaggle's project repo, zero when not configured —
-// which leaves credentials on the first-repo default, matching the daemon's
-// legacy-runtime path.
-func gaggleProjectRef(set *instance.ConfigSet, gaggle string) apiv1.RepoRef {
-	for i := range set.Gaggles {
-		if set.Gaggles[i].Name == gaggle {
-			return set.Gaggles[i].Spec.Project
-		}
-	}
-	return apiv1.RepoRef{}
-}
-
-// gaggleBacklogRef returns the named gaggle's backlog, or the zero value when
-// the gaggle is not configured.
-func gaggleBacklogRef(set *instance.ConfigSet, gaggle string) apiv1.BacklogRef {
-	for i := range set.Gaggles {
-		if set.Gaggles[i].Name == gaggle {
-			return set.Gaggles[i].Spec.Backlog
-		}
-	}
-	return apiv1.BacklogRef{}
-}
-
-// resolveGoobersForGaggle returns the goober specs a declared gaggle's stages
-// may name. Deterministic tasks and automated gates need no goobers; selecting
-// an absent goober remains an error at the agentic executor boundary.
-func resolveGoobersForGaggle(set *instance.ConfigSet, gaggle string) (map[string]apiv1.GooberSpec, error) {
-	if !slices.ContainsFunc(set.Gaggles, func(candidate apiv1.Gaggle) bool { return candidate.Name == gaggle }) {
-		return nil, fmt.Errorf("worker: gaggle %q not found in config", gaggle)
-	}
-	out := map[string]apiv1.GooberSpec{}
-	for i := range set.Goobers {
-		g := set.Goobers[i]
-		if g.Spec.Gaggle == "" || g.Spec.Gaggle == gaggle {
-			out[g.Name] = g.Spec
-		}
-	}
-	return out, nil
 }

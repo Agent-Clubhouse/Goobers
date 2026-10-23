@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
-
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/k8spreflight"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
@@ -360,7 +360,7 @@ func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnes
 	case codecMode:
 		return runDoctorTemporalCodec(root, reportFormat, stdout, stderr)
 	case avMode:
-		return runDoctorAVExclusions(root, workRoot, reportFormat, stdout, stderr, realAVExclusionDeps())
+		return runDoctorAVExclusions(root, workRoot, reportFormat, stdout, stderr, runtimewiring.RealAVExclusionDeps())
 	case harnessAuthMode:
 		return runDoctorHarnessAuth(root, reportFormat, stdout, stderr)
 	case repoMode:
@@ -428,7 +428,7 @@ func runDoctorHarnessAuth(root, reportFormat string, stdout, stderr io.Writer) i
 }
 
 func copilotAuthInfo(root string) (harness.AuthInfo, error) {
-	return copilotAuthInfoWithTimeout(root, harnessPreflightTimeout)
+	return copilotAuthInfoWithTimeout(root, runtimewiring.HarnessPreflightTimeout)
 }
 
 func copilotAuthInfoWithTimeout(root string, timeout time.Duration) (harness.AuthInfo, error) {

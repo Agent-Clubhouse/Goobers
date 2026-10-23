@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/harness"
@@ -19,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -427,8 +430,8 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 
 	disposableRoot = t.TempDir()
 	remote = materializeGettingStartedSample(t, disposableRoot)
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return remote, nil }
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return remote, nil }
 
 	server = newFakeGitHubServer(t, "your-org", "your-repo")
 	server.serveGitRemote(remote)
@@ -440,8 +443,8 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 	t.Setenv("GOOBERS_TEST_GITHUB_API_URL", server.server.URL)
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "ghp_getting_started_fixture_token")
 
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
+	previousAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{
 			Transcript: []byte("deterministic " + gooberName + " model boundary\n"),
 			Act: func(_ context.Context, request harness.RunRequest) error {
@@ -481,8 +484,8 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 	}
 
 	t.Cleanup(func() {
-		repoCloneURL = previousCloneURL
-		newAgenticAdapter = previousAdapter
+		runtimewiring.RepoCloneURL = previousCloneURL
+		runtimewiring.NewAgenticAdapter = previousAdapter
 	})
 	return root, remote, disposableRoot, seed, server
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -101,7 +103,7 @@ func (w childKitWriter) snapshot(ctx context.Context, start childExecutionStart)
 		return nil, nil, fmt.Errorf("child kit: load retained config: %w (%s)", err, validationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*start.Proposal.Workflow.DeepCopy()}
-	instructions, skills, err := loadSnapshotGooberInputs(directory, set)
+	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(directory, set)
 	if err != nil {
 		release()
 		return nil, nil, err

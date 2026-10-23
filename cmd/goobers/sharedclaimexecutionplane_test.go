@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -147,7 +149,7 @@ func TestRemoteExecutionPolicyUsesDaemonPinAndRefusesTerminalRun(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(response)
 				}))
 				t.Cleanup(server.Close)
-				fence := remoteSharedExecutionFence(server.URL, func(runID string) (string, error) {
+				fence := runtimewiring.RemoteSharedExecutionFence(server.URL, func(runID string) (string, error) {
 					return token, nil
 				})
 				ctx, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "shared-run"})
@@ -172,7 +174,7 @@ func TestRemoteExecutionPolicyUsesDaemonPinAndRefusesTerminalRun(t *testing.T) {
 }
 
 func TestRemoteExecutionWithoutBearerRefusesRemoteDaemon(t *testing.T) {
-	fence := remoteSharedExecutionFence("https://daemon.example", func(string) (string, error) { return "", nil })
+	fence := runtimewiring.RemoteSharedExecutionFence("https://daemon.example", func(string) (string, error) { return "", nil })
 	_, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "run"})
 	stop()
 	if err == nil {

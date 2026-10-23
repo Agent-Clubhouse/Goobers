@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -28,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -88,9 +90,9 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 	writeFileContent(t, filepath.Join(source, "source.txt"), "base\n")
 	recoveryCLIGit(t, source, "add", ".")
 	recoveryCLIGit(t, source, "commit", "-m", "base")
-	originalClone := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = originalClone })
+	originalClone := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = originalClone })
 	instanceLog, _, err := journal.OpenInstanceLog(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -114,8 +116,8 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 	var calls, childCalls atomic.Int32
 	var paths sync.Map
 	var runID string
-	previous := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previous := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(ctx context.Context, req harness.RunRequest) error {
 			if !credentials.TrustedLocalProcess(ctx) {
 				return fmt.Errorf("missing delegated local authority")
@@ -184,7 +186,7 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 			}
 		}}
 	}
-	t.Cleanup(func() { newAgenticAdapter = previous })
+	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previous })
 	store, err := executionGenerationStore(f.layout)
 	if err != nil {
 		t.Fatal(err)

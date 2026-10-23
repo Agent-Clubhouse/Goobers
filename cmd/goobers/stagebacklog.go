@@ -6,41 +6,13 @@ import (
 	"os"
 	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/providerconfig"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
-
-// stageBacklogSettings is the part of a gaggle's backlog configuration an
-// Azure DevOps stage applies to its provider: the backlog project its work
-// item operations address (backlogRepoRefForStage), the claim-scope labels
-// (stageADOBacklogScope) and the states that count as done for predecessor
-// blocking (applyGaggleDoneStates). A stage pod has no
-// instance config, so the worker resolves these from the gaggle and the
-// dispatcher stamps them as dispatcher.GaggleBacklogEnv (#5957).
-//
-// Labels is the backlog's claim scope (#6098): on Azure DevOps the labels a
-// work item must carry for this gaggle to select it from a project that other
-// gaggles share. Missing it in a pod made the gaggle claim items meant for a
-// sibling.
-type stageBacklogSettings struct {
-	Provider   apiv1.Provider           `json:"provider,omitempty"`
-	Project    string                   `json:"project,omitempty"`
-	Labels     []string                 `json:"labels,omitempty"`
-	DoneStates *apiv1.BacklogDoneStates `json:"doneStates,omitempty"`
-}
-
-// configSet renders the delivered settings as a one-gaggle config set, so a
-// stage applies them through exactly the functions that apply the instance
-// config (providerconfig.ApplyBacklogProject, GaggleADODoneStates).
-func (s stageBacklogSettings) configSet(gaggle string) *instance.ConfigSet {
-	g := apiv1.Gaggle{Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{Provider: s.Provider, Project: s.Project, Labels: s.Labels, DoneStates: s.DoneStates}}}
-	g.Name = gaggle
-	return &instance.ConfigSet{Gaggles: []apiv1.Gaggle{g}}
-}
 
 // stageGaggleBacklog resolves the backlog configuration of the stage's gaggle
 // (GOOBERS_GAGGLE) as a config set, and the gaggle's name. A stage that names
@@ -66,7 +38,7 @@ func stageGaggleBacklog(root string) (string, *instance.ConfigSet, error) {
 		if err != nil {
 			return gaggle, nil, err
 		}
-		return gaggle, settings.configSet(gaggle), nil
+		return gaggle, settings.ConfigSet(gaggle), nil
 	}
 	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err == nil && report != nil && set != nil {
@@ -80,13 +52,13 @@ func stageGaggleBacklog(root string) (string, *instance.ConfigSet, error) {
 		gaggle, dispatcher.GaggleBacklogEnv, reason)
 }
 
-func decodeStageBacklogSettings(gaggle, stamped string) (stageBacklogSettings, error) {
+func decodeStageBacklogSettings(gaggle, stamped string) (runtimewiring.StageBacklogSettings, error) {
 	if strings.TrimSpace(stamped) == "" {
-		return stageBacklogSettings{}, fmt.Errorf("gaggle %q backlog settings cannot be resolved: the dispatcher stamped an empty %s, so it has no settings for this gaggle (#5957)", gaggle, dispatcher.GaggleBacklogEnv)
+		return runtimewiring.StageBacklogSettings{}, fmt.Errorf("gaggle %q backlog settings cannot be resolved: the dispatcher stamped an empty %s, so it has no settings for this gaggle (#5957)", gaggle, dispatcher.GaggleBacklogEnv)
 	}
-	var settings stageBacklogSettings
+	var settings runtimewiring.StageBacklogSettings
 	if err := json.Unmarshal([]byte(stamped), &settings); err != nil {
-		return stageBacklogSettings{}, fmt.Errorf("gaggle %q backlog settings cannot be resolved: %s is malformed: %w", gaggle, dispatcher.GaggleBacklogEnv, err)
+		return runtimewiring.StageBacklogSettings{}, fmt.Errorf("gaggle %q backlog settings cannot be resolved: %s is malformed: %w", gaggle, dispatcher.GaggleBacklogEnv, err)
 	}
 	return settings, nil
 }

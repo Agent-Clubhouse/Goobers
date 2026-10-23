@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
@@ -77,7 +79,7 @@ func runHarnessAuthCopilotStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: configured Copilot adapter does not expose authentication status\n")
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), harnessPreflightTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), runtimewiring.HarnessPreflightTimeout)
 	defer cancel()
 	info, err := reporter.AuthStatus(ctx)
 	if err != nil {
@@ -181,11 +183,11 @@ func copilotAuthAdapter(root string) (harness.Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load secret stores: %w", err)
 	}
-	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, apiv1.HarnessCopilot)
+	modelCredential, _, err := runtimewiring.AgentModelCredentialResolver(cfg, stores, apiv1.HarnessCopilot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent:model credential: %w", err)
 	}
-	return harnessAdapterFor(apiv1.HarnessCopilot, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+	return runtimewiring.HarnessAdapterFor(apiv1.HarnessCopilot, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
 }
 
 func copilotAuthPlacementUnavailable(root string, cfg *instance.Config) (string, error) {
@@ -203,7 +205,7 @@ func copilotAuthPlacementUnavailable(root string, cfg *instance.Config) (string,
 		}
 		return "", fmt.Errorf("load config directory: %w", err)
 	}
-	goobers := goobersByName(set)
+	goobers := runtimewiring.GoobersByName(set)
 	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
 	gaggleRunsOn := make(map[string]*apiv1.GaggleRunsOn, len(set.Gaggles))
 	for i := range set.Gaggles {
@@ -215,14 +217,14 @@ func copilotAuthPlacementUnavailable(root string, cfg *instance.Config) (string,
 		machine, err := workflow.Compile(
 			workflow.Definition{Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations},
 			workflow.WithGoobers(goobers),
-			workflow.WithKnownChecks(knownAutomatedCheckNames()),
+			workflow.WithKnownChecks(runtimewiring.KnownAutomatedCheckNames()),
 			workflow.WithKnownHarnesses([]string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode), string(apiv1.HarnessCodex)}),
 			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
 		)
 		if err != nil {
-			return "", &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+			return "", &runtimewiring.WorkflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		placements, err := bootstrap.PinStagePlacements(cfg, set, wf.Spec.Gaggle, machine.Def)
 		if err != nil {

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -29,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/testgit"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -182,11 +184,11 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 	}
 
 	fixtureRepo := newTutorFixtureRepo(t)
-	prevRepo := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
+	prevRepo := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
 
-	prevAdapter := newAgenticAdapter
-	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
+	prevAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
@@ -201,8 +203,8 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 	}
 
 	t.Cleanup(func() {
-		repoCloneURL = prevRepo
-		newAgenticAdapter = prevAdapter
+		runtimewiring.RepoCloneURL = prevRepo
+		runtimewiring.NewAgenticAdapter = prevAdapter
 	})
 	return root
 }

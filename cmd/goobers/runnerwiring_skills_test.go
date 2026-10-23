@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
@@ -33,7 +35,7 @@ func TestBuildAgenticExecutorDeliversResolvedSkillSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	scrubber := journal.NewRegistryScrubber()
-	executor, err := buildAgenticExecutor(agenticExecutorInput{
+	executor, err := runtimewiring.BuildAgenticExecutor(runtimewiring.AgenticExecutorInput{
 		GooberName: "coder", Goobers: map[string]apiv1.GooberSpec{"coder": {Skills: []string{"review"}}},
 		Instructions: map[string]string{"coder": "role instructions"},
 		SkillPackages: map[string][]workflow.SkillFile{

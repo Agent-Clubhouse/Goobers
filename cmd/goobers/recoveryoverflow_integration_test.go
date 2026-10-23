@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -160,7 +161,7 @@ func (f *reclaimFixture) overflowSeed(runID string, ageHours int, content string
 	// mirror and pinned clones are ever visited.
 	recoveryCLIGit(f.t, f.mirror, "fetch", "--no-tags", "--", f.source, "+refs/heads/*:refs/heads/*")
 	record := f.overflowRecord(entry, snapshot)
-	published, _, err := recovery.PublishOverflow(f.t.Context(), f.mirror, recoveryOverflowRoot(f.layout), record)
+	published, _, err := recovery.PublishOverflow(f.t.Context(), f.mirror, runtimewiring.RecoveryOverflowRoot(f.layout), record)
 	if err != nil {
 		f.t.Fatal(err)
 	}

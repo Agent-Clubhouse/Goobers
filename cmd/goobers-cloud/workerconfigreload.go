@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
@@ -96,7 +98,7 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 }
 
 func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnapshot, bool, error) {
-	digest, err := configDirectoryDigest(l.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(l.ConfigDir())
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
@@ -132,7 +134,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	// Capture — not reference — the config-tree content this snapshot's kits
 	// and goober digests are derived from, so it stays answerable after the
 	// tree on disk moves past it (#3884, snapshot retention).
-	instructions, skillPackages, err := loadSnapshotGooberInputs(l.ConfigDir(), set)
+	instructions, skillPackages, err := runtimewiring.LoadSnapshotGooberInputs(l.ConfigDir(), set)
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: load goober kit content: %w", err)
 	}
@@ -140,7 +142,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	// Read-validate-reread, the same stability check the daemon's reloader
 	// uses: if the digest moved while the directory was being parsed, the
 	// parse may have seen half of one tree and half of another.
-	settled, err := configDirectoryDigest(l.ConfigDir())
+	settled, err := runtimewiring.ConfigDirectoryDigest(l.ConfigDir())
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
@@ -169,7 +171,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 // stage or — worse — silently accepting a broken one.
 func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	dir := instance.NewLayout(w.root).ConfigDir()
-	digest, err := configDirectoryDigest(dir)
+	digest, err := runtimewiring.ConfigDirectoryDigest(dir)
 	if err != nil {
 		return workerReloadOutcome{}, fmt.Errorf("worker: digest config directory: %w", err)
 	}
@@ -202,7 +204,7 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	// reload that parsed tree T1 could overwrite a snapshot forGaggle had
 	// already published from a NEWER tree T2, walking the worker backwards.
 	// A tree that has moved again converges on the next check instead.
-	settled, err := configDirectoryDigest(dir)
+	settled, err := runtimewiring.ConfigDirectoryDigest(dir)
 	if err != nil {
 		return workerReloadOutcome{Digest: digest}, fmt.Errorf("worker: digest config directory: %w", err)
 	}
@@ -281,7 +283,7 @@ func (w *workerSeams) historyDigestsLocked() []string {
 // the directory here would compare whatever landed since instead — which
 // could retain a kit across a change it does not reflect.
 func (w *workerSeams) gaggleFingerprint(snapshot *workerConfigSnapshot, gaggle string) (string, error) {
-	goobers, err := resolveGoobersForGaggle(snapshot.set, gaggle)
+	goobers, err := runtimewiring.ResolveGoobersForGaggle(snapshot.set, gaggle)
 	if err != nil {
 		return "", err
 	}
@@ -329,7 +331,7 @@ func gaggleConfigFingerprint(
 		Goobers:          goobers,
 		Instructions:     instructions,
 		SkillPackages:    skillPackages,
-		BranchNamespaces: branchNamespacesByGaggle(set),
+		BranchNamespaces: runtimewiring.BranchNamespacesByGaggle(set),
 	}
 	for i := range set.Gaggles {
 		if set.Gaggles[i].Name == gaggle {

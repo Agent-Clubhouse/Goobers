@@ -1,46 +1,48 @@
 package main
 
-// workergooberpin.go is the pin/refusal half of #3884.
-//
-// #3912 gave `goobers-cloud worker` a config-tree reload, which removed the STALE
-// WINDOW that cost Infra LEDGER I-51 a run's worktree checkout. It did not
-// make kit identity per-run: a reload landing between attempt N and attempt
-// N+1 of the same run could still hand N+1 a different curator than N, with
-// nothing in run.yaml to show it. #3876/D1 then pinned the run's
-// `GooberDigest` into engine.StartSpec / RunInput / run.yaml — provenance
-// only, explicitly not selection.
-//
-// This file closes the loop. The pin rides every InvocationEnvelope, and an
-// agentic attempt is served from the config snapshot whose tree RESOLVES that
-// digest — the current one, or a bounded history of superseded ones — or it is
-// refused by name. There is no third branch: the worker never substitutes its
-// current instructions for the ones a run was admitted against.
-//
-// THE THREE OUTCOMES, and why each is the one it is:
-//
-//   - The current tree resolves the pin. Ordinary. Serve it.
-//   - A retained tree resolves the pin. A reload rolled the tree forward
-//     under an in-flight run. Serve that run its OWN kit, so its identity is
-//     stable across the reload, while every newly-started run gets the new
-//     tree. This is the whole reason snapshots are retained rather than
-//     dropped.
-//   - Nothing resolves the pin. REFUSE, retriably, naming the expected digest.
-//     Retriably because the fix is usually a reload away — the worker's tree
-//     is behind the daemon's, the very I-51 shape — and the next attempt after
-//     it lands succeeds without operator action. Naming the digest because a
-//     refusal an operator cannot act on is only marginally better than the
-//     silent stale run it replaced.
-//
-// Nothing here changes an UNPINNED attempt: an empty envelope digest resolves
-// the current tree exactly as before, byte for byte, which is what keeps every
-// run started before D1 (and every non-agentic seam) working unchanged.
-
 import (
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
+	// workergooberpin.go is the pin/refusal half of #3884.
+	//
+	// #3912 gave `goobers-cloud worker` a config-tree reload, which removed the STALE
+	// WINDOW that cost Infra LEDGER I-51 a run's worktree checkout. It did not
+	// make kit identity per-run: a reload landing between attempt N and attempt
+	// N+1 of the same run could still hand N+1 a different curator than N, with
+	// nothing in run.yaml to show it. #3876/D1 then pinned the run's
+	// `GooberDigest` into engine.StartSpec / RunInput / run.yaml — provenance
+	// only, explicitly not selection.
+	//
+	// This file closes the loop. The pin rides every InvocationEnvelope, and an
+	// agentic attempt is served from the config snapshot whose tree RESOLVES that
+	// digest — the current one, or a bounded history of superseded ones — or it is
+	// refused by name. There is no third branch: the worker never substitutes its
+	// current instructions for the ones a run was admitted against.
+	//
+	// THE THREE OUTCOMES, and why each is the one it is:
+	//
+	//   - The current tree resolves the pin. Ordinary. Serve it.
+	//   - A retained tree resolves the pin. A reload rolled the tree forward
+	//     under an in-flight run. Serve that run its OWN kit, so its identity is
+	//     stable across the reload, while every newly-started run gets the new
+	//     tree. This is the whole reason snapshots are retained rather than
+	//     dropped.
+	//   - Nothing resolves the pin. REFUSE, retriably, naming the expected digest.
+	//     Retriably because the fix is usually a reload away — the worker's tree
+	//     is behind the daemon's, the very I-51 shape — and the next attempt after
+	//     it lands succeeds without operator action. Naming the digest because a
+	//     refusal an operator cannot act on is only marginally better than the
+	//     silent stale run it replaced.
+	//
+	// Nothing here changes an UNPINNED attempt: an empty envelope digest resolves
+	// the current tree exactly as before, byte for byte, which is what keeps every
+	// run started before D1 (and every non-agentic seam) working unchanged.
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -255,7 +257,7 @@ func (s *workerConfigSnapshot) instructionsFor(goobers map[string]apiv1.GooberSp
 	for name := range goobers {
 		content, ok := s.instructions[name]
 		if !ok {
-			return nil, &gooberInstructionsError{
+			return nil, &runtimewiring.GooberInstructionsError{
 				Goober: name,
 				Err:    fmt.Errorf("config tree %s captured no instructions for this goober", s.digest),
 			}
@@ -279,11 +281,11 @@ func newGooberDigestIndex(
 ) *gooberDigestIndex {
 	return &gooberDigestIndex{
 		compute: func() (map[localscheduler.WorkflowIdentity]string, error) {
-			_, digests, _, _, err := compiledMachinesWithGooberDigests(
+			_, digests, _, _, err := runtimewiring.CompiledMachinesWithGooberDigests(
 				set,
-				goobersByName(set),
+				runtimewiring.GoobersByName(set),
 				instructions,
-				harnessEnvironmentPolicy(cfg.Runner),
+				runtimewiring.HarnessEnvironmentPolicy(cfg.Runner),
 				cfg.Runner.HarnessCommand,
 				// The daemon defers model discovery when it computes the
 				// digests this pin is matched against. Deferring here too is
@@ -310,31 +312,6 @@ func newGooberDigestIndex(
 			return digests, nil
 		},
 	}
-}
-
-// loadSnapshotGooberInputs reads the config-tree content a snapshot must
-// CAPTURE to stay answerable after the tree moves: every configured goober's
-// instruction body, and every gaggle's resolved skill packages.
-//
-// Read here, once per snapshot, rather than lazily at first use, because
-// "lazily" would mean "from whatever is on disk by then" — the exact
-// substitution the pin exists to prevent.
-func loadSnapshotGooberInputs(configDir string, set *instance.ConfigSet) (map[string]string, map[string]map[string][]workflow.SkillFile, error) {
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, set, goobers)
-	if err != nil {
-		return nil, nil, err
-	}
-	skillPackages := make(map[string]map[string][]workflow.SkillFile, len(set.Gaggles))
-	for i := range set.Gaggles {
-		gaggle := set.Gaggles[i].Name
-		packages, err := loadGooberSkillPackages(configDir, gaggle, goobers)
-		if err != nil {
-			return nil, nil, err
-		}
-		skillPackages[gaggle] = packages
-	}
-	return instructions, skillPackages, nil
 }
 
 // retainSupersededLocked pushes the snapshot a reload just replaced onto the

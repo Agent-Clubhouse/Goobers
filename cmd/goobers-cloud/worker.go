@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"go.temporal.io/sdk/converter"
-
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runtimewiring"
+	"go.temporal.io/sdk/converter"
+
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/temporaldial"
@@ -223,6 +224,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	root := resolvedWorkerRoot(*workRoot)
+	if avDeps := runtimewiring.RealAVExclusionDeps(); avDeps.HostOS == "windows" {
+		if line := runtimewiring.HostAVExclusionAdvisory(context.Background(), "worker", runtimewiring.WorkerAVExclusionDirectories(root, avDeps), avDeps); line != "" {
+			writeln(stdout, line)
+		}
+	}
+
 	configPlane, configCode := prepareWorkerConfigPlaneCLI(*configEndpoint, *configKeyFile, root, instanceRoot, stderr)
 	if configCode != 0 {
 		return configCode
@@ -507,14 +514,6 @@ func workerEngineDeps(workRoot string) (workerEngineRuntime, error) {
 
 const workerRootOwnerFile = ".goobers-worker-owner"
 
-// The worker's work-root layout, named once so the provisioner
-// (workerEngineDepsForPlatform) and the #3480 antivirus-exclusion
-// enumeration (`goobers doctor --av-exclusions`, the worker's startup
-// advisory) read the same paths.
-func defaultWorkerRoot(tempDir string) string    { return filepath.Join(tempDir, "goobers-worker") }
-func workerWorkcopiesDir(workRoot string) string { return filepath.Join(workRoot, "workcopies") }
-func workerScratchDir(workRoot string) string    { return filepath.Join(workRoot, "scratch") }
-
 func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRuntime, error) {
 	rootClaim, err := claimWorkerRoot(workRoot, owner)
 	if err != nil {
@@ -524,7 +523,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
-	wtMgr, err := worktree.NewManager(workerWorkcopiesDir(workRoot), managerOptions...)
+	wtMgr, err := worktree.NewManager(runtimewiring.WorkerWorkcopiesDir(workRoot), managerOptions...)
 	if err != nil {
 		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
@@ -534,7 +533,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 			Auto: gate.NewAutomatedEvaluator(),
 			Workspaces: &workerhost.WorktreeWorkspaces{
 				Manager:    wtMgr,
-				ScratchDir: workerScratchDir(workRoot),
+				ScratchDir: runtimewiring.WorkerScratchDir(workRoot),
 			},
 			Scrubber: scrubber,
 		},

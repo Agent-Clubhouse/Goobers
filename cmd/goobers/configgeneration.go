@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -110,7 +112,7 @@ func retainedExecutionGenerationPinsWithApplied(ctx context.Context, layout inst
 }
 
 func retainExecutionGeneration(ctx context.Context, layout instance.Layout, retainer *configgeneration.Retainer) (instance.Layout, string, error) {
-	before, err := configDirectoryDigest(layout.ConfigDir())
+	before, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		return layout, "", err
 	}
@@ -126,7 +128,7 @@ func retainExecutionGeneration(ctx context.Context, layout instance.Layout, reta
 	if err != nil {
 		return layout, "", err
 	}
-	after, err := configDirectoryDigest(directory)
+	after, err := runtimewiring.ConfigDirectoryDigest(directory)
 	if err != nil {
 		return layout, "", err
 	}

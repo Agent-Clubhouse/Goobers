@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -91,7 +93,7 @@ type credentialPlaneDefinitions struct {
 func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneDefinitions {
 	defs := credentialPlaneDefinitions{
 		Scopes:  make(map[string]credentialGaggleScope, len(set.Gaggles)),
-		Goobers: goobersByName(set),
+		Goobers: runtimewiring.GoobersByName(set),
 	}
 	for i := range set.Gaggles {
 		g := &set.Gaggles[i]
@@ -548,7 +550,7 @@ func (s *daemonCredentialService) repoAuthScheme(scope credentialGaggleScope, mi
 	if minted == 0 {
 		return ""
 	}
-	repo, ok := adoRepoForGaggle(s.config, scope.Project)
+	repo, ok := runtimewiring.AdoRepoForGaggle(s.config, scope.Project)
 	if !ok {
 		return ""
 	}
@@ -783,16 +785,16 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	build := s.buildSources
 	if build == nil {
 		build = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
-			return buildGaggleCredentials(s.config, s.stores, scope.Project, scope.Backlog, scope.AdditionalRepos, s.shared)
+			return runtimewiring.BuildGaggleCredentials(s.config, s.stores, scope.Project, scope.Backlog, scope.AdditionalRepos, s.shared)
 		}
 	}
 	resolver, grants, err := build(scope)
 	if err != nil {
 		return nil, nil, err
 	}
-	schemes := adoCredentialSchemes(s.config, scope.Project, grants)
+	schemes := runtimewiring.AdoCredentialSchemes(s.config, scope.Project, grants)
 	if profile.goober == "" {
-		injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(grants), s.shared)
+		injector, err := credentials.NewInjector(resolver, runtimewiring.DeterministicCredentialGrants(grants), s.shared)
 		return injector, schemes, err
 	}
 	credentialKeys := append([]string(nil), profile.capabilities...)
@@ -801,9 +803,9 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	if harnessName == "" {
 		harnessName = string(apiv1.HarnessCopilot)
 	}
-	gooberGrants := buildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
+	gooberGrants := runtimewiring.BuildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
 	injector, err := credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
 	// A goober's grants are keyed by the plain capability but may resolve to
 	// a harness-scoped source, so its schemes follow its own grants.
-	return injector, adoCredentialSchemes(s.config, scope.Project, gooberGrants), err
+	return injector, runtimewiring.AdoCredentialSchemes(s.config, scope.Project, gooberGrants), err
 }

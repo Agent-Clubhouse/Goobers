@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -44,7 +46,7 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 	if authority.branch != branch {
 		return errors.New("parent restore contract has different workspace scope")
 	}
-	project, err := recoveryConfiguredProject(r.config, record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, record.RepositoryKey)
 	if err != nil {
 		return err
 	}
@@ -58,12 +60,12 @@ func (r parentArchiveRestorer) restore(ctx context.Context, rec runner.OwnedJour
 	if err := r.importArchivedForkSource(ctx, rec, reader, archive); err != nil {
 		return err
 	}
-	policy, _ := resolveRecoveryPolicy(r.layout, r.config)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(r.layout, r.config)
 	maxBytes := policy.MaxArchiveBytesEffective()
 	var state recovery.RetainedParentState
 	if err := r.worktrees.WithRecoveryMirror(ctx, url, func(repository string) error {
 		var err error
-		state, err = recovery.LoadRetainedParentState(ctx, repository, filepath.Join(r.layout.Root, "recovery"), recoveryOverflowRoot(r.layout), record, maxBytes)
+		state, err = recovery.LoadRetainedParentState(ctx, repository, filepath.Join(r.layout.Root, "recovery"), runtimewiring.RecoveryOverflowRoot(r.layout), record, maxBytes)
 		if err != nil {
 			return err
 		}

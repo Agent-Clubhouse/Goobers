@@ -11,12 +11,14 @@ import (
 	"os"
 	"sort"
 	"strings"
-	_ "time/tzdata"
 
-	"golang.org/x/term"
+	"github.com/goobers/goobers/internal/runtimewiring"
+
+	_ "time/tzdata"
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/version"
+	"golang.org/x/term"
 )
 
 const configGenerationMismatchCode = "config_generation_mismatch"
@@ -94,7 +96,7 @@ func enforceAppliedStageConfig() error {
 	if expected == "" {
 		return nil
 	}
-	current, err := configDirectoryDigestForGaggle(layout.ConfigDir(), gaggle)
+	current, err := runtimewiring.ConfigDirectoryDigestForGaggle(layout.ConfigDir(), gaggle)
 	if err != nil {
 		return fmt.Errorf("read deterministic-stage config generation: %w", err)
 	}

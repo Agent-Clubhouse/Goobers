@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // parentKitWriter reuses ordinary kit composition under exact retained stage
@@ -110,7 +111,7 @@ func (w parentKitWriter) snapshot(ctx context.Context) (*workerConfigSnapshot, f
 		release()
 		return nil, nil, fmt.Errorf("parent kit: load retained config: %w (%s)", err, validationIssueSummary(report))
 	}
-	instructions, skills, err := loadSnapshotGooberInputs(directory, set)
+	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(directory, set)
 	if err != nil {
 		release()
 		return nil, nil, err

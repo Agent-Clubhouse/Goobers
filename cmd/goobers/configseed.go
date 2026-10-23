@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 const configSeedHelp = `Usage: goobers config-seed --mirror <absolute-path> --instance <absolute-path>
@@ -58,12 +59,12 @@ func validateSeededWorkerConfig(root string) error {
 	}
 	// Parsing YAML alone is insufficient: first dispatch also needs every
 	// referenced instruction body and skill package, including large prose.
-	_, _, err = loadSnapshotGooberInputs(layout.ConfigDir(), set)
+	_, _, err = runtimewiring.LoadSnapshotGooberInputs(layout.ConfigDir(), set)
 	if err != nil {
 		return err
 	}
 	// The digest loader also verifies asset bytes against preserved source
 	// modes, including when an init-container retry reuses a completed seed.
-	_, err = configDirectoryDigest(layout.ConfigDir())
+	_, err = runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	return err
 }

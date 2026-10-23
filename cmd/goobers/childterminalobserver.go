@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -190,7 +191,7 @@ func (l *queuedChildLauncher) retainedChildWorktrees(ctx context.Context, id jou
 		if id.WorkspaceRepository == nil || !reflect.DeepEqual(gaggle.Spec.Project, *id.WorkspaceRepository) {
 			return nil, errors.New("child terminal repository differs from archive")
 		}
-		if configured, ok := configuredRepoForProject(l.config, gaggle.Spec.Project); ok && configured.Pinned() {
+		if configured, ok := runtimewiring.ConfiguredRepoForProject(l.config, gaggle.Spec.Project); ok && configured.Pinned() {
 			return nil, errors.New("child terminal custody cannot use shared pinned workspace")
 		}
 		scoped, err := instance.EffectiveWorkcopiesLayout(l.layout.ForGaggle(id.Gaggle), l.config, gaggle)

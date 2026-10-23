@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/invoke"
@@ -129,7 +131,7 @@ func (g *parentRoutedGoober) HasAssetBundle() bool {
 // constructs a host harness only after selecting the trusted-local backend.
 // Shared profiles still construct it when an ordinary task or gate uses it.
 // A failed remote parent route never falls back to that path.
-func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory func() (invoke.Goober, error), hasAssets bool, fence executionFenceStart) (invoke.Goober, error) {
+func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory func() (invoke.Goober, error), hasAssets bool, fence runtimewiring.ExecutionFenceStart) (invoke.Goober, error) {
 	routed, err := routeContainedParent(root, goober, rec, nil)
 	if err != nil {
 		return nil, err
@@ -144,5 +146,5 @@ func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory
 		parent.ordinaryFactory = sync.OnceValues(factory)
 		parent.hasAssets = hasAssets
 	}
-	return claimFencedGoober{Goober: routed, start: fence}, nil
+	return runtimewiring.ClaimFencedGoober{Goober: routed, Start: fence}, nil
 }

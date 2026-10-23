@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/retryutil"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/workerblob"
 )
 
@@ -76,7 +77,7 @@ func resolvedWorkerRoot(configured string) string {
 	if configured != "" {
 		return configured
 	}
-	return defaultWorkerRoot(os.TempDir())
+	return runtimewiring.DefaultWorkerRoot(os.TempDir())
 }
 
 type workerConfigPlaneWatcher struct {

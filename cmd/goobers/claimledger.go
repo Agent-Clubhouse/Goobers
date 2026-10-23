@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // claimledger.go is where every ledger-touching CLI stage gets its
@@ -51,7 +52,7 @@ func claimLedgerJournal(l instance.Layout) (*journal.InstanceLog, func(), error)
 	if claimsPlaneSelected() {
 		return nil, func() {}, nil
 	}
-	stopTelemetry := startCommandJournalTelemetry(l, os.Stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(l, os.Stderr)
 	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
 	if err != nil {
 		stopTelemetry()

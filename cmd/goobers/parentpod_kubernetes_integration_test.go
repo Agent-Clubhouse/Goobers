@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"go.temporal.io/sdk/testsuite"
+
 	temporalworker "go.temporal.io/sdk/worker"
 	"sigs.k8s.io/yaml"
 
@@ -116,9 +118,9 @@ func qualifyContainedParentJourney(t *testing.T, action string, provider ...stri
 	recoveryCLIGit(t, sourceRepo, "add", ".")
 	recoveryCLIGit(t, sourceRepo, "commit", "-m", "qualification base")
 	publication := newParentPublicationQualification(t, action, sourceRepo, provider...)
-	originalClone := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return sourceRepo, nil }
-	t.Cleanup(func() { repoCloneURL = originalClone })
+	originalClone := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return sourceRepo, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = originalClone })
 	instanceLog, _, err := journal.OpenInstanceLog(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
