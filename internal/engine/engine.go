@@ -1357,7 +1357,11 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, ""))
+	options := stageActivityOptions(limits, "")
+	if cancelSafeStageJournal(ctx) {
+		options.WaitForCancellation = true
+	}
+	return workflow.WithActivityOptions(ctx, options)
 }
 
 // stageActivityOptions builds the options every engine activity dispatches
@@ -1398,7 +1402,12 @@ func stageActivityOptions(limits apiv1.Limits, taskQueue string) workflow.Activi
 // engine.NewTemporalStarter taking a single queue was never the obstacle it
 // looked like. It is the workflow's queue, and that is correct.
 func stageActivityContextOn(ctx workflow.Context, limits apiv1.Limits, capabilities []string) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, stageTaskQueue(ctx, capabilities)))
+	options := stageActivityOptions(
+		limits, stageTaskQueue(ctx, capabilities))
+	if cancelSafeStageJournal(ctx) {
+		options.WaitForCancellation = true
+	}
+	return workflow.WithActivityOptions(ctx, options)
 }
 
 // stageTaskQueue derives a stage's task queue from its declared platform

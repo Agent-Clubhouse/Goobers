@@ -135,9 +135,6 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	var infraCommittedWork bool
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
-		if cancelSafeStageJournal(ctx) && workflowContextCanceled(ctx) {
-			return apiv1.ResultEnvelope{}, temporal.NewCanceledError()
-		}
 		// The first attempt carries no class (normative); a retry carries the
 		// class its triggering failure selected — the journal attempt-class
 		// convention (§3.3). Infrastructure retries do not consume the policy
@@ -167,6 +164,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		var res apiv1.ResultEnvelope
 		var err error
 		var identity *attemptidentity.Identity
+		completionCommitted := false
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
@@ -175,7 +173,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			activityResult, err = rec.dispatchChargedAttempt(dispatchCtx, in, t, step, &usageBudget, dispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
-			if stopsAttemptLoop(ctx, err) {
+			if stopsAttemptLoop(ctx, err) &&
+				!(cancelSafeStageJournal(ctx) && err == nil) {
 				return apiv1.ResultEnvelope{}, err
 			}
 			if errors.Is(err, errChildContinued) {
@@ -231,7 +230,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
 				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
 				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError, identity)
-				emitErr = emitStageCompletion(ctx, rec)
+				emitErr, completionCommitted = emitStageCompletion(ctx, rec)
 				if emitErr == nil {
 					// Only a WINNING attempt's delta is carried forward. A
 					// retried attempt's bundle describes a workspace that was
@@ -246,7 +245,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		}
 		if emitErr != nil {
 			if cancelSafeStageJournal(ctx) && stopsAttemptLoop(ctx, emitErr) {
-				rec.rollbackUnemitted(mark)
+				if !completionCommitted {
+					rec.rollbackUnemitted(mark)
+				}
 				return apiv1.ResultEnvelope{}, temporal.NewCanceledError()
 			}
 			// §8 failure policy: a journal emission that exhausted its bounded
@@ -351,19 +352,20 @@ func workflowContextCanceled(ctx workflow.Context) bool {
 func emitStageCompletion(
 	ctx workflow.Context,
 	rec *runJournal,
-) error {
+) (error, bool) {
 	if !cancelSafeStageJournal(ctx) {
-		return rec.emitPending(ctx)
+		err := rec.emitPending(ctx)
+		return err, err == nil
 	}
 	disconnected, cancel := workflow.NewDisconnectedContext(ctx)
 	defer cancel()
 	if err := rec.emitPending(disconnected); err != nil {
-		return err
+		return err, false
 	}
 	if workflowContextCanceled(ctx) {
-		return temporal.NewCanceledError()
+		return temporal.NewCanceledError(), true
 	}
-	return nil
+	return nil, true
 }
 
 func usageRequired(usage AttemptUsage, err error) bool {
