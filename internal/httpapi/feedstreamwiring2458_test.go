@@ -23,13 +23,27 @@ func TestFeedStreamUsesTheStoreFeed(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	backend := struct{ readmodel.Backend }{Backend: store}
-	stream := newFeedStream(backend, store.Feed())
-	t.Cleanup(stream.Close)
-
-	if stream.feed != store.Feed() {
-		t.Fatal("the SSE stream holds a different feed from the store's: a projector commit notifies " +
-			"the store's feed while Since waits here, so the wakeup is lost and the Portal stays stale")
+	config := &handlerConfig{}
+	if err := WithChangeFeedStream(backend, store.Feed())(config); err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(config.events.Close)
+	stream, ok := config.events.(*feedStream)
+	if !ok || stream.feed != store.Feed() {
+		t.Fatal("handler did not retain the store's singleton feed")
+	}
+
+	foreign := &handlerConfig{}
+	if err := WithChangeFeedStream(backend, readmodel.NewFeed(store))(foreign); err == nil {
+		if foreign.events != nil {
+			foreign.events.Close()
+		}
+		t.Fatal("handler accepted a second feed: projector wakeups would be lost")
+	}
+	if foreign.events != nil {
+		t.Fatal("refused feed was installed")
+	}
+
 }
 
 func TestWithChangeFeedStreamRequiresBothCapabilities(t *testing.T) {

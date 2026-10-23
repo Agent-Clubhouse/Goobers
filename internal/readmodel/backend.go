@@ -173,6 +173,9 @@ var _ FreshnessReporter = (*Store)(nil)
 type Backend interface {
 	Reader
 	Writer
+	// ChangeFeed returns the backend's singleton feed. Its identity must be
+	// comparable and stable, so readers cannot wait on a second notifier.
+	ChangeFeed() Feed
 }
 
 // Store satisfies Backend. The assertion is here rather than nowhere so that a

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -738,7 +739,8 @@ func WithTrustedProxies(proxies []string) HandlerOption {
 }
 
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
-// change feed (#1929).
+// change feed (#1929). The feed must be store.ChangeFeed(): a second feed would
+// wait on a different notifier and lose the store's commit wakeups.
 //
 // The only SSE source (#1929). It tails rows the projector wrote in the same
 // transaction as the facts they describe, so it is ordered, durable, and
@@ -750,6 +752,9 @@ func WithChangeFeedStream(store readmodel.Backend, feed readmodel.Feed) HandlerO
 	return func(h *handlerConfig) error {
 		if store == nil || feed == nil {
 			return errors.New("http API change feed backend and feed are required")
+		}
+		if !reflect.TypeOf(feed).Comparable() || feed != store.ChangeFeed() {
+			return errors.New("http API change feed must be the backend's singleton feed")
 		}
 		h.events = newFeedStream(store, feed)
 		return nil

@@ -492,3 +492,7 @@ func (s *Store) Feed() *ChangeFeed {
 	s.feedOnce.Do(func() { s.feed = NewFeed(s) })
 	return s.feed
 }
+
+// ChangeFeed exposes the store's singleton through the backend read seam.
+// Feed retains its concrete notifier API for local projector composition.
+func (s *Store) ChangeFeed() Feed { return s.Feed() }
