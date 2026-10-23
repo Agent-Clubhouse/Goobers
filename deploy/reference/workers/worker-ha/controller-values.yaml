@@ -1,0 +1,10 @@
+# Merge this fragment into the Temporal Worker Controller chart values. The
+# validating webhook and controller RBAC both derive from allowedResources.
+workerResourceTemplate:
+  allowedResources:
+    - kinds: ["HorizontalPodAutoscaler"]
+      apiGroups: ["autoscaling"]
+      resources: ["horizontalpodautoscalers"]
+    - kinds: ["PodDisruptionBudget"]
+      apiGroups: ["policy"]
+      resources: ["poddisruptionbudgets"]

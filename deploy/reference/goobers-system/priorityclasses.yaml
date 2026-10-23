@@ -1,0 +1,16 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: goobers-control-plane
+value: 100000
+globalDefault: false
+description: Goobers control-plane services, including versioned workers.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: goobers-stage
+value: 1000
+preemptionPolicy: Never
+globalDefault: false
+description: Goobers stage pods; never preempts another workload.

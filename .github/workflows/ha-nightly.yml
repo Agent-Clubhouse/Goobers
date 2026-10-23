@@ -109,6 +109,9 @@ jobs:
           go test -race ./test/ha/invariants/... ./test/ha/chaos/...
           go run ./test/ha/chaos/cmd/chaos run | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify worker HA scenario contracts
+        run: go test ./test/ha/workerscenarios
+
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
         run: |

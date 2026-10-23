@@ -16,7 +16,9 @@ resources:
   - operator-deployment.yaml
   - worker-rbac.yaml
   - worker-service-rbac.yaml
+  - priorityclasses.yaml
   - worker-deployment.yaml
+  - worker-pdb.yaml
   - networkpolicies.yaml
   - api-rbac.yaml
   - api-deployment.yaml
