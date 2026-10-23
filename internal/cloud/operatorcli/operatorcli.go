@@ -28,25 +28,51 @@ type Command struct {
 	Run   func([]string, io.Writer, io.Writer) int
 }
 
+// Handler is a command implementation supplied by the composition root.
+type Handler func([]string, io.Writer, io.Writer) int
+
 // Commands returns the complete operator command registry.
-func Commands() []Command {
-	return []Command{
+func Commands(overrides ...map[string]Handler) []Command {
+	commands := []Command{
 		{Name: "status", Short: "Show cloud instance status through the API.", Long: statusHelp, Run: runStatus},
 		{Name: "runs list", Short: "List runs through the API.", Long: runsListHelp, Run: runRunsList},
 		{Name: "runs show", Short: "Show one run through the API.", Long: runsShowHelp, Run: runRunsShow},
 		{Name: "runs logs", Short: "Read one run's journal events through the API.", Long: runsLogsHelp, Run: runRunsLogs},
 		{Name: "claims list", Short: "List active claims through the API.", Long: claimsListHelp, Run: runClaimsList},
-		{Name: "claims release", Short: "Release a cloud claim.", Long: claimsReleaseHelp, Run: unavailableOperatorCommand("claims release", claimsReleaseHelp, "#7808")},
+		{Name: "claims release", Short: "Release a cloud claim.", Long: claimsReleaseHelp, Run: unavailableOperatorCommand("claims release", claimsReleaseHelp, "#7845")},
 		{Name: "triggers", Short: "Submit a durable workflow trigger through the API.", Long: triggersHelp, Run: runTriggers},
 		{Name: "approve", Short: "Approve a paused stage through the API.", Long: approveHelp, Run: runApprove},
 		{Name: "override", Short: "Override a paused stage through the API.", Long: overrideHelp, Run: runOverride},
 		{Name: "deny", Short: "Deny an escalated run through the API.", Long: denyHelp, Run: runDeny},
 		{Name: "cancel", Short: "Cancel a live run through the API.", Long: cancelHelp, Run: runCancel},
-		{Name: "config apply", Short: "Apply cloud configuration.", Long: configApplyHelp, Run: unavailableOperatorCommand("config apply", configApplyHelp, "#7827")},
-		{Name: "config status", Short: "Show cloud configuration status.", Long: configStatusHelp, Run: unavailableOperatorCommand("config status", configStatusHelp, "#7827")},
-		{Name: "migrate status", Short: "Show cloud schema migration status.", Long: migrateStatusHelp, Run: unavailableOperatorCommand("migrate status", migrateStatusHelp, "#7802")},
-		{Name: "lease status", Short: "Show cloud controller lease status.", Long: leaseStatusHelp, Run: unavailableOperatorCommand("lease status", leaseStatusHelp, "#7803")},
+		{Name: "config apply", Short: "Apply cloud configuration.", Long: configApplyHelp, Run: unavailableOperatorCommand("config apply", configApplyHelp, "#7834")},
+		{Name: "config status", Short: "Show cloud configuration status.", Long: configStatusHelp, Run: unavailableOperatorCommand("config status", configStatusHelp, "#7834")},
+		{Name: "migrate status", Short: "Show cloud schema migration status.", Long: migrateStatusHelp},
+		{Name: "lease status", Short: "Show cloud controller lease status.", Long: leaseStatusHelp},
 	}
+	if len(overrides) != 0 {
+		for i := range commands {
+			if run := overrides[0][commands[i].Name]; run != nil {
+				commands[i].Run = run
+			}
+		}
+	}
+	for i := range commands {
+		if commands[i].Run == nil {
+			commands[i].Run = unavailableOperatorCommand(commands[i].Name, commands[i].Long, "#7818")
+		}
+	}
+	return commands
+}
+
+// Help returns the registered long help for name.
+func Help(name string) string {
+	for _, command := range Commands() {
+		if command.Name == name {
+			return command.Long
+		}
+	}
+	return ""
 }
 
 const (
@@ -97,19 +123,20 @@ Cancel one live cloud run through the control-plane API.
 `
 	configApplyHelp = `Usage: goobers-cloud config apply [OPTIONS]
 
-Apply a cloud configuration generation. Reserved until #7827.
+Apply a cloud configuration generation. Reserved until #7834.
 `
 	configStatusHelp = `Usage: goobers-cloud config status [OPTIONS]
 
-Show cloud configuration generation and eligibility status. Reserved until #7827.
+Show cloud configuration generation and eligibility status. Reserved until #7834.
 `
-	migrateStatusHelp = `Usage: goobers-cloud migrate status [OPTIONS]
+	migrateStatusHelp = `Usage: goobers-cloud migrate status [DATABASE OPTIONS]
 
-Show cloud schema migration compatibility. Reserved until #7802.
+Show applied cloud schema migrations and binary compatibility.
 `
-	leaseStatusHelp = `Usage: goobers-cloud lease status [OPTIONS]
+	leaseStatusHelp = `Usage: goobers-cloud lease status [DATABASE OPTIONS]
 
-Show the active cloud controller lease and fence epoch. Reserved until #7803.
+Show active cloud controller leases, fence epochs, DB-clock expiry, and recent
+lease history.
 `
 )
 

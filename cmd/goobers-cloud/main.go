@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/cliregistry"
@@ -29,13 +28,16 @@ func init() {
 	commands = []command{
 		{name: "api", short: "Serve the cloud control-plane API.", long: apiHelp, run: runAPIRole, role: true},
 		{name: "controller", short: "Run cloud control-plane reconciliation.", long: controllerHelp, run: runControllerRole, role: true},
-		{name: "worker", short: "Run a Temporal engine worker.", long: workerHelp, examples: []string{"goobers-cloud worker --task-queue goobers"}, run: runWorkerRole, role: true},
 		{name: "migrate", short: "Apply cloud data-store migrations.", long: migrateHelp, run: runMigrateRole, role: true},
+		{name: "worker", short: "Run a Temporal engine worker.", long: workerHelp, examples: []string{"goobers-cloud worker --task-queue goobers"}, run: runWorkerRole, role: true},
 		{name: "completion", short: "Generate a shell completion script.", long: completionHelp, run: runCompletion},
 		{name: "help", short: "Show command help.", long: helpHelp, run: runHelp},
 		{name: "__generate-docs", run: runGenerateDocs, hidden: true},
 	}
-	for _, operator := range operatorcli.Commands() {
+	for _, operator := range operatorcli.Commands(map[string]operatorcli.Handler{
+		"migrate status": runMigrateStatus,
+		"lease status":   runLeaseStatus,
+	}) {
 		commands = append(commands, command{name: operator.Name, short: operator.Short, long: operator.Long, run: operator.Run})
 	}
 }
@@ -75,15 +77,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func writeUsage(w io.Writer) {
 	writef(w, "goobers-cloud %s\n\nUsage:\n  goobers-cloud <COMMAND> [OPTIONS]\n\nRoles:\n", version.Version)
-	visible := make([]command, 0, len(commands))
 	for _, candidate := range commands {
 		if candidate.role {
-			visible = append(visible, candidate)
+			writef(w, "  %-18s %s\n", candidate.name, candidate.short)
 		}
-	}
-	sort.Slice(visible, func(i, j int) bool { return visible[i].name < visible[j].name })
-	for _, candidate := range visible {
-		writef(w, "  %-18s %s\n", candidate.name, candidate.short)
 	}
 	writeln(w, "\nCommands:")
 	for _, candidate := range commands {

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/operatorcli"
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/workerhost"
 )
 
@@ -94,7 +94,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	if err := os.WriteFile(urlFile, []byte("postgres://file-secret@localhost/goobers\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := databaseURL("", urlFile, "UNSET_DATABASE_URL")
+	value, err := cloudpg.DatabaseURL("", urlFile, "UNSET_DATABASE_URL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +114,7 @@ func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
 	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
 		return &cloudpg.Pools{}, nil
 	}
+
 	var backupRef string
 	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string) error {
 		backupRef = backup

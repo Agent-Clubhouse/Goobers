@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/operatorcli"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/version"
@@ -108,7 +111,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		flags.Usage()
 		return 2
 	}
-	directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
+	directURL, err := cloudpg.DatabaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud migrate: direct database URL: %v\n", err)
 		return 2
@@ -165,9 +168,37 @@ var (
 			InstanceID: instanceID, Holder: holder,
 		}).Apply(ctx)
 	}
+	loadMigrationStatus = cloudmigrate.Status
+	loadLeaseStatus     = cloudlease.Status
+	pingCloudPools      = func(ctx context.Context, pools *cloudpg.Pools) (string, error) {
+		if err := pools.Transaction.Ping(ctx); err != nil {
+			return "transaction", err
+		}
+		return "direct", pools.Direct.Ping(ctx)
+	}
 )
 
 type databaseRole func(context.Context, *cloudpg.Pools, error) error
+
+func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
+	return runDatabaseRole("migrate status", operatorcli.Help("migrate status"), args, stdout, stderr, func(ctx context.Context, pools *cloudpg.Pools, _ error) error {
+		status, err := loadMigrationStatus(ctx, pools.Transaction, version.Get().Version)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(status)
+	})
+}
+
+func runLeaseStatus(args []string, stdout, stderr io.Writer) int {
+	return runDatabaseRole("lease status", operatorcli.Help("lease status"), args, stdout, stderr, func(ctx context.Context, pools *cloudpg.Pools, _ error) error {
+		status, err := loadLeaseStatus(ctx, pools.Transaction)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(status)
+	})
+}
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
@@ -198,12 +229,12 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		flags.Usage()
 		return 2
 	}
-	transactionURL, err := databaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
+	transactionURL, err := cloudpg.DatabaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: transaction database URL: %v\n", role, err)
 		return 2
 	}
-	directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
+	directURL, err := cloudpg.DatabaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: direct database URL: %v\n", role, err)
 		return 2
@@ -223,12 +254,8 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		return 1
 	}
 	defer pools.Close()
-	if err := pools.Transaction.Ping(ctx); err != nil {
-		writef(stderr, "goobers-cloud %s: transaction pool: %s\n", role, cloudpg.SafeDiagnostic(err))
-		return 1
-	}
-	if err := pools.Direct.Ping(ctx); err != nil {
-		writef(stderr, "goobers-cloud %s: direct pool: %s\n", role, cloudpg.SafeDiagnostic(err))
+	if pool, err := pingCloudPools(ctx, pools); err != nil {
+		writef(stderr, "goobers-cloud %s: %s pool: %s\n", role, pool, cloudpg.SafeDiagnostic(err))
 		return 1
 	}
 	compatibilityErr := checkCloudSchema(ctx, pools.Transaction, version.Get().Version)
@@ -241,29 +268,6 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		return 1
 	}
 	return 0
-}
-
-func databaseURL(argument, filename, environment string) (string, error) {
-	if strings.TrimSpace(argument) != "" && strings.TrimSpace(filename) != "" {
-		return "", errors.New("choose either the URL argument or file, not both")
-	}
-	if value := strings.TrimSpace(argument); value != "" {
-		return value, nil
-	}
-	if strings.TrimSpace(filename) != "" {
-		content, err := os.ReadFile(filename)
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", filename, err)
-		}
-		if value := strings.TrimSpace(string(content)); value != "" {
-			return value, nil
-		}
-		return "", fmt.Errorf("%s is empty", filename)
-	}
-	if value := strings.TrimSpace(os.Getenv(environment)); value != "" {
-		return value, nil
-	}
-	return "", fmt.Errorf("set the corresponding flag, file, or %s", environment)
 }
 
 func configureDatabaseAuth(role, authMode string, config *cloudpg.Config, stderr io.Writer) int {

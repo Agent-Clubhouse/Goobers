@@ -131,11 +131,9 @@ func TestOperatorCommandsFailClosed(t *testing.T) {
 		args  []string
 		issue string
 	}{
-		{args: []string{"claims", "release"}, issue: "#7808"},
-		{args: []string{"config", "apply"}, issue: "#7827"},
-		{args: []string{"config", "status"}, issue: "#7827"},
-		{args: []string{"migrate", "status"}, issue: "#7802"},
-		{args: []string{"lease", "status"}, issue: "#7803"},
+		{args: []string{"claims", "release"}, issue: "#7845"},
+		{args: []string{"config", "apply"}, issue: "#7834"},
+		{args: []string{"config", "status"}, issue: "#7834"},
 	} {
 		code, stdout, stderr := runForTest(test.args...)
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "not available until "+test.issue) {
