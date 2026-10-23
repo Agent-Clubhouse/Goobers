@@ -273,7 +273,7 @@ reference's original 1.27.2 installation one minor at a time:
 | baseline | 0.62.0 | 1.27.2 | Record a database backup and current Helm values | cluster health, D11 reference smoke, E2/E4/E11 replay | restore the backup and chart 0.62.0 |
 | 1 | 0.64.0 | 1.28.0 | Delete any Worker Deployments created on 1.27, then let the chart's pre-upgrade schema hook finish | same | restore the pre-step backup and chart 0.62.0 |
 | 2 | 0.68.1 | 1.29.0 | Let the pre-upgrade schema hook finish | same | restore the pre-step backup and chart 0.64.0 |
-| 3 | 0.74.0 | 1.30.3 | Let the pre-upgrade schema hook finish; 1.30 removes tools from server images | same | restore the pre-step backup and chart 0.68.1 |
+| 3 | 0.74.0 | 1.30.3 | Let the pre-upgrade schema hook finish; select the chart's `sprig` config because 1.30 removes `dockerize` | same | restore the pre-step backup and chart 0.68.1 |
 | 4 | 1.3.0 | 1.31.0 | Migrate to chart 1.x datastore values and let the pre-upgrade schema hook finish | same; Worker Deployment APIs are GA | restore the pre-step backup and chart 0.74.0 with legacy values |
 
 Database schema migrations are not downgraded in place. A rollback restores the

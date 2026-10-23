@@ -251,6 +251,7 @@ func collect() error {
 		"events.txt":        {"kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"},
 		"cnpg.yaml":         {"kubectl", "get", "cluster", "temporal-postgres", "-n", "goobers-temporal", "-o", "yaml"},
 		"helm-releases.txt": {"helm", "list", "-A"},
+		"temporal-logs.txt": {"kubectl", "logs", "-n", "goobers-temporal", "--all-containers", "--prefix", "--tail=200", "-l", "app.kubernetes.io/instance=temporal"},
 	} {
 		_ = capture(ctx, filepath.Join(evidence, name), args...)
 	}

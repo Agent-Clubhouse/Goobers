@@ -13,6 +13,10 @@ grafana:
 
 server:
   replicaCount: 1
+  # Chart 0.74 defaults to the removed dockerize path even for its 1.30 image.
+  # Earlier charts ignore these keys; 0.74 uses the built-in sprig renderer.
+  configMapsToMount: sprig
+  setConfigFilePath: true
   dynamicConfig:
     frontend.workerVersioningWorkflowAPIs:
       - value: true
