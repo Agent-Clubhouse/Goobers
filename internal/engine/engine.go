@@ -267,12 +267,8 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := refuseRemoteUsage(in.WorkflowName, in.Spec, in.Placements); err != nil {
 		return RunResult{}, err
 	}
-	if !humanGateImplementationEnabled(ctx) {
-		for _, gate := range in.Spec.Gates {
-			if err := refuseHumanGate(gate); err != nil {
-				return RunResult{}, err
-			}
-		}
+	if err := refuseUnreadyHumanGates(ctx, in); err != nil {
+		return RunResult{}, err
 	}
 	rec, err := newRunJournal(ctx, in, m)
 	if err != nil {

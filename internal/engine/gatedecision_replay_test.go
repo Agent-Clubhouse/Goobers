@@ -11,7 +11,6 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
@@ -34,7 +33,7 @@ func TestGateDecisionAcceptedHistoryAndPrefixesReplay(t *testing.T) {
 	writer, _ := newLiveWriter(t)
 	const queue = "gate-decision-replay"
 	worker := temporalworker.New(server.Client(), queue, temporalworker.Options{})
-	worker.RegisterWorkflowWithOptions(runHumanGateTestWorkflow, workflow.RegisterOptions{Name: "Run"})
+	worker.RegisterWorkflow(Run)
 	worker.RegisterActivity(&Activities{Journal: writer})
 	if err := worker.Start(); err != nil {
 		t.Fatal(err)

@@ -60,7 +60,6 @@ var engineRuntimeBlockers = map[workflow.FeatureID]runtimeBlocker{
 	"workflow.spec.parallels.selection": {path: "spec.parallels.selection", issue: 7754},
 	"workflow.spec.maps":                {path: "spec.maps", issue: 7755},
 	"task.childWorkflows":               {path: "task.childWorkflows", issue: 7758},
-	"gate.evaluator.human":              {path: "gate.evaluator.human", issue: 7760},
 	"task.limits.maxTokens":             {path: "task.limits.maxTokens", issue: 7761},
 	"task.limits.maxCostUSD":            {path: "task.limits.maxCostUSD", issue: 7761},
 	"task.outbox":                       {path: "task.outbox", issue: 7762},
@@ -186,11 +185,6 @@ func declaredEngineRuntimeBlockers(spec apiv1.WorkflowSpec) []workflow.FeatureID
 	for _, refusal := range engineadmission.UnsupportedFeatures(spec) {
 		if id, ok := runtimeFeatureForPath(refusal.Feature); ok {
 			declared[id] = true
-		}
-	}
-	for _, gate := range spec.Gates {
-		if gate.Evaluator == apiv1.EvaluatorHuman {
-			declared["gate.evaluator.human"] = true
 		}
 	}
 	for _, task := range spec.Tasks {

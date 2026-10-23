@@ -167,8 +167,9 @@ func RefuseFeatures(name string, spec apiv1.WorkflowSpec) error {
 	return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
 }
 
-// RefuseHumanGate is run()'s human-gate refusal, factored out so the daemon's
-// pre-dispatch check (RefuseDefinition) cannot drift from the walk's own.
+// RefuseHumanGate is the historical run-start human-gate refusal. The engine
+// still applies it to histories recorded before human gates were supported
+// (HA-P4-12, #7760), and to generated children, which cannot hold a gate yet.
 func RefuseHumanGate(g apiv1.Gate) error {
 	if g.Evaluator != apiv1.EvaluatorHuman {
 		return nil
@@ -178,7 +179,8 @@ func RefuseHumanGate(g apiv1.Gate) error {
 
 // RefuseDefinition reports why the engine walk cannot execute this definition,
 // or nil when it can. It aggregates every refusal the walk applies from the
-// definition ALONE — the R9 unsupported-feature set and human gates.
+// definition ALONE — the R9 unsupported-feature set. Human gates run on the
+// engine through the occurrence-bound decision protocol (#7760).
 //
 // # Why the daemon needs this before it dispatches
 //
@@ -200,15 +202,7 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // the runner, where the feature is implemented, with the refusal text as the
 // operator-facing reason.
 func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
-	if err := RefuseFeatures(name, spec); err != nil {
-		return err
-	}
-	for _, g := range spec.Gates {
-		if err := RefuseHumanGate(g); err != nil {
-			return err
-		}
-	}
-	return nil
+	return RefuseFeatures(name, spec)
 }
 
 // RefusePlacedDefinition also checks features whose support depends on the

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engineadmission"
@@ -394,18 +395,32 @@ func TestHumanGateRequiresEnabledDecisionPolicy(t *testing.T) {
 			},
 		},
 	}
-	var ts testsuite.WorkflowTestSuite
-	env := temporaltest.NewWorkflowEnvironment(&ts)
-	calls := 0
-	env.RegisterActivity(&Activities{Det: &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-		calls++
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
-	}}})
-	env.ExecuteWorkflow(Run, runInput("human", spec))
-
-	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), engineadmission.HumanGateUnsupported) || calls != 0 {
-		t.Fatalf("workflow error = %v calls=%d, want run-start human gate refusal", err, calls)
+	for name, c := range map[string]struct {
+		legacy bool
+		want   string
+	}{
+		// A new run with no enabled decision policy fails closed at start
+		// rather than holding a gate no decision can reach.
+		"no decision policy": {want: HumanGateDecisionPolicyRequired},
+		// A history recorded before engine support replays its refusal.
+		"pre-support history": {legacy: true, want: engineadmission.HumanGateUnsupported},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ts testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&ts)
+			if c.legacy {
+				env.OnGetVersion(humanGateDecisionChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+			}
+			calls := 0
+			env.RegisterActivity(&Activities{Det: &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+				calls++
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+			}}})
+			env.ExecuteWorkflow(Run, runInput("human", spec))
+			if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), c.want) || calls != 0 {
+				t.Fatalf("workflow error = %v calls=%d, want run-start refusal %q", err, calls, c.want)
+			}
+		})
 	}
 }
 

@@ -209,7 +209,6 @@ func ensureRuntimeSupport(features []Feature) []Feature {
 			"workflow.spec.parallels.selection",
 			"workflow.spec.maps",
 			"task.childWorkflows",
-			"gate.evaluator.human",
 			"task.limits.maxTokens",
 			"task.limits.maxCostUSD",
 			"task.outbox",
