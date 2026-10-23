@@ -28,14 +28,13 @@ type RunKey struct {
 
 // RunWriterOptions carries storage-independent writer policy.
 type RunWriterOptions struct {
-	Clock                  func() time.Time
-	Scrubber               Scrubber
-	InputIntegrity         map[string]apiv1.Integrity
-	InputSource            map[string]string
-	AppendObserver         func(string, uint64)
-	ContextObserver        func(context.Context, string, uint64)
-	ObserverContext        context.Context
-	DisableCommittedExport bool
+	Clock           func() time.Time
+	Scrubber        Scrubber
+	InputIntegrity  map[string]apiv1.Integrity
+	InputSource     map[string]string
+	AppendObserver  func(string, uint64)
+	ContextObserver func(context.Context, string, uint64)
+	ObserverContext context.Context
 }
 
 // CreateRunRequest creates one logical run.
@@ -471,9 +470,6 @@ func fileRunOptions(options RunWriterOptions) []Option {
 		result = append(result, WithAsyncAppendObserver(ctx, options.ContextObserver))
 	} else if options.AppendObserver != nil {
 		result = append(result, WithAppendObserver(options.AppendObserver))
-	}
-	if options.DisableCommittedExport {
-		result = append(result, WithoutCommittedEventExport())
 	}
 	return result
 }
