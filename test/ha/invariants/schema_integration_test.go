@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -93,6 +94,7 @@ func newSchemaDB(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	runner := migrate.Runner{Direct: pool, Catalog: catalog, BackupRef: "chaos-selftest", InstanceID: "i", Holder: "chaos-selftest"}
 	if err := runner.Apply(ctx); err != nil {
 		t.Fatal(err)

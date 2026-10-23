@@ -10,7 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -73,7 +73,7 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if err != nil {
 		r.append(ctx, journal.Event{
 			Type: journal.EventError, Parallel: p.Name,
-			Error: journal.ErrorDetailFor(runner.FanOutSourceInvalidCode, err),
+			Error: journal.ErrorDetailFor(runsemantics.FanOutSourceInvalidCode, err),
 		})
 		if emitErr := r.emitPending(ctx); emitErr != nil {
 			return "", true, emitErr
@@ -232,7 +232,7 @@ func (p *staticParallelWalk) target() string {
 
 func (r *runJournal) staticJoinInputs(stage string, inputs map[string]any) {
 	if s := r.staticWalk; s != nil && s.join == stage {
-		inputs[runner.BranchCompletenessInput] = s.completeness
+		inputs[runsemantics.BranchCompletenessInput] = s.completeness
 	}
 }
 

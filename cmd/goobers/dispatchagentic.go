@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
@@ -50,10 +51,13 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		// would run with no instructions at all.
 		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
 	}
-	ctx, usage := newSupervisedUsageContext(ctx, kit.Envelope.Limits)
+	ctx, usage := newSupervisedUsageContext(ctx, kit.UsageAllowance)
 	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
 	ctx = invoke.WithAgentUsageStream(ctx, usage.report)
 	defer func() { settleSupervisedUsage(&out, usage) }()
+	if usage.budgetCause() != nil {
+		return stageOutcome{}
+	}
 	// fail shapes every refusal past this point. For a REVIEW the class
 	// matters in a way it does not for an invocation: a task's surrendered
 	// failure is a business outcome the workflow branches on, but a gate has
@@ -103,7 +107,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		// so the engine ends the run superseded rather than failed.
 		code := workspaceProvisionFailureCode(err)
 		out := fail(code, err)
-		out.WorkspaceHeadMoved = code == runner.WorkspaceHeadMovedErrorCode
+		out.WorkspaceHeadMoved = code == runsemantics.WorkspaceHeadMovedErrorCode
 		return out
 	}
 	// The stamp the harness actually reads.

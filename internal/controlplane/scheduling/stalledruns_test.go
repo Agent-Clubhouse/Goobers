@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -224,7 +225,7 @@ func TestSweepStalledRunsAbortsOverAgeRunWithFreshHeartbeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(events) < 2 || events[len(events)-2].Error == nil ||
-		events[len(events)-2].Error.Code != runner.RunDurationExceededErrorCode {
+		events[len(events)-2].Error.Code != runsemantics.RunDurationExceededErrorCode {
 		t.Fatalf("terminal events = %+v, want duration-exceeded error", events)
 	}
 }

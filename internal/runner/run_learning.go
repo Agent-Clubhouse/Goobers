@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
-	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // gateBranchInjection is what a gate branch that re-enters a stage produces
@@ -115,7 +113,7 @@ func recordGateBranchEpisode(
 	sourceResult apiv1.ResultEnvelope,
 	verdictPointer *apiv1.ContextPointer,
 ) (*apiv1.ContextPointer, error) {
-	if !LearningEpisodeAppliesToBranch(LearningEpisodeBranchFor(gr)) {
+	if !runsemantics.LearningEpisodeAppliesToBranch(LearningEpisodeBranchFor(gr)) {
 		return nil, nil
 	}
 	return recordLearningInjection(jr, in, gateName, target, gr, sourceStage, sourceResult, verdictPointer)
@@ -185,7 +183,7 @@ func recordLearningInjection(
 	// here: the artifact's digest is conformance-normative, so the engine's own
 	// injection has to produce the identical struct rather than a second
 	// hand-assembled copy of it.
-	episode := BuildLearningEpisode(LearningEpisodeInput{
+	episode := runsemantics.BuildLearningEpisode(runsemantics.LearningEpisodeInput{
 		RunID:             in.RunID,
 		Workflow:          in.Machine.Def.Name,
 		WorkflowDigest:    in.Machine.Digest(),
@@ -203,20 +201,20 @@ func recordLearningInjection(
 	if err != nil {
 		return nil, fmt.Errorf("encode learning episode: %w", err)
 	}
-	name := LearningEpisodeArtifactName(gateName, sourceSeq)
+	name := runsemantics.LearningEpisodeArtifactName(gateName, sourceSeq)
 	ref, err := jr.RecordArtifact(name, data)
 	if err != nil {
 		return nil, fmt.Errorf("record learning episode: %w", err)
 	}
 	episodePointer := &apiv1.ContextPointer{
-		Name:      LearningEpisodePointerName(sourceSeq),
+		Name:      runsemantics.LearningEpisodePointerName(sourceSeq),
 		Integrity: ref.Integrity,
 		Artifact: &apiv1.ArtifactPointer{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 			MediaType: "application/json", Integrity: ref.Integrity,
 		},
 	}
-	runner := LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest)
+	runner := runsemantics.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest)
 	if err := jr.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		// #3931: Stage is the TARGET and so is Attempt. A stage-scoped event's
@@ -235,80 +233,14 @@ func recordLearningInjection(
 	return episodePointer, nil
 }
 
-func learningEpisodeAddressing(runDir, gateName, sourceStage, target string, reviewer bool) LearningEpisodeAddressing {
+func learningEpisodeAddressing(runDir, gateName, sourceStage, target string, reviewer bool) runsemantics.LearningEpisodeAddressing {
 	rd, err := journal.OpenRead(runDir)
 	if err != nil {
-		return LearningEpisodeAddressing{}
+		return runsemantics.LearningEpisodeAddressing{}
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return LearningEpisodeAddressing{}
+		return runsemantics.LearningEpisodeAddressing{}
 	}
-	return ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, reviewer)
-}
-
-func learningFindingsForRepass(gateName, stage string, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.Finding {
-	if verdict != nil && len(verdict.Findings) > 0 {
-		findings := append([]apiv1.Finding(nil), verdict.Findings...)
-		for i := range findings {
-			learning.NormalizeFinding(&findings[i], gateName, findings[i].EvidenceDigest)
-		}
-		return findings
-	}
-	message := strings.TrimSpace(result.Summary)
-	if result.Error != nil {
-		if result.Error.Message != "" {
-			message = result.Error.Message
-		}
-		if message == "" {
-			message = result.Error.Code
-		}
-	}
-	if message == "" {
-		message = "validation failed"
-	}
-	finding := apiv1.Finding{
-		Severity:               apiv1.SeverityError,
-		Message:                message,
-		Location:               stage,
-		LearningClassification: apiv1.LearningValidation,
-	}
-	learning.NormalizeFinding(&finding, stage, learningEvidenceDigest(result.Artifacts))
-	return []apiv1.Finding{finding}
-}
-
-func learningEvidence(pointer *apiv1.ContextPointer, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.ArtifactPointer {
-	var evidence []apiv1.ArtifactPointer
-	if pointer != nil && pointer.Artifact != nil {
-		evidence = append(evidence, *pointer.Artifact)
-	}
-	if verdict != nil {
-		evidence = append(evidence, verdict.Evidence...)
-	}
-	evidence = append(evidence, result.Artifacts...)
-	seen := map[string]bool{}
-	out := evidence[:0]
-	for _, artifact := range evidence {
-		key := artifact.Digest + "\x00" + artifact.Path
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, artifact)
-	}
-	return out
-}
-
-func learningEvidenceDigest(artifacts []apiv1.ArtifactPointer) string {
-	digests := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if artifact.Digest != "" {
-			digests = append(digests, artifact.Digest)
-		}
-	}
-	slices.Sort(digests)
-	if len(digests) == 0 {
-		return ""
-	}
-	return apiv1.Digest([]byte(strings.Join(digests, "\n")))
+	return runsemantics.ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, reviewer)
 }

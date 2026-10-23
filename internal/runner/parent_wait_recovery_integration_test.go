@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -32,7 +34,7 @@ func TestIntegrationAcceptedRecoveryWaitsBeforeAnyContinuation(t *testing.T) {
 	for _, terminal := range []bool{false, true} {
 		t.Run(map[bool]string{false: "crash", true: "human-reopen"}[terminal], func(t *testing.T) {
 			r, run, frame, f, fork := prepareChildWaitRuntime(t)
-			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 				t.Fatal(err)
 			}
 			workspace, err := r.createStageWorkspace(t.Context(), frame.in, frame.t.Name, apiv1.WorkspaceRepo, false, "")
@@ -167,7 +169,7 @@ func TestIntegrationParentCustodyPrecedesInvocationAndSurvivesReplyLoss(t *testi
 func TestIntegrationParentRecoveryAfterChildContinuationUsesLatestAttempt(t *testing.T) {
 	testdep.Require(t, "git")
 	r, run, frame, f, _ := prepareChildWaitRuntime(t)
-	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := r.createStageWorkspace(t.Context(), frame.in, frame.t.Name, apiv1.WorkspaceRepo, false, "")
@@ -194,8 +196,8 @@ func TestIntegrationParentRecoveryAfterChildContinuationUsesLatestAttempt(t *tes
 	if err := run.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: frame.t.Name, Attempt: 1, Runner: map[string]any{"kind": ChildContinuedKind, "requestId": request.RequestID, "context": pointer}}); err != nil {
 		t.Fatal(err)
 	}
-	prior := newStageUsageTotals()
-	accumulateStageUsage(prior, map[string]float64{telemetry.AttrUsageCostUSD: 2})
+	prior := runsemantics.NewStageUsageTotals()
+	runsemantics.AccumulateStageUsage(prior, map[string]float64{telemetry.AttrUsageCostUSD: 2})
 	if err := frame.recordTaskStartedWithRecovery(2, "", 0, 0, prior); err != nil {
 		t.Fatal(err)
 	}

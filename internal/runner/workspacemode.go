@@ -2,6 +2,7 @@ package runner
 
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -56,5 +57,5 @@ func emptyReviewerDiffIsEvidence(m *workflow.Machine, subjectStage string, g api
 	if !gateWorkspaceMode(g).IsWritableRepo() && !runBranchObserved {
 		return false
 	}
-	return RequiresReviewerDiff(m, g.Name, subjectStage)
+	return runsemantics.RequiresReviewerDiff(m, g.Name, subjectStage)
 }

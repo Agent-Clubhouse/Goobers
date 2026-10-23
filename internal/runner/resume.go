@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workflowgraph"
 )
@@ -1139,7 +1140,7 @@ func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate,
 		return gate.Result{}, false, false, nil
 	}
 	result := gateResultFromEvent(evaluated)
-	class, _, retryable := retryFailureClassForGateResult(g, subject, result.Outcome)
+	class, _, retryable := runsemantics.RetryFailureClassForGateResult(g, subject, result.Outcome)
 	if !retryable {
 		return gate.Result{}, false, false, nil
 	}
@@ -1203,7 +1204,7 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 		e := events[i]
 		switch e.Type {
 		case journal.EventStageFinished:
-			if isInterruptedAttemptMarker(e) {
+			if runsemantics.IsInterruptedAttemptMarker(e) {
 				continue
 			}
 			return "", false
@@ -1226,7 +1227,7 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 				}
 				return target, true
 			}
-			if e.Runner["kind"] != retryDecisionKind || e.Stage != subjectStage {
+			if e.Runner["kind"] != runsemantics.RetryDecisionKind || e.Stage != subjectStage {
 				continue
 			}
 			g, ok := machine.Gate(e.Gate)
@@ -1234,10 +1235,10 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 				return "", false
 			}
 			outcome := ""
-			if class, ok := e.Runner[retryFailureClassKey].(string); ok && class == string(journal.AttemptInfra) {
+			if class, ok := e.Runner[runsemantics.RetryFailureClassKey].(string); ok && class == string(journal.AttemptInfra) {
 				outcome = gate.OutcomeInfra
 			}
-			if _, _, retryable := retryFailureClassForGateResult(g, subject, outcome); !retryable {
+			if _, _, retryable := runsemantics.RetryFailureClassForGateResult(g, subject, outcome); !retryable {
 				return "", false
 			}
 			target, ok := e.Runner["target"].(string)
@@ -1258,7 +1259,7 @@ func hasRetryDecisionAfter(events []journal.Event, evaluated journal.Event) bool
 	for i := len(events) - 1; i >= 0 && events[i].Seq > evaluated.Seq; i-- {
 		e := events[i]
 		if e.Type == journal.EventRunnerAnnotation && e.Gate == evaluated.Gate &&
-			e.Runner["kind"] == retryDecisionKind {
+			e.Runner["kind"] == runsemantics.RetryDecisionKind {
 			return true
 		}
 	}
@@ -1389,7 +1390,7 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
-	cause := newTerminalCause(journal.PhaseFailed)
+	cause := runsemantics.NewTerminalCause(journal.PhaseFailed)
 	cause.Classification, cause.Code, cause.Message = journal.TerminalResumeRefused, code, msg
 	cause.CausalEventSeq = jr.Seq() + 1 // The refusal itself is the causal event.
 	terminal := journal.Event{
@@ -1427,7 +1428,7 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 func lastFinishedSubject(events []journal.Event) (stage string, result apiv1.ResultEnvelope, ok bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
-		if e.Type != journal.EventStageFinished || isInterruptedAttemptMarker(e) {
+		if e.Type != journal.EventStageFinished || runsemantics.IsInterruptedAttemptMarker(e) {
 			continue
 		}
 		var errInfo *apiv1.ErrorInfo
@@ -1499,7 +1500,7 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 			}
 			branchNames[e.Branch] = e.BranchName
 		case journal.EventStageFinished:
-			if isInterruptedAttemptMarker(e) {
+			if runsemantics.IsInterruptedAttemptMarker(e) {
 				continue
 			}
 			record(e.Branch, contextPointersFor(e.Stage, artifactPointersFrom(e.Artifacts)))
@@ -1650,7 +1651,7 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 				branch.machine = event.Stage
 			}
 		case journal.EventStageFinished:
-			if branch == nil || isInterruptedAttemptMarker(event) {
+			if branch == nil || runsemantics.IsInterruptedAttemptMarker(event) {
 				continue
 			}
 			branch.machine = event.Stage
@@ -1712,11 +1713,11 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 				continue
 			}
 			kind, _ := event.Runner["kind"].(string)
-			if kind != LearningEpisodeInjectedKind || event.Ref == nil {
+			if kind != runsemantics.LearningEpisodeInjectedKind || event.Ref == nil {
 				continue
 			}
 			record(branch, nil, []apiv1.ContextPointer{{
-				Name:      LearningEpisodePointerName(runnerUint64(event.Runner["sourceSeq"])),
+				Name:      runsemantics.LearningEpisodePointerName(runnerUint64(event.Runner["sourceSeq"])),
 				Integrity: event.Ref.Integrity,
 				Artifact: &apiv1.ArtifactPointer{
 					Path: event.Ref.Path, Digest: event.Ref.Digest, Size: event.Ref.Size,
@@ -1791,7 +1792,7 @@ func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelEx
 			continue
 		}
 		for _, later := range events[i+1:] {
-			stageFinished := later.Type == journal.EventStageFinished && later.Stage == join && !isInterruptedAttemptMarker(later)
+			stageFinished := later.Type == journal.EventStageFinished && later.Stage == join && !runsemantics.IsInterruptedAttemptMarker(later)
 			gateFinished := later.Type == journal.EventGateEvaluated && later.Gate == join
 			if stageFinished || gateFinished {
 				return nil
@@ -1993,7 +1994,7 @@ func fanInFromFinished(spec apiv1.Parallel, event journal.Event) *parallelExec {
 func lastWorkspaceBranch(events []journal.Event, machine *workflow.Machine, nsPrefix string) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
-		if e.Type != journal.EventStageFinished || isInterruptedAttemptMarker(e) {
+		if e.Type != journal.EventStageFinished || runsemantics.IsInterruptedAttemptMarker(e) {
 			continue
 		}
 		t, ok := machine.Task(e.Stage)
@@ -2017,11 +2018,6 @@ func RestoredWorkspaceBranch(events []journal.Event, machine *workflow.Machine, 
 	return lastWorkspaceBranch(events, machine, nsPrefix)
 }
 
-func isInterruptedAttemptMarker(e journal.Event) bool {
-	marker, ok := e.Runner[interruptedAttemptMarkerKey].(bool)
-	return e.Type == journal.EventStageFinished && ok && marker
-}
-
 // gateRepassSeed reconstructs internal/gate.Evaluator.Attempts from the
 // journal's event log. gate.started carries the prospective count before
 // dispatch, so a dangling marker charges a crash-interrupted evaluation to the
@@ -2034,7 +2030,7 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 	for _, e := range events {
 		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
 			target, _ := e.Runner["target"].(string)
-			n, ok := runnerInt(e.Runner["repassAttempt"])
+			n, ok := runsemantics.RunnerInt(e.Runner["repassAttempt"])
 			if target == "" || !ok {
 				continue
 			}
@@ -2108,7 +2104,7 @@ func targetRepassSeed(events []journal.Event) map[string]int {
 	for _, e := range events {
 		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == handoffValidationRetryAnnotationKind {
 			target, _ := e.Runner["target"].(string)
-			n, ok := runnerInt(e.Runner["repassAttempt"])
+			n, ok := runsemantics.RunnerInt(e.Runner["repassAttempt"])
 			if target == "" || !ok {
 				continue
 			}
@@ -2308,7 +2304,7 @@ func recordedInterruptedAttempt(events []journal.Event, stageName string) int {
 		if e.Stage != stageName {
 			continue
 		}
-		if isInterruptedAttemptMarker(e) {
+		if runsemantics.IsInterruptedAttemptMarker(e) {
 			return e.Attempt
 		}
 		switch e.Type {
@@ -2335,8 +2331,8 @@ func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, a
 		if event.Type != journal.EventError || event.Stage != stageName || event.Attempt != attempt {
 			continue
 		}
-		committed, _ := event.Runner[infraCommittedWorkKey].(bool)
-		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
+		committed, _ := event.Runner[runsemantics.InfraCommittedWorkKey].(bool)
+		return event.Runner[runsemantics.RetryFailureClassKey] == string(journal.AttemptInfra) && committed
 	}
 	return false
 }
@@ -2379,7 +2375,7 @@ func infrastructureFailuresBefore(events []journal.Event, stageName string, inte
 		if event.Type != journal.EventError ||
 			event.Stage != stageName ||
 			event.Attempt >= interruptedAttempt ||
-			event.Runner[retryFailureClassKey] != string(journal.AttemptInfra) {
+			event.Runner[runsemantics.RetryFailureClassKey] != string(journal.AttemptInfra) {
 			continue
 		}
 		failures++

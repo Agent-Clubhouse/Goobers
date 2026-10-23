@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/remediation"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -554,7 +555,7 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 			if event.Status != string(apiv1.ResultFailure) || len(event.Outputs) != 0 {
 				t.Errorf("stage.finished = %+v, want failure with no outputs", event)
 			}
-		case event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode:
+		case event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == runsemantics.ToleratedFailureErrorCode:
 			tolerated = i
 		case event.Type == journal.EventRunFinished:
 			runFinished = i
@@ -2803,7 +2804,7 @@ func TestRunnerTaskFailureContinueOnErrorMatrix(t *testing.T) {
 				if event.Type == journal.EventGateEvaluated && event.Gate == "observe-failure" && event.Verdict == gate.OutcomeFail {
 					sawGateFailure = true
 				}
-				if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+				if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == runsemantics.ToleratedFailureErrorCode {
 					sawTolerated = true
 				}
 				if event.Type == journal.EventStageFinished && event.Stage == "notify" {
@@ -2861,7 +2862,7 @@ func TestJournalToleratedFailureIsIdempotentPerAttempt(t *testing.T) {
 	}
 	var notes int
 	for _, event := range events {
-		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == runsemantics.ToleratedFailureErrorCode {
 			notes++
 		}
 	}
@@ -2904,7 +2905,7 @@ func TestConformanceJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay
 	}
 	var notes []journal.Event
 	for _, event := range events {
-		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == toleratedFailureErrorCode {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.Error != nil && event.Error.Code == runsemantics.ToleratedFailureErrorCode {
 			notes = append(notes, event)
 		}
 	}
@@ -2915,7 +2916,7 @@ func TestConformanceJournalToleratedFailurePreservesInfraAttemptMetadataOnReplay
 		t.Fatalf("tolerated failure note attempt = %d class = %q, want attempt=2 class=infra", notes[0].Attempt, notes[0].AttemptClass)
 	}
 	for _, event := range journal.ConformanceView(events) {
-		if event.Type == journal.EventError && event.Stage == "notify" && event.ErrorCode == toleratedFailureErrorCode {
+		if event.Type == journal.EventError && event.Stage == "notify" && event.ErrorCode == runsemantics.ToleratedFailureErrorCode {
 			t.Fatalf("infra tolerated failure note leaked into conformance view: %+v", event)
 		}
 	}
@@ -3277,7 +3278,7 @@ func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.
 				"kind": "remediation-evidence-required",
 				"actionableEvidence": []actionableEvidence{{
 					Pointer:    "local-ci.artifact[0]",
-					Ranges:     []receiptLineRange{{Start: 42, End: 42}},
+					Ranges:     []runsemantics.ReceiptLineRange{{Start: 42, End: 42}},
 					Signatures: []string{"unit widget panic"},
 				}},
 			},
@@ -3416,34 +3417,6 @@ func TestRemediationEvidenceRequirementRecordsTriggerAndPointers(t *testing.T) {
 	}) {
 		t.Fatalf("required pointers = %#v, want exact failure evidence pointers", annotation.Runner["requiredFailureEvidencePointers"])
 	}
-}
-
-func TestRemediationFailureEvidencePointersSelectTriggeringEvidence(t *testing.T) {
-	pointers := []apiv1.ContextPointer{
-		{Name: "query-backlog.artifact[0]"},
-		{Name: "local-ci.artifact[0]"},
-		{Name: "local-ci.artifact[1]"},
-		{Name: "review.verdict"},
-		{Name: "review.diff"},
-	}
-	t.Run("CI failure", func(t *testing.T) {
-		got := remediationFailureEvidencePointers(&gate.RepassCause{
-			Kind: "stage-failure", Stage: "local-ci",
-		}, pointers)
-		if names := requiredContextPointerNames(got); !reflect.DeepEqual(names, []string{
-			"local-ci.artifact[0]", "local-ci.artifact[1]",
-		}) {
-			t.Fatalf("failure evidence = %v, want only local-ci artifacts", names)
-		}
-	})
-	t.Run("review", func(t *testing.T) {
-		got := remediationFailureEvidencePointers(&gate.RepassCause{
-			Kind: "reviewer", Gate: "review",
-		}, pointers)
-		if names := requiredContextPointerNames(got); !reflect.DeepEqual(names, []string{"review.verdict"}) {
-			t.Fatalf("failure evidence = %v, want only review verdict", names)
-		}
-	})
 }
 
 func TestValidateDependencyResultUsesOnlyInvocationPointers(t *testing.T) {
@@ -3689,168 +3662,6 @@ func TestValidateDependencyNotMetCorruptTranscript(t *testing.T) {
 	}
 	if !strings.Contains(validationErr.Message, `journal: resolve blob "nonexistent/transcript"`) {
 		t.Fatalf("validation message missing underlying journal read error: %q", validationErr.Message)
-	}
-}
-
-// Unit test for parseTranscriptInputInspection function.
-func TestParseTranscriptInputInspection(t *testing.T) {
-	tests := []struct {
-		name          string
-		transcript    string
-		required      map[string]struct{}
-		wantList      bool
-		wantInspected map[string]bool
-	}{
-		{
-			name:          "empty transcript",
-			transcript:    "",
-			required:      map[string]struct{}{"pointer1": {}},
-			wantList:      false,
-			wantInspected: map[string]bool{},
-		},
-		{
-			name:          "list_inputs only",
-			transcript:    `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n",
-			required:      map[string]struct{}{"pointer1": {}},
-			wantList:      true,
-			wantInspected: map[string]bool{},
-		},
-		{
-			name: "list_inputs and read_input for required pointer",
-			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer1"}}}` + "\n",
-			required:      map[string]struct{}{"pointer1": {}},
-			wantList:      true,
-			wantInspected: map[string]bool{"pointer1": true},
-		},
-		{
-			name: "read_input for unrequired pointer",
-			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"unrequired"}}}` + "\n",
-			required:      map[string]struct{}{"pointer1": {}},
-			wantList:      true,
-			wantInspected: map[string]bool{},
-		},
-		{
-			name: "grep_input for required pointer",
-			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-grep_input","arguments":{"name":"pointer1"}}}` + "\n",
-			required:      map[string]struct{}{"pointer1": {}},
-			wantList:      true,
-			wantInspected: map[string]bool{"pointer1": true},
-		},
-		{
-			name: "multiple pointers with mixed inspection",
-			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer1"}}}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer2"}}}` + "\n",
-			required:      map[string]struct{}{"pointer1": {}, "pointer2": {}, "pointer3": {}},
-			wantList:      true,
-			wantInspected: map[string]bool{"pointer1": true, "pointer2": true},
-		},
-		{
-			name: "malformed JSON lines are skipped",
-			transcript: `not json` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
-				`{"invalid":json}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer1"}}}` + "\n",
-			required:      map[string]struct{}{"pointer1": {}},
-			wantList:      true,
-			wantInspected: map[string]bool{"pointer1": true},
-		},
-		{
-			name: "non-assistant role is ignored",
-			transcript: `{"role":"user","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
-				`{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n",
-			required:      map[string]struct{}{},
-			wantList:      true,
-			wantInspected: map[string]bool{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotList, gotInspected := parseTranscriptInputInspection([]byte(tt.transcript), tt.required)
-			if gotList != tt.wantList {
-				t.Fatalf("sawListInputs = %v, want %v", gotList, tt.wantList)
-			}
-			// The function returns true for required pointers that were inspected,
-			// and does not include entries for pointers not found
-			for key, wantVal := range tt.wantInspected {
-				if gotVal, ok := gotInspected[key]; !ok || gotVal != wantVal {
-					t.Fatalf("inspected[%q] = %v (ok=%v), want %v", key, gotVal, ok, wantVal)
-				}
-			}
-			// Check that pointers not in wantInspected are also not in gotInspected
-			for key := range gotInspected {
-				if _, ok := tt.wantInspected[key]; !ok {
-					t.Fatalf("unexpected inspected pointer: %q", key)
-				}
-			}
-		})
-	}
-}
-
-// Unit test for pointerValidationErrorMessage function.
-func TestPointerValidationErrorMessage(t *testing.T) {
-	tests := []struct {
-		name      string
-		missing   []string
-		sawList   bool
-		wantMsg   string
-		wantEmpty bool
-	}{
-		{
-			name:      "no missing pointers and list_inputs was called",
-			missing:   []string{},
-			sawList:   true,
-			wantEmpty: true,
-		},
-		{
-			name:    "missing pointers and list_inputs not called",
-			missing: []string{"pointer1", "pointer2"},
-			sawList: false,
-			wantMsg: "required context pointers were not inspected before DEPENDENCY_NOT_MET",
-		},
-		{
-			name:    "missing pointers and list_inputs was called",
-			missing: []string{"pointer1", "pointer2"},
-			sawList: true,
-			wantMsg: "required context pointers were not inspected before DEPENDENCY_NOT_MET",
-		},
-		{
-			name:    "single missing pointer",
-			missing: []string{"single-pointer"},
-			sawList: false,
-			wantMsg: "required context pointers were not inspected before DEPENDENCY_NOT_MET",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := pointerValidationErrorMessage(tt.missing, tt.sawList)
-			if tt.wantEmpty && msg != "" {
-				t.Fatalf("message = %q, want empty", msg)
-			}
-			if !tt.wantEmpty && msg == "" {
-				t.Fatalf("message is empty, want non-empty")
-			}
-			if !tt.wantEmpty {
-				if !strings.Contains(msg, tt.wantMsg) {
-					t.Fatalf("message = %q, want to contain %q", msg, tt.wantMsg)
-				}
-				// Verify all missing pointers are named in the message
-				for _, pointer := range tt.missing {
-					if !strings.Contains(msg, pointer) {
-						t.Fatalf("message = %q, want to contain pointer %q", msg, pointer)
-					}
-				}
-				// Verify list_inputs status is included
-				if !strings.Contains(msg, "list_inputs") {
-					t.Fatalf("message = %q, want to contain list_inputs status", msg)
-				}
-			}
-		})
 	}
 }
 
@@ -4589,7 +4400,7 @@ func TestRunnerBoundsPersistentInfrastructureFailures(t *testing.T) {
 			}
 		}
 		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "run_failed" {
-			terminalRetryClass, _ = event.Runner[retryFailureClassKey].(string)
+			terminalRetryClass, _ = event.Runner[runsemantics.RetryFailureClassKey].(string)
 		}
 	}
 	if starts != 2 || attemptErrors != 2 {
@@ -5198,7 +5009,7 @@ func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *
 			event.Stage == "implement" &&
 			event.Attempt == 1 &&
 			event.Error != nil &&
-			event.Error.Code == interruptedAttemptErrorCode {
+			event.Error.Code == runsemantics.InterruptedAttemptErrorCode {
 			interrupted = true
 		}
 	}
@@ -5208,7 +5019,7 @@ func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *
 }
 
 func TestRunnerResumePreservesCompletedFailureIdentity(t *testing.T) {
-	for _, code := range []string{budgetExceededErrorCode, "external_telemetry_schema_mismatch"} {
+	for _, code := range []string{runsemantics.BudgetExceededErrorCode, "external_telemetry_schema_mismatch"} {
 		t.Run(code, func(t *testing.T) {
 			machine := retryFixtureMachine(t, 1)
 			runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
@@ -5269,7 +5080,7 @@ func TestRunnerResumePreservesCompletedFailureIdentity(t *testing.T) {
 					if event.Error != nil && event.Error.Code == code {
 						foundSpecific = true
 					}
-					if event.Error != nil && event.Error.Code == interruptedAttemptErrorCode {
+					if event.Error != nil && event.Error.Code == runsemantics.InterruptedAttemptErrorCode {
 						t.Fatalf("specific failure was hidden by interruption: %+v", events)
 					}
 				}
@@ -5339,7 +5150,7 @@ func TestRunnerResumePreservesInterruptedInfrastructureRetry(t *testing.T) {
 		{
 			Type: journal.EventError, Stage: "implement", Attempt: 1,
 			Error:  &journal.ErrorDetail{Code: "executor_error"},
-			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+			Runner: map[string]any{runsemantics.RetryFailureClassKey: string(journal.AttemptInfra)},
 		},
 		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra},
 	} {
@@ -7207,7 +7018,7 @@ func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 		if err := run.Append(journal.Event{
 			Type: journal.EventRunnerAnnotation, Stage: "local-ci", Gate: "local-gate",
 			Runner: map[string]any{
-				"kind": retryDecisionKind, retryFailureClassKey: string(journal.AttemptInfra),
+				"kind": runsemantics.RetryDecisionKind, runsemantics.RetryFailureClassKey: string(journal.AttemptInfra),
 			},
 		}); err != nil {
 			t.Fatalf("append retry decision: %v", err)
@@ -9482,7 +9293,7 @@ func TestRunnerEnvironmentalFailureUnchangedRepassStopsBeforeReview(t *testing.T
 			environmentalFailure = true
 		}
 		if event.Type == journal.EventRunnerAnnotation && event.Stage == "local-ci" &&
-			event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) {
+			event.Runner[runsemantics.RetryFailureClassKey] == string(journal.AttemptInfra) {
 			infrastructureAnnotation = true
 		}
 	}

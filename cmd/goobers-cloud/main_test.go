@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/cloud/operatorcli"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -41,6 +42,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	const password = "do-not-log-this-password"
 	t.Setenv("GOOBERS_DATABASE_URL", "postgres://user:"+password+"@[invalid/goobers")
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "https://example.invalid")
 	code, _, stderr := runForTest("api")
 	if code != 1 {
 		t.Fatalf("api code = %d, stderr = %q", code, stderr)
@@ -53,7 +55,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	if err := os.WriteFile(urlFile, []byte("postgres://file-secret@localhost/goobers\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := databaseURL("", urlFile, "UNSET_DATABASE_URL")
+	value, err := cloudpg.DatabaseURL("", urlFile, "UNSET_DATABASE_URL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +130,19 @@ func TestCompletionCommand(t *testing.T) {
 	}
 }
 
+func TestNestedOperatorHelpRoutesFromRegistry(t *testing.T) {
+	var want string
+	for _, candidate := range operatorcli.Commands() {
+		if candidate.Name == "runs list" {
+			want = candidate.Long
+		}
+	}
+	code, stdout, stderr := runForTest("help", "runs", "list")
+	if want == "" || code != 0 || stderr != "" || stdout != want {
+		t.Fatalf("nested help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestWorkerUsesWorkerHost(t *testing.T) {
 	originalNew, originalRun, originalSignal := newWorkerHost, runWorkerHost, signalContext
 	t.Cleanup(func() {
@@ -165,5 +180,18 @@ func TestWorkerMapsHostErrors(t *testing.T) {
 	code, _, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir())
 	if code != 3 || !strings.Contains(stderr, "drain timeout") {
 		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestBootstrapFailsClosedWhileBackendsUnavailable(t *testing.T) {
+	code, stdout, stderr := runForTest("bootstrap", "--instance-id", "i", "--backup-ref", "pitr")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "not available until #") || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("bootstrap: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestCutoverCheckRequiresInputs(t *testing.T) {
+	if code, _, _ := runForTest("cutover", "check"); code != 2 {
+		t.Fatalf("cutover check without inputs: code=%d, want 2", code)
 	}
 }

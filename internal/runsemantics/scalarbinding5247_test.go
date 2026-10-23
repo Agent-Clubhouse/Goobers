@@ -1,4 +1,4 @@
-package runner
+package runsemantics
 
 import (
 	"strings"
@@ -18,10 +18,10 @@ func TestScalarBindingProducerIntermediateConsumer(t *testing.T) {
 	// `plan` ran first, then `build`; `build` is the immediately preceding
 	// stage, which is what a bare key resolves against.
 	completed := stageOutputs{
-		"plan":  {outputs: map[string]any{"prTitle": "Add scalar binding docs", "attempt": float64(2)}},
-		"build": {outputs: map[string]any{"sha": "abc123", "a.b": "legacy dotted value"}},
+		"plan":  {Outputs: map[string]any{"prTitle": "Add scalar binding docs", "attempt": float64(2)}},
+		"build": {Outputs: map[string]any{"sha": "abc123", "a.b": "legacy dotted value"}},
 	}
-	upstream := apiv1.ResultEnvelope{Outputs: completed["build"].outputs}
+	upstream := apiv1.ResultEnvelope{Outputs: completed["build"].Outputs}
 
 	for _, tc := range []struct {
 		name  string
@@ -76,10 +76,10 @@ func TestScalarBindingProducerIntermediateConsumer(t *testing.T) {
 // a dotted value is a bare key and nothing reaches back to an earlier stage.
 func TestScalarBindingUnqualifiedVersionTreatsEveryValueAsBare(t *testing.T) {
 	completed := stageOutputs{
-		"plan":  {outputs: map[string]any{"prTitle": "unreachable"}},
-		"build": {outputs: map[string]any{"a.b": "legacy dotted value"}},
+		"plan":  {Outputs: map[string]any{"prTitle": "unreachable"}},
+		"build": {Outputs: map[string]any{"a.b": "legacy dotted value"}},
 	}
-	upstream := apiv1.ResultEnvelope{Outputs: completed["build"].outputs}
+	upstream := apiv1.ResultEnvelope{Outputs: completed["build"].Outputs}
 
 	if _, ok := resolveInputsFrom("plan.prTitle", upstream, completed, false); ok {
 		t.Error("a pre-qualified-inputs version must not resolve a stage-qualified reference")
@@ -100,7 +100,7 @@ func TestScalarBindingUnqualifiedVersionTreatsEveryValueAsBare(t *testing.T) {
 func TestInputsFromDiagnosticsNameKeysNotValues(t *testing.T) {
 	const secretish = "s3cr3t-value-that-must-not-leak"
 	completed := stageOutputs{
-		"build": {outputs: map[string]any{"sha": "abc123", "token": secretish}},
+		"build": {Outputs: map[string]any{"sha": "abc123", "token": secretish}},
 	}
 	upstream := apiv1.ResultEnvelope{Outputs: map[string]any{"tag": "v1", "password": secretish}}
 

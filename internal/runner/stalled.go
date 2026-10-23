@@ -13,29 +13,8 @@ import (
 	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
-
-// RunStalledErrorCode identifies watchdog terminalizations in run journals.
-const RunStalledErrorCode = "run_stalled"
-
-// RunCanceledErrorCode identifies operator-requested live cancellations
-// (`goobers run cancel`, #831) in run journals, distinct from the watchdog's
-// stall terminalizations (RunStalledErrorCode).
-const RunCanceledErrorCode = "run_canceled"
-
-// RunDurationExceededErrorCode identifies watchdog cancellations caused by a
-// run exceeding its configured total wall-clock duration.
-const RunDurationExceededErrorCode = "run_duration_exceeded"
-
-// StageInterruptedErrorCode identifies operator-requested interrupts of a
-// single running agentic stage (#1995) in run journals. Unlike a cancel
-// (RunCanceledErrorCode), which terminalizes the whole run aborted, a stage
-// interrupt terminalizes the run escalated — a recoverable phase from which
-// RerunStage continues the interrupted stage with an operator correction
-// folded into the envelope. It is distinct from the watchdog's stall
-// terminalization (RunStalledErrorCode): the trigger is a human, not the
-// no-progress watchdog.
-const StageInterruptedErrorCode = "stage_interrupted"
 
 var (
 	errStalledRun          = errors.New("runner: stalled run escalation requested")
@@ -844,7 +823,7 @@ func interruptEvent(runID string, request stalledRequest) journal.Event {
 	case interruptCancel:
 		return journal.Event{
 			Type:  journal.EventError,
-			Error: &journal.ErrorDetail{Code: RunCanceledErrorCode, Message: fmt.Sprintf("run %q canceled by operator request", runID)},
+			Error: &journal.ErrorDetail{Code: runsemantics.RunCanceledErrorCode, Message: fmt.Sprintf("run %q canceled by operator request", runID)},
 			Runner: map[string]any{
 				"canceledAt": request.now.UTC().Format(time.RFC3339Nano),
 			},
@@ -853,7 +832,7 @@ func interruptEvent(runID string, request stalledRequest) journal.Event {
 		return journal.Event{
 			Type: journal.EventError,
 			Error: &journal.ErrorDetail{
-				Code:    RunDurationExceededErrorCode,
+				Code:    runsemantics.RunDurationExceededErrorCode,
 				Message: fmt.Sprintf("run %q exceeded maximum duration %s (started %s)", runID, request.timeout, request.lastActivity.UTC().Format(time.RFC3339)),
 			},
 			Runner: map[string]any{
@@ -866,7 +845,7 @@ func interruptEvent(runID string, request stalledRequest) journal.Event {
 			Type:  journal.EventError,
 			Stage: request.stage,
 			Actor: request.actor,
-			Error: &journal.ErrorDetail{Code: StageInterruptedErrorCode, Message: fmt.Sprintf("run %q stage %q interrupted by operator request", runID, request.stage)},
+			Error: &journal.ErrorDetail{Code: runsemantics.StageInterruptedErrorCode, Message: fmt.Sprintf("run %q stage %q interrupted by operator request", runID, request.stage)},
 			Runner: map[string]any{
 				"interruptedAt": request.now.UTC().Format(time.RFC3339Nano),
 				"stage":         request.stage,
@@ -883,7 +862,7 @@ func interruptEvent(runID string, request stalledRequest) journal.Event {
 	)
 	return journal.Event{
 		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: RunStalledErrorCode, Message: message},
+		Error: &journal.ErrorDetail{Code: runsemantics.RunStalledErrorCode, Message: message},
 		Runner: map[string]any{
 			"lastActivityAt":    request.lastActivity.UTC().Format(time.RFC3339Nano),
 			"stalledRunTimeout": request.timeout.String(),
