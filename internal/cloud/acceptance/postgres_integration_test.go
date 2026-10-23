@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/goobers/goobers/internal/apicontract"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -271,7 +270,6 @@ func TestRecordDispatchMustUseAssignedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	if err := store.BeginDispatch(t.Context(), record.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -281,52 +279,6 @@ func TestRecordDispatchMustUseAssignedID(t *testing.T) {
 	assigned := strings.TrimPrefix(record.ID, "trigger-")
 	if err := store.RecordDispatch(t.Context(), record.ID, assigned); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestFencedStartContract(t *testing.T) {
-	store, pool := testStore(t, 1)
-	record, _, err := store.Accept(t.Context(), "start-contract", "operator", []byte("payload"), time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	fenced, err := NewFenced(pool, "test-instance", "controller-a", store.manager, store.handle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := fenced.ReadStart(t.Context(), record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := apicontract.StartIdentity{
-		AcceptanceID: record.ID,
-		RunID:        strings.TrimPrefix(record.ID, "trigger-"),
-		InstanceID:   "test-instance",
-		StarterID:    "controller-a",
-		OwnerEpoch:   store.handle.Epoch,
-	}
-	if identity != want {
-		t.Fatalf("identity = %+v, want %+v", identity, want)
-	}
-	if err := fenced.ConfirmStart(t.Context(), identity, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := fenced.CheckStartLease(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	predecessor := identity.OwnerEpoch
-	if err := store.manager.Release(t.Context(), store.handle); err != nil {
-		t.Fatal(err)
-	}
-	currentBase := successorStore(t, pool)
-	current, err := NewFenced(pool, "test-instance", "controller-b", currentBase.manager, currentBase.handle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity.StarterID = "controller-b"
-	identity.OwnerEpoch = currentBase.handle.Epoch
-	if err := current.ConfirmStart(t.Context(), identity, true); err != nil {
-		t.Fatalf("adopt predecessor epoch %d: %v", predecessor, err)
 	}
 }
 

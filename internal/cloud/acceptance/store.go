@@ -24,27 +24,8 @@ import (
 type Store struct {
 	pool       *pgxpool.Pool
 	instanceID string
-	starterID  string
 	manager    *cloudlease.Manager
 	handle     *cloudlease.Handle
-}
-
-// NewFenced constructs a controller store bound to one live lease handle.
-func NewFenced(
-	pool *pgxpool.Pool,
-	instanceID, starterID string,
-	manager *cloudlease.Manager,
-	handle *cloudlease.Handle,
-) (*Store, error) {
-	store, err := New(pool, instanceID)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(starterID) == "" || manager == nil || handle == nil {
-		return nil, errors.New("cloud acceptance requires starter identity and live lease")
-	}
-	store.starterID, store.manager, store.handle = starterID, manager, handle
-	return store, nil
 }
 
 // New constructs an instance-scoped acceptance store.
