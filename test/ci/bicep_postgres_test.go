@@ -70,18 +70,23 @@ func TestPostgresBicepIsZoneRedundantPrivateAndEntra(t *testing.T) {
 	}
 }
 
+// offlineBicepCLI finds a Bicep CLI on PATH or where `az bicep install` puts
+// it. Without one the test skips locally, but fails when GOOBERS_REQUIRE_BICEP
+// is set, as CI's preflight job does after provisioning the pinned CLI.
 func offlineBicepCLI(t *testing.T) string {
 	t.Helper()
 	if binary, err := exec.LookPath("bicep"); err == nil {
 		return binary
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("Bicep CLI is not installed")
+	if home, err := os.UserHomeDir(); err == nil {
+		binary := filepath.Join(home, ".azure", "bin", "bicep")
+		if info, err := os.Stat(binary); err == nil && !info.IsDir() {
+			return binary
+		}
 	}
-	binary := filepath.Join(home, ".azure", "bin", "bicep")
-	if info, err := os.Stat(binary); err != nil || info.IsDir() {
-		t.Skip("Bicep CLI is not installed offline")
+	if os.Getenv("GOOBERS_REQUIRE_BICEP") == "1" {
+		t.Fatal("GOOBERS_REQUIRE_BICEP is set but no Bicep CLI is installed")
 	}
-	return binary
+	t.Skip("Bicep CLI is not installed")
+	return ""
 }

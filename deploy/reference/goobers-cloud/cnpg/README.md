@@ -36,5 +36,5 @@ inventory.
 ## Validation
 
 `make deploy-validate` renders this kustomization and checks it with
-kubeconform in strict mode. The CNPG schemas come from a pinned commit of the
-datreeio CRDs catalog.
+kubeconform in strict mode. The CNPG schemas are vendored in
+[`test/fixtures/crd-schemas`](../../../../test/fixtures/crd-schemas/README.md).
