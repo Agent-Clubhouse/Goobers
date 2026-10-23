@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 )
 
 func TestSurrenderWriteOnce(t *testing.T) {
@@ -453,6 +454,7 @@ func testMetadata(t *testing.T, container string) (*Metadata, *pgxpool.Pool, *Az
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	if err := (migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "object-test",
 		InstanceID: "migration", Holder: "migration",

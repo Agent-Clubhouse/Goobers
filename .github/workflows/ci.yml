@@ -907,7 +907,28 @@ jobs:
           GOOBERS_TEST_AZURITE_ACCOUNT: devstoreaccount1
           GOOBERS_TEST_AZURITE_KEY: Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
           GOOBERS_TEST_AZURITE_URL: http://127.0.0.1:10000/devstoreaccount1
-        run: go test -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 ./internal/cloud/... ./test/ha/invariants/...
+        # -p 1: cloud packages share cluster-wide roles (pgtest.EnsureRoles), so
+        # no two packages may converge them concurrently. The -json stream is
+        # kept as an artifact, and cloud-pg-report fails the job when any
+        # cloudintegration package ran no passing test (a missing tag or env var
+        # would otherwise skip the PostgreSQL suites and pass).
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./test/ha/invariants/... \
+            | tee "$RUNNER_TEMP/cloud-pg-test.json" > /dev/null || status=$?
+          go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1
+          exit "$status"
+
+      - name: Upload cloud integration test events
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloud-pg-test-events
+          path: ${{ runner.temp }}/cloud-pg-test.json
+          if-no-files-found: warn
 
       - name: Stop Azurite
         if: always()
