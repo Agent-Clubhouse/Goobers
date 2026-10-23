@@ -254,11 +254,34 @@ func developmentBuild(version string) bool {
 }
 
 func buildIDContainsVersion(buildID, binaryVersion string) bool {
-	if strings.Contains(buildID, binaryVersion) {
+	if containsBuildToken(buildID, binaryVersion) {
 		return true
 	}
 	normalized := strings.TrimPrefix(binaryVersion, "v")
-	return normalized != binaryVersion && strings.Contains(buildID, normalized)
+	return normalized != binaryVersion && containsBuildToken(buildID, normalized)
+}
+
+func containsBuildToken(buildID, version string) bool {
+	for offset := 0; offset <= len(buildID)-len(version); {
+		index := strings.Index(buildID[offset:], version)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(version)
+		if (index == 0 || !buildTokenCharacter(buildID[index-1])) &&
+			(end == len(buildID) || !buildTokenCharacter(buildID[end])) {
+			return true
+		}
+		offset = index + 1
+	}
+	return false
+}
+
+func buildTokenCharacter(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9'
 }
 
 func isPlaceholder(value string) bool {

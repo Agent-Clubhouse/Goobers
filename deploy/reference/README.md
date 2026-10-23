@@ -840,7 +840,9 @@ Use the version itself or `<version>-<workflow-source-hash>` and inject it from
 the release pipeline. Reusing that ID makes Worker Controller roll changed
 code in place under pinned workflows, so the worker rejects both the shipped
 `CHANGE-ME` placeholder and a release ID that does not contain its binary
-version. Plain `dev` builds are exempt for local development.
+version at token boundaries. For example, binary `0.9.1` accepts
+`release-0.9.1-workflow-abcd` but rejects `release-0.9.10`. Plain `dev` builds
+are exempt for local development.
 
 The reference omits `GOOBERS_AUTO_UPGRADE_RETENTION`. After replay qualification
 for that release, add it to the worker environment with a value exactly equal
