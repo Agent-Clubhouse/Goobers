@@ -79,6 +79,7 @@ type corpusScenario struct {
 	fixture string
 	run     func(*testing.T, context.Context, *runner.Runner, *workflow.Machine, string) runner.Result
 	script  deterministicConfig
+	expect  []journal.EventType
 }
 
 func localCorpus() []corpusScenario {
@@ -90,17 +91,24 @@ func localCorpus() []corpusScenario {
 				failFirst: true, artifact: []byte(`{"result":"stable"}`),
 			},
 			run: startToTerminal,
+			expect: []journal.EventType{
+				journal.EventStageStarted, journal.EventError, journal.EventArtifactRecorded,
+				journal.EventStageFinished, journal.EventGateStarted, journal.EventGateEvaluated,
+				journal.EventReviewerStarted, journal.EventReviewerFinished, journal.EventRunFinished,
+			},
 		},
 		{
 			name: "human-gate", runID: strings.Repeat("2", 32),
 			fixture: "human-gate.yaml",
 			run:     startAndApproveHumanGate,
+			expect:  []journal.EventType{journal.EventGatePaused, journal.EventGateEvaluated, journal.EventRunFinished},
 		},
 		{
 			name: "stage-boundary-cancellation", runID: strings.Repeat("3", 32),
 			fixture: "cancellation.yaml",
 			script:  deterministicConfig{cancelAfter: "first"},
 			run:     startToCancellationBoundary,
+			expect:  []journal.EventType{journal.EventStageStarted, journal.EventStageFinished},
 		},
 	}
 }
@@ -145,10 +153,12 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	if err := journal.MonotonicSeq(events); err != nil {
 		t.Fatal(err)
 	}
+	assertEventCoverage(t, scenario.expect, events)
 	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	canonicalEvents := make([]string, 0, len(events))
 	var digests []string
 	for _, event := range events {
@@ -167,6 +177,19 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	return canonicalRun{
 		Events: canonicalEvents, ArtifactDigests: digests,
 		Projection: string(canonicalJSON(t, projection, scenario.runID)),
+	}
+}
+
+func assertEventCoverage(t *testing.T, expected []journal.EventType, events []journal.Event) {
+	t.Helper()
+	seen := make(map[journal.EventType]bool, len(events))
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	for _, eventType := range expected {
+		if !seen[eventType] {
+			t.Errorf("corpus does not emit %s", eventType)
+		}
 	}
 }
 
