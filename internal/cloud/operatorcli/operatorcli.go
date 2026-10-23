@@ -39,7 +39,7 @@ func Commands(overrides ...map[string]Handler) []Command {
 		{Name: "runs show", Short: "Show one run through the API.", Long: runsShowHelp, Run: runRunsShow},
 		{Name: "runs logs", Short: "Read one run's journal events through the API.", Long: runsLogsHelp, Run: runRunsLogs},
 		{Name: "claims list", Short: "List active claims through the API.", Long: claimsListHelp, Run: runClaimsList},
-		{Name: "claims release", Short: "Release a cloud claim.", Long: claimsReleaseHelp, Run: unavailableOperatorCommand("claims release", claimsReleaseHelp, "#7845")},
+		{Name: "claims release", Short: "Release a cloud claim.", Long: claimsReleaseHelp, Run: unavailableOperatorCommand("claims release", claimsReleaseHelp, "#7808 (implementation PR #7845)")},
 		{Name: "triggers", Short: "Submit a durable workflow trigger through the API.", Long: triggersHelp, Run: runTriggers},
 		{Name: "approve", Short: "Approve a paused stage through the API.", Long: approveHelp, Run: runApprove},
 		{Name: "override", Short: "Override a paused stage through the API.", Long: overrideHelp, Run: runOverride},
@@ -99,7 +99,8 @@ List active cloud claims through the control-plane API.
 	claimsReleaseHelp = `Usage: goobers-cloud claims release [OPTIONS]
 
 Release a cloud claim. This command is reserved until the PostgreSQL claims
-backend supplies an operator-safe release operation.
+backend supplies an operator-safe release operation (#7808; implementation PR
+#7845).
 `
 	triggersHelp = `Usage: goobers-cloud triggers --api URL --workflow NAME [--gaggle NAME] --idempotency-key KEY [--force] [--source-run RUN]
 

@@ -131,7 +131,7 @@ func TestOperatorCommandsFailClosed(t *testing.T) {
 		args  []string
 		issue string
 	}{
-		{args: []string{"claims", "release"}, issue: "#7845"},
+		{args: []string{"claims", "release"}, issue: "#7808 (implementation PR #7845)"},
 		{args: []string{"config", "apply"}, issue: "#7834"},
 		{args: []string{"config", "status"}, issue: "#7834"},
 	} {

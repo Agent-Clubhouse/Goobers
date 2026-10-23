@@ -104,7 +104,8 @@ Release a cloud claim.
 Usage: goobers-cloud claims release [OPTIONS]
 
 Release a cloud claim. This command is reserved until the PostgreSQL claims
-backend supplies an operator-safe release operation.
+backend supplies an operator-safe release operation (#7808; implementation PR
+#7845).
 ~~~
 
 ## `goobers-cloud completion`

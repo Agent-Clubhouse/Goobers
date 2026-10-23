@@ -20,7 +20,7 @@ run those stages. The table maps the instance-root and operator commands.
 | `runs list` | `goobers-cloud runs list --api URL` | Supports gaggle, workflow, phase and limit filters. |
 | `trace RUN` | `goobers-cloud runs logs --api URL RUN` | Reads journal events; use `runs show` for summary state. |
 | `claims active`, `claims list` | `goobers-cloud claims list --api URL` | Active cloud claims. |
-| `claims release` | `goobers-cloud claims release` | Fails closed until #7845. |
+| `claims release` | `goobers-cloud claims release` | Fails closed until #7808 (implementation PR #7845). |
 | `run`, `signal` | `goobers-cloud triggers --api URL ...` | Durable API trigger with an idempotency key. |
 | `approve` | `goobers-cloud approve --api URL ...` | Runtime intervention. |
 | `override` | `goobers-cloud override --api URL ...` | Runtime intervention. |
