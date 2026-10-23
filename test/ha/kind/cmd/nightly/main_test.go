@@ -112,3 +112,51 @@ func TestShardSettlementDwellsAndRechecksAdvancedMap(t *testing.T) {
 		t.Fatalf("query calls = %d, want at least two so the post-dwell map is rechecked", calls)
 	}
 }
+
+// The kind database follows the production role contract: every credential
+// Secret the cluster references is created by the runner with a distinct
+// random password, and the Temporal ladder connects as temporal_app.
+func TestKindDatabaseFollowsRoleContract(t *testing.T) {
+	manifest, err := databaseCredentialsManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster, err := os.ReadFile("../../cnpg-cluster.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwords := map[string]bool{}
+	for _, credential := range databaseCredentials {
+		if !strings.Contains(manifest, "name: "+credential.secret+"\n") || !strings.Contains(manifest, "username: "+credential.user+"\n") {
+			t.Fatalf("manifest missing %s/%s", credential.secret, credential.user)
+		}
+		if !strings.Contains(string(cluster), "name: "+credential.secret+"\n") {
+			t.Fatalf("cnpg-cluster.yaml does not reference Secret %s", credential.secret)
+		}
+	}
+	for _, line := range strings.Split(manifest, "\n") {
+		if password, ok := strings.CutPrefix(strings.TrimSpace(line), "password: "); ok {
+			if len(password) != 48 || passwords[password] {
+				t.Fatalf("passwords must be distinct 48-hex values, got %q", password)
+			}
+			passwords[password] = true
+		}
+	}
+	if len(passwords) != len(databaseCredentials) {
+		t.Fatalf("got %d passwords, want %d", len(passwords), len(databaseCredentials))
+	}
+	for _, want := range []string{"owner: temporal_app", "enableSuperuserAccess: true", "goobers_owner", "goobers_api", "goobers_controller"} {
+		if !strings.Contains(string(cluster), want) {
+			t.Fatalf("cnpg-cluster.yaml missing %q", want)
+		}
+	}
+	for _, path := range []string{"../../temporal-values.yaml", "../../temporal-values-legacy.yaml"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "user: temporal\n") || strings.Count(string(data), "user: temporal_app\n") != 2 {
+			t.Fatalf("%s must connect both datastores as temporal_app", path)
+		}
+	}
+}

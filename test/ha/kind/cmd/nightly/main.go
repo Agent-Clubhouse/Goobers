@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -85,6 +87,16 @@ func run() error {
 		{"kubectl", "apply", "--server-side", "-f", filepath.Join(assets, "cnpg.yaml")},
 		{"kubectl", "rollout", "status", "deployment/cnpg-controller-manager", "-n", "cnpg-system", "--timeout=5m"},
 		{"kubectl", "create", "namespace", "goobers-temporal"},
+	}
+	for _, args := range commands {
+		if err := command(ctx, env, args...); err != nil {
+			return err
+		}
+	}
+	if err := createDatabaseCredentials(ctx, env); err != nil {
+		return err
+	}
+	commands = [][]string{
 		{"kubectl", "apply", "-f", "test/ha/kind/cnpg-cluster.yaml"},
 		{"kubectl", "wait", "--for=condition=Ready", "cluster/temporal-postgres", "-n", "goobers-temporal", "--timeout=10m"},
 		{"kind", "load", "docker-image", "goobers:ha-nightly", "--name", "goobers-ha-nightly"},
@@ -108,6 +120,44 @@ func run() error {
 		return err
 	}
 	return verifyAndSummarize(ctx, env, evidence)
+}
+
+// databaseCredentials are the role passwords test/ha/kind/cnpg-cluster.yaml
+// references. They are random per run and travel to kubectl on stdin only: never
+// argv, never logged (command prints the argument list, not stdin).
+var databaseCredentials = []struct{ secret, user string }{
+	{"temporal-postgres-app", "temporal_app"},
+	{"goobers-owner-credentials", "goobers_owner"},
+	{"goobers-api-credentials", "goobers_api"},
+	{"goobers-controller-credentials", "goobers_controller"},
+}
+
+func databaseCredentialsManifest() (string, error) {
+	var manifest strings.Builder
+	for _, credential := range databaseCredentials {
+		raw := make([]byte, 24)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&manifest, "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  namespace: goobers-temporal\n  labels:\n    cnpg.io/reload: \"true\"\ntype: kubernetes.io/basic-auth\nstringData:\n  username: %s\n  password: %s\n",
+			credential.secret, credential.user, hex.EncodeToString(raw))
+	}
+	return manifest.String(), nil
+}
+
+func createDatabaseCredentials(ctx context.Context, env []string) error {
+	manifest, err := databaseCredentialsManifest()
+	if err != nil {
+		return err
+	}
+	fmt.Println("+ kubectl apply -f - (database credential Secrets; contents not logged)")
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	cmd.Env, cmd.Stdout, cmd.Stderr = env, os.Stdout, os.Stderr
+	cmd.Stdin = strings.NewReader(manifest)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl apply database credential Secrets: %w", err)
+	}
+	return nil
 }
 
 func runTemporalStep(ctx context.Context, env []string, assets, evidence string, step temporalStep, baseline bool) error {
