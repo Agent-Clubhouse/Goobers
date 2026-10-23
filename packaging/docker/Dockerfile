@@ -56,6 +56,12 @@ RUN go build -tags embed_portal -trimpath \
             -X github.com/goobers/goobers/internal/version.Commit=${COMMIT} \
             -X github.com/goobers/goobers/internal/version.Date=${DATE}" \
         -o /out/goobers ./cmd/goobers \
+    && go build -trimpath \
+        -ldflags "-s -w \
+            -X github.com/goobers/goobers/internal/version.Version=${VERSION} \
+            -X github.com/goobers/goobers/internal/version.Commit=${COMMIT} \
+            -X github.com/goobers/goobers/internal/version.Date=${DATE}" \
+        -o /out/goobers-cloud ./cmd/goobers-cloud \
     && go build -trimpath -ldflags "-s -w" -o /out/goobers-operator ./cmd/operator
 
 FROM ${RUNTIME_IMAGE}
@@ -71,7 +77,7 @@ RUN apt-get update \
     && copilot --version \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/goobers /out/goobers-operator /usr/local/bin/
+COPY --from=build /out/goobers /out/goobers-cloud /out/goobers-operator /usr/local/bin/
 # 65532 mirrors the conventional distroless "nonroot" uid/gid so pod
 # securityContexts (runAsNonRoot, runAsUser: 65532) hold across base images.
 RUN groupadd --gid 65532 nonroot \
