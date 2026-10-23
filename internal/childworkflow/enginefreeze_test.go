@@ -45,7 +45,9 @@ func newFreezeFixture(t *testing.T) freezeFixture {
 		t.Fatal(err)
 	}
 	occurrence := journal.StageAttemptID("parent-run", 0, "plan", 5)
+	execution := ExecutionBinding{InstanceID: "instance-a", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}, BranchNamespace: "goobers"}
 	authority := Authority{
+		Execution:        &execution,
 		Origin:           Origin{Gaggle: "web", RunID: "parent-run", StageOccurrence: occurrence, AttemptID: occurrence},
 		Admission:        admission,
 		ConfigGeneration: journal.Digest([]byte("config generation")), ParentWorkflow: "parent",
@@ -63,7 +65,7 @@ func newFreezeFixture(t *testing.T) freezeFixture {
 		AcceptedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)}
 	request := journal.ChildHandoffRequest{Gaggle: "web", ParentRunID: "parent-run", RequestID: journal.Digest([]byte("request")), Action: "wait", ChildRunID: child.RunID,
 		AcceptanceID: child.AcceptanceID, InvocationKey: "call-1", SourceDigest: proposal.SourceDigest, Origin: apiv1.ChildWorkflowOrigin{StageOccurrence: occurrence, AttemptID: occurrence}}
-	pinned := EngineFreezeContext{Admission: admission, InstanceID: "instance-a", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}, BranchNamespace: "goobers"}
+	pinned := EngineFreezeContext{Admission: admission, Execution: execution}
 	return freezeFixture{pinned: pinned, payload: payload, source: source, child: child, request: request}
 }
 
@@ -153,11 +155,22 @@ func TestEngineFreezeRefusesDrift(t *testing.T) {
 			f.pinned.Admission.ParentTask.ChildWorkflows.AllowedCapabilities = []string{"agent:model"}
 		},
 		"other config digest": func(f *freezeFixture) { f.pinned.Admission.ConfigDigest = journal.Digest([]byte("other config")) },
-		"runner backend":      func(f *freezeFixture) { f.pinned.Admission.Backend = BackendRunner },
-		"other parent stage":  func(f *freezeFixture) { f.pinned.Admission.ParentTask.Name = "other" },
-		"reformatted source":  func(f *freezeFixture) { f.source = append([]byte("# reformatted\n"), f.source...) },
-		"other lineage":       func(f *freezeFixture) { f.child.Identity.InvocationKey = "call-2" },
-		"other request":       func(f *freezeFixture) { f.request.InvocationKey = "call-2" },
+		// The bindings decide where the child acts; a resolver cannot move them.
+		"other repository":        func(f *freezeFixture) { f.pinned.Execution.RepoRef.Owner = "evil" },
+		"other repository branch": func(f *freezeFixture) { f.pinned.Execution.RepoRef.Branch = "release" },
+		"other branch namespace":  func(f *freezeFixture) { f.pinned.Execution.BranchNamespace = "other" },
+		"other instance":          func(f *freezeFixture) { f.pinned.Execution.InstanceID = "instance-b" },
+		"unpinned execution": func(f *freezeFixture) {
+			var e ChildStartEnvelope
+			_ = json.Unmarshal(f.payload, &e)
+			e.ExecutionDigest = ""
+			f.payload, _ = json.Marshal(e)
+		},
+		"runner backend":     func(f *freezeFixture) { f.pinned.Admission.Backend = BackendRunner },
+		"other parent stage": func(f *freezeFixture) { f.pinned.Admission.ParentTask.Name = "other" },
+		"reformatted source": func(f *freezeFixture) { f.source = append([]byte("# reformatted\n"), f.source...) },
+		"other lineage":      func(f *freezeFixture) { f.child.Identity.InvocationKey = "call-2" },
+		"other request":      func(f *freezeFixture) { f.request.InvocationKey = "call-2" },
 		"runner envelope": func(f *freezeFixture) {
 			var e ChildStartEnvelope
 			_ = json.Unmarshal(f.payload, &e)
@@ -195,4 +208,34 @@ func TestEngineFreezeRefusesDrift(t *testing.T) {
 			t.Fatal("froze without pinned context")
 		}
 	})
+}
+
+func TestStartEnvelopePinsExecutionOnlyForEngineChildren(t *testing.T) {
+	fixture := newFreezeFixture(t)
+	engineEnvelope, err := DecodeStartEnvelope(fixture.payload)
+	if err != nil || engineEnvelope.ExecutionDigest == "" {
+		t.Fatalf("engine envelope = %+v %v", engineEnvelope, err)
+	}
+	runnerEnvelope := engineEnvelope
+	runnerEnvelope.Backend = BackendRunner
+	withDigest, _ := json.Marshal(runnerEnvelope)
+	if _, err := DecodeStartEnvelope(withDigest); err == nil {
+		t.Fatal("runner envelope carried an execution binding")
+	}
+	runnerEnvelope.ExecutionDigest = ""
+	runner, _ := json.Marshal(runnerEnvelope)
+	if bytes.Contains(runner, []byte("executionDigest")) {
+		t.Fatal("runner envelopes changed their retained encoding")
+	}
+	if _, err := DecodeStartEnvelope(runner); err != nil {
+		t.Fatalf("runner envelope refused: %v", err)
+	}
+	admission := engineAdmission()
+	proposal, err := validator(t, admission).Validate(fixture.source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := childStartEnvelope(Authority{Admission: admission}, proposal, "call-1"); err == nil {
+		t.Fatal("engine child accepted without its parent's execution binding")
+	}
 }

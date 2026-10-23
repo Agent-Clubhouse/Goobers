@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -22,10 +21,9 @@ var ErrFrozenChildDrift = errors.New("childworkflow: accepted child no longer re
 // live catalog: the admission context the proposal was validated against and
 // the parent's execution bindings the child inherits.
 type EngineFreezeContext struct {
-	Admission       AdmissionContext
-	InstanceID      string
-	RepoRef         apiv1.RepoRef
-	BranchNamespace string
+	Admission AdmissionContext
+	// Execution must reproduce the envelope's ExecutionDigest.
+	Execution ExecutionBinding
 }
 
 // EngineFreezeResolver loads the pinned context for one accepted envelope.
@@ -53,9 +51,15 @@ func (f EngineFreezer) Freeze(ctx context.Context, request journal.ChildHandoffR
 		e.SourceDigest != child.ProposalDigest || e.SourceDigest != request.SourceDigest || e.SourceDigest != digest(source) {
 		return engine.FrozenChildManifest{}, fmt.Errorf("%w: envelope, lineage and source differ", ErrFrozenChildDrift)
 	}
+	// ParentWorkflowDigest stays an audit pin: the parent's definition does
+	// not shape the child, and the parent's own walk already verifies it.
 	pinned, err := f.Resolve(ctx, e)
 	if err != nil {
 		return engine.FrozenChildManifest{}, err
+	}
+	executionDigest, err := pinned.Execution.Digest()
+	if err != nil || executionDigest != e.ExecutionDigest {
+		return engine.FrozenChildManifest{}, fmt.Errorf("%w: execution binding", ErrFrozenChildDrift)
 	}
 	admission := pinned.Admission
 	if admission.Backend != BackendEngine || admission.Gaggle.Name != e.Gaggle || admission.ParentTask.Name != e.ParentStage ||
@@ -80,12 +84,12 @@ func (f EngineFreezer) Freeze(ctx context.Context, request journal.ChildHandoffR
 	}
 	preview := true
 	input := engine.RunInput{
-		InstanceID: pinned.InstanceID, RunID: child.RunID, Gaggle: e.Gaggle,
+		InstanceID: pinned.Execution.InstanceID, RunID: child.RunID, Gaggle: e.Gaggle,
 		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, WorkflowDigest: proposal.Machine.Digest(), Spec: def.Spec,
 		// task.childWorkflows is itself preview-gated: a parent that may
 		// request children already carries the acknowledgement its child needs.
 		PreviewFeaturesEnabled: &preview, LiveJournal: true,
-		RepoRef: pinned.RepoRef, BranchNamespace: pinned.BranchNamespace, TriggerKind: string(journal.TriggerManual),
+		RepoRef: pinned.Execution.RepoRef, BranchNamespace: pinned.Execution.BranchNamespace, TriggerKind: string(journal.TriggerManual),
 		GooberDigest: e.ParentGooberDigest, ConfigGeneration: e.ConfigGeneration, Placements: proposal.Placements,
 	}
 	return engine.FrozenChildManifest{Version: 1, Source: append([]byte(nil), source...), SourceDigest: e.SourceDigest, CanonicalDigest: e.CanonicalDigest, Input: input}, nil
