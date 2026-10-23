@@ -176,6 +176,9 @@ const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 // WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
 const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
 
+// WorkerChildAdmissionPrincipalIssuer can only call the engine child-admission plane.
+const WorkerChildAdmissionPrincipalIssuer = "goobers/worker-child-admission"
+
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
 // authorizer admits it to the credential refresh route and nothing else.
@@ -475,8 +478,8 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("a credential-refresh grant may only call the credential refresh route")
 		}
-		if principal.Issuer == WorkerSurrenderPrincipalIssuer {
-			return authorizeWorkerSurrender(request)
+		if authorize, ok := workerPlaneAuthorizers[principal.Issuer]; ok {
+			return authorize(request)
 		}
 		if principal.Issuer == WorkerBlobPrincipalIssuer {
 			return authorizeWorkerBlob(request)
@@ -671,6 +674,7 @@ type handlerConfig struct {
 	escalations               EscalationService
 	cancels                   CancelService
 	journal                   JournalService
+	engineChildren            EngineChildPlane
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
@@ -1352,6 +1356,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
+	registerEngineChildPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{

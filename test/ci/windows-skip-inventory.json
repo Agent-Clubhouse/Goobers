@@ -181,6 +181,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/childadmissionclient",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Engine worker client for the child-admission plane (#7879) over an in-process HTTP server; no Windows-specific seam identified, runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/claimability",
       "coverage": "none",
       "category": "not-selected",
@@ -461,6 +467,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/enginechildplane",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Engine-typed adapter behind the child-admission plane (#7879); no Windows-specific seam identified, runs on the Linux unit shards only."
     },
     {
       "package": "internal/enginedecision",
