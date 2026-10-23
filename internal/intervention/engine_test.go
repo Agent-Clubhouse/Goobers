@@ -83,38 +83,37 @@ func TestApproveRoutesToEngineForEngineRun(t *testing.T) {
 	}
 }
 
-func TestTerminalInterventionsRouteToEngineIntents(t *testing.T) {
-	cases := map[string]struct {
-		call func(*Service) error
-		want engine.HITLIntent
-	}{
-		"approve past a terminal": {func(s *Service) error {
+// Terminal interventions would reopen an engine run after run.finished, which
+// its live journal refuses; they are refused by name, and nothing is sent.
+func TestTerminalInterventionsOnEngineRunsAreRefused(t *testing.T) {
+	cases := map[string]func(*Service) error{
+		"approve past a terminal": func(s *Service) error {
 			_, err := s.Approve(t.Context(), httpapi.InterventionRequest{RunID: "engine-run", Stage: "review", Actor: "alice", IdempotencyKey: "k", Decision: "pass"})
 			return err
-		}, engine.HITLIntent{Kind: engine.HITLResolveEscalation, Gate: "review", Resolution: engine.HITLResolutionApprove, Decision: "pass"}},
-		"override": {func(s *Service) error {
+		},
+		"override": func(s *Service) error {
 			_, err := s.Override(t.Context(), httpapi.InterventionRequest{RunID: "engine-run", Stage: "review", Actor: "alice", IdempotencyKey: "k", Rationale: "safe"})
 			return err
-		}, engine.HITLIntent{Kind: engine.HITLResolveEscalation, Gate: "review", Resolution: engine.HITLResolutionOverride, Decision: "pass", Rationale: "safe"}},
-		"rerun": {func(s *Service) error {
+		},
+		"rerun": func(s *Service) error {
 			_, err := s.RerunStage(t.Context(), httpapi.InterventionRequest{RunID: "engine-run", Stage: "build", Actor: "alice", IdempotencyKey: "k", InstructionAddendum: "retry"})
 			return err
-		}, engine.HITLIntent{Kind: engine.HITLRerunStage, Stage: "build", InstructionAddendum: "retry"}},
-		"deny": {func(s *Service) error {
+		},
+		"deny": func(s *Service) error {
 			_, err := s.AcceptDenyEscalation(t.Context(), t.Context(), httpapi.InterventionRequest{RunID: "engine-run", Stage: "review", Actor: "alice", IdempotencyKey: "k", Rationale: "unsafe"})
 			return err
-		}, engine.HITLIntent{Kind: engine.HITLResolveEscalation, Gate: "review", Resolution: engine.HITLResolutionDeny, Rationale: "unsafe"}},
+		},
 	}
-	for name, c := range cases {
+	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {
-			decisions := &recordingEngine{hitl: engine.HITLState{Enabled: true, Phase: "awaiting-operator", TerminalGeneration: 3}}
-			if err := c.call(engineRunService(t, decisions)); err != nil {
-				t.Fatal(err)
+			decisions := &recordingEngine{}
+			err := call(engineRunService(t, decisions))
+			var intervention *httpapi.InterventionError
+			if !errors.As(err, &intervention) || intervention.Status != http.StatusConflict || intervention.Code != EngineTerminalInterventionUnsupported {
+				t.Fatalf("terminal intervention on an engine run = %v", err)
 			}
-			want := c.want
-			want.Protocol, want.Version, want.RunID, want.RequestID, want.Actor, want.ExpectedTerminalGeneration = engine.HITLProtocol, engine.HITLProtocolVersion, "engine-run", "k", "alice", 3
-			if len(decisions.intents) != 1 || decisions.intents[0] != want || len(decisions.gates) != 0 {
-				t.Fatalf("intents = %+v, want %+v", decisions.intents, want)
+			if len(decisions.gates) != 0 || len(decisions.intents) != 0 {
+				t.Fatalf("a refused intervention reached the engine: %+v %+v", decisions.gates, decisions.intents)
 			}
 		})
 	}

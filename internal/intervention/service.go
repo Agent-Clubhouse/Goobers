@@ -20,7 +20,6 @@ import (
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/engine"
 	gateevaluator "github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -284,8 +283,7 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 		return *result, err
 	}
 	if resolved.engine {
-		return s.engineIntent(admission, resolved, "override", input, engine.HITLIntent{Kind: engine.HITLResolveEscalation,
-			Gate: input.Stage, Resolution: engine.HITLResolutionOverride, Decision: decision, Rationale: rationale})
+		return httpapi.InterventionResult{}, engineTerminalRefusal("override", resolved)
 	}
 	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -343,7 +341,7 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 		return *result, err
 	}
 	if resolved.engine {
-		return s.engineIntent(admission, resolved, "rerun", input, engine.HITLIntent{Kind: engine.HITLRerunStage, Stage: input.Stage, InstructionAddendum: addendum})
+		return httpapi.InterventionResult{}, engineTerminalRefusal("rerun", resolved)
 	}
 	if resolved.phase != journal.PhaseEscalated {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -433,8 +431,7 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engine {
-		return s.engineIntent(admission, resolved, "deny", input, engine.HITLIntent{Kind: engine.HITLResolveEscalation,
-			Gate: input.Stage, Resolution: engine.HITLResolutionDeny, Rationale: rationale})
+		return httpapi.InterventionResult{}, engineTerminalRefusal("deny", resolved)
 	}
 	return s.denyEscalation(resolved, input)
 }

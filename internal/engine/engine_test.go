@@ -397,11 +397,15 @@ func TestHumanGateRequiresEnabledDecisionPolicy(t *testing.T) {
 	}
 	for name, c := range map[string]struct {
 		legacy bool
+		hitl   bool
 		want   string
 	}{
 		// A new run with no enabled decision policy fails closed at start
 		// rather than holding a gate no decision can reach.
 		"no decision policy": {want: HumanGateDecisionPolicyRequired},
+		// An enabled policy without live journaling cannot commit the gate
+		// occurrence a decision binds to, so it fails closed too.
+		"enabled policy without live journal": {hitl: true, want: HumanGateDecisionPolicyRequired},
 		// A history recorded before engine support replays its refusal.
 		"pre-support history": {legacy: true, want: engineadmission.HumanGateUnsupported},
 	} {
@@ -416,7 +420,11 @@ func TestHumanGateRequiresEnabledDecisionPolicy(t *testing.T) {
 				calls++
 				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 			}}})
-			env.ExecuteWorkflow(Run, runInput("human", spec))
+			in := runInput("human", spec)
+			if c.hitl {
+				in.HITL, in.LiveJournal = &HITLPolicy{Enabled: true, WaitSeconds: 3600}, false
+			}
+			env.ExecuteWorkflow(Run, in)
 			if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), c.want) || calls != 0 {
 				t.Fatalf("workflow error = %v calls=%d, want run-start refusal %q", err, calls, c.want)
 			}

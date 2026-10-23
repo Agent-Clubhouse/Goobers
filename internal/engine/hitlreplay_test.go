@@ -163,7 +163,7 @@ func TestHITLAcceptedUpdateHistoryReplays(t *testing.T) {
 	handle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   run.GetID(),
 		RunID:        run.GetRunID(),
-		UpdateID:     intent.RequestID,
+		UpdateID:     HITLIntentUpdateID(intent),
 		UpdateName:   HITLUpdateName,
 		Args:         []interface{}{intent},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
@@ -237,7 +237,7 @@ func TestHITLPreProtocolHistoryReplays(t *testing.T) {
 	intent.Complete = true
 	handle, uerr := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   run.GetID(),
-		UpdateID:     intent.RequestID,
+		UpdateID:     HITLIntentUpdateID(intent),
 		UpdateName:   HITLUpdateName,
 		Args:         []interface{}{intent},
 		WaitForStage: client.WorkflowUpdateStageCompleted,

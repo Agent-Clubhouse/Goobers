@@ -15,15 +15,13 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 )
 
-// EngineDecisions delivers operator decisions to a run the engine drives.
+// EngineDecisions delivers human-gate decisions to a run the engine drives.
 // Implementations derive payload-bound Temporal UpdateIDs and refuse any
 // acknowledgement that does not answer the exact request
 // (enginedecision.Router). The workflow, not this service, owns the journal.
 type EngineDecisions interface {
 	GateState(context.Context, string) (engine.GateDecisionState, error)
-	HITLState(context.Context, string) (engine.HITLState, error)
 	DecideGate(context.Context, engine.GateDecisionRequest) (engine.GateDecisionAck, error)
-	Intend(context.Context, engine.HITLIntent) (engine.HITLAck, error)
 }
 
 // engineRequestID is the caller's idempotency key, or a key derived from the
@@ -46,18 +44,18 @@ func engineRefusal(action string, err error) error {
 	return httpapi.NewInterventionError(http.StatusBadGateway, "engine_unreachable", fmt.Sprintf("the engine did not accept the %s", action), err)
 }
 
-func (s *Service) engineIntent(ctx context.Context, resolved resolvedInterventionRun, action string, input httpapi.InterventionRequest, intent engine.HITLIntent) (httpapi.InterventionResult, error) {
-	state, err := s.engineDecisions.HITLState(ctx, resolved.runID)
-	if err != nil {
-		return httpapi.InterventionResult{}, engineRefusal(action, err)
-	}
-	intent.Protocol, intent.Version = engine.HITLProtocol, engine.HITLProtocolVersion
-	intent.RunID, intent.RequestID, intent.Actor = resolved.runID, engineRequestID(action, input), input.Actor
-	intent.ExpectedTerminalGeneration = state.TerminalGeneration
-	if _, err := s.engineDecisions.Intend(ctx, intent); err != nil {
-		return httpapi.InterventionResult{}, engineRefusal(action, err)
-	}
-	return currentInterventionResult(resolved)
+// EngineTerminalInterventionUnsupported refuses an intervention that would
+// reopen an engine run's terminal. The live journal refuses every op after
+// run.finished, so the resumed segment could not be journaled; the run's
+// record would silently stop at its escalation.
+const EngineTerminalInterventionUnsupported = "engine_terminal_intervention_unsupported"
+
+// engineTerminalRefusal keeps approve-past-terminal, override, rerun and deny
+// refused on engine runs until the live journal accepts post-terminal HITL
+// segments. Mid-run human-gate decisions are routed (engineApprove).
+func engineTerminalRefusal(action string, resolved resolvedInterventionRun) error {
+	return interventionConflict(EngineTerminalInterventionUnsupported, fmt.Sprintf(
+		"%s would reopen engine run %q after its terminal, which its live journal cannot record yet", action, resolved.runID))
 }
 
 // engineApprove decides the pending human gate when the run holds one, and
@@ -68,8 +66,7 @@ func (s *Service) engineApprove(ctx context.Context, resolved resolvedInterventi
 		return httpapi.InterventionResult{}, engineRefusal("approve", err)
 	}
 	if !gate.Pending || gate.Gate != input.Stage {
-		return s.engineIntent(ctx, resolved, "approve", input, engine.HITLIntent{Kind: engine.HITLResolveEscalation,
-			Gate: input.Stage, Resolution: engine.HITLResolutionApprove, Decision: decision, Rationale: input.Rationale})
+		return httpapi.InterventionResult{}, engineTerminalRefusal("approve", resolved)
 	}
 	request := engine.GateDecisionRequest{Protocol: engine.GateDecisionProtocol, Version: engine.GateDecisionProtocolVersion, RunID: resolved.runID,
 		RequestID: engineRequestID("approve", input), Actor: input.Actor, Gate: input.Stage, GateOccurrence: gate.GateOccurrence,

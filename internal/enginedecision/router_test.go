@@ -95,22 +95,28 @@ func TestChangedPayloadReuseCannotAcceptAStaleAck(t *testing.T) {
 		t.Fatalf("stale gate ack accepted: %v", err)
 	}
 
-	intent := engine.HITLIntent{Protocol: engine.HITLProtocol, Version: engine.HITLProtocolVersion, Kind: engine.HITLResolveEscalation, RunID: "run-1",
+	// HITL acks echo no resolution, so the digest is what binds them. The
+	// stale ack below has the SAME kind and generation and claims a resume:
+	// only the content differs (an approve answering a deny).
+	approve := engine.HITLIntent{Protocol: engine.HITLProtocol, Version: engine.HITLProtocolVersion, Kind: engine.HITLResolveEscalation, RunID: "run-1",
 		RequestID: "key-2", Actor: "alice", ExpectedTerminalGeneration: 2, Gate: "review", Resolution: engine.HITLResolutionApprove}
-	id, err := HITLIntentUpdateID(intent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	denied := intent
-	denied.Resolution = engine.HITLResolutionDeny
-	deniedID, _ := HITLIntentUpdateID(denied)
-	if deniedID == id {
+	deny := approve
+	deny.Resolution = engine.HITLResolutionDeny
+	if engine.HITLIntentUpdateID(deny) == engine.HITLIntentUpdateID(approve) {
 		t.Fatal("HITL UpdateID does not bind the payload")
 	}
-	staleIntent, _ := json.Marshal(engine.HITLAck{Protocol: intent.Protocol, Version: intent.Version, RunID: "run-1", RequestID: "key-2", Kind: engine.HITLRerunStage, TerminalGeneration: 1})
-	server.outcomes[deniedID] = staleIntent
-	if _, err := (Router{Client: server}).Intend(t.Context(), denied); !errors.Is(err, ErrStaleAcknowledgement) {
-		t.Fatalf("stale HITL ack accepted: %v", err)
+	staleApprove, _ := json.Marshal(engine.HITLAck{Protocol: approve.Protocol, Version: approve.Version, RunID: "run-1", RequestID: "key-2", Kind: approve.Kind,
+		Resumed: true, TerminalGeneration: 2, IntentDigest: engine.HITLIntentDigest(approve)})
+	server.outcomes[engine.HITLIntentUpdateID(deny)] = staleApprove
+	if _, err := (Router{Client: server}).Intend(t.Context(), deny); !errors.Is(err, ErrStaleAcknowledgement) {
+		t.Fatalf("approve ack accepted for a deny intent: %v", err)
+	}
+	// The genuine acknowledgement for the deny is accepted.
+	genuine, _ := json.Marshal(engine.HITLAck{Protocol: deny.Protocol, Version: deny.Version, RunID: "run-1", RequestID: "key-2", Kind: deny.Kind,
+		TerminalGeneration: 2, IntentDigest: engine.HITLIntentDigest(deny)})
+	server.outcomes[engine.HITLIntentUpdateID(deny)] = genuine
+	if _, err := (Router{Client: server}).Intend(t.Context(), deny); err != nil {
+		t.Fatalf("genuine deny ack refused: %v", err)
 	}
 }
 

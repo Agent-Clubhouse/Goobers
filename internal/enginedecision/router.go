@@ -8,9 +8,6 @@ package enginedecision
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -38,18 +35,6 @@ type Router struct {
 // starts each run under its RunID with duplicate IDs rejected.
 func WorkflowID(runID string) string { return runID }
 
-// HITLIntentUpdateID binds transport deduplication to the intent's full
-// payload, as engine.GateDecisionUpdateID does for gate decisions. The
-// workflow refuses a reused RequestID with changed content on its own.
-func HITLIntentUpdateID(intent engine.HITLIntent) (string, error) {
-	data, err := json.Marshal(intent)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return engine.HITLUpdateName + ":" + hex.EncodeToString(sum[:]), nil
-}
-
 // GateState reads the run's committed pending human-gate occurrence.
 func (r Router) GateState(ctx context.Context, runID string) (engine.GateDecisionState, error) {
 	var state engine.GateDecisionState
@@ -76,16 +61,14 @@ func (r Router) DecideGate(ctx context.Context, request engine.GateDecisionReque
 
 // Intend delivers one terminal intervention intent.
 func (r Router) Intend(ctx context.Context, intent engine.HITLIntent) (engine.HITLAck, error) {
-	id, err := HITLIntentUpdateID(intent)
-	if err != nil {
-		return engine.HITLAck{}, err
-	}
 	var ack engine.HITLAck
-	if err := r.update(ctx, intent.RunID, engine.HITLUpdateName, id, intent, &ack); err != nil {
+	if err := r.update(ctx, intent.RunID, engine.HITLUpdateName, engine.HITLIntentUpdateID(intent), intent, &ack); err != nil {
 		return engine.HITLAck{}, err
 	}
-	if ack.Protocol != intent.Protocol || ack.Version != intent.Version || ack.RunID != intent.RunID || ack.RequestID != intent.RequestID ||
-		ack.Kind != intent.Kind || ack.TerminalGeneration != intent.ExpectedTerminalGeneration {
+	// The digest binds resolution, gate, decision and every other intent
+	// field; the remaining checks keep the envelope honest on its own.
+	if ack.IntentDigest != engine.HITLIntentDigest(intent) || ack.Protocol != intent.Protocol || ack.Version != intent.Version || ack.RunID != intent.RunID ||
+		ack.RequestID != intent.RequestID || ack.Kind != intent.Kind || ack.TerminalGeneration != intent.ExpectedTerminalGeneration {
 		return engine.HITLAck{}, ErrStaleAcknowledgement
 	}
 	return ack, nil
