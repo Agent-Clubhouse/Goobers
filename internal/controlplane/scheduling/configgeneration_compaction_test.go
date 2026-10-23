@@ -1,4 +1,4 @@
-package main
+package scheduling
 
 import (
 	"encoding/json"
@@ -24,7 +24,7 @@ func TestCompactionPreservesAppliedGeneration(t *testing.T) {
 	const generation = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	enc := json.NewEncoder(f)
 	for _, event := range []journal.Event{
-		{Schema: journal.EventSchema, Seq: 1, Time: old, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": appliedGenerationAnnotation, "configGeneration": generation}},
+		{Schema: journal.EventSchema, Seq: 1, Time: old, Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": journal.ConfigGenerationAppliedAnnotation, "configGeneration": generation}},
 		{Schema: journal.EventSchema, Seq: 2, Time: time.Now(), Type: journal.EventTickSkipped},
 	} {
 		if err := enc.Encode(event); err != nil {
@@ -34,7 +34,7 @@ func TestCompactionPreservesAppliedGeneration(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reader := appliedExecutionGenerationReader(layout)
+	reader := AppliedExecutionGenerationReader(layout)
 	if got, err := reader(t.Context()); err != nil || got != generation {
 		t.Fatalf("before compact=%q err=%v", got, err)
 	}

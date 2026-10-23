@@ -1,136 +1,37 @@
 package main
 
 import (
-	"context"
-	"crypto/sha256"
-	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
-// claimledger.go is where every ledger-touching CLI stage gets its
-// claimsclient.Ledger (finding 002 C1). Two constructions:
-//
-//   - stageClaimLedger: the STAGE seam. The plane backend when
-//     GOOBERS_CLAIMS_ENDPOINT (+ the claims bearer) is in the stage's
-//     environment — a stage pod — else the file backend below. Fail closed in
-//     between: an endpoint without a bearer is an error, never a silent fall
-//     through to a ledger file the pod does not have.
-//   - fileClaimLedger: the instance's own claims.json under
-//     the same withClaimLock discipline, operation labels, timeout and
-//     slow-lock journaling providercmd.go has always applied. The daemon's own
-//     paths (terminal cleanup, interventions) use these directly and never
-//     select by environment — the daemon is the writer, not a client.
-//
-// Nothing about the file path changes for a type-1/type-2 instance: the lock
-// closure IS withClaimLock, the ledger open IS localscheduler.OpenClaimLedger,
-// and Locked's fn runs inside exactly the critical section the seam held
-// before this file existed.
+func claimFiles() scheduling.ClaimFiles {
+	return scheduling.ClaimFiles{ClaimLock: withClaimLock, FileLock: withFileLock, BoundedLock: withBoundedFileLock, RunLock: withClaimLockForRun, SharedResolver: stageSharedClaimResolver, StartTelemetry: func(l instance.Layout) func() { return startCommandJournalTelemetry(l, os.Stderr) }}
+}
 
-// openStageClaimLedger is the stage seam, swappable in tests.
 var openStageClaimLedger = stageClaimLedger
+var claimsPlaneSelected = scheduling.ClaimsPlaneSelected
+var withClaimJournal = scheduling.WithClaimJournal
+var claimContext = scheduling.ClaimContext
 
-// stageClaimLedger selects a ledger for a stage CLI process from its
-// environment.
 func stageClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	return claimsclient.Select(os.Getenv, func() (claimsclient.Ledger, error) {
-		return fileClaimLedgerWithResolver(l, stageSharedClaimResolver(l), opts...)
-	})
+	return claimFiles().Stage(l, opts...)
 }
-
-// claimLedgerJournal opens the instance log a file-backed claimant journals
-// claim transitions to, or nothing when the stage is on the plane — the
-// daemon's own ledger journals plane-driven transitions, and a pod has no
-// instance log to open. The returned close is nil-safe.
-func claimLedgerJournal(l instance.Layout) (*journal.InstanceLog, func(), error) {
-	if claimsPlaneSelected() {
-		return nil, func() {}, nil
-	}
-	stopTelemetry := startCommandJournalTelemetry(l, os.Stderr)
-	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
-	if err != nil {
-		stopTelemetry()
-		return nil, func() {}, fmt.Errorf("open instance log: %w", err)
-	}
-	return log, func() {
-		_ = log.Close()
-		stopTelemetry()
-	}, nil
-}
-
-// claimsPlaneSelected reports whether the stage's environment names the
-// claims plane — the same predicate Select applies, read here so a seam can
-// skip instance-root side work (an instance-log open) the plane owns.
-func claimsPlaneSelected() bool {
-	return os.Getenv(claimsclient.EnvEndpoint) != ""
-}
-
-// withClaimJournal appends WithInstanceLog(log) when log is non-nil.
-func withClaimJournal(log *journal.InstanceLog, opts ...localscheduler.LedgerOption) []localscheduler.LedgerOption {
-	if log == nil {
-		return opts
-	}
-	return append(opts, localscheduler.WithInstanceLog(log))
-}
-
-// fileClaimLedger is the instance's ledger under withClaimLock — one flock
-// acquisition per Locked section, labelled by the caller.
 func fileClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	return fileClaimLedgerWithResolver(l, nil, opts...)
+	return claimFiles().File(l, opts...)
 }
 
-func fileClaimLedgerWithResolver(l instance.Layout, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	return claimsclient.NewFile(claimsclient.FileConfig{
-		Shared:     resolver,
-		LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-		Lock: func(operation string, fn func() error) error {
-			return withClaimLock(lockPath, operation, fn)
-		},
-		MergeLock: func(fn func() error) error {
-			return withFileLock(filepath.Join(l.SchedulerDir(), mergeLockFileName), fn)
-		},
-		ProviderReleaseLock: claimProviderReleaseLock(l),
-		Options:             opts,
-	})
-}
-
-func claimProviderReleaseLock(l instance.Layout) func(claimsclient.Key, func() error) error {
-	return func(key claimsclient.Key, fn func() error) error {
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%q/%q/%q", key.Gaggle, key.Provider, key.ExternalID)))
-		path := filepath.Join(l.SchedulerDir(), fmt.Sprintf("claim-release-%x.lock", digest))
-		return withBoundedFileLock(path, "backlog.release.provider", fn)
-	}
-}
-
-// fileClaimLedgerForRunWithResolver uses withClaimLockForRun's lock
-// (the run-attributed lock-event context the run-lifecycle releases use).
-func fileClaimLedgerForRunWithResolver(l instance.Layout, gaggle, runID string, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	return claimsclient.NewFile(claimsclient.FileConfig{
-		Shared:              resolver,
-		LedgerPath:          filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-		ProviderReleaseLock: claimProviderReleaseLock(l),
-		Lock: func(operation string, fn func() error) error {
-			return withClaimLockForRun(lockPath, operation, gaggle, runID, fn)
-		},
-		Options: opts,
-	})
-}
-
-// stageClaimLedgerForRun is the stage seam with the run-attributed file lock.
 func stageClaimLedgerForRun(l instance.Layout, gaggle, runID string, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
-	return claimsclient.Select(os.Getenv, func() (claimsclient.Ledger, error) {
-		return fileClaimLedgerForRunWithResolver(l, gaggle, runID, stageSharedClaimResolver(l), opts...)
-	})
+	return claimFiles().StageForRun(l, gaggle, runID, opts...)
 }
-
-// claimContext is the context a CLI seam hands the ledger when it has none of
-// its own: the plane backend bounds each round trip itself, and the file
-// backend ignores it.
-func claimContext() context.Context { return context.Background() }
+func claimLedgerJournal(l instance.Layout) (*journal.InstanceLog, func(), error) {
+	return claimFiles().Journal(l)
+}
+func claimProviderReleaseLock(l instance.Layout) func(claimsclient.Key, func() error) error {
+	return claimFiles().ProviderReleaseLock(l)
+}

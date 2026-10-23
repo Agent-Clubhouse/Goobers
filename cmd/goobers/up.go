@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configauthoring"
 	"github.com/goobers/goobers/internal/configmirror"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -1730,9 +1731,7 @@ func (u *upSession) configureSource() int {
 	}
 
 	if source := u.setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-		u.sourceApplier = &workflowSourceApplier{
-			root: u.root, source: *source, appTokens: workflowSourceAppTokens, setup: u.setup, reloader: u.reloader,
-		}
+		u.sourceApplier = newWorkflowSourceApplier(u.root, *source, workflowSourceAppTokens, u.setup, u.reloader)
 	}
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
 		if u.sourceApplier != nil {
@@ -1976,7 +1975,7 @@ func (u *upSession) startRequestLoops() int {
 	if u.sourceApplier != nil {
 		u.configLoopEnabled = true
 		sourceLoop := &configSourceReconciler{
-			source:    u.sourceApplier.source,
+			source:    u.sourceApplier.Source,
 			errors:    newSweepErrorReporter(u.setup.InstanceLog, "config_reconcile_failed"),
 			wake:      u.sourceReconcileWake,
 			reconcile: u.sourceApplier.Reconcile,
@@ -2359,7 +2358,7 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 // journaled its own start, so the newest drain interval ends at this
 // lifetime's beginning. A read failure credits nothing, which is the
 // pre-#5601 behavior, and says so.
-func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDowntime, *hostsuspend.Ledger) {
+func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) (scheduling.DowntimeWindows, *hostsuspend.Ledger) {
 	if log == nil {
 		return nil, hostsuspend.NewLedger(nil, nil)
 	}
@@ -2371,7 +2370,7 @@ func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDown
 	return cleanDaemonDowntime(events), hostsuspend.NewLedger(log, hostsuspend.FromEvents(events))
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime scheduling.DowntimeWindows, hostSuspensions *hostsuspend.Ledger) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
