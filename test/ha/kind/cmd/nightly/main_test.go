@@ -19,7 +19,7 @@ func TestTemporalLadderAdvancesOneMinorToWorkerDeploymentGA(t *testing.T) {
 		"1.28.4/temporal-0.67.0.tgz",
 		"1.29.7/temporal-0.73.2.tgz",
 		"1.30.8/temporal-0.74.0.tgz",
-		"1.31.0/temporal-1.3.0.tgz",
+		"1.31.4/temporal-1.6.0.tgz",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Temporal ladder = %v, want %v", got, want)

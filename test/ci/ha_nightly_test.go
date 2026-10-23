@@ -77,7 +77,7 @@ func TestHANightlyDeclaresRequiredTopologyAndOperations(t *testing.T) {
 		"temporal-0.67.0.tgz",
 		"temporal-0.73.2.tgz",
 		"temporal-0.74.0.tgz",
-		"temporal-1.3.0.tgz",
+		"temporal-1.6.0.tgz",
 		"toxiproxy-server",
 		`"kind", "load", "docker-image", "goobers:ha-nightly"`,
 		`"kubectl", "apply", "-k", "test/ha/kind/reference"`,

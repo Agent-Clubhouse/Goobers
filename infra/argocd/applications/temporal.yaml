@@ -14,7 +14,7 @@ spec:
   sources:
     - repoURL: https://go.temporal.io/helm-charts
       chart: temporal
-      targetRevision: 1.3.0
+      targetRevision: 1.6.0
       helm:
         valueFiles:
           - $infra/infra/temporal/values.yaml

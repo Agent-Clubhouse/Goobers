@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ var temporalLadder = []temporalStep{
 	{server: "1.28.4", chart: "temporal-0.67.0.tgz", image: "1.28.4@sha256:465833b37daee69d90cbff8f855e8f3c96e342087405e61131d4930213feceb4", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
 	{server: "1.29.7", chart: "temporal-0.73.2.tgz", image: "1.29.7@sha256:688da708d0daca6ff8083334a4a7fbbdbc7e70d1cca8e2eda8c05b21fdbd601e", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
 	{server: "1.30.8", chart: "temporal-0.74.0.tgz", image: "1.30.8@sha256:54c59485b185ad787061f9a2ed72bd31c8efeae2d4144c61f22873df52c3c781", values: []string{"test/ha/kind/temporal-values-legacy.yaml"}},
-	{server: "1.31.0", chart: "temporal-1.3.0.tgz", image: "1.31.0@sha256:b021b3b58c3f169634cdbb0451fcc0e69e8190b40454323362c7c52bbd4ff7b9", values: []string{"deploy/reference/temporal/values.yaml", "test/ha/kind/temporal-values.yaml"}},
+	{server: "1.31.4", chart: "temporal-1.6.0.tgz", image: "1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6", values: []string{"deploy/reference/temporal/values.yaml", "test/ha/kind/temporal-values.yaml"}},
 }
 
 func main() {
@@ -92,8 +93,9 @@ func run() error {
 			return err
 		}
 	}
+	var priorMinRange int64
 	for index, step := range temporalLadder {
-		if err := runTemporalStep(ctx, env, assets, evidence, step); err != nil {
+		if err := runTemporalStep(ctx, env, assets, evidence, step, &priorMinRange); err != nil {
 			return err
 		}
 		if index == 0 {
@@ -108,8 +110,8 @@ func run() error {
 	return verifyAndSummarize(ctx, env, evidence)
 }
 
-func runTemporalStep(ctx context.Context, env []string, assets, evidence string, step temporalStep) error {
-	legacy := step.chart != "temporal-1.3.0.tgz"
+func runTemporalStep(ctx context.Context, env []string, assets, evidence string, step temporalStep, priorMinRange *int64) error {
+	legacy := step.chart != "temporal-1.6.0.tgz"
 	if legacy {
 		if err := runLegacySchema(ctx, env, assets, step); err != nil {
 			return fmt.Errorf("upgrade temporal %s schema before server rollout: %w", step.server, err)
@@ -141,9 +143,11 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 	if err := waitForTemporalHealth(ctx, env); err != nil {
 		return fmt.Errorf("temporal %s cluster smoke: %w", step.server, err)
 	}
-	if err := waitForShardSettlement(ctx, env, evidence, step.server); err != nil {
+	minRange, err := waitForShardSettlement(ctx, env, evidence, step.server, *priorMinRange)
+	if err != nil {
 		return err
 	}
+	*priorMinRange = minRange
 	if err := command(ctx, env, "kubectl", "delete", "job/goobers-temporal-namespace",
 		"-n", "goobers-temporal", "--ignore-not-found"); err != nil {
 		return err
@@ -172,27 +176,40 @@ func runTemporalStep(ctx context.Context, env []string, assets, evidence string,
 		[]byte("schema-first migration, server rollout, cluster health, cross-version workflow continuation, and history replay passed\n"), 0o644)
 }
 
-func waitForShardSettlement(ctx context.Context, env []string, evidence, serverVersion string) error {
+func waitForShardSettlement(ctx context.Context, env []string, evidence, serverVersion string, priorMinRange int64) (int64, error) {
 	query := "SELECT count(*), min(range_id) FROM shards;"
 	var last string
-	for range 60 {
+	var candidate int64
+	var stableSince time.Time
+	for range 120 {
 		result, err := output(ctx, env, "kubectl", "exec", "-n", "goobers-temporal", "temporal-postgres-1",
 			"--", "psql", "-U", "postgres", "-d", "temporal", "-Atc", query)
 		if err == nil {
 			last = strings.TrimSpace(result)
 			fields := strings.Split(last, "|")
-			if len(fields) == 2 && fields[0] == "4" && fields[1] != "" && fields[1] != "0" {
-				return os.WriteFile(filepath.Join(evidence, "temporal-"+serverVersion+"-shards.txt"),
-					[]byte("count|min_range_id\n"+last+"\n"), 0o644)
+			current, parseErr := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+			if len(fields) == 2 && parseErr == nil && fields[0] == "4" && current > priorMinRange {
+				if current != candidate {
+					candidate, stableSince = current, time.Now()
+				} else if time.Since(stableSince) >= 30*time.Second {
+					data := fmt.Sprintf("count|min_range_id\n%s\nprior_min_range_id=%d\nstable_seconds=30\n", last, priorMinRange)
+					if err := os.WriteFile(filepath.Join(evidence, "temporal-"+serverVersion+"-shards.txt"), []byte(data), 0o644); err != nil {
+						return 0, err
+					}
+					return current, nil
+				}
+			} else {
+				candidate, stableSince = 0, time.Time{}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return errors.Join(ctx.Err(), err)
+			return 0, errors.Join(ctx.Err(), err)
 		case <-time.After(5 * time.Second):
 		}
 	}
-	return fmt.Errorf("temporal %s shards did not settle (last count|min_range_id=%q)", serverVersion, last)
+	return 0, fmt.Errorf("temporal %s shards did not advance beyond %d and remain stable for 30s (last=%q)",
+		serverVersion, priorMinRange, last)
 }
 
 func runUpgradeProbe(ctx context.Context, env []string, evidence string, step temporalStep, final bool) error {
@@ -249,8 +266,10 @@ func runUpgradeProbe(ctx context.Context, env []string, evidence string, step te
 	if err != nil {
 		return fmt.Errorf("temporal %s engine replay suites: %w", step.server, err)
 	}
-	if bytes.Count(output, []byte("--- PASS:")) < 3 {
-		return fmt.Errorf("temporal %s engine replay suite ran fewer than three required tests", step.server)
+	for _, name := range []string{"TestE2WalkHistoryReplays", "TestE4WalkHistoryReplays", "TestE11WalkHistoryReplays"} {
+		if !bytes.Contains(output, []byte("--- PASS: "+name+" ")) {
+			return fmt.Errorf("temporal %s engine replay suite did not pass top-level %s", step.server, name)
+		}
 	}
 	return nil
 }
@@ -405,7 +424,7 @@ func verifyAndSummarize(ctx context.Context, env []string, evidence string) erro
 	summary := "### HA nightly kind\n\n" +
 		"- Owner rotation: `" + envDefault("HA_NIGHTLY_OWNER_ROTATION", "control-plane-ha-maintainers") + "`\n" +
 		"- Calico enforcing CNI: ready\n- CNPG instances: 3\n- Temporal frontend: ready\n" +
-		"- Temporal ladder: 1.27.2 -> 1.27.4 -> 1.28.4 -> 1.29.7 -> 1.30.8 -> 1.31.0 (Worker Deployment GA)\n" +
+		"- Temporal ladder: 1.27.2 -> 1.27.4 -> 1.28.4 -> 1.29.7 -> 1.30.8 -> 1.31.4 (Worker Deployment GA minor)\n" +
 		"- Schema-first migration, cluster workflow continuation, and history replay: passed at every step\n" +
 		"- Reference image smoke: passed\n- Toxiproxy: ready\n" +
 		"- Benchmarks: not yet registered; future benchmark values are reported, never asserted\n"

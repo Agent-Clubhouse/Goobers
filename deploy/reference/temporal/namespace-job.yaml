@@ -38,7 +38,7 @@ spec:
       containers:
         - name: register-namespace
           # Keep this at the server version selected by values.yaml.
-          image: temporalio/admin-tools:1.31.0@sha256:3e68adcd54195a7c1222e99f2dbc32a4fdbf44ad69e3bb48e21e85c4bf417c2e
+          image: temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87
           env:
             # Same default the worker/engine connect to
             # (internal/instance/config.go: DefaultTemporalNamespace) unless

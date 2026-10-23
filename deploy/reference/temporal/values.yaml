@@ -5,7 +5,7 @@
 #   helm repo add temporal https://go.temporal.io/helm-charts
 #   helm install temporal temporal/temporal \
 #     --namespace goobers-temporal --create-namespace \
-#     --version 1.3.0 -f values.yaml
+#     --version 1.6.0 -f values.yaml
 #
 # Persistence is the customer-managed PostgreSQL (§2/§4: managed cloud PG
 # recommended — the one stateful service Goobers requires); every bundled
