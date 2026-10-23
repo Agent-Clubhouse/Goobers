@@ -686,10 +686,13 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
 	}
-	// #5414: a reviewer off the run branch reads the run's diff from a probe.
-	probed, err := a.probeRunBranchDiff(ctx, env, workspace, workspaceBranch, workspaceDelta, requireDiff)
-	if err != nil {
-		return GateReviewResult{}, classifySeamError(err)
+	var probed *GateReviewResult
+	var err error
+	if env.PreparedReviewerDiff == nil {
+		probed, err = a.probeRunBranchDiff(ctx, env, workspace, workspaceBranch, workspaceDelta, requireDiff)
+		if err != nil {
+			return GateReviewResult{}, classifySeamError(err)
+		}
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
@@ -697,43 +700,15 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	}
 	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 
-	// The subject diff (#3384), read from the workspace this reviewer was
-	// already given rather than from a second one. It is both the evidence the
-	// reviewer judges and — through the two short-circuits below — the reason
-	// a reviewer sometimes must not be asked at all.
-	out := captureGateDiff(ctx, ws, workspace, env)
-	if probed != nil {
-		out = *probed
-	}
-	if a.Canary != nil && len(out.Diff) > 0 {
-		// Defence in depth, as in the local runner's recordReviewerDiff: a
-		// commit that captured a registered credential must not carry it into
-		// the journal on its way to the reviewer.
-		out.Diff = a.Canary.Scrub(out.Diff)
-	}
-	if len(out.Diff) > 0 {
-		ref, err := journal.ArtifactRef(out.Diff)
-		if err != nil {
-			return GateReviewResult{}, classifySeamError(fmt.Errorf("address reviewer diff for gate %q: %w", env.TaskID, err))
-		}
-		out.DiffDigest = ref.Digest
-		// The workflow records the artifact from these same bytes, so the
-		// pointer handed to the reviewer here and the one the journal commits
-		// address one blob by construction, not by agreement.
-		env.ContextPointers = append(env.ContextPointers, apiv1.ContextPointer{
-			Name:      runsemantics.ReviewerDiffPointerName(gateNameFromTaskID(env)),
-			Integrity: apiv1.IntegrityDerived,
-			Artifact: &apiv1.ArtifactPointer{
-				Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-				MediaType: runsemantics.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
-			},
-		})
+	out, err := a.reviewerDiffForInvocation(ctx, &env, ws, workspace, probed)
+	if err != nil {
+		return GateReviewResult{}, err
 	}
 	// The two short-circuits, placed exactly where internal/gate's Evaluate
 	// places them: after the diff is known and BEFORE the reviewer is called.
 	// A synthesized verdict here is the whole point — the negative assertion
 	// the parity rows make is that a.Goober.Review is never reached.
-	if out.Observed && len(out.Diff) == 0 && requireDiff {
+	if out.Observed && out.DiffDigest == "" && requireDiff {
 		// #415: an agentic stage asked to change something changed nothing.
 		// No reviewer can turn that into a pass. Scoped to an agentic subject
 		// — or, since #5414, a gate that reviews implementation work — because
@@ -775,6 +750,11 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 // zero value, and the workflow then behaves exactly as it did — no diff
 // artifact, no digest, no short-circuit.
 type GateReviewResult struct {
+	// Prepared marks evidence already committed before dispatch. N-1 results
+	// omit it and retain the legacy post-review artifact recording path.
+	Prepared     bool                  `json:"prepared,omitempty"`
+	PreparedDiff *apiv1.ContextPointer `json:"preparedDiff,omitempty"`
+
 	apiv1.Verdict
 	// Actor is populated only by the workflow-side human decision protocol.
 	Actor string `json:"actor,omitempty"`

@@ -64,6 +64,7 @@ type podPlanes struct {
 	surrenderPath   string
 	credentialReqs  []string
 	recoveryUploads int
+	journalEmits    [][]byte
 }
 
 func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
@@ -105,6 +106,9 @@ func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
 				creds = append(creds, dispatcher.MintedCredential{Capability: c, Value: p.checkoutToken})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": creds})
+		case strings.HasSuffix(r.URL.Path, "/journal/emit"):
+			p.journalEmits = append(p.journalEmits, body)
+			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/surrender"):
 			p.surrendered = body
 			p.surrenderPath = r.URL.Path
