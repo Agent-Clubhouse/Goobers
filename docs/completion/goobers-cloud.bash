@@ -1,1 +1,1 @@
-complete -W "api completion controller help migrate worker" goobers-cloud
+complete -W "api approve cancel claims completion config controller deny help lease migrate override runs status triggers worker" goobers-cloud
