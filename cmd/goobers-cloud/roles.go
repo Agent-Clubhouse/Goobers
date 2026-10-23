@@ -133,7 +133,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pools.Close()
-	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder, migrationWarning(stderr, "migrate")); err != nil {
+	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder, cloudmigrate.WarningTo(stderr, "migrate")); err != nil {
 		writef(stderr, "goobers-cloud migrate: %s\n", cloudpg.SafeDiagnostic(err))
 		return 1
 	}
@@ -172,15 +172,6 @@ var (
 		return "direct", pools.Direct.Ping(ctx)
 	}
 )
-
-// migrationWarning prints a non-fatal migration finding (a partition pass
-// deferred to the periodic job) as a stderr warning so it is visible in the Job
-// logs. The diagnostic is the sanitized class, as for errors.
-func migrationWarning(stderr io.Writer, command string) func(error) {
-	return func(err error) {
-		writef(stderr, "goobers-cloud %s: warning: partition maintenance deferred to the periodic job: %s\n", command, cloudpg.SafeDiagnostic(err))
-	}
-}
 
 type databaseServices struct {
 	RecoverStarts   func(context.Context, engine.Starter, cloudacceptance.StartInputResolver) error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
@@ -344,4 +346,13 @@ func CheckPoolCompatibility(ctx context.Context, pool *pgxpool.Pool, binary stri
 		return fmt.Errorf("load cloud schema for compatibility check: %w", err)
 	}
 	return CheckCompatibility(binary, applied, catalog)
+}
+
+// WarningTo returns a Runner.Report that prints a non-fatal finding (a partition
+// pass deferred to the periodic job) as a warning on w, so it shows in the
+// Job's logs. The diagnostic is the sanitized class, as for errors.
+func WarningTo(w io.Writer, command string) func(error) {
+	return func(err error) {
+		_, _ = fmt.Fprintf(w, "goobers-cloud %s: warning: partition maintenance deferred to the periodic job: %s\n", command, cloudpg.SafeDiagnostic(err))
+	}
 }

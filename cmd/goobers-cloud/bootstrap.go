@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/cutover"
+	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 )
 
@@ -113,7 +114,7 @@ func runBootstrapRole(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 	connect := cutover.Connect{
-		Report: migrationWarning(stderr, "bootstrap"),
+		Report: cloudmigrate.WarningTo(stderr, "bootstrap"),
 		Admin:  func(ctx context.Context) (*pgx.Conn, error) { return pgx.Connect(ctx, adminURL) },
 		Owner: func(ctx context.Context) (*pgxpool.Pool, error) {
 			pools, err := newCloudPools(ctx, config)
