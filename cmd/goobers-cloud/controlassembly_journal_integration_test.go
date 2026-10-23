@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -17,8 +19,10 @@ import (
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
+	"github.com/goobers/goobers/internal/cloud/readmodelpg"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // TestControlJournalWritesAsTheControllerRoleAndLeavesNoLocalFiles composes the
@@ -58,13 +62,17 @@ func TestControlJournalWritesAsTheControllerRoleAndLeavesNoLocalFiles(t *testing
 	t.Cleanup(planes.close)
 
 	runID := strings.Repeat("a", 32)
+	graph, err := json.Marshal(workflow.Graph{Name: "wf", Version: 1, Digest: "sha256:abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	started, stage := journal.Event{Type: journal.EventRunStarted, Status: string(journal.PhaseRunning)}, journal.Event{Type: journal.EventStageStarted, Stage: "build", Attempt: 1}
 	response, err := planes.Journal.Emit(t.Context(), livejournal.EmitRequest{
 		RunID: runID, Gaggle: "web",
 		Open: &livejournal.OpenHeader{
 			Identity: journal.RunIdentity{RunID: runID, Workflow: "wf", WorkflowVersion: 1, WorkflowDigest: "sha256:abc", Gaggle: "web", Trigger: journal.Trigger{Kind: journal.TriggerManual}},
-			Graph:    []byte(`{"nodes":[]}`), Definition: []byte(`{"name":"wf"}`),
+			Graph:    graph, Definition: []byte(`{"name":"wf"}`),
 		},
 		Ops: []livejournal.Op{
 			{Kind: livejournal.OpAppend, Key: runID + "|0||0|0", Event: &started, Time: at},
@@ -80,6 +88,45 @@ func TestControlJournalWritesAsTheControllerRoleAndLeavesNoLocalFiles(t *testing
 	}
 	if _, err := os.Stat(cloudJournalRunsRoot); !os.IsNotExist(err) {
 		t.Fatalf("PG journal touched the local runs root: %v", err)
+	}
+
+	// R2: the journal observer nudges the projector, and the projector service the
+	// control role starts projects the run under its own lease, readable by the
+	// API login role through the read model.
+	select {
+	case <-planes.projectorWake:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the journal commit never nudged the projector")
+	}
+	service, err := projectorService(db, planes, func(err error) { t.Errorf("projector: %v", err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectorCtx, stopProjector := context.WithCancel(t.Context())
+	stopped := make(chan error, 1)
+	go func() { stopped <- service(projectorCtx) }()
+	t.Cleanup(func() { stopProjector(); <-stopped })
+	apiConfig, err := pgxpool.ParseConfig(apiURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiConfig.MaxConns = lease.MaxFencedConnections
+	apiPool, err := pgxpool.NewWithConfig(t.Context(), apiConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(apiPool.Close)
+	models, err := readmodelpg.NewActiveReader(t.Context(), apiPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if row, ok, err := models.GetRun(t.Context(), runID); err == nil && ok && row.LastSeq == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the control role's projector never projected the run")
+		}
 	}
 
 	// The API login role has no journal grants in P3 (writepaths.yaml): a read
