@@ -57,6 +57,9 @@ func New(
 	if pool == nil || strings.TrimSpace(instanceID) == "" || manager == nil || handle == nil {
 		return nil, errors.New("cloud claims require a pool, instance, and live lease")
 	}
+	if instanceID != handle.InstanceID {
+		return nil, errors.New("cloud claims instance does not match lease handle")
+	}
 	return &Store{pool: pool, instanceID: instanceID, manager: manager, handle: handle}, nil
 }
 
@@ -83,94 +86,108 @@ func (s *Store) ClaimScoped(
 		}
 		if _, err := tx.Exec(ctx, `
 			DELETE FROM control.claim_history
-			WHERE instance_id=$1 AND released_at<(clock_timestamp()-$2::interval)`,
-			s.instanceID, localscheduler.ClaimHistoryTTL,
+			WHERE instance_id=$1 AND owner_epoch<=$2
+			  AND released_at<(clock_timestamp()-$3::interval)`,
+			s.instanceID, epoch, localscheduler.ClaimHistoryTTL,
 		); err != nil {
 			return err
 		}
-		entry, token, live, rowErr := s.readClaimForUpdate(ctx, tx, key)
-		switch {
-		case rowErr == nil:
-			holder = entry.RunID
-			if entry.RunID == runID && live {
-				if entry.Workflow != workflow {
-					return ErrConflict
+		for attempt := 0; attempt < 2; attempt++ {
+			entry, token, rowEpoch, live, rowErr := s.readClaimForUpdate(ctx, tx, key)
+			if errors.Is(rowErr, pgx.ErrNoRows) {
+				entry, token, rowEpoch, live, rowErr = s.readClaimForUpdateBlocking(ctx, tx, key)
+			}
+			switch {
+			case rowErr == nil:
+				holder = entry.RunID
+				if entry.RunID == runID && live {
+					if entry.Workflow != workflow {
+						return ErrConflict
+					}
+					if rowEpoch != epoch {
+						return ErrTransition
+					}
+					tag, err := tx.Exec(ctx, `
+						UPDATE control.claim
+						SET renewed_at=clock_timestamp(), expires_at=clock_timestamp()+$7
+						WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
+						  AND owner_token=$5 AND owner_epoch=$6`,
+						s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
+						token, epoch, lease,
+					)
+					if err := changed(tag.RowsAffected(), err); err != nil {
+						return err
+					}
+					if err := recordFairnessState(ctx, tx, s.instanceID, key, runID, epoch); err != nil {
+						return err
+					}
+					ok, holder = true, runID
+					return nil
+				}
+				if live {
+					ok = false
+					return nil
 				}
 				tag, err := tx.Exec(ctx, `
-					UPDATE control.claim
-					SET renewed_at=clock_timestamp(), expires_at=clock_timestamp()+$7
+					DELETE FROM control.claim
 					WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
-					  AND owner_token=$5 AND owner_epoch=$6`,
+					  AND owner_token=$5 AND owner_epoch=$6 AND owner_epoch<=$7
+					  AND expires_at<=clock_timestamp()`,
 					s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
-					token, epoch, lease,
+					token, rowEpoch, epoch,
 				)
 				if err := changed(tag.RowsAffected(), err); err != nil {
 					return err
 				}
-				if err := recordFairnessState(ctx, tx, s.instanceID, key, runID, epoch); err != nil {
-					return err
-				}
-				ok, holder = true, runID
-				return nil
-			}
-			if live {
-				ok = false
-				return nil
+			case !errors.Is(rowErr, pgx.ErrNoRows):
+				return rowErr
 			}
 			if _, err := tx.Exec(ctx, `
 				DELETE FROM control.claim
-				WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
-				  AND owner_token=$5 AND owner_epoch<=$6 AND expires_at<=clock_timestamp()`,
-				s.instanceID, key.Gaggle, key.Provider, key.ExternalID, token, epoch,
+				WHERE instance_id=$1 AND owner_epoch<=$2
+				  AND expires_at<=clock_timestamp()`,
+				s.instanceID, epoch,
 			); err != nil {
 				return err
 			}
-		case !errors.Is(rowErr, pgx.ErrNoRows):
-			return rowErr
-		}
-		var count int
-		if err := tx.QueryRow(ctx, `
-			SELECT count(*) FROM control.claim WHERE instance_id=$1`,
-			s.instanceID,
-		).Scan(&count); err != nil {
-			return err
-		}
-		if count >= MaxClaims {
-			return ErrCapacity
-		}
-		ownerToken, err := randomToken()
-		if err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `
-			INSERT INTO control.claim
-				(instance_id, gaggle, provider, external_id, run_id, workflow,
-				 owner_token, owner_epoch, claimed_at, renewed_at, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp(),clock_timestamp(),clock_timestamp()+$9)
-			ON CONFLICT (instance_id,gaggle,provider,external_id) DO NOTHING`,
-			s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
-			runID, workflow, ownerToken, epoch, lease,
-		)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			existing, _, err := s.readClaim(ctx, tx, key)
+			var count int
+			if err := tx.QueryRow(ctx, `
+				SELECT count(*) FROM control.claim
+				WHERE instance_id=$1 AND owner_epoch<=$2
+				  AND expires_at>clock_timestamp()`,
+				s.instanceID, epoch,
+			).Scan(&count); err != nil {
+				return err
+			}
+			if count >= MaxClaims {
+				return ErrCapacity
+			}
+			ownerToken, err := randomToken()
 			if err != nil {
 				return err
 			}
-			holder = existing.RunID
-			if existing.RunID == runID && existing.Workflow == workflow {
-				ok = true
-				return nil
+			tag, err := tx.Exec(ctx, `
+				INSERT INTO control.claim
+					(instance_id, gaggle, provider, external_id, run_id, workflow,
+					 owner_token, owner_epoch, claimed_at, renewed_at, expires_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp(),clock_timestamp(),clock_timestamp()+$9)
+				ON CONFLICT (instance_id,gaggle,provider,external_id) DO NOTHING`,
+				s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
+				runID, workflow, ownerToken, epoch, lease,
+			)
+			if err != nil {
+				return err
 			}
-			return ErrConflict
+			if tag.RowsAffected() == 0 {
+				continue
+			}
+			if err := recordFairnessState(ctx, tx, s.instanceID, key, runID, epoch); err != nil {
+				return err
+			}
+			ok, holder = true, runID
+			return nil
 		}
-		if err := recordFairnessState(ctx, tx, s.instanceID, key, runID, epoch); err != nil {
-			return err
-		}
-		ok, holder = true, runID
-		return nil
+		return ErrTransition
 	})
 	return ok, holder, err
 }
@@ -184,17 +201,18 @@ func recordFairnessState(
 	epoch int64,
 ) error {
 	stateKey := key.Gaggle + "|" + key.Provider + "|" + key.ExternalID
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO control.scheduler_state
 			(instance_id,scope,key,value,etag,owner_epoch,updated_at)
 		VALUES ($1,'claim-fairness',$2,$3,1,$4,clock_timestamp())
 		ON CONFLICT (instance_id,scope,key) DO UPDATE
 		SET value=excluded.value,etag=control.scheduler_state.etag+1,
 		    owner_epoch=excluded.owner_epoch,updated_at=clock_timestamp()
-		WHERE control.scheduler_state.owner_epoch<=$4`,
+		WHERE control.scheduler_state.instance_id=$1
+		  AND control.scheduler_state.owner_epoch<=$4`,
 		instanceID, stateKey, []byte(runID), epoch,
 	)
-	return err
+	return changed(tag.RowsAffected(), err)
 }
 
 // Release releases a legacy claim.
@@ -252,10 +270,6 @@ func (s *Store) RecordClaimVerification(
 	expected localscheduler.ClaimEntry,
 	observation localscheduler.ClaimVerification,
 ) (updated bool, err error) {
-	raw, err := json.Marshal(observation)
-	if err != nil {
-		return false, err
-	}
 	key := localscheduler.ClaimKey{
 		Gaggle: expected.Gaggle, Provider: expected.Provider, ExternalID: expected.ExternalID,
 	}
@@ -263,17 +277,70 @@ func (s *Store) RecordClaimVerification(
 		key = localscheduler.ClaimKey{Gaggle: "legacy", Provider: "legacy", ExternalID: expected.ItemID}
 	}
 	err = s.mutate(func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		var now time.Time
+		if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+			return err
+		}
+		if err := localscheduler.ValidateClaimVerification(expected, observation, now); err != nil {
+			return err
+		}
+		current, token, rowEpoch, live, err := s.readClaimForUpdateBlocking(ctx, tx, key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.RunID != expected.RunID ||
+			!current.ClaimedAt.Equal(expected.ClaimedAt) ||
+			rowEpoch != epoch ||
+			!live ||
+			(!current.Verification.ObservedAt.IsZero() &&
+				!observation.ObservedAt.After(current.Verification.ObservedAt)) {
+			return nil
+		}
+		raw, err := json.Marshal(observation)
+		if err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `
-			UPDATE control.claim SET verification=$7
+			UPDATE control.claim SET verification=$8
 			WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
-			  AND run_id=$5 AND owner_epoch=$6`,
+			  AND run_id=$5 AND owner_token=$6 AND owner_epoch=$7
+			  AND expires_at>clock_timestamp()`,
 			s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
-			expected.RunID, epoch, raw,
+			expected.RunID, token, epoch, raw,
 		)
 		updated = err == nil && tag.RowsAffected() == 1
 		return err
 	})
 	return updated, err
+}
+
+// AdoptClaims transfers live predecessor claims to the current fenced epoch.
+// The predecessor epoch is an exact CAS input, so an adoption cannot steal a
+// claim already adopted by another successor.
+func (s *Store) AdoptClaims(predecessorEpoch int64) (int64, error) {
+	if predecessorEpoch < 1 || predecessorEpoch >= s.handle.Epoch {
+		return 0, errors.New("cloud claims: invalid predecessor epoch")
+	}
+	var adopted int64
+	err := s.mutate(func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		if err := lockClaims(ctx, tx, s.instanceID); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE control.claim SET owner_epoch=$3
+			WHERE instance_id=$1 AND owner_epoch=$2
+			  AND expires_at>clock_timestamp()`,
+			s.instanceID, predecessorEpoch, epoch,
+		)
+		if err == nil {
+			adopted = tag.RowsAffected()
+		}
+		return err
+	})
+	return adopted, err
 }
 
 // Snapshot returns active claims.
@@ -337,8 +404,8 @@ func (s *Store) readClaimForUpdate(
 	ctx context.Context,
 	tx pgx.Tx,
 	key localscheduler.ClaimKey,
-) (localscheduler.ClaimEntry, string, bool, error) {
-	return scanClaimWithTokenAndLive(tx.QueryRow(ctx, claimSelectWithToken+`,expires_at>clock_timestamp()`+`
+) (localscheduler.ClaimEntry, string, int64, bool, error) {
+	return scanClaimWithOwnershipAndLive(tx.QueryRow(ctx, claimSelectWithOwnership+`,expires_at>clock_timestamp()`+`
 		FROM control.claim
 		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
 		FOR UPDATE SKIP LOCKED`,
@@ -346,14 +413,15 @@ func (s *Store) readClaimForUpdate(
 	))
 }
 
-func (s *Store) readClaim(
+func (s *Store) readClaimForUpdateBlocking(
 	ctx context.Context,
 	tx pgx.Tx,
 	key localscheduler.ClaimKey,
-) (localscheduler.ClaimEntry, string, error) {
-	return scanClaimWithToken(tx.QueryRow(ctx, claimSelectWithToken+`
+) (localscheduler.ClaimEntry, string, int64, bool, error) {
+	return scanClaimWithOwnershipAndLive(tx.QueryRow(ctx, claimSelectWithOwnership+`,expires_at>clock_timestamp()`+`
 		FROM control.claim
-		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4`,
+		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
+		FOR UPDATE`,
 		s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
 	))
 }
@@ -361,6 +429,7 @@ func (s *Store) readClaim(
 const claimSelect = `SELECT external_id,gaggle,provider,run_id,workflow,
 	claimed_at,renewed_at,expires_at,verification`
 const claimSelectWithToken = claimSelect + `,owner_token`
+const claimSelectWithOwnership = claimSelectWithToken + `,owner_epoch`
 const claimHistorySelect = `SELECT external_id,gaggle,provider,run_id,workflow,
 	claimed_at,renewed_at,expires_at,verification,released_at,release_reason`
 
@@ -382,35 +451,24 @@ func scanClaimRow(row interface{ Scan(...any) error }) (localscheduler.ClaimEntr
 	return entry, err
 }
 
-func scanClaimWithToken(row interface{ Scan(...any) error }) (localscheduler.ClaimEntry, string, error) {
+func scanClaimWithOwnershipAndLive(
+	row interface{ Scan(...any) error },
+) (localscheduler.ClaimEntry, string, int64, bool, error) {
 	var entry localscheduler.ClaimEntry
 	var verification []byte
 	var token string
-	err := row.Scan(
-		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
-		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification, &token,
-	)
-	entry.ExternalID = entry.ItemID
-	if len(verification) > 0 {
-		err = errors.Join(err, json.Unmarshal(verification, &entry.Verification))
-	}
-	return entry, token, err
-}
-
-func scanClaimWithTokenAndLive(row interface{ Scan(...any) error }) (localscheduler.ClaimEntry, string, bool, error) {
-	var entry localscheduler.ClaimEntry
-	var verification []byte
-	var token string
+	var ownerEpoch int64
 	var live bool
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
-		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification, &token, &live,
+		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification,
+		&token, &ownerEpoch, &live,
 	)
 	entry.ExternalID = entry.ItemID
 	if len(verification) > 0 {
 		err = errors.Join(err, json.Unmarshal(verification, &entry.Verification))
 	}
-	return entry, token, live, err
+	return entry, token, ownerEpoch, live, err
 }
 
 func scanHistoryClaim(row pgx.CollectableRow) (localscheduler.ClaimEntry, error) {

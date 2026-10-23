@@ -91,11 +91,11 @@ func (s *Store) WriteTriggerEvaluations(
 		}
 		return records[i].Workflow < records[j].Workflow
 	})
-	monotonic := func(previous []byte) error {
+	mergeMonotonic := func(previous []byte) (any, error) {
 		var prior []evaluationRecord
 		if len(previous) > 0 {
 			if err := json.Unmarshal(previous, &prior); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		positions := make(map[localscheduler.WorkflowIdentity]time.Time, len(prior))
@@ -105,12 +105,25 @@ func (s *Store) WriteTriggerEvaluations(
 		for _, record := range records {
 			identity := localscheduler.WorkflowIdentity{Gaggle: record.Gaggle, Workflow: record.Workflow}
 			if before := positions[identity]; record.LastEval.Before(before) {
-				return errors.New("cloud claims: trigger evaluation cannot move backward")
+				return nil, errors.New("cloud claims: trigger evaluation cannot move backward")
 			}
+			positions[identity] = record.LastEval
 		}
-		return nil
+		merged := make([]evaluationRecord, 0, len(positions))
+		for identity, lastEval := range positions {
+			merged = append(merged, evaluationRecord{
+				Gaggle: identity.Gaggle, Workflow: identity.Workflow, LastEval: lastEval,
+			})
+		}
+		sort.Slice(merged, func(i, j int) bool {
+			if merged[i].Gaggle != merged[j].Gaggle {
+				return merged[i].Gaggle < merged[j].Gaggle
+			}
+			return merged[i].Workflow < merged[j].Workflow
+		})
+		return merged, nil
 	}
-	return s.writeState(stateScopeEvaluations, records, monotonic)
+	return s.writeState(stateScopeEvaluations, records, mergeMonotonic)
 }
 
 func (s *Store) readState(scope string, target any) error {
@@ -129,11 +142,11 @@ func (s *Store) readState(scope string, target any) error {
 	return json.Unmarshal(raw, target)
 }
 
-func (s *Store) writeState(scope string, value any, validate func([]byte) error) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
+func (s *Store) writeState(
+	scope string,
+	value any,
+	merge func([]byte) (any, error),
+) error {
 	return s.mutate(func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 		if err := lockClaims(ctx, tx, s.instanceID); err != nil {
 			return err
@@ -148,6 +161,16 @@ func (s *Store) writeState(scope string, value any, validate func([]byte) error)
 			s.instanceID, scope, stateSnapshotKey,
 		).Scan(&previous, &etag, &ownerEpoch)
 		if errors.Is(err, pgx.ErrNoRows) {
+			if merge != nil {
+				value, err = merge(nil)
+				if err != nil {
+					return err
+				}
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
 			_, err = tx.Exec(ctx, `
 				INSERT INTO control.scheduler_state
 					(instance_id,scope,key,value,etag,owner_epoch,updated_at)
@@ -162,10 +185,15 @@ func (s *Store) writeState(scope string, value any, validate func([]byte) error)
 		if ownerEpoch > epoch {
 			return ErrTransition
 		}
-		if validate != nil {
-			if err := validate(previous); err != nil {
+		if merge != nil {
+			value, err = merge(previous)
+			if err != nil {
 				return err
 			}
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
 		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE control.scheduler_state

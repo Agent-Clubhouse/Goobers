@@ -178,6 +178,202 @@ func TestSchedulerStateRejectsBackwardCursor(t *testing.T) {
 	}
 }
 
+func TestLockedExpiredRetryCannotCreateTwoHolders(t *testing.T) {
+	store, pool := testStore(t, "controller")
+	key := claimKey("locked-expired")
+	if ok, _, err := store.ClaimScoped(key, "run-a", "implementation", time.Hour); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	locker, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = locker.Rollback(t.Context()) }()
+	if _, err := locker.Exec(t.Context(), `
+		UPDATE control.claim SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4`,
+		store.instanceID, key.Gaggle, key.Provider, key.ExternalID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		ok     bool
+		holder string
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ok, holder, err := store.ClaimScoped(key, "run-a", "implementation", time.Hour)
+		done <- result{ok: ok, holder: holder, err: err}
+	}()
+	waitForClaimsLock(t, pool, store.instanceID)
+	if err := locker.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	retry := <-done
+	if retry.err != nil || !retry.ok || retry.holder != "run-a" {
+		t.Fatalf("retry = %v %q %v", retry.ok, retry.holder, retry.err)
+	}
+	ok, holder, err := store.ClaimScoped(key, "run-b", "implementation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || holder != "run-a" {
+		t.Fatalf("second holder acquired after skipped retry: ok=%v holder=%q", ok, holder)
+	}
+}
+
+func TestStoreRejectsLeaseFromAnotherInstance(t *testing.T) {
+	store, _ := testStore(t, "controller")
+	if _, err := New(store.pool, "other-instance", store.manager, store.handle); err == nil {
+		t.Fatal("instance B accepted instance A lease handle")
+	}
+}
+
+func TestVerificationMatchesFileBackendRejections(t *testing.T) {
+	store, pool := testStore(t, "controller")
+	key := claimKey("verification")
+	if ok, _, err := store.ClaimScoped(key, "run-a", "implementation", time.Hour); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	entry := store.Snapshot()[0]
+	valid := localscheduler.ClaimVerification{
+		State: "verified", ObservedAt: time.Now().UTC(), ProviderRunID: "run-a",
+	}
+	if ok, err := store.RecordClaimVerification(entry, valid); err != nil || !ok {
+		t.Fatalf("valid observation = %v %v", ok, err)
+	}
+	for _, observation := range []localscheduler.ClaimVerification{
+		{State: "verified", ObservedAt: valid.ObservedAt.Add(-time.Nanosecond), ProviderRunID: "run-a"},
+		{State: "verified", ObservedAt: time.Now().UTC().Add(time.Hour), ProviderRunID: "run-a"},
+		{State: "verified", ObservedAt: time.Now().UTC(), ProviderRunID: "other"},
+	} {
+		ok, err := store.RecordClaimVerification(entry, observation)
+		if observation.ObservedAt.After(time.Now().UTC()) || observation.ProviderRunID == "other" {
+			if !errors.Is(err, localscheduler.ErrInvalidClaimVerification) || ok {
+				t.Fatalf("invalid observation accepted: %+v = %v %v", observation, ok, err)
+			}
+		} else if err != nil || ok {
+			t.Fatalf("older observation = %v %v, want unchanged", ok, err)
+		}
+	}
+	if err := store.manager.Release(t.Context(), store.handle); err != nil {
+		t.Fatal(err)
+	}
+	successor := successorStore(t, pool, "successor")
+	if ok, err := successor.RecordClaimVerification(entry, localscheduler.ClaimVerification{
+		State: "missing", ObservedAt: time.Now().UTC(),
+	}); err != nil || ok {
+		t.Fatalf("predecessor observation = %v %v, want unchanged", ok, err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE control.claim SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1 AND external_id=$2`,
+		successor.instanceID, key.ExternalID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := successor.RecordClaimVerification(entry, localscheduler.ClaimVerification{
+		State: "missing", ObservedAt: time.Now().UTC(),
+	}); err != nil || ok {
+		t.Fatalf("expired observation = %v %v, want unchanged", ok, err)
+	}
+}
+
+func TestSuccessorAdoptsPredecessorClaimsBeforeRenewAndRelease(t *testing.T) {
+	old, pool := testStore(t, "old")
+	key := claimKey("adopt")
+	if ok, _, err := old.ClaimScoped(key, "run-a", "implementation", time.Hour); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE control.lease_heartbeat
+		SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE instance_id=$1 AND name=$2`,
+		old.handle.InstanceID, old.handle.Name,
+	); err != nil {
+		t.Fatal(err)
+	}
+	current := successorStore(t, pool, "new")
+	adopted, err := current.AdoptClaims(old.handle.Epoch)
+	if err != nil || adopted != 1 {
+		t.Fatalf("adopted = %d, %v", adopted, err)
+	}
+	if ok, _, err := current.ClaimScoped(key, "run-a", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("renew adopted claim = %v %v", ok, err)
+	}
+	if err := current.ReleaseScoped(key, "run-a", claimrelease.Completed.Reason()); err != nil {
+		t.Fatalf("release adopted claim: %v", err)
+	}
+}
+
+func TestExpiredRowsDoNotBlockFreshAdmission(t *testing.T) {
+	store, pool := testStore(t, "controller")
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO control.claim
+			(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
+			 claimed_at,renewed_at,expires_at)
+		SELECT $1,'g','github','expired-'||n,'run-'||n,'implementation','token-'||n,$2,
+		       clock_timestamp()-interval '2 hours',clock_timestamp()-interval '2 hours',
+		       clock_timestamp()-interval '1 hour'
+		FROM generate_series(1,$3) AS n`,
+		store.instanceID, store.handle.Epoch, MaxClaims,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := store.ClaimScoped(
+		claimKey("fresh-after-expiry"), "fresh-run", "implementation", time.Hour,
+	); err != nil || !ok {
+		t.Fatalf("fresh admission = %v %v", ok, err)
+	}
+}
+
+func TestTriggerCursorSurvivesOmission(t *testing.T) {
+	store, _ := testStore(t, "controller")
+	id := localscheduler.WorkflowIdentity{Gaggle: "g", Workflow: "w"}
+	at := time.Now().UTC()
+	if err := store.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{id: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ReadTriggerEvaluations("")
+	if err != nil || !got[id].Equal(at) {
+		t.Fatalf("omission lost cursor: %v %v", got, err)
+	}
+	if err := store.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{
+		id: at.Add(-time.Hour),
+	}); err == nil {
+		t.Fatal("reintroduced cursor moved backward")
+	}
+}
+
+func waitForClaimsLock(t *testing.T, pool *pgxpool.Pool, instanceID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tx, err := pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var acquired bool
+		err = tx.QueryRow(t.Context(), `
+			SELECT pg_try_advisory_xact_lock(hashtextextended('claims:' || $1, 0))`,
+			instanceID,
+		).Scan(&acquired)
+		_ = tx.Rollback(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !acquired {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("claim retry did not reach the locked row")
+}
+
 func claimKey(id string) localscheduler.ClaimKey {
 	return localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: id}
 }

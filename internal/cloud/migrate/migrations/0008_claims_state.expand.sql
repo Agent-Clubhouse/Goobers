@@ -17,6 +17,9 @@ CREATE TABLE control.claim (
     PRIMARY KEY (instance_id, gaggle, provider, external_id)
 );
 
+CREATE INDEX claim_expiry_idx
+    ON control.claim (instance_id, expires_at);
+
 CREATE TABLE control.claim_history (
     instance_id text NOT NULL,
     gaggle text NOT NULL,
