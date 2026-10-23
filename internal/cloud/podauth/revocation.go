@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
-	"github.com/goobers/goobers/internal/controlplane/planes"
+	shared "github.com/goobers/goobers/internal/podauth"
 )
 
 // RevocationReadTimeout bounds grant admission when PostgreSQL is unavailable.
@@ -27,7 +27,7 @@ type Revocations struct {
 	InstanceID string
 }
 
-var _ planes.GrantRevocations = (*Revocations)(nil)
+var _ GrantAdmission = (*Revocations)(nil)
 
 // Revoke appends one monotonic security fact. Repeated writes are idempotent
 // and never shorten retention or undo a revocation. Only the controller can
@@ -51,19 +51,43 @@ func (r *Revocations) Revoke(ctx context.Context, id string, expiresAt time.Time
 // subsequently started check sees it; a check already in flight is bounded by
 // RevocationReadTimeout. Errors must never be interpreted as not revoked.
 func (r *Revocations) IsRevoked(ctx context.Context, id string) (bool, error) {
+	revoked, _, err := r.readRevocation(ctx, id)
+	return revoked, err
+}
+
+// CheckGrant rejects expired or revoked grants using a single primary read.
+// Comparing to the database clock makes cleanup safe even when the API host's
+// wall clock trails the database. The signed expiry is supplied by Auth only
+// after signature verification; the DB read must succeed before admission.
+func (r *Revocations) CheckGrant(ctx context.Context, id string, expiresAt time.Time) error {
+	revoked, now, err := r.readRevocation(ctx, id)
+	if err != nil {
+		return err
+	}
+	if revoked {
+		return shared.ErrInvalidCredentialGrant
+	}
+	if !expiresAt.After(now) {
+		return shared.ErrExpiredCredentialGrant
+	}
+	return nil
+}
+
+func (r *Revocations) readRevocation(ctx context.Context, id string) (bool, time.Time, error) {
 	if err := r.validate(id); err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, RevocationReadTimeout)
 	defer cancel()
 	var revoked bool
+	var now time.Time
 	err := r.Pool.QueryRow(ctx, `SELECT EXISTS (
   SELECT 1 FROM control.grant_revocation WHERE instance_id=$1 AND grant_id=$2
- )`, r.InstanceID, id).Scan(&revoked)
+ ), clock_timestamp()`, r.InstanceID, id).Scan(&revoked, &now)
 	if err != nil {
-		return false, fmt.Errorf("read cloud grant revocation: %w", err)
+		return false, time.Time{}, fmt.Errorf("read cloud grant revocation: %w", err)
 	}
-	return revoked, nil
+	return revoked, now, nil
 }
 
 func (r *Revocations) validate(id string) error {
@@ -75,7 +99,8 @@ func (r *Revocations) validate(id string) error {
 
 // PruneExpired is controller-only maintenance. The epoch lock prevents a stale
 // replica from deleting security facts after losing authority. Reads use the DB
-// clock, so cleanup never depends on a replica's clock skew.
+// clock, as does CheckGrant, so cleanup cannot resurrect a revoked grant on
+// an API replica whose wall clock trails the database.
 func PruneExpired(ctx context.Context, manager *lease.Manager, handle *lease.Handle) error {
 	if manager == nil || handle == nil {
 		return errors.New("grant revocation cleanup requires controller ownership")

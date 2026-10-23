@@ -46,7 +46,9 @@ Then rotate as follows:
    child-workflow grants (pod tokens alone are capped at 8 hours). Then remove it.
 
 `Revocations` reads `control.grant_revocation` on the primary for every grant
-admission with a two-second timeout. It has no replica-local negative cache.
+admission with a two-second timeout. That same query reads `clock_timestamp()`
+and rejects grants whose signed expiry has passed on the database clock. A slow
+API host clock therefore cannot re-admit a revoked grant after controller cleanup. It has no replica-local negative cache.
 After a revoke commits, all newly started checks see it; already-started reads
 are bounded by the timeout. Database errors fail closed. Instances are isolated
 by `(instance_id, grant_id)`. Rows contain only random grant IDs, owner epochs,

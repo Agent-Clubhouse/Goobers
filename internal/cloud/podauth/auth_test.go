@@ -27,6 +27,16 @@ func (r *testRevocations) Revoke(context.Context, string, time.Time) error {
 }
 func (r *testRevocations) IsRevoked(context.Context, string) (bool, error) { return r.revoked, r.err }
 
+func (r *testRevocations) CheckGrant(context.Context, string, time.Time) error {
+	if r.err != nil {
+		return r.err
+	}
+	if r.revoked {
+		return shared.ErrInvalidCredentialGrant
+	}
+	return nil
+}
+
 func authFixture(t *testing.T, store *testRevocations) *Auth {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "key")

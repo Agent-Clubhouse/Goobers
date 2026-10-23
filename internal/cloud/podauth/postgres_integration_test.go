@@ -117,7 +117,7 @@ func TestGrantRevocationReadDeadlineFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &Revocations{Pool: pool, InstanceID: "instance"}
-	_, err = store.IsRevoked(t.Context(), "grant")
+	err = store.CheckGrant(t.Context(), "grant", time.Now().Add(time.Hour))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("blocked revocation read = %v", err)
 	}

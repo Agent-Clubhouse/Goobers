@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/cloud/podauth"
+	shared "github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -133,6 +135,20 @@ func TestControlAPIRevocationUnderSetRoleNeedsNoLeasePrivileges(t *testing.T) {
 	if revoked, err := revocations.IsRevoked(t.Context(), "set-role-grant"); err != nil || !revoked {
 		t.Fatalf("API revocation visibility: revoked=%v err=%v", revoked, err)
 	}
+	for _, check := range []struct {
+		id     string
+		expiry time.Time
+		want   error
+	}{
+		{"set-role-grant", time.Now().Add(time.Hour), shared.ErrInvalidCredentialGrant},
+		{"unrevoked", time.Now().Add(-time.Hour), shared.ErrExpiredCredentialGrant},
+		{"unrevoked", time.Now().Add(time.Hour), nil},
+	} {
+		if err := revocations.CheckGrant(t.Context(), check.id, check.expiry); !errors.Is(err, check.want) {
+			t.Fatalf("API grant admission %s: %v, want %v", check.id, err, check.want)
+		}
+	}
+
 }
 
 func TestControlRevocationCleanupNeedsOnlySelectDelete(t *testing.T) {
