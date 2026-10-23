@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -216,4 +217,80 @@ func TestRootlessServiceRequiresItsSourcesAndNoLocalOnes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rootlessSweepSkips are lifecycle hooks, not reads: they start or wire
+// background work and are exercised by their own tests.
+var rootlessSweepSkips = map[string]bool{
+	"StartActiveRunSampler": true, "StartSchedulerStateProjector": true, "WaitForInitialActiveRunSample": true,
+	"ReloadDefinitions": true, "PublishDefinitionReload": true,
+	"AttachProjectionHealth": true, "AttachIntakeDepth": true, "AttachStartupStatus": true,
+}
+
+// Every exported method of a rootless service, run from a working directory
+// no one may read (mode 000): any path resolved against it fails with
+// EACCES, so a single relative read or write anywhere fails the sweep.
+func TestRootlessServiceSweepsEveryMethodWithAnUnreadableWorkingDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	plantLocalTraps(t, cwd)
+	t.Chdir(cwd)
+	if err := os.Chmod(cwd, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cwd, 0o700) })
+	service, err := NewLocal(rootlessSources(t), func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxType := reflect.TypeFor[context.Context]()
+	errType := reflect.TypeFor[error]()
+	value := reflect.ValueOf(service)
+	swept := 0
+	for i := range value.NumMethod() {
+		method := value.Type().Method(i)
+		if rootlessSweepSkips[method.Name] {
+			continue
+		}
+		fn := value.Method(i)
+		args := make([]reflect.Value, fn.Type().NumIn())
+		for a := range args {
+			in := fn.Type().In(a)
+			switch {
+			case in == ctxType:
+				args[a] = reflect.ValueOf(context.Background())
+			case in.Kind() == reflect.String:
+				args[a] = reflect.ValueOf("0123456789abcdef0123456789abcdef").Convert(in)
+			default:
+				args[a] = reflect.Zero(in)
+			}
+		}
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Errorf("%s panicked: %v", method.Name, recovered)
+				}
+			}()
+			results := fn.Call(args)
+			for _, result := range results {
+				if result.Type() == errType && !result.IsNil() {
+					if err := result.Interface().(error); errors.Is(err, fs.ErrPermission) {
+						t.Errorf("%s touched the working directory: %v", method.Name, err)
+					}
+				}
+			}
+		}()
+		swept++
+	}
+	skipped := 0
+	for name := range rootlessSweepSkips {
+		if _, ok := value.Type().MethodByName(name); !ok {
+			t.Errorf("sweep skip %s names no method; remove it", name)
+			continue
+		}
+		skipped++
+	}
+	if swept+skipped != value.NumMethod() {
+		t.Fatalf("swept %d + skipped %d != %d exported methods", swept, skipped, value.NumMethod())
+	}
+	t.Logf("swept %d of %d exported methods (%d lifecycle hooks skipped)", swept, value.NumMethod(), skipped)
 }
