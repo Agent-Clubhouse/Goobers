@@ -497,3 +497,6 @@ github.com/goobers/goobers/internal/cloud/migrate.DropInstanceEventPartition # H
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Ensure # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Run # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 
+
+github.com/goobers/goobers/internal/cloud/config.Applier.Applied # Engine child admissions (#7879) read the applied generation by asserting it on the control Configuration seam; production reaches it once that seam composes cloud config (#7860). expires=2026-11-30
+github.com/goobers/goobers/internal/cloud/config.Configuration.Applied # Engine child admissions (#7879) read the applied generation by asserting it on the control Configuration seam; production reaches it once that seam composes cloud config (#7860). expires=2026-11-30

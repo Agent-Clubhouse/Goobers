@@ -52,7 +52,13 @@ func PinnedAuthority(ctx context.Context, source GenerationSource, cfg *instance
 	if err != nil {
 		return Authority{}, err
 	}
+	if generation.Release == nil {
+		return Authority{}, errors.New("childworkflow: generation source returned no release")
+	}
 	defer func() { _ = generation.Release() }()
+	if generation.Set == nil || generation.Directory == "" {
+		return Authority{}, errors.New("childworkflow: generation source returned an unloaded generation")
+	}
 	backend := BackendRunner
 	if parent.EngineDriven() {
 		backend = BackendEngine
