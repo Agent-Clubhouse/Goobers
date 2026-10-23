@@ -208,7 +208,6 @@ func ensureRuntimeSupport(features []Feature) []Feature {
 		case "workflow.spec.parallels",
 			"workflow.spec.maps",
 			"task.childWorkflows",
-			"task.outbox",
 			"task.experiment":
 			engineLevel = RuntimeUnsupported
 		}

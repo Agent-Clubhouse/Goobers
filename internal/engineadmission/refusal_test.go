@@ -12,7 +12,7 @@ func TestPlacedDefinitionRefusalsPropagateAndAggregate(t *testing.T) {
 	feature := &UnsupportedFeaturesError{
 		Workflow: "flow",
 		Refusals: []*UnsupportedFeatureError{{
-			Feature: "task.outbox", Stage: "agent", Err: ErrOutboxUnsupported,
+			Feature: "task.experiment", Stage: "agent", Err: ErrExperimentUnsupported,
 		}},
 	}
 	spec := apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
@@ -44,25 +44,28 @@ func TestPlacedDefinitionRefusalsPropagateAndAggregate(t *testing.T) {
 	}
 }
 
-// Human gates (#7760) and remote limits (#7835) run on the engine: they add
-// no refusal, while the features still refused aggregate.
+// Human gates (#7760), remote limits (#7835) and outbox (#7847) run on the
+// engine: they add no refusal, while the feature still refused is reported.
 func TestRefusePlacedDefinitionAggregatesRefusedFeaturesNotHumanGates(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Tasks: []apiv1.Task{{
 			Name: "agent", Type: apiv1.TaskAgentic,
-			Outbox: []string{"result.json"}, Limits: &apiv1.Limits{MaxTokens: 1},
-			Experiment: &apiv1.BanditExperiment{Arms: []apiv1.BanditArm{{Name: "a"}, {Name: "b"}}},
+			Experiment: &apiv1.BanditExperiment{},
+			Outbox:     []string{"result.json"}, Limits: &apiv1.Limits{MaxTokens: 1},
 		}},
 		Gates: []apiv1.Gate{{Name: "approval", Evaluator: apiv1.EvaluatorHuman}},
 	}
 	err := RefusePlacedDefinition("flow", spec, nil)
 	var refused *UnsupportedFeaturesError
-	if !errors.As(err, &refused) || len(refused.Refusals) != 2 {
-		t.Fatalf("refusal = %#v, want outbox and experiment", err)
+	if !errors.As(err, &refused) || len(refused.Refusals) != 1 {
+		t.Fatalf("refusal = %#v, want experiment only", err)
 	}
-	for _, refusal := range refused.Refusals {
-		if refusal.Feature == "gate.evaluator.human" {
-			t.Fatalf("human gate refused on the engine: %+v", refusal)
+	if refused.Refusals[0].Feature != "task.experiment" {
+		t.Fatalf("refusal[0] = %q, want task.experiment", refused.Refusals[0].Feature)
+	}
+	for _, r := range refused.Refusals {
+		if r.Feature == "gate.evaluator.human" || r.Feature == "task.outbox" {
+			t.Fatalf("%s is supported on the engine but was refused: %#v", r.Feature, r)
 		}
 	}
 }

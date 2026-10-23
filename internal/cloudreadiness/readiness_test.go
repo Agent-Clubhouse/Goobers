@@ -118,7 +118,7 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 	for _, feature := range []string{
 		"spec.parallels", "spec.maps",
 		"task.childWorkflows",
-		"task.outbox", "task.experiment",
+		"task.experiment",
 	} {
 		if !features[feature] {
 			t.Errorf("missing engine feature blocker %s", feature)
@@ -129,8 +129,8 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 		t.Error("human gates still reported as an engine blocker")
 	}
 	if result.Summary.ConfigFixes == 0 || result.Summary.WaitingOnP4 == 0 ||
-		len(result.Summary.P4Issues) != 5 {
-		t.Fatalf("summary = %+v, want config and all 5 remaining P4 issue groups", result.Summary)
+		len(result.Summary.P4Issues) != 4 {
+		t.Fatalf("summary = %+v, want config and all 4 remaining P4 issue groups", result.Summary)
 	}
 }
 

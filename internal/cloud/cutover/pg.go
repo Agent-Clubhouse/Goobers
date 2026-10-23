@@ -5,20 +5,21 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgroles"
 )
 
 // Issues that gate the unfinished backends. Update the constant and delete the
 // UnavailableError once the backend lands.
 const (
-	issueProvisionDatabase = 7821 // HA-P3-21: database and role provisioning references
-	issueObjectStore       = 7813 // HA-P3-13: object-store blob store
-	issueAdmissionPause    = 7818 // HA-P3-18: control role and admission pause
-	issueBanditImport      = 7763 // engine task.experiment: banditstore.ImportLocalJournals
+	issueObjectStore    = 7813 // HA-P3-13: object-store blob store
+	issueAdmissionPause = 7818 // HA-P3-18: control role and admission pause
+	issueBanditImport   = 7763 // engine task.experiment: banditstore.ImportLocalJournals
 )
 
 // ControllerLeaseName is the lease row the control role acquires. It mirrors
@@ -57,12 +58,67 @@ func (PGInstall) BucketReachable(context.Context) error {
 	return &UnavailableError{What: "object-store reachability", Issue: issueObjectStore}
 }
 
-// PGSteps returns the ordered bootstrap steps for a PostgreSQL install.
-func PGSteps(direct *pgxpool.Pool, instanceID, leaseName, backupRef, holder string) []Step {
-	ping := func(ctx context.Context) error { return direct.Ping(ctx) }
-	return []Step{
-		{Name: "create database and roles", Issue: issueProvisionDatabase},
-		{Name: "apply schema migrations", Check: ping, Run: func(ctx context.Context) (bool, error) {
+// Connect supplies the two database identities bootstrap uses. Both are
+// opened lazily so a precheck probes them without any earlier step having run:
+// Admin (server administrator; creates roles and databases) and Owner (the
+// instance database owner; the only identity that runs migrations). The
+// owner cannot be probed before provisioning creates its role, so only the
+// admin connection is probed up front.
+type Connect struct {
+	Admin func(ctx context.Context) (*pgx.Conn, error)
+	Owner func(ctx context.Context) (*pgxpool.Pool, error)
+}
+
+// PGSteps returns the ordered bootstrap steps for a PostgreSQL install. The
+// returned func releases the owner pool the steps opened.
+func PGSteps(connect Connect, instanceID, leaseName, backupRef, holder string, entra map[string]string) ([]Step, func()) {
+	var owner *pgxpool.Pool
+	open := func(ctx context.Context) (*pgxpool.Pool, error) {
+		if owner != nil {
+			return owner, nil
+		}
+		pool, err := connect.Owner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		owner = pool
+		return owner, nil
+	}
+	closeOwner := func() {
+		if owner != nil {
+			owner.Close()
+		}
+	}
+	ownerConfigured := func(context.Context) error {
+		if connect.Owner == nil {
+			return errors.New("no owner database connection configured")
+		}
+		return nil
+	}
+	steps := []Step{
+		{Name: "create database and roles", Check: func(ctx context.Context) error {
+			if connect.Admin == nil {
+				return errors.New("no administrator database connection configured")
+			}
+			conn, err := connect.Admin(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = conn.Close(ctx) }()
+			return conn.Ping(ctx)
+		}, Run: func(ctx context.Context) (bool, error) {
+			conn, err := connect.Admin(ctx)
+			if err != nil {
+				return false, err
+			}
+			defer func() { _ = conn.Close(ctx) }()
+			return pgroles.Provision(ctx, conn, pgroles.Plan{Instance: instanceID, Entra: entra})
+		}},
+		{Name: "apply schema migrations", Check: ownerConfigured, Run: func(ctx context.Context) (bool, error) {
+			direct, err := open(ctx)
+			if err != nil {
+				return false, err
+			}
 			before, err := appliedOrNone(ctx, direct)
 			if err != nil {
 				return false, err
@@ -77,7 +133,11 @@ func PGSteps(direct *pgxpool.Pool, instanceID, leaseName, backupRef, holder stri
 			after, err := cloudmigrate.AppliedMigrations(ctx, direct)
 			return len(after) != len(before), err
 		}},
-		{Name: "create first lease row", Check: ping, Run: func(ctx context.Context) (bool, error) {
+		{Name: "create first lease row", Check: ownerConfigured, Run: func(ctx context.Context) (bool, error) {
+			direct, err := open(ctx)
+			if err != nil {
+				return false, err
+			}
 			tx, err := direct.Begin(ctx)
 			if err != nil {
 				return false, err
@@ -103,6 +163,7 @@ func PGSteps(direct *pgxpool.Pool, instanceID, leaseName, backupRef, holder stri
 		// ImportResult{Imported, Existing} once banditstore lands.
 		{Name: "import local bandit observations", Issue: issueBanditImport},
 	}
+	return steps, closeOwner
 }
 
 // appliedOrNone reads the migration ledger, treating only a missing ledger

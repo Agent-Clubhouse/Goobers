@@ -70,9 +70,14 @@ type RunInput struct {
 	// FrozenChild is internal protocol data; the production Run entry refuses it.
 	FrozenChild *ChildRunBinding `json:"frozenChild,omitempty"`
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
-	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
-	InstanceID             string             `json:"instanceId,omitempty"`
-	RunID                  string             `json:"runId"`
+	SelfExecutionDenied bool   `json:"selfExecutionDenied,omitempty"`
+	InstanceID          string `json:"instanceId,omitempty"`
+	RunID               string `json:"runId"`
+	// StartPredecessorEpoch is admission-only proof, never serialized to Temporal.
+	StartPredecessorEpoch  int64              `json:"-"`
+	AcceptanceID           string             `json:"acceptanceId,omitempty"`
+	OwnerEpoch             int64              `json:"ownerEpoch,omitempty"`
+	StarterID              string             `json:"starterId,omitempty"`
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
 	Version                int                `json:"version"`
@@ -772,6 +777,10 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		if workspaceHeadMovedResult(result) {
 			rec.workspaceHeadMoved(ctx, t.Name, result.Error.Message)
 			return "", supersededRunResult(t.Name, upstream, steps), true
+		}
+		if runsemantics.IsOutboxExportFailure(result) {
+			code, message := failureCause(result.Error)
+			return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
 		}
 		if t.ContinueOnError {
 			rec.toleratedFailure(ctx, t.Name)

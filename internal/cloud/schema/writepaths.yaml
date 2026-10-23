@@ -126,11 +126,12 @@ tables:
   table: acceptance
   provisioned: true
   fence: owner_epoch
-  rationale: 'The api Accept inserts accepted rows and never updates state or owner_epoch (column grants cannot pin the inserted
-    state value; the code inserts only ''accepted''). The controller inserts source-driven acceptances (AcceptSource) and
-    owns dispatch transitions under the controller-lease fence. TEMPORARY: the api''s SELECT(finished_at) and DELETE serve
-    main''s api-path retention prune; #7850 moves the prune to the fenced controller and removes both, and adds its 0009/0014
-    columns.'
+  rationale: 'The api Accept inserts accepted rows and never updates state or owner_epoch (column grants cannot
+    pin the inserted state value; the code inserts only ''accepted''). The controller inserts source-driven acceptances
+    (AcceptSource) and owns dispatch transitions under the controller-lease fence. TEMPORARY: the api''s SELECT(finished_at)
+    and DELETE serve main''s api-path retention prune; #7850 moves the prune to the fenced controller and removes
+    both, and adds its 0009 columns. Start-fence custody and retry updates (0014) belong to the controller; both
+    roles can read uncertain-start status.'
   readers:
   - role: goobers_api
     columns:
@@ -144,6 +145,8 @@ tables:
     - reason
     - accepted_at
     - finished_at
+    - dispatch_started_at
+    - start_retry_at
   - role: goobers_controller
     columns:
     - instance_id
@@ -157,6 +160,9 @@ tables:
     - accepted_at
     - finished_at
     - owner_epoch
+    - dispatch_started_at
+    - start_retry_at
+    - start_retry_count
   writers:
   - role: goobers_api
     insert:
@@ -186,6 +192,9 @@ tables:
     - owner_epoch
     - reason
     - finished_at
+    - dispatch_started_at
+    - start_retry_at
+    - start_retry_count
 - schema: control
   table: source_receipt
   provisioned: true

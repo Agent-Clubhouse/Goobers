@@ -9,7 +9,6 @@ import (
 // the same fail-closed policy with child admission.
 var (
 	ErrExperimentUnsupported = engineadmission.ErrExperimentUnsupported
-	ErrOutboxUnsupported     = engineadmission.ErrOutboxUnsupported
 	ErrParallelsUnsupported  = engineadmission.ErrParallelsUnsupported
 	ErrMapsUnsupported       = engineadmission.ErrMapsUnsupported
 )
