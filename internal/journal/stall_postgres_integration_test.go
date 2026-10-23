@@ -240,7 +240,7 @@ func TestCloudStaleSweeperCannotTerminateAfterTakeover(t *testing.T) {
 	successor, err := stallsweep.NewStallSweeper(stallsweep.StallConfig{
 		Pool: config.Pool, InstanceID: config.InstanceID,
 		Manager: successorManager, Handle: successorHandle,
-		Source: backend, Engine: engine, Terminalizer: successorBackend,
+		Source: backend, Events: stallEvents(backend), Engine: engine, Terminalizer: successorBackend,
 		StalledTimeout: 30 * time.Minute,
 	})
 	if err != nil {
@@ -370,7 +370,7 @@ func cloudSweeper(
 	sweeper, err := stallsweep.NewStallSweeper(stallsweep.StallConfig{
 		Pool: config.Pool, InstanceID: config.InstanceID,
 		Manager: config.Lease, Handle: config.LiveOwner(),
-		Source: backend, Engine: engine, Terminalizer: backend,
+		Source: backend, Events: stallEvents(backend), Engine: engine, Terminalizer: backend,
 		StalledTimeout: stallTimeout, MaxRunDuration: maxDuration,
 	})
 	if err != nil {
@@ -387,11 +387,46 @@ func createEngineRun(
 	lastAppendAt time.Time,
 ) {
 	t.Helper()
+	createEngineRunHandle(t, backend, runID, startedAt, lastAppendAt, nil)
+}
+
+// writerClock is a test-controlled run-writer clock: the backend stamps every
+// event with it (the event's own Time is ignored), so a run's history can be
+// laid out in the past.
+type writerClock struct{ at time.Time }
+
+func (c *writerClock) now() time.Time { return c.at }
+
+func stallEvents(backend *journalpg.Backend) func(context.Context, string) ([]journal.Event, error) {
+	return func(ctx context.Context, runID string) ([]journal.Event, error) {
+		reader, err := backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
+		if err != nil {
+			return nil, err
+		}
+		return reader.Events()
+	}
+}
+
+func createEngineRunHandle(
+	t *testing.T,
+	backend *journalpg.Backend,
+	runID string,
+	startedAt time.Time,
+	lastAppendAt time.Time,
+	clock *writerClock,
+) (journal.RunHandle, journal.OwnerToken) {
+	t.Helper()
+	var options journal.RunWriterOptions
+	if clock != nil {
+		clock.at = startedAt
+		options.Clock = clock.now
+	}
 	handle, owner, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{
 		Identity: journal.RunIdentity{
 			RunID: runID, Gaggle: "g", Workflow: "implementation",
 			Driver: journal.DriverEngine, StartedAt: startedAt,
 		},
+		Options: options,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -401,6 +436,7 @@ func createEngineRun(
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	return handle, owner
 }
 
 func databaseClock(t *testing.T, config journalpg.Config) time.Time {
@@ -410,4 +446,154 @@ func databaseClock(t *testing.T, config journalpg.Config) time.Time {
 		t.Fatal(err)
 	}
 	return now.UTC()
+}
+
+// ageRun backdates a run on the database clock, as the other stall tests do.
+func ageRun(t *testing.T, config journalpg.Config, runID string, age, idle time.Duration) {
+	t.Helper()
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
+		UPDATE journal.run SET created_at=clock_timestamp()-$3::interval
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID, age.String(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
+		UPDATE journal.run_seq SET last_append_at=clock_timestamp()-$3::interval
+		WHERE instance_id=$1 AND run_id=$2`,
+		config.InstanceID, runID, idle.String(),
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// appendChildWait commits a stage start bound to its origin and a durable child
+// wait that runs from waitFrom, optionally closed at waitTo (zero = still parked).
+func appendChildWait(
+	t *testing.T,
+	backend *journalpg.Backend,
+	handle journal.RunHandle,
+	owner journal.OwnerToken,
+	clock *writerClock,
+	runID string,
+	waitFrom, waitTo time.Time,
+) {
+	t.Helper()
+	clock.at = waitFrom
+	_, origin, err := backend.AppendChildStageStarted(t.Context(), handle, owner, journal.ChildStageStartRecord{
+		Event: journal.Event{Type: journal.EventStageStarted, Stage: "build", Attempt: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := "00000000000000000000000000099999"
+	request := journal.ChildHandoffRequest{
+		Gaggle: "g", ParentRunID: runID, RequestID: journal.Digest([]byte(child)), Action: "wait",
+		ChildRunID: child, AcceptanceID: "trigger-" + child, InvocationKey: child,
+		SourceDigest: journal.Digest([]byte("source")), Origin: *origin,
+	}
+	events := []journal.Event{{
+		Type: journal.EventRunnerAnnotation, Stage: "build", Attempt: 1,
+		Runner: map[string]any{"kind": journal.ChildWaitKind, "childWait": journal.ChildWaitHeader{
+			Version: 1, ParentRunID: runID, Request: request}},
+	}}
+	if _, err := backend.AppendBatch(t.Context(), handle, owner, events); err != nil {
+		t.Fatal(err)
+	}
+	if !waitTo.IsZero() {
+		clock.at = waitTo
+		if _, err := backend.AppendBatch(t.Context(), handle, owner, []journal.Event{{
+			Type: journal.EventRunnerAnnotation, Stage: "build", Attempt: 1,
+			Runner: map[string]any{"kind": journal.ChildContinuedKind, "requestId": request.RequestID},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func requireEvents(t *testing.T, backend *journalpg.Backend, runID string, check func([]journal.Event) bool, what string) {
+	t.Helper()
+	events, err := stallEvents(backend)(t.Context(), runID)
+	if err != nil || !check(events) {
+		t.Fatalf("test precondition: %s (events=%d err=%v)", what, len(events), err)
+	}
+}
+
+// The local sweep's one exemption: a run waiting at a human gate is not stalled.
+func TestCloudStallSkipsRunParkedAtGate(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	runID := "00000000000000000000000000057816"
+	clock := &writerClock{}
+	handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-3*time.Hour), now.Add(-2*time.Hour), clock)
+	clock.at = now.Add(-2 * time.Hour)
+	if _, err := backend.AppendBatch(t.Context(), handle, owner, []journal.Event{{
+		Type: journal.EventGatePaused, Stage: "review",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	requireEvents(t, backend, runID, journal.ParkedAtGate, "run is parked at a gate")
+	ageRun(t, config, runID, 3*time.Hour, 2*time.Hour)
+	engine := &stallEngine{}
+	sweeper := cloudSweeper(t, config, backend, engine, 30*time.Minute, 0)
+	if result, err := sweeper.Sweep(t.Context()); err != nil || result.Cancelled != 0 || len(engine.cancelled) != 0 {
+		t.Fatalf("gate-parked run was swept: %+v %v cancelled=%v", result, err, engine.cancelled)
+	}
+	// maxRunDuration still applies at a gate (only child waits are excluded),
+	// as in the local sweep.
+	bounded := cloudSweeper(t, config, backend, engine, 30*time.Minute, time.Hour)
+	if result, err := bounded.Sweep(t.Context()); err != nil || result.Cancelled != 1 {
+		t.Fatalf("max duration at a gate = %+v %v", result, err)
+	}
+}
+
+func TestCloudStallSkipsRunParkedOnChild(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	runID := "00000000000000000000000000067816"
+	clock := &writerClock{}
+	handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-3*time.Hour), now.Add(-3*time.Hour), clock)
+	appendChildWait(t, backend, handle, owner, clock, runID, now.Add(-2*time.Hour), time.Time{})
+	requireEvents(t, backend, runID, journal.ParkedOnChild, "run is parked on a child")
+	ageRun(t, config, runID, 3*time.Hour, 2*time.Hour)
+	engine := &stallEngine{}
+	sweeper := cloudSweeper(t, config, backend, engine, 30*time.Minute, 0)
+	if result, err := sweeper.Sweep(t.Context()); err != nil || result.Cancelled != 0 || len(engine.cancelled) != 0 {
+		t.Fatalf("child-parked run was swept: %+v %v cancelled=%v", result, err, engine.cancelled)
+	}
+}
+
+// Design 10.3: maxRunDuration is run age less durable child waits.
+func TestCloudMaxRunDurationExcludesChildWaits(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		waitStart time.Duration // before now
+		waitEnd   time.Duration // before now
+		wantDue   bool
+	}{
+		// age 2h, 90m of waiting: 30m of execution < 1h.
+		{"long child wait keeps the run inside its budget", 110 * time.Minute, 20 * time.Minute, false},
+		// age 2h, 30m of waiting: 90m of execution > 1h.
+		{"short child wait still exceeds the budget", 60 * time.Minute, 30 * time.Minute, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := postgresJournalConfig(t)
+			backend := postgresBackend(t, config)
+			now := databaseClock(t, config)
+			runID := "00000000000000000000000000077816"
+			clock := &writerClock{}
+			handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-2*time.Hour), now.Add(-2*time.Hour), clock)
+			appendChildWait(t, backend, handle, owner, clock, runID, now.Add(-test.waitStart), now.Add(-test.waitEnd))
+			ageRun(t, config, runID, 2*time.Hour, 10*time.Minute)
+			requireEvents(t, backend, runID, func(e []journal.Event) bool { return !journal.ParkedOnChild(e) }, "the wait is closed")
+			engine := &stallEngine{}
+			sweeper := cloudSweeper(t, config, backend, engine, time.Hour, time.Hour)
+			result, err := sweeper.Sweep(t.Context())
+			if err != nil || (result.Cancelled == 1) != test.wantDue {
+				t.Fatalf("sweep = %+v %v, want due=%v", result, err, test.wantDue)
+			}
+		})
+	}
 }

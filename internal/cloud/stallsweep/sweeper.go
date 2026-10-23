@@ -48,11 +48,14 @@ type RunTerminalizer interface {
 
 // StallConfig binds one cloud instance to its control lease.
 type StallConfig struct {
-	Pool           *pgxpool.Pool
-	InstanceID     string
-	Manager        *cloudlease.Manager
-	Handle         *cloudlease.Handle
-	Source         StallSource
+	Pool       *pgxpool.Pool
+	InstanceID string
+	Manager    *cloudlease.Manager
+	Handle     *cloudlease.Handle
+	Source     StallSource
+	// Events reads one run's journal events. It is called only for candidates
+	// whose timing already makes them due, so the read is bounded by the page.
+	Events         func(ctx context.Context, runID string) ([]journal.Event, error)
 	Engine         EngineControl
 	Terminalizer   RunTerminalizer
 	StalledTimeout time.Duration
@@ -68,7 +71,7 @@ func NewStallSweeper(config StallConfig) (*StallSweeper, error) {
 	if config.Pool == nil || config.InstanceID == "" ||
 		config.Manager == nil || config.Handle == nil ||
 		config.Handle.InstanceID != config.InstanceID ||
-		config.Source == nil || config.Engine == nil || config.Terminalizer == nil ||
+		config.Source == nil || config.Events == nil || config.Engine == nil || config.Terminalizer == nil ||
 		config.StalledTimeout <= 0 || config.MaxRunDuration < 0 {
 		return nil, errors.New("stall sweep: invalid cloud configuration")
 	}
@@ -210,7 +213,7 @@ func (s *StallSweeper) processCandidate(
 	ctx context.Context,
 	candidate StallActivity,
 ) (cancelled int, terminated int, err error) {
-	reason, timeout, due, err := s.due(candidate)
+	reason, timeout, due, err := s.due(ctx, candidate)
 	if err != nil || !due {
 		return 0, 0, err
 	}
@@ -288,6 +291,7 @@ func (s *StallSweeper) beginTermination(
 }
 
 func (s *StallSweeper) due(
+	ctx context.Context,
 	candidate StallActivity,
 ) (reason string, timeout time.Duration, due bool, err error) {
 	stallTimeout := s.config.StalledTimeout
@@ -304,14 +308,51 @@ func (s *StallSweeper) due(
 				candidate.Identity.RunControls.MaxRunDuration)
 		}
 	}
-	if maxDuration > 0 &&
-		!candidate.DatabaseNow.Before(candidate.Identity.StartedAt.Add(maxDuration)) {
-		return "max_duration", stallTimeout, true, nil
+	// Cheap timing screen first: only runs that could be due have their events
+	// read, so a page of healthy runs costs no journal reads.
+	pastDuration := maxDuration > 0 &&
+		!candidate.DatabaseNow.Before(candidate.Identity.StartedAt.Add(maxDuration))
+	pastStall := !candidate.DatabaseNow.Before(candidate.LastAppendAt.Add(stallTimeout))
+	if !pastDuration && !pastStall {
+		return "", stallTimeout, false, nil
 	}
-	if !candidate.DatabaseNow.Before(candidate.LastAppendAt.Add(stallTimeout)) {
-		return "stalled", stallTimeout, true, nil
+	events, err := s.config.Events(ctx, candidate.Identity.RunID)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("read run events: %w", err)
 	}
-	return "", stallTimeout, false, nil
+	if pastDuration {
+		// Design 10.3: maxRunDuration is run age less durable child waits (the
+		// same journal.ChildExecutionElapsed the local sweep uses). Event times
+		// are writer clocks while startedAt and now are the database clock, so
+		// widen the window to cover events a skewed writer stamped outside it;
+		// otherwise the child-wait projection rejects the history as invalid.
+		startedAt, now := candidate.Identity.StartedAt, candidate.DatabaseNow
+		if len(events) > 0 {
+			if first := events[0].Time; first.Before(startedAt) {
+				startedAt = first
+			}
+			if last := events[len(events)-1].Time; last.After(now) {
+				now = last
+			}
+		}
+		elapsed, err := journal.ChildExecutionElapsed(events, startedAt, now, nil)
+		if err != nil {
+			return "", 0, false, fmt.Errorf("read run execution clock: %w", err)
+		}
+		if elapsed > maxDuration {
+			return "max_duration", stallTimeout, true, nil
+		}
+	}
+	if !pastStall {
+		return "", stallTimeout, false, nil
+	}
+	// A run parked at a human gate or on a child is waiting, not stalled; the
+	// local sweep's one exemption (journal.ParkedAtGate / ParkedOnChild). It
+	// holds even when something appended after the pause.
+	if journal.ParkedAtGate(events) || journal.ParkedOnChild(events) {
+		return "", stallTimeout, false, nil
+	}
+	return "stalled", stallTimeout, true, nil
 }
 
 type stallAction struct {
