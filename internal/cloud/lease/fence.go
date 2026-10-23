@@ -33,13 +33,14 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 		return fmt.Errorf("begin fenced transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(txCtx) }()
-	if _, err := tx.Exec(txCtx, `
-		SET LOCAL statement_timeout = '2s';
-		SET LOCAL idle_in_transaction_session_timeout = '2s'`); err != nil {
-		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
-			return deadlineErr
+	timeoutSetting := fmt.Sprintf("%dms", max(int64(1), timeout.Milliseconds()))
+	for _, setting := range []string{"statement_timeout", "idle_in_transaction_session_timeout"} {
+		if _, err := tx.Exec(txCtx, "SELECT set_config($1, $2, true)", setting, timeoutSetting); err != nil {
+			if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
+				return deadlineErr
+			}
+			return fmt.Errorf("bound fenced transaction: %w", err)
 		}
-		return fmt.Errorf("bound fenced transaction: %w", err)
 	}
 	var one int
 	err = tx.QueryRow(txCtx, `
