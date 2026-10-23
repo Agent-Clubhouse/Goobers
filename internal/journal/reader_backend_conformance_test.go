@@ -127,8 +127,11 @@ func readerPageContinuation(ctx context.Context, backend journal.ReaderBackend, 
 		return fmt.Errorf("continued instance page = %+v", events)
 	}
 	events, err = backend.InstanceRead(ctx, 3, 1)
-	if err != nil || len(events) != 0 {
-		return fmt.Errorf("instance past end = %+v: %v", events, err)
+	if err != nil {
+		return err
+	}
+	if len(events) != 0 {
+		return fmt.Errorf("instance past end = %+v", events)
 	}
 	return nil
 }
@@ -178,12 +181,18 @@ func readerHandleConformance(ctx context.Context, backend journal.ReaderBackend,
 		return fmt.Errorf("handle checkpoint = %+v", state)
 	}
 	phase, err := reader.Phase()
-	if err != nil || phase != journal.PhaseCompleted {
-		return fmt.Errorf("handle phase = %s: %v", phase, err)
+	if err != nil {
+		return err
+	}
+	if phase != journal.PhaseCompleted {
+		return fmt.Errorf("handle phase = %s", phase)
 	}
 	bounded, err := reader.PhaseBounded(ctx)
-	if err != nil || bounded != phase {
-		return fmt.Errorf("bounded phase = %s: %v", bounded, err)
+	if err != nil {
+		return err
+	}
+	if bounded != phase {
+		return fmt.Errorf("bounded phase = %s", bounded)
 	}
 	if reader.Schema().Version != journal.CurrentSchemaVersion {
 		return fmt.Errorf("handle schema = %+v", reader.Schema())
@@ -196,16 +205,22 @@ func readerHandleConformance(ctx context.Context, backend journal.ReaderBackend,
 		return errors.New("artifact byte ceiling ignored")
 	}
 	data, err := reader.ArtifactByDigest(artifact.Digest)
-	if err != nil || !bytes.Equal(data, []byte("reader-blob")) {
-		return fmt.Errorf("digest lookup = %q: %v", data, err)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(data, []byte("reader-blob")) {
+		return fmt.Errorf("digest lookup = %q", data)
 	}
 	span := records[5].Event.Ref
 	if span == nil {
 		return errors.New("missing span ref")
 	}
 	data, err = reader.SpanBytes(*span)
-	if err != nil || !bytes.Equal(data, []byte("reader-span")) {
-		return fmt.Errorf("span = %q: %v", data, err)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(data, []byte("reader-span")) {
+		return fmt.Errorf("span = %q", data)
 	}
 	bad := *artifact
 	bad.Digest = "sha256:" + string(bytes.Repeat([]byte("0"), 64))
