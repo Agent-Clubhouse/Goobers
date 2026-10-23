@@ -1,6 +1,7 @@
 package livejournal
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -34,9 +35,18 @@ func (r AppendReceipt) Validate(op Op) error {
 // appendReceipt reads the committed event under the writer lock. Lifecycle
 // receipts are infrequent; deriving them from the journal avoids a second
 // cache whose recovery could diverge from the durable emit-key index.
-func (run *liveRun) appendReceipt(op Op) (AppendReceipt, error) {
-	if run.jr != nil {
-		if err := run.jr.Checkpoint(); err != nil {
+func (w *Writer) appendReceipt(run *liveRun, op Op) (AppendReceipt, error) {
+	// Recovery can retain an append whose checkpoint failed. Deduplication
+	// alone cannot authorize a receipt: retry the checkpoint through the
+	// active owner, whether it is a borrowed journal or a backend handle.
+	if w.hasRun(run) {
+		var err error
+		if run.adopted {
+			err = run.jr.Checkpoint()
+		} else {
+			err = w.backend.Checkpoint(context.Background(), run.handle, run.owner)
+		}
+		if err != nil {
 			return AppendReceipt{}, err
 		}
 	}
