@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -107,5 +108,20 @@ func TestChildEngineStartSurvivesLeaseTakeover(t *testing.T) {
 	}
 	if _, err := old.BindChildEngineStart(t.Context(), child.Identity, want); !errors.Is(err, cloudlease.ErrStale) && !errors.Is(err, triggerqueue.ErrTransition) {
 		t.Fatalf("stale predecessor wrote a start intent: %v", err)
+	}
+}
+
+func TestByRunResolvesTheAcceptanceThatOwnsARun(t *testing.T) {
+	store, _ := childTestStore(t)
+	record, _, err := store.Accept(t.Context(), "by-run", "operator", []byte(`{"kind":"x"}`), time.Now())
+	if err != nil || record.RunID == "" {
+		t.Fatalf("accept = %+v, %v", record, err)
+	}
+	got, err := store.ByRun(t.Context(), record.RunID)
+	if err != nil || got.ID != record.ID {
+		t.Fatalf("ByRun = %+v, %v; want %s", got, err, record.ID)
+	}
+	if _, err := store.ByRun(t.Context(), "no-such-run"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("ByRun on an unknown run = %v, want sql.ErrNoRows", err)
 	}
 }
