@@ -88,3 +88,15 @@ func isTestSelfExecutionDenied(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == runner.SelfExecutionDeniedCode
 }
+
+func TestSelfExecutionDeniedPinnedPolicyRejectsAbsentAndSelfPins(t *testing.T) {
+	for _, pins := range [][]PinnedPlacement{nil, {{Stage: "build", Self: true}}} {
+		in := projectionInput("denied-pin", apiv1.WorkflowSpec{Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "build", Tasks: []apiv1.Task{podTask("build", "", nil)}})
+		in.SelfExecutionDenied = true
+		in.Placements = pins
+		proj := executeForProjection(t, in, &Activities{AdmitSelfExecution: func(stage string) error { t.Fatalf("lost pin reached a local activity: %s", stage); return nil }}, false)
+		if placements := projectedPlacements(t, proj); len(placements) != 0 {
+			t.Fatalf("refusal ran locally: %+v", placements)
+		}
+	}
+}
