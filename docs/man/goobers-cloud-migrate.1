@@ -6,10 +6,14 @@ goobers-cloud migrate \- Apply cloud data-store migrations.
 \fBgoobers-cloud migrate\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers-cloud migrate
+Usage: goobers-cloud migrate apply [OPTIONS]
 
-Apply cloud data-store migrations. The P1 skeleton reserves this role while
-the migration runner is wired into the cloud composition root.
+Apply ordered cloud PostgreSQL migrations.
+
+Options:
+  --database-direct-url URL  Direct PostgreSQL URL (port 5432)
+  --database-auth MODE       password or entra (default password)
+  --backup-ref REF           Restorable backup identifier or PITR mark (required)
 .fi
 .SH SEE ALSO
 \fBgoobers-cloud\fR(1)
