@@ -31,3 +31,21 @@ func TestEpochSeamIsFailClosedUntilItsPartsAreComposed(t *testing.T) {
 		t.Fatalf("Epoch with nothing composed = %v, want a refusal naming the missing parts", err)
 	}
 }
+
+// Provider observations are composed by default: the epoch refuses naming only
+// what is still missing, never the observations.
+func TestEpochWiringComposesProviderObservations(t *testing.T) {
+	if epochWiring.Observations == nil {
+		t.Fatal("provider observations are not composed into the epoch wiring")
+	}
+	if missing := epochWiring.missing(); len(missing) != 1 || missing[0] != "claims epoch maintenance" {
+		t.Fatalf("missing = %v, want only the claim plane", missing)
+	}
+	observations := epochWiring.Observations()
+	if observations.Restore == nil || observations.Capture == nil {
+		t.Fatal("observation restore/capture not wired")
+	}
+	if _, err := observations.Capture(context.Background()); err != nil {
+		t.Fatalf("capture over the shared quota ledger: %v", err)
+	}
+}
