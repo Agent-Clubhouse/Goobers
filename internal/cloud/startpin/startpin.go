@@ -23,6 +23,12 @@ func Compute(configDir string, cfg *instance.Config, set *instance.ConfigSet) (m
 	if cfg == nil || set == nil {
 		return nil, fmt.Errorf("startpin: a loaded configuration is required")
 	}
+	// The worker reload, the daemon and child admission all compile the set
+	// AFTER these overlays; a digest computed without them would never be the
+	// one a worker resolves. Both are idempotent, so applying them here is safe
+	// for a caller that already did.
+	instance.ApplyGaggleCICommand(set)
+	instance.ApplyGaggleOutboxMirror(set)
 	instructions, skillPackages, err := runtimewiring.LoadSnapshotGooberInputs(configDir, set)
 	if err != nil {
 		return nil, fmt.Errorf("startpin: load goober kit content: %w", err)

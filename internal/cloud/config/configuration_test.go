@@ -127,3 +127,22 @@ func TestPinForServesOnlyTheAppliedGenerationsDigests(t *testing.T) {
 		}
 	}
 }
+
+func TestAppliedPinsDoNotAliasTheCandidatesMap(t *testing.T) {
+	pins := map[string]cloudconfig.Pins{"g/ok": {WorkflowDigest: "wf", GooberDigest: "goober"}}
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: denyConfig(), Set: workflowSet(eligible()), Pins: pins}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pins["g/ok"] = cloudconfig.Pins{WorkflowDigest: "mutated", GooberDigest: "mutated"}
+	delete(pins, "g/other")
+	if wf, _, err := cfg.PinFor(context.Background(), "v1", "g", "ok"); err != nil || wf != "wf" {
+		t.Fatalf("applied pins changed with the candidate's map: %q, %v", wf, err)
+	}
+}

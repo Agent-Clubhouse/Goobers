@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -71,7 +72,7 @@ func (a *Applier) Apply(ctx context.Context, c Candidate) error {
 	if err := a.activator.Activate(ctx, c); err != nil {
 		return err
 	}
-	gen.pins = c.Pins
+	gen.pins = maps.Clone(c.Pins)
 	a.guard.Replace(gen)
 	a.status = Status{Applied: c.Digest}
 	return nil
