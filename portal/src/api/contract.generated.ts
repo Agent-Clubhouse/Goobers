@@ -57,6 +57,7 @@ export const apiRoutes = {
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
   "cancelRun": { method: "POST", path: "/api/v1/runs/{run}/cancel", actionClass: "maintenance" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
+  "banditObservations": { method: "POST", path: "/api/v1/bandit/observations", actionClass: "workflow-execution" },
   "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
   "credentialRefresh": { method: "POST", path: "/api/v1/credentials/refresh", actionClass: "workflow-execution" },
   "stageSurrender": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "workflow-execution" },

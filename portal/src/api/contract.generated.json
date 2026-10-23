@@ -621,6 +621,17 @@
       "recoverySafe": false
     },
     {
+      "id": "banditObservations",
+      "method": "POST",
+      "path": "/api/v1/bandit/observations",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "credentialResolve",
       "method": "POST",
       "path": "/api/v1/credentials/resolve",
