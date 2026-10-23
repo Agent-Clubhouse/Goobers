@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
+	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
@@ -48,6 +49,9 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
+	// Bandit reaches the control plane's durable observation store. Engine
+	// workers receive an HTTP client, never database credentials or a file path.
+	Bandit bandit.ObservationPlane
 	// ChildDispatchCompletion commits a stopped worker's final custody report
 	// through its existing Temporal connection before the activity returns.
 	ChildDispatchCompletion ChildDispatchCompletion

@@ -954,6 +954,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q backlog scope: %w", t.Name, err)
 	}
+	if err := rec.configureExperimentTask(ctx, in, t, env.Inputs); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
 	// non-self runner dispatches through ActDispatchStage on its pinned
 	// per-(gaggle × runner-type) queue (architecture D9, subsuming the

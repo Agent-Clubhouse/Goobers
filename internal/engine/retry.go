@@ -161,6 +161,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
 		rec.stageStarted(startedAt, t, int(attempt), class)
+		if err := rec.beginExperimentAttempt(ctx, in.RunID); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
@@ -176,6 +179,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			identity = activityResult.AttemptIdentity
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err
+			}
+			if observationErr := rec.finishExperimentAttempt(ctx, in.RunID, int(attempt), res); observationErr != nil {
+				return res, observationErr
 			}
 			if err != nil && activityResult.Placement == nil {
 				activityResult.Placement = DispatchFailurePlacement(err)

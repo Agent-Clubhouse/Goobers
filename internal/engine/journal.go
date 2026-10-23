@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -143,6 +144,7 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
+	experiment *taskExperimentState
 	// Receipts are separate from projection ordinals and remain workflow state
 	// reconstructed from recorded activity results, never mutable journal reads.
 	childOrigins map[string]livejournal.ChildOriginReceipt
@@ -929,5 +931,8 @@ func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
 func (r *runJournal) taskAttemptEnvelope(env apiv1.InvocationEnvelope, task apiv1.Task, attempt int) apiv1.InvocationEnvelope {
 	env.Attempt = int32(attempt)
 	env.ArtifactPublication = r.artifactPublication(task)
+	if r.experiment != nil && r.experiment.stage == task.Name {
+		env.Inputs = maps.Clone(r.experiment.inputs)
+	}
 	return env
 }
