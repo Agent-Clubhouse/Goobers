@@ -59,3 +59,18 @@ func (run *liveRun) appendReceipt(op Op) (AppendReceipt, error) {
 	}
 	return AppendReceipt{}, fmt.Errorf("livejournal: no committed append for %q", op.Key)
 }
+
+// requestedAppendReceipts validates the optional protocol before opening a writer.
+func requestedAppendReceipts(ops []Op) (bool, error) {
+	requested := false
+	for i, op := range ops {
+		if !op.Receipt {
+			continue
+		}
+		if op.Kind != OpAppend || op.Event == nil {
+			return false, fmt.Errorf("livejournal: op %d requests a receipt without an append", i)
+		}
+		requested = true
+	}
+	return requested, nil
+}

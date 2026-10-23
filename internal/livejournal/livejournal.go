@@ -745,12 +745,11 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 	if len(req.Ops) == 0 {
 		return EmitResponse{}, errors.New("livejournal: emit carries no ops")
 	}
-	receiptBatch := false
+	receiptBatch, err := requestedAppendReceipts(req.Ops)
+	if err != nil {
+		return EmitResponse{}, err
+	}
 	for i, op := range req.Ops {
-		receiptBatch = receiptBatch || op.Receipt
-		if op.Receipt && (op.Kind != OpAppend || op.Event == nil) {
-			return EmitResponse{}, fmt.Errorf("livejournal: op %d requests a receipt without an append", i)
-		}
 		if _, err := opBranchContext(ctx, op); err != nil {
 			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
 		}
