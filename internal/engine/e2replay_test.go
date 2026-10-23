@@ -1,26 +1,5 @@
 package engine
 
-// Replay and determinism coverage for plan item E2 (#3874).
-//
-// Every E2 port adds STATE or a BRANCH to the workflow function, and the
-// workflow function is replayed: Temporal re-executes it against a recorded
-// history and requires the same command sequence out of it. Two failure modes
-// follow, and neither is visible to the parity harness (which runs both sides
-// once, in-process):
-//
-//   - NON-DETERMINISM. The completed-stage map is a Go map. Reading it by key is
-//     deterministic; iterating it is not. A future edit that ranges over it —
-//     to build an error message, to grade inputs — would produce a different
-//     command order on replay and wedge the run.
-//   - HISTORY SKEW. A worker running the new code replays a history recorded by
-//     one running the old code. RunResult.NoWork is `omitempty` for this reason,
-//     and the retry-decision annotation had to be added to projectableEventTypes
-//     for the same one.
-//
-// TestE2FixturesAreDeterministic covers the first cheaply, in the test
-// environment. TestE2WalkHistoryReplays covers both against a real dev server,
-// which is the only place a genuine replay happens.
-
 import (
 	"context"
 	"io"
@@ -28,6 +7,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Replay and determinism coverage for plan item E2 (#3874).
+	//
+	// Every E2 port adds STATE or a BRANCH to the workflow function, and the
+	// workflow function is replayed: Temporal re-executes it against a recorded
+	// history and requires the same command sequence out of it. Two failure modes
+	// follow, and neither is visible to the parity harness (which runs both sides
+	// once, in-process):
+	//
+	//   - NON-DETERMINISM. The completed-stage map is a Go map. Reading it by key is
+	//     deterministic; iterating it is not. A future edit that ranges over it —
+	//     to build an error message, to grade inputs — would produce a different
+	//     command order on replay and wedge the run.
+	//   - HISTORY SKEW. A worker running the new code replays a history recorded by
+	//     one running the old code. RunResult.NoWork is `omitempty` for this reason,
+	//     and the retry-decision annotation had to be added to projectableEventTypes
+	//     for the same one.
+	//
+	// TestE2FixturesAreDeterministic covers the first cheaply, in the test
+	// environment. TestE2WalkHistoryReplays covers both against a real dev server,
+	// which is the only place a genuine replay happens.
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
@@ -37,7 +38,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -84,7 +84,7 @@ func e2Fixtures() []e2Fixture {
 			script: map[string][]scriptedCall{
 				"implement": {
 					fail("nonzero_exit", "3 tests failed"),
-					fail(runner.BaseSyncConflictErrorCode, "base moved"),
+					fail(runsemantics.BaseSyncConflictErrorCode, "base moved"),
 					succeed(map[string]interface{}{"tests": "green"}),
 				},
 			},

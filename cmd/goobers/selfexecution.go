@@ -4,6 +4,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -37,7 +38,7 @@ func (w *workerSeams) admitSelfExecution(stage string) error {
 	denied := cfg.SelfExecutionDenied()
 	cfg.ObserveSelfExecution(denied)
 	if denied {
-		return &runner.SelfExecutionRefusal{Stage: stage}
+		return &runsemantics.SelfExecutionRefusal{Stage: stage}
 	}
 	return nil
 }

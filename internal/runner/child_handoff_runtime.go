@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 type childYield struct {
@@ -100,12 +101,12 @@ func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invoc
 	return output.result, yield
 }
 
-func (r *Runner) waitForChild(ctx context.Context, tf *taskFrame, attempt int, class journal.AttemptClass, yielded *childYield, policyAttempts, infrastructureFailures int32, cumulative *stageUsageTotals) error {
+func (r *Runner) waitForChild(ctx context.Context, tf *taskFrame, attempt int, class journal.AttemptClass, yielded *childYield, policyAttempts, infrastructureFailures int32, cumulative *runsemantics.StageUsageTotals) error {
 	record := yielded.record
 	record.PolicyAttempts, record.InfrastructureFailures = policyAttempts, infrastructureFailures
-	record.Usage, record.InvalidCost = maps.Clone(cumulative.metrics), cumulative.invalidCost
-	if cumulative.costUSD != nil {
-		record.CostUSD = cumulative.costUSD.RatString()
+	record.Usage, record.InvalidCost = maps.Clone(cumulative.Metrics), cumulative.InvalidCost
+	if cumulative.CostUSD != nil {
+		record.CostUSD = cumulative.CostUSD.RatString()
 	}
 	event, err := childWaitEvent(tf.t.Name, attempt, class, record)
 	if err != nil {
@@ -172,7 +173,7 @@ func restoreChildContext(tf *taskFrame, record childWaitRecord, pointer apiv1.Co
 	return apiv1.ValidateInputIntegrity(tf.in.Item, tf.upstream, tf.t.MinimumIntegrity)
 }
 
-func (r *Runner) restoreChildWait(ctx context.Context, tf *taskFrame, cumulative *stageUsageTotals) error {
+func (r *Runner) restoreChildWait(ctx context.Context, tf *taskFrame, cumulative *runsemantics.StageUsageTotals) error {
 	record := tf.childWaitResume
 	if record.ParentRunID != tf.in.RunID || record.Workspace == nil || record.Workspace.OwnerRunID != tf.in.RunID || r.cfg.Worktrees == nil || r.cfg.RepoCloneURL == nil {
 		return fmt.Errorf("runner: child wait workspace custody is unavailable")
@@ -186,14 +187,14 @@ func (r *Runner) restoreChildWait(ctx context.Context, tf *taskFrame, cumulative
 		return err
 	}
 	workspace := &stageWorkspace{path: wt.Path, worktree: wt, retainedChild: func(context.Context) error { return nil }}
-	cumulative.metrics, cumulative.invalidCost = maps.Clone(record.Usage), record.InvalidCost
-	if cumulative.metrics == nil {
-		cumulative.metrics = make(map[string]float64)
+	cumulative.Metrics, cumulative.InvalidCost = maps.Clone(record.Usage), record.InvalidCost
+	if cumulative.Metrics == nil {
+		cumulative.Metrics = make(map[string]float64)
 	}
 	if record.CostUSD != "" {
 		var ok bool
-		cumulative.costUSD, ok = new(big.Rat).SetString(record.CostUSD)
-		if !ok || cumulative.costUSD.Sign() < 0 {
+		cumulative.CostUSD, ok = new(big.Rat).SetString(record.CostUSD)
+		if !ok || cumulative.CostUSD.Sign() < 0 {
 			return fmt.Errorf("runner: invalid child wait usage custody")
 		}
 	}

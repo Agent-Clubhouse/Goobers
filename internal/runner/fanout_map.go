@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -200,7 +201,7 @@ func joinInputs(fanIn *parallelExec, state string, inputs map[string]any) {
 		inputs[MapResultsInput] = join.results
 		return
 	}
-	inputs[BranchCompletenessInput] = fanIn.completeness()
+	inputs[runsemantics.BranchCompletenessInput] = fanIn.completeness()
 }
 
 // assembleMapJoin rebuilds the per-occurrence result store from the journal

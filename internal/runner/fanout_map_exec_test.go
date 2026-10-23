@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -307,8 +308,8 @@ func (h *mapHarness) join(t *testing.T) ([]journal.BranchOutcome, []MapItemResul
 	if !ok {
 		t.Fatalf("join %s = %T, want []MapItemResult", MapResultsInput, env.Inputs[MapResultsInput])
 	}
-	if _, static := env.Inputs[BranchCompletenessInput]; static {
-		t.Fatalf("map join also received %s", BranchCompletenessInput)
+	if _, static := env.Inputs[runsemantics.BranchCompletenessInput]; static {
+		t.Fatalf("map join also received %s", runsemantics.BranchCompletenessInput)
 	}
 	return completeness, results, env
 }

@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -260,9 +261,9 @@ func TestRunnerRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 	if got := rerun.Inputs["performance"]; got != "performance" {
 		t.Errorf("rerun performance input = %#v, want performance", got)
 	}
-	completeness, ok := rerun.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+	completeness, ok := rerun.Inputs[runsemantics.BranchCompletenessInput].([]journal.BranchOutcome)
 	if !ok || len(completeness) != 2 {
-		t.Fatalf("rerun branch completeness = %#v, want two outcomes", rerun.Inputs[BranchCompletenessInput])
+		t.Fatalf("rerun branch completeness = %#v, want two outcomes", rerun.Inputs[runsemantics.BranchCompletenessInput])
 	}
 	for i, branch := range completeness {
 		if branch.Branch != i+1 || branch.Status != journal.BranchSucceeded {
@@ -325,9 +326,9 @@ func TestRunnerRepeatedRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 		if invocation.Inputs["security"] != "security" || invocation.Inputs["performance"] != "performance" {
 			t.Errorf("rerun %d inputs = %#v, want both branch summaries", i+1, invocation.Inputs)
 		}
-		completeness, ok := invocation.Inputs[BranchCompletenessInput].([]journal.BranchOutcome)
+		completeness, ok := invocation.Inputs[runsemantics.BranchCompletenessInput].([]journal.BranchOutcome)
 		if !ok || len(completeness) != 2 {
-			t.Errorf("rerun %d branch completeness = %#v, want two outcomes", i+1, invocation.Inputs[BranchCompletenessInput])
+			t.Errorf("rerun %d branch completeness = %#v, want two outcomes", i+1, invocation.Inputs[runsemantics.BranchCompletenessInput])
 		}
 	}
 }
@@ -655,14 +656,14 @@ func TestStageResultWithInterruptedErrorCodeIsNotRecoveryMarker(t *testing.T) {
 		{
 			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
 			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
-			Error: &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "stage-owned result"},
+			Error: &journal.ErrorDetail{Code: runsemantics.InterruptedAttemptErrorCode, Message: "stage-owned result"},
 			Artifacts: []journal.Ref{{
 				Path: "artifacts/stage-owned", Digest: "sha256:stage-owned", Size: 11,
 			}},
 		},
 	}
 
-	if isInterruptedAttemptMarker(events[len(events)-1]) {
+	if runsemantics.IsInterruptedAttemptMarker(events[len(events)-1]) {
 		t.Fatal("stage-controlled error code was classified as a runner recovery marker")
 	}
 	if rerun, _, err := pendingRerun(events, machine); err != nil {
@@ -671,7 +672,7 @@ func TestStageResultWithInterruptedErrorCodeIsNotRecoveryMarker(t *testing.T) {
 		t.Fatalf("completed stage result remained pending: %+v", rerun)
 	}
 	stage, result, ok := lastFinishedSubject(events)
-	if !ok || stage != "implement" || result.Error == nil || result.Error.Code != interruptedAttemptErrorCode {
+	if !ok || stage != "implement" || result.Error == nil || result.Error.Code != runsemantics.InterruptedAttemptErrorCode {
 		t.Fatalf("last finished subject = (%q, %+v, %t)", stage, result, ok)
 	}
 	pointers := reconstructPointers(events, machine)
@@ -746,7 +747,7 @@ func TestResumeContinuesInterruptedHumanRerunWithRecordedAddendum(t *testing.T) 
 	for _, event := range events {
 		if event.Type == journal.EventStageFinished && event.Stage == "implement" && event.Attempt == 2 {
 			if event.AttemptClass != journal.AttemptHuman || event.Error == nil ||
-				event.Error.Code != interruptedAttemptErrorCode || !isInterruptedAttemptMarker(event) {
+				event.Error.Code != runsemantics.InterruptedAttemptErrorCode || !runsemantics.IsInterruptedAttemptMarker(event) {
 				t.Fatalf("interrupted human attempt marker = %+v", event)
 			}
 			return
@@ -797,10 +798,10 @@ func TestResumeAdvancesHumanRerunAfterInterruptedAttemptWasClosed(t *testing.T) 
 			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
 			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
 			Error: &journal.ErrorDetail{
-				Code:    interruptedAttemptErrorCode,
+				Code:    runsemantics.InterruptedAttemptErrorCode,
 				Message: "attempt was in flight when the runner was interrupted",
 			},
-			Runner: map[string]any{interruptedAttemptMarkerKey: true},
+			Runner: map[string]any{runsemantics.InterruptedAttemptMarkerKey: true},
 		},
 	} {
 		if err := recovered.Append(event); err != nil {
@@ -870,8 +871,8 @@ func TestResumeDoesNotResetHumanRerunPolicyBudgetAfterRepeatedCrashes(t *testing
 		{
 			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
 			AttemptClass: journal.AttemptHuman, Status: string(apiv1.ResultFailure),
-			Error:  &journal.ErrorDetail{Code: interruptedAttemptErrorCode},
-			Runner: map[string]any{interruptedAttemptMarkerKey: true},
+			Error:  &journal.ErrorDetail{Code: runsemantics.InterruptedAttemptErrorCode},
+			Runner: map[string]any{runsemantics.InterruptedAttemptMarkerKey: true},
 		},
 		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptHuman},
 	} {
@@ -994,7 +995,7 @@ func TestResumePreservesHumanRerunInfrastructureBudget(t *testing.T) {
 		{
 			Type: journal.EventError, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptHuman,
 			Error:  &journal.ErrorDetail{Code: "executor_error"},
-			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+			Runner: map[string]any{runsemantics.RetryFailureClassKey: string(journal.AttemptInfra)},
 		},
 		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 3, AttemptClass: journal.AttemptInfra},
 	} {

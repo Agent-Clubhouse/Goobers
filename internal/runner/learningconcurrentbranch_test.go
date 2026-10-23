@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -93,7 +94,7 @@ func TestConcurrentAndSequentialBranchesInjectTheSameCorrection(t *testing.T) {
 			// about the arithmetic and the placement, not the name; the name
 			// is pinned here instead, against the event it must address.
 			corrected := failedStageSeq(t, run.events, "impl-a")
-			if want := LearningEpisodePointerName(corrected); injection.PointerName != want {
+			if want := runsemantics.LearningEpisodePointerName(corrected); injection.PointerName != want {
 				t.Fatalf("episode pointer = %q, want %q — the pointer names the corrected event, and "+
 					"the repass resolves the correction by that name", injection.PointerName, want)
 			}
@@ -285,7 +286,7 @@ func TestResumedBranchKeepsItsInjectedCorrection(t *testing.T) {
 		{Seq: 6, Type: journal.EventRunnerAnnotation, Parallel: "fan", Branch: 1, Stage: "impl-a", Attempt: 2,
 			Gate: "gate-a", Name: "learning/episode-gate-a-4.json", Ref: ref,
 			Runner: map[string]any{
-				"kind": LearningEpisodeInjectedKind, "target": "impl-a",
+				"kind": runsemantics.LearningEpisodeInjectedKind, "target": "impl-a",
 				"sourceSeq": float64(4), "nextAttempt": float64(2),
 			}},
 	}
@@ -304,7 +305,7 @@ func TestResumedBranchKeepsItsInjectedCorrection(t *testing.T) {
 		names = append(names, pointer.Name)
 	}
 	sort.Strings(names)
-	if want := []string{"gate-a.verdict", LearningEpisodePointerName(4)}; !equalStrings(names, want) {
+	if want := []string{"gate-a.verdict", runsemantics.LearningEpisodePointerName(4)}; !equalStrings(names, want) {
 		t.Fatalf("resumed branch pointers = %v, want %v — a branch that injected a correction before "+
 			"the interruption must get it back, exactly as reconstructPointers rebuilds the run-level "+
 			"one; otherwise the resumed repass runs uncorrected while the artifact sits on disk",
@@ -313,7 +314,7 @@ func TestResumedBranchKeepsItsInjectedCorrection(t *testing.T) {
 
 	var episode *apiv1.ContextPointer
 	for i := range branch.pointers {
-		if branch.pointers[i].Name == LearningEpisodePointerName(4) {
+		if branch.pointers[i].Name == runsemantics.LearningEpisodePointerName(4) {
 			episode = &branch.pointers[i]
 		}
 	}
@@ -548,7 +549,7 @@ func TestConcurrentBranchInjectsOnTheAdvancePathToo(t *testing.T) {
 			// stage.finished, because the stage did not fail: the reviewer
 			// rejected its output.
 			corrected := needsChangesGateSeq(t, run.events, "review-a")
-			if want := LearningEpisodePointerName(corrected); injection.PointerName != want {
+			if want := runsemantics.LearningEpisodePointerName(corrected); injection.PointerName != want {
 				t.Fatalf("episode pointer = %q, want %q — the pointer names the reviewer's verdict "+
 					"event, and the repass resolves the correction by that name", injection.PointerName, want)
 			}
@@ -696,7 +697,7 @@ func needsChangesGateSeq(t *testing.T, events []journal.Event, gateName string) 
 	t.Helper()
 	for _, e := range events {
 		if e.Type == journal.EventGateEvaluated && e.Gate == gateName && e.Runner != nil {
-			if attempt, _ := runnerInt(e.Runner["repassAttempt"]); attempt >= 1 {
+			if attempt, _ := runsemantics.RunnerInt(e.Runner["repassAttempt"]); attempt >= 1 {
 				return e.Seq
 			}
 		}
