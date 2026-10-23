@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -36,7 +37,12 @@ func rootlessSources(t *testing.T) LocalSources {
 		Journal: fileJournalReader(instance.NewLayout(t.TempDir()))}
 }
 
-// fileTree records every path under root with its size and modification time.
+// fileTree records every entry under root: directories by existence only,
+// regular files by mode, size, modification time and content digest. A
+// directory's own timestamp is deliberately not compared: NTFS updates it
+// lazily after entry changes (the trap setup's atomic renames), so it moves
+// on Windows with no access by the code under test. Any file the service
+// created, removed, rewrote or re-moded still changes the tree.
 func fileTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 	tree := map[string]string{}
@@ -44,11 +50,19 @@ func fileTree(t *testing.T, root string) map[string]string {
 		if err != nil {
 			return err
 		}
+		if entry.IsDir() {
+			tree[path] = "dir"
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		tree[path] = fmt.Sprint(info.ModTime().UnixNano(), info.Mode(), info.Size())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		tree[path] = fmt.Sprint(info.Mode(), info.Size(), info.ModTime().UnixNano(), sha256.Sum256(data))
 		return nil
 	})
 	if err != nil {
