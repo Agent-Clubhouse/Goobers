@@ -63,7 +63,6 @@ var engineRuntimeBlockers = map[workflow.FeatureID]runtimeBlocker{
 	"gate.evaluator.human":              {path: "gate.evaluator.human", issue: 7760},
 	"task.limits.maxTokens":             {path: "task.limits.maxTokens", issue: 7761},
 	"task.limits.maxCostUSD":            {path: "task.limits.maxCostUSD", issue: 7761},
-	"task.outbox":                       {path: "task.outbox", issue: 7762},
 	"task.experiment":                   {path: "task.experiment", issue: 7763},
 }
 

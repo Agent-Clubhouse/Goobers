@@ -92,6 +92,22 @@ func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
 			result.ObservedUsageReported = true
 			result.ObservedUsage = map[string]float64{"gen_ai.usage.input_tokens": 7}
 		}},
+		{name: "v3 outbox", mutate: func(result *SurrenderedResult) {
+			result.ContractVersion = SurrenderContractV3
+			result.Outbox = []SurrenderedOutboxFile{{
+				RelPath: "reports/result.json",
+				Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Size:    7,
+			}}
+		}},
+		{name: "v2 outbox refused", wantErr: true, mutate: func(result *SurrenderedResult) {
+			result.ContractVersion = SurrenderContractV2
+			result.Outbox = []SurrenderedOutboxFile{{
+				RelPath: "result.json",
+				Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Size:    7,
+			}}
+		}},
 		{name: "future version refused", wantErr: true, mutate: func(result *SurrenderedResult) {
 			result.ContractVersion = CurrentSurrenderContract + 1
 		}},
@@ -107,6 +123,40 @@ func TestSurrenderContractAcceptsCurrentAndPreviousVersions(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestOldWorkerIgnoresOutboxManifest(t *testing.T) {
+	current := SurrenderedResult{
+		ContractVersion: SurrenderContractV3,
+		Outbox: []SurrenderedOutboxFile{{
+			RelPath: "reports/result.json",
+			Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Size:    7,
+		}},
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	}
+	data, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldWorker struct {
+		Result apiv1.ResultEnvelope `json:"result"`
+	}
+	if err := json.Unmarshal(data, &oldWorker); err != nil {
+		t.Fatal(err)
+	}
+	if oldWorker.Result.Status != apiv1.ResultSuccess {
+		t.Fatalf("old worker result = %+v", oldWorker)
+	}
+}
+
+func TestSurrenderContractForOutboxPreservesNMinusOneWithoutManifest(t *testing.T) {
+	if got := SurrenderContractForOutbox(nil); got != SurrenderContractV2 {
+		t.Fatalf("no-manifest version=%d, want v2", got)
+	}
+	if got := SurrenderContractForOutbox([]SurrenderedOutboxFile{{RelPath: "report"}}); got != SurrenderContractV3 {
+		t.Fatalf("manifest version=%d, want v3", got)
 	}
 }
 

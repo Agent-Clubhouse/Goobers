@@ -10,7 +10,6 @@ import (
 var (
 	ErrExperimentUnsupported        = engineadmission.ErrExperimentUnsupported
 	ErrRemoteUsageLimitsUnsupported = engineadmission.ErrRemoteUsageLimitsUnsupported
-	ErrOutboxUnsupported            = engineadmission.ErrOutboxUnsupported
 	ErrParallelsUnsupported         = engineadmission.ErrParallelsUnsupported
 	ErrSelectiveParallelUnsupported = engineadmission.ErrSelectiveParallelUnsupported
 	ErrMapsUnsupported              = engineadmission.ErrMapsUnsupported

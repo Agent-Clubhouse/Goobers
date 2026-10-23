@@ -84,7 +84,7 @@ func buildPodAgenticExecutorForTest(t *testing.T, runsDir string, act func(conte
 		Goobers:      map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
 		Instructions: map[string]string{"coder": "instructions"},
 	}
-	exec, err := buildPodAgenticExecutor(kit, os.Stderr, nil, runsDir)
+	exec, _, err := buildPodAgenticExecutor(kit, os.Stderr, nil, runsDir)
 	if err != nil {
 		t.Fatalf("buildPodAgenticExecutor: %v", err)
 	}
@@ -780,7 +780,7 @@ func TestPodAppliesRepositoryCredentialsOnlyForTheirProvider(t *testing.T) {
 				{Capability: "github:milestones:write", Value: "milestone-secret"},
 				{Capability: "agent:model", Value: "model-secret"},
 			}
-			if _, err := buildPodAgenticExecutor(kit, &strings.Builder{}, minted, t.TempDir()); err != nil {
+			if _, _, err := buildPodAgenticExecutor(kit, &strings.Builder{}, minted, t.TempDir()); err != nil {
 				t.Fatalf("buildPodAgenticExecutor: %v", err)
 			}
 			if got := os.Getenv("GH_TOKEN") == "repo-secret"; got != tc.wantGHToken {

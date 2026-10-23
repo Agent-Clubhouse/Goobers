@@ -121,6 +121,16 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: journal.ErrorInfoFor("execution_authority_ended", cause, false)}
 	}
 	stopFence()
+	var outbox []dispatcher.SurrenderedOutboxFile
+	var outboxErr error
+	if outcome.OutboxEligible {
+		outbox, outboxErr = publishPodOutbox(ctx, outcome.OutboxScrubber)
+	}
+	if outboxErr != nil {
+		pf(stderr, "dispatch-exec: export outbox: %v\n", outboxErr)
+		outcome.Verdict = nil
+		outcome.Result = runner.OutboxExportFailureResult(outcome.Result, outboxErr)
+	}
 	// Surrender authorizes pod disposal. Include the complete receipt set,
 	// even when the stage failed, so the engine can project it after disposal.
 	mutations, receiptErr := podMutationReceipts()
@@ -177,9 +187,10 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		ContractVersion:       dispatcher.CurrentSurrenderContract,
+		ContractVersion:       dispatcher.SurrenderContractForOutbox(outbox),
 		ObservedUsage:         outcome.ObservedUsage,
 		ObservedUsageReported: outcome.ObservedUsageReported,
+		Outbox:                outbox,
 		RecoveryAcknowledged:  true,
 		Mutations:             mutations,
 		Result:                envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
@@ -252,6 +263,10 @@ func surrenderRetryDeadline(stageTimeout time.Duration) time.Duration {
 type stageOutcome struct {
 	Result  apiv1.ResultEnvelope
 	Verdict *apiv1.Verdict
+	// OutboxScrubber is the exact credential-aware scrubber used for this
+	// attempt's other durable evidence.
+	OutboxScrubber journal.Scrubber
+	OutboxEligible bool
 	// ObservedUsage is populated only by the supervisor callback installed
 	// around an agentic harness. Result.Metrics is never a trusted substitute.
 	ObservedUsage         map[string]float64
@@ -281,13 +296,22 @@ func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	}
 	switch strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) {
 	case executor.KindCIPoll:
-		return stageOutcome{Result: runCIPollStage(ctx, stderr)}
+		return stageOutcome{Result: runCIPollStage(ctx, stderr), OutboxEligible: true}
 	case executor.KindExternalTelemetry:
-		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr)}
+		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr), OutboxEligible: true}
 	}
 	var headMoved bool
+	capture := &declaredStageOutboxCapture{}
+	ctx = context.WithValue(ctx, declaredStageOutboxCaptureKey{}, capture)
 	result := runDeclaredStage(ctx, stdout, stderr, &headMoved)
-	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved}
+	return stageOutcome{Result: result, WorkspaceHeadMoved: headMoved, OutboxScrubber: capture.scrubber, OutboxEligible: capture.eligible}
+}
+
+type declaredStageOutboxCaptureKey struct{}
+
+type declaredStageOutboxCapture struct {
+	scrubber journal.Scrubber
+	eligible bool
 }
 
 // runDeclaredStage builds and runs the pinned Command/Script, and always
@@ -486,7 +510,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 	// executor registers every token with a scrubber before the stage runs;
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
-	scrubber := podStageScrubber(resolved.withGrant(checkoutCreds), checkoutScheme)
+	scrubber := podStageScrubberAndCaptureOutbox(ctx, resolved.withGrant(checkoutCreds), checkoutScheme)
 	defer publishPodNamedResult(ctx, stderr, scrubber, &outcome)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
@@ -528,7 +552,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer, headMoved *
 	case runErr != nil:
 		exitCode = -1
 	}
-	stageMetrics := map[string]float64{"exitCode": float64(exitCode)}
+	stageMetrics := stageMetricsAndCaptureOutbox(ctx, exitCode, runErr == nil && !timedOut)
 
 	// #4119: the result file is READ BEFORE the artifacts are emitted because
 	// it is one of them. The local executor records it (shell.go's

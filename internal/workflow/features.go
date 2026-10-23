@@ -212,7 +212,6 @@ func ensureRuntimeSupport(features []Feature) []Feature {
 			"gate.evaluator.human",
 			"task.limits.maxTokens",
 			"task.limits.maxCostUSD",
-			"task.outbox",
 			"task.experiment":
 			engineLevel = RuntimeUnsupported
 		}

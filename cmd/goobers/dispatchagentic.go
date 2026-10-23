@@ -168,10 +168,11 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 
 	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
+	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
+	defer func() { out.OutboxScrubber = scrubber }()
 
 	if kit.IsReview() {
 		// The SAME executor and the SAME constructor as an invocation — only
@@ -205,7 +206,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	if err != nil {
 		return fail("agentic_invocation_failed", err)
 	}
-	return stageOutcome{Result: result}
+	return stageOutcome{Result: result, OutboxEligible: true}
 }
 
 // reviewSubstrateFailure names the pod-side refusals that are faults of the
@@ -356,7 +357,7 @@ func podHarnessEnvironment(kit *agentickit.Kit, selected apiv1.Harness) harness.
 // runsDir is the staging root the caller already created and already
 // materialized this stage's context into; it becomes both the recorder's Dir()
 // and the contextResolver's root, which is what makes the two agree.
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, journal.Scrubber, error) {
 	gooberName := kit.Envelope.Goober
 	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}, expiries: map[string]time.Time{}}
 	for _, g := range kit.Grants {
@@ -403,7 +404,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 			continue
 		}
 		if err := os.Setenv(envVar, c.Value); err != nil {
-			return nil, fmt.Errorf("apply credential for capability %s: %w", c.Capability, err)
+			return nil, nil, fmt.Errorf("apply credential for capability %s: %w", c.Capability, err)
 		}
 	}
 
@@ -428,7 +429,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// directory inside an already-ephemeral one.
 	spec, ok := kit.Goobers[gooberName]
 	if !ok {
-		return nil, fmt.Errorf("kit carries no spec for goober %q", gooberName)
+		return nil, nil, fmt.Errorf("kit carries no spec for goober %q", gooberName)
 	}
 	var commands map[string][]string
 	if len(kit.HarnessCommand) > 0 {
@@ -439,32 +440,32 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// agents unable to publish their declared output.
 	selfBin, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("resolve goobers binary path in pod: %w", err)
+		return nil, nil, fmt.Errorf("resolve goobers binary path in pod: %w", err)
 	}
 	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, podHarnessEnvironment(kit, spec.Harness), commands, "", selfBin, false, nil, false)
 	if err != nil {
-		return nil, fmt.Errorf("build harness registry: %w", err)
+		return nil, nil, fmt.Errorf("build harness registry: %w", err)
 	}
 	// Preflight THIS goober's harness specifically, rather than walking
 	// workflows as the daemon does — a pod has no workflow set, and the only
 	// harness that matters here is the one this stage is about to use.
 	adapter, err := adapterRegistry.Get(string(spec.Harness))
 	if err != nil {
-		return nil, fmt.Errorf("harness %q is not available in this pod: %w", spec.Harness, err)
+		return nil, nil, fmt.Errorf("harness %q is not available in this pod: %w", spec.Harness, err)
 	}
 	info, err := preflightAdapterConfig(context.Background(), adapter, spec)
 	if err != nil {
 		// Fail closed with the harness's own message: an unusable harness
 		// discovered mid-invocation is a burned attempt with the cause buried
 		// in a transcript.
-		return nil, fmt.Errorf("harness %q preflight failed in pod: %w", spec.Harness, err)
+		return nil, nil, fmt.Errorf("harness %q preflight failed in pod: %w", spec.Harness, err)
 	}
 	harnessInfo := harnessPreflightInfo{spec.Harness: info}
 	for _, warning := range info.Warnings {
 		pf(stderr, "HARNESS %s WARNING: %s\n", spec.Harness, warning)
 	}
 
-	return buildAgenticExecutor(podAgenticExecutorInput(podExecutorWiring{
+	exec, err := buildAgenticExecutor(podAgenticExecutorInput(podExecutorWiring{
 		Kit:             kit,
 		RunsDir:         runsDir,
 		Stderr:          stderr,
@@ -475,6 +476,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		AdapterRegistry: adapterRegistry,
 		HarnessInfo:     harnessInfo,
 	}))
+	return exec, scrubber, err
 }
 
 // podExecutorWiring is everything buildPodAgenticExecutor discovers about this

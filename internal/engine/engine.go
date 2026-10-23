@@ -761,6 +761,10 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 			rec.workspaceHeadMoved(ctx, t.Name, result.Error.Message)
 			return "", supersededRunResult(t.Name, upstream, steps), true
 		}
+		if runner.IsOutboxExportFailure(result) {
+			code, message := failureCause(result.Error)
+			return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
+		}
 		if t.ContinueOnError {
 			rec.toleratedFailure(ctx, t.Name)
 			break

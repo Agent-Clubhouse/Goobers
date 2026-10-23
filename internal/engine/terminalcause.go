@@ -43,12 +43,18 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 	refs := map[string]journal.Ref{}
 	for i, op := range projection.Ops {
 		if op.Kind == opArtifact && op.Artifact != nil {
-			ref, err := journal.ArtifactRef(op.Artifact.Data)
-			if err != nil {
-				return nil, err
+			var ref journal.Ref
+			if op.Artifact.Ref != nil {
+				ref = *op.Artifact.Ref
+			} else {
+				var err error
+				ref, err = journal.ArtifactRef(op.Artifact.Data)
+				if err != nil {
+					return nil, err
+				}
+				artifacts[ref.Digest] = op.Artifact.Data
 			}
 			refs[projectedArtifactKey(op.Artifact.Branch, op.Artifact.Name)] = ref
-			artifacts[ref.Digest] = op.Artifact.Data
 		}
 		if op.Event == nil {
 			continue

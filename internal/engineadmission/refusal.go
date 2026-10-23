@@ -45,9 +45,6 @@ var (
 	// ErrRemoteUsageLimitsUnsupported refuses budgeted agentic pod dispatch:
 	// the remote surrender protocol does not yet carry trusted adapter usage.
 	ErrRemoteUsageLimitsUnsupported = errors.New("task.limits.maxTokens/maxCostUSD on remote agentic tasks are not implemented on the engine walk")
-	// ErrOutboxUnsupported refuses task.outbox (internal/runner/outbox.go's
-	// workspace-relative export, #1552).
-	ErrOutboxUnsupported = errors.New("task.outbox (workspace file export) is not implemented on the engine walk")
 	// ErrParallelsUnsupported refuses spec.parallels (internal/runner's
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
@@ -150,9 +147,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 		if t.Experiment != nil {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
 		}
-		if len(t.Outbox) > 0 {
-			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.outbox", Err: ErrOutboxUnsupported})
-		}
 	}
 	return out
 }
@@ -191,7 +185,7 @@ func RefuseHumanGate(g apiv1.Gate) error {
 // It is wrong as a scheduler outcome. Since #3876 a cron tick can dispatch a
 // lane onto the engine, and neither refusal is visible to the placement-pin
 // predicate that made that choice: `spec.parallels`, `task.experiment`,
-// `task.limits`, `task.outbox`, and human gates contribute no placement rows,
+// `task.limits`, and human gates contribute no placement rows,
 // so a fully remote-pinned lane declaring any of them is selected for the
 // engine and then refused on EVERY tick — permanently, having run perfectly
 // well on the local runner the day before.

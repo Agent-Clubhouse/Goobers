@@ -283,12 +283,12 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 		}
 		return registry, nil
 	}
-	if _, err := buildPodAgenticExecutor(kit, io.Discard, nil, t.TempDir()); err != nil {
+	if _, _, err := buildPodAgenticExecutor(kit, io.Discard, nil, t.TempDir()); err != nil {
 		t.Fatalf("pod constructor: %v", err)
 	}
 	refused := errors.New("fixture preflight refusal")
 	fake.PreflightErr = refused
-	if _, err := buildPodAgenticExecutor(kit, io.Discard, nil, t.TempDir()); !errors.Is(err, refused) {
+	if _, _, err := buildPodAgenticExecutor(kit, io.Discard, nil, t.TempDir()); !errors.Is(err, refused) {
 		t.Fatalf("pod skipped preflight refusal: %v", err)
 	}
 }

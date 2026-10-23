@@ -269,8 +269,8 @@ func TestRunDispatchExecContextSurrendersToTheWriteAPI(t *testing.T) {
 	if surrendered.Result.Status != apiv1.ResultSuccess {
 		t.Fatalf("surrendered status = %q, want success", surrendered.Result.Status)
 	}
-	if surrendered.ContractVersion != dispatcher.CurrentSurrenderContract {
-		t.Fatalf("surrender contract version = %d, want %d", surrendered.ContractVersion, dispatcher.CurrentSurrenderContract)
+	if surrendered.ContractVersion != dispatcher.SurrenderContractV2 {
+		t.Fatalf("surrender contract version = %d, want v2 without an outbox manifest", surrendered.ContractVersion)
 	}
 }
 

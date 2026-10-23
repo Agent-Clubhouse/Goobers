@@ -117,13 +117,15 @@ type SpanSource interface {
 // ArtifactOp is one content-addressed artifact record: bytes the workflow
 // reconstructs deterministically (context manifests, gate verdicts).
 type ArtifactOp struct {
-	Stage     string               `json:"stage,omitempty"`
-	Attempt   int                  `json:"attempt,omitempty"`
-	Class     journal.AttemptClass `json:"class,omitempty"`
-	Name      string               `json:"name"`
-	Data      []byte               `json:"data"`
-	Ref       *journal.Ref         `json:"ref,omitempty"`
-	Integrity apiv1.Integrity      `json:"integrity,omitempty"`
+	Stage            string               `json:"stage,omitempty"`
+	Attempt          int                  `json:"attempt,omitempty"`
+	Class            journal.AttemptClass `json:"class,omitempty"`
+	Name             string               `json:"name"`
+	Data             []byte               `json:"data"`
+	Ref              *journal.Ref         `json:"ref,omitempty"`
+	OutboxRelPath    string               `json:"outboxRelPath,omitempty"`
+	OutboxOccurrence uint64               `json:"outboxOccurrence,omitempty"`
+	Integrity        apiv1.Integrity      `json:"integrity,omitempty"`
 }
 
 // SpanOp adopts one executor-recorded span (a harness transcript) by digest —

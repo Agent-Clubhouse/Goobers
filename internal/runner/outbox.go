@@ -22,6 +22,10 @@ const (
 	maxOutboxDiagnosticFiles      = 3
 )
 
+// OutboxExportFailureCode is the stable terminal code for missing declared
+// outbox evidence.
+const OutboxExportFailureCode = outboxExportFailureCode
+
 type outboxFileDiagnostic struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
@@ -151,8 +155,20 @@ func outboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr err
 	return commandResult
 }
 
+// OutboxExportFailureResult preserves the command outcome while failing the
+// stage because its declared outbox evidence could not be exported.
+func OutboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr error) apiv1.ResultEnvelope {
+	return outboxExportFailureResult(commandResult, exportErr)
+}
+
 func isOutboxExportFailure(result apiv1.ResultEnvelope) bool {
 	return result.Error != nil && result.Error.Code == outboxExportFailureCode
+}
+
+// IsOutboxExportFailure reports a failed declared-evidence export. It is
+// terminal even when the task otherwise allows command failures to continue.
+func IsOutboxExportFailure(result apiv1.ResultEnvelope) bool {
+	return isOutboxExportFailure(result)
 }
 
 // taskDispatchError normalizes an outbox collection failure onto the same
@@ -307,6 +323,7 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 		if _, dup := seen[relPath]; dup {
 			return nil
 		}
+
 		seen[relPath] = struct{}{}
 		candidates = append(candidates, outboxCandidate{relPath: relPath, absPath: absPath, size: size})
 		totalBytes += size
@@ -377,6 +394,12 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 		files = append(files, journal.OutboxFile{RelPath: candidate.relPath, Data: data})
 	}
 	return files, nil
+}
+
+// CollectOutboxFiles applies the runner's containment, deduplication, and
+// aggregate bounds to a stage workspace before a remote supervisor uploads it.
+func CollectOutboxFiles(workspaceRoot string, declared []string) ([]journal.OutboxFile, error) {
+	return collectOutboxFiles(workspaceRoot, declared)
 }
 
 // outboxRelPath returns p relative to the resolved workspace root, failing

@@ -9,9 +9,13 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/workspacerevision"
@@ -67,8 +71,10 @@ const (
 	SurrenderContractV1 = 1
 	// SurrenderContractV2 adds trusted supervisor-observed usage.
 	SurrenderContractV2 = 2
-	// CurrentSurrenderContract is stamped by every current pod writer.
-	CurrentSurrenderContract = SurrenderContractV2
+	// SurrenderContractV3 adds content-addressed declared outbox files.
+	SurrenderContractV3 = 3
+	// CurrentSurrenderContract is the newest contract a current reader accepts.
+	CurrentSurrenderContract = SurrenderContractV3
 )
 
 // SurrenderPlane stores and serves surrendered result documents by attempt
@@ -108,6 +114,23 @@ type SurrenderedMutation struct {
 	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
+// SurrenderedOutboxFile identifies one scrubbed workspace file uploaded to the
+// blob plane by the trusted pod supervisor.
+type SurrenderedOutboxFile struct {
+	RelPath string `json:"relPath"`
+	Digest  string `json:"digest"`
+	Size    int64  `json:"size"`
+}
+
+// SurrenderContractForOutbox keeps ordinary v2 surrenders readable by an N-1
+// worker and opts into v3 only when the new manifest is present.
+func SurrenderContractForOutbox(files []SurrenderedOutboxFile) int {
+	if len(files) > 0 {
+		return SurrenderContractV3
+	}
+	return SurrenderContractV2
+}
+
 // SurrenderedResult is the wire shape of one attempt's surrendered outcome:
 // exactly what the engine's in-process activities produce for a local stage
 // (ResultEnvelope + mutation facts + mutation issues), so the dispatch
@@ -119,6 +142,9 @@ type SurrenderedResult struct {
 	// ObservedUsage comes from the isolated harness adapter, not model-authored metrics.
 	ObservedUsage         map[string]float64 `json:"observedUsage,omitempty"`
 	ObservedUsageReported bool               `json:"observedUsageReported,omitempty"`
+	// Outbox is the path-preserving manifest of declared files already
+	// uploaded under Digest. Only v3 writers may populate it.
+	Outbox []SurrenderedOutboxFile `json:"outbox,omitempty"`
 	// ChildWorkspaceDigest names the bounded child output carrier. The host
 	// verifies its contract and waits for exact pod writer termination before
 	// importing its tree. Ordinary workspace delta semantics do not apply.
@@ -205,7 +231,7 @@ func (r SurrenderedResult) Validate() error {
 	if version == 0 {
 		version = SurrenderContractV1
 	}
-	if version != SurrenderContractV1 && version != SurrenderContractV2 {
+	if version != SurrenderContractV1 && version != SurrenderContractV2 && version != SurrenderContractV3 {
 		return fmt.Errorf("dispatcher: unsupported surrender contract version %d", r.ContractVersion)
 	}
 	if version < SurrenderContractV2 && (r.ObservedUsageReported || len(r.ObservedUsage) > 0) {
@@ -218,6 +244,9 @@ func (r SurrenderedResult) Validate() error {
 		if key == "" || len(key) > 128 || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("dispatcher: invalid observed usage")
 		}
+	}
+	if err := validateSurrenderedOutboxManifest(version, r.Outbox); err != nil {
+		return err
 	}
 	if err := r.Result.Validate(); err != nil {
 		return fmt.Errorf("dispatcher: surrendered result envelope: %w", err)
@@ -235,6 +264,37 @@ func (r SurrenderedResult) Validate() error {
 	for i, issue := range r.MutationIssues {
 		if issue == "" {
 			return fmt.Errorf("dispatcher: surrendered mutation issue %d is empty", i)
+		}
+	}
+	return nil
+}
+
+func validateSurrenderedOutboxManifest(version int, files []SurrenderedOutboxFile) error {
+	if version < SurrenderContractV3 && len(files) > 0 {
+		return fmt.Errorf("dispatcher: outbox manifest requires surrender contract version %d", SurrenderContractV3)
+	}
+	if len(files) > journal.MaxOutboxFilesPerAttempt {
+		return fmt.Errorf("dispatcher: outbox manifest exceeds %d files", journal.MaxOutboxFilesPerAttempt)
+	}
+	seenOutbox := make(map[string]bool, len(files))
+	var outboxBytes int64
+	for i, file := range files {
+		clean := path.Clean(filepath.ToSlash(file.RelPath))
+		if file.RelPath == "" || clean != filepath.ToSlash(file.RelPath) || clean == "." ||
+			clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) ||
+			strings.Contains(clean, `\`) {
+			return fmt.Errorf("dispatcher: outbox file %d has invalid relative path", i)
+		}
+		if seenOutbox[clean] {
+			return fmt.Errorf("dispatcher: outbox manifest repeats %q", clean)
+		}
+		seenOutbox[clean] = true
+		if !blobstore.ValidDigest(file.Digest) || file.Size < 0 || file.Size > journal.MaxOutboxBytesPerAttempt {
+			return fmt.Errorf("dispatcher: outbox file %q has invalid blob reference", clean)
+		}
+		outboxBytes += file.Size
+		if outboxBytes > journal.MaxOutboxBytesPerAttempt {
+			return fmt.Errorf("dispatcher: outbox manifest exceeds %d bytes", journal.MaxOutboxBytesPerAttempt)
 		}
 	}
 	return nil

@@ -257,7 +257,9 @@ func liveOpFrom(op JournalOp) livejournal.Op {
 		if op.Artifact != nil {
 			out.Artifact = &livejournal.ArtifactOp{
 				Stage: op.Artifact.Stage, Attempt: op.Artifact.Attempt, Class: op.Artifact.Class,
-				Name: op.Artifact.Name, Data: op.Artifact.Data, Integrity: op.Artifact.Integrity,
+				Name: op.Artifact.Name, Data: op.Artifact.Data, Ref: op.Artifact.Ref,
+				OutboxRelPath: op.Artifact.OutboxRelPath, OutboxOccurrence: op.Artifact.OutboxOccurrence,
+				Integrity: op.Artifact.Integrity,
 			}
 		}
 	case opSpan:

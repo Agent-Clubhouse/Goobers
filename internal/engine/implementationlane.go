@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 
 	"go.temporal.io/sdk/workflow"
 
@@ -63,15 +64,25 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			if a == nil {
 				return nil, nil, fmt.Errorf("engine: journal op %d records no artifact", i)
 			}
-			ref, err := journal.ArtifactRef(a.Data)
-			if err != nil {
-				return nil, nil, fmt.Errorf("engine: address artifact %q: %w", a.Name, err)
+			var ref journal.Ref
+			if a.Ref != nil {
+				ref = *a.Ref
+				if a.OutboxRelPath == "" || a.OutboxOccurrence == 0 {
+					return nil, nil, fmt.Errorf("engine: referenced artifact %q is not an outbox file", a.Name)
+				}
+				ref.Path = path.Join("artifacts", "outbox", a.Stage, fmt.Sprintf("attempt-%d", a.Attempt), fmt.Sprintf("occurrence-%d", a.OutboxOccurrence), a.OutboxRelPath)
+			} else {
+				var err error
+				ref, err = journal.ArtifactRef(a.Data)
+				if err != nil {
+					return nil, nil, fmt.Errorf("engine: address artifact %q: %w", a.Name, err)
+				}
+				byDigest[ref.Digest] = a.Data
+				byPath[ref.Path] = a.Data
 			}
 			byName[a.Name] = ref
-			byDigest[ref.Digest] = a.Data
-			byPath[ref.Path] = a.Data
 			events = append(events, journal.Event{
-				Seq: uint64(len(events) + 1), Type: journal.EventArtifactRecorded,
+				Schema: journal.EventSchema, Seq: uint64(len(events) + 1), Type: journal.EventArtifactRecorded,
 				Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class,
 				Name: a.Name, Ref: &ref, Integrity: a.Integrity,
 			})
@@ -82,7 +93,7 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			}
 			ref := s.Ref
 			events = append(events, journal.Event{
-				Seq: uint64(len(events) + 1), Type: journal.EventSpanRecorded,
+				Schema: journal.EventSchema, Seq: uint64(len(events) + 1), Type: journal.EventSpanRecorded,
 				Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
 				Name: s.Name, Ref: &ref,
 			})
