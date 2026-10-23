@@ -237,19 +237,20 @@ func TestVerificationMatchesFileBackendRejections(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 	entry := store.Snapshot()[0]
+	observedAt := databaseNow(t, pool)
 	valid := localscheduler.ClaimVerification{
-		State: "verified", ObservedAt: time.Now().UTC(), ProviderRunID: "run-a",
+		State: "verified", ObservedAt: observedAt, ProviderRunID: "run-a",
 	}
 	if ok, err := store.RecordClaimVerification(entry, valid); err != nil || !ok {
 		t.Fatalf("valid observation = %v %v", ok, err)
 	}
 	for _, observation := range []localscheduler.ClaimVerification{
 		{State: "verified", ObservedAt: valid.ObservedAt.Add(-time.Nanosecond), ProviderRunID: "run-a"},
-		{State: "verified", ObservedAt: time.Now().UTC().Add(time.Hour), ProviderRunID: "run-a"},
-		{State: "verified", ObservedAt: time.Now().UTC(), ProviderRunID: "other"},
+		{State: "verified", ObservedAt: observedAt.Add(time.Hour), ProviderRunID: "run-a"},
+		{State: "verified", ObservedAt: observedAt, ProviderRunID: "other"},
 	} {
 		ok, err := store.RecordClaimVerification(entry, observation)
-		if observation.ObservedAt.After(time.Now().UTC()) || observation.ProviderRunID == "other" {
+		if observation.ObservedAt.After(observedAt) || observation.ProviderRunID == "other" {
 			if !errors.Is(err, localscheduler.ErrInvalidClaimVerification) || ok {
 				t.Fatalf("invalid observation accepted: %+v = %v %v", observation, ok, err)
 			}
@@ -262,7 +263,7 @@ func TestVerificationMatchesFileBackendRejections(t *testing.T) {
 	}
 	successor := successorStore(t, pool, "successor")
 	if ok, err := successor.RecordClaimVerification(entry, localscheduler.ClaimVerification{
-		State: "missing", ObservedAt: time.Now().UTC(),
+		State: "missing", ObservedAt: databaseNow(t, pool),
 	}); err != nil || ok {
 		t.Fatalf("predecessor observation = %v %v, want unchanged", ok, err)
 	}
@@ -274,7 +275,7 @@ func TestVerificationMatchesFileBackendRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ok, err := successor.RecordClaimVerification(entry, localscheduler.ClaimVerification{
-		State: "missing", ObservedAt: time.Now().UTC(),
+		State: "missing", ObservedAt: databaseNow(t, pool),
 	}); err != nil || ok {
 		t.Fatalf("expired observation = %v %v, want unchanged", ok, err)
 	}
@@ -372,6 +373,15 @@ func waitForClaimsLock(t *testing.T, pool *pgxpool.Pool, instanceID string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("claim retry did not reach the locked row")
+}
+
+func databaseNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	return now
 }
 
 func claimKey(id string) localscheduler.ClaimKey {
