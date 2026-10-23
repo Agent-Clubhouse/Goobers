@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // Failure types stamped onto activity errors so an attempt's class survives
@@ -122,7 +123,7 @@ func supersededRunResult(state string, upstream map[string]apiv1.ResultEnvelope,
 // envelope because it is a fact about the attempt loop, not the stage's
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
-func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -172,7 +173,11 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if emitErr == nil {
 			var activityResult stageActivityResult
 			dispatchCtx := withDispatchAttemptStarted(ctx, startedAt)
-			activityResult, err = rec.dispatchWithChildAdmission(dispatchCtx, in, t, int(attempt), class, dispatch)
+			allowance := nextAttemptUsageAllowance(t, &usageBudget)
+			chargedDispatch := func(c workflow.Context, a int, cl journal.AttemptClass) (stageActivityResult, error) {
+				return dispatch(c, a, cl, allowance)
+			}
+			activityResult, err = rec.dispatchWithChildAdmission(dispatchCtx, in, t, int(attempt), class, chargedDispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
 			if stopsAttemptLoop(ctx, err) {
@@ -200,7 +205,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				// Worker-loss timeouts may hide an attempt that already spent
 				// budget. Require usage in that case even though the activity
 				// could not report it; pre-execution failures remain retryable.
-				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLoss(err), &res, &err)
+				usageBudget.Apply(limits, usage.Metrics, usageRequired(usage, err), &res, &err)
 			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
@@ -314,6 +319,10 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 }
 
+func usageRequired(usage AttemptUsage, err error) bool {
+	return usage.Reported || usage.Unavailable || isWorkerLoss(err)
+}
+
 func attemptIdentityFromError(err error) *attemptidentity.Identity {
 	for current := err; current != nil; current = errors.Unwrap(current) {
 		var appErr *temporal.ApplicationError
@@ -352,6 +361,18 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 		return backoff
 	}
 	return backoff
+}
+
+func nextAttemptUsageAllowance(
+	task apiv1.Task,
+	budget *runsemantics.StageUsageBudget,
+) *usageallowance.Allowance {
+	if task.Type != apiv1.TaskAgentic || task.Limits == nil ||
+		(task.Limits.MaxTokens <= 0 && task.Limits.MaxCostUSD <= 0) {
+		return nil
+	}
+	allowance := budget.Allowance(*task.Limits)
+	return &allowance
 }
 
 // ClassifyDispatchFailure maps one failed dispatch to the journal attempt

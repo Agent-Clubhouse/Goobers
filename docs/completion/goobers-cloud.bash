@@ -1,1 +1,1 @@
-complete -W "api completion controller help migrate worker" goobers-cloud
+complete -W "api bootstrap completion controller cutover help migrate worker" goobers-cloud

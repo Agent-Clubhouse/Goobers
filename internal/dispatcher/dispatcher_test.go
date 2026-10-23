@@ -229,6 +229,21 @@ func TestDispatchFreshPodPerAttemptDisposedAfterSurrender(t *testing.T) {
 	}
 }
 
+func TestDispatchReportDistinguishesAttemptedPodCreate(t *testing.T) {
+	pods := &fakePodAPI{createErr: errors.New("apiserver response lost")}
+	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: false}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	if err == nil {
+		t.Fatal("ambiguous create unexpectedly succeeded")
+	}
+	if !report.PodCreateAttempted || report.Pod != "" {
+		t.Fatalf("report=%+v, want attempted create without confirmed pod identity", report)
+	}
+}
+
 // The disposal gate half: surrender NOT confirmed → the typed error surfaces,
 // AND the pod is still disposed (the retry gets a fresh pod, never this one).
 func TestDispatchUnconfirmedSurrenderStillDisposes(t *testing.T) {
@@ -470,8 +485,12 @@ func TestDispatchFailsClosedWhenMintFails(t *testing.T) {
 	}
 	failing := testAttempt()
 	failing.PodToken = ""
-	if _, err := d.Dispatch(context.Background(), failing, []RunnerSpec{linuxRunner()}); err == nil {
+	report, err := d.Dispatch(context.Background(), failing, []RunnerSpec{linuxRunner()})
+	if err == nil {
 		t.Fatal("Dispatch must fail when the pod token cannot be minted")
+	}
+	if report.PodCreateAttempted {
+		t.Fatal("pre-create token refusal reported an attempted pod create")
 	}
 	if len(pods.created) != 0 {
 		t.Fatalf("no pod may be created when minting failed, created %v", pods.created)

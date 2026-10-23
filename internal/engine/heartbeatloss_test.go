@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // #6750: an activity whose context ends without a server cancellation request
@@ -95,7 +96,7 @@ func TestWorkerLossRetriesAsInfrastructureUnlessSideEffecting(t *testing.T) {
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
 				task := retrySpec(nil).Tasks[0]
 				task.PolicyActions = tc.policyActions
-				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(_ workflow.Context, _ int, class journal.AttemptClass) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(_ workflow.Context, _ int, class journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 					classes = append(classes, class)
 					if len(classes) == 1 {
 						return stageActivityResult{}, tc.err
@@ -168,7 +169,7 @@ func TestHeldPriorAttemptDefersRetryToItsDeadline(t *testing.T) {
 			var suite testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&suite)
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
-				_, err := dispatchWithRetry(ctx, RunInput{}, retrySpec(nil).Tasks[0], &runJournal{}, nil, func(ctx workflow.Context, _ int, class journal.AttemptClass) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, RunInput{}, retrySpec(nil).Tasks[0], &runJournal{}, nil, func(ctx workflow.Context, _ int, class journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 					classes = append(classes, class)
 					switch {
 					case len(classes) == 1:

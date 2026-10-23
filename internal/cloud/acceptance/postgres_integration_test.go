@@ -17,6 +17,7 @@ import (
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -334,6 +335,7 @@ func testStore(t *testing.T, epoch int64) (*Store, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	if err := (migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "acceptance-test",
 		InstanceID: "migration", Holder: "migration",
