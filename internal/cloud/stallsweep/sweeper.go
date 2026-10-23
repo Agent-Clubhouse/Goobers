@@ -21,6 +21,11 @@ import (
 
 const defaultStallBatch = 100
 
+// maxEventClockSkew bounds how far a writer's event clock may sit outside the
+// database's [startedAt, now] window before max-duration accounting refuses the
+// run's history.
+const maxEventClockSkew = 5 * time.Minute
+
 // ErrNoWorker means cancellation cannot be delivered because no worker serves
 // the run. The sweep escalates that run to a server-side termination.
 var (
@@ -324,14 +329,24 @@ func (s *StallSweeper) due(
 		// Design 10.3: maxRunDuration is run age less durable child waits (the
 		// same journal.ChildExecutionElapsed the local sweep uses). Event times
 		// are writer clocks while startedAt and now are the database clock, so
-		// widen the window to cover events a skewed writer stamped outside it;
-		// otherwise the child-wait projection rejects the history as invalid.
+		// the window is widened to cover events a mildly skewed writer stamped
+		// outside it; otherwise the child-wait projection rejects the history as
+		// invalid. The widening is bounded: an event further outside the
+		// database's window than maxEventClockSkew would inflate the elapsed
+		// time (a far-ahead stamp extends "now"), and over-escalating a run is
+		// the costly direction, so such a history is reported, not acted on.
 		startedAt, now := candidate.Identity.StartedAt, candidate.DatabaseNow
 		if len(events) > 0 {
 			if first := events[0].Time; first.Before(startedAt) {
+				if startedAt.Sub(first) > maxEventClockSkew {
+					return "", 0, false, fmt.Errorf("run event clock is %s before the run start", startedAt.Sub(first).Round(time.Second))
+				}
 				startedAt = first
 			}
 			if last := events[len(events)-1].Time; last.After(now) {
+				if last.Sub(now) > maxEventClockSkew {
+					return "", 0, false, fmt.Errorf("run event clock is %s ahead of the database", last.Sub(now).Round(time.Second))
+				}
 				now = last
 			}
 		}
