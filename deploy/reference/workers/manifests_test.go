@@ -86,15 +86,11 @@ func TestRainbowManifestUsesHealthGatedAllAtOnce(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("worker env missing: %v", err)
 	}
-	attestation := ""
 	for _, raw := range env {
 		entry := raw.(map[string]any)
 		if entry["name"] == "GOOBERS_AUTO_UPGRADE_RETENTION" {
-			attestation, _ = entry["value"].(string)
+			t.Fatal("reference manifest enables retention without replay qualification")
 		}
-	}
-	if attestation != buildID {
-		t.Fatalf("retention attestation %q != unsafeCustomBuildID %q", attestation, buildID)
 	}
 }
 

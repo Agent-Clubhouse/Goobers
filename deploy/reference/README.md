@@ -833,12 +833,17 @@ workflow task replays on the current build, including a HITL run that resumes
 after the old Deployment has scaled down. At the cap, budget for at least six
 worker pods and keep all three images pullable until their versions drain.
 
-The rainbow manifest sets `workerOptions.unsafeCustomBuildID` and
-`GOOBERS_AUTO_UPGRADE_RETENTION` to the same `CHANGE-ME` release token. Replace
-both with one immutable release/build identifier only after the replay check
-passes. Do not use the controller's default pod-template hash here: the
-attestation environment variable is part of that hash, so embedding the
-resulting hash in the template would change the build ID again.
+Release tooling must replace `workerOptions.unsafeCustomBuildID` with a
+distinct, immutable release version or workflow-source hash for **every** image
+or workflow-code release, whether replay qualification passes or not. Reusing
+that ID makes Worker Controller roll changed code in place under pinned
+workflows, so the worker rejects the shipped `CHANGE-ME` placeholder.
+
+The reference omits `GOOBERS_AUTO_UPGRADE_RETENTION`. After replay qualification
+for that release, add it to the worker environment with a value exactly equal
+to the already-selected `unsafeCustomBuildID`. This same-release template
+update may roll in place because the workflow code and build ID are unchanged;
+it only enables retention. Placeholder values are rejected at startup.
 
 Terminating one replica does not consume a stage attempt. The replacement
 worker adopts the exact live stage pod by UID, preserving the attempt number

@@ -212,6 +212,9 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 	if deployment != DeploymentName {
 		return Config{}, fmt.Errorf("workerhost: %s=%q, want %q", temporalDeploymentNameEnv, deployment, DeploymentName)
 	}
+	if isPlaceholder(buildID) {
+		return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; set a distinct immutable ID for this release", temporalWorkerBuildIDEnv, buildID)
+	}
 	cfg.BuildVersion = buildID
 	cfg.Versioning = true
 	// Controller-managed retention is enabled only by an attestation for this
@@ -226,6 +229,9 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 	}
 	if raw, ok := lookup(autoUpgradeRetentionEnv); ok {
 		attestedBuild := strings.TrimSpace(raw)
+		if isPlaceholder(attestedBuild) {
+			return Config{}, fmt.Errorf("workerhost: %s=%q is a placeholder; omit it until replay qualification passes", autoUpgradeRetentionEnv, attestedBuild)
+		}
 		if attestedBuild == buildID {
 			cfg.AutoUpgradeRetention = true
 		} else {
@@ -236,6 +242,17 @@ func applyDeploymentEnvironment(cfg Config, lookup func(string) (string, bool)) 
 		}
 	}
 	return cfg, nil
+}
+
+func isPlaceholder(value string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(upper, "CHANGE-ME") ||
+		strings.Contains(upper, "CHANGE_ME") ||
+		strings.Contains(upper, "CHANGEME") ||
+		strings.Contains(upper, "PLACEHOLDER") ||
+		strings.Contains(upper, "REPLACE-ME") ||
+		strings.Contains(upper, "REPLACE_ME") ||
+		(strings.HasPrefix(upper, "<") && strings.HasSuffix(upper, ">"))
 }
 
 // Identity is the versioned Temporal worker identity (#632): build version,

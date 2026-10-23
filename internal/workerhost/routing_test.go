@@ -116,6 +116,7 @@ func TestWorkerControllerDeploymentVersionFailsClosed(t *testing.T) {
 		{name: "missing build", deployment: DeploymentName},
 		{name: "missing deployment", build: "v2"},
 		{name: "wrong deployment", deployment: "other", build: "v2"},
+		{name: "placeholder build", deployment: DeploymentName, build: "CHANGE-ME-release-version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(temporalDeploymentNameEnv, tc.deployment)
@@ -124,6 +125,42 @@ func TestWorkerControllerDeploymentVersionFailsClosed(t *testing.T) {
 				t.Fatal("New accepted incomplete or foreign controller identity")
 			}
 		})
+	}
+}
+
+func TestWorkerControllerRejectsPlaceholderAttestation(t *testing.T) {
+	t.Setenv(temporalDeploymentNameEnv, DeploymentName)
+	t.Setenv(temporalWorkerBuildIDEnv, "release-v2")
+	t.Setenv(podNamespaceEnv, "goobers-system")
+	t.Setenv(autoUpgradeRetentionEnv, "CHANGE-ME-replay-qualified-release")
+	if _, err := New(Config{TaskQueues: []string{"goobers-engine"}}); err == nil ||
+		!strings.Contains(err.Error(), "placeholder") {
+		t.Fatalf("New placeholder attestation error = %v", err)
+	}
+}
+
+func TestWorkerControllerBuildIDChangesAcrossReleases(t *testing.T) {
+	var builds []string
+	for _, release := range []string{"release-v1", "release-v2"} {
+		cfg, err := applyDeploymentEnvironment(Config{}, func(key string) (string, bool) {
+			switch key {
+			case temporalDeploymentNameEnv:
+				return DeploymentName, true
+			case temporalWorkerBuildIDEnv:
+				return release, true
+			case podNamespaceEnv:
+				return "goobers-system", true
+			default:
+				return "", false
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		builds = append(builds, cfg.BuildVersion)
+	}
+	if builds[0] == builds[1] {
+		t.Fatalf("release build IDs did not change: %q", builds)
 	}
 }
 
