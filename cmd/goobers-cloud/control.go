@@ -153,8 +153,8 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		return err
 	}
 	defer temporal.Close()
-	lister := epoch.Lister(temporal)
-	epochTemporal.Store(&lister)
+	dialed := epoch.Temporal(temporal)
+	epochTemporal.Store(&dialed)
 	report := func(err error) { logger.Printf("%v", err) }
 	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
 	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {

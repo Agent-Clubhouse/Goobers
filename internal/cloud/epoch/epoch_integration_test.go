@@ -84,8 +84,9 @@ func TestTwoConsecutiveTakeoversLeaveNothingStranded(t *testing.T) {
 	services, err := Build(Config{
 		Handle: third, Claims: claims,
 		Cancel: cancelpg.Store{Fence: thirdManager}, Terminal: terminalreportpg.Store{Fence: thirdManager},
-		Open:         fakeOpen{runs: map[string]bool{"run-1": true}, rec: rec},
-		Observations: newConfigObservations(),
+		Open:          fakeOpen{runs: map[string]bool{"run-1": true}, rec: rec},
+		ConfirmClosed: func(context.Context, string) (bool, error) { return true, nil },
+		Observations:  newConfigObservations(),
 	})
 	if err != nil {
 		t.Fatal(err)

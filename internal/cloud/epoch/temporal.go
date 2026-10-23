@@ -3,13 +3,56 @@ package epoch
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 )
 
 // Lister is the visibility call OpenRuns needs; client.Client satisfies it.
 type Lister interface {
 	ListWorkflow(ctx context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error)
+}
+
+// Describer is the strongly consistent per-run call; client.Client satisfies it.
+type Describer interface {
+	DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
+}
+
+// Temporal is the client surface the epoch needs.
+type Temporal interface {
+	Lister
+	Describer
+}
+
+// TemporalConfirmClosed confirms a run is closed through
+// DescribeWorkflowExecution (strongly consistent, unlike visibility): not found
+// or a closed status is closed; running or paused is open; any other error is
+// returned so the caller keeps the claim this tick. Same pattern as the worker
+// sweep and the start fence.
+func TemporalConfirmClosed(client Describer) func(ctx context.Context, runID string) (bool, error) {
+	return func(ctx context.Context, runID string) (bool, error) {
+		if client == nil {
+			return false, errors.New("cloud epoch: no Temporal client to confirm run state")
+		}
+		response, err := client.DescribeWorkflowExecution(ctx, runID, "")
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		switch response.GetWorkflowExecutionInfo().GetStatus() {
+		case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED:
+			return false, nil
+		case enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED:
+			return false, fmt.Errorf("cloud epoch: run %q has no execution status", runID)
+		default:
+			return true, nil
+		}
+	}
 }
 
 // maxOpenRuns bounds one listing so a runaway visibility store cannot exhaust

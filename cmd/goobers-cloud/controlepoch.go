@@ -35,7 +35,7 @@ var epochWiring epochWiringParts
 
 // epochTemporal is the dialed Temporal client, set by serveControl once it is
 // connected (the Epoch seam is assembled before the dial).
-var epochTemporal atomic.Pointer[epoch.Lister]
+var epochTemporal atomic.Pointer[epoch.Temporal]
 
 func (p epochWiringParts) missing() []string {
 	var missing []string
@@ -81,7 +81,7 @@ func constructEpoch(_ context.Context, db databaseServices, _ controlAuth, _ fun
 		return epoch.Build(epoch.Config{
 			Handle: handle, Claims: claims,
 			Cancel: cancelpg.Store{Fence: fence}, Terminal: terminalreportpg.Store{Fence: fence},
-			Open: epoch.TemporalOpenRuns{Client: *temporal}, Awaiters: awaiters,
+			Open: epoch.TemporalOpenRuns{Client: *temporal}, ConfirmClosed: epoch.TemporalConfirmClosed(*temporal), Awaiters: awaiters,
 			Observations: parts.Observations(), Report: parts.Report,
 		})
 	}

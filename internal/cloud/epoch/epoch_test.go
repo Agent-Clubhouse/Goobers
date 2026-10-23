@@ -8,6 +8,11 @@ import (
 	"testing"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
+	"go.temporal.io/api/workflowservice/v1"
+
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -46,6 +51,8 @@ type fakeClaims struct {
 	renewErr, recoverErr error
 	renewed              map[string]bool
 	reaped               int
+	expiredRuns          []string
+	kept                 []string
 }
 
 func (c *fakeClaims) RenewRuns(_ context.Context, _ *lease.Handle, open map[string]bool) ([]localscheduler.ClaimEntry, error) {
@@ -56,13 +63,25 @@ func (c *fakeClaims) RenewRuns(_ context.Context, _ *lease.Handle, open map[stri
 
 // RecoverExpired honors the gate exactly as the claim plane does: a closed gate
 // is a no-op.
-func (c *fakeClaims) RecoverExpired(_ context.Context, _ *lease.Handle, gate interface{ RecoveryPermitted() bool }) ([]localscheduler.ClaimEntry, error) {
-	if gate == nil || !gate.RecoveryPermitted() {
+func (c *fakeClaims) RecoverExpired(ctx context.Context, _ *lease.Handle, gate interface{ RecoveryPermitted() bool }, confirmClosed func(context.Context, string) (bool, error)) ([]localscheduler.ClaimEntry, error) {
+	if gate == nil || !gate.RecoveryPermitted() || confirmClosed == nil {
 		c.rec.add("reap:gated")
 		return nil, nil
 	}
 	c.rec.add("reap")
-	c.reaped++
+	// One expired claim per run in expiredRuns; it is released only when the
+	// run is confirmed closed.
+	for _, run := range c.expiredRuns {
+		closed, err := confirmClosed(ctx, run)
+		if err != nil || !closed {
+			c.kept = append(c.kept, run)
+			continue
+		}
+		c.reaped++
+	}
+	if len(c.expiredRuns) == 0 {
+		c.reaped++
+	}
 	return nil, c.recoverErr
 }
 
@@ -97,8 +116,9 @@ func newConfig(rec *recorder) (Config, *fakeClaims, *fakeAwaiters) {
 	return Config{
 		Handle: &lease.Handle{InstanceID: "i", Epoch: 3},
 		Claims: claims, Cancel: adopter{name: "cancel", rec: rec}, Terminal: adopter{name: "terminal", rec: rec},
-		Open:     fakeOpen{runs: map[string]bool{"run-1": true}, rec: rec},
-		Awaiters: awaiters,
+		Open:          fakeOpen{runs: map[string]bool{"run-1": true}, rec: rec},
+		ConfirmClosed: func(context.Context, string) (bool, error) { return true, nil },
+		Awaiters:      awaiters,
 		Observations: Observations{
 			Restore: func(context.Context, []control.Observation) error { return nil },
 			Capture: func(context.Context) ([]control.Observation, error) { return nil, nil },
@@ -204,6 +224,8 @@ func TestL2SkipsRenewAndReapWithoutALivenessProof(t *testing.T) {
 	cfg, claims, _ := newConfig(rec)
 	open := &switchableOpen{rec: rec}
 	cfg.Open = open
+	var reported []error
+	cfg.Report = func(err error) { reported = append(reported, err) }
 	now := time.Unix(0, 0)
 	cfg.Now = func() time.Time { return now }
 	services, _ := Build(cfg)
@@ -218,8 +240,11 @@ func TestL2SkipsRenewAndReapWithoutALivenessProof(t *testing.T) {
 			renewsBefore++
 		}
 	}
-	if err := services.L2(t.Context()); err == nil {
-		t.Fatal("L2 succeeded without a liveness proof")
+	if err := services.L2(t.Context()); err != nil {
+		t.Fatalf("L2 = %v; a non-stale failure is reported, not returned", err)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported = %v, want the missing liveness proof surfaced", reported)
 	}
 	renews := 0
 	for _, call := range rec.list() {
@@ -386,4 +411,96 @@ func TestHostIsReadyOnlyAfterTheRebuildSucceeds(t *testing.T) {
 	}
 	cancel2()
 	<-done2
+}
+
+// TestAnOpenButUnlistedRunIsNeverReaped: visibility lags at a failover and
+// omits paused runs, so a run absent from the listing is NOT thereby dead. Its
+// expired claim is reaped only when DescribeWorkflowExecution confirms closed.
+func TestAnOpenButUnlistedRunIsNeverReaped(t *testing.T) {
+	rec := &recorder{}
+	cfg, claims, _ := newConfig(rec)
+	claims.expiredRuns = []string{"unlisted-running", "unlisted-paused", "describe-fails", "really-closed"}
+	cfg.Open = fakeOpen{runs: map[string]bool{}, rec: rec} // none listed
+	cfg.ConfirmClosed = func(_ context.Context, run string) (bool, error) {
+		switch run {
+		case "describe-fails":
+			return false, errors.New("temporal unavailable")
+		case "really-closed":
+			return true, nil
+		}
+		return false, nil // running or paused
+	}
+	cfg.Now = func() time.Time { return time.Unix(0, 0) }
+	services, _ := Build(cfg)
+	if err := services.RebuildBeforeReap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.L2(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if claims.reaped != 1 {
+		t.Fatalf("reaped %d claims, want only the confirmed-closed one", claims.reaped)
+	}
+	if want := []string{"unlisted-running", "unlisted-paused", "describe-fails"}; fmt.Sprint(claims.kept) != fmt.Sprint(want) {
+		t.Fatalf("kept %v, want %v (open, paused and unverifiable runs keep their claims)", claims.kept, want)
+	}
+}
+
+func TestL2ReportsNonStaleErrorsAndOnlyAFencedOutHandleEndsTheEpoch(t *testing.T) {
+	rec := &recorder{}
+	cfg, claims, _ := newConfig(rec)
+	var reported []error
+	cfg.Report = func(err error) { reported = append(reported, err) }
+	now := time.Unix(0, 0)
+	cfg.Now = func() time.Time { return now }
+	services, _ := Build(cfg)
+	if err := services.RebuildBeforeReap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	claims.recoverErr = errors.New("transient database error")
+	now = now.Add(time.Hour)
+	if err := services.L2(t.Context()); err != nil || len(reported) != 1 {
+		t.Fatalf("a transient L2 failure = %v (reported %d); it must be reported without ending the epoch", err, len(reported))
+	}
+	claims.recoverErr = fmt.Errorf("recovering: %w", lease.ErrStale)
+	now = now.Add(time.Hour)
+	if err := services.L2(t.Context()); !IsStale(err) {
+		t.Fatalf("a fenced-out handle = %v, want it returned so the epoch ends", err)
+	}
+}
+
+type fakeDescriber struct {
+	status enumspb.WorkflowExecutionStatus
+	err    error
+}
+
+func (d fakeDescriber) DescribeWorkflowExecution(context.Context, string, string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	return &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: d.status}}, nil
+}
+
+func TestTemporalConfirmClosed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		d      fakeDescriber
+		closed bool
+		err    bool
+	}{
+		"running":    {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}, false, false},
+		"paused":     {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_PAUSED}, false, false},
+		"completed":  {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED}, true, false},
+		"terminated": {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED}, true, false},
+		"not found":  {fakeDescriber{err: serviceerror.NewNotFound("gone")}, true, false},
+		"error":      {fakeDescriber{err: errors.New("unavailable")}, false, true},
+		"no status":  {fakeDescriber{status: enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED}, false, true},
+	} {
+		closed, err := TemporalConfirmClosed(tc.d)(t.Context(), "run-1")
+		if closed != tc.closed || (err != nil) != tc.err {
+			t.Errorf("%s: closed=%v err=%v, want closed=%v err=%v", name, closed, err, tc.closed, tc.err)
+		}
+	}
+	if _, err := TemporalConfirmClosed(nil)(t.Context(), "run-1"); err == nil {
+		t.Fatal("a nil client confirmed a run")
+	}
 }

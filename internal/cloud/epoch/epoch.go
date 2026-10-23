@@ -46,10 +46,15 @@ type Adopter interface {
 type Claims interface {
 	Adopter
 	RenewRuns(ctx context.Context, handle *lease.Handle, open map[string]bool) ([]localscheduler.ClaimEntry, error)
-	RecoverExpired(ctx context.Context, handle *lease.Handle, gate interface{ RecoveryPermitted() bool }) ([]localscheduler.ClaimEntry, error)
+	// RecoverExpired releases an expired claim only when confirmClosed says its
+	// run is CONFIRMED closed; an error or an open run keeps the claim.
+	RecoverExpired(ctx context.Context, handle *lease.Handle, gate interface{ RecoveryPermitted() bool }, confirmClosed func(ctx context.Context, runID string) (closed bool, err error)) ([]localscheduler.ClaimEntry, error)
 }
 
-// OpenRuns lists the workflow IDs of runs that are open in Temporal.
+// OpenRuns lists the workflow IDs of runs that are open in Temporal. The listing
+// comes from visibility, which is eventually consistent (it lags exactly at a
+// failover) and excludes paused runs, so it is only a RENEWAL hint: it is never
+// treated as proof that an absent run is dead. Reaping is gated on ConfirmClosed.
 type OpenRuns interface {
 	OpenRuns(ctx context.Context) (map[string]bool, error)
 }
@@ -76,6 +81,11 @@ type Config struct {
 	Cancel   Adopter
 	Terminal Adopter
 	Open     OpenRuns
+	// ConfirmClosed answers, from a strongly consistent source (Temporal
+	// DescribeWorkflowExecution), whether a run is CLOSED: not found or a closed
+	// status is closed; running or paused is open; an error is neither, and the
+	// claim is kept this tick.
+	ConfirmClosed func(ctx context.Context, runID string) (closed bool, err error)
 	// Awaiters may be nil until the terminal-effect awaiters are composed.
 	Awaiters     Awaiters
 	Observations Observations
@@ -100,6 +110,8 @@ func (c Config) validate() error {
 		return errors.New("cloud epoch requires claims, cancel-receipt and terminal-report adoption")
 	case c.Open == nil:
 		return errors.New("cloud epoch requires an open-run lister")
+	case c.ConfirmClosed == nil:
+		return errors.New("cloud epoch requires a strongly consistent run-closed confirmation")
 	case c.Observations.Restore == nil || c.Observations.Capture == nil:
 		return errors.New("cloud epoch requires provider observation wiring")
 	}
@@ -210,7 +222,21 @@ func (e *services) reattach(ctx context.Context) error {
 
 // l2 renews, reaps (gated), then runs the awaiter tick and any extra hook.
 // Per-step failures are joined so one failing step does not starve the rest.
+// l2 runs the throttled maintenance. A non-stale failure is reported and the
+// loop continues (Host.loop would otherwise tear the whole epoch down on any
+// tick error); only a fenced-out handle ends the epoch.
 func (e *services) l2(ctx context.Context) error {
+	err := e.maintain(ctx)
+	if err == nil || IsStale(err) {
+		return err
+	}
+	if e.cfg.Report != nil {
+		e.cfg.Report(err)
+	}
+	return nil
+}
+
+func (e *services) maintain(ctx context.Context) error {
 	if e.cfg.Awaiters != nil {
 		// The awaiter tick is cheap and not throttled.
 		defer func() {
@@ -234,7 +260,7 @@ func (e *services) l2(ctx context.Context) error {
 		// must not be released because its renewal was lost.
 		return fmt.Errorf("cloud epoch %d: renew claims: %w", h.Epoch, err)
 	}
-	if _, err := e.cfg.Claims.RecoverExpired(ctx, h, e.gate); err != nil {
+	if _, err := e.cfg.Claims.RecoverExpired(ctx, h, e.gate, e.cfg.ConfirmClosed); err != nil {
 		errs = append(errs, fmt.Errorf("cloud epoch %d: recover expired claims: %w", h.Epoch, err))
 	}
 	if err := e.extra(ctx); err != nil {
