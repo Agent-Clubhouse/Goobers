@@ -80,6 +80,10 @@ type conformanceFixture struct {
 	// (agentic stages) and therefore needs the hermetic git fixture repo on
 	// the local side.
 	usesRepo bool
+	// Optional observers/evaluators exercise the actual gate envelopes on
+	// both runners, including protected host-authored join inputs.
+	automated invoke.Automated
+	goober    invoke.Goober
 }
 
 func failureClassGate(name string, branches map[string]string) apiv1.Gate {
@@ -325,6 +329,9 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 			return exec, nil
 		},
 		NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
+			if fx.goober != nil {
+				return fx.goober, nil
+			}
 			return exec, nil
 		},
 		Automated:   &flakyAutomated{inner: gate.NewAutomatedEvaluator(), transientFailures: fx.gateTransientFailures},
@@ -332,6 +339,9 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 		Worktrees:   wtMgr,
 		RunsDir:     runsDir,
 		ScratchDir:  filepath.Join(instanceRoot, "scratch"),
+	}
+	if fx.automated != nil {
+		cfg.Automated = &flakyAutomated{inner: fx.automated, transientFailures: fx.gateTransientFailures}
 	}
 	if fx.usesRepo {
 		repo := newConformanceFixtureRepo(t)
@@ -383,11 +393,18 @@ func runEngineFixture(t *testing.T, fx conformanceFixture, runID string) []journ
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.SetStartTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	goober, automated := fx.goober, fx.automated
+	if goober == nil {
+		goober = exec
+	}
+	if automated == nil {
+		automated = gate.NewAutomatedEvaluator()
+	}
 	env.RegisterActivity(&Activities{
 		Journal:    writer,
-		Goober:     exec,
+		Goober:     goober,
 		Det:        exec,
-		Auto:       &flakyAutomated{inner: gate.NewAutomatedEvaluator(), transientFailures: fx.gateTransientFailures},
+		Auto:       &flakyAutomated{inner: automated, transientFailures: fx.gateTransientFailures},
 		Workspaces: testWorkspaces(t),
 	})
 	env.ExecuteWorkflow(Run, in)

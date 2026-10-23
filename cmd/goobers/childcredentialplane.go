@@ -157,8 +157,7 @@ func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, i
 	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
 		return childExecutionRef{}, errors.New("child execution has no claimed start")
 	}
-	service := durableTriggerService{queue: queue}
-	ref, err := service.childReference(ctx, receipt)
+	ref, err := childReference(ctx, queue, receipt)
 	if err != nil {
 		return childExecutionRef{}, err
 	}

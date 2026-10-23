@@ -757,10 +757,11 @@ it.
 ### Multi-worker runs need the artifact store
 
 A stage consumes prior work through ContextPointers, which resolve as a path on
-the **local** filesystem. One worker: correct and free. Two workers: stage 2 is
-polled by a node whose staging area is empty and fails closed on an integrity
-fault. `--blob-store` on a ReadWriteMany volume is what makes a run spannable;
-omit it (and the volume) if you run exactly one worker.
+the **local** filesystem. With multiple workers, a later stage can be polled by
+a pod whose staging area is empty. The authenticated blob plane makes those
+artifacts available without mounting the daemon's storage volume into workers.
+Its backing store must be durable and shared at the daemon; each worker keeps
+only a pod-private cache.
 
 Code state is a separate channel and is **not** shared: every stage attempt gets
 a fresh worktree on the run branch, so what survives between stages is the branch
@@ -768,13 +769,14 @@ in that worker's own git mirror. A stage that hands work to another platform mus
 push first (#2861).
 
 The `goobers-system` namespace enforces Pod Security Standards `restricted`.
-PSS evaluates **initContainers** too, so an adopter's per-worker instance-root
-seed must set the same non-root, no-escalation, dropped-capabilities, read-only
-root filesystem, and `RuntimeDefault` seccomp controls as the application
-container. The reference worker includes that restricted-compatible seed.
-These controls are Linux-only: Kubernetes rejects them on Windows pods. Keep
-Linux and Windows workers as separate Deployments, set `spec.os.name: windows`
-for Windows workers, and do not copy the Linux security context into them.
+PSS evaluates **initContainers** too, so any adopter-added worker initializer
+must set the same non-root, no-escalation, dropped-capabilities, read-only root
+filesystem, and `RuntimeDefault` seccomp controls as the application container.
+The reference worker needs no instance-root seed because config arrives through
+the worker plane. These controls are Linux-only: Kubernetes rejects them on
+Windows pods. Keep Linux and Windows workers as separate Deployments, set
+`spec.os.name: windows` for Windows workers, and do not copy the Linux security
+context into them.
 
 ### Cluster rebuilds
 
@@ -785,14 +787,29 @@ explicitly as a step rather than trusting the flag.
 
 ### Worker replacement and shutdown
 
-The Linux reference worker uses `Recreate` because its instance root holds locks
-on an RWO volume: the old pod must exit before its replacement starts. This
-introduces a brief polling interruption during upgrades; Temporal retains queued
-work. Keep this worker at one replica until instance storage is separated for
-additional workers. Both worker templates allow six minutes for shutdown, covering
-the default 30-second Temporal drain, five-minute child-custody settlement, and a
-30-second process-exit margin. Increase the pod grace period when increasing
-`--drain-timeout`.
+The worker is stateless across pods: its writable instance root and workspaces
+are pod-private `emptyDir` volumes, config arrives by digest, and blobs use the
+authenticated blob plane. The reference therefore runs two worker replicas
+without mounting the daemon's RWO volumes.
+
+The base manifest still uses `Recreate` as a transitional guard against mixing
+builds in one Deployment. The rainbow rollout replaces it with one Deployment
+per build ID. A new build must have live pollers before it becomes current, and
+an older build stays running while Temporal has workflows pinned to it. Do not
+scale a draining build to zero merely because it receives no new workflows;
+remove it only after its pinned executions finish. The three-version retention
+cap and AUTO_UPGRADE handling for older pinned runs are part of the rainbow
+controller rollout.
+
+Terminating one replica does not consume a stage attempt. The replacement
+worker adopts the exact live stage pod by UID, preserving the attempt number
+and its original `timeoutSeconds` deadline. The current template retains a
+six-minute grace period while the disruption policy is staged. Once the
+rainbow manifests and re-attach chaos coverage are installed, the worker pod
+grace becomes 90 seconds: enough for the default Temporal drain and handoff,
+not the lifetime of the stage pod, which continues independently. Increase pod
+grace only when increasing `--drain-timeout`, and keep a process-exit margin.
+
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
 

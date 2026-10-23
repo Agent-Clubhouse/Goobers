@@ -189,6 +189,18 @@ func (f *fakeWorkspaces) provisioned() []WorkspaceRequest {
 	return append([]WorkspaceRequest(nil), f.requests...)
 }
 
+func (f *fakeWorkspaces) lifecycleOf(stage string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.lifecycle {
+		if e == "provision "+stage || e == "remove "+stage {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func (f *fakeWorkspaces) removedPaths() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

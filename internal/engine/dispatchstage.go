@@ -165,6 +165,9 @@ type DispatchStageInput struct {
 	// ActivityTaskScheduled payload Temporal already wrote decodes with it
 	// zero, which is exactly that unstamped case.
 	OwningWorkflowID string `json:"owningWorkflowID,omitempty"`
+	// Custody asks a replacement worker to adopt this exact live pod instead
+	// of creating another one. Additive for recorded histories.
+	Custody *dispatcher.PodCustody `json:"custody,omitempty"`
 }
 
 // gatePodAttempt names the pod attempt number for one dispatch of a reviewer
@@ -223,12 +226,11 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	if number, ok := reviewerNumber(ctx); ok && physicalAttempt > 0 {
 		attemptEnv.Attempt = int32(number)
 	}
-	var result stageActivityResult
 	// OwningWorkflowID is read here, inside the workflow, for the same reason
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
-	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+	result, err := executeDispatchActivity(ctx, DispatchStageInput{
 		PodAttempt:       physicalAttempt,
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
@@ -239,7 +241,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		Review:           true,
 		RequireDiff:      requireDiff,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-	}).Get(ctx, &result)
+	})
 	placementAttempt := podAttempt
 	if number, ok := reviewerNumber(ctx); ok {
 		placementAttempt = number
@@ -355,14 +357,13 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		}
 	}
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
-		var result stageActivityResult
 		taskDispatches[t.Name]++
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		result, err := executeDispatchActivity(ctx, DispatchStageInput{
 			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
 			Class:            dispatchAttemptClass(ctx, class),
 			Envelope:         attemptEnv,
@@ -372,7 +373,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			WorkspaceDelta:   workspaceDelta,
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-		}).Get(ctx, &result)
+		})
 		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
@@ -544,7 +545,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if err := a.validateStageDispatch(input); err != nil {
 		return stageActivityResult{}, err
 	}
-	stopHeartbeat := heartbeatDispatch(ctx)
+	ctx, custody, stopHeartbeat := dispatchCustodyContext(ctx, input)
 	defer stopHeartbeat()
 	// input.Run is set exactly for a deterministic dispatch (agentic stages
 	// carry a nil Run and are unaffected below). Re-assert
@@ -749,7 +750,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		attempt.Timeout = time.Duration(input.Envelope.Limits.MaxDurationSeconds) * time.Second
 	}
 
-	report, err := a.Dispatcher.Dispatch(ctx, attempt, input.Placement.Eligible)
+	report, err := a.dispatchOrAdopt(ctx, attempt, input)
 	a.logDispatchCleanup(ctx, attempt, report)
 	// Defense-in-depth for the settled-outcome invariant (#3588): once the
 	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
@@ -762,7 +763,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
 	// kind alone closes the whole class of post-surrender dispatcher errors.
 	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
-		return unconfirmedDispatchFailure(ctx, err, report)
+		return unconfirmedReattachFailure(ctx, err, report, custody)
 	}
 	if err == nil && report.Local {
 		return stageActivityResult{}, a.refuseLocalDispatch(input.Envelope.TaskID)

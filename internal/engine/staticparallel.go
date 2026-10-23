@@ -1,0 +1,232 @@
+package engine
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"go.temporal.io/sdk/workflow"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
+	wf "github.com/goobers/goobers/internal/workflow"
+)
+
+// staticWalkSession is assembled only by the versioned test entry. Production
+// Run still refuses fan-out before the walk. Visits cannot yet be repeated:
+// per-visit dispatch identity and branch-qualified joins are separate slices.
+type staticWalkSession struct {
+	seen         map[string]bool
+	join         string
+	completeness []journal.BranchOutcome
+}
+
+type staticBranchOutcome struct {
+	index int
+	frame *branchWalkFrame
+	err   error
+}
+
+// Only the root coroutine owns this queue and settles outcomes. Branch bodies
+// publish exactly once to a buffered workflow channel, including on cancel.
+type staticParallelWalk struct {
+	root         *runJournal
+	in           RunInput
+	machine      *wf.Machine
+	spec         fanOutPlan
+	started      livejournal.AppendReceipt
+	seed         *branchWalkFrame
+	outcomes     []*staticBranchOutcome
+	results      workflow.Channel
+	ctx, drain   workflow.Context
+	cancel       workflow.CancelFunc
+	next, active int
+	stopped      bool
+	err          error
+}
+
+func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Machine, state string, seed *branchWalkFrame) (string, bool, error) {
+	p, ok := m.Parallel(state)
+	if r.staticWalk == nil || !ok {
+		return "", false, nil
+	}
+	if r.staticWalk.seen[state] {
+		return "", true, fmt.Errorf("engine: repeated static parallel visit %q is not supported", state)
+	}
+	if r.owner == nil || r.stepBudget == nil || p.Selection != nil {
+		return "", true, fmt.Errorf("engine: static parallel requires commit owner, shared budget and static branches")
+	}
+	if err := refuseStaticJoinBindings(in.Spec, p.Name); err != nil {
+		return "", true, err
+	}
+	if r.staticWalk.seen == nil {
+		r.staticWalk.seen = map[string]bool{}
+	}
+	r.staticWalk.seen[state] = true
+	pwalk, result, err := r.fanOut(ctx, in, m, staticFanOutPlan(p), seed)
+	if err != nil {
+		return "", true, err
+	}
+	r.staticWalk.join, r.staticWalk.completeness = p.Join, pwalk.completeness()
+	pwalk.merge()
+	return result.Target, true, nil
+}
+
+func (p *staticParallelWalk) run(ctx workflow.Context) {
+	limit := min(max(1, int(p.spec.MaxConcurrentBranches)), len(p.spec.Branches))
+	for p.active > 0 || p.next < len(p.spec.Branches) {
+		p.fail(ctx.Err())
+		if p.next < len(p.spec.Branches) && p.outcomes[p.next] != nil {
+			p.next++
+			continue
+		}
+		var out staticBranchOutcome
+		if p.results.ReceiveAsync(&out) {
+			p.accept(out)
+			continue
+		}
+		if p.stopped {
+			p.cancelQueued()
+		} else if p.next < len(p.spec.Branches) && p.active < limit {
+			p.launch()
+			continue
+		}
+		if p.active > 0 {
+			p.results.Receive(p.drain, &out)
+			p.accept(out)
+		}
+	}
+	p.fail(ctx.Err())
+}
+
+func (p *staticParallelWalk) launch() {
+	i := p.next
+	branch := p.spec.Branches[i]
+	p.root.append(p.ctx, journal.Event{Type: journal.EventBranchStarted, Branch: i + 1, Parallel: p.spec.Name, BranchName: branch.Name, Stage: branch.Start, MapItemIdentity: branch.ItemIdentity, MapItemDigest: branch.ItemDigest})
+	if err := p.root.emitPending(p.ctx); err != nil {
+		p.fail(err)
+		return
+	}
+	frame := *p.seed // walk clones every mutable seed collection before use.
+	frame.start = branch.Start
+	frame.bind = branch.Bind
+	frame.started = p.started
+	frame.results = nil
+	if p.spec.BranchTimeoutSeconds > 0 {
+		frame.deadline = workflow.Now(p.ctx).Add(time.Duration(p.spec.BranchTimeoutSeconds) * time.Second)
+	}
+	rec := &runJournal{owner: p.root.owner, branch: i + 1, branchWalk: &frame, stepBudget: p.root.stepBudget, machine: p.machine, live: true, proj: p.root.proj, branchRef: p.root.branchRef}
+	rec.proj.Ops = nil
+	p.next++
+	p.active++
+	workflow.Go(p.ctx, func(ctx workflow.Context) {
+		_, err := walk(ctx, p.in, p.machine, rec, nil)
+		// Capacity covers every started body, so completion never blocks and
+		// never disappears because its execution context was cancelled.
+		p.results.SendAsync(staticBranchOutcome{index: i, frame: &frame, err: err})
+	})
+}
+
+func (p *staticParallelWalk) accept(out staticBranchOutcome) {
+	p.active--
+	p.outcomes[out.index] = &out
+	p.settle(out.index)
+	status := out.frame.status
+	// Boundary timeouts are branch outcomes. Cancellation caused by our own
+	// fail-fast/terminal decision must not replace that decision with an error.
+	if status != journal.BranchTimedOut && status != journal.BranchCancelled {
+		p.fail(out.err)
+	}
+	failed := status == journal.BranchFailed || status == journal.BranchTimedOut
+	if out.frame.terminalTarget != "" || (failed && p.spec.FailurePolicy == apiv1.BranchFailFast) {
+		p.stop()
+	}
+}
+
+func (p *staticParallelWalk) stop() {
+	p.stopped = true
+	p.cancel()
+}
+
+func (p *staticParallelWalk) fail(err error) {
+	if err != nil && p.err == nil {
+		p.err = err
+		p.stop()
+	}
+}
+
+func (p *staticParallelWalk) settle(i int) {
+	p.root.append(p.drain, journal.Event{Type: journal.EventBranchFinished, Branch: i + 1, Parallel: p.spec.Name, BranchName: p.spec.Branches[i].Name, BranchStatus: p.outcomes[i].frame.status, Reason: p.spec.Branches[i].Reason, MapItemIdentity: p.spec.Branches[i].ItemIdentity, MapItemDigest: p.spec.Branches[i].ItemDigest})
+	p.fail(p.root.emitPending(p.drain))
+}
+
+func (p *staticParallelWalk) cancelQueued() {
+	for p.next < len(p.spec.Branches) {
+		i := p.next
+		p.next++
+		if p.outcomes[i] != nil {
+			continue
+		}
+		p.outcomes[i] = &staticBranchOutcome{index: i, frame: &branchWalkFrame{status: journal.BranchCancelled}}
+		p.settle(i)
+	}
+}
+
+func (p *staticParallelWalk) completeness() []journal.BranchOutcome {
+	out := make([]journal.BranchOutcome, len(p.spec.Branches))
+	for i, b := range p.spec.Branches {
+		out[i] = journal.BranchOutcome{Branch: i + 1, Name: b.Name, Status: journal.BranchCancelled, Reason: b.Reason, MapItemIdentity: b.ItemIdentity, MapItemDigest: b.ItemDigest}
+		if result := p.outcomes[i]; result != nil {
+			out[i].Status = result.frame.status
+			start := min(len(p.seed.pointers), len(result.frame.pointers))
+			for _, pointer := range result.frame.pointers[start:] {
+				if pointer.Artifact != nil {
+					out[i].Artifacts++
+				}
+			}
+		}
+	}
+	return out
+}
+
+func (p *staticParallelWalk) target() string {
+	if p.err != nil {
+		return ""
+	}
+	failed := false
+	for _, out := range p.outcomes {
+		if out.frame.terminalTarget != "" {
+			return out.frame.terminalTarget
+		}
+		switch out.frame.status {
+		case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
+			failed = true
+		}
+	}
+	if failed && p.spec.FailurePolicy != apiv1.BranchContinueOnError {
+		return p.spec.OnFailure
+	}
+	return p.spec.Join
+}
+
+func (r *runJournal) staticJoinInputs(stage string, inputs map[string]any) {
+	if s := r.staticWalk; s != nil && s.join == stage {
+		inputs[runner.BranchCompletenessInput] = s.completeness
+	}
+}
+
+// The old scalar resolver can treat dotted strings as literal output keys.
+// Reject unsupported branch bindings explicitly rather than accidentally
+// accepting a root output with the same spelling.
+func refuseStaticJoinBindings(spec apiv1.WorkflowSpec, parallel string) error {
+	for _, task := range spec.Tasks {
+		for _, key := range sortedKeys(task.InputsFrom) {
+			if strings.HasPrefix(task.InputsFrom[key], parallel+".") {
+				return fmt.Errorf("engine: branch-qualified join input %q on %q is not supported", key, task.Name)
+			}
+		}
+	}
+	return nil
+}

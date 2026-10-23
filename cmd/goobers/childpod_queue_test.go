@@ -35,7 +35,8 @@ func testQueuedChildFactory(t *testing.T, f childKitFixture, worker *factoryWork
 		Gaggle: f.child.Identity.Gaggle, Workflow: f.writer.identity.Child.ParentWorkflow, RepoRef: f.parent.applied.Gaggles[0].Spec.Project,
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 3},
 	}}, s.log))
-	triggers := &durableTriggerService{queue: s.childQueue, dispatch: dispatch, observeChild: acceptedChildObserver(s.layout)}
+	triggers := durableTriggerServiceForQueue(t, s.childQueue, dispatch)
+	triggers.observeChild = acceptedChildObserver(s.layout)
 	build := func(layout instance.Layout, generation string, set *instance.ConfigSet, report *validate.Report) (*schedulerDefinitions, error) {
 		return buildSchedulerDefinitions(schedulerDefinitionsInput{Layout: layout, Config: s.config, Definitions: set, Validation: report,
 			RunnerRegistry: registry, ProviderQuota: localscheduler.NewProviderQuotaState(), Generations: []*configgeneration.Retainer{retainer}, PinnedGeneration: generation})

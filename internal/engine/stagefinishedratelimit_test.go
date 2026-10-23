@@ -44,6 +44,15 @@ func TestStageFinishedKeepsTheRateLimitResetAcrossTheToleratedDiscard(t *testing
 	if !ok || got != reset {
 		t.Fatalf("runner[%s] = %v, want the reset %q; without it the scheduler keeps admitting runs into an exhausted window", executor.OutputRateLimitReset, ev.Runner[executor.OutputRateLimitReset], reset)
 	}
+	// Not conformance-normative, so the runner's journal for the same outcome
+	// still compares equal.
+	if len(journal.ConformanceView([]journal.Event{ev})) != len(journal.ConformanceView([]journal.Event{{
+		Type: journal.EventStageFinished, Stage: "poll-ci", Attempt: 1,
+		AttemptClass: journal.AttemptPolicy, Status: string(apiv1.ResultFailure),
+		Error: &journal.ErrorDetail{Code: providers.ErrorCodeRateLimited, Message: "rate limited"},
+	}})) {
+		t.Error("the annotation changed the conformance view; the two drivers' journals would no longer compare equal")
+	}
 }
 
 // TestStageFinishedDoesNotAnnotateWhatItDidNotDiscard: an untolerated

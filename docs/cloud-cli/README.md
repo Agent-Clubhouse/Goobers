@@ -33,10 +33,22 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 Serve the cloud control-plane API.
 
 ~~~text
-Usage: goobers-cloud api
+Usage: goobers-cloud api [DATABASE OPTIONS]
 
-Serve the cloud control-plane API. The P1 skeleton reserves this role while
-the extracted API host is wired into the cloud composition root.
+Serve the cloud control-plane API.
+
+Database options:
+  --database-url URL               PgBouncer URL (prefer env/file for credentials)
+  --database-url-file PATH         Read PgBouncer URL from a mounted Secret
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-max-conns N           Total connection budget (default 16)
+  --database-direct-max-conns N    Direct-pool reservation (default 2)
+  --database-auth MODE             password or entra (default password)
+
+Environment:
+  GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud completion`
@@ -54,10 +66,11 @@ Generate a shell completion script. Source the output in the target shell.
 Run cloud control-plane reconciliation.
 
 ~~~text
-Usage: goobers-cloud controller
+Usage: goobers-cloud controller [DATABASE OPTIONS]
 
-Run cloud control-plane reconciliation. The P1 skeleton reserves this role
-while the extracted controller host is wired into the cloud composition root.
+Run cloud control-plane reconciliation.
+
+Database options are the same as for the api role.
 ~~~
 
 ## `goobers-cloud migrate`
@@ -65,10 +78,20 @@ while the extracted controller host is wired into the cloud composition root.
 Apply cloud data-store migrations.
 
 ~~~text
-Usage: goobers-cloud migrate
+Usage: goobers-cloud migrate apply [OPTIONS]
 
-Apply cloud data-store migrations. The P1 skeleton reserves this role while
-the migration runner is wired into the cloud composition root.
+Apply ordered cloud PostgreSQL migrations.
+
+Options:
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-auth MODE             password or entra (default password)
+  --backup-ref REF                 Restorable backup identifier or PITR mark (required)
+  --instance-id ID                 Goobers instance owning the migration lease (required)
+  --holder ID                      Unique migration pod/process identity
+
+Environment:
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
 ~~~
 
 ## `goobers-cloud worker`

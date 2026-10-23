@@ -1616,8 +1616,8 @@ func TestHITLRefusesUnresumableTargets(t *testing.T) {
 	}
 }
 
-// TestHITLDelivererRequiresAddressableRun covers the daemon-side client: a run
-// with no workflow is a not-found, distinct from a refusal.
+// TestHITLRefusalCodeReadsProtocolCode pins that a refusal's stable code
+// survives the round trip a daemon does to map it onto an HTTP status.
 func TestHITLRefusalCodeReadsProtocolCode(t *testing.T) {
 	err := hitlRefusal(HITLErrRunSettled, "run %s has settled", "run-x")
 	code, message, ok := HITLRefusalCode(err)
