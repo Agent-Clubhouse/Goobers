@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/cloud/operatorcli"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -54,7 +55,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	if err := os.WriteFile(urlFile, []byte("postgres://file-secret@localhost/goobers\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := databaseURL("", urlFile, "UNSET_DATABASE_URL")
+	value, err := cloudpg.DatabaseURL("", urlFile, "UNSET_DATABASE_URL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +127,19 @@ func TestCompletionCommand(t *testing.T) {
 	code, stdout, stderr := runForTest("completion", "bash")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "goobers-cloud") {
 		t.Fatalf("completion bash: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestNestedOperatorHelpRoutesFromRegistry(t *testing.T) {
+	var want string
+	for _, candidate := range operatorcli.Commands() {
+		if candidate.Name == "runs list" {
+			want = candidate.Long
+		}
+	}
+	code, stdout, stderr := runForTest("help", "runs", "list")
+	if want == "" || code != 0 || stderr != "" || stdout != want {
+		t.Fatalf("nested help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

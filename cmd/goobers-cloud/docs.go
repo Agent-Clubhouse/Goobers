@@ -1,14 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/clidocs"
+	"github.com/goobers/goobers/internal/cliregistry"
 )
 
 const completionHelp = `Usage: goobers-cloud completion <bash|zsh|fish>
@@ -36,7 +35,7 @@ func documentedCommands() []clidocs.Command {
 		}
 		docs = append(docs, clidocs.Command{
 			Binary:   "goobers-cloud",
-			Path:     []string{candidate.name},
+			Path:     strings.Fields(candidate.name),
 			Short:    candidate.short,
 			Long:     candidate.long,
 			Examples: candidate.examples,
@@ -68,26 +67,13 @@ func renderDocs() map[string]string {
 }
 
 func completionScript(shell string) string {
-	names := make([]string, 0, len(commands))
+	paths := make([]string, 0, len(commands))
 	for _, candidate := range commands {
 		if !candidate.hidden {
-			names = append(names, candidate.name)
+			paths = append(paths, candidate.name)
 		}
 	}
-	sort.Strings(names)
-	joined := strings.Join(names, " ")
-	switch shell {
-	case "bash":
-		return fmt.Sprintf("complete -W %q goobers-cloud\n", joined)
-	case "fish":
-		var b strings.Builder
-		for _, name := range names {
-			fmt.Fprintf(&b, "complete -c goobers-cloud -f -a %q\n", name)
-		}
-		return b.String()
-	default:
-		return fmt.Sprintf("#compdef goobers-cloud\n_arguments '1:command:(%s)'\n", joined)
-	}
+	return cliregistry.Completion("goobers-cloud", shell, paths)
 }
 
 func writeDocs(root string) error {
