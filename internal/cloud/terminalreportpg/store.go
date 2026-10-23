@@ -272,7 +272,8 @@ func (s Store) Freeze(ctx context.Context, handle *lease.Handle, d Delivery, bod
 // and reports ErrSuperseded so that generation is delivered too; a reclaimed
 // or adopted lease reports ErrLeaseLost and changes nothing.
 func (s Store) Delivered(ctx context.Context, handle *lease.Handle, d Delivery) error {
-	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+	superseded := false
+	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		var generation int64
 		err := tx.QueryRow(ctx, `
 			SELECT generation FROM control.terminal_report
@@ -288,10 +289,9 @@ func (s Store) Delivered(ctx context.Context, handle *lease.Handle, d Delivery) 
 			return fmt.Errorf("read terminal report lease: %w", err)
 		}
 		if generation != d.Generation {
-			if err := s.releaseLease(ctx, tx, handle, d); err != nil {
-				return err
-			}
-			return terminalreport.ErrSuperseded
+			// Commit the release; returning an error here would roll it back.
+			superseded = true
+			return s.releaseLease(ctx, tx, handle, d)
 		}
 		_, err = tx.Exec(ctx, `
 			UPDATE control.terminal_report
@@ -304,6 +304,10 @@ func (s Store) Delivered(ctx context.Context, handle *lease.Handle, d Delivery) 
 		}
 		return nil
 	})
+	if err == nil && superseded {
+		return terminalreport.ErrSuperseded
+	}
+	return err
 }
 
 func (s Store) releaseLease(ctx context.Context, tx pgx.Tx, handle *lease.Handle, d Delivery) error {

@@ -22,7 +22,8 @@ var (
 	ErrNotFound = errors.New("recoverypg: recovery record not found")
 )
 
-// Record is the immutable identity of one published snapshot.
+// Record is the immutable identity of one published snapshot. IdentityTime
+// is stored, compared and returned in UTC at microsecond precision.
 type Record struct {
 	RunID         string
 	RepositoryKey string
@@ -61,6 +62,7 @@ func scan(row pgx.Row) (Stored, error) {
 	err := row.Scan(&s.RunID, &s.RepositoryKey, &s.Ref, &s.BaseRef, &s.BaseSHA, &s.SnapshotSHA,
 		&s.PatchDigest, &s.ArchiveDigest, &s.ArchiveBytes, &s.ArchiveFormat, &s.BundleKey,
 		&s.IdentityTime, &s.CreatedAt, &s.RetainUntil, &s.OwnerEpoch)
+	s.IdentityTime, s.CreatedAt, s.RetainUntil = s.IdentityTime.UTC(), s.CreatedAt.UTC(), s.RetainUntil.UTC()
 	return s, err
 }
 
