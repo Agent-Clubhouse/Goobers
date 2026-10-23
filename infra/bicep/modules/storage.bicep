@@ -23,8 +23,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     name: 'Standard_LRS'
   }
 
-  resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
-    parent: storage
+  resource blobService 'blobServices@2023-01-01' = {
     name: 'default'
     properties: {
       deleteRetentionPolicy: {
