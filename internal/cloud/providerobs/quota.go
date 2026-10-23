@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -21,8 +22,10 @@ import (
 )
 
 const (
-	quotaKeyPrefix = "provider-quota/"
-	quotaVersion   = 1
+	// maxObservations is control.Observations' snapshot bound.
+	maxObservations = 128
+	quotaKeyPrefix  = "provider-quota/"
+	quotaVersion    = 1
 )
 
 type quotaPayload struct {
@@ -34,26 +37,45 @@ type quotaPayload struct {
 
 // Quota persists a provider quota ledger. The same State must be the one the
 // scheduler and provider clients record into.
+//
+// control.Observations.Replace swaps the WHOLE snapshot, so rows this adapter
+// does not own (another adapter's keys, or a newer binary's payload version
+// seen during a mixed-version failover) are carried through untouched: Restore
+// remembers them and Capture re-emits them.
 type Quota struct {
 	State *localscheduler.ProviderQuotaState
 	// Now defaults to time.Now.
 	Now func() time.Time
+	// Report receives rows that were skipped as corrupt. The ledger is an
+	// optimisation, so a bad row is reported and dropped, never fatal.
+	Report func(error)
+
+	mu          sync.Mutex
+	passthrough []control.Observation
 }
 
-func (q Quota) now() time.Time {
+func (q *Quota) now() time.Time {
 	if q.Now != nil {
 		return q.Now()
 	}
 	return time.Now()
 }
 
-// Capture snapshots the active quota windows for control.Observations.Replace.
-func (q Quota) Capture(context.Context) ([]control.Observation, error) {
+func (q *Quota) report(err error) {
+	if q.Report != nil {
+		q.Report(err)
+	}
+}
+
+// Capture snapshots the active quota windows for control.Observations.Replace,
+// followed by the foreign rows Restore passed through.
+func (q *Quota) Capture(context.Context) ([]control.Observation, error) {
 	if q.State == nil {
 		return nil, fmt.Errorf("provider quota observations require a quota state")
 	}
 	now := q.now()
 	var observations []control.Observation
+	owned := map[string]bool{}
 	for _, window := range q.State.Windows() {
 		if !window.ResetAt.After(now) {
 			continue // an expired window carries no budget worth restoring
@@ -62,7 +84,21 @@ func (q Quota) Capture(context.Context) ([]control.Observation, error) {
 		if err != nil {
 			return nil, err
 		}
-		observations = append(observations, control.Observation{Key: quotaKeyPrefix + string(window.Provider), Payload: payload, ObservedAt: now.UTC()})
+		key := quotaKeyPrefix + string(window.Provider)
+		owned[key] = true
+		observations = append(observations, control.Observation{Key: key, Payload: payload, ObservedAt: now.UTC()})
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, foreign := range q.passthrough {
+		if owned[foreign.Key] {
+			continue // a current v1 window supersedes an unknown-version row for its key
+		}
+		if len(observations) >= maxObservations {
+			q.report(fmt.Errorf("provider observation %q dropped: snapshot is full", foreign.Key))
+			continue
+		}
+		observations = append(observations, foreign)
 	}
 	return observations, nil
 }
@@ -70,33 +106,50 @@ func (q Quota) Capture(context.Context) ([]control.Observation, error) {
 // Restore replays a predecessor's snapshot into the ledger. Windows already
 // expired are skipped, and Record ratchets (a lower remaining in the same
 // window wins, an older window loses), so a replay never adds budget back.
-// Keys this adapter does not own, and payload versions it does not know, are
-// ignored so a newer or sibling adapter's state cannot block a controller; a
-// malformed payload of a known version is an error (corruption is visible).
-func (q Quota) Restore(_ context.Context, snapshot []control.Observation) error {
+//
+// A restore never fails the controller's epoch. The version is decoded FIRST: a
+// payload of a version this binary does not know (a newer binary's shape) and
+// keys this adapter does not own are kept untouched for Capture to re-emit, and
+// a corrupt row of the known version is reported and skipped.
+func (q *Quota) Restore(_ context.Context, snapshot []control.Observation) error {
 	if q.State == nil {
 		return fmt.Errorf("provider quota observations require a quota state")
 	}
 	now := q.now()
+	var passthrough []control.Observation
 	for _, observation := range snapshot {
 		provider, owned := strings.CutPrefix(observation.Key, quotaKeyPrefix)
 		if !owned {
+			passthrough = append(passthrough, observation)
+			continue
+		}
+		var head struct {
+			Version int `json:"version"`
+		}
+		if err := json.Unmarshal(observation.Payload, &head); err != nil {
+			q.report(fmt.Errorf("provider observation %q is corrupt: %w", observation.Key, err))
+			continue
+		}
+		if head.Version != quotaVersion {
+			passthrough = append(passthrough, observation)
 			continue
 		}
 		var payload quotaPayload
 		if err := json.Unmarshal(observation.Payload, &payload); err != nil {
-			return fmt.Errorf("provider observation %q: %w", observation.Key, err)
-		}
-		if payload.Version != quotaVersion {
+			q.report(fmt.Errorf("provider observation %q is corrupt: %w", observation.Key, err))
 			continue
 		}
 		if payload.Provider != provider || provider == "" || payload.Remaining < 0 || payload.ResetAt.IsZero() {
-			return fmt.Errorf("provider observation %q is invalid", observation.Key)
+			q.report(fmt.Errorf("provider observation %q is invalid", observation.Key))
+			continue
 		}
 		if !payload.ResetAt.After(now) {
 			continue
 		}
 		q.State.Record(apiv1.Provider(provider), payload.Remaining, payload.ResetAt)
 	}
+	q.mu.Lock()
+	q.passthrough = passthrough
+	q.mu.Unlock()
 	return nil
 }
