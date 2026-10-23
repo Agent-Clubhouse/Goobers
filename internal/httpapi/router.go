@@ -1673,6 +1673,8 @@ func writeReadError(w http.ResponseWriter, errorLog *log.Logger, operation strin
 		writeError(w, http.StatusConflict, "artifact_invalid", "artifact integrity verification failed")
 	case errors.Is(err, readservice.ErrTelemetryUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "telemetry_unavailable", "telemetry is not enabled")
+	case errors.Is(err, readservice.ErrUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "read_unavailable", "this data is not available from this API")
 	default:
 		errorLog.Printf("%s failed: %v", operation, err)
 		writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
