@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgroles"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -61,6 +62,9 @@ func postgresJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	if err := migration.Apply(t.Context()); err != nil {
 		t.Fatalf("apply journal fixture migrations: %v", err)
 	}
+	// The backend and its lease run as the controller role production uses, so
+	// a write path missing from the grant inventory fails here.
+	pool = rolePool(t, pool, pgroles.Controller)
 	manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "test-instance", Name: "controller", Holder: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +97,37 @@ func postgresJournalConfigRenew(t testing.TB, renew bool) journalpg.Config {
 	t.Cleanup(func() { cancel(); <-done; _ = manager.Release(context.Background(), handle) })
 	return journalpg.Config{Pool: pool, InstanceID: "test-instance", Lease: manager, LiveOwner: func() *lease.Handle { return handle }}
 }
+
+// rolePool opens a pool on base's database whose sessions act as role.
+func rolePool(t testing.TB, base *pgxpool.Pool, role string) *pgxpool.Pool {
+	t.Helper()
+	cfg := base.Config()
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{role}.Sanitize())
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// postgresOwnerPool opens an owner session on the fixture database for test
+// setup the controller role is not granted (DDL, raw storage edits).
+func postgresOwnerPool(t testing.TB, config journalpg.Config) *pgxpool.Pool {
+	t.Helper()
+	cfg := config.Pool.Config()
+	cfg.AfterConnect = nil
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 func postgresBackend(t testing.TB, config journalpg.Config) *journalpg.Backend {
 	t.Helper()
 	backend, err := journalpg.New(config)
@@ -122,7 +157,7 @@ func TestJournalReaderBackendConformancePostgres(t *testing.T) {
 		}
 		// The storage adapter injects a future envelope field after retirement.
 		// A writer that only knows today's Event cannot produce that field.
-		if _, err := config.Pool.Exec(context.Background(), `UPDATE journal.run_event SET body=$1 WHERE instance_id=$2 AND run_id='run-reader' AND seq=2`, []byte(unknownReaderRecord), config.InstanceID); err != nil {
+		if _, err := postgresOwnerPool(t, config).Exec(context.Background(), `UPDATE journal.run_event SET body=$1 WHERE instance_id=$2 AND run_id='run-reader' AND seq=2`, []byte(unknownReaderRecord), config.InstanceID); err != nil {
 			return nil, err
 		}
 		return backend, nil

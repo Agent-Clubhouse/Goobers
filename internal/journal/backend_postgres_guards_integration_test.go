@@ -99,7 +99,7 @@ func TestJournalRollbackAndDedupDoNotAllocateGaps(t *testing.T) {
 	config := postgresJournalConfig(t)
 	b := postgresBackend(t, config)
 	h, o := createPostgresRun(t, b)
-	_, err := config.Pool.Exec(t.Context(), `ALTER TABLE journal.run_event ADD CONSTRAINT reject_fixture CHECK (body NOT LIKE '%rollback-fixture%'::bytea)`)
+	_, err := postgresOwnerPool(t, config).Exec(t.Context(), `ALTER TABLE journal.run_event ADD CONSTRAINT reject_fixture CHECK (body NOT LIKE '%rollback-fixture%'::bytea)`)
 	if err != nil {
 		t.Fatal(err)
 	}

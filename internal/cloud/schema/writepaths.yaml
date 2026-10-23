@@ -880,13 +880,16 @@ tables:
   table: run_checkpoint
   provisioned: true
   fence: owner_token
-  rationale: Derived checkpoints are upserted only by the current writer token under the controller-lease fence. RunStatus reads the phase.
+  rationale: Derived checkpoints are upserted only by the current writer token under the controller-lease fence. ON CONFLICT DO UPDATE needs SELECT on every column it sets; RunStatus reads the phase.
   readers:
   - role: goobers_controller
     columns:
     - instance_id
     - run_id
     - phase
+    - terminal
+    - state
+    - at_seq
   writers:
   - role: goobers_controller
     insert:
