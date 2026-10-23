@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
@@ -166,7 +168,7 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	}
 	if mode != "record" {
 		layout := instance.NewLayout(root)
-		inventory, err := prepareRecoveryInventory(root)
+		inventory, err := runtimewiring.PrepareRecoveryInventory(root)
 		if err != nil {
 			t.Fatal(err)
 		}

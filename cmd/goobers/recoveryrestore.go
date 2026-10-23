@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -56,7 +58,7 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	} else {
-		if err := prepareManualRoot(layout, stderr); err != nil {
+		if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -65,7 +67,7 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if !claimsPlaneSelected() {
-		stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+		stopTelemetry := runtimewiring.StartCommandJournalTelemetry(layout, stderr)
 		defer stopTelemetry()
 	}
 	var commit string
@@ -162,7 +164,7 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 	if err != nil {
 		return "", err
 	}
-	project, err := recoveryConfiguredProject(cfg, record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(cfg, record.RepositoryKey)
 	if err != nil {
 		return "", err
 	}
@@ -208,7 +210,7 @@ func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, 
 	if err != nil {
 		return nil, err
 	}
-	gitEnv, err := buildWorktreeGitEnv(cfg, workcopies, project, nil, nil, nil, runner.DefaultRepoCloneURL, registry, stores)
+	gitEnv, err := runtimewiring.BuildWorktreeGitEnv(cfg, workcopies, project, nil, nil, nil, runner.DefaultRepoCloneURL, registry, stores)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +235,7 @@ func stageRecoveryGitEnvironment(ctx context.Context, cfg *instance.Config, proj
 		}
 		return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
 	case apiv1.ProviderADO:
-		if _, ok := configuredRepoForProject(cfg, project); !ok {
+		if _, ok := runtimewiring.ConfiguredRepoForProject(cfg, project); !ok {
 			return nil, fmt.Errorf("ADO recovery repository %s/%s is not configured", project.Owner, project.Name)
 		}
 		// The delivered repo:push credential, in the scheme the daemon stated
@@ -266,18 +268,4 @@ func recoveryAuthenticationEnvironment(environment []string) []string {
 		}
 	}
 	return result
-}
-
-func recoveryConfiguredProject(cfg *instance.Config, key string) (apiv1.RepoRef, error) {
-	var matches []apiv1.RepoRef
-	for _, repo := range cfg.Repos {
-		identity := providers.RepositoryRef{Provider: providers.ProviderKind(repo.Provider), URL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
-		if identity.CanonicalKey() == key {
-			matches = append(matches, apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name})
-		}
-	}
-	if len(matches) != 1 {
-		return apiv1.RepoRef{}, fmt.Errorf("recovery record must match exactly one configured repository")
-	}
-	return matches[0], nil
 }

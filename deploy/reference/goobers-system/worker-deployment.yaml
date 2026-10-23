@@ -28,9 +28,17 @@ spec:
         goobers.dev/role: worker
     spec:
       serviceAccountName: goobers-worker
-      # Allow the default 30s Temporal drain, 5m child custody settlement, and exit.
-      # Increase this when overriding --drain-timeout.
+      # Keep the staged 360s bound until ChildSettlementTimeout is lowered and
+      # rainbow re-attachment passes CHAOS-13 qualification.
       terminationGracePeriodSeconds: 360
+      priorityClassName: goobers-control-plane
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: goobers-worker
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
@@ -47,7 +55,7 @@ spec:
           # Set runner.harnessCommand in instance.yaml when selecting another
           # installed harness.
           image: goobers # rewritten by your overlay's images: transformer (#3287)
-          # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
+          # `goobers-cloud worker` is the cloud worker entrypoint
           # (#632): it serves the named task queue(s) until SIGTERM, then
           # drains. One task queue per Deployment — set the queue to the one
           # this gaggle/workflow dispatches to (default "goobers-engine").
@@ -80,6 +88,8 @@ spec:
           # Initial config fetches wait through an API restart. The startup
           # probe below suppresses liveness/readiness until the worker opens
           # its health listener.
+          command:
+            - "goobers-cloud"
           args:
             - "worker"
             - "--task-queue"

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -149,7 +151,7 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: repository provider %q does not support branch reconciliation\n", repo.Provider)
 		return 1
 	}
-	stopTelemetry := startCommandJournalTelemetry(layoutFor(root), stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(layoutFor(root), stderr)
 	defer stopTelemetry()
 	log, _, err := journal.OpenInstanceLog(layoutFor(root).SchedulerDir(), journal.WithScrubber(scrubber))
 	if err != nil {

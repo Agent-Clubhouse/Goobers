@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -95,7 +96,7 @@ func schedulerExecutionGeneration(input schedulerDefinitionsInput) (instance.Lay
 }
 
 func generationService() scheduling.Generations {
-	return scheduling.Generations{OrdinaryPins: retainedOrdinaryGenerationPins, Digest: configDirectoryDigest, Load: loadConfigDirectory, IssueSummary: validationIssueSummary}
+	return scheduling.Generations{OrdinaryPins: retainedOrdinaryGenerationPins, Digest: runtimewiring.ConfigDirectoryDigest, Load: loadConfigDirectory, IssueSummary: runtimewiring.ValidationIssueSummary}
 }
 
 var executionGenerationStore = scheduling.ExecutionGenerationStore

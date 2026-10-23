@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 type daemonWorkerConfigService struct {
@@ -96,7 +97,7 @@ func (r *configReloader) publishConfigMirror(ctx context.Context) error {
 		return err
 	}
 	validate := func(staged string) error {
-		digest, err := configDirectoryDigest(filepath.Join(staged, "config"))
+		digest, err := runtimewiring.ConfigDirectoryDigest(filepath.Join(staged, "config"))
 		if err != nil {
 			return err
 		}

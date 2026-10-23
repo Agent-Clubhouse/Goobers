@@ -8,10 +8,11 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func claimFiles() scheduling.ClaimFiles {
-	return scheduling.ClaimFiles{ClaimLock: withClaimLock, FileLock: withFileLock, BoundedLock: withBoundedFileLock, RunLock: withClaimLockForRun, SharedResolver: stageSharedClaimResolver, StartTelemetry: func(l instance.Layout) func() { return startCommandJournalTelemetry(l, os.Stderr) }}
+	return scheduling.ClaimFiles{ClaimLock: withClaimLock, FileLock: withFileLock, BoundedLock: withBoundedFileLock, RunLock: withClaimLockForRun, SharedResolver: stageSharedClaimResolver, StartTelemetry: func(l instance.Layout) func() { return runtimewiring.StartCommandJournalTelemetry(l, os.Stderr) }}
 }
 
 var openStageClaimLedger = stageClaimLedger

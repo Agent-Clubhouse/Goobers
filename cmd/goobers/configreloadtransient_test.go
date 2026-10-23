@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func TestConfigReloaderSchedulesTransientRetryWithBackoff(t *testing.T) {
@@ -72,7 +73,7 @@ func TestConfigReloaderPollReevaluatesDigestWithDueTransientRetry(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(layout.ConfigDir(), "candidate.yaml"), []byte("kind: rejected\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}

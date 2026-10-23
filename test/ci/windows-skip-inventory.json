@@ -49,6 +49,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "deploy/reference/workers",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Kubernetes manifest semantic tests run on Linux; hosted kind validates the rendered worker resources."
+    },
+    {
       "package": "deploy/reference/telemetry",
       "coverage": "none",
       "category": "not-selected",
@@ -215,6 +221,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud PostgreSQL migration tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/objstore",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Azure Blob and PostgreSQL metadata tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
     },
     {
       "package": "internal/cloud/pg",
@@ -407,6 +419,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Named journal projection, child stage identity, dispatch heartbeat and cancellation regressions run; the remaining engine suite runs on Linux."
+    },
+    {
+      "package": "internal/engineadmission",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
       "package": "internal/ephemeraltmp",
@@ -1337,6 +1355,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "HA chaos harness: Linux-only (kubectl/kind, PostgreSQL 16 integration); unit tests run on the Linux unit shards only."
+    },
+    {
+      "package": "test/ha/workerscenarios",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Hosted kind owns worker eviction and rainbow rollout execution; contract checks run on Linux."
     },
     {
       "package": "test/hermetic",

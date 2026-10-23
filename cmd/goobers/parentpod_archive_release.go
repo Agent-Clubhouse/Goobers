@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -31,7 +32,7 @@ func releaseTerminalParentArchives(layout instance.Layout, manager *worktree.Man
 	if err != nil {
 		return err
 	}
-	cloneURL := repoCloneURL
+	cloneURL := runtimewiring.RepoCloneURL
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL
 	}
@@ -71,7 +72,7 @@ func (r parentArchiveRestorer) releaseArchive(ctx context.Context, reader *journ
 	if err != nil {
 		return err
 	}
-	project, err := recoveryConfiguredProject(r.config, record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, record.RepositoryKey)
 	if err != nil {
 		return err
 	}

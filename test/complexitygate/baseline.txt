@@ -57,6 +57,7 @@ internal/workflow/v_3_0/features.go	addTaskFeatures	48
 test/nophonehome/main.go	tokenizeScript	45
 !body-length-cap 200
 !body-length	api/validate/validate.go	(*index).checkWorkflow	221
+!body-length	cmd/goobers-cloud/worker.go	runWorker	255
 !body-length	cmd/goobers/applyverdict.go	runApplyVerdict	489
 !body-length	cmd/goobers/backlogquery.go	runBacklogQueryMode	272
 !body-length	cmd/goobers/daemon.go	buildSchedulerDefinitions	342
@@ -67,14 +68,11 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	cmd/goobers/openpr.go	runOpenPR	262
 !body-length	cmd/goobers/prsiblingcontext.go	runGatherSiblingContextCore	373
 !body-length	cmd/goobers/reconcilebranches.go	reconcileRemoteBranches	245
-!body-length-justification	cmd/goobers/runnerwiring.go	buildRunnerConfig	278	#4962 threads the applied config digest into each deterministic executor
-!body-length	cmd/goobers/runnerwiring.go	buildRunnerConfig	278
 !body-length	cmd/goobers/runtime_capabilities.go	init	724
 !body-length	cmd/goobers/status.go	runRunTable	382
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206
 !body-length	cmd/goobers/trace.go	runTraceWithFactories	223
 !body-length	cmd/goobers/validate.go	runValidateConfig	261
-!body-length	cmd/goobers/worker.go	runWorker	255
 !body-length	internal/apicontract/wire.go	newWireFixtures	753
 !body-length	internal/decomposition/publisher.go	(Publisher).Publish	233
 !body-length	internal/engine/dispatchstage.go	(*Activities).DispatchStage	283

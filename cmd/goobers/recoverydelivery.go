@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -72,7 +73,7 @@ func (s recoveryDeliveryService) overflowPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	policy, _ := resolveRecoveryPolicy(s.layout, cfg)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(s.layout, cfg)
 	free, err := recoveryInventoryFreeSlots(ctx, s.layout, policy)
 	if err != nil {
 		return err

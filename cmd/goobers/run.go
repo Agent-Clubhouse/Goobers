@@ -6,6 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	iofs "io/fs"
 	"net/url"
 	"os"
@@ -24,7 +27,9 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -178,7 +183,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -486,7 +491,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 	if cfg == nil {
 		return fmt.Errorf("validate pull request #%d: instance configuration is unavailable", number)
 	}
-	configured, ok := configuredRepoForProject(cfg, entry.RepoRef)
+	configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, entry.RepoRef)
 	if !ok {
 		return fmt.Errorf("validate pull request #%d: repository %s is not configured in this instance", number, targetedRepoDisplay(entry.RepoRef))
 	}
@@ -515,7 +520,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 		if repo.Provider == providers.ProviderGitea {
 			credentialCapability = capability.ProviderPRWrite
 		}
-		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
+		resolver, grants, buildErr := runtimewiring.BuildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
 		if buildErr != nil {
 			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
 		}
@@ -852,7 +857,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -881,7 +886,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
 	cfg := &instance.Config{}
-	stopTelemetry := startCommandJournalTelemetry(l, stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(l, stderr)
 	defer stopTelemetry()
 	if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
 		cfg = loaded
@@ -905,7 +910,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 				runLayout = configured
 				workcopiesRoot = runLayout.WorkcopiesDir()
 				if gaggle != nil {
-					if repo, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
+					if repo, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
 						workcopiesRoot = runLayout.WorkcopiesBaseDir()
 					}
 				}
@@ -914,7 +919,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	wtMgr, err := worktree.NewManager(workcopiesRoot, mutationCleanupGuard(runLayout.RunsDir()))
+	wtMgr, err := worktree.NewManager(workcopiesRoot, runtimewiring.MutationCleanupGuard(runLayout.RunsDir()))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -1105,7 +1110,7 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
