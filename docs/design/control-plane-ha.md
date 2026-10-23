@@ -795,7 +795,7 @@ CREATE TABLE control.schema_migration (version int PRIMARY KEY, kind text CHECK 
 - Layout `blobs/sha256/<aa>/<rest>` (same as `blobstore.Dir`) with `If-None-Match: *` create-only puts. Readers verify the digest.
 - Write order: blob first, then the row that points at it. A crash in between leaves an orphan for GC, never a dangling pointer.
 - `recovery/<record>/snapshot.bundle` is immutable, with soft-delete and versioning on.
-- **GC (DS8)** is a leader job under the `gc` lease. A digest is deleted only when **all** hold: no row in `journal.run_artifact`, config generations, recovery records or pending adoptions; older than the TTL baseline; unreferenced for longer than the **PITR retention window**, so a restored DB never points at a deleted blob. GC is pausable for restores; bucket lifecycle rules are a backstop only.
+- **GC (DS8)** is a leader job under the `gc` lease. A digest is deleted only when **all** hold: no row in `journal.run_artifact`, config generations, recovery records or pending adoptions; older than the TTL baseline; unreferenced for longer than the **PITR retention window**, so a restored DB never points at a deleted blob. GC is pausable for restores; bucket lifecycle rules and Blob soft-delete are backstops. Physical deletion is disabled by default and remains experimental behind `--experimental-physical-blob-gc` pending #7843.
 - Today there is **no** general GC caller; the only `Remove` caller is `internal/configgeneration/store.go:232`.
 
 <a id="migrations"></a>

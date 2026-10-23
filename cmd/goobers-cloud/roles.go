@@ -12,9 +12,12 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	cloudacceptance "github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudmigrate "github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/version"
@@ -34,10 +37,14 @@ Database options:
   --database-max-conns N           Total connection budget (default 16)
   --database-direct-max-conns N    Direct-pool reservation (default 2)
   --database-auth MODE             password or entra (default password)
+  --object-store-url URL           Azure Blob service URL
+  --object-store-container NAME    Blob container (default goobers)
+  --experimental-physical-blob-gc  Enable unqualified physical deletion (#7843)
 
 Environment:
   GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+  GOOBERS_OBJECT_STORE_URL     Azure Blob service URL
 `
 	controllerHelp = `Usage: goobers-cloud controller [DATABASE OPTIONS]
 
@@ -152,6 +159,8 @@ var (
 	signalContext             = signals.SetupSignalContext
 	newCloudPools             = cloudpg.NewPools
 	newAcceptanceStore        = cloudacceptance.New
+	newAzureObjectStore       = objstore.NewAzure
+	newObjectMetadata         = objstore.NewMetadataWithOptions
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) {
 		return azidentity.NewDefaultAzureCredential(nil)
 	}
@@ -170,17 +179,20 @@ var (
 	}
 )
 
-type databaseServices struct {
+type cloudServices struct {
 	Pools               *cloudpg.Pools
 	Acceptances         triggerqueue.SchedulerPolicyStore
+	Blobs               blobstore.Store
+	Surrenders          dispatcher.SurrenderPlane
+	Objects             *objstore.Metadata
 	SchemaCompatibility error
 }
 
-type databaseRole func(context.Context, databaseServices) error
+type databaseRole func(context.Context, cloudServices) error
 
 var errRoleUnavailable = errors.New("role wiring is not available yet")
 
-func unavailableDatabaseRole(context.Context, databaseServices) error { return errRoleUnavailable }
+func unavailableDatabaseRole(context.Context, cloudServices) error { return errRoleUnavailable }
 
 func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer, serve databaseRole) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -196,6 +208,12 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 	maxConnections := flags.Int("database-max-conns", int(cloudpg.DefaultMaxConnections), "total database connection budget")
 	directConnections := flags.Int("database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct-pool connection reservation")
 	authMode := flags.String("database-auth", "password", "database authentication mode: password or entra")
+	objectStoreURL := flags.String("object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
+	objectStoreContainer := flags.String("object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	experimentalPhysicalBlobGC := flags.Bool(
+		"experimental-physical-blob-gc", false,
+		"enable experimental physical blob deletion (#7843)",
+	)
 	flags.Usage = func() { write(stderr, help) }
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -203,7 +221,7 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		}
 		return 2
 	}
-	if flags.NArg() != 0 {
+	if flags.NArg() != 0 || strings.TrimSpace(*objectStoreURL) == "" || strings.TrimSpace(*objectStoreContainer) == "" {
 		flags.Usage()
 		return 2
 	}
@@ -253,8 +271,29 @@ func runDatabaseRole(role, help string, args []string, stdout, stderr io.Writer,
 		writef(stderr, "goobers-cloud %s: acceptance store initialization failed\n", role)
 		return 1
 	}
-	services := databaseServices{
-		Pools: pools, Acceptances: acceptances, SchemaCompatibility: compatibilityErr,
+	objectCredential, err := newDefaultAzureCredential()
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: object-store credential initialization failed\n", role)
+		return 1
+	}
+	blobs, err := newAzureObjectStore(*objectStoreURL, *objectStoreContainer, objectCredential)
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: object-store initialization failed\n", role)
+		return 1
+	}
+	objects, err := newObjectMetadata(pools.Direct, blobs, objstore.MetadataOptions{
+		ExperimentalPhysicalDelete: *experimentalPhysicalBlobGC,
+	})
+	if err != nil {
+		writef(stderr, "goobers-cloud %s: object metadata initialization failed\n", role)
+		return 1
+	}
+	services := cloudServices{
+		Pools: pools, Acceptances: acceptances, Blobs: blobs, Objects: objects,
+		SchemaCompatibility: compatibilityErr,
+		Surrenders: objstore.SurrenderPlane{
+			Metadata: objects, InstanceID: environmentOr("GOOBERS_INSTANCE_ID", "default"),
+		},
 	}
 	if err := serve(ctx, services); err != nil {
 		writef(stderr, "goobers-cloud %s: %v\n", role, err)
