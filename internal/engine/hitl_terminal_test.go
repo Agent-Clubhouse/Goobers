@@ -79,7 +79,7 @@ func TestLiveTerminalLostRepliesRetryOneIntentBeforeAcknowledgement(t *testing.T
 	intent := terminalApproveIntent(input)
 	var ack HITLAck
 	completed := 0
-	env.RegisterDelayedCallback(func() {
+	atTerminalHold(t, env, func() {
 		state, err := env.QueryWorkflow(HITLStateQuery)
 		if err != nil {
 			t.Fatal(err)
@@ -102,7 +102,7 @@ func TestLiveTerminalLostRepliesRetryOneIntentBeforeAcknowledgement(t *testing.T
 				t.Errorf("acked before all replies recovered: calls=%d", seam.calls)
 			}
 		}}, intent)
-	}, time.Second)
+	})
 	env.ExecuteWorkflow(Run, input)
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -128,9 +128,9 @@ func TestLiveTerminalDefinitiveRefusalDoesNotRetry(t *testing.T) {
 			seam.refusal = refusal
 			intent := terminalApproveIntent(input)
 			refused := false
-			env.RegisterDelayedCallback(func() {
+			atTerminalHold(t, env, func() {
 				env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) { refused = err != nil }}, intent)
-			}, time.Second)
+			})
 			env.ExecuteWorkflow(Run, input)
 			if !refused || seam.calls != 1 {
 				t.Fatalf("refused=%v calls=%d", refused, seam.calls)
@@ -150,15 +150,15 @@ func TestLiveTerminalCancellationFencesLostReply(t *testing.T) {
 	seam.lost = 100
 	intent := terminalApproveIntent(input)
 	completed := false
-	env.RegisterDelayedCallback(func() {
+	atTerminalHold(t, env, func() {
 		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(_ any, err error) {
 			if err == nil {
 				t.Error("cancelled Update acknowledged")
 			}
 			completed = true
 		}}, intent)
-	}, time.Second)
-	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, 3*time.Second)
+		env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, 2*time.Second)
+	})
 	env.ExecuteWorkflow(Run, input)
 	if env.GetWorkflowError() == nil || seam.cancellation != 1 || !completed {
 		t.Fatalf("err=%v cancellations=%d completed=%v", env.GetWorkflowError(), seam.cancellation, completed)
@@ -170,4 +170,24 @@ func TestLiveTerminalCancellationFencesLostReply(t *testing.T) {
 	if last := events[len(events)-1]; last.Type != journal.EventRunFinished || last.Status != "aborted" {
 		t.Fatalf("last=%+v", last)
 	}
+}
+
+// The activity host can be busy under race/parallel CI. Submit from the
+// workflow's durable hold state, never a guessed offset from startup.
+func atTerminalHold(t *testing.T, env *testsuite.TestWorkflowEnvironment, call func()) {
+	t.Helper()
+	var poll func()
+	poll = func() {
+		value, err := env.QueryWorkflow(HITLStateQuery)
+		var state HITLState
+		if err == nil {
+			err = value.Get(&state)
+		}
+		if err == nil && state.Phase == hitlPhaseAwaiting {
+			call()
+			return
+		}
+		env.RegisterDelayedCallback(poll, 100*time.Millisecond)
+	}
+	env.RegisterDelayedCallback(poll, 100*time.Millisecond)
 }
