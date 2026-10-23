@@ -217,6 +217,12 @@
       "reason": "Cloud control-plane policy has no Windows-specific seam; unit and PostgreSQL integration tests run on Linux."
     },
     {
+      "package": "internal/cloud/childengine",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud control-plane child custody adapter has no Windows deployment target; unit and PostgreSQL integration tests run on Linux."
+    },
+    {
       "package": "internal/cloud/config",
       "coverage": "none",
       "category": "not-selected",

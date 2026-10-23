@@ -101,13 +101,21 @@ func (c *Client) call(ctx context.Context, path string, body any, want int, limi
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("childadmissionclient: %s: %w", path, err)
+		if ctx.Err() != nil {
+			return fmt.Errorf("childadmissionclient: %s: %w", path, err)
+		}
+		// The plane may be mid-failover; the engine retries for its budget.
+		return fmt.Errorf("childadmissionclient: %s: %w: %w", path, engine.ErrChildCustodyUnavailable, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != want {
 		var envelope apicontract.ErrorEnvelope
 		_ = json.NewDecoder(io.LimitReader(response.Body, 4<<10)).Decode(&envelope)
-		return fmt.Errorf("childadmissionclient: %s refused with status %d (%s): %s", path, response.StatusCode, envelope.Error.Code, envelope.Error.Message)
+		failure := fmt.Errorf("childadmissionclient: %s refused with status %d (%s): %s", path, response.StatusCode, envelope.Error.Code, envelope.Error.Message)
+		if class := statusClass(response.StatusCode); class != nil {
+			return fmt.Errorf("%w: %w", class, failure)
+		}
+		return failure
 	}
 	if out == nil {
 		return nil
@@ -120,4 +128,22 @@ func (c *Client) call(ctx context.Context, path string, body any, want int, limi
 		return errors.New("childadmissionclient: response exceeds its byte budget")
 	}
 	return json.Unmarshal(data, out)
+}
+
+// statusClass maps a plane status onto the engine's custody error classes.
+// The plane answers 503 while no controller holds custody (failover) and a
+// 4xx for a request that can never succeed. Credential failures (401/403)
+// and other 5xx statuses stay unclassified: bounded retry, then stop.
+func statusClass(status int) error {
+	switch {
+	case status == http.StatusServiceUnavailable, status == http.StatusBadGateway,
+		status == http.StatusGatewayTimeout, status == http.StatusTooManyRequests:
+		return engine.ErrChildCustodyUnavailable
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return nil
+	case status >= 400 && status < 500:
+		return engine.ErrChildCustodyRefused
+	default:
+		return nil
+	}
 }

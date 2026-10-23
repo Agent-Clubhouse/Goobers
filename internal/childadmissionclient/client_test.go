@@ -3,8 +3,10 @@ package childadmissionclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -123,5 +125,48 @@ func TestUnservedCustodyOperationsFailClosed(t *testing.T) {
 	}
 	if _, err := c.Admit(t.Context(), engine.ChildAdmissionInput{}); err == nil {
 		t.Fatal("unconfigured client called out")
+	}
+}
+
+func TestClientCarriesCustodyErrorClassesAcrossThePlane(t *testing.T) {
+	backend := &recordingAdmissions{}
+	signer, url := planeServer(t, backend)
+	client := &Client{BaseURL: url, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission("engine-worker", time.Minute) }}
+	for _, tc := range []struct {
+		name               string
+		fail               error
+		unavailable, final bool
+	}{
+		{name: "failover", fail: fmt.Errorf("lease lost: %w", engine.ErrChildCustodyUnavailable), unavailable: true},
+		{name: "refusal", fail: fmt.Errorf("parent closed: %w", engine.ErrChildCustodyRefused), final: true},
+		{name: "unclassified", fail: errors.New("custody bug")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend.fail = tc.fail
+			_, err := client.Admit(t.Context(), engine.ChildAdmissionInput{})
+			if err == nil || errors.Is(err, engine.ErrChildCustodyUnavailable) != tc.unavailable || errors.Is(err, engine.ErrChildCustodyRefused) != tc.final {
+				t.Fatalf("admit error = %v, want unavailable=%v refused=%v", err, tc.unavailable, tc.final)
+			}
+		})
+	}
+}
+
+func TestClientTreatsAnUnreachablePlaneAsFailover(t *testing.T) {
+	client := &Client{BaseURL: "http://127.0.0.1:1", TokenSource: func() (string, error) { return "token", nil }}
+	if _, err := client.Admit(t.Context(), engine.ChildAdmissionInput{}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
+		t.Fatalf("unreachable plane error = %v, want unavailable", err)
+	}
+}
+
+func TestStatusClassLeavesCredentialAndServerFaultsUnclassified(t *testing.T) {
+	for status, want := range map[int]error{
+		http.StatusServiceUnavailable: engine.ErrChildCustodyUnavailable, http.StatusTooManyRequests: engine.ErrChildCustodyUnavailable,
+		http.StatusBadGateway: engine.ErrChildCustodyUnavailable, http.StatusGatewayTimeout: engine.ErrChildCustodyUnavailable,
+		http.StatusConflict: engine.ErrChildCustodyRefused, http.StatusBadRequest: engine.ErrChildCustodyRefused,
+		http.StatusUnauthorized: nil, http.StatusForbidden: nil, http.StatusInternalServerError: nil,
+	} {
+		if got := statusClass(status); !errors.Is(got, want) || (want == nil) != (got == nil) {
+			t.Errorf("statusClass(%d) = %v, want %v", status, got, want)
+		}
 	}
 }

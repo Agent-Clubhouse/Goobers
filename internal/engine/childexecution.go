@@ -77,7 +77,8 @@ func validWaitReceipt(r livejournal.AppendReceipt) bool {
 }
 
 // ParkEngineChild confirms parent writer custody before releasing capacity.
-func (a *Activities) ParkEngineChild(ctx context.Context, in ChildParkInput) error {
+func (a *Activities) ParkEngineChild(ctx context.Context, in ChildParkInput) (err error) {
+	defer func() { err = classifyChildCustody(ctx, err) }()
 	if a.EngineChildren == nil {
 		return ErrNotConfigured
 	}
@@ -88,7 +89,8 @@ func (a *Activities) ParkEngineChild(ctx context.Context, in ChildParkInput) err
 }
 
 // FinalizeEngineChild retains stopped-writer custody and bounds the return.
-func (a *Activities) FinalizeEngineChild(ctx context.Context, in ChildFinalizeInput) (childresult.TerminalReturn, error) {
+func (a *Activities) FinalizeEngineChild(ctx context.Context, in ChildFinalizeInput) (_ childresult.TerminalReturn, err error) {
+	defer func() { err = classifyChildCustody(ctx, err) }()
 	if a.EngineChildren == nil {
 		return childresult.TerminalReturn{}, ErrNotConfigured
 	}
@@ -109,7 +111,8 @@ func (a *Activities) FinalizeEngineChild(ctx context.Context, in ChildFinalizeIn
 }
 
 // CompleteEngineChild reacquires capacity and returns a retained context reference.
-func (a *Activities) CompleteEngineChild(ctx context.Context, in ChildCompletionInput) (apiv1.ContextPointer, error) {
+func (a *Activities) CompleteEngineChild(ctx context.Context, in ChildCompletionInput) (_ apiv1.ContextPointer, err error) {
+	defer func() { err = classifyChildCustody(ctx, err) }()
 	if a.EngineChildren == nil {
 		return apiv1.ContextPointer{}, ErrNotConfigured
 	}

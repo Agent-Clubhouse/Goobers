@@ -83,7 +83,7 @@ func (s *Service) acceptedChild(ctx context.Context, r journal.ChildHandoffReque
 	}
 	if child.Identity != identity || child.AcceptanceID != r.AcceptanceID || child.RunID != r.ChildRunID || child.ProposalDigest != r.SourceDigest ||
 		!child.TombstonedAt.IsZero() || !child.AcknowledgedAt.IsZero() || child.CancellationRequested {
-		return child, errors.New("childengine: handoff does not name a live accepted child")
+		return child, errNotLiveChild
 	}
 	return child, s.Custody.CheckChildParentOpen(ctx, identity.ChildParent)
 }
@@ -96,7 +96,8 @@ func binding(in engine.ChildAdmissionInput, child triggerqueue.ChildRecord, star
 // Admit freezes and binds one child start. A child already bound to another
 // parent execution returns that owner's receipt unchanged; the engine refuses
 // it as a sealed-child restart rather than re-binding.
-func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (engine.ChildRunBinding, error) {
+func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (_ engine.ChildRunBinding, err error) {
+	defer func() { err = classify(err) }()
 	if err := s.configured(); err != nil {
 		return engine.ChildRunBinding{}, err
 	}
@@ -142,7 +143,8 @@ func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (eng
 
 // Load reads the manifest the binding's own start intent recorded. A receipt
 // for another parent execution or manifest is refused.
-func (s *Service) Load(ctx context.Context, b engine.ChildRunBinding) ([]byte, error) {
+func (s *Service) Load(ctx context.Context, b engine.ChildRunBinding) (_ []byte, err error) {
+	defer func() { err = classify(err) }()
 	if err := s.configured(); err != nil {
 		return nil, err
 	}
@@ -152,14 +154,15 @@ func (s *Service) Load(ctx context.Context, b engine.ChildRunBinding) ([]byte, e
 		return nil, err
 	}
 	if start.ManifestDigest != b.ManifestDigest || start.ParentWorkflowID != b.ParentWorkflowID || start.ParentTemporalRunID != b.ParentTemporalRunID || !start.Deadline.Equal(b.Deadline) {
-		return nil, errors.New("childengine: binding differs from the recorded start intent")
+		return nil, errBindingDiffers
 	}
 	return s.Custody.ChildBlob(ctx, identity, start.ManifestDigest)
 }
 
 // Cancel durably fences the exact parent family: no later admission or
 // queued start. It retains every custody record.
-func (s *Service) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
+func (s *Service) Cancel(ctx context.Context, b engine.ChildRunBinding) (err error) {
+	defer func() { err = classify(err) }()
 	if err := s.configured(); err != nil {
 		return err
 	}
