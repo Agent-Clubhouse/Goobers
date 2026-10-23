@@ -90,12 +90,17 @@ type DispatchStageInput struct {
 	// Zero retains the legacy Envelope.Attempt identity. Journal lineage stays
 	// in Envelope.Attempt/Class and is independent of this surrender/pod key.
 	PodAttempt int `json:"podAttempt,omitempty"`
+	// FanOutVisit and FanOutBranch identify a branch occurrence by its
+	// committed parallel.started or map.started receipt.
+	FanOutVisit  uint64 `json:"fanOutVisit,omitempty"`
+	FanOutBranch int    `json:"fanOutBranch,omitempty"`
 	// Class is supplied by the retry driver, independently of the pod ordinal.
 	// Omitted in legacy histories, which retain the initial-attempt default.
-	Class     journal.AttemptClass     `json:"class,omitempty"`
-	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
-	Placement PinnedPlacement          `json:"placement"`
-	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
+	Class       journal.AttemptClass       `json:"class,omitempty"`
+	Envelope    apiv1.InvocationEnvelope   `json:"envelope"`
+	ExactInputs map[string]json.RawMessage `json:"exactInputs,omitempty"`
+	Placement   PinnedPlacement            `json:"placement"`
+	Run         *apiv1.DeterministicRun    `json:"run,omitempty"`
 	// Workspace is the TASK-level declaration, which is the only place an
 	// agentic stage can express one — it carries no DeterministicRun.
 	Workspace apiv1.WorkspaceMode `json:"workspace,omitempty"`
@@ -304,7 +309,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 //   - a command that reads the instance config directory;
 //   - a command or built-in kind that needs the daemon's instance root
 //     (decision 003 ruling 3), as a journaled stage outcome.
-func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, exactInputs map[string]json.RawMessage, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
 	// Topology (b) (a GitHub or Gitea backlog for Azure DevOps code,
 	// docs/design/ado-parity-dsl-2-0.md §7.2): every task of such a run, of
 	// either type, is refused a stage pod. A stage routes backlog work and
@@ -375,8 +380,11 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
 		result, err := executeDispatchActivity(ctx, DispatchStageInput{
 			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
+			FanOutVisit:      rec.fanOutVisit(),
+			FanOutBranch:     rec.branch,
 			Class:            dispatchAttemptClass(ctx, class),
 			Envelope:         attemptEnv,
+			ExactInputs:      exactInputs,
 			Placement:        placement,
 			Run:              t.Run,
 			Workspace:        t.Workspace,
@@ -531,12 +539,22 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 	return run != nil && (executor.StageInvokesGoobersCLI(run.Command) || run.InjectRunContext)
 }
 
-func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
+func (a *Activities) validateStageDispatch(input *DispatchStageInput) error {
+	if err := applyExactInputs(&input.Envelope, input.ExactInputs); err != nil {
+		return classifySeamError(err)
+	}
 	if err := refuseSelectedRevisionDispatch(input.Envelope); err != nil {
 		return err
 	}
 	if err := validatePodAttempt(input.PodAttempt); err != nil {
 		return err
+	}
+	if (input.FanOutVisit == 0) != (input.FanOutBranch == 0) || input.FanOutBranch < 0 {
+		return temporal.NewNonRetryableApplicationError(
+			"engine: fan-out dispatch identity requires both a committed visit and positive branch",
+			FailureTypeStage,
+			nil,
+		)
 	}
 	if a.Dispatcher == nil || a.Surrenders == nil {
 		return classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
@@ -558,6 +576,30 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 	return nil
 }
 
+func newDispatchAttempt(input DispatchStageInput) dispatcher.Attempt {
+	return dispatcher.Attempt{
+		InstanceID:     input.Envelope.InstanceID,
+		RunID:          input.Envelope.RunID,
+		Gaggle:         input.Envelope.Gaggle,
+		Workflow:       input.Envelope.WorkflowID,
+		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
+		Number:         int(input.Envelope.Attempt),
+		PodAttempt:     input.PodAttempt,
+		FanOutVisit:    input.FanOutVisit,
+		FanOutBranch:   input.FanOutBranch,
+		Class:          input.Class,
+		LedgerTouching: input.Placement.LedgerTouching,
+		CPU:            input.Placement.CPU,
+		Memory:         input.Placement.Memory,
+		Disk:           input.Placement.Disk,
+		Restrictions:   input.Placement.Restrictions,
+		// The workflow stamps the actual driver id; activity identity is not
+		// the run workflow and cannot safely replace it.
+		OwningWorkflowID:   input.OwningWorkflowID,
+		RunsOnCapabilities: input.Placement.Capabilities,
+	}
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -569,7 +611,7 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
-	if err := a.validateStageDispatch(input); err != nil {
+	if err := a.validateStageDispatch(&input); err != nil {
 		return stageActivityResult{}, err
 	}
 	ctx, custody, stopHeartbeat := dispatchCustodyContext(ctx, input)
@@ -602,29 +644,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q reads the instance config directory, which a stage pod does not have (fail closed)", input.Envelope.TaskID))
 		}
 	}
-	attempt := dispatcher.Attempt{
-		InstanceID:     input.Envelope.InstanceID,
-		RunID:          input.Envelope.RunID,
-		Gaggle:         input.Envelope.Gaggle,
-		Workflow:       input.Envelope.WorkflowID,
-		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
-		Number:         int(input.Envelope.Attempt),
-		PodAttempt:     input.PodAttempt,
-		Class:          input.Class,
-		LedgerTouching: input.Placement.LedgerTouching,
-		CPU:            input.Placement.CPU,
-		Memory:         input.Placement.Memory,
-		Disk:           input.Placement.Disk,
-		Restrictions:   input.Placement.Restrictions,
-		// The driver the orphan sweep must describe. Taken from the input the
-		// WORKFLOW stamped, never from activity.GetInfo: this activity is also
-		// invoked directly in tests, and a stamp the workflow owns is the same
-		// value on the first attempt and on every activity retry.
-		OwningWorkflowID: input.OwningWorkflowID,
-		// The runner-capability requirement, for the Windows identity stamp
-		// (#3619) — distinct from the credential Capabilities set below.
-		RunsOnCapabilities: input.Placement.Capabilities,
-	}
+	attempt := newDispatchAttempt(input)
 	stampDeterministicRun(&attempt, input.Run)
 	attempt.ArtifactPublication = input.Envelope.ArtifactPublication
 	// Declared credential capabilities travel as NAMES; the pod resolves them

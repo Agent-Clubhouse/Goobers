@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runsemantics"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -24,12 +25,27 @@ type staticWalkSession struct {
 	completeness  []journal.BranchOutcome
 	parallel      string
 	branches      map[string]runsemantics.BranchInputSource
+	mapJoin       *staticMapJoin
+}
+
+type staticMapJoin struct {
+	completeness     []journal.BranchOutcome
+	results          []runner.MapItemResult
+	rosterIntegrity  apiv1.Integrity
+	resultsIntegrity apiv1.Integrity
 }
 
 type staticBranchOutcome struct {
 	index int
 	frame *branchWalkFrame
 	err   error
+}
+
+func (r *runJournal) fanOutVisit() uint64 {
+	if r.branchWalk == nil {
+		return 0
+	}
+	return r.branchWalk.started.Seq
 }
 
 // Only the root coroutine owns this queue and settles outcomes. Branch bodies
@@ -51,8 +67,14 @@ type staticParallelWalk struct {
 }
 
 func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Machine, state string, seed *branchWalkFrame) (string, bool, error) {
+	if r.staticWalk == nil {
+		return "", false, nil
+	}
+	if mapped, ok := m.Map(state); ok {
+		return r.staticMap(ctx, in, m, mapped, seed)
+	}
 	p, ok := m.Parallel(state)
-	if r.staticWalk == nil || !ok {
+	if !ok {
 		return "", false, nil
 	}
 	repeatable := workflow.GetVersion(ctx, staticParallelVisitsVersion, workflow.DefaultVersion, 1) != workflow.DefaultVersion
@@ -75,6 +97,8 @@ func (r *runJournal) staticParallel(ctx workflow.Context, in RunInput, m *wf.Mac
 	if r.staticWalk.seen == nil {
 		r.staticWalk.seen = map[string]bool{}
 	}
+	r.staticWalk.join, r.staticWalk.completeness, r.staticWalk.mapJoin = "", nil, nil
+	r.staticWalk.parallel, r.staticWalk.branches = "", nil
 	r.staticWalk.seen[state] = true
 	plan, err := r.selectiveFanOutPlan(ctx, in, m, p)
 	if err != nil {
@@ -153,7 +177,8 @@ func (p *staticParallelWalk) launch() {
 	if p.spec.BranchTimeoutSeconds > 0 {
 		frame.deadline = workflow.Now(p.ctx).Add(time.Duration(p.spec.BranchTimeoutSeconds) * time.Second)
 	}
-	rec := &runJournal{owner: p.root.owner, branch: i + 1, branchWalk: &frame, stepBudget: p.root.stepBudget, machine: p.machine, live: true, proj: p.root.proj, branchRef: p.root.branchRef}
+	rec := &runJournal{owner: p.root.owner, branch: i + 1, branchWalk: &frame, stepBudget: p.root.stepBudget,
+		taskDispatches: p.root.taskDispatches, machine: p.machine, live: true, proj: p.root.proj, branchRef: p.root.branchRef}
 	rec.proj.Ops = nil
 	p.next++
 	p.active++
@@ -249,8 +274,26 @@ func (p *staticParallelWalk) target() string {
 
 func (r *runJournal) staticJoinInputs(stage string, inputs map[string]any) {
 	if s := r.staticWalk; s != nil && s.join == stage {
+		if s.mapJoin != nil {
+			inputs[runsemantics.MapCompletenessInput] = s.mapJoin.completeness
+			inputs[runsemantics.MapResultsInput] = s.mapJoin.results
+			return
+		}
 		inputs[runsemantics.BranchCompletenessInput] = s.completeness
 	}
+}
+
+func (r *runJournal) staticJoinGrades(stage string, grades map[string]apiv1.Integrity) map[string]apiv1.Integrity {
+	s := r.staticWalk
+	if s == nil || s.join != stage || s.mapJoin == nil {
+		return grades
+	}
+	if grades == nil {
+		grades = make(map[string]apiv1.Integrity, 2)
+	}
+	grades[runsemantics.MapCompletenessInput] = s.mapJoin.rosterIntegrity
+	grades[runsemantics.MapResultsInput] = s.mapJoin.resultsIntegrity
+	return grades
 }
 
 // The old scalar resolver can treat dotted strings as literal output keys.

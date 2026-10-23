@@ -417,7 +417,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
 	// Physical task dispatches never reset when the graph revisits a task.
-	taskDispatches := map[string]int{}
+	taskDispatches := rec.taskDispatches
+	if taskDispatches == nil {
+		taskDispatches = map[string]int{}
+		rec.taskDispatches = taskDispatches
+	}
 	// evaluatedGates names every gate that has recorded a verdict on this
 	// walk. A gate named in a downstream stage's contextFrom delivers that
 	// verdict as context, so the #2736 no-work check must count it as
@@ -945,6 +949,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	}
 	inputGrades := rec.taskInputGrades(t, machine, upstreamResult, completed, qualifiedInputs)
 	inputGrades = bindings.addGrades(inputGrades)
+	inputGrades = rec.staticJoinGrades(t.Name, inputGrades)
 	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
 	if integrityErr == nil {
 		integrityErr = apiv1.ValidateResolvedInputIntegrity(inputGrades, env.MinimumIntegrity)
@@ -991,7 +996,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// claimed PR's head — must have every later stage checked out THERE.
 		// Without it the pod derived the run branch from workflow+runID and
 		// remediated a branch nobody was reviewing.
-		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
+		return dispatchRemoteTask(ctx, in, t, rec, env, bindings.Exact, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
 	if in.SelfExecutionDenied {
 		return runsemantics.SelfExecutionBlockedResult(t.Name), nil
@@ -1011,7 +1016,13 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
+			activityName := ActInvokeGoober
+			args := []any{attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout}
+			if len(bindings.Exact) > 0 {
+				activityName = ActInvokeGooberExact
+				args = append(args, bindings.Exact)
+			}
+			err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
 			result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 			return result, err
 		}, deltaOut)
@@ -1038,7 +1049,13 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
+		activityName := ActRunDeterministic
+		args := []any{attemptEnv, run, workspaceBranch, workspaceDelta}
+		if len(bindings.Exact) > 0 {
+			activityName = ActRunDeterministicExact
+			args = append(args, bindings.Exact)
+		}
+		err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
 		result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)

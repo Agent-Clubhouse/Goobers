@@ -156,14 +156,15 @@ type runJournal struct {
 	children     *childFamily
 	receipts     map[string]livejournal.AppendReceipt
 
-	owner         *journalCommitOwner
-	branch        int
-	branchWalk    *branchWalkFrame
-	staticWalk    *staticWalkSession
-	stepBudget    *walkStepBudget
-	proj          JournalProjection
-	machine       *wf.Machine
-	terminalCause *journal.TerminalCause
+	owner          *journalCommitOwner
+	branch         int
+	branchWalk     *branchWalkFrame
+	staticWalk     *staticWalkSession
+	stepBudget     *walkStepBudget
+	taskDispatches map[string]int
+	proj           JournalProjection
+	machine        *wf.Machine
+	terminalCause  *journal.TerminalCause
 
 	usesRepo       bool
 	branchRecorded bool

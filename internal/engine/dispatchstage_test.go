@@ -214,6 +214,36 @@ func TestDispatchStageRejectsInvalidUsageAllowance(t *testing.T) {
 	}
 }
 
+func TestDispatchStageCarriesCommittedFanOutIdentity(t *testing.T) {
+	store := surrenderStore(t)
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "win-ci", Pod: "map-item", Phase: corev1.PodSucceeded,
+		SurrenderConfirmed: true, Disposed: true,
+	}}
+	input := dispatchInput("map-run", "mapped", 1)
+	input.PodAttempt, input.FanOutVisit, input.FanOutBranch = 9, 57, 3
+	input.Envelope.Inputs = map[string]any{"item": map[string]any{"number": float64(9007199254740992)}}
+	input.ExactInputs = map[string]json.RawMessage{
+		"item": json.RawMessage(`{"number":9007199254740993}`),
+	}
+	putSurrendered(t, store, "map-run", "mapped", 9, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	acts := &Activities{Dispatcher: fake, Surrenders: store}
+	if _, err := acts.DispatchStage(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	attempts, _ := fake.recorded()
+	if len(attempts) != 1 || attempts[0].PodAttempt != 9 ||
+		attempts[0].FanOutVisit != 57 || attempts[0].FanOutBranch != 3 {
+		t.Fatalf("dispatcher attempts = %+v", attempts)
+	}
+	number, ok := attempts[0].Envelope.Inputs["item"].(map[string]any)["number"].(json.Number)
+	if !ok || number.String() != "9007199254740993" {
+		t.Fatalf("remote exact map input = %#v", attempts[0].Envelope.Inputs["item"])
+	}
+}
+
 // ErrStageFailed arrives with surrender confirmed, so the pod's own
 // ResultFailure envelope is the business outcome — envelope, not error —
 // with parity to the local executor's failure handling.

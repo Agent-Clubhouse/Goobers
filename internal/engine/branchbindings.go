@@ -25,6 +25,7 @@ type fanOutBindingContext struct {
 type fanOutBindings struct {
 	Values map[string]any
 	Grades map[string]apiv1.Integrity
+	Exact  map[string]json.RawMessage
 }
 
 func (r *runJournal) branchBindings(stage string) (fanOutBindings, error) {
@@ -60,6 +61,7 @@ func (r *runJournal) branchBindings(stage string) (fanOutBindings, error) {
 		return fanOutBindings{}, err
 	}
 	bound.Grades = maps.Clone(bound.Grades)
+	bound.Exact = maps.Clone(bound.Exact)
 	return bound, nil
 }
 

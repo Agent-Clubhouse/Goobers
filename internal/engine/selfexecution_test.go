@@ -65,7 +65,8 @@ func TestSelfExecutionDeniedFullDispatchedLifecycle(t *testing.T) {
 
 func TestSelfExecutionDeniedDispatchBoundary(t *testing.T) {
 	acts := &Activities{Dispatcher: &fakeStageDispatcher{}, Surrenders: surrenderStore(t), AdmitSelfExecution: func(stage string) error { return &runsemantics.SelfExecutionRefusal{Stage: stage} }}
-	err := acts.validateStageDispatch(DispatchStageInput{Envelope: apiv1.InvocationEnvelope{TaskID: "run:work"}, Placement: PinnedPlacement{Self: true}})
+	input := DispatchStageInput{Envelope: apiv1.InvocationEnvelope{TaskID: "run:work"}, Placement: PinnedPlacement{Self: true}}
+	err := acts.validateStageDispatch(&input)
 	if !isTestSelfExecutionDenied(err) {
 		t.Fatalf("dispatch self selection lost policy classification: %v", err)
 	}
