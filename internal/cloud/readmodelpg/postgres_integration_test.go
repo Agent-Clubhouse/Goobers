@@ -20,7 +20,9 @@ import (
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/cloud/readmodelpg"
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/conformance"
@@ -47,34 +49,72 @@ func (f testFence) WithFence(
 }
 
 func TestPostgresConformance(t *testing.T) {
-	pool := testPool(t)
-	applyMigrations(t, pool)
-	resetReadmodel(t, pool)
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	pool := controllerPool(t, admin)
 	var version atomic.Int64
 	version.Store(1)
 	conformance.Run(t, func(t *testing.T) readmodel.Backend {
 		current := int(version.Add(1))
 		fence := testFence{pool: pool, epoch: int64(current)}
-		builder, err := readmodelpg.NewBuilder(pool, fence)
+		builder, err := readmodelpg.NewBuilder(
+			admin, testFence{pool: admin, epoch: int64(current)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := builder.CreateEmptyVersion(t.Context(), current); err != nil {
 			t.Fatal(err)
 		}
-		activateVersion(t, pool, current, int64(current))
+		reconcileReadmodelGrants(t, admin)
+		activateVersion(t, admin, current, int64(current))
 		store, err := readmodelpg.NewVersion(t.Context(), pool, current, fence)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
 			schema := pgx.Identifier{fmt.Sprintf("readmodel_v%d", current)}.Sanitize()
-			if _, err := pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
+			if _, err := admin.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
 				t.Errorf("drop test schema: %v", err)
 			}
 		})
 		return store
 	})
+}
+
+func TestChangeFeedAsControllerRole(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	controller := controllerPool(t, admin)
+	store, err := readmodelpg.New(
+		t.Context(), controller, testFence{pool: controller, epoch: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := store.ChangeFeed(), store.ChangeFeed()
+	if first != second {
+		t.Fatalf("ChangeFeed identity changed: %p != %p", first, second)
+	}
+	state, err := store.State(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishDefinitionsChanged(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	position, err := first.Since(t.Context(), readmodel.Cursor{
+		SchemaVersion: state.SchemaVersion,
+		Epoch:         state.Epoch,
+		Seq:           state.MinChangeSeq,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(position.Changes) != 1 ||
+		position.Changes[0].Kind != readmodel.ChangeDefinitionsChanged {
+		t.Fatalf("definitions changes = %+v", position.Changes)
+	}
 }
 
 func TestRetiredWriterRejectsPostFlipWrite(t *testing.T) {
@@ -451,9 +491,10 @@ func TestRebuildFlipIsAtomic(t *testing.T) {
 }
 
 func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
-	pool := testPool(t)
-	applyMigrations(t, pool)
-	resetReadmodel(t, pool)
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	pool := controllerPool(t, admin)
 	fence := testFence{pool: pool, epoch: 7}
 	source, err := readmodelpg.New(t.Context(), pool, fence)
 	if err != nil {
@@ -462,10 +503,12 @@ func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
 	if err := source.UpsertRun(t.Context(), testProjection("baseline", 1)); err != nil {
 		t.Fatal(err)
 	}
-	builder, _ := readmodelpg.NewBuilder(pool, fence)
+	builder, _ := readmodelpg.NewBuilder(
+		admin, testFence{pool: admin, epoch: 7})
 	if err := builder.Build(t.Context(), "readmodel_v2"); err != nil {
 		t.Fatal(err)
 	}
+	reconcileReadmodelGrants(t, admin)
 	if err := builder.Flip(t.Context(), "readmodel", 2); err != nil {
 		t.Fatal(err)
 	}
@@ -489,12 +532,31 @@ func TestRebuildPreservesSafeFeedFloor(t *testing.T) {
 		t.Fatalf("rebuilt feed: latest=%d floor=%d changes=%v, want 1/2/empty",
 			latest, state.MinChangeSeq, changes)
 	}
+	head, err := active.ChangeFeed().Head(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Seq != state.MinChangeSeq-1 {
+		t.Fatalf("rebuilt head seq = %d, want floor-1 = %d",
+			head.Seq, state.MinChangeSeq-1)
+	}
 	condition := readmodel.EvaluateCursor(readmodel.Cursor{
 		SchemaVersion: state.SchemaVersion, Epoch: state.Epoch, Seq: latest,
 	}, state)
-	if condition != readmodel.CursorFeedTruncated {
-		t.Fatalf("resume at discarded baseline = %q, want %q",
-			condition, readmodel.CursorFeedTruncated)
+	if condition != readmodel.CursorOK {
+		t.Fatalf("resume immediately before floor = %q, want %q",
+			condition, readmodel.CursorOK)
+	}
+	if err := active.PublishDefinitionsChanged(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	position, err := active.ChangeFeed().Since(t.Context(), head, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(position.Changes) != 1 ||
+		position.Changes[0].Kind != readmodel.ChangeDefinitionsChanged {
+		t.Fatalf("first post-flip change = %+v", position.Changes)
 	}
 }
 
@@ -536,11 +598,48 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if databaseURL == "" {
 		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
 	}
+	// A private database per test: migrate's grant reconcile spans every
+	// schema in the database, so tests must not share one.
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "readmodelpg_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	identifier := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.Exec(t.Context(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+identifier); err != nil {
+		t.Fatal(err)
+	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	config.ConnConfig.Database = name
 	config.MaxConns = cloudlease.MaxFencedConnections
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
+		admin.Close()
+	})
+	return pool
+}
+
+func controllerPool(t *testing.T, admin *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := admin.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -549,12 +648,32 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+func reconcileReadmodelGrants(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(t.Context()) }()
+	if err := cloudschema.ReconcileGrants(t.Context(), tx, inventory); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func applyMigrations(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	catalog, err := migrate.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
+	pgtest.EnsureRoles(t, pool)
 	runner := migrate.Runner{
 		Direct: pool, Catalog: catalog, BackupRef: "readmodel-integration-pitr",
 		InstanceID: "readmodel-migration", Holder: "readmodel-migration",

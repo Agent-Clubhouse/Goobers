@@ -16,7 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/usageallowance"
 )
 
@@ -436,6 +436,9 @@ type Attempt struct {
 	// surrendered stdout instead of its result file, which silently changed
 	// gate outcomes rather than failing (Goobers#3699 v1 cut).
 	Inputs map[string]string
+	// Outbox is the runner-owned set of workspace-relative paths the pod
+	// supervisor exports after execution. It is never stage-authored env.
+	Outbox []string
 
 	// CheckoutCapability is the capability the pod may mint solely to provision
 	// a repo workspace (#3770) — never exported to the stage's environment.
@@ -812,6 +815,9 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
+	// PodCreateAttempted distinguishes a refusal before the Kubernetes create
+	// call from an ambiguous create outcome that may already be executing.
+	PodCreateAttempted bool
 	// ChildPodUID is the API-created object identity, never a name-derived ID.
 	ChildPodUID string
 	// ChildCreateAttempted distinguishes a preflight refusal from an uncertain
@@ -911,8 +917,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 	report := Report{Runner: selected.Name, QueuedAt: d.now().UTC()}
-	report.Build = os.Getenv(runner.EnvPlacementBuild)
-	report.Worker = os.Getenv(runner.EnvPlacementWorker)
+	report.Build = os.Getenv(runsemantics.EnvPlacementBuild)
+	report.Worker = os.Getenv(runsemantics.EnvPlacementWorker)
 
 	if selected.HostKind == instance.RunnerHostSelf {
 		// host: self — the local execution path (fresh worktree per attempt,

@@ -246,6 +246,67 @@ func waiterCount(feed *ChangeFeed) int {
 	return len(feed.waiters)
 }
 
+type feedManualWakeup struct{ channel chan struct{} }
+
+func (w feedManualWakeup) Subscribe() (<-chan struct{}, func()) {
+	return w.channel, func() {}
+}
+
+type feedBarrierStore struct {
+	*Store
+	firstRead chan struct{}
+	once      sync.Once
+}
+
+func (s *feedBarrierStore) Changes(
+	ctx context.Context,
+	after uint64,
+	limit int,
+) ([]Change, error) {
+	changes, err := s.Store.Changes(ctx, after, limit)
+	s.once.Do(func() { close(s.firstRead) })
+	return changes, err
+}
+
+func TestFeedPruneWhileWaitingReturnsTruncated(t *testing.T) {
+	store := openTestStore(t)
+	firstRead := make(chan struct{})
+	wakeup := feedManualWakeup{channel: make(chan struct{})}
+	feed := NewFeedWithWakeup(&feedBarrierStore{
+		Store: store, firstRead: firstRead,
+	}, wakeup)
+	head, err := feed.Head(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		page FeedPosition
+		err  error
+	}
+	done := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	go func() {
+		page, err := feed.Since(ctx, head, 10)
+		done <- result{page: page, err: err}
+	}()
+	<-firstRead
+	for index := range 4 {
+		seedChange(t, store, 100+index)
+	}
+	if _, err := store.PruneChanges(t.Context(), head.Seq+3); err != nil {
+		t.Fatal(err)
+	}
+	close(wakeup.channel)
+	got := <-done
+	var cursorErr *CursorError
+	if !errors.As(got.err, &cursorErr) ||
+		cursorErr.Condition != CursorFeedTruncated {
+		t.Fatalf("Since after prune = page %+v err %v, want feed_truncated",
+			got.page, got.err)
+	}
+}
+
 // TestFeedDoesNotRetainWaitersOnEveryExit pins that a subscription which leaves
 // without being notified takes its waiter with it.
 //

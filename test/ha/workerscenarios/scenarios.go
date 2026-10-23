@@ -21,6 +21,8 @@ type SideEffectObservation struct {
 	RunID           string
 	Attempt         int
 	StagePod        string
+	StagePodUID     string
+	OwnerWorker     string
 	Adopted         bool
 	ChargedAttempts int
 	Terminal        bool
@@ -57,7 +59,9 @@ func RunCHAOS13(ctx context.Context, fixture Fixture) error {
 	if err != nil {
 		return err
 	}
-	if before.RunID == "" || before.Attempt < 1 || before.StagePod == "" {
+	if before.RunID == "" || before.Attempt < 1 || before.StagePod == "" ||
+		before.StagePodUID == "" || before.OwnerWorker == "" ||
+		before.ChargedAttempts < 1 {
 		return fmt.Errorf("CHAOS-13: incomplete initial observation: %+v", before)
 	}
 	if err := fixture.EvictOwningWorker(ctx, before); err != nil {
@@ -70,9 +74,12 @@ func RunCHAOS13(ctx context.Context, fixture Fixture) error {
 	switch {
 	case !after.Adopted:
 		return fmt.Errorf("CHAOS-13: stage was not adopted: %+v", after)
-	case after.StagePod != before.StagePod:
-		return fmt.Errorf("CHAOS-13: second stage pod %q replaced %q",
-			after.StagePod, before.StagePod)
+	case after.StagePodUID == "" || after.StagePodUID != before.StagePodUID:
+		return fmt.Errorf("CHAOS-13: stage pod UID changed %q -> %q (names %q/%q)",
+			before.StagePodUID, after.StagePodUID, before.StagePod, after.StagePod)
+	case after.OwnerWorker == "" || after.OwnerWorker == before.OwnerWorker:
+		return fmt.Errorf("CHAOS-13: owner worker did not change %q -> %q",
+			before.OwnerWorker, after.OwnerWorker)
 	case after.Attempt != before.Attempt:
 		return fmt.Errorf("CHAOS-13: attempt changed %d -> %d",
 			before.Attempt, after.Attempt)

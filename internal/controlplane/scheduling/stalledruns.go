@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -346,11 +347,11 @@ func (s StallServices) Sweep(
 			}
 			if log != nil && !liveOwner {
 				terminalPhase := journal.PhaseEscalated
-				errorCode := runner.RunStalledErrorCode
+				errorCode := runsemantics.RunStalledErrorCode
 				message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
 				if durationExceeded {
 					terminalPhase = journal.PhaseAborted
-					errorCode = runner.RunDurationExceededErrorCode
+					errorCode = runsemantics.RunDurationExceededErrorCode
 					message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
 				}
 				appendErr := log.Append(journal.Event{

@@ -986,11 +986,7 @@ func withRuntimeSupport(features []Feature) []Feature {
 	for i := range features {
 		engineLevel := RuntimeSupported
 		switch features[i].ID {
-		case featureWorkflowParallels,
-			featureTaskLimitMaxTokens,
-			featureTaskLimitMaxCostUSD,
-			featureEvaluatorHuman,
-			featureTaskOutbox:
+		case featureWorkflowParallels:
 			engineLevel = RuntimeUnsupported
 		}
 		features[i].Runtimes = []RuntimeSupport{

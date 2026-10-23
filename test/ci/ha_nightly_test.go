@@ -74,13 +74,36 @@ func TestHANightlyDeclaresRequiredTopologyAndOperations(t *testing.T) {
 		"calico.yaml",
 		"instances: 3",
 		"temporal.tgz",
+		"temporal-0.67.0.tgz",
+		"temporal-0.73.2.tgz",
+		"temporal-0.74.0.tgz",
+		"temporal-1.6.0.tgz",
 		"toxiproxy-server",
 		`"kind", "load", "docker-image", "goobers:ha-nightly"`,
 		`"kubectl", "apply", "-k", "test/ha/kind/reference"`,
+		`run", "./test/ha/temporalprobe"`,
+		`Test(E2|E4|E11)WalkHistoryReplays$`,
+		"1.27.4@sha256:",
+		"1.28.4@sha256:",
+		"1.29.7@sha256:",
+		"1.30.8@sha256:",
 		"Benchmarks: not yet registered; future benchmark values are reported, never asserted",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("HA nightly environment is missing %q", want)
+		}
+	}
+}
+
+func TestHANightlyReportsPostgresJournalThroughput(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "workflows", "ha-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := workflowJob(string(data), "journal-throughput")
+	for _, want := range []string{"postgres:16@sha256:", "BenchmarkPostgresJournalAppend", "-tags=cloudintegration", "GITHUB_STEP_SUMMARY", "Upload journal throughput", "actions/upload-artifact@"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("nightly journal report missing %q", want)
 		}
 	}
 }

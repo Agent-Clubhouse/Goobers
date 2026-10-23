@@ -53,10 +53,12 @@ type RunStatus struct {
 
 // BlobRecord describes a content-addressed artifact write and its journal event.
 type BlobRecord struct {
-	Event    Event
-	Data     []byte
-	MaxBytes int
-	Expected *Ref
+	Event            Event
+	Data             []byte
+	MaxBytes         int
+	Expected         *Ref
+	OutboxRelPath    string
+	OutboxOccurrence uint64
 }
 
 // SpanRecord describes a recorded span blob.
@@ -248,6 +250,15 @@ func (b *fileBackend) RecordBlob(_ context.Context, handle RunHandle, owner Owne
 
 	if record.Event.Integrity == "" {
 		return Ref{}, errors.New("journal: blob integrity is required")
+	}
+	if record.OutboxRelPath != "" || record.OutboxOccurrence != 0 {
+		if record.Expected == nil {
+			return Ref{}, errors.New("journal: outbox blob requires an expected reference")
+		}
+		return run.RecordBranchExpectedOutboxFileAnnotated(
+			record.Event.Branch, record.Event.Stage, record.Event.Attempt, record.Event.AttemptClass,
+			record.OutboxOccurrence, record.OutboxRelPath, record.Data, *record.Expected, record.Event.Runner,
+		)
 	}
 	if record.Event.Stage == "" && record.Event.Branch == 0 {
 		record.Event.Attempt = 0

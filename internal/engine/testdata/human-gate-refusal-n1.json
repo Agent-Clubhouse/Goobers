@@ -1,0 +1,105 @@
+{
+  "events":  [
+    {
+      "eventId":  "1",
+      "eventTime":  "2026-10-23T08:12:45.602339Z",
+      "eventType":  "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "taskId":  "1048587",
+      "workflowExecutionStartedEventAttributes":  {
+        "workflowType":  {
+          "name":  "Run"
+        },
+        "taskQueue":  {
+          "name":  "human-n1",
+          "kind":  "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input":  {
+          "payloads":  [
+            {
+              "metadata":  {
+                "encoding":  "anNvbi9wbGFpbg=="
+              },
+              "data":  "eyJydW5JZCI6InJ1bi1odW1hbi1uMSIsImdhZ2dsZSI6IndlYiIsIndvcmtmbG93TmFtZSI6Imh1bWFuLW4xIiwidmVyc2lvbiI6MSwid29ya2Zsb3dEaWdlc3QiOiIiLCJwcmV2aWV3RmVhdHVyZXNFbmFibGVkIjp0cnVlLCJzcGVjIjp7ImdhZ2dsZSI6IndlYiIsInRyaWdnZXJzIjpbeyJ0eXBlIjoiYmFja2xvZy1pdGVtIn1dLCJyZWFkaW5lc3MiOnt9LCJzdGFydCI6InByZXBhcmUiLCJ0YXNrcyI6W3sibmFtZSI6InByZXBhcmUiLCJ0eXBlIjoiZGV0ZXJtaW5pc3RpYyIsImdvYWwiOiJwcmVwYXJlIiwicnVuIjp7ImNvbW1hbmQiOlsidHJ1ZSJdLCJ3b3Jrc3BhY2UiOiJzY3JhdGNoIn0sIm5leHQiOiJhcHByb3ZlIn1dLCJnYXRlcyI6W3sibmFtZSI6ImFwcHJvdmUiLCJldmFsdWF0b3IiOiJodW1hbiIsImh1bWFuIjp7fSwiYnJhbmNoZXMiOnsicGFzcyI6IiIsInJlamVjdCI6IkBhYm9ydCJ9fV19LCJyZXBvUmVmIjp7InByb3ZpZGVyIjoiZ2l0aHViIiwib3duZXIiOiJhY21lIiwibmFtZSI6IndlYiJ9LCJydW5Db250cm9scyI6e30sImxpdmVKb3VybmFsIjp0cnVlLCJoaXRsIjp7ImVuYWJsZWQiOnRydWV9fQ=="
+            }
+          ]
+        },
+        "workflowExecutionTimeout":  "0s",
+        "workflowRunTimeout":  "0s",
+        "workflowTaskTimeout":  "10s",
+        "originalExecutionRunId":  "01a167d1-cea2-7528-be8d-1ff008c34560",
+        "identity":  "fixture-client",
+        "firstExecutionRunId":  "01a167d1-cea2-7528-be8d-1ff008c34560",
+        "attempt":  1,
+        "firstWorkflowTaskBackoff":  "0s",
+        "header":  {},
+        "workflowId":  "human-gate-n1"
+      }
+    },
+    {
+      "eventId":  "2",
+      "eventTime":  "2026-10-23T08:12:45.602378Z",
+      "eventType":  "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId":  "1048588",
+      "workflowTaskScheduledEventAttributes":  {
+        "taskQueue":  {
+          "name":  "human-n1",
+          "kind":  "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout":  "10s",
+        "attempt":  1
+      }
+    },
+    {
+      "eventId":  "3",
+      "eventTime":  "2026-10-23T08:12:45.603778Z",
+      "eventType":  "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId":  "1048593",
+      "workflowTaskStartedEventAttributes":  {
+        "scheduledEventId":  "2",
+        "identity":  "fixture-worker",
+        "requestId":  "d4f3076c-18ae-46a9-aeb6-c3c61ee3ac3a",
+        "historySizeBytes":  "854",
+        "workerVersion":  {
+          "buildId":  "a475e3c04310e440452ed1ffece3c8e3"
+        }
+      }
+    },
+    {
+      "eventId":  "4",
+      "eventTime":  "2026-10-23T08:12:45.609789Z",
+      "eventType":  "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId":  "1048597",
+      "workflowTaskCompletedEventAttributes":  {
+        "scheduledEventId":  "2",
+        "startedEventId":  "3",
+        "identity":  "fixture-worker",
+        "workerVersion":  {
+          "buildId":  "a475e3c04310e440452ed1ffece3c8e3"
+        },
+        "sdkMetadata":  {
+          "langUsedFlags":  [
+            3
+          ],
+          "sdkName":  "temporal-go",
+          "sdkVersion":  "1.49.0"
+        },
+        "meteringMetadata":  {}
+      }
+    },
+    {
+      "eventId":  "5",
+      "eventTime":  "2026-10-23T08:12:45.609836Z",
+      "eventType":  "EVENT_TYPE_WORKFLOW_EXECUTION_FAILED",
+      "taskId":  "1048598",
+      "workflowExecutionFailedEventAttributes":  {
+        "failure":  {
+          "message":  "engine: human gates require occurrence-bound Temporal signals and are not supported yet: gate \"approve\"",
+          "source":  "GoSDK",
+          "applicationFailureInfo":  {}
+        },
+        "retryState":  "RETRY_STATE_RETRY_POLICY_NOT_SET",
+        "workflowTaskCompletedEventId":  "4"
+      }
+    }
+  ]
+}

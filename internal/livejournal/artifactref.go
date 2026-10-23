@@ -60,12 +60,23 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 		if err != nil {
 			return journal.Ref{}, err
 		}
+		if a.OutboxRelPath != "" || a.OutboxOccurrence != 0 {
+			if a.OutboxRelPath == "" || a.OutboxOccurrence == 0 || a.Stage == "" || a.Attempt < 1 {
+				return journal.Ref{}, errors.New("outbox artifact op has incomplete identity")
+			}
+		}
 		if run.adopted {
+			if a.OutboxRelPath != "" {
+				return run.jr.RecordBranchExpectedOutboxFileAnnotated(
+					requestBranch(ctx), a.Stage, a.Attempt, a.Class,
+					a.OutboxOccurrence, a.OutboxRelPath, data, *a.Ref, meta,
+				)
+			}
 			return run.jr.RecordBranchExpectedArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
 		}
 		return w.backend.RecordBlob(ctx, run.handle, run.owner, journal.BlobRecord{
 			Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: requestBranch(ctx), Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity, Runner: meta},
-			Data:  data, Expected: a.Ref,
+			Data:  data, Expected: a.Ref, OutboxRelPath: a.OutboxRelPath, OutboxOccurrence: a.OutboxOccurrence,
 		})
 	}
 	if !run.adopted {
@@ -73,6 +84,9 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 			Event: journal.Event{Type: journal.EventArtifactRecorded, Branch: requestBranch(ctx), Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class, Name: a.Name, Integrity: integrity, Runner: meta},
 			Data:  a.Data,
 		})
+	}
+	if a.OutboxRelPath != "" || a.OutboxOccurrence != 0 {
+		return journal.Ref{}, errors.New("outbox artifact op requires a blob reference")
 	}
 	if a.Stage != "" || requestBranch(ctx) != 0 {
 		return run.jr.RecordBranchStageArtifactAnnotated(requestBranch(ctx), a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
@@ -89,8 +103,12 @@ func (w *Writer) fetchArtifact(ctx context.Context, a *ArtifactOp, integrity api
 	if err != nil || path != ref.Path || strings.ToLower(ref.Digest) != ref.Digest {
 		return nil, errors.New("artifact op has an invalid content-addressed ref")
 	}
-	if ref.Size < 0 || ref.Size > MaxArtifactRefBytes {
-		return nil, fmt.Errorf("artifact ref size %d is outside 0..%d", ref.Size, MaxArtifactRefBytes)
+	maxBytes := MaxArtifactRefBytes
+	if a.OutboxRelPath != "" && a.OutboxOccurrence > 0 {
+		maxBytes = journal.MaxOutboxBytesPerAttempt
+	}
+	if ref.Size < 0 || ref.Size > maxBytes {
+		return nil, fmt.Errorf("artifact ref size %d is outside 0..%d", ref.Size, maxBytes)
 	}
 	if !integrity.Valid() || (ref.Integrity != "" && ref.Integrity != integrity) {
 		return nil, errors.New("artifact ref has invalid or conflicting integrity")

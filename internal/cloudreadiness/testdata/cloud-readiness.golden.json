@@ -4,16 +4,13 @@
   "cloudReady": false,
   "summary": {
     "blockedWorkflows": 2,
-    "totalBlockers": 12,
+    "totalBlockers": 8,
     "configFixes": 4,
-    "waitingOnP4": 8,
+    "waitingOnP4": 4,
     "p4Issues": [
       7753,
       7755,
       7758,
-      7760,
-      7761,
-      7762,
       7763
     ]
   },
@@ -76,58 +73,6 @@
           }
         },
         {
-          "code": "RUNTIME001",
-          "feature": "task.outbox",
-          "stage": "agent",
-          "path": "/spec/tasks/0/outbox",
-          "message": "engine does not support task.outbox",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7762",
-            "issue": 7762,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7762"
-          }
-        },
-        {
-          "code": "RUNTIME001",
-          "feature": "gate.evaluator.human",
-          "stage": "approval",
-          "path": "/spec/gates/0/evaluator",
-          "message": "engine does not support gate.evaluator.human",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7760",
-            "issue": 7760,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7760"
-          }
-        },
-        {
-          "code": "RUNTIME001",
-          "feature": "task.limits.maxTokens",
-          "stage": "agent",
-          "path": "/spec/tasks/0/limits/maxTokens",
-          "message": "engine does not support task.limits.maxTokens",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7761",
-            "issue": 7761,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7761"
-          }
-        },
-        {
-          "code": "RUNTIME001",
-          "feature": "task.limits.maxCostUSD",
-          "stage": "agent",
-          "path": "/spec/tasks/0/limits/maxCostUSD",
-          "message": "engine does not support task.limits.maxCostUSD",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7761",
-            "issue": 7761,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7761"
-          }
-        },
-        {
           "code": "RUNTIME002",
           "stage": "agent",
           "path": "/spec/tasks/0/runsOn",
@@ -178,25 +123,6 @@
     }
   ],
   "blockers": [
-    {
-      "key": "RUNTIME001:gate.evaluator.human",
-      "code": "RUNTIME001",
-      "feature": "gate.evaluator.human",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7760",
-        "issue": 7760,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7760"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "approval",
-          "path": "/spec/gates/0/evaluator"
-        }
-      ]
-    },
     {
       "key": "RUNTIME001:spec.maps",
       "code": "RUNTIME001",
@@ -270,63 +196,6 @@
           "workflow": "all-features",
           "stage": "agent",
           "path": "/spec/tasks/0/experiment"
-        }
-      ]
-    },
-    {
-      "key": "RUNTIME001:task.limits.maxCostUSD",
-      "code": "RUNTIME001",
-      "feature": "task.limits.maxCostUSD",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7761",
-        "issue": 7761,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7761"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "agent",
-          "path": "/spec/tasks/0/limits/maxCostUSD"
-        }
-      ]
-    },
-    {
-      "key": "RUNTIME001:task.limits.maxTokens",
-      "code": "RUNTIME001",
-      "feature": "task.limits.maxTokens",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7761",
-        "issue": 7761,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7761"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "agent",
-          "path": "/spec/tasks/0/limits/maxTokens"
-        }
-      ]
-    },
-    {
-      "key": "RUNTIME001:task.outbox",
-      "code": "RUNTIME001",
-      "feature": "task.outbox",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7762",
-        "issue": 7762,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7762"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "agent",
-          "path": "/spec/tasks/0/outbox"
         }
       ]
     },

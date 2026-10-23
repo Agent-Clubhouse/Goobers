@@ -41,10 +41,28 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		}
 	}
 	run := job.step(t, "Run cloud integration smoke")
-	if !strings.Contains(run.Run, "go test -tags=integration,cloudpg,cloudintegration") ||
-		!strings.Contains(run.Run, "./internal/cloud/...") ||
+	// -p 1: the packages share cluster-wide PostgreSQL roles. The -json stream
+	// must reach cloud-pg-report, which fails the job when a cloudintegration
+	// package ran no passing test, and it is uploaded as an artifact.
+	if !strings.Contains(run.Run, "go test -p 1 ") || !strings.Contains(run.Run, "-tags=integration,cloudpg,cloudintegration") ||
+		!strings.Contains(run.Run, " -json ") || !strings.Contains(run.Run, "set -uo pipefail") ||
+		!strings.Contains(run.Run, `tee "$RUNNER_TEMP/cloud-pg-test.json"`) ||
+		!strings.Contains(run.Run, `go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1`) ||
+		!strings.Contains(run.Run, "./internal/cloud/... ./test/ha/invariants/...") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
+	}
+	upload := job.step(t, "Upload cloud integration test events")
+	if upload.If != "always()" || !strings.Contains(upload.Uses, "actions/upload-artifact@") ||
+		upload.With["path"] != "${{ runner.temp }}/cloud-pg-test.json" {
+		t.Fatalf("cloud integration events are not always uploaded: %+v", upload)
+	}
+	journal := job.step(t, "Run PostgreSQL journal conformance")
+	if !strings.Contains(journal.Run, "go test -race -tags=cloudintegration") ||
+		!strings.Contains(journal.Run, "./internal/journal") ||
+		!strings.Contains(journal.Run, "Journal.*Postgres") ||
+		journal.Env["GOOBERS_TEST_POSTGRES_URL"] == "" {
+		t.Fatalf("journal conformance is not gated against PG16: %+v", journal)
 	}
 	restart := job.step(t, "Restart Azurite with telemetry disabled")
 	if !strings.Contains(restart.Run, "--disableTelemetry --skipApiVersionCheck") ||

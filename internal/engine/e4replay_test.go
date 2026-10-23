@@ -1,32 +1,5 @@
 package engine
 
-// Replay and determinism coverage for plan items E4–E9 (#3882).
-//
-// The parity harness runs both lanes ONCE, in-process, and compares them. That
-// is the wrong instrument for the two failure modes this port is most exposed
-// to, because neither is a divergence between the lanes — both are divergences
-// between the engine and ITSELF:
-//
-//   - NON-DETERMINISM. The port adds three maps to the walk (lastDiffDigest,
-//     addenda, contextRejected) and one derived-from-history helper
-//     (projectedEvents, which the learning-episode injection and the
-//     remediation-evidence obligation both read). Reading a Go map by key is
-//     deterministic; ranging one is not. An edit that starts ranging any of
-//     them — to build a message, to grade evidence — reorders the walk's
-//     commands on replay and wedges every in-flight run.
-//   - HISTORY SKEW. A worker running this code replays histories recorded by a
-//     worker that predates it. That is the constraint that put the diff capture
-//     and both short-circuits INSIDE ReviewGoober rather than in a new activity
-//     (a new ExecuteActivity ahead of an existing one is an immediate
-//     nondeterminism error), made GateReviewResult embed apiv1.Verdict so an
-//     old bare-verdict payload decodes with every new field zero, and made
-//     InvokeGoober's new arguments TRAILING and positional so an old history's
-//     shorter argument list still decodes.
-//
-// TestE4FixturesAreDeterministic covers the first cheaply. TestE4WalkHistory
-// Replays covers both against a real dev server, which is the only place a
-// genuine replay happens.
-
 import (
 	"context"
 	"encoding/json"
@@ -37,6 +10,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Replay and determinism coverage for plan items E4–E9 (#3882).
+	//
+	// The parity harness runs both lanes ONCE, in-process, and compares them. That
+	// is the wrong instrument for the two failure modes this port is most exposed
+	// to, because neither is a divergence between the lanes — both are divergences
+	// between the engine and ITSELF:
+	//
+	//   - NON-DETERMINISM. The port adds three maps to the walk (lastDiffDigest,
+	//     addenda, contextRejected) and one derived-from-history helper
+	//     (projectedEvents, which the learning-episode injection and the
+	//     remediation-evidence obligation both read). Reading a Go map by key is
+	//     deterministic; ranging one is not. An edit that starts ranging any of
+	//     them — to build a message, to grade evidence — reorders the walk's
+	//     commands on replay and wedges every in-flight run.
+	//   - HISTORY SKEW. A worker running this code replays histories recorded by a
+	//     worker that predates it. That is the constraint that put the diff capture
+	//     and both short-circuits INSIDE ReviewGoober rather than in a new activity
+	//     (a new ExecuteActivity ahead of an existing one is an immediate
+	//     nondeterminism error), made GateReviewResult embed apiv1.Verdict so an
+	//     old bare-verdict payload decodes with every new field zero, and made
+	//     InvokeGoober's new arguments TRAILING and positional so an old history's
+	//     shorter argument list still decodes.
+	//
+	// TestE4FixturesAreDeterministic covers the first cheaply. TestE4WalkHistory
+	// Replays covers both against a real dev server, which is the only place a
+	// genuine replay happens.
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
@@ -46,7 +47,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -161,7 +161,7 @@ func e4Fixtures() []e4Fixture {
 			name: "reviewer diff evidence and repass context",
 			exercises: bothExercised(
 				requireArtifactRecorded("review/reviewer-diff.patch"),
-				requireAnnotationKind(runner.RemediationEvidenceRequiredKind),
+				requireAnnotationKind(runsemantics.RemediationEvidenceRequiredKind),
 			),
 			spec: e4ReviewSpec(),
 			script: map[string][]scriptedCall{
@@ -187,7 +187,7 @@ func e4Fixtures() []e4Fixture {
 			// status-equals gate over a failing deterministic stage — which is
 			// exactly where the local runner injects.
 			name:      "learning episode injection on the retry route",
-			exercises: requireAnnotationKind(runner.LearningEpisodeInjectedKind),
+			exercises: requireAnnotationKind(runsemantics.LearningEpisodeInjectedKind),
 			spec: fixtureSpec("build",
 				[]apiv1.Task{detTask("build", "check"), detTask("park", wf.TargetAbort)},
 				[]apiv1.Gate{statusGate("check", map[string]string{
@@ -275,7 +275,7 @@ func e4CachedVerdict(decision apiv1.VerdictDecision) map[string]interface{} {
 	if err != nil {
 		panic(fmt.Sprintf("encode cached verdict fixture: %v", err))
 	}
-	return map[string]interface{}{runner.CachedVerdictOutputKey: string(raw)}
+	return map[string]interface{}{runsemantics.CachedVerdictOutputKey: string(raw)}
 }
 
 // e4Workspaces builds the fixture's workspace fake. A gate absent from the
@@ -405,7 +405,7 @@ func implementationAnnotations(events []journal.Event) []string {
 func TestE4WalkHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+	temporalClient, stop, err := startReplayClient(ctx, t, testsuite.DevServerOptions{
 		LogLevel: "error",
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
@@ -414,11 +414,10 @@ func TestE4WalkHistoryReplays(t *testing.T) {
 		t.Fatalf("start Temporal dev server: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := server.Stop(); err != nil {
+		if err := stop(); err != nil {
 			t.Errorf("stop Temporal dev server: %v", err)
 		}
 	})
-	temporalClient := server.Client()
 
 	for i, fx := range e4Fixtures() {
 		t.Run(fx.name, func(t *testing.T) {

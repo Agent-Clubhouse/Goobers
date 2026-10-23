@@ -42,22 +42,20 @@ func TestCloudReadinessKeepsUnmappedEngineRefusal(t *testing.T) {
 	t.Fatalf("unmapped engine refusal disappeared: %+v", result)
 }
 
-func TestSelfPinnedAgenticLimitsStillReportP4Blockers(t *testing.T) {
+func TestTrustedRemoteUsageLimitsAreCloudReady(t *testing.T) {
 	set := blockerFixture()
-	result := Assess(&instance.Config{}, set)
+	result := Assess(readinessRemoteConfig(), set)
 	features := map[string]bool{}
-	var placement bool
 	for _, assessed := range result.Workflows {
 		if assessed.Name != "all-features" {
 			continue
 		}
 		for _, blocker := range assessed.Blockers {
 			features[blocker.Feature] = true
-			placement = placement || blocker.Code == CodePlacement
 		}
 	}
-	if !placement || !features["task.limits.maxTokens"] || !features["task.limits.maxCostUSD"] {
-		t.Fatalf("self placement hid future cloud limit refusals: %+v", result)
+	if features["task.limits.maxTokens"] || features["task.limits.maxCostUSD"] {
+		t.Fatalf("trusted remote usage limits remain blocked: %+v", result)
 	}
 }
 
@@ -119,17 +117,20 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 	}
 	for _, feature := range []string{
 		"spec.parallels", "spec.maps",
-		"task.childWorkflows", "gate.evaluator.human",
-		"task.limits.maxTokens", "task.limits.maxCostUSD",
-		"task.outbox", "task.experiment",
+		"task.childWorkflows",
+		"task.experiment",
 	} {
 		if !features[feature] {
 			t.Errorf("missing engine feature blocker %s", feature)
 		}
 	}
+	// Human gates run on the engine since #7760, so they block no cutover.
+	if features["gate.evaluator.human"] {
+		t.Error("human gates still reported as an engine blocker")
+	}
 	if result.Summary.ConfigFixes == 0 || result.Summary.WaitingOnP4 == 0 ||
-		len(result.Summary.P4Issues) != 7 {
-		t.Fatalf("summary = %+v, want config and all 7 P4 issue groups", result.Summary)
+		len(result.Summary.P4Issues) != 4 {
+		t.Fatalf("summary = %+v, want config and all 4 remaining P4 issue groups", result.Summary)
 	}
 }
 

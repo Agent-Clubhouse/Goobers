@@ -38,7 +38,7 @@ func ParentForkResults(reader *journal.Reader, plan ParentForkPlan, reference jo
 		return nil, err
 	}
 	state := states[plan.Sequence]
-	if state == nil || state.reference != reference {
+	if state == nil || state.Reference != reference {
 		return nil, errors.New("parallel result plan unavailable")
 	}
 	results := []ParentForkResult{}
@@ -127,10 +127,10 @@ func parallelForkResultRequest(reader *journal.Reader, in StartInput, parallel a
 	}
 	state := states[started.Seq]
 	branch := result.index + 1
-	if state == nil || branch <= 0 || branch > len(state.plan.Workspaces) || !state.ready[branch] || !validForkResultStatus(result.status) {
+	if state == nil || branch <= 0 || branch > len(state.Plan.Workspaces) || !state.Ready[branch] || !validForkResultStatus(result.status) {
 		return empty, nil, errors.New("invalid parallel result branch")
 	}
-	owner := state.plan.Workspaces[branch-1]
+	owner := state.Plan.Workspaces[branch-1]
 	if _, err := readParentWorkspaceState(events, in.RunID, owner.Branch); err != nil {
 		return empty, nil, err
 	}
@@ -141,11 +141,11 @@ func parallelForkResultRequest(reader *journal.Reader, in StartInput, parallel a
 	if _, waiting := projection.Waits[branch]; waiting {
 		return empty, nil, errors.New("parallel result has unresolved child custody")
 	}
-	values, err := ParentForkResults(reader, state.plan, state.reference)
+	values, err := ParentForkResults(reader, state.Plan, state.Reference)
 	if err != nil {
 		return empty, nil, err
 	}
-	request := spec.ResultRequest{Request: forkSourceRequest(in, started), Plan: state.reference, Seed: state.plan.Source, Branch: branch, Status: result.status, Custody: owner}
+	request := spec.ResultRequest{Request: forkSourceRequest(in, started), Plan: state.Reference, Seed: state.Plan.Source, Branch: branch, Status: result.status, Custody: owner}
 	for _, value := range values {
 		if value.Branch != branch {
 			continue
@@ -186,5 +186,5 @@ func (r *Runner) verifyParallelForkResults(ctx context.Context, run *journal.Run
 }
 
 func validParentForkResult(value ParentForkResult, event journal.Event, state *parentForkState) bool {
-	return value.Plan == state.reference && value.Branch > 0 && value.Branch <= len(state.plan.Workspaces) && event.Branch == value.Branch && event.Parallel == state.plan.Parallel && event.Seq > state.plannedAt && state.ready[value.Branch] && validForkResultStatus(value.Status) && value.Source.Metadata.Integrity == apiv1.IntegrityTrusted && value.Source.Bundle.Integrity == apiv1.IntegrityTrusted
+	return value.Plan == state.Reference && value.Branch > 0 && value.Branch <= len(state.Plan.Workspaces) && event.Branch == value.Branch && event.Parallel == state.Plan.Parallel && event.Seq > state.PlannedAt && state.Ready[value.Branch] && validForkResultStatus(value.Status) && value.Source.Metadata.Integrity == apiv1.IntegrityTrusted && value.Source.Bundle.Integrity == apiv1.IntegrityTrusted
 }

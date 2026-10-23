@@ -82,7 +82,9 @@ func Run(t *testing.T, newBackend Factory) {
 		{"EpochsAreOpaqueAndDistinct", epochsAreOpaqueAndDistinct},
 		{"ChangeOrderIsSerializedAndDense", changeOrderIsSerializedAndDense},
 		{"ChangeSeqIsNeverReused", changeSeqIsNeverReused},
-		{"DefinitionsChangeJoinsOrderedFeed", definitionsChange},
+		{"DefinitionsChangeOrdersAfterRun", definitionsChange},
+		{"ChangeFeedIdentityIsStable", changeFeedIdentityIsStable},
+		{"DefinitionsChangeJoinsOrderedFeed", definitionsChangeJoinsOrderedFeed},
 		{"RetentionFloorOnlyAdvances", retentionFloorOnlyAdvances},
 		{"ClosedSetIsRefusedNotAnswered", closedSetIsRefusedNotAnswered},
 		{"ClosedSetIsFullyServed", closedSetIsFullyServed},
@@ -93,6 +95,38 @@ func Run(t *testing.T, newBackend Factory) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) { testCase.run(t, newBackend) })
+	}
+}
+
+func changeFeedIdentityIsStable(t *testing.T, newBackend Factory) {
+	store := newBackend(t)
+	if first, second := store.ChangeFeed(), store.ChangeFeed(); first != second {
+		t.Fatalf("ChangeFeed identity changed: %p != %p", first, second)
+	}
+}
+
+func definitionsChangeJoinsOrderedFeed(t *testing.T, newBackend Factory) {
+	ctx := context.Background()
+	store := newBackend(t)
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishDefinitionsChanged(ctx); err != nil {
+		t.Fatal(err)
+	}
+	position, err := store.ChangeFeed().Since(ctx, readmodel.Cursor{
+		SchemaVersion: state.SchemaVersion,
+		Epoch:         state.Epoch,
+		Seq:           state.MinChangeSeq,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(position.Changes) != 1 ||
+		position.Changes[0].Kind != readmodel.ChangeDefinitionsChanged ||
+		position.Changes[0].RunID != "" {
+		t.Fatalf("definitions change = %+v", position.Changes)
 	}
 }
 

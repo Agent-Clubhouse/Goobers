@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -14,8 +15,8 @@ func TestRecoveredAcceptedWaitPreservesOriginalAccounting(t *testing.T) {
 	for _, mode := range []string{"normal", "missing-accounting", "new-owner", "terminal"} {
 		t.Run(mode, func(t *testing.T) {
 			_, run, frame := childOriginRuntime(t, &childOriginGoober{})
-			totals := newStageUsageTotals()
-			accumulateStageUsage(totals, map[string]float64{telemetry.AttrUsageCostUSD: 2})
+			totals := runsemantics.NewStageUsageTotals()
+			runsemantics.AccumulateStageUsage(totals, map[string]float64{telemetry.AttrUsageCostUSD: 2})
 			if mode == "missing-accounting" {
 				if err := frame.recordTaskStarted(1, ""); err != nil {
 					t.Fatal(err)
@@ -87,7 +88,7 @@ func TestRecoveredAcceptedWaitPreservesIndependentParallelBranches(t *testing.T)
 		frame := original
 		frame.t.Name = fmt.Sprintf("stage-%d", branch)
 		frame.jr = &branchJournal{run: run, branch: branch}
-		if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+		if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 			t.Fatal(err)
 		}
 		child := fmt.Sprintf("child-%d", branch)

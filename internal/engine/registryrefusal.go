@@ -8,11 +8,9 @@ import (
 // Keep the engine API's sentinel identity and errors.As types while sharing
 // the same fail-closed policy with child admission.
 var (
-	ErrExperimentUnsupported        = engineadmission.ErrExperimentUnsupported
-	ErrRemoteUsageLimitsUnsupported = engineadmission.ErrRemoteUsageLimitsUnsupported
-	ErrOutboxUnsupported            = engineadmission.ErrOutboxUnsupported
-	ErrParallelsUnsupported         = engineadmission.ErrParallelsUnsupported
-	ErrMapsUnsupported              = engineadmission.ErrMapsUnsupported
+	ErrExperimentUnsupported = engineadmission.ErrExperimentUnsupported
+	ErrParallelsUnsupported  = engineadmission.ErrParallelsUnsupported
+	ErrMapsUnsupported       = engineadmission.ErrMapsUnsupported
 )
 
 // UnsupportedFeatureError names a refused declaration and wraps its sentinel.
@@ -23,8 +21,4 @@ type UnsupportedFeaturesError = engineadmission.UnsupportedFeaturesError
 
 func refuseHumanGate(g apiv1.Gate) error {
 	return engineadmission.RefuseHumanGate(g)
-}
-
-func refuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []PinnedPlacement) error {
-	return engineadmission.RefuseRemoteUsage(name, spec, placements)
 }

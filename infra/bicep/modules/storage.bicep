@@ -11,9 +11,9 @@ param name string
 param tags object = {}
 
 @description('Blob soft-delete retention used as a backstop after fenced GC (must cover the database PITR window).')
-@minValue(1)
+@minValue(35)
 @maxValue(365)
-param blobSoftDeleteDays int = 30
+param blobSoftDeleteDays int = 35
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: name

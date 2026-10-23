@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const maxChildKitBytes = 8 << 20
@@ -51,7 +52,7 @@ func (w childKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt
 	if err != nil {
 		return "", err
 	}
-	kit.ReviewRequiresDiff = attempt.Review && runner.ReviewsImplementation(start.Proposal.Machine, attempt.Stage)
+	kit.ReviewRequiresDiff = attempt.Review && runsemantics.ReviewsImplementation(start.Proposal.Machine, attempt.Stage)
 	if attempt.Review {
 		if !slices.Equal(kit.Goobers[attempt.Envelope.Goober].Capabilities, attempt.Envelope.Capabilities) {
 			return "", errors.New("child reviewer capabilities differ from pinned Goober")

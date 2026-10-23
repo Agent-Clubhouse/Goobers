@@ -15,7 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -33,8 +33,8 @@ type staticSchedulerResult struct {
 	Projection JournalProjection
 }
 
-// No production entry constructs a staticWalkSession or a shared budget.
-// The version gate also preserves unmarked refusal histories in this fixture.
+// This fixture keeps its historical assembly separate from the production Run
+// entry point. Its version gate preserves unmarked refusal histories.
 func staticScheduler(ctx workflow.Context, input staticSchedulerInput) (staticSchedulerResult, error) {
 	if workflow.GetVersion(ctx, staticSchedulerVersion, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 		return staticSchedulerResult{}, fmt.Errorf("engine: static parallel execution is refused")
@@ -90,15 +90,18 @@ func schedulerInput(name string, width int32) staticSchedulerInput {
 	in.Spec.Tasks = append(in.Spec.Tasks, gamma)
 	in.Spec.Parallels[0].Branches = append(in.Spec.Parallels[0].Branches, apiv1.Branch{Name: "gamma", Start: "gamma"})
 	in.Spec.Parallels[0].MaxConcurrentBranches = width
-	in.Spec.Tasks[3].Inputs = map[string]string{runner.BranchCompletenessInput: "cannot override host completeness"}
+	in.Spec.Tasks[3].Inputs = map[string]string{runsemantics.BranchCompletenessInput: "cannot override host completeness"}
 	return staticSchedulerInput{Run: in}
 }
 
-func executeScheduler(t *testing.T, in staticSchedulerInput, acts *Activities) staticSchedulerResult {
+func executeScheduler(t *testing.T, in staticSchedulerInput, acts *Activities, configure ...func(*testsuite.TestWorkflowEnvironment)) staticSchedulerResult {
 	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&suite)
 	env.RegisterActivity(acts)
+	for _, setup := range configure {
+		setup(env)
+	}
 	env.ExecuteWorkflow(staticScheduler, in)
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -122,7 +125,7 @@ func TestStaticSchedulerBoundedAdmissionAndJoin(t *testing.T) {
 			acts := &Activities{Journal: writer, Workspaces: testWorkspaces(t), Det: &fakeRunner{run: func(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 				stage := stageOfTaskID(env.TaskID)
 				if stage == "join" {
-					data, err := json.Marshal(env.Inputs[runner.BranchCompletenessInput])
+					data, err := json.Marshal(env.Inputs[runsemantics.BranchCompletenessInput])
 					if err != nil {
 						return apiv1.ResultEnvelope{}, err
 					}

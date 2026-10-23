@@ -62,6 +62,50 @@ func (r *Run) ExportBranchOutbox(branch int, stage string, attempt int, class At
 	return r.exportOutbox(branch, stage, attempt, class, files)
 }
 
+// RecordBranchExpectedOutboxFileAnnotated adopts one already-scrubbed,
+// content-addressed outbox file at the workflow-committed batch occurrence.
+func (r *Run) RecordBranchExpectedOutboxFileAnnotated(branch int, stage string, attempt int, class AttemptClass, occurrence uint64, relPath string, data []byte, expected Ref, meta map[string]any) (Ref, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return Ref{}, ErrClosed
+	}
+	if err := validOutboxStage(stage); err != nil {
+		return Ref{}, err
+	}
+	if attempt < 1 || occurrence < 1 {
+		return Ref{}, fmt.Errorf("journal: outbox file for stage %q requires positive attempt and occurrence", stage)
+	}
+	clean, err := cleanOutboxRelPath(relPath)
+	if err != nil {
+		return Ref{}, fmt.Errorf("journal: outbox file %q: %w", relPath, err)
+	}
+	scrubbed := r.scrubber.Scrub(data)
+	if int64(len(scrubbed)) != expected.Size || Digest(scrubbed) != expected.Digest {
+		return Ref{}, fmt.Errorf("journal: outbox file %q does not match its expected reference", clean)
+	}
+	dest := path.Join(dirArtifacts, dirOutbox, stage, fmt.Sprintf("attempt-%d", attempt), fmt.Sprintf("occurrence-%d", occurrence), clean)
+	if _, err := containedBlobPath(r.dir, dest); err != nil {
+		return Ref{}, fmt.Errorf("journal: outbox destination for %q: %w", clean, err)
+	}
+	ref, err := writeContentScrubbed(r.dir, dest, scrubbed, expected.Digest)
+	if err != nil {
+		return Ref{}, fmt.Errorf("journal: write outbox file %q: %w", clean, err)
+	}
+	ref.Integrity = apiv1.IntegrityDerived
+	ev := Event{
+		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class,
+		Name: path.Join(dirOutbox, clean), Ref: &ref, Integrity: ref.Integrity, Runner: meta,
+	}
+	if err := r.append(ev); err != nil {
+		return Ref{}, fmt.Errorf("journal: record outbox file %q: %w", clean, err)
+	}
+	if err := r.checkpoint(); err != nil {
+		return Ref{}, err
+	}
+	return ref, nil
+}
+
 func (r *Run) exportOutbox(branch int, stage string, attempt int, class AttemptClass, files []OutboxFile) ([]Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -127,6 +127,7 @@ func TestLoadEngineChildFailsClosedOnCustodyLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.parentSlots = 0 // parked
 	if _, err := a.LoadEngineChild(t.Context(), binding); err != nil {
 		t.Fatalf("intact custody refused: %v", err)
 	}

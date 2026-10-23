@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -30,24 +31,24 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 			"selectedNumber": "77", "needsFullRemediation": "true",
 		}},
 		runID + ":gather-pr-context": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput:    rebindBranch,
-			"selectedNumber":         "77",
-			"head":                   rebindBranch,
-			"base":                   "main",
-			"isBehindBase":           "true",
-			"hasSubstantiveFindings": "true",
-			"hasFailingCI":           "false",
+			runsemantics.WorkspaceBranchOutput: rebindBranch,
+			"selectedNumber":                   "77",
+			"head":                             rebindBranch,
+			"base":                             "main",
+			"isBehindBase":                     "true",
+			"hasSubstantiveFindings":           "true",
+			"hasFailingCI":                     "false",
 		}},
 		runID + ":gather-ci-failures": {
 			status: apiv1.ResultSuccess,
 			outputs: map[string]interface{}{
-				WorkspaceBranchOutput:    rebindBranch,
-				"selectedNumber":         "77",
-				"head":                   rebindBranch,
-				"base":                   "main",
-				"isBehindBase":           "true",
-				"hasSubstantiveFindings": "true",
-				"hasFailingCI":           "false",
+				runsemantics.WorkspaceBranchOutput: rebindBranch,
+				"selectedNumber":                   "77",
+				"head":                             rebindBranch,
+				"base":                             "main",
+				"isBehindBase":                     "true",
+				"hasSubstantiveFindings":           "true",
+				"hasFailingCI":                     "false",
 			},
 			artifactName:      "remediation-brief.json",
 			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),

@@ -13,6 +13,6 @@
   },
   "runtime-policy.yaml": {
     "machine": "sha256:cec77a4a6f15e2c08b7e11951de9c632df69c8ec0d9941ed28ca22440f0fd21c",
-    "semantics": "sha256:c1d9a0831b0fb02dd10f9f7b28fcaa7d265be644266775904603540fa3965dad"
+    "semantics": "sha256:daa3317ee04657c72983f2b83940da3b1c3f71afaf87200606fd250d5a3a8a09"
   }
 }

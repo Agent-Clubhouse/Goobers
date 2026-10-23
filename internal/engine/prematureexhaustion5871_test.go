@@ -7,7 +7,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -21,7 +21,7 @@ func TestAgenticPrematureExhaustionClaimConsumesPolicyRetry(t *testing.T) {
 			return apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
 				Error: &apiv1.ErrorInfo{
-					Code:      runner.PrematureExhaustionClaimCode,
+					Code:      runsemantics.PrematureExhaustionClaimCode,
 					Message:   "the agent reported EXECUTION_WINDOW_EXHAUSTED after 22s of its 30m0s execution window",
 					Retryable: true,
 				},
