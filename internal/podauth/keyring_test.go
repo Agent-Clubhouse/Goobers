@@ -60,11 +60,11 @@ func TestRotationDrillNo401(t *testing.T) {
 	old, newKey := ringKey("old", 'o'), ringKey("new", 'n')
 	path := filepath.Join(t.TempDir(), "keys.json")
 	writeRing(t, path, old, nil)
-	first, err := LoadSignedKeyFile(path)
+	first, err := LoadKeyRingFile(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := LoadSignedKeyFile(path)
+	second, err := LoadKeyRingFile(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestKeyFileReloadValidationAndDomainSeparation(t *testing.T) {
 	old, newKey := ringKey("old", 'o'), ringKey("new", 'n')
 	path := filepath.Join(t.TempDir(), "keys")
 	writeRing(t, path, old, &newKey)
-	signer, err := LoadDerivedSignedKeyFile(path, CredentialGrantKeyDomain)
+	signer, err := LoadKeyRingFile(path, CredentialGrantKeyDomain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestKeyFileReloadValidationAndDomainSeparation(t *testing.T) {
 	if _, err := raw.VerifyCredentialGrant(token); err == nil {
 		t.Fatal("raw key accepted derived grant")
 	}
-	for _, invalid := range [][]byte{[]byte(`{"current":{"id":"old","key":"bad"}}`), []byte(`{"unknown":true}`), bytes.Repeat([]byte("x"), maxKeyFileBytes+1)} {
+	for _, invalid := range [][]byte{[]byte(`{"current":{"id":"old","key":"bad"}}`), []byte(`{"unknown":true}`), bytes.Repeat([]byte("x"), 64), bytes.Repeat([]byte("x"), maxKeyFileBytes+1)} {
 		if err := os.WriteFile(path, invalid, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -219,7 +219,7 @@ func TestKeyRingConcurrentReloadAndWatch(t *testing.T) {
 	a, b := ringKey("a", 'a'), ringKey("b", 'b')
 	path := filepath.Join(t.TempDir(), "keys")
 	writeRing(t, path, a, &b)
-	s, err := LoadSignedKeyFile(path)
+	s, err := LoadKeyRingFile(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
