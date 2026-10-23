@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/usageallowance"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -79,7 +80,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	if err != nil {
 		return "", err
 	}
-	kit.ReviewRequiresDiff = attempt.Review && attempt.ReviewRequiresDiff
+	applyAgenticKitAttemptContract(kit, attempt)
 	data, digest, err := agentickit.Marshal(kit)
 	if err != nil {
 		return "", err
@@ -100,6 +101,11 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 		return "", fmt.Errorf("publish agentic kit: %w", err)
 	}
 	return digest, nil
+}
+
+func applyAgenticKitAttemptContract(kit *agentickit.Kit, attempt dispatcher.Attempt) {
+	kit.ReviewRequiresDiff = attempt.Review && attempt.ReviewRequiresDiff
+	kit.UsageAllowance = usageallowance.Clone(attempt.UsageAllowance)
 }
 
 // kitModeFor is the completion contract stamped INTO the kit (decision 001

@@ -32,6 +32,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/usageallowance"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -79,6 +80,10 @@ type Kit struct {
 	// reviewer to judge a checkout that does not carry the run's commits.
 	// Omitted (false) in every kit that predates it.
 	ReviewRequiresDiff bool `json:"reviewRequiresDiff,omitempty"`
+	// UsageAllowance is the trusted remaining token/cost budget for this
+	// attempt. It comes from the deterministic retry walk, never workflow
+	// input or model output. Nil preserves legacy/unlimited kits.
+	UsageAllowance *usageallowance.Allowance `json:"usageAllowance,omitempty"`
 	// Goobers are the specs the executor routes on, keyed by goober name.
 	Goobers map[string]apiv1.GooberSpec `json:"goobers"`
 	// Instructions are each goober's system instructions.
@@ -145,6 +150,11 @@ func Unmarshal(data []byte, wantDigest string) (*Kit, error) {
 	var k Kit
 	if err := json.Unmarshal(data, &k); err != nil {
 		return nil, fmt.Errorf("agentickit: unmarshal: %w", err)
+	}
+	if k.UsageAllowance != nil {
+		if err := k.UsageAllowance.Validate(); err != nil {
+			return nil, fmt.Errorf("agentickit: usage allowance: %w", err)
+		}
 	}
 	return &k, nil
 }
