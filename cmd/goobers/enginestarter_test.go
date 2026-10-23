@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -228,15 +229,8 @@ func TestEngineStarterRefusesWhenTheRuntimeIsNotAttached(t *testing.T) {
 	}
 }
 
-// TestEngineStarterReservesTheRunBeforeStartingTheWorkflow is the
-// start-to-first-emit window closure (piece 6), asserted at the only instant
-// it can be: INSIDE the engine Start call, before any emit could have
-// happened.
-//
-// A daemon that crashed here without the reservation would leave the run in
-// Temporal and nowhere else — no runs/<id>/ for the boot scan to find — and
-// the next daemon would re-admit the same workflow under a fresh run id while
-// the first kept executing, with the first run's terminal hooks never firing.
+// The pre-start crash window retains durable provisional custody. No run
+// journal or ownership effects are published until Temporal classifies ownership.
 func TestEngineStarterReservesTheRunBeforeStartingTheWorkflow(t *testing.T) {
 	engineStart := &recordingEngineStarter{
 		gate:    make(chan struct{}),
@@ -260,33 +254,12 @@ func TestEngineStarterReservesTheRunBeforeStartingTheWorkflow(t *testing.T) {
 		t.Fatal("engine Start was never reached")
 	}
 
-	// The window. The workflow is being started RIGHT NOW and has emitted
-	// nothing; runs/<id>/ must already exist and must already say the run is
-	// the engine's.
-	rd, err := journal.OpenRead(filepath.Join(fixture.layout.RunsDir(), "run-reserve"))
-	if err != nil {
-		t.Fatalf("no run directory inside the start-to-first-emit window: %v; a restart here re-admits the workflow under a fresh id while the first keeps executing", err)
+	if _, err := journal.OpenRead(filepath.Join(fixture.layout.RunsDir(), "run-reserve")); err == nil {
+		t.Fatal("provisional start published an owned run journal")
 	}
-	id, err := rd.Identity()
-	if err != nil {
-		t.Fatalf("reserved run has no readable identity: %v", err)
-	}
-	if !id.EngineDriven() {
-		t.Errorf("reserved run.yaml driver = %q, want the engine driver so the boot scan reattaches instead of resuming in-process", id.Driver)
-	}
-	if id.RunID != "run-reserve" {
-		t.Errorf("reserved run id = %q, want run-reserve", id.RunID)
-	}
-	instanceID, identityErr := fixture.layout.ReadIdentity()
-	if identityErr != nil || instanceID == "" || id.InstanceID != instanceID {
-		t.Errorf("reservation identity %q differs from durable root %q (%v)", id.InstanceID, instanceID, identityErr)
-	}
-	rootID, rootIdentityErr := instance.ReadRootIdentity(fixture.layout.Root)
-	if rootIdentityErr != nil || id.InstanceID != rootID {
-		t.Errorf("run.yaml identity %q differs from root identity %q (%v)", id.InstanceID, rootID, rootIdentityErr)
-	}
-	if id.GooberDigest != "sha256:deadbeef" {
-		t.Errorf("reserved run identity GooberDigest = %q, want the scheduler's pinned digest", id.GooberDigest)
+	entries, err := os.ReadDir(filepath.Join(fixture.layout.SchedulerDir(), "engine-starts"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("provisional custody = %v, %v", entries, err)
 	}
 
 	close(engineStart.gate)
@@ -502,59 +475,20 @@ func TestEngineStarterPinsTheSchedulersRunFacts(t *testing.T) {
 	}
 }
 
-// TestEngineStarterClosesTheReservationWhenTheStartFails is the compensating
-// half of the reservation, and it exists because an OPEN reservation is worse
-// than no reservation at all.
-//
-// ReserveRun writes runs/<id>/ before Temporal is called, so a crash in the
-// window leaves a record. A start that FAILS outright — an unreachable
-// frontend, a namespace error, a deadline — leaves that same record with no
-// workflow that will ever finish it, and nothing reclaims it: the orphan
-// pruner skips any directory holding a run.yaml, and the stalled-run sweep
-// re-tries cancelling a workflow that does not exist on every tick, forever.
-// During a Temporal outage that is one immortal `running` run per scheduler
-// tick per engine lane.
-func TestEngineStarterClosesTheReservationWhenTheStartFails(t *testing.T) {
-	startErr := errors.New("temporal frontend unavailable")
-	fixture := newEngineStarterFixture(t, &fakeEngineWorkflows{}, &recordingEngineStarter{err: startErr})
-
-	res, err := fixture.starter.Start(context.Background(), engineStartRequest("run-startfail"))
-	if err == nil {
-		t.Fatal("a failed engine start reported success")
+// A transport failure may follow an accepted Temporal start. Retain the
+// provisional input for reclassification; never invent a terminal journal.
+func TestEngineStarterRetainsProvisionalCustodyWhenTheStartFails(t *testing.T) {
+	fixture := newEngineStarterFixture(t, &fakeEngineWorkflows{}, &recordingEngineStarter{err: errors.New("response lost")})
+	res, err := fixture.starter.Start(t.Context(), engineStartRequest("run-startfail"))
+	if err == nil || res.Phase != journal.PhaseFailed {
+		t.Fatalf("result = %+v, %v", res, err)
 	}
-	if res.Phase != journal.PhaseFailed {
-		t.Errorf("phase = %q, want %q", res.Phase, journal.PhaseFailed)
+	if _, err := journal.OpenRead(filepath.Join(fixture.layout.RunsDir(), "run-startfail")); err == nil {
+		t.Fatal("failed start published a journal")
 	}
-
-	dir := filepath.Join(fixture.layout.RunsDir(), "run-startfail")
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		t.Fatalf("open reserved run: %v", err)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("read reserved run events: %v", err)
-	}
-	var finished *journal.Event
-	var cause string
-	for i := range events {
-		switch events[i].Type {
-		case journal.EventRunFinished:
-			finished = &events[i]
-		case journal.EventError:
-			if events[i].Error != nil && events[i].Error.Code == "run_failed" {
-				cause = events[i].Error.Message
-			}
-		}
-	}
-	if finished == nil {
-		t.Fatal("the reservation was left in phase running with no workflow that could ever finish it; the stalled-run sweep would retry cancelling a nonexistent workflow forever")
-	}
-	if finished.Status != string(journal.PhaseFailed) {
-		t.Errorf("run.finished status = %q, want %q", finished.Status, journal.PhaseFailed)
-	}
-	if cause == "" || !strings.Contains(cause, startErr.Error()) {
-		t.Errorf("run_failed cause = %q, want it to carry the start failure %q", cause, startErr)
+	entries, err := os.ReadDir(filepath.Join(fixture.layout.SchedulerDir(), "engine-starts"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("provisional custody = %v, %v", entries, err)
 	}
 }
 

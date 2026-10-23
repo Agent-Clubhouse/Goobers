@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -62,6 +63,20 @@ func (r *engineRuntime) Attach(starter engine.Starter, guards *engineRunGuards, 
 	r.guards = guards
 	r.live = live
 	r.now = now
+}
+
+func (r *engineRuntime) recoverAndAttach(ctx context.Context, layout instance.Layout, starter engine.Starter, guards *engineRunGuards, live *livejournal.Writer) error {
+	if err := engine.RecoverStartIntents(ctx, filepath.Join(layout.SchedulerDir(), "engine-starts"), starter, live, func(waitCtx context.Context, in engine.RunInput) error {
+		attachment := guards.await(waitCtx, in.RunID)
+		if !attachment.Settled {
+			return engine.ErrStartOwnershipUncertain
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	r.Attach(starter, guards, live, time.Now)
+	return nil
 }
 
 // adoptFrom copies prev's attachment onto r.
@@ -184,58 +199,39 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 		return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, err)
 	}
 
-	// Reservation BEFORE the workflow exists. See engine.ReserveRun: between
-	// TemporalStarter.Start returning and the workflow's first emit there is
-	// a window (up to stageScheduleToStart) in which the run exists only in
-	// Temporal, and a daemon restart inside it admits a second run of the
-	// same workflow while the first keeps executing with its terminal hooks
-	// never firing. Writing runs/<id>/run.yaml with driver: engine first
-	// makes the boot scan able to see the run.
-	//
-	// A reservation failure REFUSES the dispatch rather than proceeding
-	// unreserved: proceeding would re-open exactly the window this closes,
-	// and no workflow has been started yet, so refusing costs one tick.
-	var (
-		reserved   bool
-		reservedAt time.Time
-	)
+	// Provisional custody survives a lost start response without claiming the
+	// execution. Only a classified mine/adopt result can publish its journal.
+	directory := filepath.Join(s.layout.SchedulerDir(), "engine-starts")
+	var intent engine.StartIntent
 	if s.liveJournal && live != nil {
-		reservedAt = now()
-		reservation, rerr := engine.ReserveRun(in, reservedAt)
-		if rerr != nil {
-			return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, rerr)
+		intent, err = engine.ProvisionStart(directory, in, now())
+		if err != nil {
+			return localscheduler.StartResult{Phase: journal.PhaseFailed}, err
 		}
-		if _, rerr := live.Emit(ctx, reservation); rerr != nil {
-			return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: reserve run journal: %w", req.Gaggle, s.def.Name, rerr)
+	}
+	started, err := starter.Start(ctx, in)
+	if err != nil {
+		// The response may have been lost after Temporal accepted the run.
+		// Keep provisional custody for the boot-time reclassification pass.
+		return localscheduler.StartResult{Phase: journal.PhaseFailed, FailureCode: "engine_start_failed", FailureMessage: err.Error()}, err
+	}
+	if started.NotMine {
+		if intent.Input.RunID != "" {
+			if err := engine.ReleaseStart(directory, in.RunID); err != nil {
+				return localscheduler.StartResult{Phase: journal.PhaseFailed}, err
+			}
 		}
-		reserved = true
+		return localscheduler.StartResult{Phase: journal.PhaseFailed}, engine.ErrStartNotMine
+	}
+	if intent.Input.RunID != "" {
+		if err := engine.ConfirmStart(ctx, directory, intent, live); err != nil {
+			return localscheduler.StartResult{Phase: journal.PhaseRunning}, err
+		}
 	}
 	s.echo(req, journal.Event{
-		Type:   journal.EventRunStarted,
-		Status: string(journal.PhaseRunning),
+		Type: journal.EventRunStarted, Status: string(journal.PhaseRunning),
 		Reason: "engine dispatch admitted",
 	})
-
-	if _, err := starter.Start(ctx, in); err != nil {
-		s.echo(req, journal.Event{
-			Type:   journal.EventError,
-			Reason: "engine dispatch failed to start",
-			Error:  journal.ErrorDetailFor("engine_start_failed", err),
-		})
-		// Close the reservation out. It was written before Temporal was
-		// called precisely so a crash in the window leaves a record; a start
-		// that failed outright leaves that record with no workflow that will
-		// ever finish it, and nothing reclaims a run directory holding a
-		// run.yaml — the orphan pruner skips it and the stalled-run sweep
-		// retries cancelling a workflow that does not exist on every tick,
-		// forever. Best-effort, and on the daemon's context: a dispatch
-		// cancelled by SIGTERM is exactly when this matters most.
-		if reserved {
-			s.abandonReservation(context.WithoutCancel(ctx), live, in, req, reservedAt, now(), err)
-		}
-		return localscheduler.StartResult{Phase: journal.PhaseFailed, FailureCode: "engine_start_failed", FailureMessage: err.Error()},
-			fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, err)
-	}
 
 	var result engine.RunResult
 	attachment := guards.awaitInto(ctx, req.RunID, &result)
@@ -275,28 +271,6 @@ func (s *engineStarter) RegisterDispatch() func() {
 	}
 	s.wg.Add(1)
 	return s.wg.Done
-}
-
-// abandonReservation terminalizes a reservation whose workflow never started.
-// See engine.AbandonReservation for why an un-closed reservation is worse than
-// no reservation at all. Failures here are journaled to the instance log and
-// otherwise swallowed: the dispatch has already failed, and the caller's error
-// is the one the operator needs.
-func (s *engineStarter) abandonReservation(ctx context.Context, live *livejournal.Writer, in engine.RunInput, req localscheduler.StartRequest, startedAt, finishedAt time.Time, cause error) {
-	if live == nil {
-		return
-	}
-	batch, err := engine.AbandonReservation(in, startedAt, finishedAt, cause.Error())
-	if err == nil {
-		_, err = live.Emit(ctx, batch)
-	}
-	if err != nil {
-		s.echo(req, journal.Event{
-			Type:   journal.EventError,
-			Reason: "engine run reservation left open after a failed start",
-			Error:  journal.ErrorDetailFor("engine_reservation_abandon_failed", err),
-		})
-	}
 }
 
 // echo appends one instance-log record for this dispatch. Best-effort: the

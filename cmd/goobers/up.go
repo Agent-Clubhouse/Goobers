@@ -933,12 +933,10 @@ func (u *upSession) startServices() int {
 	// actually dispatch. An unattached runtime refuses the dispatch rather
 	// than silently running remotely-pinned stages on this host.
 	if u.engineClient != nil {
-		u.setup.EngineRuntime.Attach(
-			engine.NewTemporalStarter(u.engineClient.Temporal(), u.setup.Config.EffectiveEngineConfig().TaskQueue),
-			u.engineGuards,
-			u.liveJournals,
-			time.Now,
-		)
+		if err := u.setup.EngineRuntime.recoverAndAttach(u.ctx, u.l, engine.NewTemporalStarter(u.engineClient.Temporal(), u.setup.Config.EffectiveEngineConfig().TaskQueue), u.engineGuards, u.liveJournals); err != nil {
+			pf(u.stderr, "error: recover provisional engine starts: %v\n", err)
+			return 1
+		}
 	}
 	printValidationWarnings(u.stdout, u.setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(u.setup.Definitions, u.setup.Config); warning != "" {

@@ -20,17 +20,18 @@ func validateStartupRoot(layout instance.Layout) error {
 }
 
 type statusRootIdentity struct {
-	DecommissionedAt   *time.Time `json:"decommissionedAt,omitempty"`
-	DecommissionReason string     `json:"decommissionReason,omitempty"`
-	LifecycleProblem   string     `json:"lifecycleProblem,omitempty"`
-	Path               string     `json:"path"`
-	ID                 string     `json:"id,omitempty"`
-	IdentityProblem    string     `json:"identityProblem,omitempty"`
-	DaemonState        string     `json:"daemonState"`
-	OwningPID          int        `json:"owningPid,omitempty"`
-	RecordedPID        int        `json:"recordedPid,omitempty"`
-	RecordedRoot       string     `json:"recordedRoot,omitempty"`
-	DaemonProblem      string     `json:"daemonProblem,omitempty"`
+	StartOwnershipUncertain []string   `json:"startOwnershipUncertain,omitempty"`
+	DecommissionedAt        *time.Time `json:"decommissionedAt,omitempty"`
+	DecommissionReason      string     `json:"decommissionReason,omitempty"`
+	LifecycleProblem        string     `json:"lifecycleProblem,omitempty"`
+	Path                    string     `json:"path"`
+	ID                      string     `json:"id,omitempty"`
+	IdentityProblem         string     `json:"identityProblem,omitempty"`
+	DaemonState             string     `json:"daemonState"`
+	OwningPID               int        `json:"owningPid,omitempty"`
+	RecordedPID             int        `json:"recordedPid,omitempty"`
+	RecordedRoot            string     `json:"recordedRoot,omitempty"`
+	DaemonProblem           string     `json:"daemonProblem,omitempty"`
 }
 
 func canonicalStatusRoot(path string) string {
@@ -45,7 +46,7 @@ func canonicalStatusRoot(path string) string {
 }
 
 func inspectStatusRoot(layout instance.Layout, now time.Time) statusRootIdentity {
-	result := statusRootIdentity{Path: canonicalStatusRoot(layout.Root), DaemonState: "not-running"}
+	result := statusRootIdentity{Path: canonicalStatusRoot(layout.Root), DaemonState: "not-running", StartOwnershipUncertain: startOwnershipWarnings(layout)}
 	readStatusRootLifecycle(&result, layout.Root)
 	id, err := instance.ReadRootIdentity(layout.Root)
 	switch {
@@ -88,6 +89,9 @@ func optionalStatusRoot(enabled bool, layout instance.Layout, now time.Time) *st
 }
 
 func writeStatusRoot(w io.Writer, root statusRootIdentity) {
+	for _, warning := range root.StartOwnershipUncertain {
+		pln(w, warning)
+	}
 	pf(w, "Instance root: %q; instance ID: %q; daemon: %s; owning PID: %d\n", root.Path, root.ID, root.DaemonState, root.OwningPID)
 	if root.DecommissionedAt != nil {
 		pf(w, "  Historical root; do not use. Decommissioned %s: %q\n", root.DecommissionedAt.Format(time.RFC3339Nano), root.DecommissionReason)

@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"github.com/goobers/goobers/internal/engine"
 	"io"
 	"net"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/signals"
@@ -76,11 +78,13 @@ func runDoctorTemporalCodec(root, format string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	status := struct {
-		Enabled      bool             `json:"enabled"`
-		Strict       bool             `json:"strict"`
-		KeyRef       *instance.KeyRef `json:"keyRef,omitempty"`
-		Verification string           `json:"verification"`
+		Enabled        bool             `json:"enabled"`
+		Strict         bool             `json:"strict"`
+		KeyRef         *instance.KeyRef `json:"keyRef,omitempty"`
+		Verification   string           `json:"verification"`
+		StartOwnership []string         `json:"startOwnershipUncertain,omitempty"`
 	}{Verification: "configuration-only; key access and stored histories not probed"}
+	status.StartOwnership = startOwnershipWarnings(instance.NewLayout(root))
 	if settings := cfg.TemporalPayloadCodec(); settings != nil {
 		status.Enabled, status.Strict, status.KeyRef = settings.KeyRef != nil, settings.Strict, settings.KeyRef
 	}
@@ -91,9 +95,24 @@ func runDoctorTemporalCodec(root, format string, stdout, stderr io.Writer) int {
 		}
 	} else {
 		pf(stdout, "Temporal payload codec: %s; strict: %s\n%s\n", onOff(status.Enabled), onOff(status.Strict), status.Verification)
+		for _, warning := range status.StartOwnership {
+			pln(stdout, warning)
+		}
 		if status.KeyRef != nil {
 			pf(stdout, "Wrapping key: %s/%s (version %q; empty selects current)\n", status.KeyRef.Store, status.KeyRef.Name, status.KeyRef.Version)
 		}
 	}
 	return 0
+}
+
+func startOwnershipWarnings(layout instance.Layout) []string {
+	intents, err := engine.PendingStartIntents(filepath.Join(layout.SchedulerDir(), "engine-starts"))
+	if err != nil {
+		return []string{"start ownership uncertain: provisional custody cannot be read"}
+	}
+	var warnings []string
+	for _, intent := range intents {
+		warnings = append(warnings, "start ownership uncertain: "+intent.Input.RunID+" ("+intent.Input.Gaggle+"/"+intent.Input.WorkflowName+")")
+	}
+	return warnings
 }

@@ -132,15 +132,22 @@ func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, 
 // StartWithInputDigest includes the verified canonical-input digest in Temporal
 // custody. AlreadyRunning still requires exact observation by its queue caller.
 func (s *TemporalStarter) StartWithInputDigest(ctx context.Context, in RunInput, digest string) (StartResult, error) {
+	if digest == "" {
+		return StartResult{}, errors.New("engine: accepted input digest is required")
+	}
+	return s.start(ctx, in, digest)
+}
+
+func verifyStartInputDigest(in RunInput, digest string) error {
 	raw, err := json.Marshal(in)
 	if err != nil {
-		return StartResult{}, err
+		return err
 	}
 	sum := sha256.Sum256(raw)
 	if digest != "sha256:"+hex.EncodeToString(sum[:]) {
-		return StartResult{}, errors.New("engine: accepted input digest differs")
+		return errors.New("engine: accepted input digest differs")
 	}
-	return s.start(ctx, in, digest)
+	return nil
 }
 
 func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string) (StartResult, error) {
@@ -151,6 +158,11 @@ func (s *TemporalStarter) start(ctx context.Context, in RunInput, digest string)
 	}
 	if in.RunID == "" {
 		return StartResult{}, errors.New("engine: RunInput.RunID is required to start a run")
+	}
+	if digest != "" {
+		if err := verifyStartInputDigest(in, digest); err != nil {
+			return StartResult{}, err
+		}
 	}
 	memo, err := runMemo(in)
 	if err != nil {
