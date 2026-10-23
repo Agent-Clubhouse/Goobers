@@ -42,7 +42,7 @@ func (s *daemonCredentialService) pinnedChildStage(ctx context.Context, current 
 	if err != nil {
 		return childworkflow.PinnedStageAdmission{}, err
 	}
-	capabilities := childPermissionIntersection(authority.Admission.ParentTask.Capabilities, policy.GrantedCapabilities)
+	capabilities := childworkflow.PermissionIntersection(authority.Admission.ParentTask.Capabilities, policy.GrantedCapabilities)
 	if policy.ParentTask.Goober != authority.Admission.ParentTask.Goober {
 		capabilities = nil
 	}
