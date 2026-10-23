@@ -108,32 +108,39 @@ func TestRecoveryRetainUntilMonotone(t *testing.T) {
 	}
 }
 
+// TestRecoveryConcurrentPublishResolvesToOneRecord races identical publishes.
+// Each loser must resolve to the winner's record: a race on the bundle
+// location's unique index once surfaced as ErrBundleUnavailable, so it runs
+// many rounds to make that interleaving likely.
 func TestRecoveryConcurrentPublishResolvesToOneRecord(t *testing.T) {
 	pool := pgtest.Pool(t, "recoverypg")
 	manager := pgtest.Manager(t, pool, "holder", 0)
 	handle := pgtest.Acquire(t, manager)
 	store := recoverypg.Store{Pool: pool, Fence: manager}
 	const callers = lease.MaxFencedConnections
-	results := make(chan recovery.IndexedRecord, callers)
-	var wg sync.WaitGroup
-	for range callers {
-		wg.Go(func() {
-			indexed, err := store.Publish(t.Context(), handle, record("run-1"), "bundles/run-1", time.Hour)
-			if err != nil {
-				t.Error(err)
-			}
-			results <- indexed
-		})
-	}
-	wg.Wait()
-	close(results)
-	var first *recovery.IndexedRecord
-	for indexed := range results {
-		if first == nil {
-			first = &indexed
+	for round := range 20 {
+		run := fmt.Sprintf("run-%d", round)
+		results := make(chan recovery.IndexedRecord, callers)
+		var wg sync.WaitGroup
+		for range callers {
+			wg.Go(func() {
+				indexed, err := store.Publish(t.Context(), handle, record(run), "bundles/"+run, time.Hour)
+				if err != nil {
+					t.Errorf("round %d: %v", round, err)
+				}
+				results <- indexed
+			})
 		}
-		if indexed != *first {
-			t.Fatalf("concurrent publishes resolved to %+v and %+v", *first, indexed)
+		wg.Wait()
+		close(results)
+		var first *recovery.IndexedRecord
+		for indexed := range results {
+			if first == nil {
+				first = &indexed
+			}
+			if indexed != *first {
+				t.Fatalf("round %d: concurrent publishes resolved to %+v and %+v", round, *first, indexed)
+			}
 		}
 	}
 }

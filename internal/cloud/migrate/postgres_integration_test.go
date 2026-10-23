@@ -5,32 +5,18 @@ package migrate
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/goobers/goobers/internal/cloud/pgroles"
 )
 
 func TestPostgresMigrationApply(t *testing.T) {
-	databaseURL := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
-	if databaseURL == "" {
-		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
-	}
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if _, err := pool.Exec(t.Context(), "DROP SCHEMA IF EXISTS control CASCADE"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS control CASCADE")
-	})
+	pool := privatePool(t)
+	ensureRoles(t, pool)
 	catalog, err := Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -62,20 +48,9 @@ func TestPostgresMigrationApply(t *testing.T) {
 }
 
 func TestPartitionIndexRetryRepairsInvalidAndReapplies(t *testing.T) {
-	databaseURL := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
-	if databaseURL == "" {
-		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
-	}
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	// A private database: the grant reconcile in other tests spans every
+	// schema in the database it migrates.
+	pool := privatePool(t)
 	if _, err := pool.Exec(t.Context(), `
 		DROP TABLE IF EXISTS review_event CASCADE;
 		CREATE TABLE review_event (id integer, created_at integer) PARTITION BY RANGE (id);
@@ -113,5 +88,59 @@ func TestPartitionIndexRetryRepairsInvalidAndReapplies(t *testing.T) {
 	}
 	if !valid || !attached {
 		t.Fatalf("repaired index valid=%v attached=%v", valid, attached)
+	}
+}
+
+// privatePool creates a database private to the test. The grant reconcile
+// covers every schema in the database, so it must not share one with tests
+// that leave their own tables behind.
+func privatePool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	databaseURL := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("GOOBERS_TEST_POSTGRES_URL is not set")
+	}
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "migrate_" + strings.ToLower(t.Name())
+	identifier := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.Exec(t.Context(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+identifier); err != nil {
+		t.Fatal(err)
+	}
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.Database = name
+	config.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
+		admin.Close()
+	})
+	return pool
+}
+
+// ensureRoles provisions the cluster-wide roles through pgroles, as
+// pgtest.EnsureRoles does; this package's tests cannot import pgtest, which
+// imports migrate.
+func ensureRoles(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	conn, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := pgroles.ProvisionRoles(t.Context(), conn.Conn(), nil); err != nil {
+		t.Fatalf("provision cloud roles: %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 func TestAgenticUsageBudgetUnavailableAfterTimeout(t *testing.T) {
@@ -41,7 +43,7 @@ func TestAgenticUsageBudgetUnavailableAfterTimeout(t *testing.T) {
 			env.ExecuteWorkflow(func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 				task := agenticRetrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
 				task.Limits = &apiv1.Limits{MaxTokens: 10, MaxCostUSD: 1}
-				return dispatchWithRetry(ctx, RunInput{}, task, &rec, nil, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
+				return dispatchWithRetry(ctx, RunInput{}, task, &rec, nil, func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error) {
 					calls++
 					if calls == 1 {
 						return stageActivityResult{}, tc.firstErr
@@ -172,11 +174,90 @@ func TestAgenticUsageBudgetLegacyVersion(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
+
 	var result RunResult
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != StatusCompleted {
 		t.Fatalf("legacy status=%s", result.Status)
+	}
+}
+
+func TestRetryCarriesDecreasingUsageAllowance(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	var allowances []usageallowance.Allowance
+	env.ExecuteWorkflow(func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
+		task := agenticRetrySpec(&apiv1.RetryPolicy{MaxAttempts: 2}).Tasks[0]
+		task.Limits = &apiv1.Limits{MaxTokens: 100, MaxCostUSD: 0.3}
+		return dispatchWithRetry(
+			ctx, RunInput{}, task, &runJournal{}, nil,
+			func(_ workflow.Context, attempt int, _ journal.AttemptClass, allowance *usageallowance.Allowance) (stageActivityResult, error) {
+				if allowance == nil {
+					t.Fatal("limited attempt carried no allowance")
+				}
+				allowances = append(allowances, *usageallowance.Clone(allowance))
+				result := stageActivityResult{
+					ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+					Usage: &AttemptUsage{
+						Reported: true,
+						Metrics:  usageMetrics(15, 0.1),
+					},
+				}
+				if attempt == 1 {
+					return result, temporal.NewApplicationError(
+						"retry after measured failure", FailureTypeStage,
+					)
+				}
+				return result, nil
+			},
+			nil,
+		)
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if len(allowances) != 2 ||
+		allowances[0].MaxTokens == nil || *allowances[0].MaxTokens != 100 ||
+		allowances[0].MaxCostUSD == nil || *allowances[0].MaxCostUSD != 0.3 ||
+		allowances[1].MaxTokens == nil || *allowances[1].MaxTokens != 85 ||
+		allowances[1].MaxCostUSD == nil || *allowances[1].MaxCostUSD != 0.2 {
+		t.Fatalf("attempt allowances = %+v", allowances)
+	}
+}
+
+func TestRemoteUsageAllowanceVersionGate(t *testing.T) {
+	tokens := int64(10)
+	input := &usageallowance.Allowance{MaxTokens: &tokens}
+	for _, test := range []struct {
+		name    string
+		version workflow.Version
+		wantNil bool
+	}{
+		{name: "legacy", version: workflow.DefaultVersion, wantNil: true},
+		{name: "current", version: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&suite)
+			env.OnGetVersion("remote-agent-usage-v1", workflow.DefaultVersion, 1).Return(test.version)
+			env.ExecuteWorkflow(func(ctx workflow.Context) error {
+				got := versionedRemoteUsageAllowance(ctx, input)
+				if (got == nil) != test.wantNil {
+					return fmt.Errorf("allowance = %+v, wantNil %v", got, test.wantNil)
+				}
+				if got != nil {
+					*got.MaxTokens = 1
+				}
+				return nil
+			})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			if tokens != 10 {
+				t.Fatal("versioned allowance mutated workflow state")
+			}
+		})
 	}
 }

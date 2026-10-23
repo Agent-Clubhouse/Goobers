@@ -7,9 +7,9 @@ import (
 	"math"
 	"sync"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 type supervisorBudgetExceededError struct{ message string }
@@ -17,20 +17,34 @@ type supervisorBudgetExceededError struct{ message string }
 func (e *supervisorBudgetExceededError) Error() string { return e.message }
 
 type supervisedObservedUsage struct {
-	mu       sync.Mutex
-	limits   apiv1.Limits
-	cancel   context.CancelCauseFunc
-	metrics  map[string]float64
-	reported bool
-	exceeded error
+	mu        sync.Mutex
+	allowance *usageallowance.Allowance
+	cancel    context.CancelCauseFunc
+	metrics   map[string]float64
+	reported  bool
+	exceeded  error
 }
 
 func newSupervisedUsageContext(
 	parent context.Context,
-	limits apiv1.Limits,
+	allowance *usageallowance.Allowance,
 ) (context.Context, *supervisedObservedUsage) {
 	ctx, cancel := context.WithCancelCause(parent)
-	return ctx, &supervisedObservedUsage{limits: limits, cancel: cancel}
+	supervisor := &supervisedObservedUsage{
+		allowance: usageallowance.Clone(allowance), cancel: cancel,
+	}
+	if allowance != nil {
+		switch {
+		case allowance.MaxTokens != nil && *allowance.MaxTokens == 0:
+			supervisor.exceeded = &supervisorBudgetExceededError{message: "remaining maxTokens is exhausted"}
+		case allowance.MaxCostUSD != nil && *allowance.MaxCostUSD == 0:
+			supervisor.exceeded = &supervisorBudgetExceededError{message: "remaining maxCostUSD is exhausted"}
+		}
+	}
+	if supervisor.exceeded != nil {
+		cancel(supervisor.exceeded)
+	}
+	return ctx, supervisor
 }
 
 func (u *supervisedObservedUsage) report(metrics map[string]float64) {
@@ -51,7 +65,7 @@ func (u *supervisedObservedUsage) report(metrics map[string]float64) {
 		}
 	}
 	if u.exceeded == nil {
-		u.exceeded = supervisorUsageLimitError(u.limits, u.metrics)
+		u.exceeded = supervisorUsageLimitError(u.allowance, u.metrics)
 	}
 	exceeded := u.exceeded
 	u.mu.Unlock()
@@ -72,22 +86,25 @@ func (u *supervisedObservedUsage) budgetCause() error {
 	return u.exceeded
 }
 
-func supervisorUsageLimitError(limits apiv1.Limits, usage map[string]float64) error {
-	if limits.MaxTokens > 0 {
+func supervisorUsageLimitError(allowance *usageallowance.Allowance, usage map[string]float64) error {
+	if allowance == nil {
+		return nil
+	}
+	if allowance.MaxTokens != nil {
 		input, hasInput := usage[telemetry.AttrGenAIUsageInputTokens]
 		output, hasOutput := usage[telemetry.AttrGenAIUsageOutputTokens]
 		if hasInput && hasOutput && validSupervisorTokenUsage(input) && validSupervisorTokenUsage(output) &&
-			input+output > float64(limits.MaxTokens) {
+			input+output > float64(*allowance.MaxTokens) {
 			return &supervisorBudgetExceededError{message: fmt.Sprintf(
-				"token usage %.0f exceeds maxTokens %d", input+output, limits.MaxTokens,
+				"token usage %.0f exceeds remaining maxTokens %d", input+output, *allowance.MaxTokens,
 			)}
 		}
 	}
-	if limits.MaxCostUSD > 0 {
+	if allowance.MaxCostUSD != nil {
 		cost, ok := usage[telemetry.AttrUsageCostUSD]
-		if ok && validSupervisorUsage(cost) && cost > limits.MaxCostUSD {
+		if ok && validSupervisorUsage(cost) && cost > *allowance.MaxCostUSD {
 			return &supervisorBudgetExceededError{message: fmt.Sprintf(
-				"cost usage $%g exceeds maxCostUSD $%g", cost, limits.MaxCostUSD,
+				"cost usage $%g exceeds remaining maxCostUSD $%g", cost, *allowance.MaxCostUSD,
 			)}
 		}
 	}

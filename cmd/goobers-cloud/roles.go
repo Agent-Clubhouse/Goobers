@@ -108,7 +108,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		flags.Usage()
 		return 2
 	}
-	directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
+	directURL, err := cloudpg.DatabaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud migrate: direct database URL: %v\n", err)
 		return 2
@@ -240,12 +240,12 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		flags.Usage()
 		return 2
 	}
-	transactionURL, err := databaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
+	transactionURL, err := cloudpg.DatabaseURL(*transactionURLArg, *transactionURLFile, "GOOBERS_DATABASE_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: transaction database URL: %v\n", role, err)
 		return 2
 	}
-	directURL, err := databaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
+	directURL, err := cloudpg.DatabaseURL(*directURLArg, *directURLFile, "GOOBERS_DATABASE_DIRECT_URL")
 	if err != nil {
 		writef(stderr, "goobers-cloud %s: direct database URL: %v\n", role, err)
 		return 2
@@ -323,29 +323,6 @@ func runDatabaseRoleMode(role, help string, args []string, stdout, stderr io.Wri
 		return 1
 	}
 	return 0
-}
-
-func databaseURL(argument, filename, environment string) (string, error) {
-	if strings.TrimSpace(argument) != "" && strings.TrimSpace(filename) != "" {
-		return "", errors.New("choose either the URL argument or file, not both")
-	}
-	if value := strings.TrimSpace(argument); value != "" {
-		return value, nil
-	}
-	if strings.TrimSpace(filename) != "" {
-		content, err := os.ReadFile(filename)
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", filename, err)
-		}
-		if value := strings.TrimSpace(string(content)); value != "" {
-			return value, nil
-		}
-		return "", fmt.Errorf("%s is empty", filename)
-	}
-	if value := strings.TrimSpace(os.Getenv(environment)); value != "" {
-		return value, nil
-	}
-	return "", fmt.Errorf("set the corresponding flag, file, or %s", environment)
 }
 
 func configureDatabaseAuth(role, authMode string, config *cloudpg.Config, stderr io.Writer) int {

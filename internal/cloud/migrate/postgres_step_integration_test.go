@@ -51,6 +51,7 @@ func stepTestPool(t *testing.T) *pgxpool.Pool {
 		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
 		admin.Close()
 	})
+	ensureRoles(t, pool)
 	return pool
 }
 
@@ -86,7 +87,7 @@ func TestMigrationStepOutlivesFenceTimeout(t *testing.T) {
 		Direct: pool, BackupRef: "step-test", InstanceID: "instance", Holder: "migrate-a",
 		Catalog: catalogWith(t, Migration{Version: 9001, Name: "9001_slow.expand.sql", SQL: `
 			SELECT pg_sleep(2.5);
-			CREATE TABLE control.slow_step (id integer)`}),
+			COMMENT ON SCHEMA control IS 'slow migration step'`}),
 	}
 	if err := runner.Apply(t.Context()); err != nil {
 		t.Fatalf("slow migration step: %v", err)

@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/usageallowance"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -540,7 +541,7 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
 				task := retrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
 				task.PolicyActions = []string{"external-mutation"}
-				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(_ workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(_ workflow.Context, attempt int, _ journal.AttemptClass, _ *usageallowance.Allowance) (stageActivityResult, error) {
 					calls++
 					attempts = append(attempts, attempt)
 					if calls == 1 {

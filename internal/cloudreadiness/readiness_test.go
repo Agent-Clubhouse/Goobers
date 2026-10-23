@@ -3,6 +3,7 @@ package cloudreadiness
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,12 +13,82 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
+func TestCloudReadinessKeepsUnmappedEngineRefusal(t *testing.T) {
+	set := mapReadinessFixture()
+	spec := set.Workflows[0].Spec
+	if err := engineadmission.RefusePlacedDefinition("all-features", spec, nil); !errors.Is(err, engineadmission.ErrMapsUnsupported) {
+		t.Fatalf("engine premise = %v, want map refusal", err)
+	}
+	saved := featureBlockers["workflow.spec.maps"]
+	delete(featureBlockers, "workflow.spec.maps")
+	t.Cleanup(func() { featureBlockers["workflow.spec.maps"] = saved })
+
+	result := Assess(readinessRemoteConfig(), set)
+	if result.CloudReady || len(result.Workflows) != 1 {
+		t.Fatalf("engine-refused map assessed ready: %+v", result)
+	}
+	for _, blocker := range result.Workflows[0].Blockers {
+		if blocker.Code == CodeFeature && blocker.Feature == "spec.maps" &&
+			blocker.Action.Kind == "engine" && blocker.Action.Issue == 0 {
+			return
+		}
+	}
+	t.Fatalf("unmapped engine refusal disappeared: %+v", result)
+}
+
+func TestSelfPinnedAgenticLimitsStillReportP4Blockers(t *testing.T) {
+	set := blockerFixture()
+	result := Assess(&instance.Config{}, set)
+	features := map[string]bool{}
+	var placement bool
+	for _, assessed := range result.Workflows {
+		if assessed.Name != "all-features" {
+			continue
+		}
+		for _, blocker := range assessed.Blockers {
+			features[blocker.Feature] = true
+			placement = placement || blocker.Code == CodePlacement
+		}
+	}
+	if !placement || !features["task.limits.maxTokens"] || !features["task.limits.maxCostUSD"] {
+		t.Fatalf("self placement hid future cloud limit refusals: %+v", result)
+	}
+}
+
+func mapReadinessFixture() *instance.ConfigSet {
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:    &apiv1.DeterministicRun{Command: []string{"true"}},
+			RunsOn: &apiv1.RunsOn{OS: "linux"}, Next: next,
+		}
+	}
+	plan, work, join := task("plan", "items"), task("work", workflow.TargetJoin), task("join", "")
+	plan.ArtifactSlots = []apiv1.ArtifactSlot{{Name: "roster", MediaType: "application/json"}}
+	return &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "g"}}},
+		Workflows: []apiv1.Workflow{{
+			ObjectMeta: metav1.ObjectMeta{Name: "mapped"},
+			DSLVersion: supportmatrix.V31DSLVersion,
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "g", Start: "plan", Tasks: []apiv1.Task{plan, work, join},
+				Maps: []apiv1.Map{{
+					Name: "items", Source: apiv1.FanOutSource{Task: "plan", Slot: "roster"},
+					Task: "work", FailurePolicy: apiv1.BranchContinueOnError, Join: "join",
+				}},
+			},
+		}},
+	}
+}
+
 func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
-	result := Assess(&instance.Config{}, blockerFixture())
+	result := Assess(readinessRemoteConfig(), blockerFixture())
 	if result.CloudReady {
 		t.Fatal("result is cloud-ready with blockers")
 	}
@@ -114,11 +185,13 @@ func blockerFixture() *instance.ConfigSet {
 	}
 	agentic := apiv1.Task{
 		Name: "agent", Type: apiv1.TaskAgentic, Goal: "agent work", Goober: "coder",
+		RunsOn:         &apiv1.RunsOn{OS: "linux"},
 		ChildWorkflows: &apiv1.ChildWorkflowPolicy{},
 		Experiment:     &apiv1.BanditExperiment{},
 		Outbox:         []string{"result.json"},
 		Limits:         &apiv1.Limits{MaxTokens: 100, MaxCostUSD: 1},
 	}
+
 	return &instance.ConfigSet{
 		Gaggles: []apiv1.Gaggle{{
 			ObjectMeta: metav1.ObjectMeta{Name: "g"},
@@ -150,6 +223,18 @@ func blockerFixture() *instance.ConfigSet {
 		Goobers: []apiv1.Goober{{
 			ObjectMeta: metav1.ObjectMeta{Name: "coder"},
 			Spec:       apiv1.GooberSpec{Gaggle: "g", Harness: apiv1.HarnessCopilot},
+		}},
+	}
+}
+
+func readinessRemoteConfig() *instance.Config {
+	return &instance.Config{
+		Runners: []instance.RunnerEntry{{
+			Name: "worker", Host: "ghcr.io/example/worker:v1",
+			Provides: instance.RunnerProvides{
+				OS: instance.RunnerOSLinux, Shell: true,
+				Capabilities: []string{"harness:copilot"},
+			},
 		}},
 	}
 }

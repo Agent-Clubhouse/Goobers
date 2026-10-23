@@ -55,7 +55,7 @@ func TestDatabaseURLSourcesAndParseErrorsRedactPasswords(t *testing.T) {
 	if err := os.WriteFile(urlFile, []byte("postgres://file-secret@localhost/goobers\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := databaseURL("", urlFile, "UNSET_DATABASE_URL")
+	value, err := cloudpg.DatabaseURL("", urlFile, "UNSET_DATABASE_URL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,5 +180,18 @@ func TestWorkerMapsHostErrors(t *testing.T) {
 	code, _, stderr := runForTest("worker", "--work-root", t.TempDir(), "--blob-store", t.TempDir())
 	if code != 3 || !strings.Contains(stderr, "drain timeout") {
 		t.Fatalf("worker abandoned: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestBootstrapFailsClosedWhileBackendsUnavailable(t *testing.T) {
+	code, stdout, stderr := runForTest("bootstrap", "--instance-id", "i", "--backup-ref", "pitr")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "not available until #") || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("bootstrap: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestCutoverCheckRequiresInputs(t *testing.T) {
+	if code, _, _ := runForTest("cutover", "check"); code != 2 {
+		t.Fatalf("cutover check without inputs: code=%d, want 2", code)
 	}
 }

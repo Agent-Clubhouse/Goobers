@@ -188,17 +188,24 @@ func (m *Manager) Acquire(ctx context.Context) (*Handle, error) {
 }
 
 func (m *Manager) ensureRows(ctx context.Context, tx pgx.Tx) error {
+	return EnsureRows(ctx, tx, m.config.InstanceID, m.config.Name)
+}
+
+// EnsureRows creates the unheld lease rows for one named lease. It is
+// idempotent and is the only place the first-row shape is defined, so cloud
+// bootstrap and Acquire cannot diverge.
+func EnsureRows(ctx context.Context, tx pgx.Tx, instanceID, name string) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO control.lease_heartbeat (instance_id, name, holder, epoch, expires_at)
 		VALUES ($1, $2, '', 0, '-infinity') ON CONFLICT DO NOTHING`,
-		m.config.InstanceID, m.config.Name,
+		instanceID, name,
 	); err != nil {
 		return fmt.Errorf("initialize lease heartbeat: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO control.lease (instance_id, name, holder, epoch)
 		VALUES ($1, $2, '', 0) ON CONFLICT DO NOTHING`,
-		m.config.InstanceID, m.config.Name,
+		instanceID, name,
 	); err != nil {
 		return fmt.Errorf("initialize lease authority: %w", err)
 	}
