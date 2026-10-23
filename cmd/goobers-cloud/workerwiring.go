@@ -25,7 +25,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/internal/worktree"
@@ -144,7 +143,7 @@ func (s *workerConfigSnapshot) withGaggle(gaggle string, built *builtGaggleSeams
 }
 
 type gaggleSeams struct {
-	cfg     runner.Config
+	cfg     runtimewiring.ExecutorConfig
 	runsDir string
 	// manager is buildRunnerConfig's own worktree manager — the CREDENTIALED
 	// one. workerEngineDeps builds a bare manager with no git auth, which

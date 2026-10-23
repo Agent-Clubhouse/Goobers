@@ -6,19 +6,18 @@ import (
 	"github.com/goobers/goobers/providers"
 
 	"github.com/goobers/goobers/internal/invoke"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-type runnerCompositionInput = runtimewiring.RunnerCompositionInput
+type runnerCompositionInput = runtimewiring.ExecutorCompositionInput
 
 var runnerLookPath = exec.LookPath
 
-func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(input runnerCompositionInput) (runtimewiring.ExecutorConfig, *worktree.Manager, error) {
 	binary, err := workerExecutorBinary()
 	if err != nil {
-		return runner.Config{}, nil, err
+		return runtimewiring.ExecutorConfig{}, nil, err
 	}
 	input.ExecutorBinary = binary
 	input.Diagnostics, input.DiagnosticsMaxBytes = diagnosticsMode, diagnosticsMaxOutputBytes
@@ -39,5 +38,5 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		stage.AutomationReadCache = true
 		return runtimewiring.BuildDeterministicExecutor(stage)
 	}
-	return runtimewiring.BuildRunnerConfig(input)
+	return runtimewiring.BuildExecutorConfig(input)
 }

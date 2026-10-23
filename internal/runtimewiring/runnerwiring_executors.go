@@ -28,7 +28,7 @@ import (
 	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
 
-// RepoCloneURL overrides runner.Config.RepoCloneURL when non-nil. It exists
+// RepoCloneURL overrides ExecutorConfig.RepoCloneURL when non-nil. It exists
 // purely as a test seam (mirrors internal/localscheduler's swappable newRunID)
 // so integration tests can point worktree provisioning at a local git fixture
 // instead of a real GitHub clone; production leaves it nil and runner.New
@@ -455,7 +455,7 @@ type DeterministicExecutorInput struct {
 	DiagnosticsMaxBytes int64
 	// ScratchDir, when set, is wired onto the ShellExecutor's own field of the
 	// same name (#3342) — the same already-writable scratch directory
-	// (runner.Config.ScratchDir, under the instance's workcopies root) the
+	// (ExecutorConfig.ScratchDir, under the instance's workcopies root) the
 	// runner uses for scratch-mode workspaces, reused here so the built-in
 	// error file never depends on the OS default temp directory being
 	// writable under a read-only-root deployment.

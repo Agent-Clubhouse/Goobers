@@ -19,7 +19,6 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -59,7 +58,7 @@ func AdoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 	}
 }
 
-func withLegacyAgenticFactory(config runner.Config) runner.Config {
+func withLegacyAgenticFactory(config ExecutorConfig) ExecutorConfig {
 	config.NewAgentic = legacyAgenticFactory(config.NewAgenticWithMCPServers)
 	return config
 }

@@ -6,12 +6,13 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/stageexec"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/runner"
 )
 
 func TestWorkerGooberPreparationReleaseAndOrder(t *testing.T) {
@@ -56,7 +57,7 @@ func TestWorkerGooberPreparationReleaseAndOrder(t *testing.T) {
 				var order []string
 				exec := &preparationCaptureGoober{dispatch: func() { order = append(order, "dispatch") }}
 				gaggle := &gaggleSeams{
-					cfg: runner.Config{NewAgentic: func(string, stageexec.ArtifactRecorder, stageexec.SecretRegistrar) (invoke.Goober, error) {
+					cfg: runtimewiring.ExecutorConfig{NewAgentic: func(string, stageexec.ArtifactRecorder, stageexec.SecretRegistrar) (invoke.Goober, error) {
 						return exec, nil
 					}},
 					runsDir: t.TempDir(),
@@ -152,7 +153,7 @@ func TestWorkerGooberPreparationReleasesOnPanic(t *testing.T) {
 			t.Run(operation.name+"/"+panicStage, func(t *testing.T) {
 				var releases int
 				gaggle := &gaggleSeams{
-					cfg: runner.Config{NewAgentic: func(string, stageexec.ArtifactRecorder, stageexec.SecretRegistrar) (invoke.Goober, error) {
+					cfg: runtimewiring.ExecutorConfig{NewAgentic: func(string, stageexec.ArtifactRecorder, stageexec.SecretRegistrar) (invoke.Goober, error) {
 						if panicStage == "executor" {
 							panic(panicValue)
 						}

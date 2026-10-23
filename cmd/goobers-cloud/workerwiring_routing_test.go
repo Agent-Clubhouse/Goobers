@@ -14,7 +14,6 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
@@ -34,7 +33,7 @@ import (
 //     (cmd/goobers/workerwiring.go's workerGoober) receives on the wire
 //     carries the dispatching task's goober name, so it resolves the SAME
 //     named executor the local runner would build for that stage
-//     (runner.Config.NewAgentic) — not a different one, and not a
+//     (runtimewiring.ExecutorConfig.NewAgentic) — not a different one, and not a
 //     "no goober name" failure.
 //
 // Both engine.Run (dispatch) and workerSeams.Agentic() (the worker's
@@ -79,7 +78,7 @@ func TestEngineDispatchRoutesQueueAndGooberIdentityThroughWorkerSeams(t *testing
 		ConfigSnapshot: runtimewiring.ConfigSnapshot{Digest: "sha256:routing-fixture"},
 		gaggles: map[string]*builtGaggleSeams{
 			"web": {seams: &gaggleSeams{
-				cfg: runner.Config{
+				cfg: runtimewiring.ExecutorConfig{
 					NewAgentic: func(name string, _ stageexec.ArtifactRecorder, _ stageexec.SecretRegistrar) (invoke.Goober, error) {
 						return &routingCaptureGoober{
 							name: name,
