@@ -113,3 +113,43 @@ func TestPGRecoveryStaleLeaseCannotReserveRetries(t *testing.T) {
 		t.Fatal("stale recovery changed retry metadata")
 	}
 }
+
+func TestPGRecoverySkipsLockedRowsAndBoundsReservations(t *testing.T) {
+	store, pool := testStore(t, 1)
+	_, err := pool.Exec(t.Context(), `INSERT INTO control.acceptance
+ (instance_id,id,idem_key,actor,fingerprint,payload,state,owner_epoch,run_id,accepted_at,dispatch_started_at)
+ SELECT $1,'trigger-retry-'||n,'retry-'||n,'operator',decode('00','hex'),decode('78','hex'),
+ 'dispatching',$2,'retry-'||n,clock_timestamp()-interval '2 minutes',clock_timestamp()-interval '2 minutes'
+ FROM generate_series(1,34) n`, store.instanceID, store.handle.Epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(t.Context()) }()
+	if _, err := tx.Exec(t.Context(), "SELECT id FROM control.acceptance WHERE id='trigger-retry-1' FOR UPDATE"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.reserveStartRetries(t.Context())
+	if err != nil || len(rows) != startRecoveryBatch {
+		t.Fatalf("batch=%d err=%v", len(rows), err)
+	}
+	for _, row := range rows {
+		if row.ID == "trigger-retry-1" {
+			t.Fatal("recovery selected locked row")
+		}
+	}
+	remaining, err := store.reserveStartRetries(t.Context())
+	if err != nil || len(remaining) != 1 {
+		t.Fatalf("remaining=%d err=%v", len(remaining), err)
+	}
+	if err := tx.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	last, err := store.reserveStartRetries(t.Context())
+	if err != nil || len(last) != 1 || last[0].ID != "trigger-retry-1" {
+		t.Fatalf("released lock=%+v err=%v", last, err)
+	}
+}
