@@ -145,10 +145,13 @@ func TestKindDatabaseFollowsRoleContract(t *testing.T) {
 	if len(passwords) != len(databaseCredentials) {
 		t.Fatalf("got %d passwords, want %d", len(passwords), len(databaseCredentials))
 	}
-	for _, want := range []string{"log_min_error_statement: panic", "REVOKE ALL ON DATABASE temporal FROM PUBLIC", "REVOKE ALL ON DATABASE temporal_visibility FROM PUBLIC", "REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC", "owner: temporal_app", "enableSuperuserAccess: true", "goobers_owner", "goobers_api", "goobers_controller"} {
+	for _, want := range []string{"log_min_error_statement: panic", "REVOKE ALL ON DATABASE temporal FROM PUBLIC", "REVOKE ALL ON DATABASE temporal_visibility FROM PUBLIC", "owner: temporal_app", "enableSuperuserAccess: true", "goobers_owner", "goobers_api", "goobers_controller"} {
 		if !strings.Contains(string(cluster), want) {
 			t.Fatalf("cnpg-cluster.yaml missing %q", want)
 		}
+	}
+	if strings.Contains(string(cluster), "ON DATABASE postgres") {
+		t.Fatal("do not revoke from the postgres database: CNPG pg_rewind connects to it as streaming_replica")
 	}
 	for _, path := range []string{"../../temporal-values.yaml", "../../temporal-values-legacy.yaml"} {
 		data, err := os.ReadFile(path)
