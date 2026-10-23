@@ -5,12 +5,12 @@ package harness
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
+
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -36,11 +36,7 @@ func TestIntegrationCopilotStoredLoginPreflightWithoutCopy(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(work, copilotConfigFileName)); !os.IsNotExist(err) {
 		t.Fatal("login file copied into probe directory")
 	}
-	path, err := exec.LookPath("copilot")
-	if err != nil {
-		t.Fatal("Copilot executable unavailable")
-	}
-	client := copilot.NewClient(&copilot.ClientOptions{Connection: copilot.StdioConnection{Path: path, Args: []string{"--no-auto-update"}, Env: prepared}, WorkingDirectory: work, LogLevel: "none"})
+	client := copilot.NewClient(&copilot.ClientOptions{Connection: copilot.StdioConnection{Path: "copilot", Args: []string{"--no-auto-update"}, Env: prepared}, WorkingDirectory: work, LogLevel: "none"})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := client.Start(ctx); err != nil {
