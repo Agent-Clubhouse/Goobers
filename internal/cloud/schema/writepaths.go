@@ -37,7 +37,24 @@ var inventoryYAML []byte
 type Inventory struct {
 	Tables    []Table    `yaml:"tables"`
 	Sequences []Sequence `yaml:"sequences"`
+	Functions []Function `yaml:"functions"`
 }
+
+// Function describes one cloud function (identified by its identity
+// arguments) and the roles that may execute it. A SECURITY DEFINER function
+// runs with its owner's rights, so it must be listed here to exist at all.
+type Function struct {
+	Schema          string   `yaml:"schema"`
+	Name            string   `yaml:"function"`
+	Arguments       string   `yaml:"arguments"`
+	Rationale       string   `yaml:"rationale"`
+	SecurityDefiner bool     `yaml:"security_definer"`
+	Execute         []string `yaml:"execute"`
+}
+
+// Signature is the function's identity, as pg_get_function_identity_arguments
+// renders it.
+func (f Function) Signature() string { return f.Schema + "." + f.Name + "(" + f.Arguments + ")" }
 
 // Sequence describes one cloud sequence and the roles that may draw from it
 // (USAGE: nextval and currval).
@@ -133,7 +150,33 @@ func (inventory Inventory) Validate() error {
 			}
 		}
 	}
-	return inventory.validateSequences(seen)
+	if err := inventory.validateSequences(seen); err != nil {
+		return err
+	}
+	return inventory.validateFunctions()
+}
+
+func (inventory Inventory) validateFunctions() error {
+	seen := make(map[string]struct{}, len(inventory.Functions))
+	for _, function := range inventory.Functions {
+		key := function.Signature()
+		if !identifier.MatchString(function.Schema) || !identifier.MatchString(function.Name) {
+			return fmt.Errorf("cloud write-path inventory has invalid function %q", key)
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("cloud write-path inventory duplicates function %s", key)
+		}
+		seen[key] = struct{}{}
+		if strings.TrimSpace(function.Rationale) == "" {
+			return fmt.Errorf("cloud write-path inventory lacks rationale for function %s", key)
+		}
+		for _, role := range function.Execute {
+			if !slices.Contains(RuntimeRoles, role) {
+				return fmt.Errorf("cloud write-path inventory has invalid function role %q on %s", role, key)
+			}
+		}
+	}
+	return nil
 }
 
 func (inventory Inventory) validateSequences(seen map[string]struct{}) error {

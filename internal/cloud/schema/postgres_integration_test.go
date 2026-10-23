@@ -5,7 +5,6 @@ package schema_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"reflect"
@@ -17,6 +16,7 @@ import (
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
+	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/cloud/schema"
 )
 
@@ -118,13 +118,7 @@ func migratedPool(t *testing.T) (*pgxpool.Pool, string) {
 		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
 		admin.Close()
 	})
-	for _, role := range schema.RuntimeRoles {
-		if _, err := pool.Exec(t.Context(), fmt.Sprintf(`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN CREATE ROLE %s NOLOGIN; END IF;
-			EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`, role, role)); err != nil {
-			t.Fatal(err)
-		}
-	}
+	pgtest.EnsureRoles(t, pool)
 	apply(t, pool)
 	databaseURLForTest, err := url.Parse(databaseURL)
 	if err != nil {
@@ -392,4 +386,57 @@ func reconcile(t *testing.T, pool *pgxpool.Pool, inventory schema.Inventory) err
 		return err
 	}
 	return tx.Commit(t.Context())
+}
+
+// TestReconcileRefusesUndeclaredSecurityDefiner is reviewer-3's function probe:
+// an out-of-band SECURITY DEFINER function that writes lease.epoch would let
+// any role act with the owner's rights.
+func TestReconcileRefusesUndeclaredSecurityDefiner(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `
+		CREATE FUNCTION control.bump_epoch() RETURNS void LANGUAGE sql SECURITY DEFINER
+		AS 'UPDATE control.lease SET epoch = epoch + 1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyErr(t, pool); err == nil || !strings.Contains(err.Error(), "control.bump_epoch() is SECURITY DEFINER") {
+		t.Fatalf("apply with an undeclared SECURITY DEFINER function = %v", err)
+	}
+}
+
+// TestReconcileRevokesFunctionExecute: functions default to PUBLIC EXECUTE;
+// after the reconcile only the inventory's roles may execute them.
+func TestReconcileRevokesFunctionExecute(t *testing.T) {
+	pool, _ := migratedPool(t)
+	if _, err := pool.Exec(t.Context(), `
+		CREATE FUNCTION control.plain(n integer) RETURNS integer LANGUAGE sql AS 'SELECT n';
+		CREATE FUNCTION control.listed(n integer) RETURNS integer LANGUAGE sql AS 'SELECT n'`); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := schema.LoadWritePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory.Functions = append(inventory.Functions, schema.Function{
+		Schema: "control", Name: "listed", Arguments: "n integer", Rationale: "test", Execute: []string{"goobers_controller"},
+	})
+	if err := reconcile(t, pool, inventory); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		role, function string
+		want           bool
+	}{
+		{"goobers_api", "control.plain(integer)", false},
+		{"goobers_controller", "control.plain(integer)", false},
+		{"goobers_controller", "control.listed(integer)", true},
+		{"goobers_api", "control.listed(integer)", false},
+	} {
+		var got bool
+		if err := pool.QueryRow(t.Context(), "SELECT has_function_privilege($1, $2, 'EXECUTE')", check.role, check.function).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != check.want {
+			t.Fatalf("%s EXECUTE %s = %v, want %v", check.role, check.function, got, check.want)
+		}
+	}
 }

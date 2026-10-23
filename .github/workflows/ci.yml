@@ -907,7 +907,9 @@ jobs:
           GOOBERS_TEST_AZURITE_ACCOUNT: devstoreaccount1
           GOOBERS_TEST_AZURITE_KEY: Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
           GOOBERS_TEST_AZURITE_URL: http://127.0.0.1:10000/devstoreaccount1
-        run: go test -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 ./internal/cloud/... ./test/ha/invariants/...
+        # -p 1: cloud packages share cluster-wide roles (pgtest.EnsureRoles), so
+        # no two packages may converge them concurrently.
+        run: go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 ./internal/cloud/... ./test/ha/invariants/...
 
       - name: Stop Azurite
         if: always()

@@ -41,7 +41,8 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		}
 	}
 	run := job.step(t, "Run cloud integration smoke")
-	if !strings.Contains(run.Run, "go test -tags=integration,cloudpg,cloudintegration") ||
+	// -p 1: the packages share cluster-wide PostgreSQL roles.
+	if !strings.Contains(run.Run, "go test -p 1 ") || !strings.Contains(run.Run, "-tags=integration,cloudpg,cloudintegration") ||
 		!strings.Contains(run.Run, "./internal/cloud/...") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
