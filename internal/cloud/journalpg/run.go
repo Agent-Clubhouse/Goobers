@@ -130,7 +130,8 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	for {
-		r, report, err := b.tryRecover(waitCtx, key, options)
+		// The lock-wait budget must not become a history-replay size limit.
+		r, report, err := b.tryRecover(ctx, key, options)
 		if err == nil {
 			return b.keepRun(r), r.token, report, nil
 		}
@@ -173,6 +174,10 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 		return nil, journal.RecoverReport{}, err
 	}
 	r := &runOwner{key: key, token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, options: normalizedOptions(options)}
+	// Reject current owners before reading potentially large immutable history.
+	if err := b.recoverableRun(ctx, key, h.Epoch); err != nil {
+		return nil, journal.RecoverReport{}, err
+	}
 	snapshot, err := b.snapshot(ctx, key.RunID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = os.ErrNotExist
@@ -205,6 +210,33 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 	return r, report, err
 }
 
+func (b *Backend) recoverableRun(ctx context.Context, key journal.RunKey, liveEpoch int64) error {
+	var epoch int64
+	var token *string
+	var gaggle string
+	err := b.config.Pool.QueryRow(ctx, `SELECT s.owner_epoch,s.owner_token,r.gaggle FROM journal.run_seq s JOIN journal.run r USING(instance_id,run_id) WHERE s.instance_id=$1 AND s.run_id=$2`, b.config.InstanceID, key.RunID).Scan(&epoch, &token, &gaggle)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return os.ErrNotExist
+	}
+	if err != nil {
+		return err
+	}
+	return validateRecoveryOwner(key, gaggle, token, epoch, liveEpoch)
+}
+
+func validateRecoveryOwner(key journal.RunKey, gaggle string, token *string, epoch, liveEpoch int64) error {
+	if gaggle != key.Gaggle {
+		return os.ErrNotExist
+	}
+	if epoch > liveEpoch {
+		return lease.ErrStale
+	}
+	if token != nil && epoch == liveEpoch {
+		return journal.ErrRunOwned
+	}
+	return nil
+}
+
 // claimRun validates the pre-fence snapshot under the counter lock. No event
 // history is read here; takeover plus the prepared checkpoint is one short TX.
 func (b *Backend) claimRun(ctx context.Context, tx pgx.Tx, h *lease.Handle, r *runOwner, expected int64) error {
@@ -218,14 +250,8 @@ func (b *Backend) claimRun(ctx context.Context, tx pgx.Tx, h *lease.Handle, r *r
 	if err != nil {
 		return err
 	}
-	if gaggle != r.key.Gaggle {
-		return os.ErrNotExist
-	}
-	if epoch > h.Epoch {
-		return lease.ErrStale
-	}
-	if token != nil && epoch == h.Epoch {
-		return journal.ErrRunOwned
+	if err := validateRecoveryOwner(r.key, gaggle, token, epoch, h.Epoch); err != nil {
+		return err
 	}
 	if seq != expected {
 		return errHistoryChanged

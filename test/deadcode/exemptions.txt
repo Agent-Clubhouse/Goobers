@@ -550,3 +550,5 @@ github.com/goobers/goobers/internal/cloud/journalpg.Backend.validateProgress # H
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.claimRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.Backend.retireOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/journalpg.completedTranscriptPartials # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.Backend.recoverableRun # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/journalpg.validateRecoveryOwner # HA-P3-09 journal backend; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22

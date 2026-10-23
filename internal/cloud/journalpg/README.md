@@ -28,6 +28,8 @@ O(history) outside the write budget, while fenced work is O(batch). Progress-rat
 checks use a bounded indexed window count; operator keys, notification claims and
 child continuations use dedicated indexes. Recovery prepares its report before
 fenced takeover and cleans transcript fragments in batches of at most 100.
+The caller context bounds replay; the 30-second lock-wait budget applies only
+to ownership contention, so it does not impose a second history-size ceiling.
 A process-lifetime backend forgets local handles from strictly older epochs on
 recovery, so lease reacquisition does not require restarting the process.
 
