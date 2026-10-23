@@ -133,7 +133,7 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pools.Close()
-	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder); err != nil {
+	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder, cloudmigrate.WarningTo(stderr, "migrate")); err != nil {
 		writef(stderr, "goobers-cloud migrate: %s\n", cloudpg.SafeDiagnostic(err))
 		return 1
 	}
@@ -153,14 +153,14 @@ var (
 	runAPIHost         = unavailableDatabaseRole
 	runControllerHost  = unavailableDatabaseRole
 	checkCloudSchema   = cloudmigrate.CheckPoolCompatibility
-	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef, instanceID, holder string) error {
+	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef, instanceID, holder string, report func(error)) error {
 		catalog, err := cloudmigrate.Catalog()
 		if err != nil {
 			return err
 		}
 		return (cloudmigrate.Runner{
 			Direct: pools.Direct, Catalog: catalog, BackupRef: backupRef,
-			InstanceID: instanceID, Holder: holder,
+			InstanceID: instanceID, Holder: holder, Report: report,
 		}).Apply(ctx)
 	}
 	loadMigrationStatus = cloudmigrate.Status

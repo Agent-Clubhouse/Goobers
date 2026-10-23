@@ -950,7 +950,7 @@ jobs:
         env:
           TESTDEP_STRICT: "1"
           GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
-        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres)'
+        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey)|HealthStreamAndConsumerCursor)'
 
       - name: Stop Azurite
         if: always()
