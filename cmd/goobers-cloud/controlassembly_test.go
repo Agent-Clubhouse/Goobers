@@ -39,6 +39,9 @@ func TestControlAssemblyManifestCoversRealRequiredFields(t *testing.T) {
 	}
 	for i := range fields.NumField() {
 		field := fields.Field(i).Name
+		if !fields.Field(i).IsExported() {
+			continue
+		}
 		if field != "RunnerHosts" && !seen[field] {
 			t.Fatalf("required assembly field %s is absent from manifest", field)
 		}
@@ -52,12 +55,12 @@ func TestControlCheckAssemblyIsOfflineAndListsPendingSeams(t *testing.T) {
 	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "not a database URL")
 	t.Setenv("GOOBERS_POD_KEY_FILE", "/does-not-exist/keyring.json")
 	prior := assembleControlPlanes
-	assembleControlPlanes = func(context.Context, controlDatabases, controlAuth, func() *lease.Handle) (controlPlanes, error) {
+	assembleControlPlanes = func(context.Context, controlDatabases, controlAuth, *lease.Manager, func() *lease.Handle) (controlPlanes, error) {
 		t.Fatal("offline inspection invoked the real dependency constructors")
 		return controlPlanes{}, nil
 	}
 	t.Cleanup(func() { assembleControlPlanes = prior })
-	code, stdout, stderr := runForTest("control", "--check-assembly")
+	code, stdout, stderr := runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
 	wantCode := 0
 	for _, seam := range controlAssembly {
 		state := "implemented"
@@ -80,18 +83,18 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 	calls := make(map[string]int)
 	for i := range controlAssembly {
 		fieldName := controlAssembly[i].field
-		controlAssembly[i].construct = func(_ context.Context, _ databaseServices, _ controlAuth, _ func() *lease.Handle, p *controlPlanes) error {
+		controlAssembly[i].construct = func(_ context.Context, _ databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
 			calls[fieldName]++
 			value := reflect.ValueOf(populatedControlPlanes()).FieldByName(fieldName)
 			reflect.ValueOf(p).Elem().FieldByName(fieldName).Set(value)
 			return nil
 		}
 	}
-	code, stdout, stderr := runForTest("control", "--check-assembly")
+	code, stdout, stderr := runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
 	if code != 0 || stderr != "" || strings.Contains(stdout, "pending") || len(calls) != 0 {
 		t.Fatalf("compiled manifest code=%d stdout=%s stderr=%s calls=%v", code, stdout, stderr, calls)
 	}
-	assembled, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, func() *lease.Handle { return nil })
+	assembled, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, nil, func() *lease.Handle { return nil })
 	if err != nil || !assembled.complete() {
 		t.Fatalf("real composition diverged from manifest: %v", err)
 	}
@@ -101,14 +104,14 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 		}
 	}
 	controlAssembly[0].construct = nil
-	code, stdout, _ = runForTest("control", "--check-assembly")
+	code, stdout, _ = runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
 	if code != 1 || !strings.Contains(stdout, controlAssembly[0].name()+"\tpending") {
 		t.Fatalf("removing one constructor did not fail closed: code=%d %s", code, stdout)
 	}
-	controlAssembly[0].construct = func(context.Context, databaseServices, controlAuth, func() *lease.Handle, *controlPlanes) error {
+	controlAssembly[0].construct = func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error {
 		return nil
 	}
-	if _, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, func() *lease.Handle { return nil }); err == nil {
+	if _, err := assembleControlPlanes(t.Context(), controlDatabases{}, controlAuth{}, nil, func() *lease.Handle { return nil }); err == nil {
 		t.Fatal("runtime accepted a registered no-op constructor")
 	}
 }
@@ -125,5 +128,25 @@ func populatedControlPlanes() controlPlanes {
 		Epoch: func(context.Context, *lease.Handle) (control.EpochServices, error) {
 			return control.EpochServices{}, nil
 		},
+	}
+}
+
+func TestCheckAssemblyNamesTheOptionASeamCannotComposeWithout(t *testing.T) {
+	t.Setenv("GOOBERS_OBJECT_STORE_URL", "")
+	prior := controlAssembly
+	controlAssembly = append([]controlAssemblySeam(nil), prior...)
+	t.Cleanup(func() { controlAssembly = prior })
+	for i := range controlAssembly {
+		controlAssembly[i].construct = func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error {
+			return nil
+		}
+	}
+	code, stdout, _ := runForTest("control", "--check-assembly")
+	if code != 1 || !strings.Contains(stdout, "Journal\tpending\thttps://github.com/Agent-Clubhouse/Goobers/issues/7818\tneeds --object-store-url") {
+		t.Fatalf("a journal that cannot compose without the object store reported ready: code=%d %s", code, stdout)
+	}
+	code, stdout, _ = runForTest("control", "--check-assembly", "--object-store-url", "https://store.invalid")
+	if code != 0 || strings.Contains(stdout, "pending") {
+		t.Fatalf("a satisfied option still reports pending: code=%d %s", code, stdout)
 	}
 }
