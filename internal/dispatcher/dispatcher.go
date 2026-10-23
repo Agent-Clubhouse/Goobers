@@ -812,6 +812,9 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
+	// PodCreateAttempted distinguishes a refusal before the Kubernetes create
+	// call from an ambiguous create outcome that may already be executing.
+	PodCreateAttempted bool
 	// ChildPodUID is the API-created object identity, never a name-derived ID.
 	ChildPodUID string
 	// ChildCreateAttempted distinguishes a preflight refusal from an uncertain

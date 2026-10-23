@@ -17,7 +17,9 @@ func TestApplyAgenticKitAttemptContractCopiesUsageAllowance(t *testing.T) {
 		},
 	}
 	kit := &agentickit.Kit{}
-	applyAgenticKitAttemptContract(kit, attempt)
+	if err := applyAgenticKitAttemptContract(kit, attempt); err != nil {
+		t.Fatal(err)
+	}
 	tokens, cost = 99, 99
 	if !kit.ReviewRequiresDiff || kit.UsageAllowance == nil ||
 		kit.UsageAllowance.MaxTokens == nil || *kit.UsageAllowance.MaxTokens != 0 ||

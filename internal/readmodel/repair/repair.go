@@ -558,7 +558,15 @@ func (s *Sweeper) sweepReverse(
 		examined++
 		found, err := s.runExists(ctx, row.RunID, runsDirs)
 		if err != nil {
-			return examined, err
+			if ctx.Err() != nil {
+				return examined, ctx.Err()
+			}
+			s.stats.Failures++
+			s.options.Logger.Warn("repair journal lookup failed", "run_id", row.RunID,
+				"error", fmt.Errorf("open journal: %w", err))
+			// An unreadable source is not evidence of deletion. Keep the row,
+			// but advance past it so other runs progress; retry next cycle.
+			found = true
 		}
 		if !found && s.options.Journal == nil && !refreshedRoots && s.options.ResolveRunsDirs != nil {
 			// A new root may have been projected after Step's snapshot.

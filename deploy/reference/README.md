@@ -806,12 +806,16 @@ controller rollout.
 
 Terminating one replica does not consume a stage attempt. The replacement
 worker adopts the exact live stage pod by UID, preserving the attempt number
-and its original `timeoutSeconds` deadline. The current template retains a
-six-minute grace period while the disruption policy is staged. Once the
-rainbow manifests and re-attach chaos coverage are installed, the worker pod
-grace becomes 90 seconds: enough for the default Temporal drain and handoff,
-not the lifetime of the stage pod, which continues independently. Increase pod
-grace only when increasing `--drain-timeout`, and keep a process-exit margin.
+and its original `timeoutSeconds` deadline. Worker pods retain the staged
+360-second grace so the 30-second drain, five-minute child settlement, and
+process-exit margin fit. Lowering this to 90 seconds is a separate transition:
+first lower `workerhost.ChildSettlementTimeout`, then qualify rainbow
+re-attachment under CHAOS-13. Each rainbow build receives its own PDB
+(`maxUnavailable: 1`, unhealthy pods always evictable), workers use the
+control-plane PriorityClass owned by the cloud-reference prerequisites, and
+zone spread is preferred. Rainbow PDBs select the controller-owned
+`temporal.io/build-id`; the rainbow overlay deletes the legacy broad PDB so no
+worker pod is selected by two disruption budgets.
 
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
