@@ -37,6 +37,9 @@ Options:
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
   --task-queue NAME              Remote engine task queue (default goobers)
+  --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
+                                 journal span source and config generations live there
+  --object-store-container NAME  Azure Blob container (default goobers)
 
 Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.

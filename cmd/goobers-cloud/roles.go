@@ -180,6 +180,7 @@ type databaseServices struct {
 	BindControllerFence func(*cloudlease.Manager, *cloudlease.Handle)
 	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
+	InstanceID          string
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata
