@@ -74,6 +74,10 @@ func TestCloudScopeProfile(t *testing.T) {
 	}{
 		{"internal/cloud/store/postgres.go", true},
 		{"cmd/goobers-cloud/main.go", true},
+		{"test/journalequivalence/cloud_test.go", true},
+		{"test/testtiming/wall.go", true},
+		{".github/workflows/ci.yml", true},
+		{".github/test-timing-budgets.json", true},
 		{"deploy/cloud/api.yaml", true},
 		{"migrations/001.sql", true},
 		{"internal/journal/store.go", true},
