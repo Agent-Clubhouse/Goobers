@@ -8,8 +8,12 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	sharedauth "github.com/goobers/goobers/internal/podauth"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -39,7 +43,19 @@ func TestControlStandbyServesTheBlobPlaneOnly(t *testing.T) {
 	planes := populatedControlPlanes()
 	planes.BlobPlane = httpapi.WithBlobService(store)
 	db := databaseServices{StartStatusPage: func(context.Context, string, int) ([]acceptance.StartStatus, error) { return nil, nil }}
-	handler, err := controlHandler(db, planes, &cloudauth.Auth{}, host, log.New(io.Discard, "", 0))
+	keyPath := filepath.Join(t.TempDir(), "keys.json")
+	raw, err := json.Marshal(map[string]sharedauth.SigningKey{"current": {ID: "test", Key: bytes.Repeat([]byte("k"), 32)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := cloudauth.New(cloudauth.Config{Mode: "signed", KeyFile: keyPath, Revocations: admitAllGrants{}, Fallback: httpapi.DenyAllAuthenticator{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := controlHandler(db, planes, auth, host, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
