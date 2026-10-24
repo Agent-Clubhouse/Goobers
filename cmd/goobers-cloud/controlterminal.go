@@ -91,7 +91,10 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 	if err != nil {
 		return failedTerminalPart(fmt.Errorf("terminal hooks: provider credentials: %w", err))
 	}
-	runs := terminalwriter.JournalRuns{Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Journal: backend, Generations: p.generations}
+	runs := terminalwriter.JournalRuns{
+		Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Children: terminalwriter.AcceptanceChildren(store.ChildForExecutionRun),
+		Journal: backend, Generations: p.generations,
+	}
 	writer, err := terminalwriter.New(runs, backends, registrar)
 	if err != nil {
 		return failedTerminalPart(fmt.Errorf("terminal hooks: provider writer: %w", err))
