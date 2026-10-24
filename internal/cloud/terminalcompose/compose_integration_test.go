@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/terminalcompose"
 	"github.com/goobers/goobers/internal/cloud/terminalwriter"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/terminalhooks/parking"
@@ -179,8 +182,10 @@ type rig struct {
 	events  map[string][]journal.Event
 	closed  []terminalawait.ClosedRun
 	// hideOpen makes the open-run listing empty (visibility has aged the run out).
-	hideOpen   bool
-	tuning     terminalcompose.Tuning
+	hideOpen bool
+	tuning   terminalcompose.Tuning
+	// noBudget makes the shared quota ledger refuse provider reads.
+	noBudget   atomic.Bool
 	manager    *lease.Manager
 	controller *pgxpool.Pool
 	reported   []error
@@ -200,6 +205,15 @@ func newRigTuned(t *testing.T, tm temporal, claimed map[string][]string, tuning 
 	r := &rig{t: t, backend: &backend{deleted: true}, rel: &releaser{}, log: &recorder{}, handle: handle, events: map[string][]journal.Event{}, manager: manager, controller: controller, pool: pool}
 	r.streaks = failurestreakpg.Store{Pool: controller, Fence: manager}
 	writer, err := terminalwriter.New(runs{}, backends{r.backend}, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaggle := apiv1.Gaggle{}
+	gaggle.Name = "web"
+	gaggle.Spec.Project = pinRepo
+	escalator, err := terminalwriter.NewInstanceWriter(func() (*instance.ConfigSet, string, bool) {
+		return &instance.ConfigSet{Gaggles: []apiv1.Gaggle{gaggle}}, "g1", true
+	}, backends{r.backend}, journal.NewRegistryScrubber(), r.log.AppendBestEffort)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,12 +237,14 @@ func newRigTuned(t *testing.T, tm temporal, claimed map[string][]string, tuning 
 		Pins: func(context.Context, string) (terminalawait.RunPin, error) {
 			return terminalawait.RunPin{Gaggle: "web", Workflow: "implementation", RepoRef: pinRepo}, nil
 		},
-		Bind:     runs{}.Bind,
-		Writer:   writer,
-		Events:   func(_ context.Context, run string) ([]journal.Event, error) { return r.events[run], nil },
-		Log:      r.log,
-		Report:   func(err error) { r.reported = append(r.reported, err) },
-		Backends: backends{r.backend},
+		Bind:      runs{}.Bind,
+		Writer:    writer,
+		Events:    func(_ context.Context, run string) ([]journal.Event, error) { return r.events[run], nil },
+		Log:       r.log,
+		Report:    func(err error) { r.reported = append(r.reported, err) },
+		Backends:  backends{r.backend},
+		Escalator: escalator,
+		Reserve:   func(providers.ProviderKind) bool { return !r.noBudget.Load() },
 		Instance: func(repo providers.RepositoryRef) (terminalwriter.Binding, bool) {
 			return terminalwriter.Binding{Gaggle: "web", Generation: "g1", Project: pinRepo, Workspace: workspace, WorkItems: workspace}, repo == workspace
 		},
@@ -501,5 +517,71 @@ func TestHealForgetsAClosedBlockerAndKeepsAnUnverifiableOne(t *testing.T) {
 	r.backend.mu.Unlock()
 	if reads != 1 {
 		t.Fatalf("the unverifiable item was read %d times across passes, want once (then backed off)", reads)
+	}
+}
+
+// The deferral end to end: a block that closes a cycle while the provider read
+// budget is spent parks its members without escalating; the delivery loop's sweep
+// later re-verifies the cycle and escalates it through the instance-level writer
+// (no run involved, keyed comments, every write journaled), exactly once.
+func TestADeferredCycleIsEscalatedByTheSweepThroughTheInstanceWriter(t *testing.T) {
+	blockedOn := func(id, on string) engine.RunResult {
+		return engine.RunResult{
+			Status: engine.StatusEscalated, FinalState: "implement",
+			Outputs: map[string]apiv1.ResultEnvelope{"implement": {Status: apiv1.ResultBlocked, Summary: "waits", Outputs: map[string]any{"blockedBy": on}}},
+		}
+	}
+	tm := temporal{"run-a": {id: "run-a", result: blockedOn("42", "43")}, "run-b": {id: "run-b", result: blockedOn("43", "42")}}
+	r := newRigTuned(t, tm, map[string][]string{"run-a": {"42"}, "run-b": {"43"}},
+		terminalcompose.Tuning{DeliveryEvery: time.Millisecond, HealEvery: time.Millisecond, DeferralBound: time.Hour})
+	r.noBudget.Store(true) // the second block cannot be verified
+	r.run(t)
+	if n := blockedRecords(t, r); n != 2 {
+		t.Fatalf("blocked records = %d, want both blocks recorded", n)
+	}
+	for _, u := range updates(r) {
+		if slices.Contains(u.AddLabels, providers.LabelNeedsHuman) {
+			t.Fatalf("a cycle that could not be verified was escalated already: %+v", u)
+		}
+	}
+	var deferred int
+	if err := r.controller.QueryRow(t.Context(), `SELECT count(*) FROM control.blocked_record WHERE verify_after IS NOT NULL`).Scan(&deferred); err != nil || deferred != 1 {
+		t.Fatalf("deferred markers = %d, %v; want the cycle's seed marked", deferred, err)
+	}
+	// The budget returns and the marker falls due; the loop's sweep resolves it.
+	r.noBudget.Store(false)
+	if _, err := r.pool.Exec(t.Context(), `UPDATE control.blocked_record SET verify_after = now() - interval '1 second' WHERE verify_after IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	r.deliver(t)
+	escalations := map[string]int{}
+	for _, u := range updates(r) {
+		if slices.Contains(u.AddLabels, providers.LabelNeedsHuman) && u.Comment != "" {
+			if u.IdempotencyKey == "" || !strings.HasPrefix(u.IdempotencyKey, "cycle-") {
+				t.Fatalf("an escalation comment without the cycle's key: %+v", u)
+			}
+			escalations[u.ID]++
+		}
+	}
+	if escalations["42"] != 1 || escalations["43"] != 1 {
+		t.Fatalf("escalations = %v; want each member escalated exactly once (updates %+v, reported %v)", escalations, updates(r), r.reported)
+	}
+	var wrote, summarized bool
+	r.log.mu.Lock()
+	for _, ev := range r.log.events {
+		wrote = wrote || ev.Runner["kind"] == terminalwriter.InstanceWriteOperation
+		summarized = summarized || ev.Runner["kind"] == "blocked_cycle_escalated"
+	}
+	r.log.mu.Unlock()
+	if !wrote || !summarized {
+		t.Fatalf("instance writes journaled %v, escalation summary journaled %v; want both", wrote, summarized)
+	}
+	before := len(updates(r))
+	r.deliver(t) // nothing is owed any more
+	if after := len(updates(r)); after != before {
+		t.Fatalf("a settled cycle was written again: %d -> %d updates", before, after)
+	}
+	if st := r.comp.Delivery.Status(); st.DeferredCycles != 0 {
+		t.Fatalf("status still shows %d deferred cycles", st.DeferredCycles)
 	}
 }

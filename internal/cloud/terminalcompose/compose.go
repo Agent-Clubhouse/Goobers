@@ -12,6 +12,8 @@ package terminalcompose
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/capability"
 
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
@@ -35,6 +38,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/terminalhooks"
 	"github.com/goobers/goobers/internal/terminalhooks/frame"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
 	"github.com/goobers/goobers/internal/terminalhooks/providerposter"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/providers"
@@ -60,6 +64,13 @@ type Tuning struct {
 	DeliveryEvery  time.Duration
 	DeliveryBudget int
 	HealLimit      int
+	// DeferralBound is the longest a blocked-record cycle that cannot be verified may
+	// wait before it is escalated as unverifiable (default and minimum clamp: see
+	// blockedrecordspg.ClampDeferralBound). SweepCycles and SweepMembers bound the
+	// cycles re-checked and the provider reads made per sweep pass.
+	DeferralBound time.Duration
+	SweepCycles   int
+	SweepMembers  int
 	// MaxOutboxLag is how long the oldest undelivered terminal report may wait
 	// before the controller reports itself unhealthy (default 15m).
 	MaxOutboxLag time.Duration
@@ -96,6 +107,10 @@ type Deps struct {
 	// without them verification falls back to the run that recorded the block.
 	Backends terminalwriter.Backends
 	Instance func(repo providers.RepositoryRef) (terminalwriter.Binding, bool)
+	// Escalator writes the escalation of a cycle the sweep resolves, outside any
+	// run (terminalwriter.InstanceWriter). Required for deferral: without it a cycle
+	// that cannot be verified is escalated at once, labelled, never deferred.
+	Escalator parking.Poster
 	// Reserve accounts a provider read in the shared quota ledger and reports
 	// whether it may be made now (nil allows all).
 	Reserve func(providers.ProviderKind) bool
@@ -162,9 +177,9 @@ func New(deps Deps) (*Composition, error) {
 		// has. A lost outcome event costs the log entry, never the report.
 		Log: func(ev journal.Event) error { deps.Log.AppendBestEffort(ev); return nil },
 	}
-	blocks := blockedrecordspg.Store{Fence: deps.Fence, Closed: closedVia(deps), Reserve: deps.Reserve, Backoff: &blockedrecordspg.Backoff{Now: deps.Now}}
-	delivery := newDelivery(deps, outbox, blocks)
+	blocks := blockedrecordspg.Store{Fence: deps.Fence, Closed: closedVia(deps), Reserve: deps.Reserve, Backoff: &blockedrecordspg.Backoff{Now: deps.Now}, Defer: deps.Escalator != nil}
 	c := &composer{deps: deps, outbox: outbox, blocks: blocks}
+	delivery := newDelivery(deps, outbox, blocks, c.escalateCycle)
 
 	tune := deps.Tuning
 	awaiters, err := terminalawait.New(deps.Handle, terminalawait.Config{
@@ -317,3 +332,34 @@ var (
 	_ terminalawait.Watermark = watermark{}
 	_ terminalawait.Framed    = framed{}
 )
+
+// escalateCycle is the sweep's escalation: every member of the resolved cycle is
+// parked needs-human with the cycle report, through the instance-level writer, with
+// every comment keyed by the cycle's identity so a repeat (a crash before the marker
+// is cleared) writes nothing new. The escalation is also journaled once.
+func (c *composer) escalateCycle(ctx context.Context, cycle blockedcycle.Result, _ blockedrecordspg.Deferral) error {
+	key := blockedrecordspg.CycleKey(cycle.Affected)
+	err := parking.EscalateCycle(ctx, keyedPoster{inner: c.deps.Escalator, cycle: key}, cycle)
+	if err == nil {
+		c.deps.Log.AppendBestEffort(journal.Event{
+			Type: journal.EventRunnerAnnotation, Reason: "blocked-record cycle escalated by the sweep",
+			Runner: map[string]any{"kind": "blocked_cycle_escalated", "cycle": key, "members": len(cycle.Affected), "unverified": cycle.Unverified, "driver": string(journal.DriverEngine)},
+		})
+	}
+	return err
+}
+
+// keyedPoster gives every cycle comment a key derived from the cycle and the
+// comment, so the provider dedupes a repeated escalation.
+type keyedPoster struct {
+	inner parking.Poster
+	cycle string
+}
+
+func (p keyedPoster) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	if req.Comment != "" && req.IdempotencyKey == "" {
+		sum := sha256.Sum256([]byte(req.Comment))
+		req.IdempotencyKey = p.cycle + "/" + req.ID + "/" + hex.EncodeToString(sum[:6])
+	}
+	return p.inner.UpdateWorkItem(ctx, req)
+}

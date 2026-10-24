@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -44,6 +45,11 @@ type Store struct {
 	// Backoff keeps an item that cannot be verified from being retried on every
 	// pass. Nil retries every time.
 	Backoff *Backoff
+	// Defer enables deferral: a cycle that cannot be verified yet gets a durable
+	// marker for Sweep to re-check. It must only be set when something runs Sweep;
+	// without a driver a deferred cycle would sit parked forever, so unset means
+	// such a cycle is escalated at once, labelled unverified.
+	Defer bool
 	// RetryDelays are the waits before each inline retry of a retryable
 	// verification failure while a block is being decided (default 5s then 15s,
 	// inside the caller's record timeout).
@@ -153,13 +159,20 @@ func (b *Backoff) Verified(node blockedcycle.Node) {
 //
 // A cycle is verified before it is escalated: a member whose item is closed is
 // forgotten, and a cycle through it is false. A member that cannot be verified is
-// never silently trusted and never silently held. Nothing re-runs this decision
-// later (a failed frame retries only its claim release), so holding a cycle would
-// leave its members parked blocked-on-sibling with no one to escalate them. Instead
-// a retryable failure is retried inline, within the caller's record timeout, and a
-// cycle still unverified after that (or after a spent read budget, or a permanent
-// failure) is ESCALATED with the unverifiable members named in its comment, so a
-// human sees it and knows what was not confirmed.
+// never silently trusted:
+//   - a failure that can never succeed (the repository is not configured, the
+//     credential is refused, the item is gone) escalates the cycle at once, with
+//     the unverifiable members named in its comment;
+//   - a transient failure (a rate limit, 5xx, timeout) is retried inline within the
+//     caller's timeout, and a spent read budget is not waited out: a cycle still
+//     unverified is DEFERRED. The seed record carries a durable marker and the
+//     controller's sweep re-checks it (Sweep), so the cycle ends up dropped, or
+//     escalated once verified or once it has waited the bound. No cycle is
+//     returned meanwhile, and its members stay parked blocked-on-sibling.
+//
+// Nothing else re-runs this decision (a failed frame retries only its claim
+// release), which is why deferral is a stored marker with a driver, not an
+// in-memory hold.
 func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
 	cycle, err := s.record(ctx, handle, b)
 	if err != nil || len(cycle.Affected) == 0 || s.Closed == nil {
@@ -171,19 +184,18 @@ func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.
 	for range cycle.Affected {
 		recs, serr := s.snapshot(ctx, handle)
 		if serr != nil {
-			return cycle, serr
+			return notChecked(cycle), serr
 		}
 		closed, skipped, unverifiable := s.verifyCycle(ctx, recs, cycle.Affected, b.RunID)
 		if len(closed) == 0 {
-			cycle.Unverified = unverifiedNotes(skipped, unverifiable)
-			return cycle, nil
+			return s.settle(ctx, handle, key, cycle, skipped, unverifiable)
 		}
 		if ferr := s.Forget(ctx, handle, closed); ferr != nil {
-			return cycle, ferr
+			return notChecked(cycle), ferr
 		}
 		recs, serr = s.snapshot(ctx, handle)
 		if serr != nil {
-			return cycle, serr
+			return notChecked(cycle), serr
 		}
 		if cycle = blockedrecords.FindCycle(recs, key); len(cycle.Affected) == 0 {
 			return cycle, nil
@@ -192,11 +204,34 @@ func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.
 	// The loop is bounded by the cycle's size and every pass removes a member, so
 	// this is not reached in practice. If it is, the members the last pass never
 	// read are unverified, not verified.
+	return notChecked(cycle), nil
+}
+
+// notChecked labels every member of a cycle as unconfirmed, for an answer given
+// before (or without) reading the provider.
+func notChecked(cycle blockedcycle.Result) blockedcycle.Result {
 	notes := make([]string, 0, len(cycle.Affected))
 	for _, node := range cycle.Affected {
-		notes = append(notes, "#"+node.ItemID+": unverifiable: not re-checked")
+		notes = append(notes, "#"+node.ItemID+": unverifiable: not checked")
 	}
 	cycle.Unverified = notes
+	return cycle
+}
+
+// settle decides a verification pass that closed nothing: escalate a verified or
+// permanently unverifiable cycle, defer one that may yet be verified.
+func (s Store) settle(ctx context.Context, handle *lease.Handle, key string, cycle blockedcycle.Result, skipped []blockedcycle.Node, unverifiable []unverified) (blockedcycle.Result, error) {
+	if len(skipped) == 0 && len(unverifiable) == 0 {
+		return cycle, nil
+	}
+	if s.Defer && !slices.ContainsFunc(unverifiable, func(u unverified) bool { return u.Permanent }) {
+		if err := s.deferCycle(ctx, handle, key, deferReason(skipped, unverifiable), FirstDeferralDelay); err == nil {
+			return blockedcycle.Result{}, nil
+		}
+		// The marker could not be stored: with no driver to re-check it, escalating
+		// (visibly, labelled) is the safe answer.
+	}
+	cycle.Unverified = unverifiedNotes(skipped, unverifiable)
 	return cycle, nil
 }
 
@@ -278,7 +313,8 @@ func (s Store) record(ctx context.Context, handle *lease.Handle, b parking.Block
 			INSERT INTO control.blocked_record (instance_id, record_key, record, owner_epoch)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (instance_id, record_key) DO UPDATE
-			SET record = EXCLUDED.record, owner_epoch = EXCLUDED.owner_epoch, recorded_at = now()`,
+			SET record = EXCLUDED.record, owner_epoch = EXCLUDED.owner_epoch, recorded_at = now(),
+			    verify_after = NULL, deferred_since = NULL, defer_attempts = 0, defer_reason = ''`,
 			handle.InstanceID, key, encoded, handle.Epoch); err != nil {
 			return fmt.Errorf("record block: %w", err)
 		}

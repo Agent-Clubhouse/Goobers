@@ -52,6 +52,8 @@ type terminalOutboxLag struct {
 	Pending       int     `json:"pending"`
 	OldestSeconds float64 `json:"oldestSeconds"`
 	Healthy       bool    `json:"healthy"`
+	// DeferredCycles is the blocked-record cycles awaiting re-verification.
+	DeferredCycles int `json:"deferredCycles"`
 }
 
 func currentTerminalOutboxLag() *terminalOutboxLag {
@@ -60,7 +62,7 @@ func currentTerminalOutboxLag() *terminalOutboxLag {
 		return nil
 	}
 	s := (*status)()
-	return &terminalOutboxLag{Pending: s.Pending, OldestSeconds: s.OldestAge.Seconds(), Healthy: s.Healthy}
+	return &terminalOutboxLag{Pending: s.Pending, OldestSeconds: s.OldestAge.Seconds(), Healthy: s.Healthy, DeferredCycles: s.DeferredCycles}
 }
 
 // terminalPart returns the Terminal part composed from the control planes, or nil
@@ -101,8 +103,18 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		if err != nil {
 			return terminalEpoch{}, err
 		}
+		// The sweep's escalation is the one credentialed write outside a run: it
+		// journals every write to the epoch's fenced log before making it.
+		escalator, err := terminalwriter.NewInstanceWriter(func() (*instance.ConfigSet, string, bool) {
+			candidate, ok := owner.Applied()
+			return candidate.Set, candidate.Digest, ok
+		}, backends, registrar, log.AppendBestEffort)
+		if err != nil {
+			return terminalEpoch{}, fmt.Errorf("terminal hooks: instance writer: %w", err)
+		}
 		comp, err := terminalcompose.New(terminalcompose.Deps{
-			Handle: handle, Fence: fence, Pool: db.Pools.Transaction,
+			Escalator: escalator,
+			Handle:    handle, Fence: fence, Pool: db.Pools.Transaction,
 			Releaser: plane,
 			Claimed:  claimedItemIDs(plane),
 			Holders:  plane.ClaimedRuns,

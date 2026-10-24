@@ -7,12 +7,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/blockedcycle"
+	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
 	"github.com/goobers/goobers/internal/terminalreport"
+	"github.com/goobers/goobers/providers"
 )
 
 type fakeLoop struct {
+	sweeps       int
+	sweepErr     error
+	sweepOpt     blockedrecordspg.SweepOptions
+	deferred     int
 	budgets      []int
 	heals        int
 	healLimits   []int
@@ -32,6 +39,14 @@ func (f *fakeLoop) Heal(_ context.Context, _ *lease.Handle, limit int) (int, err
 	f.healLimits = append(f.healLimits, limit)
 	return 0, f.healErr
 }
+
+func (f *fakeLoop) Sweep(_ context.Context, _ *lease.Handle, opt blockedrecordspg.SweepOptions) (blockedrecordspg.SweepResult, error) {
+	f.sweeps++
+	f.sweepOpt = opt
+	return blockedrecordspg.SweepResult{}, f.sweepErr
+}
+
+func (f *fakeLoop) Deferrals(context.Context, *lease.Handle) (int, error) { return f.deferred, nil }
 
 func (f *fakeLoop) Backlog(context.Context) (terminalreportpg.Backlog, error) {
 	return f.backlog, f.backlogErr
@@ -148,4 +163,52 @@ func TestHealthIsFalseOnLagAndOnAnUnreadableBacklog(t *testing.T) {
 	if !d.Status().Healthy {
 		t.Fatal("a loop that has not run reported unhealthy")
 	}
+}
+
+// The sweep drives every deferred cycle, so it runs with the heal (its slow
+// cadence) and only when there is something to escalate with.
+func TestTheSweepRunsWithTheHealAndOnlyWithAnEscalator(t *testing.T) {
+	f, c := &fakeLoop{deferred: 2}, &clock{now: time.Unix(1000, 0)}
+	d, _ := newLoop(f, c, Tuning{DeferralBound: 20 * time.Minute, SweepCycles: 3, SweepMembers: 4})
+	d.deps.Escalator = poster{}
+	d.escalate = func(context.Context, blockedcycle.Result, blockedrecordspg.Deferral) error { return nil }
+	if err := d.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if f.sweeps != 1 || f.sweepOpt.Bound != 20*time.Minute || f.sweepOpt.MaxCycles != 3 || f.sweepOpt.MaxMembers != 4 || f.sweepOpt.Escalate == nil {
+		t.Fatalf("sweeps %d options %+v; want one pass with the configured bounds and an escalator", f.sweeps, f.sweepOpt)
+	}
+	if got := d.Status().DeferredCycles; got != 2 {
+		t.Fatalf("status deferred cycles = %d, want 2", got)
+	}
+	c.now = c.now.Add(2 * time.Second) // delivery is due again, the heal is not
+	if err := d.Tick(t.Context()); err != nil || f.sweeps != 1 {
+		t.Fatalf("sweeps = %d after a delivery-only pass (err %v); the sweep follows the heal cadence", f.sweeps, err)
+	}
+	// Without an escalator there is no driver: the sweep does not run, and the
+	// store (Defer unset) escalates unverifiable cycles itself.
+	f2 := &fakeLoop{}
+	d2, _ := newLoop(f2, &clock{now: time.Unix(1000, 0)}, Tuning{})
+	if err := d2.Tick(t.Context()); err != nil || f2.sweeps != 0 {
+		t.Fatalf("sweeps without an escalator = %d, err %v", f2.sweeps, err)
+	}
+	// A lost lease in the sweep ends the epoch; other failures are reported.
+	f3 := &fakeLoop{sweepErr: lease.ErrStale}
+	d3, _ := newLoop(f3, &clock{now: time.Unix(1000, 0)}, Tuning{})
+	d3.deps.Escalator = poster{}
+	if err := d3.Tick(t.Context()); err == nil {
+		t.Fatal("a stale fence in the sweep did not end the epoch")
+	}
+	f4 := &fakeLoop{sweepErr: errors.New("provider down")}
+	d4, reported := newLoop(f4, &clock{now: time.Unix(1000, 0)}, Tuning{})
+	d4.deps.Escalator = poster{}
+	if err := d4.Tick(t.Context()); err != nil || len(*reported) == 0 {
+		t.Fatalf("sweep failure: err %v reported %v; want reported, epoch kept", err, *reported)
+	}
+}
+
+type poster struct{}
+
+func (poster) UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
 }

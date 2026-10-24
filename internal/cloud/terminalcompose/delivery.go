@@ -33,6 +33,8 @@ type (
 	}
 	healer interface {
 		Heal(ctx context.Context, handle *lease.Handle, limit int) (int, error)
+		Sweep(ctx context.Context, handle *lease.Handle, opt blockedrecordspg.SweepOptions) (blockedrecordspg.SweepResult, error)
+		Deferrals(ctx context.Context, handle *lease.Handle) (int, error)
 	}
 )
 
@@ -47,6 +49,7 @@ type Delivery struct {
 	backlog   backlogReader
 	heal      healer
 	apply     func(context.Context, terminalreport.Effect) error
+	escalate  blockedrecordspg.EscalateFunc
 
 	every     time.Duration
 	healEvery time.Duration
@@ -70,13 +73,15 @@ type Status struct {
 	// LastPass is when the loop last completed; LastError the last failure.
 	LastPass  time.Time
 	LastError error
+	// DeferredCycles is the blocked-record cycles awaiting re-verification.
+	DeferredCycles int
 	// Healthy is false when the oldest report has waited longer than the bound, or
 	// the backlog could not be read: an unreadable outbox is not a healthy one.
 	Healthy bool
 }
 
-func newDelivery(deps Deps, outbox terminalreportpg.Outbox, blocks blockedrecordspg.Store) *Delivery {
-	d := &Delivery{deps: deps, reconcile: outbox, backlog: outbox, heal: blocks}
+func newDelivery(deps Deps, outbox terminalreportpg.Outbox, blocks blockedrecordspg.Store, escalate blockedrecordspg.EscalateFunc) *Delivery {
+	d := &Delivery{deps: deps, reconcile: outbox, backlog: outbox, heal: blocks, escalate: escalate}
 	d.apply = func(ctx context.Context, e terminalreport.Effect) error {
 		return e.Apply(ctx, providerposter.Poster{Writer: deps.Writer, RunID: e.RunID})
 	}
@@ -151,6 +156,20 @@ func (d *Delivery) Tick(ctx context.Context) error {
 				return err
 			}
 		}
+		// The sweep is the driver of every deferred cycle: it re-checks the ones
+		// that have fallen due, and escalates or drops each.
+		if d.deps.Escalator != nil {
+			opt := blockedrecordspg.SweepOptions{Bound: d.deps.Tuning.DeferralBound, MaxCycles: d.deps.Tuning.SweepCycles, MaxMembers: d.deps.Tuning.SweepMembers, Escalate: d.escalate}
+			if _, err := d.heal.Sweep(ctx, d.deps.Handle, opt); err != nil {
+				if err := note(fmt.Errorf("sweep deferred cycles: %w", err)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	deferred, deferErr := d.heal.Deferrals(ctx, d.deps.Handle)
+	if err := note(deferErr); err != nil {
+		return err
 	}
 	backlog, readErr := d.backlog.Backlog(ctx)
 	if err := note(readErr); err != nil {
@@ -158,7 +177,7 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	d.snapshot = Status{
-		Pending: backlog.Pending, OldestAge: backlog.Oldest, LastPass: d.deps.Now(), LastError: failure,
+		Pending: backlog.Pending, OldestAge: backlog.Oldest, LastPass: d.deps.Now(), LastError: failure, DeferredCycles: deferred,
 		Healthy: readErr == nil && backlog.Oldest <= d.maxLag,
 	}
 	d.mu.Unlock()
