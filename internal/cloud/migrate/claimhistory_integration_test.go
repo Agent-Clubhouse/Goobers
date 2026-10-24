@@ -16,8 +16,9 @@ import (
 	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
-// upgradeTo0022 applies the catalog before 0022, runs seed against the
-// pre-0022 schema, then applies the full catalog.
+// upgradeTo0022 applies the catalog without 0022 and 0035 (which alters the
+// table 0022 creates), runs seed against the pre-0022 schema, then applies the
+// full catalog.
 func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	t.Helper()
 	pool := privatePool(t)
@@ -28,7 +29,7 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	}
 	var before []Migration
 	for _, migration := range catalog {
-		if migration.Version < 22 {
+		if migration.Version != 22 && migration.Version != 35 {
 			before = append(before, migration)
 		}
 	}
@@ -47,9 +48,8 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	return pool
 }
 
-// writePathsBefore0022 is the current inventory without what 0022 and later
-// claim migrations add: the claim_run_history table and the cleanup-custody
-// column (0024).
+// writePathsBefore0022 is the current inventory without what 0022 and 0035
+// add: the claim_run_history table and the cleanup-custody column.
 func writePathsBefore0022() (cloudschema.Inventory, error) {
 	inventory, err := cloudschema.LoadWritePaths()
 	if err != nil {
