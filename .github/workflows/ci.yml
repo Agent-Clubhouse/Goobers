@@ -2422,7 +2422,7 @@ jobs:
         run: go test ./cmd/goobers -run 'TestWorkflowValidateChild|TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
       - name: Windows cloud CLI
-        run: go test ./internal/cliregistry ./internal/cloud/operatorcli ./cmd/goobers-cloud
+        run: go test ./internal/cliregistry ./internal/cloud/operatorcli ./cmd/goobers-cloud ./test/ha/kind/cmd/assemblyclassify
 
       - name: Windows shared runtime wiring
         run: go test ./internal/runtimewiring

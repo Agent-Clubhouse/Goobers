@@ -289,16 +289,8 @@ jobs:
           assembly="$(go run ./cmd/goobers-cloud control --check-assembly "${flags[@]}" 2>&1)"
           status=$?
           set -e
-          printf '%s\n' "$assembly" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [[ "$status" -eq 0 ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          elif grep -q $'\tpending\t' <<<"$assembly"; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=cloud reference blocked::control assembly still has explicitly pending seams; cloud deployment was not attempted"
-          else
-            echo "::error title=cloud assembly check failed::all compiled seams must either report pending or compose successfully"
-            exit "$status"
-          fi
+          printf '%s\n' "$assembly" |
+            go run ./test/ha/kind/cmd/assemblyclassify "$status"
 
       - name: Apply goobers-cloud reference and check rollout
         if: ${{ steps.cloud.outputs.ready == 'true' }}

@@ -126,6 +126,7 @@ func TestHANightlyWiresCloudStackAndWorkerController(t *testing.T) {
 	root := moduleRoot(t)
 	paths := []string{
 		".github/workflows/ha-nightly.yml",
+		"test/ha/kind/cmd/assemblyclassify/main.go",
 		"test/ha/kind/cloud-reference/azurite.yaml",
 		"test/ha/kind/cloud-reference/kustomization.yaml",
 		"test/ha/kind/reference/nightly-patch.yaml",
@@ -158,7 +159,7 @@ func TestHANightlyWiresCloudStackAndWorkerController(t *testing.T) {
 		"--object-store-container=$(GOOBERS_OBJECT_STORE_CONTAINER)",
 		"--config-dir=/etc/goobers/config",
 		"replicas: 2",
-		`grep -q $'\tpending\t'`,
+		"pendingNeedsFlag",
 		"cloud assembly check failed",
 	} {
 		if !strings.Contains(all, want) {
