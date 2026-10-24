@@ -15,7 +15,7 @@ import (
 //
 // It is the controller's own read, for in-process consumers such as the
 // scheduler's demand counters; it carries no pod containment because there is no
-// pod principal. Unlike Store.Snapshot and Store.HistorySnapshot it returns every
+// pod principal. Like the error-returning Store reads, it returns every
 // query and scan error: a caller deciding from the ABSENCE of a claim must be able
 // to tell "no claims" from "the read failed", or a database error would read as
 // an unclaimed item.
@@ -30,11 +30,11 @@ func (p *Plane) ListNamespace(ctx context.Context, gaggle, provider string) (cla
 	const historyNamespace = `((h.gaggle=$2 AND h.provider=$3) OR (h.gaggle='` + legacyNamespace + `' AND h.provider='` + legacyNamespace + `'))`
 	entries, err := p.selectEntries(ctx, p.pool, namespace, gaggle, provider)
 	if err != nil {
-		return claimsclient.Listing{}, err
+		return claimsclient.Listing{}, claimReadError(err)
 	}
 	history, err := queryHistory(ctx, p.pool, p.instanceID, historyNamespace, historyNewestFirst, gaggle, provider)
 	if err != nil {
-		return claimsclient.Listing{}, err
+		return claimsclient.Listing{}, claimReadError(err)
 	}
 	return claimsclient.Listing{Entries: unscoped(entries), History: unscoped(history)}, nil
 }

@@ -84,6 +84,9 @@ func (s *Scheduler) demandPollFailed(ctx context.Context, entry WorkflowEntry, p
 // maxParallelRuns, idle backoff), and a start stage with nothing eligible ends
 // as ordinary no-work.
 //
+// Claim-read failures are different: ownership is unknown, so never take the
+// fallback. pollDemand marks them for deferred re-poll, preserving the fire.
+//
 // Everything else keeps returning 0:
 //   - backlog and refill polls size fan-out, so an unknown count must not
 //     guess one;
@@ -91,7 +94,7 @@ func (s *Scheduler) demandPollFailed(ctx context.Context, entry WorkflowEntry, p
 //   - a rate-limit give-up would meet the same exhausted quota in the run;
 //   - a persistent failure (not-found, malformed request) is not demand.
 func failedPollDemand(ctx context.Context, poll demandPoll, err error) int {
-	if !poll.schedule || ctx.Err() != nil {
+	if !poll.schedule || ctx.Err() != nil || errors.Is(err, ErrClaimRead) {
 		return 0
 	}
 	var rateLimited *providers.RateLimitError

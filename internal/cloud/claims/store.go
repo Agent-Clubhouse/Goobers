@@ -336,42 +336,53 @@ func (s *Store) AdoptClaims(predecessorEpoch int64) (int64, error) {
 	return adopted, err
 }
 
-// Snapshot returns active claims.
-func (s *Store) Snapshot() []localscheduler.ClaimEntry {
-	rows, err := s.pool.Query(context.Background(), claimSelect+`
-		FROM control.claim WHERE instance_id=$1 ORDER BY gaggle,provider,external_id`,
-		s.instanceID,
-	)
+// SnapshotErr returns active claims or the read error, never a partial snapshot.
+func (s *Store) SnapshotErr(ctx context.Context) ([]localscheduler.ClaimEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, claimSelect+`
+        FROM control.claim WHERE instance_id=$1 ORDER BY gaggle,provider,external_id`, s.instanceID)
 	if err != nil {
-		return nil
+		return nil, claimReadError(err)
 	}
 	entries, err := pgx.CollectRows(rows, scanClaim)
 	if err != nil {
-		return nil
+		return nil, claimReadError(err)
 	}
-	return entries
+	return entries, nil
 }
 
-// ForRunAll returns all active claims owned by a run.
-func (s *Store) ForRunAll(runID string) []localscheduler.ClaimEntry {
-	entries := s.Snapshot()
+// ForRunAllErr returns all active claims owned by a run. A failed snapshot
+// cannot be interpreted as a run with no claims.
+func (s *Store) ForRunAllErr(ctx context.Context, runID string) ([]localscheduler.ClaimEntry, error) {
+	entries, err := s.SnapshotErr(ctx)
+	if err != nil {
+		return nil, err
+	}
 	result := entries[:0]
 	for _, entry := range entries {
 		if entry.RunID == runID {
 			result = append(result, entry)
 		}
 	}
-	return result
+	return result, nil
 }
 
-// HistorySnapshot returns retained claim history, newest first, as the file
-// ledger's HistorySnapshot does: one record per run and key, live or released.
-func (s *Store) HistorySnapshot() []localscheduler.ClaimEntry {
-	entries, err := queryHistory(context.Background(), s.pool, s.instanceID, `true`, historyNewestFirst)
+// HistorySnapshotErr returns retained claim history, newest first, as the file
+// ledger does: one record per run and key, live or released. A read failure is
+// not an empty history.
+func (s *Store) HistorySnapshotErr(ctx context.Context) ([]localscheduler.ClaimEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	entries, err := queryHistory(ctx, s.pool, s.instanceID, `true`, historyNewestFirst)
 	if err != nil {
-		return nil
+		return nil, claimReadError(err)
 	}
-	return entries
+	return entries, nil
+}
+
+func claimReadError(err error) error {
+	return fmt.Errorf("%w: %w", localscheduler.ErrClaimRead, err)
 }
 
 func (s *Store) mutate(action func(context.Context, pgx.Tx, int64) error) error {
