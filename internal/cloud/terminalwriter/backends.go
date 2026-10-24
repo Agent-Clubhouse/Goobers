@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
@@ -64,9 +65,9 @@ func (b *ConfiguredBackends) For(ctx context.Context, bound Binding, repo provid
 	if !ok || cfg == nil {
 		return nil, ErrNoAppliedConfig
 	}
-	configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, bound.Project)
-	if !ok {
-		return nil, fmt.Errorf("gaggle %q project %s/%s is not configured", bound.Gaggle, bound.Project.Owner, bound.Project.Name)
+	configured, err := configuredRepo(cfg, bound.Project)
+	if err != nil {
+		return nil, fmt.Errorf("gaggle %q: %w", bound.Gaggle, err)
 	}
 	if repo.Provider == providers.ProviderADO && !sameRepository(repo, bound.Workspace) {
 		// Azure Boards: the configured repository's organization-scoped auth
@@ -120,6 +121,31 @@ func (b *ConfiguredBackends) For(ctx context.Context, bound Binding, repo provid
 			providers.WithADOCredentialSource(credential), providers.WithADOSecretRegistrar(b.registrar))}, nil
 	}
 	return nil, fmt.Errorf("repository provider %q: %w", repo.Provider, ErrUnsupported)
+}
+
+// configuredRepo is the applied config's entry for project, matched on its
+// whole identity, host included (runtimewiring.ConfiguredRepoForProject
+// matches owner/name only): an identically named repository on another host
+// must never supply its credentials. Exactly one entry must match. An ADO
+// project with no exact entry uses the gaggle's organization mapping.
+func configuredRepo(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, error) {
+	want := repositoryRef(project)
+	var matched []instance.RepoRef
+	for _, configured := range cfg.Repos {
+		candidate := providers.RepositoryRef{Provider: providers.ProviderKind(configured.Provider), URL: configured.BaseURL, Owner: configured.Owner, Project: configured.Project, Name: configured.Name}
+		if candidate.CanonicalKey() == want.CanonicalKey() {
+			matched = append(matched, configured)
+		}
+	}
+	switch {
+	case len(matched) == 1:
+		return matched[0], nil
+	case len(matched) == 0 && project.Provider == apiv1.ProviderADO:
+		if repo, ok := runtimewiring.AdoRepoForGaggle(cfg, project); ok {
+			return repo, nil
+		}
+	}
+	return instance.RepoRef{}, fmt.Errorf("project %s matches %d configured repositories, want exactly one", want.CanonicalKey(), len(matched))
 }
 
 // credentials returns the injector scoped to the bound gaggle's configured

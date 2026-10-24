@@ -181,6 +181,28 @@ func TestPullRequestLabelIsIdempotentForTheRun(t *testing.T) {
 	}
 }
 
+func TestLabelsOnTheRunsWorkItemsUseTheIssueWrite(t *testing.T) {
+	backend := &fakeBackend{}
+	shared := binding("run-shared")
+	shared.WorkItems = workspaceRepo
+	w, _ := newTestWriter(t, backend, fakeRuns{"run-1": binding("run-1"), "run-shared": shared})
+	label := providers.UpdateWorkItemRequest{AddLabels: []string{"goobers:blocked"}}
+	for _, ref := range []providerwriter.ItemRef{
+		{RunID: "run-1", Repo: backlogRepo, ItemID: "7"},
+		// GitHub models a pull request as an issue: on a repository that holds
+		// both, the issue update covers the pull request too.
+		{RunID: "run-shared", Repo: workspaceRepo, ItemID: "7"},
+	} {
+		*backend.calls = nil
+		if err := w.Update(t.Context(), ref, label); err != nil {
+			t.Fatal(err)
+		}
+		if got := *backend.calls; len(got) != 1 || got[0].op != "update" || got[0].capability != string(capability.GitHubIssuesWrite) {
+			t.Fatalf("%s label: %+v, want one issue update with issues:write", ref.RunID, got)
+		}
+	}
+}
+
 func TestUpdateRefusesAnUnkeyedCommentBeforeAnyProviderCall(t *testing.T) {
 	backend := &fakeBackend{}
 	w, _ := newTestWriter(t, backend, fakeRuns{"run-1": binding("run-1")})

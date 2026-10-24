@@ -115,8 +115,11 @@ func (w *Writer) Comments(ctx context.Context, ref providerwriter.ItemRef) ([]pr
 }
 
 // Update applies req to ref. A labels-only Update of the run's workspace
-// repository labels the pull request ref.ItemID; any other Update is a work
-// item update.
+// repository labels the pull request ref.ItemID, unless the workspace is also
+// where its work items live: GitHub and Gitea model a pull request as an
+// issue, so the issue update (issues:write) covers both. Azure DevOps pull
+// request labels are Azure Repos, never Boards, so there a workspace label is
+// always a pull request label. Any other Update is a work item update.
 func (w *Writer) Update(ctx context.Context, ref providerwriter.ItemRef, req providers.UpdateWorkItemRequest) error {
 	req.Repository, req.ID = ref.Repo, ref.ItemID
 	if req.Comment != "" && req.IdempotencyKey == "" {
@@ -126,7 +129,7 @@ func (w *Writer) Update(ctx context.Context, ref providerwriter.ItemRef, req pro
 	if err != nil {
 		return w.fail("update work item", err)
 	}
-	if t.workspace && labelsOnly(req) {
+	if t.workspace && labelsOnly(req) && (!t.workItems || ref.Repo.Provider == providers.ProviderADO) {
 		return w.fail("label pull request", w.labelPull(ctx, t, ref.ItemID, req.AddLabels, req.RemoveLabels))
 	}
 	if !t.workItems {

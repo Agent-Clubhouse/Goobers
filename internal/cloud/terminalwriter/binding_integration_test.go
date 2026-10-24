@@ -5,6 +5,7 @@ package terminalwriter
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -94,53 +95,73 @@ func controllerJournal(t *testing.T) *journalpg.Backend {
 	return backend
 }
 
-func TestJournalRunsBindsAsTheControllerRole(t *testing.T) {
+// TestJournalRunsBindsFromPinsAsTheControllerRole: the binding comes from the
+// start fence's pins; the worker-written journal, read as goobers_controller,
+// is only an agreement check, and a journal that disagrees refuses.
+func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
 	backend := controllerJournal(t)
-	worked := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "fork"}
-	for _, identity := range []journal.RunIdentity{
-		{RunID: "run-engine", Gaggle: "core", Workflow: "implementation", ConfigGeneration: "gen-1"},
-		{RunID: "run-workspace", Gaggle: "core", Workflow: "implementation", ConfigGeneration: "gen-1", WorkspaceRepository: &worked},
-		{RunID: "run-unpinned", Gaggle: "core", Workflow: "implementation"},
-		{RunID: "run-ado", Gaggle: "boards", Workflow: "implementation", ConfigGeneration: "gen-1"},
+	service := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"}
+	fork := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "fork"}
+	boards := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "Code", Name: "service"}
+	identity := func(runID, gaggle string, workspace *apiv1.RepoRef) journal.RunIdentity {
+		return journal.RunIdentity{RunID: runID, Gaggle: gaggle, Workflow: "implementation", ConfigGeneration: "gen-1", WorkspaceRepository: workspace}
+	}
+	for _, id := range []journal.RunIdentity{
+		identity("run-engine", "core", nil),
+		identity("run-agreeing", "core", &service),
+		identity("run-forked", "core", &fork),
+		identity("run-forged-gaggle", "boards", nil),
+		identity("run-unpinned", "core", nil),
+		identity("run-ado", "boards", nil),
+		identity("run-ghost", "ghost", nil),
+		identity("run-elsewhere", "core", nil),
 	} {
-		if _, _, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: identity}); err != nil {
+		if _, _, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	pins := map[string]RunPin{
+		"run-engine":        {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
+		"run-agreeing":      {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
+		"run-forked":        {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
+		"run-forged-gaggle": {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
+		"run-ado":           {Gaggle: "boards", ConfigGeneration: "gen-1", RepoRef: boards},
+		"run-ghost":         {Gaggle: "ghost", ConfigGeneration: "gen-1", RepoRef: service},
+		"run-elsewhere":     {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: fork},
+		"run-no-journal":    {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
+	}
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{
 		ObjectMeta: metav1.ObjectMeta{Name: "core"},
-		Spec: apiv1.GaggleSpec{
-			Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"},
-			Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "acme/service"},
-		},
+		Spec:       apiv1.GaggleSpec{Project: service, Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "acme/service"}},
 	}, {
 		ObjectMeta: metav1.ObjectMeta{Name: "boards"},
-		Spec: apiv1.GaggleSpec{
-			Project: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "Code", Name: "service"},
-			Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "Backlog"},
-		},
+		Spec:       apiv1.GaggleSpec{Project: boards, Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "Backlog"}},
 	}}}
-	runs := JournalRuns{Journal: backend, Generations: pinnedGenerations{"gen-1": set}}
+	runs := JournalRuns{
+		Pins: func(_ context.Context, runID string) (RunPin, error) {
+			pin, ok := pins[runID]
+			if !ok {
+				return RunPin{}, sql.ErrNoRows
+			}
+			return pin, nil
+		},
+		Journal:     backend,
+		Generations: pinnedGenerations{"gen-1": set},
+	}
 
-	bound, err := runs.Bind(t.Context(), "run-engine")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A same-provider GitHub backlog lives in the gaggle's project repository.
-	service := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "service"}
-	if !sameRepository(bound.Workspace, service) || !sameRepository(bound.WorkItems, service) || bound.Gaggle != "core" || bound.Generation != "gen-1" {
-		t.Fatalf("engine run binding = %+v", bound)
-	}
-	bound, err = runs.Bind(t.Context(), "run-workspace")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Work items stay the gaggle's even when the run worked elsewhere.
-	if !sameRepository(bound.Workspace, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "fork"}) || !sameRepository(bound.WorkItems, service) {
-		t.Fatalf("journaled workspace binding = %+v", bound)
+	serviceRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "service"}
+	for _, runID := range []string{"run-engine", "run-agreeing"} {
+		bound, err := runs.Bind(t.Context(), runID)
+		if err != nil {
+			t.Fatalf("%s: %v", runID, err)
+		}
+		// A same-provider GitHub backlog lives in the gaggle's project.
+		if !sameRepository(bound.Workspace, serviceRef) || !sameRepository(bound.WorkItems, serviceRef) || bound.Gaggle != "core" || bound.Generation != "gen-1" {
+			t.Fatalf("%s binding = %+v", runID, bound)
+		}
 	}
 	// An ADO backlog is the code repository addressed in the backlog project.
-	bound, err = runs.Bind(t.Context(), "run-ado")
+	bound, err := runs.Bind(t.Context(), "run-ado")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,11 +169,23 @@ func TestJournalRunsBindsAsTheControllerRole(t *testing.T) {
 		!sameRepository(bound.WorkItems, providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "Backlog", Name: "service"}) {
 		t.Fatalf("ADO binding = %+v", bound)
 	}
-	for _, runID := range []string{"run-unpinned", "run-missing"} {
-		if _, err := runs.Bind(t.Context(), runID); err == nil {
-			t.Fatalf("%s bound without a pinned generation", runID)
-		} else if runID == "run-unpinned" && !errors.Is(err, providerwriter.ErrRepositoryNotPinned) {
-			t.Fatalf("%s: %v, want ErrRepositoryNotPinned", runID, err)
+	for runID, why := range map[string]string{
+		"run-forked":        "a journaled workspace that differs from the pin",
+		"run-forged-gaggle": "a journaled gaggle that differs from the pin",
+		"run-unpinned":      "a run with no start-fence pin",
+		"run-no-journal":    "a pinned run with no journal",
+		"run-ghost":         "a pinned gaggle with no project in the generation",
+		"run-elsewhere":     "a pinned repository that is not the gaggle's project",
+		"../escape":         "an invalid run ID",
+	} {
+		_, err := runs.Bind(t.Context(), runID)
+		if !errors.Is(err, providerwriter.ErrRepositoryNotPinned) || !providerwriter.Permanent(err) {
+			t.Errorf("%s (%s): %v, want a permanent ErrRepositoryNotPinned", runID, why, err)
 		}
+	}
+	// A failed pin read is not a refusal: it is retried.
+	runs.Pins = func(context.Context, string) (RunPin, error) { return RunPin{}, errors.New("connection reset") }
+	if _, err := runs.Bind(t.Context(), "run-engine"); err == nil || providerwriter.Permanent(err) {
+		t.Fatalf("pin read failure: %v, want a retryable error", err)
 	}
 }
