@@ -140,13 +140,19 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pools.Close()
+	started := time.Now()
 	err = retryMigrationsWhileBusy(ctx, stderr, func() error {
 		return runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder, cloudmigrate.WarningTo(stderr, "migrate"))
 	})
+	elapsed := time.Since(started).Round(time.Second)
 	switch {
+	case errors.Is(err, cloudmigrate.ErrMigrationBusy) && ctx.Err() != nil:
+		writef(stderr, "goobers-cloud migrate: stopped after %s while the database was busy: %s; re-sync the deployment once the contention ends\n",
+			elapsed, cloudpg.SafeDiagnostic(err))
+		return exitTempFail
 	case errors.Is(err, cloudmigrate.ErrMigrationBusy):
 		writef(stderr, "goobers-cloud migrate: database still busy after %s: %s; re-sync the deployment once the contention ends\n",
-			migrateBusyBudget, cloudpg.SafeDiagnostic(err))
+			elapsed, cloudpg.SafeDiagnostic(err))
 		return exitTempFail
 	case err != nil:
 		writef(stderr, "goobers-cloud migrate: %s\n", cloudpg.SafeDiagnostic(err))
@@ -184,7 +190,7 @@ func retryMigrationsWhileBusy(ctx context.Context, stderr io.Writer, apply func(
 		writef(stderr, "goobers-cloud migrate: database busy, retrying in %s: %s\n", wait, cloudpg.SafeDiagnostic(err))
 		select {
 		case <-ctx.Done():
-			return err
+			return errors.Join(ctx.Err(), err)
 		case <-time.After(wait):
 		}
 		wait = min(wait*2, migrateBusyBackoffMax)
