@@ -4,7 +4,9 @@ package journalequivalence
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/enginedecision"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/intervention"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
@@ -21,7 +25,8 @@ import (
 )
 
 // Compare the complete keyed operator intervention and resumed segment. The
-// local service and cloud router both use the production delivery paths; the
+// local and cloud sides both call Service, with the cloud Router bound to real
+// Temporal. The retained status snapshot is read-only during intervention; the
 // PG journal runs as goobers_controller, checked by cloudScenario.
 func compareCloudTerminalIntervention(t *testing.T, scenario corpusScenario) {
 	local := runScenario(t, scenario)
@@ -62,23 +67,23 @@ func compareCloudTerminalIntervention(t *testing.T, scenario corpusScenario) {
 		t.Fatal(err)
 	}
 	router := enginedecision.Router{Client: server.Client()}
-	state := waitCorpusTerminal(t, ctx, router, input.RunID)
+	waitCorpusTerminal(t, ctx, router, input.RunID)
 	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: scenario.runID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertCanonicalEqual(t, localBefore, canonicalReader(t, initial, reader))
-	intent := engine.HITLIntent{Protocol: engine.HITLProtocol, Version: engine.HITLProtocolVersion, RunID: scenario.runID, RequestID: "fixture", Actor: "operator:fixture", ExpectedTerminalGeneration: state.TerminalGeneration}
+	service := cloudCorpusInterventions(t, reader, router)
+	request := httpapi.InterventionRequest{RunID: scenario.runID, Stage: "review", IdempotencyKey: "fixture", Actor: "operator:fixture"}
 	if scenario.name == "gate-fail-rerun" {
-		intent.Kind, intent.Stage, intent.InstructionAddendum = engine.HITLRerunStage, "review", "accept the deterministic fixture"
+		request.InstructionAddendum = "accept the deterministic fixture"
+		_, err = service.RerunStage(ctx, request)
 	} else {
-		// Service.Override routes this exact intent through deliverTerminalIntent.
-		intent.Kind, intent.Gate, intent.Resolution = engine.HITLResolveEscalation, "review", "override"
-		intent.Rationale = "operator reviewed deterministic fixture"
+		request.Rationale = "operator reviewed deterministic fixture"
+		_, err = service.Override(ctx, request)
 	}
-	ack, err := router.Intend(ctx, intent)
-	if err != nil || !ack.Resumed {
-		t.Fatalf("terminal intervention: ack=%+v err=%v", ack, err)
+	if err != nil {
+		t.Fatalf("operator service refused terminal intervention: %v", err)
 	}
 	if err := run.Get(ctx, nil); err != nil {
 		t.Fatal(err)
@@ -112,4 +117,69 @@ func waitCorpusTerminal(t *testing.T, ctx context.Context, router enginedecision
 		case <-ticker.C:
 		}
 	}
+}
+
+// Service resolves retained identity/status through its file-reader boundary.
+// Snapshot those reads from PG, without substituting the snapshot for the PG
+// journal owner: the real service must route all writes through EngineDecisions.
+func cloudCorpusInterventions(t *testing.T, reader journal.RunReader, router enginedecision.Router) *intervention.Service {
+	t.Helper()
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !identity.EngineDriven() {
+		t.Fatal("PG run is not engine-driven")
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[0].Type != journal.EventRunStarted {
+		t.Fatal("PG run lacks initial event")
+	}
+	root := t.TempDir()
+	snapshot, err := journal.Create(root, identity, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	// Create has already written run.started. Preserve the remaining durable
+	// order, including the terminal that the API replica currently observes.
+	for _, event := range events[1:] {
+		if err := snapshot.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, identity.RunID)
+	t.Cleanup(func() {
+		retained, err := journal.OpenRead(dir)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		after, err := retained.Events()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if len(after) != len(events) {
+			t.Errorf("operator mutated retained snapshot: %d events, want %d", len(after), len(events))
+		}
+	})
+	return intervention.New(intervention.Config{
+		Definitions: func() intervention.Definitions {
+			return intervention.Definitions{Runners: map[string]*runner.Runner{identity.Gaggle: nil}}
+		},
+		LocateRun: func(_ []string, runID string, _ bool) (string, string, error) {
+			if runID != identity.RunID {
+				return "", "", fmt.Errorf("unknown retained run %q", runID)
+			}
+			return dir, identity.Gaggle, nil
+		},
+		EngineDecisions: router,
+	})
 }

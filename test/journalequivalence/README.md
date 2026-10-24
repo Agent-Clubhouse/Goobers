@@ -17,8 +17,11 @@ remain the reference.
 | gate-fail-rerun | Exact equality through the keyed operator rerun, fresh reviewer policy budget, resumed segment and new terminal |
 | gate-override | Exact equality through a keyed operator override and the downstream recovery stage |
 
-Terminal fixtures use `intervention.Service` on the local side and the
-production `enginedecision.Router` over real Temporal on the cloud side. Both
+Terminal fixtures call `intervention.Service.RerunStage` / `Override` on both
+sides. The cloud service binds `EngineDecisions` to the production
+`enginedecision.Router` over real Temporal. Its retained identity/status reads
+use a PG-derived snapshot; all authoritative journal writes and comparison
+remain on PG, and the snapshot must remain unchanged. Both
 include `intervention.idempotency` and compare the full resumed journal.
 The pending registry is empty; `verify-pending` remains a guard for future
 explicitly tracked divergences.
