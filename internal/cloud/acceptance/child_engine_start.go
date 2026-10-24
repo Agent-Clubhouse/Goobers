@@ -72,26 +72,7 @@ func (s *Store) BindChildEngineStart(ctx context.Context, identity triggerqueue.
 		if err != nil {
 			return err
 		}
-		// The engine bind is the child's dispatch (#8085 d): the parent's
-		// workflow starts it as a Temporal child, never the start loop. Record
-		// that, so the child can run and settle through the ordinary lifecycle
-		// and the start loop never sees an undispatched engine child.
-		tag, err := tx.Exec(txCtx, `
-			UPDATE control.acceptance
-			SET state='dispatched', owner_epoch=$3, start_retry_at=NULL,
-			    dispatch_started_at=COALESCE(dispatch_started_at,clock_timestamp()),
-			    finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
-			WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
-			s.instanceID, child.AcceptanceID, epoch)
-		if err := changed(tag.RowsAffected(), err); err != nil {
-			return err
-		}
-		tag, err = tx.Exec(txCtx, `
-			UPDATE control.child_lineage
-			SET state='running', updated_at=clock_timestamp(), owner_epoch=$3
-			WHERE instance_id=$1 AND child_id=$2 AND state='queued' AND owner_epoch=$3`,
-			s.instanceID, child.ChildID, epoch)
-		if err := changed(tag.RowsAffected(), err); err != nil {
+		if err := s.dispatchEngineChildTx(txCtx, tx, child, epoch, true); err != nil {
 			return err
 		}
 		bound = start
@@ -124,4 +105,61 @@ func readChildEngineStart(ctx context.Context, db rowQuerier, instanceID, childI
 	err := db.QueryRow(ctx, query, instanceID, childID).Scan(&start.ManifestDigest, &start.ParentWorkflow, &start.ParentWorkflowID, &start.ParentTemporalRunID, &start.Deadline)
 	start.Deadline = start.Deadline.UTC()
 	return start, err
+}
+
+// dispatchEngineChildTx records an engine child's bind as its dispatch
+// (#8085 d): the parent's workflow starts it as a Temporal child, never the
+// start loop. The acceptance becomes dispatched and the child running, so it
+// settles through the ordinary lifecycle and the start loop can never
+// dispatch it. strict requires both transitions (a fresh bind); otherwise an
+// already-dispatched child is left unchanged.
+func (s *Store) dispatchEngineChildTx(ctx context.Context, tx pgx.Tx, child triggerqueue.ChildRecord, epoch int64, strict bool) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE control.acceptance
+		SET state='dispatched', owner_epoch=$3, start_retry_at=NULL,
+		    dispatch_started_at=COALESCE(dispatch_started_at,clock_timestamp()),
+		    finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
+		WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
+		s.instanceID, child.AcceptanceID, epoch)
+	if err != nil {
+		return err
+	}
+	if strict {
+		if err := changed(tag.RowsAffected(), nil); err != nil {
+			return err
+		}
+	}
+	tag, err = tx.Exec(ctx, `
+		UPDATE control.child_lineage
+		SET state='running', updated_at=clock_timestamp(), owner_epoch=$3
+		WHERE instance_id=$1 AND child_id=$2 AND state='queued' AND owner_epoch=$3`,
+		s.instanceID, child.ChildID, epoch)
+	if err != nil {
+		return err
+	}
+	if strict {
+		return changed(tag.RowsAffected(), nil)
+	}
+	return nil
+}
+
+// DispatchEngineChild records the dispatch of a child the engine bound under
+// a control plane that predates the bind-as-dispatch rule (#8085 d mixed
+// versions), so its finalizer can settle it. It is idempotent: a dispatched
+// child, or one already past queued, is unchanged. A child with no engine
+// bind is refused: only its bind may dispatch it.
+func (s *Store) DispatchEngineChild(ctx context.Context, identity triggerqueue.ChildIdentity) error {
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		child, err := s.lockChild(txCtx, tx, identity, epoch)
+		if err != nil {
+			return err
+		}
+		if _, err := readChildEngineStart(txCtx, tx, s.instanceID, child.ChildID, true); err != nil {
+			return noRows(err)
+		}
+		if child.State != triggerqueue.ChildQueued {
+			return nil
+		}
+		return s.dispatchEngineChildTx(txCtx, tx, child, epoch, false)
+	})
 }
