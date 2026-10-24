@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -92,12 +93,33 @@ func releaseClaimWithProtocol(ctx context.Context, req ClaimWorkItemRequest, hoo
 	return before, final, releasedRunID, err
 }
 
+// ErrClaimHeldByAnotherRun matches a claim release refused because a run other
+// than the releasing one holds the claim. Retrying cannot change the holder.
+var ErrClaimHeldByAnotherRun = errors.New("provider claim is held by another run")
+
+// ClaimHeldError is a claim release refused because Holder, not the releasing
+// or Expected run, holds the claim. It matches ErrClaimHeldByAnotherRun.
+type ClaimHeldError struct {
+	Holder   string
+	Expected string
+}
+
+func (e *ClaimHeldError) Error() string {
+	if e.Expected != "" {
+		return fmt.Sprintf("provider claim is held by run %q, not expected run %q", e.Holder, e.Expected)
+	}
+	return fmt.Sprintf("provider claim is held by run %q", e.Holder)
+}
+
+// Is reports whether target is ErrClaimHeldByAnotherRun.
+func (e *ClaimHeldError) Is(target error) bool { return target == ErrClaimHeldByAnotherRun }
+
 func authorizeClaimRelease(req ClaimWorkItemRequest, winner string, claimed bool) error {
 	if claimed && req.ExpectedClaimRunID != "" && winner != req.ExpectedClaimRunID {
-		return fmt.Errorf("provider claim is held by run %q, not expected run %q", winner, req.ExpectedClaimRunID)
+		return &ClaimHeldError{Holder: winner, Expected: req.ExpectedClaimRunID}
 	}
 	if claimed && winner != req.RunID && !req.LedgerAuthorized {
-		return fmt.Errorf("provider claim is held by run %q", winner)
+		return &ClaimHeldError{Holder: winner}
 	}
 	return nil
 }

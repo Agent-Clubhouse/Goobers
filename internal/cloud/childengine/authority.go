@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/startfence"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
@@ -36,9 +38,12 @@ type ParentAuthority struct {
 	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
 	// Execution describes the run's live engine execution
 	// (startfence.DescribeStarted over the control Temporal client).
-	Execution   func(ctx context.Context, runID string) (startfence.StartedExecution, error)
-	Generations childworkflow.GenerationSource
-	Applied     AppliedConfiguration
+	Execution func(ctx context.Context, runID string) (startfence.StartedExecution, error)
+	// StartPending reports whether an acceptance's start is still being
+	// confirmed (acceptance.Store.StartPending); optional.
+	StartPending func(ctx context.Context, acceptanceID string) (bool, error)
+	Generations  childworkflow.GenerationSource
+	Applied      AppliedConfiguration
 }
 
 func (p ParentAuthority) validate() error {
@@ -102,6 +107,19 @@ func (p ParentAuthority) resolver(ctx context.Context, runID string) (*childwork
 	}
 	pins, err := p.Pins(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
+		confirming, checkErr := p.startConfirming(ctx, runID)
+		if checkErr != nil {
+			// Whether this is a start still confirming could not be told:
+			// retry rather than refuse; nothing is granted without pins.
+			return nil, nil, fmt.Errorf("%w: run %s has no pins yet: %w", engine.ErrChildCustodyUnavailable, runID, checkErr)
+		}
+		if confirming {
+			// The start fence records pins in the transaction that confirms
+			// the Temporal start, after the start itself: a live run whose
+			// confirmation has not committed (a control restart in that
+			// window) gets its pins on the next reconcile.
+			return nil, nil, fmt.Errorf("%w: run %s start is not confirmed yet", engine.ErrChildCustodyUnavailable, runID)
+		}
 		// No start-fence row: not a top-level run this control plane started
 		// (the I2 recursion guard), or started before the pins existed.
 		return nil, nil, fmt.Errorf("%w: run %s has no start-fence pins", childworkflow.ErrAuthorityUnavailable, runID)
@@ -118,7 +136,7 @@ func (p ParentAuthority) resolver(ctx context.Context, runID string) (*childwork
 		ConfigGeneration: pins.ConfigGeneration, Driver: journal.DriverEngine, WorkspaceRepository: &repo}
 	pinned := &pinnedParent{}
 	return &childworkflow.JournalAuthorityResolver{
-		OpenJournal: p.Journal,
+		OpenJournal: p.openJournal,
 		LoadPinnedStage: func(ctx context.Context, journaled journal.RunIdentity, stage string) (childworkflow.PinnedStageAdmission, error) {
 			if err := journalAgrees(journaled, parent); err != nil {
 				return childworkflow.PinnedStageAdmission{}, err
@@ -134,6 +152,61 @@ func (p ParentAuthority) resolver(ctx context.Context, runID string) (*childwork
 			return admission.PinnedStageAdmission, nil
 		},
 	}, pinned, nil
+}
+
+// openJournal opens the parent's journal, marking a failure that says nothing
+// about the run (the journal backend is unreachable) as unavailable. The
+// shared resolver joins every journal failure with its refusal sentinel; a
+// missing run is a refusal, an outage must stay a retry.
+func (p ParentAuthority) openJournal(ctx context.Context, runID string) (journal.RunReader, error) {
+	rd, err := p.Journal(ctx, runID)
+	if err != nil {
+		return nil, journalUnavailable(err)
+	}
+	return unavailableReader{rd}, nil
+}
+
+// unavailableReader marks the parent journal's read failures the same way.
+type unavailableReader struct{ journal.RunReader }
+
+func (r unavailableReader) Events() ([]journal.Event, error) {
+	events, err := r.RunReader.Events()
+	return events, journalUnavailable(err)
+}
+
+func (r unavailableReader) ArtifactBytes(ref journal.Ref) ([]byte, error) {
+	data, err := r.RunReader.ArtifactBytes(ref)
+	return data, journalUnavailable(err)
+}
+
+func journalUnavailable(err error) error {
+	if err == nil || errors.Is(err, os.ErrNotExist) || errors.Is(err, journal.ErrNotRunDirectory) {
+		return err
+	}
+	return fmt.Errorf("%w: parent journal: %w", engine.ErrChildCustodyUnavailable, err)
+}
+
+// startConfirming reports a run with no pins yet whose engine execution is
+// running the start its still-dispatching acceptance made. An error means it
+// could not be told; an execution Temporal no longer knows is not this case.
+func (p ParentAuthority) startConfirming(ctx context.Context, runID string) (bool, error) {
+	if p.StartPending == nil {
+		return false, nil
+	}
+	started, err := p.Execution(ctx, runID)
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !started.Engine || started.Status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING || started.Owner == nil || started.Owner.AcceptanceID == "" {
+		return false, nil
+	}
+	// The acceptance is read from this control plane's own custody, which is
+	// what binds the run to this instance.
+	return p.StartPending(ctx, started.Owner.AcceptanceID)
 }
 
 // missingPin names the first pin the bind needs that the start left empty.
@@ -274,7 +347,7 @@ func (a Authorities) AcquireChildAuthority(ctx context.Context, request engine.C
 		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	}
 	runID, origin := request.RunID, request.Origin
-	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: request.Endpoint,
+	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: request.Endpoint, TTL: StageGrantTTL,
 		// Control never journals or logs the bearer: it is returned to the
 		// worker, which registers it with the stage's scrubber.
 		Secrets: discardSecrets{}, Now: a.Now}
@@ -330,3 +403,23 @@ func (a Authorities) ReleaseChildAuthority(ctx context.Context, release engine.C
 type discardSecrets struct{}
 
 func (discardSecrets) RegisterUntil([]byte, time.Time) {}
+
+// stageGrantMargin covers the stage activity's heartbeat timeout plus pod
+// dispatch and start, beyond the stage's own duration.
+const stageGrantMargin = 10 * time.Minute
+
+// StageGrantTTL is a stage attempt's grant lifetime (design §6): the parent
+// stage's duration (its timeout, else its limit, else the dispatcher's default
+// stage timeout) plus the activity margin, capped by the grant maximum. A
+// longer wait renews through the same attempt's re-acquire.
+func StageGrantTTL(authority childworkflow.Authority) time.Duration {
+	task := authority.Admission.ParentTask
+	duration := dispatcher.DefaultStageTimeout
+	switch {
+	case task.TimeoutSeconds > 0:
+		duration = time.Duration(task.TimeoutSeconds) * time.Second
+	case task.Limits != nil && task.Limits.MaxDurationSeconds > 0:
+		duration = time.Duration(task.Limits.MaxDurationSeconds) * time.Second
+	}
+	return min(duration+stageGrantMargin, podauth.MaxChildWorkflowGrantTTL)
+}

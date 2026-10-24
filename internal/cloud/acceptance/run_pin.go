@@ -237,3 +237,17 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 	}
 	return sweep, nil
 }
+
+// StartPending reports whether acceptanceID's start is still dispatching: the
+// Temporal start may have happened, but the fenced confirmation that records
+// the run's pins has not committed yet.
+func (s *Store) StartPending(ctx context.Context, acceptanceID string) (bool, error) {
+	var pending bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT state='dispatching' FROM control.acceptance WHERE instance_id=$1 AND id=$2`,
+		s.instanceID, acceptanceID).Scan(&pending)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return pending, err
+}

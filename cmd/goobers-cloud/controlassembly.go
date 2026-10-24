@@ -55,6 +55,9 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }, construct: constructEngineChildAdmissions, requires: requiresObjectStore},
 	// After EngineChildAdmissions: grants bind in the same fenced custody.
 	{field: "EngineChildAuthority", label: "engine child authority", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAuthority != nil }, construct: constructEngineChildAuthority, requires: requiresObjectStore},
+	// After EngineChildAuthority: every child-workflow call re-resolves the
+	// parent through the same authority and checks the grant it bound.
+	{field: "ChildWorkflows", label: "child workflows", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.ChildWorkflows != nil }, construct: constructChildWorkflows, requires: requiresObjectStore},
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Claims != nil }, construct: constructClaims},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }, construct: constructTriggers},
@@ -191,5 +194,19 @@ func constructEngineChildAuthority(_ context.Context, db databaseServices, auth 
 		return err
 	}
 	p.EngineChildAuthority = httpapi.WithEngineChildAuthority(plane)
+	p.engineChildAuthority = &authority
+	return nil
+}
+
+// constructChildWorkflows serves the child-workflow routes (validate, start,
+// status, resolve) to engine parents' stage pods (#8085 c). Each request
+// re-resolves the parent's authority and checks the grant the engine child
+// authority bound, so a grant whose attempt ended, or that was revoked,
+// replaced or never bound, authorizes nothing.
+func constructChildWorkflows(_ context.Context, _ databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
+	if p.engineChildAuthority == nil {
+		return errors.New("child workflows require the engine child authority (#8085)")
+	}
+	p.ChildWorkflows = httpapi.WithChildWorkflowService(childengine.FencedChildWorkflows{Authority: *p.engineChildAuthority})
 	return nil
 }
