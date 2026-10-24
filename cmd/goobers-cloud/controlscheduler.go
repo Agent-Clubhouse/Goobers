@@ -11,6 +11,7 @@ import (
 
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/control"
+	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/schedentries"
 	"github.com/goobers/goobers/internal/cloud/schedstart"
 	"github.com/goobers/goobers/internal/journal"
@@ -462,7 +463,12 @@ func (a *schedulerAdmission) Stop(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	if a.log != nil {
-		errs = append(errs, a.log.Close())
+		// A deposed leader's retire is refused by the fence (stale epoch): its
+		// successor takes the stream over by epoch, so that is the expected
+		// outcome of losing the lease, not a failure to stop.
+		if err := a.log.Close(); err != nil && !errors.Is(err, lease.ErrStale) {
+			errs = append(errs, err)
+		}
 		a.log = nil
 	}
 	return errors.Join(errs...)
