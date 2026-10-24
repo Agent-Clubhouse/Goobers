@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +37,84 @@ type Store struct {
 	// Closed verifies closure before a cycle is acted on and during Heal. Without
 	// it no record is ever dropped, so stale records can accumulate.
 	Closed ClosedFunc
+	// Reserve accounts one provider read of the given provider in the shared
+	// quota ledger and reports whether it may be made now; false skips the
+	// verification (the record is kept and tried again later). Nil allows all.
+	Reserve func(providers.ProviderKind) bool
+	// Backoff keeps an item that cannot be verified from being retried on every
+	// pass. Nil retries every time.
+	Backoff *Backoff
+}
+
+// Backoff delays re-verifying an item whose last verification failed, doubling
+// from base up to max, so a record that can never be verified (its repository is
+// no longer configured, its credentials are gone) neither burns provider reads
+// nor occupies heal slots forever. It is safe for concurrent use.
+type Backoff struct {
+	Base, Max time.Duration
+	Now       func() time.Time
+
+	mu    sync.Mutex
+	state map[blockedcycle.Node]backoffState
+}
+
+type backoffState struct {
+	failures int
+	until    time.Time
+}
+
+func (b *Backoff) now() time.Time {
+	if b.Now != nil {
+		return b.Now()
+	}
+	return time.Now()
+}
+
+// Allowed reports whether node may be verified now.
+func (b *Backoff) Allowed(node blockedcycle.Node) bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.now().Before(b.state[node].until)
+}
+
+// Failed records a failed verification of node.
+func (b *Backoff) Failed(node blockedcycle.Node) {
+	if b == nil {
+		return
+	}
+	base, limit := b.Base, b.Max
+	if base <= 0 {
+		base = 10 * time.Minute
+	}
+	if limit <= 0 {
+		limit = 6 * time.Hour
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == nil {
+		b.state = map[blockedcycle.Node]backoffState{}
+	}
+	st := b.state[node]
+	st.failures++
+	delay := base
+	for i := 1; i < st.failures && delay < limit; i++ {
+		delay *= 2
+	}
+	st.until = b.now().Add(min(delay, limit))
+	b.state[node] = st
+}
+
+// Verified clears node's failures.
+func (b *Backoff) Verified(node blockedcycle.Node) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.state, node)
 }
 
 // RecordBlock replaces the item's record and returns the dependency cycle it
@@ -207,11 +286,23 @@ func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.R
 	runs := runIDs(recs)
 	var closed []blockedcycle.Node
 	for _, node := range candidates {
+		if !s.Backoff.Allowed(node) {
+			continue
+		}
+		if s.Reserve != nil && !s.Reserve(node.Repository.Provider) {
+			break // the provider's read budget is spent; the rest wait for the next pass
+		}
 		run := runs[node]
 		if run == "" {
 			run = fallbackRun
 		}
-		if done, err := s.Closed(ctx, run, node.Repository, node.ItemID); err == nil && done {
+		done, err := s.Closed(ctx, run, node.Repository, node.ItemID)
+		if err != nil {
+			s.Backoff.Failed(node)
+			continue
+		}
+		s.Backoff.Verified(node)
+		if done {
 			closed = append(closed, node)
 		}
 	}
@@ -285,6 +376,15 @@ func (s Store) Heal(ctx context.Context, handle *lease.Handle, limit int) (int, 
 	sort.Slice(nodes, func(i, j int) bool {
 		return blockedrecords.Key(nodes[i].Repository, nodes[i].ItemID) < blockedrecords.Key(nodes[j].Repository, nodes[j].ItemID)
 	})
+	// Items in backoff take no slot: an unverifiable item must not occupy the
+	// window and starve the ones that can be checked.
+	ready := nodes[:0:0]
+	for _, node := range nodes {
+		if s.Backoff.Allowed(node) {
+			ready = append(ready, node)
+		}
+	}
+	nodes = ready
 	if len(nodes) > limit {
 		// Rotate the window each minute so no item is starved by the ones before it.
 		now := time.Now

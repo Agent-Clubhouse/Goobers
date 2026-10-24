@@ -19,6 +19,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/goobers/goobers/internal/capability"
+
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/failurestreakpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -48,6 +50,9 @@ type Tuning struct {
 	MaxConcurrent int
 	RetryBase     time.Duration
 	RetryMax      time.Duration
+	// HealEvery is how often the blocked-record self-heal verifies items with the
+	// provider (default DefaultHealEvery, minutes).
+	HealEvery time.Duration
 	// DeliveryEvery is how often the outbox delivery loop runs (default 5s, with
 	// 20% jitter), DeliveryBudget the intents it delivers per pass (default 20)
 	// and HealLimit the items the blocked-record self-heal verifies per pass
@@ -84,6 +89,19 @@ type Deps struct {
 	Pins   func(ctx context.Context, runID string) (terminalawait.RunPin, error)
 	Bind   func(ctx context.Context, runID string) (terminalwriter.Binding, error)
 	Writer providerwriter.Writer
+
+	// Backends and Instance verify a recorded block's items through the applied
+	// configuration, with no run involved: a run's pin is swept days after it
+	// ends. Instance binds the gaggle whose backlog is the repository. Optional;
+	// without them verification falls back to the run that recorded the block.
+	Backends terminalwriter.Backends
+	Instance func(repo providers.RepositoryRef) (terminalwriter.Binding, bool)
+	// Reserve accounts a provider read in the shared quota ledger and reports
+	// whether it may be made now (nil allows all).
+	Reserve func(providers.ProviderKind) bool
+	// Scrubber redacts provider errors the instance-level reads return (the
+	// writer scrubs its own).
+	Scrubber journal.Scrubber
 
 	// Events reads a run's journal (the PostgreSQL journal); a missing journal is
 	// (nil, nil).
@@ -138,9 +156,13 @@ func New(deps Deps) (*Composition, error) {
 	deps.Report = report
 	outbox := terminalreportpg.Outbox{
 		Store: terminalreportpg.Store{Pool: deps.Pool, Fence: deps.Fence}, Handle: deps.Handle,
+		// The outcome event is recorded best-effort: the fenced log reports a failed
+		// append (it never writes after the fence moves) but does not return it, and
+		// failing the delivery on it would re-send a report the provider already
+		// has. A lost outcome event costs the log entry, never the report.
 		Log: func(ev journal.Event) error { deps.Log.AppendBestEffort(ev); return nil },
 	}
-	blocks := blockedrecordspg.Store{Fence: deps.Fence, Closed: closedVia(deps)}
+	blocks := blockedrecordspg.Store{Fence: deps.Fence, Closed: closedVia(deps), Reserve: deps.Reserve, Backoff: &blockedrecordspg.Backoff{Now: deps.Now}}
 	delivery := newDelivery(deps, outbox, blocks)
 	c := &composer{deps: deps, outbox: outbox, blocks: blocks}
 
@@ -234,16 +256,40 @@ func (d Deps) eventsFor(runID string) ([]journal.Event, error) {
 	return d.Events(ctx, runID)
 }
 
-// closedVia verifies a work item closed through the provider writer: only a
+// closedVia verifies a work item is closed. It reads through the applied
+// configuration's binding for the repository first, which needs no run, and only
+// falls back to the run that recorded the block (whose pin may be swept). Only a
 // definite non-open state counts; an error or an empty state leaves the record.
 func closedVia(deps Deps) blockedrecordspg.ClosedFunc {
 	return func(ctx context.Context, runID string, repo providers.RepositoryRef, itemID string) (bool, error) {
-		item, err := deps.Writer.WorkItem(ctx, providerwriter.ItemRef{RunID: runID, Repo: repo, ItemID: itemID})
+		item, err := readItem(ctx, deps, runID, repo, itemID)
 		if err != nil {
 			return false, err
 		}
 		return item.State != "" && !strings.EqualFold(item.State, "open"), nil
 	}
+}
+
+func readItem(ctx context.Context, deps Deps, runID string, repo providers.RepositoryRef, itemID string) (providers.WorkItem, error) {
+	if deps.Instance != nil && deps.Backends != nil {
+		if bound, ok := deps.Instance(repo); ok {
+			backend, err := deps.Backends.For(ctx, bound, repo, string(capability.GitHubIssuesRead))
+			if err != nil {
+				return providers.WorkItem{}, deps.scrub(err)
+			}
+			item, err := backend.GetWorkItem(ctx, repo, itemID)
+			return item, deps.scrub(err)
+		}
+	}
+	return deps.Writer.WorkItem(ctx, providerwriter.ItemRef{RunID: runID, Repo: repo, ItemID: itemID})
+}
+
+// scrub redacts an instance-level read's error; the run-bound writer scrubs its own.
+func (d Deps) scrub(err error) error {
+	if err == nil || d.Scrubber == nil {
+		return err
+	}
+	return errors.New(string(d.Scrubber.Scrub([]byte(err.Error()))))
 }
 
 // watermark binds terminalwatermarkpg.Store to the epoch's instance.

@@ -165,3 +165,38 @@ func TestTerminalPartIsAbsentWithoutItsInputs(t *testing.T) {
 		t.Fatal("terminalPart composed without the claim plane, journal backend or Temporal")
 	}
 }
+
+// A build failure after the terminal part published its status must not leave a
+// stale outbox status behind for the readiness probe.
+func TestAFailedEpochBuildWithdrawsThePublishedStatus(t *testing.T) {
+	awaiters := &fakeEpochAwaiters{}
+	status := func() terminalcompose.Status { return terminalcompose.Status{Healthy: true} }
+	withEpochWiring(t, epochWiringParts{
+		Claims: func(*lease.Manager, *lease.Handle) (epoch.Claims, error) { return fakeEpochClaims{}, nil },
+		// Observations without restore/capture make epoch.Build refuse.
+		Observations: func() epoch.Observations { return epoch.Observations{} },
+		Terminal: func(context.Context, *lease.Manager, *lease.Handle) (terminalEpoch, error) {
+			terminalStatus.Store(&status)
+			return terminalEpoch{Awaiters: &clearingAwaiters{Awaiters: awaiters, published: &status}}, nil
+		},
+	})
+	if _, err := constructedEpoch(t)(context.Background(), testHandle); err == nil {
+		t.Fatal("epoch.Build accepted an incomplete configuration")
+	}
+	if terminalOutboxChecks() != nil || awaiters.stopped.Load() != 1 {
+		t.Fatalf("status still published (%v) or awaiters not stopped (%d) after a failed build", terminalOutboxChecks(), awaiters.stopped.Load())
+	}
+}
+
+// A composition failure is reported with its cause, not as a part that is merely
+// missing.
+func TestAFailedTerminalCompositionRefusesWithItsCause(t *testing.T) {
+	withEpochWiring(t, epochWiringParts{
+		Claims:       func(*lease.Manager, *lease.Handle) (epoch.Claims, error) { return fakeEpochClaims{}, nil },
+		Observations: func() epoch.Observations { return epoch.Observations{} },
+		Terminal:     failedTerminalPart(errors.New("terminal hooks: provider credentials: no secret store")),
+	})
+	if _, err := constructedEpoch(t)(context.Background(), testHandle); err == nil || !strings.Contains(err.Error(), "no secret store") {
+		t.Fatalf("Epoch = %v, want the construction cause", err)
+	}
+}

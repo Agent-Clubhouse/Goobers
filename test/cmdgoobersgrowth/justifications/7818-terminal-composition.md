@@ -1,6 +1,6 @@
 # #7818: terminal-hook composition into the epoch
 
-Growth: about +205 non-test lines and +1 production file in `cmd/goobers-cloud`
+Growth: about +260 non-test lines and +1 production file in `cmd/goobers-cloud`
 (`controlterminal.go`), plus small edits to `controlepoch.go` and `control.go`
 (the shared scheduler-log opener's own +89 is justified in `7818-scheduler-log.md`).
 

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
+	"github.com/goobers/goobers/internal/localscheduler"
 )
 
 // epochWiring holds the Epoch parts other PRs compose. The Epoch seam is real
@@ -31,6 +32,10 @@ type epochWiringParts struct {
 	Observations func() epoch.Observations
 	// Report receives per-run awaiter failures.
 	Report func(error)
+	// Quota is the process's shared provider quota ledger (the scheduler's), so
+	// the terminal hooks' provider reads are accounted in it. Optional until the
+	// scheduler is composed; without it those reads are unmetered but slow.
+	Quota func() *localscheduler.ProviderQuotaState
 }
 
 var epochWiring epochWiringParts
@@ -93,12 +98,17 @@ func constructEpoch(_ context.Context, db databaseServices, _ controlAuth, _ *le
 		if err != nil {
 			return control.EpochServices{}, err
 		}
-		return epoch.Build(epoch.Config{
+		services, err := epoch.Build(epoch.Config{
 			Handle: handle, Claims: claims,
 			Cancel: cancelpg.Store{Fence: fence}, Terminal: terminalreportpg.Store{Fence: fence},
 			Open: epoch.TemporalOpenRuns{Client: *temporal}, ConfirmClosed: epoch.TemporalConfirmClosed(*temporal), Awaiters: term.Awaiters, L3: term.Delivery,
 			Observations: parts.Observations(), Report: parts.Report,
 		})
+		if err != nil {
+			// Nothing started: withdraw the status the terminal part published.
+			_ = term.Awaiters.Stop(ctx)
+		}
+		return services, err
 	}
 	return nil
 }

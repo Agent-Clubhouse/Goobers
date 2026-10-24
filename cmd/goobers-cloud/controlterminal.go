@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync/atomic"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
@@ -19,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/providers"
 )
 
 // terminalEpoch is one epoch's terminal machinery as the Epoch seam consumes it.
@@ -81,12 +84,12 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		return secretstore.NewRegistry(cfg.SecretStores)
 	})
 	if err != nil {
-		return nil
+		return failedTerminalPart(fmt.Errorf("terminal hooks: provider credentials: %w", err))
 	}
 	runs := terminalwriter.JournalRuns{Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Journal: backend, Generations: p.generations}
 	writer, err := terminalwriter.New(runs, backends, registrar)
 	if err != nil {
-		return nil
+		return failedTerminalPart(fmt.Errorf("terminal hooks: provider writer: %w", err))
 	}
 	return func(ctx context.Context, fence *lease.Manager, handle *lease.Handle) (terminalEpoch, error) {
 		report := func(err error) {
@@ -111,6 +114,7 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 				return terminalawait.RunPin{Gaggle: pins.Gaggle, Workflow: pins.Workflow, RepoRef: pins.RepoRef}, err
 			},
 			Bind: runs.Bind, Writer: writer,
+			Backends: backends, Instance: instanceBinding(owner), Scrubber: registrar, Reserve: quotaReserver(),
 			Events: func(ctx context.Context, runID string) ([]journal.Event, error) {
 				return runEvents(ctx, backend, runID)
 			},
@@ -180,4 +184,39 @@ func (a *clearingAwaiters) Stop(ctx context.Context) error {
 	// have stored its own.
 	terminalStatus.CompareAndSwap(a.published, nil)
 	return err
+}
+
+// failedTerminalPart is a Terminal part that reports why composition failed, so
+// the Epoch seam refuses with the cause instead of only naming a missing part.
+func failedTerminalPart(err error) func(context.Context, *lease.Manager, *lease.Handle) (terminalEpoch, error) {
+	return func(context.Context, *lease.Manager, *lease.Handle) (terminalEpoch, error) {
+		return terminalEpoch{}, err
+	}
+}
+
+// instanceBinding binds a repository through the applied configuration, for the
+// reads that must not depend on a run's pin.
+func instanceBinding(owner terminalConfiguration) func(providers.RepositoryRef) (terminalwriter.Binding, bool) {
+	return func(repo providers.RepositoryRef) (terminalwriter.Binding, bool) {
+		candidate, ok := owner.Applied()
+		if !ok {
+			return terminalwriter.Binding{}, false
+		}
+		return terminalwriter.InstanceBinding(candidate.Set, candidate.Digest, repo)
+	}
+}
+
+// quotaReserver accounts a provider read in the shared quota ledger when the
+// scheduler has composed one; false skips the read this pass.
+func quotaReserver() func(providers.ProviderKind) bool {
+	return func(provider providers.ProviderKind) bool {
+		if epochWiring.Quota == nil {
+			return true
+		}
+		state := epochWiring.Quota()
+		if state == nil {
+			return true
+		}
+		return state.ReservePolls(apiv1.Provider(provider), time.Now(), 1).Allowed > 0
+	}
 }

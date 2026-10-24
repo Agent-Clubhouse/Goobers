@@ -10,10 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.temporal.io/sdk/client"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
+	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
+	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/failurestreakpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -23,6 +26,8 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -83,6 +88,9 @@ func (r *recorder) AppendBestEffort(ev journal.Event) {
 type runs struct{}
 
 func (runs) Bind(_ context.Context, runID string) (terminalwriter.Binding, error) {
+	if runID == "gone-run" {
+		return terminalwriter.Binding{}, providerwriter.ErrRepositoryNotPinned // its pin has been swept
+	}
 	return terminalwriter.Binding{RunID: runID, Gaggle: "web", Generation: "g1", Project: pinRepo, Workspace: workspace, WorkItems: workspace}, nil
 }
 
@@ -92,11 +100,33 @@ type backend struct {
 	updates   []providers.UpdateWorkItemRequest
 	deleted   bool
 	deleteErr error
+	// updateErr fails UpdateWorkItem (consumed one call at a time); attempts counts
+	// every call, successful or not.
+	updateErrs []error
+	attempts   int
+	// states is each work item's provider state (default "open"); getErr fails a
+	// read of that item; reads counts reads per item.
+	states map[string]string
+	getErr map[string]error
+	reads  map[string]int
 }
 
 func (b *backend) Kind() providers.ProviderKind { return providers.ProviderGitHub }
-func (b *backend) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
-	return providers.WorkItem{State: "open"}, nil
+func (b *backend) GetWorkItem(_ context.Context, _ providers.RepositoryRef, id string) (providers.WorkItem, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.reads == nil {
+		b.reads = map[string]int{}
+	}
+	b.reads[id]++
+	if err := b.getErr[id]; err != nil {
+		return providers.WorkItem{}, err
+	}
+	state := "open"
+	if s, ok := b.states[id]; ok {
+		state = s
+	}
+	return providers.WorkItem{ID: id, State: state}, nil
 }
 func (b *backend) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
 	return nil, nil
@@ -104,6 +134,12 @@ func (b *backend) ListComments(context.Context, providers.RepositoryRef, string)
 func (b *backend) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.attempts++
+	if len(b.updateErrs) > 0 {
+		err := b.updateErrs[0]
+		b.updateErrs = b.updateErrs[1:]
+		return providers.WorkItem{}, err
+	}
 	b.updates = append(b.updates, req)
 	return providers.WorkItem{}, nil
 }
@@ -133,7 +169,7 @@ func (f backends) For(context.Context, terminalwriter.Binding, providers.Reposit
 
 type rig struct {
 	t       *testing.T
-	pool    interface{ Close() }
+	pool    *pgxpool.Pool
 	backend *backend
 	rel     *releaser
 	log     *recorder
@@ -143,17 +179,25 @@ type rig struct {
 	events  map[string][]journal.Event
 	closed  []terminalawait.ClosedRun
 	// hideOpen makes the open-run listing empty (visibility has aged the run out).
-	hideOpen bool
-	reported []error
+	hideOpen   bool
+	tuning     terminalcompose.Tuning
+	manager    *lease.Manager
+	controller *pgxpool.Pool
+	reported   []error
 }
 
 func newRig(t *testing.T, tm temporal, claimed map[string][]string) *rig {
+	t.Helper()
+	return newRigTuned(t, tm, claimed, terminalcompose.Tuning{DeliveryEvery: time.Millisecond})
+}
+
+func newRigTuned(t *testing.T, tm temporal, claimed map[string][]string, tuning terminalcompose.Tuning) *rig {
 	t.Helper()
 	pool := pgtest.Pool(t, "tcomp")
 	controller := pgtest.ControllerPool(t, pool)
 	manager := pgtest.ControllerManager(t, pool, "leader", 0)
 	handle := pgtest.Acquire(t, manager)
-	r := &rig{t: t, backend: &backend{deleted: true}, rel: &releaser{}, log: &recorder{}, handle: handle, events: map[string][]journal.Event{}}
+	r := &rig{t: t, backend: &backend{deleted: true}, rel: &releaser{}, log: &recorder{}, handle: handle, events: map[string][]journal.Event{}, manager: manager, controller: controller, pool: pool}
 	r.streaks = failurestreakpg.Store{Pool: controller, Fence: manager}
 	writer, err := terminalwriter.New(runs{}, backends{r.backend}, journal.NewRegistryScrubber())
 	if err != nil {
@@ -179,12 +223,16 @@ func newRig(t *testing.T, tm temporal, claimed map[string][]string) *rig {
 		Pins: func(context.Context, string) (terminalawait.RunPin, error) {
 			return terminalawait.RunPin{Gaggle: "web", Workflow: "implementation", RepoRef: pinRepo}, nil
 		},
-		Bind:   runs{}.Bind,
-		Writer: writer,
-		Events: func(_ context.Context, run string) ([]journal.Event, error) { return r.events[run], nil },
-		Log:    r.log,
-		Report: func(err error) { r.reported = append(r.reported, err) },
-		Tuning: terminalcompose.Tuning{DeliveryEvery: time.Millisecond},
+		Bind:     runs{}.Bind,
+		Writer:   writer,
+		Events:   func(_ context.Context, run string) ([]journal.Event, error) { return r.events[run], nil },
+		Log:      r.log,
+		Report:   func(err error) { r.reported = append(r.reported, err) },
+		Backends: backends{r.backend},
+		Instance: func(repo providers.RepositoryRef) (terminalwriter.Binding, bool) {
+			return terminalwriter.Binding{Gaggle: "web", Generation: "g1", Project: pinRepo, Workspace: workspace, WorkItems: workspace}, repo == workspace
+		},
+		Tuning: tuning,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -317,5 +365,141 @@ func TestPrepareJournalsMissingAndInUseBranchesLikeTheDaemon(t *testing.T) {
 				t.Fatalf("journaled reason = %v, want %s (outcomes %v)", got, tc.reason, outcomes(r))
 			}
 		})
+	}
+}
+
+func updates(r *rig) []providers.UpdateWorkItemRequest {
+	r.backend.mu.Lock()
+	defer r.backend.mu.Unlock()
+	return slices.Clone(r.backend.updates)
+}
+
+func blockedRecords(t *testing.T, r *rig) int {
+	t.Helper()
+	var n int
+	if err := r.controller.QueryRow(t.Context(), `SELECT count(*) FROM control.blocked_record`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// The parking frame, end to end: a run whose final stage reports blocked on
+// another item records the learned block in PostgreSQL, parks the item as
+// blocked-on-sibling, and comments on it with a keyed escalation.
+func TestABlockedRunIsRecordedAndParkedThroughTheFrame(t *testing.T) {
+	blocked := engine.RunResult{
+		Status: engine.StatusEscalated, FinalState: "implement",
+		Outputs: map[string]apiv1.ResultEnvelope{"implement": {Status: apiv1.ResultBlocked, Summary: "waits on 41", Outputs: map[string]any{"blockedBy": "41"}}},
+	}
+	r := newRig(t, temporal{"run-p": {id: "run-p", result: blocked}}, map[string][]string{"run-p": {"42"}})
+	r.run(t)
+	if n := blockedRecords(t, r); n != 1 {
+		t.Fatalf("blocked records = %d, want the learned block recorded", n)
+	}
+	var parked, escalated bool
+	for _, u := range updates(r) {
+		parked = parked || (u.ID == "42" && slices.Contains(u.AddLabels, providers.LabelBlockedOnSibling) && slices.Contains(u.RemoveLabels, providers.LabelReady))
+		escalated = escalated || (u.Comment != "" && u.IdempotencyKey != "")
+	}
+	if !parked || !escalated {
+		t.Fatalf("parked %v, keyed escalation comment %v; updates %+v (reported %v)", parked, escalated, updates(r), r.reported)
+	}
+}
+
+// The notify frame, end to end: an escalated run that is not a blocked stage
+// charges the item's failure streak through the circuit breaker.
+func TestAnEscalatedRunChargesTheStreakThroughTheNotifyFrame(t *testing.T) {
+	escalated := engine.RunResult{Status: engine.StatusEscalated, FinalState: "ci"}
+	r := newRig(t, temporal{"run-n": {id: "run-n", result: escalated}}, map[string][]string{"run-n": {"42"}})
+	r.run(t)
+	if n, err := r.streaks.Load(t.Context(), pgtest.InstanceID, failurestreakpg.Work, workspace, "42"); err != nil || n != 1 {
+		t.Fatalf("streak = %d, %v; want the escalated terminal charged once (reported %v)", n, err, r.reported)
+	}
+}
+
+// A report the provider deferred stays owed, and the delivery loop sends it once
+// the provider recovers, within its budget.
+func TestADeferredReportIsDeliveredByATick(t *testing.T) {
+	failed := temporal{"run-d": {id: "run-d", err: errors.New("workflow execution error")}}
+	r := newRigTuned(t, failed, map[string][]string{"run-d": {"42"}}, terminalcompose.Tuning{DeliveryEvery: time.Millisecond, DeliveryBudget: 1})
+	reset := time.Now().Add(400 * time.Millisecond)
+	r.backend.updateErrs = []error{&providers.RateLimitError{Provider: providers.ProviderGitHub, Reset: reset}}
+	r.run(t)
+	if len(updates(r)) != 0 {
+		t.Fatalf("the report was delivered while the provider was limiting: %+v", updates(r))
+	}
+	time.Sleep(time.Until(reset) + 3500*time.Millisecond) // the retry delay is the reset plus 2-3s of jitter
+	r.deliver(t)
+	var commented bool
+	for _, u := range updates(r) {
+		commented = commented || (u.Comment != "" && u.IdempotencyKey != "")
+	}
+	if !commented {
+		t.Fatalf("the deferred report was not delivered by the loop (attempts %d, reported %v)", r.backend.attempts, r.reported)
+	}
+	if st := r.comp.Delivery.Status(); st.Pending != 0 || !st.Healthy {
+		t.Fatalf("status after delivery = %+v, want nothing owed and healthy", st)
+	}
+}
+
+// A report older than the bound makes the controller report itself unhealthy.
+func TestALaggingOutboxReportsUnhealthy(t *testing.T) {
+	failed := temporal{"run-l": {id: "run-l", err: errors.New("workflow execution error")}}
+	r := newRigTuned(t, failed, map[string][]string{"run-l": {"42"}}, terminalcompose.Tuning{DeliveryEvery: time.Millisecond, MaxOutboxLag: 50 * time.Millisecond})
+	r.backend.updateErrs = []error{&providers.RateLimitError{Provider: providers.ProviderGitHub, Reset: time.Now().Add(time.Hour)}}
+	r.run(t)
+	time.Sleep(200 * time.Millisecond)
+	r.deliver(t)
+	st := r.comp.Delivery.Status()
+	if st.Pending == 0 || st.Healthy {
+		t.Fatalf("status = %+v, want the owed report counted and unhealthy", st)
+	}
+}
+
+// A deposed leader's delivery pass ends its epoch instead of writing.
+func TestAStaleFenceEndsTheDeliveryLoopsEpoch(t *testing.T) {
+	r := newRig(t, temporal{}, nil)
+	pgtest.Takeover(t, r.pool, pgtest.ControllerManager(t, r.pool, "successor", 0))
+	var ended bool
+	for range 5 {
+		time.Sleep(5 * time.Millisecond)
+		if err := r.comp.Delivery.Tick(t.Context()); err != nil {
+			ended = epoch.IsStale(err)
+			break
+		}
+	}
+	if !ended {
+		t.Fatal("a delivery pass under a stale fence did not end the epoch")
+	}
+}
+
+// The self-heal verifies a recorded block's items through the applied
+// configuration, so it works after the recording run's pin is swept; a closed
+// item is forgotten, an unverifiable one is kept, and not re-read every pass.
+func TestHealForgetsAClosedBlockerAndKeepsAnUnverifiableOne(t *testing.T) {
+	r := newRigTuned(t, temporal{}, nil, terminalcompose.Tuning{DeliveryEvery: time.Millisecond, HealEvery: time.Millisecond, HealLimit: 50})
+	record := func(item, blocker string) {
+		store := blockedrecordspg.Store{Fence: r.manager}
+		if _, err := store.RecordBlock(t.Context(), r.handle, parking.Block{Repository: workspace, ItemID: item, Blockers: []string{blocker}, RunID: "gone-run", Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record("1", "2") // 2 closed since
+	record("3", "4") // 4 cannot be verified
+	r.backend.states = map[string]string{"2": "closed"}
+	r.backend.getErr = map[string]error{"4": errors.New("provider unavailable")}
+	if n := blockedRecords(t, r); n != 2 {
+		t.Fatalf("seeded records = %d, want 2", n)
+	}
+	r.deliver(t)
+	r.deliver(t)
+	if n := blockedRecords(t, r); n != 1 {
+		t.Fatalf("records after heal = %d, want only the unverifiable block kept (reported %v)", n, r.reported)
+	}
+	r.backend.mu.Lock()
+	reads := r.backend.reads["4"]
+	r.backend.mu.Unlock()
+	if reads != 1 {
+		t.Fatalf("the unverifiable item was read %d times across passes, want once (then backed off)", reads)
 	}
 }
