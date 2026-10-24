@@ -163,7 +163,7 @@ func (q pinningQueue) AcceptChild(ctx context.Context, request triggerqueue.Chil
 		// none: re-pinning would leak it. An unbound duplicate re-pins, which
 		// restores a pin lost to an earlier failed response and is otherwise
 		// idempotent.
-		_, err := q.custodyQueue.ChildEngineStart(ctx, child.Identity)
+		_, err := q.ChildEngineStart(ctx, child.Identity)
 		if err == nil {
 			return child, duplicate, nil
 		}
