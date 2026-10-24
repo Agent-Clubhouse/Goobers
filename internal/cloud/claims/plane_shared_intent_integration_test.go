@@ -3,6 +3,7 @@
 package claims
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -154,5 +155,32 @@ func TestSharedForceReleaseRevokesWithoutProviderResolver(t *testing.T) {
 	}
 	if got, err := p.Release(t.Context(), req); err != nil || !got.Ok {
 		t.Fatalf("cleanup retry=%+v, %v", got, err)
+	}
+}
+
+// A configured resolver does not change local-mode lease semantics.
+type localPolicyResolver struct{ sharedResolver }
+
+func (localPolicyResolver) Admission(context.Context, claimsclient.Key, string, string) (*claimsclient.SharedClaimBinding, error) {
+	return nil, nil
+}
+func (localPolicyResolver) Visibility(context.Context, string) (string, error) { return "local", nil }
+
+func TestLocalRenewWithSharedResolverPreservesFreshGrant(t *testing.T) {
+	f := newPlaneFixture(t)
+	p := f.leader(t, "a").plane
+	p.shared = localPolicyResolver{}
+	req := request("42", "run-a")
+	for range 2 {
+		if got, err := p.Renew(t.Context(), req); err != nil || !got.Ok {
+			t.Fatalf("local renewal did not grant a free key with explicit workflow=%+v, %v", got, err)
+		}
+		if got, err := p.Release(t.Context(), req); err != nil || !got.Ok {
+			t.Fatalf("local release=%+v, %v", got, err)
+		}
+	}
+	req.Workflow = ""
+	if got, err := p.Renew(t.Context(), req); err != nil || got.Ok {
+		t.Fatalf("missing local claim granted without a workflow=%+v, %v", got, err)
 	}
 }

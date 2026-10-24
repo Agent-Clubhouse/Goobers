@@ -57,11 +57,16 @@ func (p *Plane) claim(ctx context.Context, request httpapi.ClaimRequest, lease t
 		if renewal {
 			entries, err := p.selectEntries(ctx, p.pool, `run_id=$2 AND gaggle=$3 AND provider=$4 AND external_id=$5`,
 				request.RunID, key.Gaggle, key.Provider, key.ExternalID)
-			if err != nil || len(entries) == 0 {
-				return httpapi.ClaimResponse{Ok: false}, err
+			if err != nil {
+				return httpapi.ClaimResponse{}, err
 			}
-			expected = &entries[0]
+			if len(entries) > 0 {
+				expected = &entries[0]
+			}
 			if request.Workflow == "" {
+				if expected == nil {
+					return httpapi.ClaimResponse{Ok: false}, nil
+				}
 				request.Workflow = expected.Workflow
 			}
 		}
@@ -70,6 +75,9 @@ func (p *Plane) claim(ctx context.Context, request httpapi.ClaimRequest, lease t
 			return httpapi.ClaimResponse{}, err
 		}
 		if binding != nil {
+			if renewal && expected == nil {
+				return httpapi.ClaimResponse{Ok: false}, nil
+			}
 			return p.claimShared(ctx, p.owner(), request, lease, *binding, expected)
 		}
 	}
