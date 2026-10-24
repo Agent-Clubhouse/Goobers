@@ -131,13 +131,16 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 					return fmt.Errorf("selected ambient login lost")
 				}
 			} else if token, err := req.Credentials.Token(ctx, "agent:model"); err != nil || token != "sk-ant-qualification-model-only" {
-				return fmt.Errorf("selected parent model credential lost: %v", err)
+				return fmt.Errorf("selected parent model credential lost: %w", err)
 			}
 			if req.ChildWorkflows == nil {
 				childCalls.Add(1)
 				result, err := (harness.ExecProcessRunner{}).Run(ctx, harness.ProcessRequest{Command: []string{"/bin/sh", "-c", "printf 'child\\n' > child.txt"}, Dir: req.Workspace, Env: credentials.TrustedLocalBaseEnvironment(ctx, os.Environ()), Timeout: 5 * time.Second})
-				if err != nil || result.ExitCode != 0 {
-					return fmt.Errorf("child process: %v %+v", err, result)
+				if err != nil {
+					return fmt.Errorf("child process: %w", err)
+				}
+				if result.ExitCode != 0 {
+					return fmt.Errorf("child process exited %d: %+v", result.ExitCode, result)
 				}
 				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 			}
@@ -145,8 +148,11 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 			parentRunID := req.Envelope.RunID
 			// A real managed process establishes the same quiescence owner as a CLI.
 			result, err := (harness.ExecProcessRunner{}).Run(ctx, harness.ProcessRequest{Command: []string{"/bin/sh", "-c", "printf 'parent\\n' > parent.txt"}, Dir: req.Workspace, Env: credentials.TrustedLocalBaseEnvironment(ctx, os.Environ()), Timeout: 5 * time.Second})
-			if err != nil || result.ExitCode != 0 {
-				return fmt.Errorf("parent process: %v %+v", err, result)
+			if err != nil {
+				return fmt.Errorf("parent process: %w", err)
+			}
+			if result.ExitCode != 0 {
+				return fmt.Errorf("parent process exited %d: %+v", result.ExitCode, result)
 			}
 			token := req.ChildWorkflows.BearerToken
 			switch n {
@@ -179,7 +185,7 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 			case 3:
 				_, childErr := os.Stat(filepath.Join(req.Workspace, "child.txt"))
 				if (action == "discard") != os.IsNotExist(childErr) {
-					return fmt.Errorf("%s returned unexpected child files: %v", action, childErr)
+					return fmt.Errorf("%s returned unexpected child files: %w", action, childErr)
 				}
 				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 			default:

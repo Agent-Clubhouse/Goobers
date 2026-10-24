@@ -189,7 +189,6 @@ type rig struct {
 	closed  []terminalawait.ClosedRun
 	// hideOpen makes the open-run listing empty (visibility has aged the run out).
 	hideOpen bool
-	tuning   terminalcompose.Tuning
 	// noBudget makes the shared quota ledger refuse provider reads.
 	noBudget   atomic.Bool
 	manager    *lease.Manager

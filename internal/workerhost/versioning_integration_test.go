@@ -234,7 +234,7 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Stop()
+	defer func() { _ = server.Stop() }() // best-effort teardown
 
 	queue := "workerhost-versioning"
 	oldRecords := &versioningRecorder{}
@@ -378,7 +378,7 @@ func TestIntegrationUpgradeHITLResumesNMinus3OnCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Stop()
+	defer func() { _ = server.Stop() }() // best-effort teardown
 
 	queue := "workerhost-upgrade-hitl"
 	oldRecords := &versioningRecorder{}
