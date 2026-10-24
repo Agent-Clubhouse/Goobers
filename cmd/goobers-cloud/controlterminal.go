@@ -26,9 +26,12 @@ type terminalEpoch struct {
 	Awaiters epoch.Awaiters
 	// Delivery is the outbox delivery loop, run as the epoch's L3.
 	Delivery func(context.Context) error
-	// Status is the delivery loop's last observation.
-	Status func() terminalcompose.Status
 }
+
+// epochSchedulerLogs is the process's shared opener of the epoch's fenced
+// scheduler log. Every consumer (these hooks, the scheduler admission) takes the
+// log from it: a second open in one epoch is refused.
+var epochSchedulerLogs schedulerLogs
 
 // terminalStatus is the live epoch's delivery status, for readiness and the
 // control status page. Nil between epochs.
@@ -72,7 +75,7 @@ var errTerminalInputs = errors.New("terminal hooks need the claims plane, config
 func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Context, fence *lease.Manager, handle *lease.Handle) (terminalEpoch, error) {
 	plane, okPlane := p.Claims.(*cloudclaims.Plane)
 	backend, okBackend := p.journalReader.(terminalJournal)
-	owner, okConfig := p.Configuration.(appliedConfiguration)
+	owner, okConfig := p.Configuration.(terminalConfiguration)
 	store, okStore := db.Acceptances.(*acceptance.Store)
 	if !okPlane || !okBackend || !okConfig || !okStore || p.generations == nil || db.Temporal == nil || db.Pools == nil {
 		return nil
@@ -103,18 +106,14 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		if err != nil {
 			return terminalEpoch{}, err
 		}
-		temporal := epochTemporal.Load()
-		if temporal == nil {
-			return terminalEpoch{}, errors.New("terminal hooks require the Temporal client")
-		}
 		comp, err := terminalcompose.New(terminalcompose.Deps{
 			Handle: handle, Fence: fence, Pool: db.Pools.Transaction,
 			Releaser: plane,
 			Claimed:  claimedItemIDs(plane),
 			Holders:  plane.ClaimedRuns,
-			Temporal: *temporal,
-			Open:     epoch.TemporalOpenRuns{Client: *temporal}.OpenRuns,
-			Closed:   terminalawait.TemporalClosedRuns(*temporal),
+			Temporal: db.Temporal,
+			Open:     epoch.TemporalOpenRuns{Client: db.Temporal}.OpenRuns,
+			Closed:   terminalawait.TemporalClosedRuns(db.Temporal),
 			Pins: func(ctx context.Context, runID string) (terminalawait.RunPin, error) {
 				pins, err := store.RunPinsOf(ctx, runID)
 				return terminalawait.RunPin{Gaggle: pins.Gaggle, Workflow: pins.Workflow, RepoRef: pins.RepoRef}, err
@@ -128,7 +127,11 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		if err != nil {
 			return terminalEpoch{}, err
 		}
-		return terminalEpoch{Awaiters: comp.Awaiters, Delivery: comp.Delivery.Tick, Status: comp.Delivery.Status}, nil
+		// Publish this epoch's status for readiness and the status page; its
+		// awaiters withdraw it when the epoch stops.
+		status := comp.Delivery.Status
+		terminalStatus.Store(&status)
+		return terminalEpoch{Awaiters: &clearingAwaiters{Awaiters: comp.Awaiters, published: &status}, Delivery: comp.Delivery.Tick}, nil
 	}
 }
 
@@ -140,8 +143,8 @@ type terminalJournal interface {
 	terminalwriter.RunOpener
 }
 
-// appliedConfiguration is the configuration owner's applied generation.
-type appliedConfiguration interface {
+// terminalConfiguration is the configuration owner's applied generation.
+type terminalConfiguration interface {
 	Applied() (cloudconfig.Candidate, bool)
 	InstanceConfig() *instance.Config
 }
@@ -170,4 +173,19 @@ func runEvents(ctx context.Context, backend terminalwriter.RunOpener, runID stri
 		return nil, err
 	}
 	return reader.Events()
+}
+
+// clearingAwaiters withdraws the published delivery status when its epoch stops,
+// so a deposed or standby replica reports no outbox state of its own.
+type clearingAwaiters struct {
+	epoch.Awaiters
+	published *func() terminalcompose.Status
+}
+
+func (a *clearingAwaiters) Stop(ctx context.Context) error {
+	err := a.Awaiters.Stop(ctx)
+	// Only our own publication: a successor epoch on this process may already
+	// have stored its own.
+	terminalStatus.CompareAndSwap(a.published, nil)
+	return err
 }
