@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childresult"
@@ -181,9 +180,7 @@ func (s *Service) Complete(ctx context.Context, in engine.ChildCompletionInput) 
 	if err := s.Capacity.Reacquire(ctx, in); err != nil {
 		return apiv1.ContextPointer{}, err
 	}
-	return apiv1.ContextPointer{Name: "child-result", Artifact: &apiv1.ArtifactPointer{
-		Path: "child-results/" + strings.TrimPrefix(stored.ReceiptDigest, "sha256:") + ".json", Digest: stored.ReceiptDigest, Size: int64(len(stored.Receipt)),
-	}}, nil
+	return childresult.ContinuationPointer(stored.ReceiptDigest, int64(len(stored.Receipt))), nil
 }
 
 func sameTerminalInput(a, b childworkflow.TerminalResultInput) bool {

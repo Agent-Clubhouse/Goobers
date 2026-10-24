@@ -73,14 +73,21 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 	)
 }
 
+// EngineChildWorkflowsBlockers names what still prevents enabling generated
+// child workflows on the engine (#8085 d). Control serves Park, Finalize and
+// Complete; what remains:
+//   - a parked parent cannot yet lend its slot: L1e has not composed the
+//     control scheduler as the parent capacity plane;
+//   - stage pods cannot read the child result receipts control writes: no
+//     cloud blob plane serves the object store yet (#8188);
+//   - lifting the refusal is the product owner's enablement decision.
+//
+// The config refusal and cloud readiness both report it, so they cannot drift.
+const EngineChildWorkflowsBlockers = "the parent capacity plane is not composed (L1e), stage pods cannot read control-written child results until the cloud blob plane serves the object store (#8188), and enablement awaits a product decision (#8085)"
+
 // ErrEngineChildWorkflowsIncomplete refuses opting an instance into generated
-// child workflows until the child protocol can run safely end to end (#8085 d).
-// Control serves Park, Finalize and Complete, but a parked parent cannot yet
-// lend its slot: the control scheduler is not composed as the parent capacity
-// plane (L1e). A resuming parent can also be starved by new starts (#8174).
-// Lifting the refusal is the product owner's enablement decision once both
-// are resolved.
-var ErrEngineChildWorkflowsIncomplete = errors.New("engine.childWorkflows.enabled: child workflows are not enabled yet: the parent capacity plane is not composed (L1e), resume starvation is open (#8174), and enablement awaits a product decision (#8085)")
+// child workflows until the child protocol can run safely end to end.
+var ErrEngineChildWorkflowsIncomplete = errors.New("engine.childWorkflows.enabled: child workflows are not enabled yet: " + EngineChildWorkflowsBlockers)
 
 func (c *Config) validateEngineChildWorkflows() error {
 	if c.EngineChildWorkflowsEnabled() {

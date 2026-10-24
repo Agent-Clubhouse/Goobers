@@ -3,12 +3,14 @@ package harness
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/safepath"
 )
 
@@ -156,6 +158,12 @@ func (e *Executor) materializeContext(env apiv1.InvocationEnvelope) (map[string]
 		}
 		data, err := cp.Artifact.Resolve(journalRoot)
 		if err != nil {
+			// A child's sealed result has no other source: when it is absent,
+			// say the child was retired, not merely that a file is missing
+			// (#8085 d). Still the same hard executor error.
+			if errors.Is(err, fs.ErrNotExist) && childresult.IsContinuationPointer(cp) {
+				return nil, fmt.Errorf("harness: resolve context pointer %q (digest %s): %w: %w", cp.Name, cp.Artifact.Digest, childresult.ErrResultRetired, err)
+			}
 			return nil, fmt.Errorf("harness: resolve context pointer %q: %w", cp.Name, err)
 		}
 		relPath := filepath.Join(contextDir, safeContextFilename(i, cp.Name))
