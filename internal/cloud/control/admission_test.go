@@ -128,3 +128,12 @@ func TestAdmissionBuildFailureFailsTheEpochBuild(t *testing.T) {
 		t.Fatalf("Build = %v, want the admission failure", err)
 	}
 }
+
+func TestAdmissionBuildRefusesNilAdmission(t *testing.T) {
+	var calls []string
+	runtime := admissionRuntime(&calls, &recordingAdmission{calls: &calls}, nil)
+	runtime.Admission = func(context.Context, AdmissionDeps) (Admission, error) { return nil, nil }
+	if _, err := runtime.Build(t.Context(), &lease.Handle{InstanceID: "instance", Epoch: 1}); err == nil || !strings.Contains(err.Error(), "factory returned nil") {
+		t.Fatalf("Build = %v, want nil admission refusal", err)
+	}
+}
