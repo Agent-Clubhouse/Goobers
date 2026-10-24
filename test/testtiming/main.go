@@ -64,6 +64,9 @@ type jobBudget struct {
 	BaselineSeconds float64 `json:"baselineSeconds"`
 	BudgetSeconds   float64 `json:"budgetSeconds"`
 	Baseline        string  `json:"baseline"`
+	// AlertOnBudget opts a job into a warning at its fixed design budget.
+	// It never turns an over-budget measurement into a failing check.
+	AlertOnBudget bool `json:"alertOnBudget,omitempty"`
 	// RegressionTolerance is the fraction of growth over the previous
 	// successful run's ElapsedSeconds that counts as a genuine regression
 	// signal. Shared CI runners can swing run-to-run purely
@@ -91,6 +94,8 @@ func run(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		return runCapture(args[1:], stdout, stderr, now)
 	case "report":
 		return runReport(args[1:], stdout, stderr)
+	case "wall":
+		return runWall(args[1:], stdout, stderr, now)
 	case "weights":
 		return runWeights(args[1:], stdout, stderr)
 	case "splits":
@@ -106,6 +111,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage:")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming capture -job JOB -out FILE [-junit FILE] [-annotations] -- [go test flags and packages]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming report -budget FILE -current FILE [-previous FILE] [-summary FILE]")
+	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming wall -job JOB -started-at RFC3339 -out FILE -budget FILE [-summary FILE]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming weights -timing FILE [-timing FILE...] -splits FILE -run-metadata FILE -out FILE [-minimum-seconds N]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming splits -timing FILE [-timing FILE...] -run-metadata FILE -split PKG=PIECES [-split ...] -out FILE")
 }
@@ -391,14 +397,14 @@ type formattedReport struct {
 // shared runners contend unpredictably, so a fixed-second ceiling is either
 // stale noise (see #3323 -- every green run already exceeded it) or a number
 // someone has to keep chasing upward. It stays in the ledger because the
-// trend is genuinely useful, but it never drives the advisory signal.
+// trend is genuinely useful. A job may explicitly opt into AlertOnBudget for
+// a design-budget warning; the existing unit job does not.
 //
 // The advisory signal instead compares the current run against the previous
 // successful measurement: growth beyond RegressionTolerance is a real
 // regression worth flagging; anything inside it is contention noise. With no
 // previous measurement to compare against (first run, cross-fork PR missing
-// the artifact), there is nothing to distinguish noise from regression, so no
-// advisory fires -- silence, not a guess.
+// the artifact), only an explicitly enabled design-budget warning can fire.
 func formatReport(current artifact, budget jobBudget, previous *artifact) formattedReport {
 	actual := current.ElapsedSeconds
 	headroom := budget.BudgetSeconds - actual
@@ -408,14 +414,14 @@ func formatReport(current artifact, budget jobBudget, previous *artifact) format
 	}
 	previousText := "not available"
 	changeText := "not available"
-	advisory := false
+	advisory := budget.AlertOnBudget && headroom < 0
 	if previous != nil {
 		previousText = durationText(previous.ElapsedSeconds)
 		delta := actual - previous.ElapsedSeconds
 		changeText = signedDurationText(delta)
 		if previous.ElapsedSeconds > 0 {
 			changeText += fmt.Sprintf(" (%+.1f%%)", delta/previous.ElapsedSeconds*100)
-			advisory = delta > previous.ElapsedSeconds*budget.RegressionTolerance
+			advisory = advisory || delta > previous.ElapsedSeconds*budget.RegressionTolerance
 		}
 	}
 

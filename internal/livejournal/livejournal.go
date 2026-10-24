@@ -734,15 +734,17 @@ func (w *Writer) forgetLoan(runID string, run *liveRun) {
 // A failed read is not an error here: it leaves the cached view exactly as it
 // was, and the caller's own miss then produces the ordinary refusal.
 func (w *Writer) refreshAdopted(run *liveRun) {
-	reader, err := journal.OpenReadOnly(run.dir)
-	if err != nil {
-		return
+	if run.adopted {
+		reader, err := journal.OpenReadOnly(run.dir)
+		if err != nil {
+			return
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return
+		}
+		deriveDedupState(run, events)
 	}
-	events, err := reader.Events()
-	if err != nil {
-		return
-	}
-	deriveDedupState(run, events)
 }
 
 // deriveDedupState reads a journal's own events back into a run's dedup view:
