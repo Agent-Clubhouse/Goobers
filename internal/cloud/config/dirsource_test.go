@@ -514,3 +514,58 @@ func TestDirSourceRefusesAnInstanceFileOutsideTheConfigVersion(t *testing.T) {
 		t.Fatal("an instance.yaml that resolves outside config/'s version directory was accepted")
 	}
 }
+
+func TestDirSourcePinsTheSameSetItReturnsFromTheGenerationsOwnTree(t *testing.T) {
+	t.Parallel()
+	root := demoDir(t)
+	var gotSet *instance.ConfigSet
+	var gotDir string
+	var treeHasDefinitions bool
+	source := DirSource{Root: root, InstanceID: "i", Pins: func(configDir string, cfg *instance.Config, set *instance.ConfigSet) (map[string]Pins, error) {
+		gotSet, gotDir = set, configDir
+		_, statErr := os.Stat(filepath.Join(configDir, "manifest.yaml"))
+		treeHasDefinitions = cfg != nil && statErr == nil
+		return map[string]Pins{"g/w": {WorkflowDigest: "wf", GooberDigest: "goober"}}, nil
+	}}
+	got, err := source.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Set != gotSet || gotSet == nil {
+		t.Fatal("pins were computed on a different set than the candidate carries (the overlay would be lost)")
+	}
+	if !treeHasDefinitions || filepath.Base(gotDir) != "config" || strings.HasPrefix(gotDir, root) {
+		t.Fatalf("pins were computed from %q (definitions present: %v), want the generation's own extracted config tree", gotDir, treeHasDefinitions)
+	}
+	if got.Pins["g/w"].WorkflowDigest != "wf" || len(got.Pins) != 1 {
+		t.Fatalf("candidate pins = %+v", got.Pins)
+	}
+	if _, err := os.Stat(gotDir); err == nil {
+		t.Fatal("the private extraction outlived the load")
+	}
+}
+
+func TestDirSourceRefusesACandidateItCannotPin(t *testing.T) {
+	t.Parallel()
+	source := DirSource{Root: demoDir(t), InstanceID: "i", Pins: func(string, *instance.Config, *instance.ConfigSet) (map[string]Pins, error) {
+		return nil, errors.New("workflow does not compile")
+	}}
+	if got, err := source.Load(t.Context()); err == nil || got.Digest != "" {
+		t.Fatalf("an unpinnable generation loaded: %+v %v", got.Digest, err)
+	}
+}
+
+func TestDirSourceNamesAMissingConfigTree(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), []byte("apiVersion: goobers.dev/v1alpha1\nkind: Instance\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (DirSource{Root: root, InstanceID: "i"}).Load(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "has no config/ tree") || !strings.Contains(err.Error(), "mount the full instance") {
+		t.Fatalf("a directory with only instance.yaml = %v, want an actionable missing-config/ error", err)
+	}
+	if _, err := NewDirConfiguration(acceptAll, &countingActivator{}, DirSource{Root: root, InstanceID: "i"}); err == nil || !strings.Contains(err.Error(), "mount the full instance") {
+		t.Fatalf("boot with only instance.yaml = %v", err)
+	}
+}
