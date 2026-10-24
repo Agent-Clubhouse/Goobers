@@ -221,7 +221,10 @@ Retain run identity, budget accounting, reservation ownership, and workspace
 custody. The child uses normal fair admission and tenant quotas. Even a tenant
 with a single execution slot can therefore run a child. Parent resumption must
 fairly reacquire capacity before starting writers; replay cannot mint a permit.
-Terminal-result processing must not require that execution slot.
+Fairness is first-come by waiting parent (#8174). A parent whose resume is
+refused for capacity holds a claim on the next freed slot. The claim beats new
+starts and child admissions, and it lapses after `ContinuationClaimTTL` without
+a retry. Terminal-result processing must not require that execution slot.
 
 Keep three clocks distinct:
 
