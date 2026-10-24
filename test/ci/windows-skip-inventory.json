@@ -253,6 +253,12 @@
       "reason": "Cloud PostgreSQL journal tests run in Linux unit and local PG16 cloudintegration jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/schedcounters",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud control-plane scheduler counters; runs on the Linux unit shards, the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/schedentries",
       "coverage": "none",
       "category": "not-selected",
