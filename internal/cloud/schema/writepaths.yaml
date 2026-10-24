@@ -974,6 +974,7 @@ tables:
     - lease_until
     - owner_epoch
     - delivered_at
+    - created_at
   writers:
   - role: goobers_controller
     insert:

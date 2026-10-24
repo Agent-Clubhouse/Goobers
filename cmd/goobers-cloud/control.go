@@ -247,6 +247,7 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		return err
 	}
 	report := func(err error) { logger.Printf("%v", err) }
+	epochWiring.Report = report
 	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
 		reporter.SetReporter(report)
 	}
@@ -300,13 +301,16 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 		return struct {
 			Ready  bool                     `json:"ready"`
 			Starts []acceptance.StartStatus `json:"uncertainStarts"`
-		}{host.Ready(), rows}, err
+			// TerminalOutbox is the undelivered terminal-report backlog and its
+			// age, the lag metric of the outbox delivery loop; nil on a standby.
+			TerminalOutbox *terminalOutboxLag `json:"terminalOutbox,omitempty"`
+		}{host.Ready(), rows, currentTerminalOutboxLag()}, err
 	}, handler)
 	if err != nil {
 		return nil, err
 	}
 	return httpapi.WrapWithProbes(handler, func() bool { return true }, func() httpapi.ReadinessStatus {
-		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: p.schedulerGates.Checks()}
+		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: mergeReadinessChecks(p.schedulerGates.Checks(), terminalOutboxChecks())}
 	}), nil
 }
 
@@ -366,4 +370,20 @@ func (o *controlDatabaseOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.auth, "database-auth", environmentOr("GOOBERS_DATABASE_AUTH", "password"), "password or entra")
 	f.IntVar(&o.max, "database-max-conns", int(cloudpg.DefaultMaxConnections), "total connection budget across both roles")
 	f.IntVar(&o.direct, "database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct connection reservation per role")
+}
+
+// mergeReadinessChecks combines the informational readiness checks of the
+// scheduler gates and the terminal outbox into one map, or nil when neither
+// reports anything.
+func mergeReadinessChecks(sets ...map[string]bool) map[string]bool {
+	var out map[string]bool
+	for _, set := range sets {
+		for name, ok := range set {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[name] = ok
+		}
+	}
+	return out
 }

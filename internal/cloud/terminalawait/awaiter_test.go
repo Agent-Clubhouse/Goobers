@@ -1101,3 +1101,27 @@ func TestAnAbsentBranchIsJournaledBranchNotFoundLikeTheDaemon(t *testing.T) {
 		t.Fatalf("an absent branch was journaled %v/%v, want unnecessary/branch-not-found", outcome, reason)
 	}
 }
+
+func TestIdentifyFromPins(t *testing.T) {
+	repo := apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}
+	pins := map[string]RunPin{"run-1": {Gaggle: "web", Workflow: "implementation", RepoRef: repo}}
+	identify := IdentifyFromPins(func(_ context.Context, runID string) (RunPin, error) {
+		if pin, ok := pins[runID]; ok {
+			return pin, nil
+		}
+		if runID == "boom" {
+			return RunPin{}, errors.New("database unavailable")
+		}
+		return RunPin{}, sql.ErrNoRows
+	})
+	id, err := identify(t.Context(), "run-1")
+	if err != nil || id.Gaggle != "web" || id.Workflow != "implementation" || id.RepoRef != repo {
+		t.Fatalf("identity = %+v, %v", id, err)
+	}
+	if _, err := identify(t.Context(), "child-1"); !errors.Is(err, ErrUnidentifiable) {
+		t.Fatalf("an unpinned run = %v, want ErrUnidentifiable", err)
+	}
+	if _, err := identify(t.Context(), "boom"); err == nil || errors.Is(err, ErrUnidentifiable) {
+		t.Fatalf("a read failure = %v, want a retryable error", err)
+	}
+}
