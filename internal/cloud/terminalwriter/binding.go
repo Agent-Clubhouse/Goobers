@@ -126,9 +126,13 @@ func (r JournalRuns) Bind(ctx context.Context, runID string) (Binding, error) {
 	}, nil
 }
 
-// journalAgrees requires the worker-written identity to agree with the pin, as
-// childengine's journalAgrees does: same run, gaggle and generation, and a
-// journaled workspace, if any, equal to the pinned repository.
+// journalAgrees requires the worker-written identity to agree with the pin:
+// same run, gaggle and generation, and a journaled workspace, if any, equal to
+// the pinned repository. It is deliberately a subset of childengine's
+// journalAgrees: it compares only the fields this writer binds from the pin.
+// The workflow, digests, driver and child lineage that check also compares
+// gate child-workflow authority, not which repository a terminal hook may
+// write, so a run they would refuse can still bind here.
 func (r JournalRuns) journalAgrees(ctx context.Context, runID string, pin RunPin) error {
 	reader, err := r.Journal.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, journal.ErrNotRunDirectory) {

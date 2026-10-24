@@ -121,3 +121,21 @@ func TestCredentialsAreNarrowedToThePinnedHost(t *testing.T) {
 		t.Fatal("a project on an unconfigured host borrowed a configured repository")
 	}
 }
+
+// TestDuplicateConfigEntriesRefuseRatherThanPick: two entries for the same
+// repository on the same host leave no single entry to bind credentials from.
+func TestDuplicateConfigEntriesRefuseRatherThanPick(t *testing.T) {
+	t.Setenv("TERMINALWRITER_TOKEN_A", "token-a")
+	t.Setenv("TERMINALWRITER_TOKEN_B", "token-b")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "service", Token: instance.TokenRef{Env: "TERMINALWRITER_TOKEN_A"}},
+		{Provider: "github", Owner: "acme", Name: "service", Token: instance.TokenRef{Env: "TERMINALWRITER_TOKEN_B"}},
+	}}
+	if _, err := configuredRepo(cfg, binding("run-1").Project); err == nil {
+		t.Fatal("duplicate entries for the pinned repository picked one")
+	}
+	backends := configuredBackends(t, func() (*instance.Config, string, bool) { return cfg, "d1", true })
+	if _, err := backends.For(t.Context(), binding("run-1"), workspaceRepo, string(capability.GitHubBranchDelete)); err == nil {
+		t.Fatal("a backend was built from an ambiguous configuration")
+	}
+}
