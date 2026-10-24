@@ -505,6 +505,9 @@ func TestConstructSchedulerBindsOneQuotaStateToObservations(t *testing.T) {
 	if epochWiring.Quota == nil || epochWiring.Quota() != p.schedulerQuota {
 		t.Fatal("the terminal heal's quota is not the scheduler's state")
 	}
+	if p.schedulerComposition.Counters == nil {
+		t.Fatal("the production composition supplies no provider counters: MaxOpenPRs, backlog, refill and schedule-demand would stay unenforced")
+	}
 	if p.schedulerComposition.Capacity != &epochParentCapacity {
 		t.Fatal("the scheduler admission does not publish the process's parent capacity holder")
 	}
