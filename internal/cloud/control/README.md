@@ -71,9 +71,13 @@ The control/API composition in #7850 and #7879 must complete these steps in orde
 go test -race -tags cloudintegration ./internal/cloud/control ./internal/cloud/acceptance
 ```
 
-The control suite uses a real Temporal dev server with no worker, simulates a
-lost response after Temporal accepts a start, transfers the lease between two
-replicas, verifies one start and restored observations, and measures in-process handoff latency.
+The control suite uses a real Temporal dev server with no worker. It seeds a
+start through the first epoch's fenced starter captured at the mandatory
+Admission seam, hides Temporal's successful response, then transfers the lease
+between two replicas. It verifies successor recovery to Dispatched, exactly one
+Temporal start, restored observations, and a workflow still Running after both
+controllers stop, and measures in-process handoff latency. The controller
+composition suite separately exercises real scheduler admission and refusal handling.
 A second variant injects heartbeat renewal failures, drives the monotonic self-fence deadline,
 and requires real database TTL expiry before involuntary takeover. Live callback
 accounting checks overlap independently of Stop. The deadline test checks
