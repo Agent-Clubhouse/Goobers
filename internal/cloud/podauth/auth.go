@@ -70,6 +70,9 @@ func New(config Config) (*Auth, error) {
 // Authenticate verifies grants and their durable revocation before minting a
 // principal. All other bearer forms retain shared podauth routing and scope rules.
 func (a *Auth) Authenticate(request *http.Request) (*httpapi.Principal, error) {
+	if a == nil || a.verifier == nil {
+		return nil, errors.New("cloud pod auth is not initialized")
+	}
 	token := ""
 	authorization := request.Header.Get("Authorization")
 	if len(authorization) > 7 && strings.EqualFold(authorization[:7], "Bearer ") {
