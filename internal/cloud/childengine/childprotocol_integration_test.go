@@ -4,6 +4,7 @@ package childengine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -19,7 +20,10 @@ import (
 
 type recordedCapacity struct{ released, reacquired int }
 
-func (c *recordedCapacity) Release(context.Context, engine.ChildParkInput) error { c.released++; return nil }
+func (c *recordedCapacity) Release(context.Context, engine.ChildParkInput) error {
+	c.released++
+	return nil
+}
 func (c *recordedCapacity) Reacquire(context.Context, engine.ChildCompletionInput) error {
 	c.reacquired++
 	return nil
@@ -156,5 +160,43 @@ func TestParkAndCompleteNeedTheCapacityPlaneAndContinuationPath(t *testing.T) {
 	var recorded childresult.TerminalReturn
 	if err := json.Unmarshal(continuations.written[0], &recorded); err != nil || recorded.ResultRef != sealed.ResultRef {
 		t.Fatalf("continuation carries %+v (%v), want the sealed result", recorded, err)
+	}
+}
+
+// A child bound by a control plane that predates bind-as-dispatch is still
+// queued with an accepted acceptance; its finalizer records the dispatch and
+// settles it. A child the engine never bound cannot be dispatched this way.
+func TestFinalizeSettlesAChildBoundByAnOlderControlPlane(t *testing.T) {
+	f := newProtocolFamily(t)
+	if _, err := f.pool.Exec(t.Context(), `UPDATE control.child_lineage SET state='queued' WHERE instance_id=$1 AND child_id=$2`, testInstance, f.binding.Child.ChildID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(t.Context(), `UPDATE control.acceptance SET state='accepted', finished_at=NULL WHERE instance_id=$1 AND id=$2`, testInstance, f.binding.Child.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := f.service.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: f.binding.Child.AcceptedAt.Add(time.Second)})
+	if err != nil {
+		t.Fatalf("finalize of an older control plane's bind: %v", err)
+	}
+	child, err := f.controller.GetChild(t.Context(), f.binding.Child.Identity)
+	if err != nil || child.State != triggerqueue.ChildCompleted || child.ResultRef != sealed.ResultRef {
+		t.Fatalf("custody = %+v, %v", child, err)
+	}
+	if err := f.controller.DispatchEngineChild(t.Context(), f.binding.Child.Identity); err != nil {
+		t.Fatalf("a repeated dispatch of a settled child = %v, want unchanged", err)
+	}
+
+	other := newChildWorkflowFamily(t)
+	started, err := other.service().StartChildWorkflow(t.Context(), other.grant.BearerToken, other.parent.pins.RunID, "never-bound", []byte(generatedChild))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbound := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: other.parent.pins.Gaggle, ParentRunID: other.parent.pins.RunID},
+		StageOccurrence: other.parent.origin.StageOccurrence, InvocationKey: "never-bound"}
+	if err := other.controller.DispatchEngineChild(t.Context(), unbound); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("dispatch of an unbound child = %v, want refused (no engine bind)", err)
+	}
+	if child, err := other.controller.GetChild(t.Context(), unbound); err != nil || child.State != triggerqueue.ChildQueued || child.AcceptanceID != started.AcceptanceID {
+		t.Fatalf("unbound child after a refused dispatch = %+v, %v; want unchanged", child, err)
 	}
 }

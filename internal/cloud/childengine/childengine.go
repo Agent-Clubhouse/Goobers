@@ -37,6 +37,7 @@ type Custody interface {
 	ChildResult(context.Context, triggerqueue.ChildIdentity) (triggerqueue.ChildResult, error)
 	KeepChildResult(context.Context, triggerqueue.ChildRecord, triggerqueue.ChildResult) error
 	SetChildState(context.Context, triggerqueue.ChildIdentity, triggerqueue.ChildStateUpdate, time.Time) error
+	DispatchEngineChild(context.Context, triggerqueue.ChildIdentity) error
 }
 
 // Accepted is the immutable input a freezer may read: the verified handoff,
