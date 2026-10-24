@@ -608,3 +608,9 @@ github.com/goobers/goobers/internal/cloud/terminalwriter.configuredRepo # #8093 
 github.com/goobers/goobers/internal/cloud/terminalwriter.missingPin # #8093 cloud provider writer, awaiting its #7818 group D composition into the control role; exercised by internal/cloud/terminalwriter tests. expires=2026-12-15
 github.com/goobers/goobers/internal/cloud/terminalwriter.notPinned # #8093 cloud provider writer, awaiting its #7818 group D composition into the control role; exercised by internal/cloud/terminalwriter tests. expires=2026-12-15
 github.com/goobers/goobers/internal/cloud/terminalwriter.AcceptancePins # #8093 cloud provider writer, awaiting its #7818 group D composition into the control role; exercised by internal/cloud/terminalwriter tests. expires=2026-12-15
+
+# Engine child parent capacity plane (#8085 d), composed when L1e hands the control scheduler to childengine as ParentSlots.
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.suspension # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.forget # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.Release # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.Reacquire # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
