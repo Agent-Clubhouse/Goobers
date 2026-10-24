@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -138,7 +140,66 @@ func TestAFailedOpenIsNotRemembered(t *testing.T) {
 	if log, err := logs.For(t.Context(), opener, handle, nil); err != nil || log == nil {
 		t.Fatalf("retry after a failed open = %v, %v", log, err)
 	}
+	if opener.opens != 2 {
+		t.Fatalf("opens = %d, want 2: the failed open is retried, not cached", opener.opens)
+	}
 	if _, err := logs.For(t.Context(), nil, handle, nil); err == nil {
 		t.Fatal("a missing backend was accepted")
+	}
+}
+
+// An epoch that ends while (or right after) the log is opened still retires it
+// exactly once; synctest makes "the retire goroutine has run" deterministic.
+func TestAnEpochEndingRightAfterOpenRetiresOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		epoch := int64(9)
+		opener := &fakeOpener{taken: map[int64]bool{}, epoch: &epoch}
+		var retired atomic.Int32
+		logs := schedulerLogs{retire: func(*journalpg.SchedulerLog) error { retired.Add(1); return nil }}
+		ctx, cancel := context.WithCancel(t.Context())
+		if _, err := logs.For(ctx, opener, &lease.Handle{InstanceID: "i", Epoch: 9}, nil); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		if got := retired.Load(); got != 1 {
+			t.Fatalf("retired %d times, want exactly once", got)
+		}
+	})
+}
+
+// Only a retire failure that means something is reported: a lost lease and an
+// already-released stream are the expected end of a deposed leader's epoch.
+func TestRetireFailuresAreReportedOnlyWhenTheyMeanSomething(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err    error
+		report bool
+	}{
+		"success":          {nil, false},
+		"stale lease":      {lease.ErrStale, false},
+		"self fenced":      {lease.ErrSelfFenced, false},
+		"stream owned":     {journal.ErrRunOwned, false},
+		"wrapped stale":    {fmt.Errorf("retire: %w", lease.ErrStale), false},
+		"database failure": {errors.New("connection refused"), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				epoch := int64(1)
+				opener := &fakeOpener{taken: map[int64]bool{}, epoch: &epoch}
+				logs := schedulerLogs{retire: func(*journalpg.SchedulerLog) error { return tc.err }}
+				var reported []error
+				ctx, cancel := context.WithCancel(t.Context())
+				if _, err := logs.For(ctx, opener, &lease.Handle{InstanceID: "i", Epoch: 1}, func(err error) { reported = append(reported, err) }); err != nil {
+					t.Fatal(err)
+				}
+				cancel()
+				synctest.Wait()
+				if got := len(reported) > 0; got != tc.report {
+					t.Fatalf("reported = %v for %v, want reported=%v", reported, tc.err, tc.report)
+				}
+			})
+		})
 	}
 }
