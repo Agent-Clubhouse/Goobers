@@ -4559,6 +4559,18 @@ func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
 	}
 }
 
+// Generated child workflows are OFF unless an instance opts in, and the
+// opt-in survives loading (#8085 d).
+func TestEngineChildWorkflowsAreOffUnlessOptedIn(t *testing.T) {
+	if (&Config{}).EngineChildWorkflowsEnabled() || (*Config)(nil).EngineChildWorkflowsEnabled() ||
+		(&Config{Engine: &EngineConfig{ChildWorkflows: &EngineChildWorkflowsConfig{}}}).EngineChildWorkflowsEnabled() {
+		t.Fatal("child workflows enabled without an opt-in")
+	}
+	if !(&Config{Engine: &EngineConfig{ChildWorkflows: &EngineChildWorkflowsConfig{Enabled: true}}}).EngineChildWorkflowsEnabled() {
+		t.Fatal("engine.childWorkflows.enabled did not enable child workflows")
+	}
+}
+
 // TestResolveEngineConfigPreservesEveryField pins #6012: resolution starts
 // from a full copy of the authored engine block, so a field that is not
 // env-backed reaches the resolved config without being re-listed in the
@@ -4572,6 +4584,7 @@ func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
 		HITL:             &EngineHITLConfig{Enabled: true, Window: "4h", Actors: []string{"operator"}},
 		TLS:              &temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", ServerName: "temporal-frontend"},
 		WorkerVersioning: true,
+		ChildWorkflows:   &EngineChildWorkflowsConfig{Enabled: true},
 	}
 	value := reflect.ValueOf(authored)
 	for i := 0; i < value.NumField(); i++ {

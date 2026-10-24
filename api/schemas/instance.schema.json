@@ -985,10 +985,26 @@
           "description": "Opt-in TLS or mTLS for the Temporal frontend connection, applied by every dial site: daemon, worker, engine commands, and the doctor preflight. Omitted keeps the plaintext dial a local dev Temporal expects. When set, a frontend that does not speak TLS fails the dial; there is no fallback to plaintext.",
           "$ref": "#/$defs/engineTLS"
         },
+        "childWorkflows": {
+          "description": "Opt-in generated child workflows for engine-driven runs (#8085). Off by default: an engine run whose workflow declares `task.childWorkflows` is refused before any stage. The posture is pinned into each run at start, so a change here affects new runs only.",
+          "$ref": "#/$defs/engineChildWorkflows"
+        },
         "workerVersioning": {
           "type": "boolean",
           "default": false,
           "description": "Opt-in Temporal worker-deployment versioning for `goobers-cloud worker`: pollers register as deployment `goobers`, version `goobers.<build>`, and pin each new workflow to that build. Off by default: the worker polls unversioned, which a reference Temporal expects. When on, the namespace must have worker versioning enabled and an operator must make each new build the deployment's current version after it rolls out (`temporal worker deployment set-current-version`); until then the new worker receives no tasks. In either mode the worker logs an error while the deployment's current version does not route to it."
+        }
+      }
+    },
+    "engineChildWorkflows": {
+      "description": "Generated child-workflow settings for engine-driven runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Lets an engine-driven run whose workflow declares task.childWorkflows start and request generated children through the control plane."
         }
       }
     },
