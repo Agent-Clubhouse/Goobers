@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/terminalhooks/providerposter"
 	"github.com/goobers/goobers/internal/terminalreport"
 )
@@ -33,6 +35,8 @@ type (
 	}
 	healer interface {
 		Heal(ctx context.Context, handle *lease.Handle, limit int) (int, error)
+		Sweep(ctx context.Context, handle *lease.Handle, opt blockedrecordspg.SweepOptions) (blockedrecordspg.SweepResult, error)
+		Deferrals(ctx context.Context, handle *lease.Handle) (int, error)
 	}
 )
 
@@ -47,6 +51,7 @@ type Delivery struct {
 	backlog   backlogReader
 	heal      healer
 	apply     func(context.Context, terminalreport.Effect) error
+	escalate  blockedrecordspg.EscalateFunc
 
 	every     time.Duration
 	healEvery time.Duration
@@ -55,6 +60,7 @@ type Delivery struct {
 	maxLag    time.Duration
 
 	mu       sync.Mutex
+	refused  []string
 	next     time.Time
 	healNext time.Time
 	snapshot Status
@@ -70,13 +76,19 @@ type Status struct {
 	// LastPass is when the loop last completed; LastError the last failure.
 	LastPass  time.Time
 	LastError error
+	// DeferredCycles is the blocked-record cycles awaiting re-verification.
+	DeferredCycles int
+	// RefusedCycles names the deferred cycles whose escalation the provider
+	// permanently refused (the sweep stopped retrying them). Non-empty is loud: it
+	// is a readiness check and each one is journaled as an error.
+	RefusedCycles []string
 	// Healthy is false when the oldest report has waited longer than the bound, or
 	// the backlog could not be read: an unreadable outbox is not a healthy one.
 	Healthy bool
 }
 
-func newDelivery(deps Deps, outbox terminalreportpg.Outbox, blocks blockedrecordspg.Store) *Delivery {
-	d := &Delivery{deps: deps, reconcile: outbox, backlog: outbox, heal: blocks}
+func newDelivery(deps Deps, outbox terminalreportpg.Outbox, blocks blockedrecordspg.Store, escalate blockedrecordspg.EscalateFunc) *Delivery {
+	d := &Delivery{deps: deps, reconcile: outbox, backlog: outbox, heal: blocks, escalate: escalate}
 	d.apply = func(ctx context.Context, e terminalreport.Effect) error {
 		return e.Apply(ctx, providerposter.Poster{Writer: deps.Writer, RunID: e.RunID})
 	}
@@ -109,7 +121,9 @@ func (d *Delivery) configure() {
 func (d *Delivery) Status() Status {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.snapshot
+	status := d.snapshot
+	status.RefusedCycles = slices.Clone(d.refused) // always current: a refusal stands until restart
+	return status
 }
 
 // Tick runs one pass when it is due. It returns only an error that means the
@@ -151,6 +165,22 @@ func (d *Delivery) Tick(ctx context.Context) error {
 				return err
 			}
 		}
+		// The sweep is the driver of every deferred cycle: it re-checks the ones
+		// that have fallen due, and escalates or drops each.
+		if d.deps.Escalator != nil {
+			opt := blockedrecordspg.SweepOptions{Bound: d.deps.Tuning.DeferralBound, MaxCycles: d.deps.Tuning.SweepCycles, MaxMembers: d.deps.Tuning.SweepMembers, Escalate: d.escalate}
+			result, err := d.heal.Sweep(ctx, d.deps.Handle, opt)
+			d.surfaceRefusals(result.Refused)
+			if err != nil {
+				if err := note(fmt.Errorf("sweep deferred cycles: %w", err)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	deferred, deferErr := d.heal.Deferrals(ctx, d.deps.Handle)
+	if err := note(deferErr); err != nil {
+		return err
 	}
 	backlog, readErr := d.backlog.Backlog(ctx)
 	if err := note(readErr); err != nil {
@@ -158,9 +188,30 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	d.snapshot = Status{
-		Pending: backlog.Pending, OldestAge: backlog.Oldest, LastPass: d.deps.Now(), LastError: failure,
-		Healthy: readErr == nil && backlog.Oldest <= d.maxLag,
+		Pending: backlog.Pending, OldestAge: backlog.Oldest, LastPass: d.deps.Now(), LastError: failure, DeferredCycles: deferred,
+		RefusedCycles: slices.Clone(d.refused),
+		Healthy:       readErr == nil && backlog.Oldest <= d.maxLag,
 	}
 	d.mu.Unlock()
 	return nil
+}
+
+// maxRefusedShown bounds the refused cycles kept for the status page.
+const maxRefusedShown = 20
+
+// surfaceRefusals makes a permanently refused escalation loud: a journaled error
+// per cycle, and a standing readiness failure until the process restarts or fails
+// over. The sweep has stopped retrying it, so nothing else would ever say so.
+func (d *Delivery) surfaceRefusals(keys []string) {
+	for _, key := range keys {
+		d.deps.Log.AppendBestEffort(journal.Event{
+			Type: journal.EventRunnerAnnotation, Reason: "blocked-record cycle escalation permanently refused; the cycle's members stay parked blocked-on-sibling and need a human",
+			Runner: map[string]any{"kind": "blocked_cycle_escalation_refused", "seed": key, "driver": string(journal.DriverEngine)},
+		})
+		d.mu.Lock()
+		if len(d.refused) < maxRefusedShown {
+			d.refused = append(d.refused, key)
+		}
+		d.mu.Unlock()
+	}
 }
