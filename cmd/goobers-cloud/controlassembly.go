@@ -66,6 +66,8 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
 	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }, construct: constructEpoch},
+	// The blob plane touches no database and needs no lease (#8188).
+	{field: "BlobPlane", label: "blob plane", issue: "#8188", present: func(p controlPlanes) bool { return p.BlobPlane != nil }, construct: constructBlobPlane, requires: requiresObjectStore},
 }
 
 func composeControlPlanes(ctx context.Context, db controlDatabases, auth controlAuth, manager *lease.Manager, owner func() *lease.Handle) (controlPlanes, error) {
@@ -219,6 +221,20 @@ func constructEngineChildProtocol(_ context.Context, db databaseServices, _ cont
 		return err
 	}
 	p.EngineChildProtocol = httpapi.WithEngineChildProtocol(plane)
+	return nil
+}
+
+// constructBlobPlane serves the stage blob plane (GET and PUT by digest) over
+// the object store control writes to, so workers and their stage pods read
+// what control writes (child results, the canary) and control reads what
+// they write (#8188). It needs no database and no lease: content addressing,
+// digest verification and the per-digest storage mutation lease make every
+// replica safe to serve it.
+func constructBlobPlane(_ context.Context, db databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
+	if db.Blobs == nil {
+		return errors.New("the blob plane requires the object store (--object-store-url)")
+	}
+	p.BlobPlane = httpapi.WithBlobService(db.Blobs)
 	return nil
 }
 
