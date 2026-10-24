@@ -253,6 +253,12 @@
       "reason": "Cloud epoch-service tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/triggers",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud trigger plane tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/terminalhooks/frame",
       "coverage": "none",
       "category": "not-selected",
@@ -305,6 +311,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud grant-revocation and auth assembly tests run in Linux unit and cloud-pg jobs; shared key-ring portability is covered in internal/podauth, and the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/telemetrypg",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud telemetry store has no Windows deployment target; unit tests run on Linux and the PostgreSQL integration and local-rollup parity tests run in the cloud-pg job."
     },
     {
       "package": "internal/cloud/providerobs",
@@ -1097,6 +1109,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/telemetry/gatenoise",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure gate-noise decision arithmetic with no platform seam; runs on the Linux unit shards."
     },
     {
       "package": "internal/telemetry/rollup",
