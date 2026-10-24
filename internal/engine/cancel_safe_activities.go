@@ -3,6 +3,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
+
+	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -27,8 +30,9 @@ func (a *Activities) InvokeGooberCancelSafe(
 ) (stageActivityResult, error) {
 	stop := heartbeatDispatch(ctx)
 	defer stop()
-	return a.InvokeGoober(
+	result, err := a.InvokeGoober(
 		ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout)
+	return result, cancelSafeActivityError(ctx, err)
 }
 
 // InvokeGooberExactCancelSafe heartbeats an exact-input agentic activity.
@@ -43,9 +47,10 @@ func (a *Activities) InvokeGooberExactCancelSafe(
 ) (stageActivityResult, error) {
 	stop := heartbeatDispatch(ctx)
 	defer stop()
-	return a.InvokeGooberExact(
+	result, err := a.InvokeGooberExact(
 		ctx, env, workspaceBranch, workspaceDelta,
 		workspace, onTimeout, exact)
+	return result, cancelSafeActivityError(ctx, err)
 }
 
 // RunDeterministicCancelSafe heartbeats while deterministic work runs.
@@ -58,8 +63,9 @@ func (a *Activities) RunDeterministicCancelSafe(
 ) (stageActivityResult, error) {
 	stop := heartbeatDispatch(ctx)
 	defer stop()
-	return a.RunDeterministic(
+	result, err := a.RunDeterministic(
 		ctx, env, run, workspaceBranch, workspaceDelta)
+	return result, cancelSafeActivityError(ctx, err)
 }
 
 // RunDeterministicExactCancelSafe heartbeats exact-input deterministic work.
@@ -73,8 +79,9 @@ func (a *Activities) RunDeterministicExactCancelSafe(
 ) (stageActivityResult, error) {
 	stop := heartbeatDispatch(ctx)
 	defer stop()
-	return a.RunDeterministicExact(
+	result, err := a.RunDeterministicExact(
 		ctx, env, run, workspaceBranch, workspaceDelta, exact)
+	return result, cancelSafeActivityError(ctx, err)
 }
 
 // ReviewGooberCancelSafe heartbeats while an agentic gate runs.
@@ -89,9 +96,10 @@ func (a *Activities) ReviewGooberCancelSafe(
 ) (GateReviewResult, error) {
 	stop := heartbeatDispatch(ctx)
 	defer stop()
-	return a.ReviewGoober(
+	result, err := a.ReviewGoober(
 		ctx, env, workspaceBranch, workspaceDelta,
 		workspace, priorDiffDigest, requireDiff)
+	return result, cancelSafeActivityError(ctx, err)
 }
 
 // EvaluateAutomatedCancelSafe heartbeats while an automated gate runs.
@@ -102,5 +110,13 @@ func (a *Activities) EvaluateAutomatedCancelSafe(
 ) (string, error) {
 	stop := heartbeatDispatch(ctx)
 	defer stop()
-	return a.EvaluateAutomated(ctx, gate, env)
+	result, err := a.EvaluateAutomated(ctx, gate, env)
+	return result, cancelSafeActivityError(ctx, err)
+}
+
+func cancelSafeActivityError(ctx context.Context, err error) error {
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return temporal.NewCanceledError()
+	}
+	return err
 }

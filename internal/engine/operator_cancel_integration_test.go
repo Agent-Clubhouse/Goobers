@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	temporalworker "go.temporal.io/sdk/worker"
 
@@ -118,6 +119,14 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 			if err := run.Get(ctx, nil); err == nil ||
 				!strings.Contains(err.Error(), "canceled") {
 				t.Fatalf("workflow error = %v, want canceled", err)
+			}
+			description, err := c.DescribeWorkflowExecution(
+				ctx, run.GetID(), run.GetRunID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := description.WorkflowExecutionInfo.Status; status != enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED {
+				t.Fatalf("workflow status = %s, want CANCELED", status)
 			}
 			if elapsed := time.Since(cancelStarted); elapsed >= 2*dispatchHeartbeatTimeout {
 				t.Fatalf("cancel-to-terminal = %s, want <%s",
