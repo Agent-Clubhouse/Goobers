@@ -181,6 +181,13 @@ type databaseServices struct {
 	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
 	InstanceID          string
+	// ConfigDir is the control role's mounted instance configuration directory.
+	ConfigDir string
+	// EpochHandle is bound by serveControl: the controller lease handle of the
+	// epoch being built or run, available before recovery completes. Publishing
+	// the applied configuration happens during recovery, so it needs this and not
+	// the readiness-gated live owner.
+	EpochHandle         func() *cloudlease.Handle
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata
