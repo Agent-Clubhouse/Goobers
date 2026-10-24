@@ -214,7 +214,10 @@ func constructEngineChildProtocol(_ context.Context, db databaseServices, _ cont
 	protocol := childengine.FencedProtocol{Fenced: *p.engineChildren,
 		Journal: func(ctx context.Context, runID string) (journal.RunReader, error) {
 			return backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
-		}}
+		},
+		// The current epoch's scheduler capacity (published by the scheduler
+		// admission); refuses as not composed while none is published.
+		Capacity: &epochParentCapacity}
 	if err := protocol.Validate(); err != nil {
 		return err
 	}

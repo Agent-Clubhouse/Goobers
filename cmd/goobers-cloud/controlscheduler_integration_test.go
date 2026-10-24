@@ -137,6 +137,7 @@ type controller struct {
 	cancel    context.CancelFunc
 	admission *schedulerAdmission
 	deps      control.AdmissionDeps
+	logs      schedulerLogs
 }
 
 func (w *world) controller(holder string, handle func(*lease.Manager) *lease.Handle, entry localscheduler.WorkflowEntry, withSources bool) *controller {
@@ -168,8 +169,10 @@ func (w *world) skewedController(holder string, skew time.Duration, handle func(
 	})
 	comp := schedulerComposition{
 		Applied: func() (cloudconfig.Candidate, bool) { return cloudconfig.Candidate{Digest: "gen-1"}, true },
-		OpenLog: func(ctx context.Context, report func(error)) (journal.InstanceStore, error) {
-			return backend.OpenSchedulerLog(ctx, report)
+		// The real shared opener, one per controller (as one per process in
+		// production): the log is retired when the epoch context ends.
+		OpenLog: func(ctx context.Context, deps control.AdmissionDeps, report func(error)) (journal.InstanceStore, error) {
+			return c.logs.For(ctx, backend, deps.Handle, report)
 		},
 		State: func(deps control.AdmissionDeps) (localscheduler.SchedulerState, error) {
 			return cloudclaims.New(w.pool, pgtest.InstanceID, manager, deps.Handle)

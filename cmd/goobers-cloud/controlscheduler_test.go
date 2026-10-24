@@ -111,8 +111,10 @@ func newAdmissionFixture(t *testing.T, readiness apiv1.ReadinessConditions, with
 	f.open.Store(&[]schedstart.OpenRun{})
 	f.comp = schedulerComposition{
 		Applied: func() (cloudconfig.Candidate, bool) { c := f.applied.Load(); return *c, true },
-		OpenLog: func(context.Context, func(error)) (journal.InstanceStore, error) { return f.log, nil },
-		State:   func(control.AdmissionDeps) (localscheduler.SchedulerState, error) { return memoryState{}, nil },
+		OpenLog: func(context.Context, control.AdmissionDeps, func(error)) (journal.InstanceStore, error) {
+			return f.log, nil
+		},
+		State: func(control.AdmissionDeps) (localscheduler.SchedulerState, error) { return memoryState{}, nil },
 		OpenRuns: func(context.Context, control.AdmissionDeps) ([]schedstart.OpenRun, error) {
 			return *f.open.Load(), nil
 		},
@@ -499,6 +501,13 @@ func TestConstructSchedulerBindsOneQuotaStateToObservations(t *testing.T) {
 	if epochWiring.Observations == nil {
 		t.Fatal("the observations ledger has no producer")
 	}
+	// The terminal heal's provider reads are metered in the SAME state.
+	if epochWiring.Quota == nil || epochWiring.Quota() != p.schedulerQuota {
+		t.Fatal("the terminal heal's quota is not the scheduler's state")
+	}
+	if p.schedulerComposition.Capacity != &epochParentCapacity {
+		t.Fatal("the scheduler admission does not publish the process's parent capacity holder")
+	}
 	// Recording into the process quota state must show up in the persisted
 	// snapshot.
 	p.schedulerQuota.Record(apiv1.ProviderGitHub, 7, time.Now().Add(time.Hour))
@@ -554,7 +563,7 @@ func TestGateStatusIsOnlyChangedAfterAReloadSucceeds(t *testing.T) {
 		}
 		return &fakeCounters{runCtx: make(chan context.Context, 1)}, nil
 	}
-	f.comp.OpenLog = func(context.Context, func(error)) (journal.InstanceStore, error) {
+	f.comp.OpenLog = func(context.Context, control.AdmissionDeps, func(error)) (journal.InstanceStore, error) {
 		return flakyLog{InstanceStore: f.log, fail: &fail}, nil
 	}
 	epoch, cancel := context.WithCancel(t.Context())
@@ -586,4 +595,32 @@ func TestGateStatusIsOnlyChangedAfterAReloadSucceeds(t *testing.T) {
 	}
 	cancel()
 	stopAdmission(t, a)
+}
+
+type countingLog struct {
+	journal.InstanceStore
+	closes *atomic.Int32
+}
+
+func (l countingLog) Close() error { l.closes.Add(1); return nil }
+
+// The scheduler log is shared with the terminal hooks and retired by its opener
+// when the epoch ends: stopping the admission must not close it.
+func TestAdmissionStopDoesNotCloseTheSharedLog(t *testing.T) {
+	f := newAdmissionFixture(t, apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, true)
+	var closes atomic.Int32
+	f.comp.OpenLog = func(context.Context, control.AdmissionDeps, func(error)) (journal.InstanceStore, error) {
+		return countingLog{InstanceStore: f.log, closes: &closes}, nil
+	}
+	epoch, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := f.build(epoch)
+	if err := a.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	stopAdmission(t, a)
+	if closes.Load() != 0 {
+		t.Fatalf("Stop closed the shared scheduler log %d time(s); its opener retires it", closes.Load())
+	}
 }
