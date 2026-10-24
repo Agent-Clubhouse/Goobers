@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/engine"
-	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -23,11 +23,11 @@ var (
 	// release the parked parent's scheduler concurrency permit. Holding the
 	// permit while parked would deadlock a single-slot tenant on its own child.
 	ErrCapacityPlaneNotComposed = errors.New("childengine: capacity plane not composed: a parked parent's concurrency permit cannot be released")
-	// ErrContinuationNotComposed refuses resuming a parent while no fenced
-	// path can record its continuation artifact in the parent's journal.
-	ErrContinuationNotComposed = errors.New("childengine: continuation path not composed: the parent's continuation artifact cannot be recorded")
-	errResultDiffers           = errors.New("childengine: completion does not match the sealed child result")
+	errResultDiffers            = errors.New("childengine: completion does not match the sealed child result")
 )
+
+// maxContinuationBytes is the engine's bound on a continuation artifact.
+const maxContinuationBytes = 64 << 10
 
 var _ engine.ChildService = (*Service)(nil)
 
@@ -37,12 +37,6 @@ var _ engine.ChildService = (*Service)(nil)
 type ParentCapacity interface {
 	Release(context.Context, engine.ChildParkInput) error
 	Reacquire(context.Context, engine.ChildCompletionInput) error
-}
-
-// ContinuationWriter records the bounded continuation artifact a resumed
-// parent stage reads, in the parent's journal, as a fenced controller write.
-type ContinuationWriter interface {
-	WriteChildContinuation(ctx context.Context, binding engine.ChildRunBinding, wait livejournal.AppendReceipt, data []byte) (apiv1.ContextPointer, error)
 }
 
 // boundChild is the exact accepted child a binding names, bound to the same
@@ -137,8 +131,17 @@ func (s *Service) Finalize(ctx context.Context, in engine.ChildFinalizeInput) (_
 }
 
 // Complete verifies the parent resumes with exactly the sealed result,
-// records the continuation artifact the resumed stage reads, and reacquires
-// the parent's capacity.
+// reacquires the parent's capacity, and returns the continuation the resumed
+// stage reads: a pointer to the sealed result receipt itself.
+//
+// Control never writes the parent's journal. The journal admits only its run
+// owner's token (journalpg writeRun), so the parent journals this pointer on
+// its own path (ChildContinuedKind). The receipt needs no new blob: Finalize
+// stored it in the shared blob store, and control.child_lineage references it
+// (result_receipt_digest, result_ref), which control.blob_is_referenced
+// retains against GC. That reference lives until the child is tombstoned,
+// which waits for the parent to settle, so it covers the whole window from
+// here until the parent has journaled the pointer and resumed.
 func (s *Service) Complete(ctx context.Context, in engine.ChildCompletionInput) (_ apiv1.ContextPointer, err error) {
 	defer func() { err = classify(err) }()
 	if err := s.configured(); err != nil {
@@ -155,24 +158,22 @@ func (s *Service) Complete(ctx context.Context, in engine.ChildCompletionInput) 
 	if sealed.ResultRef != in.Result.ResultRef || !sameTerminalInput(sealed.Input, in.Result.Input) {
 		return apiv1.ContextPointer{}, errResultDiffers
 	}
-	if s.Continuations == nil {
-		return apiv1.ContextPointer{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, ErrContinuationNotComposed)
+	stored, err := s.Custody.ChildResult(ctx, child.Identity)
+	if err != nil {
+		return apiv1.ContextPointer{}, err
+	}
+	if stored.ReceiptDigest != sealed.ResultRef || len(stored.Receipt) == 0 || len(stored.Receipt) > maxContinuationBytes {
+		return apiv1.ContextPointer{}, triggerqueue.ErrChildResultUnavailable
 	}
 	if s.Capacity == nil {
 		return apiv1.ContextPointer{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, ErrCapacityPlaneNotComposed)
 	}
-	data, err := json.Marshal(in.Result)
-	if err != nil {
-		return apiv1.ContextPointer{}, err
-	}
-	pointer, err := s.Continuations.WriteChildContinuation(ctx, in.Binding, in.Wait, data)
-	if err != nil {
-		return apiv1.ContextPointer{}, err
-	}
 	if err := s.Capacity.Reacquire(ctx, in); err != nil {
 		return apiv1.ContextPointer{}, err
 	}
-	return pointer, nil
+	return apiv1.ContextPointer{Name: "child-result", Artifact: &apiv1.ArtifactPointer{
+		Path: "child-results/" + strings.TrimPrefix(stored.ReceiptDigest, "sha256:") + ".json", Digest: stored.ReceiptDigest, Size: int64(len(stored.Receipt)),
+	}}, nil
 }
 
 func sameTerminalInput(a, b childworkflow.TerminalResultInput) bool {
