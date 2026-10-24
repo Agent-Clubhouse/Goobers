@@ -36,7 +36,17 @@ type Resolver struct {
 
 // Visibility returns the run's immutable mode for trusted execution snapshots.
 func (r Resolver) Visibility(ctx context.Context, runID string) (string, error) {
-	_, _, mode, err := r.policy(ctx, runID)
+	reader, _, mode, err := r.policy(ctx, runID)
+	if err != nil || mode != "shared" {
+		return mode, err
+	}
+	phase, err := reader.PhaseBounded(ctx)
+	if err != nil {
+		return "", err
+	}
+	if phase.IsTerminal() {
+		return "", claimsclient.ErrSharedExecutionExpired
+	}
 	return mode, err
 }
 

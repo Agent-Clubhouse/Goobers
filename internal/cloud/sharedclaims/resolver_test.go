@@ -103,6 +103,9 @@ func TestResolverPinsModeAndOwnerAndAllowsTerminalRelease(t *testing.T) {
 	if _, err := r.Admission(ctx, key, "run-a", "claim"); err == nil {
 		t.Fatal("terminal admission accepted")
 	}
+	if mode, err := r.Visibility(ctx, "run-a"); mode != "" || !errors.Is(err, claimsclient.ErrSharedExecutionExpired) {
+		t.Fatalf("terminal execution visibility=%q, %v", mode, err)
+	}
 	entry := claimsclient.Entry{Gaggle: key.Gaggle, Provider: key.Provider, ExternalID: key.ExternalID, RunID: "run-a", Workflow: "claim", SharedOwner: binding.Owner}
 	if released, err := r.Release(ctx, entry); err != nil || released.Owner != binding.Owner {
 		t.Fatalf("terminal release=%+v, %v", released, err)
@@ -110,6 +113,37 @@ func TestResolverPinsModeAndOwnerAndAllowsTerminalRelease(t *testing.T) {
 	entry.SharedOwner.Token = "forged"
 	if _, err := r.Release(ctx, entry); err == nil {
 		t.Fatal("forged owner accepted")
+	}
+}
+
+type phaseFailureReader struct {
+	journal.RunReader
+	err error
+}
+
+func (r phaseFailureReader) PhaseBounded(context.Context) (journal.RunPhase, error) {
+	return "", r.err
+}
+
+func TestSharedVisibilityFailsClosedOnPhaseReadError(t *testing.T) {
+	for _, mode := range []string{"local", "shared"} {
+		t.Run(mode, func(t *testing.T) {
+			r, _, _ := resolverFixture(t, mode)
+			reader, err := r.Journal.OpenRun(t.Context(), journal.RunRef{ID: "run-a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("phase read unavailable")
+			r.Journal = pinnedJournal{reader: phaseFailureReader{RunReader: reader, err: failure}}
+			got, err := r.Visibility(t.Context(), "run-a")
+			if mode == "shared" {
+				if got != "" || !errors.Is(err, failure) {
+					t.Fatalf("failed phase granted visibility=%q, %v", got, err)
+				}
+			} else if got != "local" || err != nil {
+				t.Fatalf("local policy changed=%q, %v", got, err)
+			}
+		})
 	}
 }
 

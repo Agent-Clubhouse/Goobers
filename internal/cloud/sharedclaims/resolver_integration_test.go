@@ -10,10 +10,13 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/pgroles"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -21,6 +24,10 @@ import (
 func TestSharedPolicyReadsPGWorkflowAndControlPinAsController(t *testing.T) {
 	owner := pgtest.Pool(t, "sharedpolicy")
 	controller := pgtest.ControllerPool(t, owner)
+	var role string
+	if err := controller.QueryRow(t.Context(), `SELECT current_user`).Scan(&role); err != nil || role != pgroles.Controller {
+		t.Fatalf("runtime role=%s, %v", role, err)
+	}
 	manager := pgtest.Manager(t, controller, "leader", 0)
 	handle := pgtest.Acquire(t, manager)
 	backend, err := journalpg.New(journalpg.Config{Pool: controller, InstanceID: pgtest.InstanceID, Lease: manager, LiveOwner: func() *lease.Handle { return handle }})
@@ -42,7 +49,8 @@ func TestSharedPolicyReadsPGWorkflowAndControlPinAsController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: identity, Inputs: map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition}}); err != nil {
+	runHandle, runOwner, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: identity, Inputs: map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	store, err := acceptance.New(controller, pgtest.InstanceID)
@@ -71,6 +79,34 @@ func TestSharedPolicyReadsPGWorkflowAndControlPinAsController(t *testing.T) {
 	if mode, err := resolver.Visibility(t.Context(), identity.RunID); err != nil || mode != "shared" {
 		t.Fatalf("PG snapshot policy=%q, %v", mode, err)
 	}
+	t.Run("phase read failure refuses shared visibility", func(t *testing.T) {
+		// Fixture authority injects a real database failure only into the event
+		// read. Identity, pin and artifact reads still use runtime grants.
+		if _, err := owner.Exec(t.Context(), `REVOKE SELECT (body) ON journal.run_event FROM goobers_controller`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := owner.Exec(context.Background(), `GRANT SELECT (body) ON journal.run_event TO goobers_controller`); err != nil {
+				t.Error(err)
+			}
+		})
+		if _, _, mode, err := resolver.policy(t.Context(), identity.RunID); err != nil || mode != "shared" {
+			t.Fatalf("phase fault affected the policy read: %q, %v", mode, err)
+		}
+		mode, err := resolver.Visibility(t.Context(), identity.RunID)
+		var pgError *pgconn.PgError
+		if mode != "" || !errors.As(err, &pgError) || pgError.Code != "42501" {
+			t.Fatalf("phase read failure granted visibility=%q, %v", mode, err)
+		}
+	})
+	t.Run("terminal run refuses shared visibility", func(t *testing.T) {
+		if _, err := backend.AppendBatch(t.Context(), runHandle, runOwner, []journal.Event{{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}}); err != nil {
+			t.Fatal(err)
+		}
+		if mode, err := resolver.Visibility(t.Context(), identity.RunID); mode != "" || !errors.Is(err, claimsclient.ErrSharedExecutionExpired) {
+			t.Fatalf("terminal shared visibility=%q, %v", mode, err)
+		}
+	})
 	// A journaled self-consistent replacement is not enough: the control pin wins.
 	if _, err := owner.Exec(t.Context(), `UPDATE control.run_pin SET workflow_digest='sha256:different' WHERE instance_id=$1`, pgtest.InstanceID); err != nil {
 		t.Fatal(err)
