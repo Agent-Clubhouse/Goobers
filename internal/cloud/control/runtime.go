@@ -30,7 +30,33 @@ type Runtime struct {
 	TaskQueue     string
 	Resolve       acceptance.StartInputResolver
 	Services      func(context.Context, *lease.Handle) (EpochServices, error)
-	Report        func(error)
+	// Admission, when set, replaces the legacy direct-start drain: accepted
+	// rows are admitted through the scheduler's run conditions instead of
+	// starting straight at the start fence. Nil keeps the legacy drain.
+	Admission func(context.Context, AdmissionDeps) (Admission, error)
+	Report    func(error)
+}
+
+// AdmissionDeps are the epoch-bound pieces an Admission is built from. Ctx (the
+// Build context) is the epoch context: everything the Admission starts must end
+// with it.
+type AdmissionDeps struct {
+	Handle  *lease.Handle
+	Store   *acceptance.Store
+	Starter engine.Starter
+	Resolve func(context.Context, triggerqueue.Record) (engine.RunInput, error)
+}
+
+// Admission is one epoch's scheduler-backed admission of accepted starts.
+type Admission interface {
+	// Prepare rebuilds admission from durable state (reconcile the scheduler,
+	// watch reconciled predecessor runs). It runs after uncertain starts are
+	// reconciled and before the epoch serves.
+	Prepare(context.Context) error
+	// Tick runs one scheduler pass and admits accepted rows.
+	Tick(context.Context) error
+	// Stop ends the epoch's admission goroutines and waits for them.
+	Stop(context.Context) error
 }
 
 // Build creates a fresh acceptance adapter and starter for one acquired lease.
@@ -78,6 +104,23 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		}
 		return reconcile(ctx)
 	}
+	var admission Admission
+	if r.Admission != nil {
+		admission, err = r.Admission(ctx, AdmissionDeps{Handle: handle, Store: store, Starter: starter, Resolve: r.resolve})
+		if err != nil {
+			return services, err
+		}
+		originalAttach, originalStop := services.ReattachAwaiters, services.Stop
+		services.ReattachAwaiters = func(ctx context.Context) error {
+			if err := originalAttach(ctx); err != nil {
+				return err
+			}
+			return admission.Prepare(ctx)
+		}
+		services.Stop = func(ctx context.Context) error {
+			return errors.Join(originalStop(ctx), admission.Stop(ctx))
+		}
+	}
 	var after string
 	services.L1 = func(ctx context.Context) error {
 		if err := r.Configuration.Reload(ctx); err != nil {
@@ -92,6 +135,9 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		}
 		if err := observations.Replace(ctx, snapshot); err != nil {
 			return err
+		}
+		if admission != nil {
+			return admission.Tick(ctx)
 		}
 		next, err := r.drain(ctx, store, starter, after)
 		after = next
@@ -163,7 +209,20 @@ func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter eng
 			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			in, err := r.resolve(attempt, record)
-			if err == nil {
+			if errors.Is(err, acceptance.ErrNotOrdinaryStart) {
+				// A generated child's custody is owned by its own lifecycle. A
+				// payload that is not even a readable kind is corrupt and nothing
+				// else will ever look at it, so it is reported (still never rejected).
+				if errors.Is(err, acceptance.ErrCorruptStart) && r.Report != nil {
+					r.Report(fmt.Errorf("accepted row %s: %w", record.ID, err))
+				}
+				return
+			}
+			if errors.Is(err, acceptance.ErrPermanentStart) {
+				// Retrying can never succeed and would re-pin the generation on
+				// every sweep: finish the row as rejected with the reason.
+				err = errors.Join(err, store.RejectAccepted(attempt, record.ID, err.Error(), time.Now()))
+			} else if err == nil {
 				_, err = starter.Start(attempt, in)
 			}
 			if err != nil && r.Report != nil {

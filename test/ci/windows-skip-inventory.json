@@ -247,6 +247,18 @@
       "reason": "Cloud PostgreSQL journal tests run in Linux unit and local PG16 cloudintegration jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/epoch",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud epoch-service tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/startinput",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud start-input resolver tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/schedstart",
       "coverage": "none",
       "category": "not-selected",
@@ -283,6 +295,12 @@
       "reason": "Cloud terminal-awaiter tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/terminalwriter",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud provider-writer tests run in the Linux unit job and its PostgreSQL binding test in cloud-pg; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/blockedrecords",
       "coverage": "none",
       "category": "not-selected",
@@ -305,6 +323,18 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Provider-writer seam tests are pure and run in the Linux unit job; the seam serves the cloud control plane, which has no Windows deployment target."
+    },
+    {
+      "package": "internal/nowork/settle",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No-work streak policy tests are pure and run in the Linux unit job; the policy serves the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
+    },
+    {
+      "package": "internal/terminalhooks/prepare",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Terminal prepare-hook tests are pure and run in the Linux unit job; the policy is exercised on the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
     },
     {
       "package": "internal/cloud/startpin",

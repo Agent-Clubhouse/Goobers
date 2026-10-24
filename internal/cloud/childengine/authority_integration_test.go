@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -74,6 +75,11 @@ func TestAuthoritiesBindRedeliverAndReleaseTheExactGrant(t *testing.T) {
 	grant, err := authorities.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{RunID: pins.RunID, Origin: origin, Endpoint: podEndpoint})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The fixture's parent stage sets no timeout: the dispatcher default plus
+	// the activity margin (design §6), not the 24h grant maximum.
+	if want := time.Now().Add(dispatcher.DefaultStageTimeout + stageGrantMargin); grant.ExpiresAt.Before(want.Add(-time.Minute)) || grant.ExpiresAt.After(want.Add(time.Minute)) {
+		t.Fatalf("grant expires %v, want about %v", grant.ExpiresAt, want)
 	}
 	verified, err := f.grants.VerifyChildWorkflowGrant(grant.BearerToken)
 	if err != nil || grant.Endpoint != podEndpoint || verified.ID != grant.GrantID || verified.RunID != pins.RunID ||

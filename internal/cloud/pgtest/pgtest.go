@@ -114,3 +114,11 @@ func Acquire(t *testing.T, manager *lease.Manager) *lease.Handle {
 	}
 	return handle
 }
+
+// ControllerManager is Manager over a goobers_controller pool: the lease and
+// every fenced write made through it run under the controller grants. Takeover
+// still expires the heartbeat through the unrestricted fixture pool.
+func ControllerManager(t *testing.T, pool *pgxpool.Pool, holder string, skew time.Duration) *lease.Manager {
+	t.Helper()
+	return Manager(t, ControllerPool(t, pool), holder, skew)
+}

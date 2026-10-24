@@ -33,7 +33,10 @@ type ItemRef struct {
 	ItemID string
 }
 
-// Writer is the provider access terminal hooks need. Transient provider or
+// Writer is the provider access terminal hooks need. Errors that reach a journal
+// or a comment must already be scrubbed of credentials: scrubbing is the
+// implementation's job (the daemon scrubs at the call, scrubTerminalError), the
+// shared policies and hooks do not. Transient provider or
 // credential failures are returned wrapped and are retryable.
 type Writer interface {
 	WorkItem(ctx context.Context, ref ItemRef) (providers.WorkItem, error)
@@ -45,9 +48,13 @@ type Writer interface {
 	// IdempotencyKey as a permanent error rather than risk a duplicate post.
 	Update(ctx context.Context, ref ItemRef, req providers.UpdateWorkItemRequest) error
 	UpdateComment(ctx context.Context, ref ItemRef, commentID, body string) error
-	// PullLabels and DeleteBranch target the run's WorkspaceRepository.
+	// PullLabels and DeleteBranch target the run's WorkspaceRepository. Labelling a
+	// pull request is Update with the pull request number as ref.ItemID.
 	PullLabels(ctx context.Context, runID, pullID string) ([]string, error)
-	// DeleteBranch treats an already-absent branch as success.
+	// DeleteBranch reports two outcomes that are decisions, not failures: an
+	// already-absent branch as providers.ErrBranchNotFound (recorded as
+	// "branch-not-found"), and a branch an open pull request uses as
+	// *providers.BranchInUseError (kept).
 	DeleteBranch(ctx context.Context, runID, branch string) error
 	// ReleaseClaimMarker removes the provider-visible claim marker for
 	// ref.ItemID held by ref.RunID; an already-absent marker is success. The
