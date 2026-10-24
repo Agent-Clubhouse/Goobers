@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -185,7 +186,12 @@ func (c *Counters) refill(gaggle apiv1.Gaggle, wf *apiv1.Workflow) (*counter, er
 	assignedTo, configured := task.Inputs["assignedTo"]
 	respect := task.Inputs["respectAssignee"] == "true"
 	if respect && !configured {
-		assignedTo = c.deps.SelfIdentity
+		// The login a respectAssignee backlog-query matches is the gaggle's own
+		// selfIdentity, falling back to the instance default: the same resolution
+		// the local daemon applies (runtimewiring.SelfIdentitiesByGaggle), so a
+		// per-gaggle override is honoured here exactly as there. Empty matches only
+		// unassigned items, as it does locally.
+		assignedTo = instance.EffectiveSelfIdentity(c.deps.Config, &gaggle)
 	}
 	repo, err := c.repoFor(gaggle.Spec.Project)
 	if err != nil {

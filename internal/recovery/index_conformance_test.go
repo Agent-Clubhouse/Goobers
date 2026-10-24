@@ -123,6 +123,10 @@ func (i inventoryIndex) Reap(ctx context.Context, limit int) ([]recovery.Indexed
 	return reaped, nil
 }
 
+// RetiredBundles is empty: the inventory deletes bundles during Reap, so none
+// is ever left awaiting deletion.
+func (inventoryIndex) RetiredBundles(context.Context, int) ([]string, error) { return nil, nil }
+
 // ReleaseBundle is a no-op: the inventory deletes bundles during Reap.
 func (inventoryIndex) ReleaseBundle(context.Context, string) error { return nil }
 
@@ -133,7 +137,8 @@ func TestRecordIndexConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		return recoveryindex.Backend{
-			Open: func(*testing.T) recovery.RecordIndex { return inventoryIndex{root: root} },
+			Open:              func(*testing.T) recovery.RecordIndex { return inventoryIndex{root: root} },
+			DeletesDuringReap: true,
 			StageBundle: func(t *testing.T, data []byte) string {
 				file, err := os.CreateTemp(staging, "bundle-*")
 				if err != nil {

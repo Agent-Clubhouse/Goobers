@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -73,6 +76,23 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 	for _, option := range []*httpapi.HandlerOption{&full.EngineChildAdmissions, &full.EngineChildAuthority, &full.EngineChildProtocol, &full.ChildWorkflows} {
 		*option = httpapi.WithAuthenticator(auth)
 	}
+	// The blob plane is a real one over a store, so the test can observe it
+	// served on a standby as well as once ready (#8188).
+	blobs, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := []byte("a stage artifact")
+	blobSum := sha256.Sum256(blob)
+	blobDigest := "sha256:" + hex.EncodeToString(blobSum[:])
+	if err := blobs.Put(t.Context(), blobDigest, blob); err != nil {
+		t.Fatal(err)
+	}
+	full.BlobPlane = httpapi.WithBlobService(blobs)
+	blobBearer, err := keys.MintWorkerBlob("goobers-worker-0", 2*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !full.complete() {
 		t.Fatalf("a fully composed assembly reports missing seams: %v", full.missing())
 	}
@@ -115,6 +135,24 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		return response
 	}
+	// The blob plane is lease-free: a worker reads by digest on a standby and
+	// once ready alike.
+	blobGet := func(handler http.Handler) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, strings.Replace(apicontract.BlobDigestPath, "{digest}", blobDigest, 1), nil)
+		request.Header.Set("Authorization", "Bearer "+blobBearer)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	blobPut := func(handler http.Handler, data []byte) *httptest.ResponseRecorder {
+		sum := sha256.Sum256(data)
+		request := httptest.NewRequest(http.MethodPut, strings.Replace(apicontract.BlobDigestPath, "{digest}", "sha256:"+hex.EncodeToString(sum[:]), 1), bytes.NewReader(data))
+		request.Header.Set("Authorization", "Bearer "+blobBearer)
+		request.Header.Set("Content-Type", "application/octet-stream")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
 	// discovery is recovery-safe: it passes the gate even on a standby (a pod
 	// principal is then refused by authentication, which is past the gate).
 	discovery := func(handler http.Handler) *httptest.ResponseRecorder {
@@ -134,6 +172,12 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 	if response := runPhase(handler); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), httpapi.CodeRecovering) {
 		t.Fatalf("standby run phase = %d %s, want 503 %s", response.Code, response.Body.String(), httpapi.CodeRecovering)
 	}
+	if response := blobGet(handler); response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), blob) {
+		t.Fatalf("standby blob GET = %d %s, want the blob served lease-free", response.Code, response.Body.String())
+	}
+	if response := blobPut(handler, []byte("written on a standby")); response.Code != http.StatusNoContent {
+		t.Fatalf("standby blob PUT = %d %s, want it served lease-free", response.Code, response.Body.String())
+	}
 
 	// Ready: the host holds the lease and has finished its startup sequence.
 	go func() { _ = host.Run(ctx) }()
@@ -146,6 +190,12 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 	}
 	if response := runPhase(handler); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "completed") {
 		t.Fatalf("ready run phase = %d %s, want it served", response.Code, response.Body.String())
+	}
+	if response := blobGet(handler); response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), blob) {
+		t.Fatalf("ready blob GET = %d %s, want the blob served", response.Code, response.Body.String())
+	}
+	if response := blobPut(handler, []byte("written once ready")); response.Code != http.StatusNoContent {
+		t.Fatalf("ready blob PUT = %d %s, want it served", response.Code, response.Body.String())
 	}
 
 	// Mutants: any one seam left unassigned must not serve the API.

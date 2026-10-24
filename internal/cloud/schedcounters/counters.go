@@ -89,8 +89,6 @@ type Deps struct {
 	// here would let polling spend quota the scheduler believes it still has. It
 	// is required: New returns ErrNoQuota without it.
 	Quota *localscheduler.ProviderQuotaState
-	// SelfIdentity is the login a respectAssignee backlog-query matches.
-	SelfIdentity string
 	// OpenPRInterval overrides localscheduler.DefaultOpenPRRefreshInterval.
 	OpenPRInterval time.Duration
 	// OpenPRMaxStale bounds how long a refresher shed by the quota ledger keeps
