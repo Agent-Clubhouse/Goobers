@@ -554,3 +554,48 @@ func TestPGStartPendingTracksTheUnconfirmedStart(t *testing.T) {
 		t.Fatalf("unknown acceptance: pending=%v, %v; want false", pending, err)
 	}
 }
+
+// An adoption whose pins differ from the recorded start still settles the
+// acceptance under the successor, so recovery does not re-pick it forever;
+// the first pins stand.
+func TestPGAdoptionWithDifferentPinsSettlesTheAcceptance(t *testing.T) {
+	old, pool := testStore(t, 1)
+	in := acceptedStartInput(t, old)
+	if err := old.BeginDispatch(t.Context(), in.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := old.ReadStartAuthority(t.Context(), in.AcceptanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := testRunPins(previous.AcceptanceID, previous.RunID)
+	if err := old.ConfirmStart(t.Context(), previous.AcceptanceID, previous.RunID, recorded); err != nil {
+		t.Fatal(err)
+	}
+	// The predecessor's pins are recorded but its acceptance is still
+	// dispatching when it loses the lease.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance SET state='dispatching', finished_at=NULL WHERE instance_id=$1 AND id=$2`,
+		old.instanceID, previous.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.manager.Release(t.Context(), old.handle); err != nil {
+		t.Fatal(err)
+	}
+	current := successorStore(t, pool)
+	moved := recorded
+	moved.ConfigGeneration = "sha256:reloaded-generation"
+	if err := current.AdoptStart(t.Context(), previous.AcceptanceID, previous.RunID, previous.OwnerEpoch, moved); !errors.Is(err, ErrRunPinsDiffer) {
+		t.Fatalf("adoption with different pins = %v, want ErrRunPinsDiffer", err)
+	}
+	var state, generation string
+	var epoch int64
+	if err := pool.QueryRow(t.Context(), `SELECT a.state, a.owner_epoch, p.config_generation FROM control.acceptance a JOIN control.run_pin p
+		ON p.instance_id=a.instance_id AND p.run_id=a.run_id WHERE a.instance_id=$1 AND a.id=$2`,
+		old.instanceID, previous.AcceptanceID).Scan(&state, &epoch, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if state != "dispatched" || epoch != current.handle.Epoch || generation != recorded.ConfigGeneration {
+		t.Fatalf("after a differing adoption: acceptance %s@%d, pinned generation %s; want dispatched@%d with the first pins",
+			state, epoch, generation, current.handle.Epoch)
+	}
+}

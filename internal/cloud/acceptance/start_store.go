@@ -59,22 +59,27 @@ func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string, pi
 		if err := changed(tag.RowsAffected(), err); err != nil {
 			return err
 		}
-		err = s.recordRunPins(txCtx, tx, pins, epoch)
-		if errors.Is(err, ErrRunPinsDiffer) {
-			// Permanent: the run is started and its first recorded pins
-			// stand. Settle the acceptance as dispatched anyway, so recovery
-			// does not retry a confirmation that can never succeed. Control
-			// checks the run against the recorded pins and refuses on any
-			// mismatch.
-			differs = true
-			return nil
-		}
+		differs, err = s.settleRunPins(txCtx, tx, pins, epoch)
 		return err
 	})
 	if err == nil && differs {
 		return ErrRunPinsDiffer
 	}
 	return err
+}
+
+// settleRunPins records a settled start's pins. Different pins for a recorded
+// run are permanent: the run is started and its first recorded pins stand.
+// They report differs without failing the transaction, so the acceptance
+// still settles as dispatched and recovery does not retry a confirmation or
+// adoption that can never succeed. Control checks the run against the
+// recorded pins and refuses on any mismatch.
+func (s *Store) settleRunPins(ctx context.Context, tx pgx.Tx, pins RunPins, epoch int64) (differs bool, err error) {
+	err = s.recordRunPins(ctx, tx, pins, epoch)
+	if errors.Is(err, ErrRunPinsDiffer) {
+		return true, nil
+	}
+	return false, err
 }
 
 // AdoptStart moves a proven predecessor start to the current owner epoch.
@@ -87,7 +92,8 @@ func (s *Store) AdoptStart(
 	if predecessorEpoch < 1 || pins.AcceptanceID != acceptanceID || pins.RunID != runID {
 		return triggerqueue.ErrTransition
 	}
-	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+	var differs bool
+	err := s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.acceptance
 			SET owner_epoch=$5, state='dispatched', start_retry_at=NULL,
@@ -100,8 +106,13 @@ finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
 		if err := changed(tag.RowsAffected(), err); err != nil {
 			return err
 		}
-		return s.recordRunPins(txCtx, tx, pins, epoch)
+		differs, err = s.settleRunPins(txCtx, tx, pins, epoch)
+		return err
 	})
+	if err == nil && differs {
+		return ErrRunPinsDiffer
+	}
+	return err
 }
 
 var _ StartAdmissionStore = (*Store)(nil)
