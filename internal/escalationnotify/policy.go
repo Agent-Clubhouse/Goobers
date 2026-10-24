@@ -14,11 +14,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalhooks"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
 	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
@@ -30,34 +30,19 @@ type Item struct {
 	Repo   providers.RepositoryRef
 }
 
-// Block is one learned dependency block the blocked handler records so
-// backlog selection can skip the item until its blockers close (#552). State
-// stamps the record's time when it persists it.
-type Block struct {
-	Repository providers.RepositoryRef
-	ItemID     string
-	Blockers   []string
-	RunID      string
-	Stage      string
-	Reason     string
-}
+// Block is parking.Block.
+type Block = parking.Block
 
 // State is the instance state the policy reads and updates: the claim ledger,
 // the blocked-record file, the failure-streak store, the circuit-breaker
 // outbox and the sibling streaks it settles alongside. The composition root
 // implements it over the instance layout.
 type State interface {
-	// ClaimedItemIDs returns the item ids runID currently claims.
-	ClaimedItemIDs(runID string) ([]string, error)
+	// ClaimedItemIDs, BacklogRepository and RecordBlock.
+	parking.State
 	// ClaimedItems returns runID's claimed items with each one's recorded
 	// repository; it fails closed when any item's identity is unknown.
 	ClaimedItems(runID string) ([]Item, error)
-	// BacklogRepository maps a run's code repository to the backlog
-	// repository its work items live in.
-	BacklogRepository(repo providers.RepositoryRef) providers.RepositoryRef
-	// RecordBlock persists b and returns the dependency cycle it closes, if
-	// any. The cycle is returned even when persisting fails after detection.
-	RecordBlock(b Block) (blockedcycle.Result, error)
 	// LoadFailureStreak returns an item's persisted failure-streak count.
 	LoadFailureStreak(ctx context.Context, poster gate.Commenter, repo providers.RepositoryRef, itemID string) (int, error)
 	// WriteFailureStreak persists an item's failure-streak count.
@@ -111,138 +96,19 @@ type Policy struct {
 	RunsDir            string
 	State              State
 	EngineInterruption func(runID string) (string, error)
+	// Events reads a run's journal for its terminal classification; nil reads the
+	// run directory under RunsDir (the daemon). An absent journal is (nil, nil).
+	Events func(runID string) ([]journal.Event, error)
 	// Reports durably retains provider projections without replaying charges.
-	Reports *terminalreport.Queue
+	Reports terminalreport.Outbox
 	Gaggle  string
 }
 
-// Blocked is runner.Config.Blocked (#544/#545/#552): the instance-level
-// consequences of a stage reporting status "blocked".
-// Every blocked driving issue is parked (swap off goobers:ready and the
-// provider-visible claim marker) per the #544 ruling / #539 convention. This
-// prevents the released claim from making the same item immediately eligible
-// again.
-//
-// The park label depends on whether the stage named a blocker (#2028): a
-// named, non-cyclic blocker is goobers:blocked-on-sibling — a self-healing
-// dependency park, not a decision only a human can make; the record below is
-// what actually self-heals it (backlog selection's blocked-eligibility filter
-// over State.RecordBlock's records), the label just needs to say so. An
-// unattributed block (no blocker named) or a detected circular dependency is
-// goobers:needs-human — the runner can't resolve either on its own, so it
-// genuinely is a human decision.
-//
-// When the stage also references blockers through outputs.blockedBy, record
-// them so #552's selection guard still protects the issue if a human
-// re-promotes it before every dependency closes. Blockers naming the driving
-// item itself are dropped first (#2961) — an item cannot depend on itself,
-// and persisting that self-edge makes cycle detection report a one-node cycle
-// and park the issue needs-human over a dependency that does not exist. If a
-// new record closes a real cycle, every issue in that cycle is parked
-// goobers:needs-human and receives a cycle-specific comment for human
-// resolution. The runner's shared EscalationNotifier owns the normal
-// explanatory provider comment.
-//
-// The handler runs before FinalizeTerminal releases the run's claims, so a
-// run with no StartInput.Item (scheduled/fan-out implementation runs claim
-// their item mid-run) resolves its driving item(s) from the claim ledger by
-// run id. Best-effort per item: one item's provider failure doesn't skip the
-// rest; the joined error is journaled by the runner (blocked_handling_failed),
-// never fatal to the terminal transition.
-func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
+// Blocked is runner.Config.Blocked (#544/#545/#552); the policy itself is
+// parking.Blocked, shared with the cloud controller.
+func (p *Policy) Blocked(ctx context.Context, o terminalhooks.BlockedOutcome) error {
 	ctx = p.terminalHandlerAttributionContext(ctx, o.RunID, o.Stage)
-	itemIDs := []string{o.ItemID}
-	if o.ItemID == "" {
-		ids, err := p.State.ClaimedItemIDs(o.RunID)
-		if err != nil {
-			return err
-		}
-		if len(ids) == 0 {
-			// No driving item anywhere (a producer run) — nothing to
-			// record or park; the journaled blocked_by_agent cause and the
-			// escalated phase are the whole story.
-			return nil
-		}
-		itemIDs = ids
-	}
-
-	var errs []error
-	repoRef := providers.RepositoryRef{
-		Provider: providers.ProviderKind(o.RepoRef.Provider),
-		Owner:    o.RepoRef.Owner,
-		Name:     o.RepoRef.Name,
-	}
-	if blockedcycle.RepositoryEmpty(repoRef) {
-		return fmt.Errorf("blocked outcome for run %s has no repository", o.RunID)
-	}
-	// Scope blocked records to the backlog project, not the code repo.
-	// Work items live in the gaggle's backlog project (e.g. "Example Backlog"), which
-	// is a different ADO project than the code repo ("Example Service").
-	// The selection guard evaluates records against the backlog repo, so
-	// records must be keyed/stored under the backlog repo or a parked parent
-	// is never skipped and gets re-claimed. Idempotent for GitHub (backlog ==
-	// code repo) and re-applied safely by the poster before the work-item call.
-	repoRef = p.State.BacklogRepository(repoRef)
-	for _, itemID := range itemIDs {
-		// #2961: an item can never be its own blocker. The runner already
-		// drops the self-reference when the run carried its driving item,
-		// but a run that claims its item(s) mid-run resolves them here, so
-		// the same guard has to apply per item — otherwise a self-edge
-		// reaches the blocked records and cycle detection parks the issue
-		// needs-human for a dependency cycle that does not exist.
-		blockers, _ := runner.FilterSelfBlockers(o.Blockers, itemID)
-		// #2028: a named blocker is a self-healing dependency park
-		// (blocked-on-sibling), not a human decision; only an
-		// unattributed block stays needs-human. A detected cycle
-		// overrides this below with its own needs-human cycleReq.
-		// A block whose only named blocker was the item itself is
-		// unattributed once filtered, so it correctly stays needs-human.
-		label := providers.LabelNeedsHuman
-		if len(blockers) > 0 {
-			label = providers.LabelBlockedOnSibling
-		}
-		req := providers.UpdateWorkItemRequest{
-			Repository:   repoRef,
-			ID:           itemID,
-			AddLabels:    []string{label},
-			RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
-		}
-		if len(blockers) > 0 {
-			cycle, err := p.State.RecordBlock(Block{
-				Repository: repoRef,
-				ItemID:     itemID,
-				Blockers:   blockers,
-				RunID:      o.RunID,
-				Stage:      o.Stage,
-				Reason:     o.Reason,
-			})
-			if err != nil {
-				errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
-			}
-			if len(cycle.Affected) > 0 {
-				comments := blockedcycle.Comments(cycle)
-				for _, cycleItem := range cycle.Affected {
-					for _, comment := range comments {
-						cycleReq := providers.UpdateWorkItemRequest{
-							Repository:   cycleItem.Repository,
-							ID:           cycleItem.ItemID,
-							Comment:      comment,
-							AddLabels:    []string{providers.LabelNeedsHuman},
-							RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
-						}
-						if _, err := p.Poster.UpdateWorkItem(ctx, cycleReq); err != nil {
-							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
-						}
-					}
-				}
-				continue
-			}
-		}
-		if _, err := p.Poster.UpdateWorkItem(ctx, req); err != nil {
-			errs = append(errs, fmt.Errorf("park blocked item %s#%s: %w", repoRef.Name, itemID, err))
-		}
-	}
-	return errors.Join(errs...)
+	return parking.Blocked(ctx, p.Poster, p.State, o)
 }
 
 // Failed is runner.Config.Failed (#1054): the instance-level consequence of a
@@ -266,7 +132,7 @@ func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
 // Best-effort per item: one item's provider failure doesn't skip the rest; the
 // joined error is journaled by the runner (failed_handling_failed), never
 // fatal to the terminal transition.
-func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
+func (p *Policy) Failed(ctx context.Context, o terminalhooks.FailedOutcome) error {
 	ctx = p.terminalHandlerAttributionContext(ctx, o.RunID, o.Stage)
 	// #3361/#3364: an infra-fault terminal (credential materialization, git,
 	// network, lock contention, a harness that never gave the agent a turn) is
@@ -288,26 +154,9 @@ func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
 	return p.chargeFailed(ctx, o.RunID, o.Stage, runURL, failedOutcomeClass(o))
 }
 
-// ExistingFix is runner.Config.ExistingFix (#3236): strips goobers:ready and
-// goobers:critical labels from an issue when the implement stage returns
-// no-work with existingFixCommit set, preventing a permanent reclaim loop when
-// the fix is already on main.
-func (p *Policy) ExistingFix(ctx context.Context, o runner.ExistingFixOutcome) error {
-	if o.ItemID == "" {
-		return nil
-	}
-	repoRef := providers.RepositoryRef{
-		Provider: providers.ProviderKind(o.RepoRef.Provider),
-		Owner:    o.RepoRef.Owner,
-		Name:     o.RepoRef.Name,
-	}
-	// Strip both goobers:ready and goobers:critical labels to prevent reclaim
-	_, err := p.Poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository:   repoRef,
-		ID:           o.ItemID,
-		RemoveLabels: []string{providers.LabelReady, providers.LabelCritical},
-	})
-	return err
+// ExistingFix is runner.Config.ExistingFix (#3236); see parking.ExistingFix.
+func (p *Policy) ExistingFix(ctx context.Context, o terminalhooks.ExistingFixOutcome) error {
+	return parking.ExistingFix(ctx, p.Poster, o)
 }
 
 // TerminalNotifier wraps inner with circuit breaker logic for PhaseEscalated
@@ -327,20 +176,11 @@ func (p *Policy) ExistingFix(ctx context.Context, o runner.ExistingFixOutcome) e
 // not reach the provider — or a claimed item with no recorded repository
 // identity — leaves an actionable diagnostic in the run trace alongside the
 // durable outbox entry.
-func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.TerminalNotifier {
+func (p *Policy) TerminalNotifier(inner terminalhooks.TerminalNotifier) terminalhooks.TerminalNotifier {
 	return func(runID string, phase journal.RunPhase, finalState string) error {
-		var errs []error
-		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			attributedCtx, _ := AttributionContextForRun(ctx, p.RunsDir, runID, finalState)
-			runURL, _ := p.State.RunURL(runID)
-			if phase == journal.PhaseCompleted {
-				errs = append(errs, p.settleCompleted(attributedCtx, runID, finalState, runURL)...)
-			} else if err := p.chargeTerminal(attributedCtx, runID, finalState, runURL); err != nil {
-				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
-			}
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		errs := []error{p.Terminal(ctx, runID, phase, finalState)}
 		if inner != nil {
 			if err := inner(runID, phase, finalState); err != nil {
 				errs = append(errs, err)
@@ -348,6 +188,24 @@ func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.Terminal
 		}
 		return errors.Join(errs...)
 	}
+}
+
+// Terminal is TerminalNotifier's policy under the caller's context (the cloud
+// controller attributes it to the run itself): the circuit breaker for an
+// escalated or aborted terminal, the streak resets for a completed one.
+func (p *Policy) Terminal(ctx context.Context, runID string, phase journal.RunPhase, finalState string) error {
+	if phase != journal.PhaseCompleted && phase != journal.PhaseEscalated && phase != journal.PhaseAborted {
+		return nil
+	}
+	attributedCtx := p.terminalHandlerAttributionContext(ctx, runID, finalState)
+	runURL, _ := p.State.RunURL(runID)
+	if phase == journal.PhaseCompleted {
+		return errors.Join(p.settleCompleted(attributedCtx, runID, finalState, runURL)...)
+	}
+	if err := p.chargeTerminal(attributedCtx, runID, finalState, runURL); err != nil {
+		return fmt.Errorf("apply circuit breaker for run %q: %w", runID, err)
+	}
+	return nil
 }
 
 // settleCompleted is TerminalNotifier's completed-run arm. A superseded run
@@ -395,12 +253,12 @@ func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL s
 	fault, readErr := p.journaledTerminalFault(runID)
 	var err error
 	switch fault {
-	case runner.TerminalFaultItemInfrastructure:
+	case terminalhooks.TerminalFaultItemInfrastructure:
 		err = errors.Join(
 			p.State.VoidRemediationCharge(ctx, p.Poster, runID),
 			p.applyInfraCircuitBreaker(ctx, runID, finalState, runURL),
 		)
-	case runner.TerminalFaultSubstrate:
+	case terminalhooks.TerminalFaultSubstrate:
 		err = p.State.VoidRemediationCharge(ctx, p.Poster, runID)
 	default:
 		err = p.applyCircuitBreaker(ctx, runID, finalState, runURL)
@@ -408,11 +266,16 @@ func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL s
 	return errors.Join(readErr, err)
 }
 
-func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, error) {
-	reader, err := journal.OpenReadOnly(filepath.Join(p.RunsDir, runID))
+func (p *Policy) journaledTerminalFault(runID string) (terminalhooks.TerminalFault, error) {
 	var events []journal.Event
-	if err == nil {
-		events, err = reader.Events()
+	var err error
+	if p.Events != nil {
+		events, err = p.Events(runID)
+	} else {
+		var reader journal.RunReader
+		if reader, err = journal.OpenReadOnly(filepath.Join(p.RunsDir, runID)); err == nil {
+			events, err = reader.Events()
+		}
 	}
 	switch {
 	case err == nil:
@@ -425,7 +288,7 @@ func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, err
 	// Only a cancelled run can have been stopped by the engine stall sweep, so
 	// only it consults the sweep's record: a local terminal never depends on
 	// the instance log being readable.
-	if p.EngineInterruption != nil && runner.EndedByCancellation(events) {
+	if p.EngineInterruption != nil && terminalhooks.EndedByCancellation(events) {
 		var ierr error
 		if interruption, ierr = p.EngineInterruption(runID); ierr != nil {
 			// Without the sweep's record a cancelled engine run stays an
@@ -433,7 +296,7 @@ func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, err
 			err = fmt.Errorf("read engine interruption for run %q: %w", runID, ierr)
 		}
 	}
-	return runner.JournaledTerminalFault(events, interruption), err
+	return terminalhooks.JournaledTerminalFault(events, interruption), err
 }
 
 // chargeFailed charges a failed terminal by its class:
@@ -464,7 +327,7 @@ func (p *Policy) chargeFailed(ctx context.Context, runID, stage, runURL string, 
 
 // failedOutcomeClass is the terminal's class: the runner's explicit
 // FaultClass when it set one, else the class of its code.
-func failedOutcomeClass(o runner.FailedOutcome) telemetry.ErrorClass {
+func failedOutcomeClass(o terminalhooks.FailedOutcome) telemetry.ErrorClass {
 	if o.FaultClass != "" {
 		return o.FaultClass
 	}

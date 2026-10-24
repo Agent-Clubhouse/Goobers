@@ -41,6 +41,14 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 			t.Errorf("cloud-pg omits pinned action %s", pin)
 		}
 	}
+	order := job.step(t, "Enforce migration numbering above the base")
+	// The gate compares against the base, not the merge-base, so a stale PR
+	// fails on update-branch until it renumbers.
+	if order.Env["BASE_REF"] != "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.base_sha || 'HEAD' }}" ||
+		!strings.Contains(order.Run, `git fetch --no-tags --depth=1 origin "$BASE_REF"`) ||
+		!strings.Contains(order.Run, `go run ./test/migrationorder -base-ref "$BASE_REF" -head-ref HEAD`) {
+		t.Fatalf("migration numbering gate = %+v", order)
+	}
 	run := job.step(t, "Run cloud integration smoke")
 	// -p 1: the packages share cluster-wide PostgreSQL roles. The -json stream
 	// must reach cloud-pg-report, which fails the job when a cloudintegration
@@ -49,7 +57,7 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		!strings.Contains(run.Run, " -json ") || !strings.Contains(run.Run, "set -uo pipefail") ||
 		!strings.Contains(run.Run, `tee "$RUNNER_TEMP/cloud-pg-test.json"`) ||
 		!strings.Contains(run.Run, `go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1`) ||
-		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/...") ||
+		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... ./cmd/goobers-cloud") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
 	}

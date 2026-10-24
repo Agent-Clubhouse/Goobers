@@ -95,6 +95,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// daemon-owned instance journal. This authenticated machine-to-daemon
 		// write is workflow execution, not read-only status navigation.
 		"workerConfigDivergence": true,
+		// The trusted worker commits a fenced terminal journal transition; this
+		// is the execution-plane write, not the operator-facing intervention.
+		"journalTerminalIntervention": true,
 		// claims/recover (#4016): a stage pod asking the daemon to run the
 		// stale-claim sweep it cannot run itself (the sweep reads run journals
 		// under the instance root and honours interventions and the recovery
@@ -105,6 +108,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// The engine child-admission plane (#7879): a resident engine worker
 		// advancing a run's generated-child custody. POSTs carrying receipts.
 		"engineChildAdmit": true, "engineChildLoad": true, "engineChildCancel": true,
+		"engineChildAuthority": true, "engineChildAuthorityRelease": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.
 		"runRecoveryPublish": true,

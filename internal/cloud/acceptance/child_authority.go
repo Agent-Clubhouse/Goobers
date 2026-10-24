@@ -147,10 +147,13 @@ func (s *Store) CheckChildAuthority(
 		s.instanceID, grant.Gaggle, grant.ParentRunID, grant.StageOccurrence,
 		grant.GrantID, grant.AttemptID, grant.ConfigDigest, grant.PolicyDigest,
 	).Scan(&valid)
-	if err != nil || !valid {
+	// No row, or a row naming another grant, is a definite refusal; a check
+	// that could not be made is returned as the error it is, so callers can
+	// tell an outage from a revoked grant.
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && !valid {
 		return triggerqueue.ErrChildAuthorityChanged
 	}
-	return nil
+	return err
 }
 
 // CheckChildParentOpen checks cancellation and settlement without allocating.
@@ -240,7 +243,10 @@ func (s *Store) RevokeChildAuthority(
 			return err
 		}
 		if parentEpoch != epoch {
-			return triggerqueue.ErrChildAuthorityChanged
+			// Not "already replaced": an earlier epoch's custody that adoption
+			// has not reached yet. Revocation must be retried, never treated as
+			// done.
+			return ErrStaleChildEpoch
 		}
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.child_authority SET revoked=true,owner_epoch=$7

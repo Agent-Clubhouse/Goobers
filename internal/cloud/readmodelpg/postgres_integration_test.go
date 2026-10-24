@@ -891,3 +891,188 @@ func TestActiveReaderFollowsAFlipForBothRuntimeRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestFreshnessReporterOnTheActiveModelForBothRuntimeRoles(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	reconcileReadmodelGrants(t, admin)
+	store, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(t.Context(), testProjection("run", 3)); err != nil {
+		t.Fatal(err)
+	}
+	// No recorded pass: nothing says a projector is alive, so the model must
+	// not read as current (a dead projector cannot report itself dead).
+	first, err := readmodelpg.NewActiveReader(t.Context(), rolePool(t, admin, "goobers_api"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unproven, err := first.ReadState(t.Context(), readmodel.ReadStateInput{}); err != nil || !reflect.DeepEqual(unproven.Degraded, []string{readmodel.DegradedNoProjectorPass}) {
+		t.Fatalf("no recorded pass read as %+v (%v), want no_projector_pass", unproven.Degraded, err)
+	}
+	if err := store.RecordPass(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+	for role, pool := range map[string]*pgxpool.Pool{"goobers_api": rolePool(t, admin, "goobers_api"), "goobers_controller": rolePool(t, admin, "goobers_controller")} {
+		reader, err := readmodelpg.NewActiveReader(t.Context(), pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := reader.SourceApplied(t.Context(), "absent"); err != nil || found {
+			t.Fatalf("%s: unprojected run found=%v err=%v", role, found, err)
+		}
+		position, found, err := reader.SourceApplied(t.Context(), "run")
+		if err != nil || !found || position.JournalSeq != 3 {
+			t.Fatalf("%s: SourceApplied = %+v %v %v", role, position, found, err)
+		}
+		for required, want := range map[uint64]bool{2: true, 3: true, 4: false} {
+			got, err := reader.SatisfiesSourceApplied(t.Context(), readmodel.SourcePosition{RunID: "run", JournalSeq: required})
+			if err != nil || got != want {
+				t.Fatalf("%s: SatisfiesSourceApplied(%d) = %v %v, want %v", role, required, got, err, want)
+			}
+		}
+		if got, err := reader.SatisfiesSourceApplied(t.Context(), readmodel.SourcePosition{RunID: "absent", JournalSeq: 1}); err != nil || got {
+			t.Fatalf("%s: an unprojected run satisfied a position: %v %v", role, got, err)
+		}
+		healthy, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, _ := reader.State(t.Context())
+		latest, _ := reader.LatestChangeSeq(t.Context())
+		if healthy.Epoch != state.Epoch || healthy.AppliedSeq != latest || healthy.Completeness != readmodel.CompletenessComplete ||
+			len(healthy.Degraded) != 0 || healthy.LastSweepCompletedAt != nil || healthy.ObservedAt.IsZero() {
+			t.Fatalf("%s: healthy read state = %+v (state %+v latest %d)", role, healthy, state, latest)
+		}
+		degraded, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{PendingIntake: 2, ProjectFailures: 1, OldestPendingAt: time.Now().Add(-time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if degraded.Completeness != readmodel.CompletenessPartial || len(degraded.Missing) != 1 || degraded.Missing[0].Name != readmodel.MissingProjectedRuns ||
+			degraded.Missing[0].ExpectedBy.IsZero() || degraded.LagSeconds < 59 ||
+			!reflect.DeepEqual(degraded.Degraded, []string{readmodel.DegradedProjectionLag, readmodel.DegradedProjectFailure}) {
+			t.Fatalf("%s: degraded read state = %+v", role, degraded)
+		}
+	}
+}
+
+func TestReadStateDegradesOnAStaleProjectorPassAndSurfacesPersistedFailures(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	reconcileReadmodelGrants(t, admin)
+	store, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := readmodelpg.NewActiveReader(t.Context(), rolePool(t, admin, "goobers_api"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordPass(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+	current, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || len(current.Degraded) != 0 || current.Completeness != readmodel.CompletenessComplete {
+		t.Fatalf("a fresh pass read as %+v (%v), want current", current, err)
+	}
+
+	// The projector dies: its last pass ages on the database clock.
+	if _, err := admin.Exec(t.Context(), `UPDATE readmodel_v1.meta SET last_pass_at = clock_timestamp() - interval '10 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || !reflect.DeepEqual(stale.Degraded, []string{readmodel.DegradedProjectorStale}) || stale.LagSeconds < 599 {
+		t.Fatalf("a 10 minute old pass read as %+v lag %v (%v), want projector_stale with the age as lag", stale.Degraded, stale.LagSeconds, err)
+	}
+
+	// Open failures recorded by the projector reach a reader that was told nothing.
+	if err := store.RecordPass(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
+	failing, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || failing.Completeness != readmodel.CompletenessPartial || !reflect.DeepEqual(failing.Degraded, []string{readmodel.DegradedProjectFailure}) {
+		t.Fatalf("persisted open failures read as %+v %v (%v), want partial project_failure", failing.Degraded, failing.Completeness, err)
+	}
+}
+
+func TestRecordPassIsRefusedToTheAPIRoleAndToAStaleOwner(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	reconcileReadmodelGrants(t, admin)
+	owner, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.RecordPass(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+	older, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := older.RecordPass(t.Context(), 0); !errors.Is(err, readmodelpg.ErrStaleOwner) {
+		t.Fatalf("a deposed owner recorded a pass: %v", err)
+	}
+	api := rolePool(t, admin, "goobers_api")
+	if _, err := api.Exec(t.Context(), `UPDATE readmodel_v1.meta SET last_pass_at = clock_timestamp()`); err == nil {
+		t.Fatal("the API role updated the pass record")
+	}
+}
+
+// TestRebuildCopiesByColumnNameNotPosition: a target version whose columns are
+// in a different order from its source must still receive each value in the
+// column of the same name (#8156). The target's run table is recreated with
+// owner_epoch first after the build has prepared it, then the build resumes.
+func TestRebuildCopiesByColumnNameNotPosition(t *testing.T) {
+	pool := testPool(t)
+	applyMigrations(t, pool)
+	resetReadmodel(t, pool)
+	if _, err := pool.Exec(t.Context(), `DROP SCHEMA IF EXISTS readmodel_v3 CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	seedRebuildRows(t, pool, 3)
+	base := testFence{pool: pool, epoch: 7}
+	// The first fenced transaction prepares the target; the second would copy.
+	builder, _ := readmodelpg.NewBuilder(pool, &countingFence{base: base, failAt: 2})
+	if err := builder.Build(t.Context(), "readmodel_v3"); !errors.Is(err, errInjectedFence) {
+		t.Fatalf("prepare-only build = %v, want injected fence error", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		DROP TABLE readmodel_v3.run CASCADE;
+		CREATE TABLE readmodel_v3.run (
+			owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
+			disposition text NOT NULL,
+			run_id text PRIMARY KEY,
+			last_activity_at timestamptz NOT NULL,started_at timestamptz NOT NULL,
+			terminal boolean NOT NULL,phase text NOT NULL,workflow text NOT NULL,gaggle text NOT NULL,
+			projection jsonb NOT NULL,
+			source_seq bigint NOT NULL CHECK (source_seq >= 0),
+			stages text[] NOT NULL DEFAULT '{}',any_token_measured boolean NOT NULL DEFAULT false,
+			any_premium_measured boolean NOT NULL DEFAULT false,
+			any_cost_measured boolean NOT NULL DEFAULT false,
+			any_retry_waste boolean NOT NULL DEFAULT false
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	builder, _ = readmodelpg.NewBuilder(pool, &countingFence{base: base})
+	if err := builder.Build(t.Context(), "readmodel_v3"); err != nil {
+		t.Fatalf("resumed build into a reordered target: %v", err)
+	}
+	var mismatched int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM readmodel_v1.run AS s FULL JOIN readmodel_v3.run AS d USING (run_id)
+		WHERE d.run_id IS NULL OR s.run_id IS NULL
+		   OR (s.source_seq, s.gaggle, s.workflow, s.phase, s.disposition, s.terminal)
+		      IS DISTINCT FROM (d.source_seq, d.gaggle, d.workflow, d.phase, d.disposition, d.terminal)
+		   OR d.owner_epoch <> 7`).Scan(&mismatched); err != nil {
+		t.Fatal(err)
+	}
+	if mismatched != 0 {
+		t.Fatalf("%d rows landed in the wrong columns of the reordered target", mismatched)
+	}
+}

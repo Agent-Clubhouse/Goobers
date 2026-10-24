@@ -134,13 +134,15 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	var lastErr error
 	var infraCommittedWork bool
 	nextRetryClass := journal.AttemptPolicy
-	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
+	firstAttempt, firstClass := rec.takeHumanRerun(t.Name)
+	for offset := int32(0); offset < maxAttempts; offset++ {
+		attempt := firstAttempt + offset
 		// The first attempt carries no class (normative); a retry carries the
 		// class its triggering failure selected — the journal attempt-class
 		// convention (§3.3). Infrastructure retries do not consume the policy
 		// budget.
-		class := journal.AttemptClass("")
-		if attempt > 1 {
+		class := firstClass
+		if offset > 0 {
 			class = nextRetryClass
 		}
 		policyBefore := policyAttempts

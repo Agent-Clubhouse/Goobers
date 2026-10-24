@@ -610,7 +610,7 @@ func newDispatchAttempt(input DispatchStageInput) dispatcher.Attempt {
 // No workspace is provisioned here, on purpose: the pod provisions its own
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
-func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
+func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (_ stageActivityResult, outcome error) {
 	if err := a.validateStageDispatch(&input); err != nil {
 		return stageActivityResult{}, err
 	}
@@ -795,6 +795,14 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	}
 	if input.Envelope.Limits.MaxDurationSeconds > 0 {
 		attempt.Timeout = time.Duration(input.Envelope.Limits.MaxDurationSeconds) * time.Second
+	}
+
+	release, err := a.stageChildAuthority(ctx, input, &attempt)
+	if err != nil {
+		return stageActivityResult{}, err
+	}
+	if release != nil {
+		defer func() { release(outcome) }()
 	}
 
 	report, err := a.dispatchOrAdopt(ctx, attempt, input)

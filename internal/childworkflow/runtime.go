@@ -57,7 +57,13 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	}
 	r := &Runtime{definitions: definitions, policies: policies, queue: cfg.Queue}
 	r.resolver = &JournalAuthorityResolver{
-		OpenJournal: cfg.OpenJournal,
+		OpenJournal: func(ctx context.Context, runID string) (journal.RunReader, error) {
+			rd, err := cfg.OpenJournal(ctx, runID)
+			if err != nil || rd == nil {
+				return nil, errors.Join(ErrAuthorityUnavailable, err)
+			}
+			return rd, nil
+		},
 		LoadPinnedStage: func(ctx context.Context, id journal.RunIdentity, stage string) (PinnedStageAdmission, error) {
 			return cfg.LoadPinnedStage(ctx, r.definitions, id, stage)
 		},

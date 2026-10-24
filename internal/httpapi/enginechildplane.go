@@ -36,6 +36,27 @@ type EngineChildPlane interface {
 	Cancel(ctx context.Context, decode func(any) error) error
 }
 
+// EngineChildAuthority is the control-side owner of engine parents'
+// child-workflow grants behind the same plane, engine-type free for the same
+// reason as EngineChildPlane. Acquire's result carries a bearer: the response
+// is never cached and never logged.
+type EngineChildAuthority interface {
+	Acquire(ctx context.Context, decode func(any) error) (any, error)
+	Release(ctx context.Context, decode func(any) error) error
+}
+
+// WithEngineChildAuthority installs the owner of engine parents' child-workflow
+// grants behind the engine child-admission plane.
+func WithEngineChildAuthority(authority EngineChildAuthority) HandlerOption {
+	return func(config *handlerConfig) error {
+		if authority == nil {
+			return errors.New("http API engine child authority is required")
+		}
+		config.engineChildAuthority = authority
+		return nil
+	}
+}
+
 // WithEngineChildAdmissions installs the control-side generated-child custody
 // owner behind the engine child-admission plane.
 func WithEngineChildAdmissions(plane EngineChildPlane) HandlerOption {
@@ -49,19 +70,21 @@ func WithEngineChildAdmissions(plane EngineChildPlane) HandlerOption {
 }
 
 func engineChildPlanePath(path string) bool {
-	return path == apicontract.EngineChildAdmitPath || path == apicontract.EngineChildLoadPath || path == apicontract.EngineChildCancelPath
+	return path == apicontract.EngineChildAdmitPath || path == apicontract.EngineChildLoadPath || path == apicontract.EngineChildCancelPath ||
+		path == apicontract.EngineChildAuthorityPath || path == apicontract.EngineChildAuthorityReleasePath
 }
 
 // engineChildAuthorized enforces the dedicated worker credential even under a
-// permissive authorizer, then the mutation transport.
-func engineChildAuthorized(w http.ResponseWriter, request *http.Request, config handlerConfig) bool {
+// permissive authorizer, then the mutation transport. available reports
+// whether this server installed the owner behind the route.
+func engineChildAuthorized(w http.ResponseWriter, request *http.Request, available bool) bool {
 	w.Header().Set("Cache-Control", "private, no-store")
 	principal, ok := PrincipalFromRequest(request)
 	if !ok || principal.Issuer != WorkerChildAdmissionPrincipalIssuer {
 		writeError(w, http.StatusForbidden, "child_admission_worker_required", "engine child admission requires a dedicated worker credential")
 		return false
 	}
-	if config.engineChildren == nil {
+	if !available {
 		writeError(w, http.StatusServiceUnavailable, "child_admission_unavailable", "engine child admission is not available from this server")
 		return false
 	}
@@ -92,9 +115,9 @@ func (d *engineChildDecoder) decode(target any) error {
 
 // handleEngineChild authorizes, runs one plane call and maps its errors;
 // respond writes the success response.
-func handleEngineChild(config handlerConfig, errorLog *log.Logger, op string, call func(context.Context, func(any) error) (any, error), respond func(http.ResponseWriter, any)) http.HandlerFunc {
+func handleEngineChild(available bool, errorLog *log.Logger, op string, call func(context.Context, func(any) error) (any, error), respond func(http.ResponseWriter, any)) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
-		if !engineChildAuthorized(w, request, config) {
+		if !engineChildAuthorized(w, request, available) {
 			return
 		}
 		decoder := &engineChildDecoder{request: request}
@@ -114,10 +137,11 @@ func handleEngineChild(config handlerConfig, errorLog *log.Logger, op string, ca
 
 func registerEngineChildPlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
 	plane := func() EngineChildPlane { return config.engineChildren }
-	router.Handle(apicontract.RouteEngineChildAdmit, handleEngineChild(config, errorLog, "admit engine child",
+	children := config.engineChildren != nil
+	router.Handle(apicontract.RouteEngineChildAdmit, handleEngineChild(children, errorLog, "admit engine child",
 		func(ctx context.Context, decode func(any) error) (any, error) { return plane().Admit(ctx, decode) },
 		func(w http.ResponseWriter, binding any) { writeJSON(w, http.StatusOK, binding) }))
-	router.Handle(apicontract.RouteEngineChildLoad, handleEngineChild(config, errorLog, "load engine child manifest",
+	router.Handle(apicontract.RouteEngineChildLoad, handleEngineChild(children, errorLog, "load engine child manifest",
 		func(ctx context.Context, decode func(any) error) (any, error) { return plane().Load(ctx, decode) },
 		func(w http.ResponseWriter, out any) {
 			manifest, _ := out.([]byte)
@@ -127,9 +151,19 @@ func registerEngineChildPlaneRoutes(router *Router, config handlerConfig, errorL
 			}
 			writeJSON(w, http.StatusOK, EngineChildManifest{Manifest: manifest})
 		}))
-	router.Handle(apicontract.RouteEngineChildCancel, handleEngineChild(config, errorLog, "cancel engine child family",
+	router.Handle(apicontract.RouteEngineChildCancel, handleEngineChild(children, errorLog, "cancel engine child family",
 		func(ctx context.Context, decode func(any) error) (any, error) {
 			return nil, plane().Cancel(ctx, decode)
+		},
+		func(w http.ResponseWriter, _ any) { w.WriteHeader(http.StatusNoContent) }))
+	authority := config.engineChildAuthority
+	granted := authority != nil
+	router.Handle(apicontract.RouteEngineChildAuthority, handleEngineChild(granted, errorLog, "acquire engine child authority",
+		func(ctx context.Context, decode func(any) error) (any, error) { return authority.Acquire(ctx, decode) },
+		func(w http.ResponseWriter, grant any) { writeJSON(w, http.StatusOK, grant) }))
+	router.Handle(apicontract.RouteEngineChildAuthorityRelease, handleEngineChild(granted, errorLog, "release engine child authority",
+		func(ctx context.Context, decode func(any) error) (any, error) {
+			return nil, authority.Release(ctx, decode)
 		},
 		func(w http.ResponseWriter, _ any) { w.WriteHeader(http.StatusNoContent) }))
 }

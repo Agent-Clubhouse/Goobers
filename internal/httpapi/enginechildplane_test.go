@@ -44,7 +44,7 @@ func TestEngineChildPlaneDecodesExactlyOnceAndMapsErrors(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := handlerConfig{engineChildren: tc.plane}
-			handler := handleEngineChild(config, log.New(io.Discard, "", 0), "admit engine child",
+			handler := handleEngineChild(config.engineChildren != nil, log.New(io.Discard, "", 0), "admit engine child",
 				func(ctx context.Context, decode func(any) error) (any, error) {
 					return config.engineChildren.Admit(ctx, decode)
 				},

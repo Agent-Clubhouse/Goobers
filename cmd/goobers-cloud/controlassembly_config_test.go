@@ -9,6 +9,7 @@ import (
 
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/startpin"
 )
 
 func TestConfigurationConstructorFailsClosedWithoutItsDependencies(t *testing.T) {
@@ -84,5 +85,32 @@ func TestLeasedGenerationsRefuseToPinWithoutALiveHandle(t *testing.T) {
 	source := leasedGenerations{owner: func() *lease.Handle { return nil }}
 	if _, err := source.Acquire(t.Context(), "sha256:x"); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("Acquire without a live handle = %v, want ErrStale", err)
+	}
+}
+
+// TestDirSourcePinsEveryWorkflowOfARealInstance runs the real pin computation
+// through the loader on an initialized instance: a generation the control role
+// admits must carry digests, or every start is refused as unpinnable.
+func TestDirSourcePinsEveryWorkflowOfARealInstance(t *testing.T) {
+	root := initDemo(t)
+	policy := filepath.Join(root, "instance.yaml")
+	data, err := os.ReadFile(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policy, append(data, []byte("placement:\n  selfExecution: deny\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := (cloudconfig.DirSource{Root: root, InstanceID: "instance-a", Pins: startpin.Compute}).Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Pins) == 0 || len(candidate.Pins) != len(candidate.Set.Workflows) {
+		t.Fatalf("pins = %v for %d workflows, want one per workflow", candidate.Pins, len(candidate.Set.Workflows))
+	}
+	for key, pins := range candidate.Pins {
+		if pins.WorkflowDigest == "" || pins.GooberDigest == "" {
+			t.Fatalf("%s has an incomplete pin %+v", key, pins)
+		}
 	}
 }
