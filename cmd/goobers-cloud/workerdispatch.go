@@ -65,6 +65,9 @@ type stageDispatch struct {
 	// Children is the engine child-admission plane client, or nil when the
 	// instance has no signing key (the engine then refuses child custody).
 	Children engine.ChildService
+	// ChildAuthority acquires stage attempts' child-workflow grants over the
+	// same plane, or nil without the key or the worker's secret registry.
+	ChildAuthority engine.ChildWorkflowAuthority
 }
 
 // dispatchKubeClient builds the typed clientset for pod creation: in-cluster
@@ -230,7 +233,12 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}, nil
+	dispatch := stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}
+	if seams != nil {
+		// Pods reach control at WriteAPIBase, which is daemonAPI.
+		dispatch.ChildAuthority = childadmissionclient.AuthorityForWorker(daemonAPI, daemonAPI, owner, signed, seams.SharedRegistry())
+	}
+	return dispatch, nil
 }
 
 // validateStageDispatchConfig checks the remote planes before the worker can

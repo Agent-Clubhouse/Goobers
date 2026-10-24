@@ -71,6 +71,8 @@ type Config struct {
 	// Watermark persists how far closed-run discovery has completed. Required
 	// with Closed.
 	Watermark Watermark
+	// Framed is the durable receipt of completed frames. Optional.
+	Framed Framed
 	// Margin is how far before the watermark Closed looks, to cover clock skew
 	// between hosts (default 10m). The first epoch ever initialises the watermark
 	// from this host's clock, so skew must stay under Margin.
@@ -115,6 +117,17 @@ type retryState struct {
 	out      frame.Outcome
 	attempts int
 	next     time.Time
+}
+
+// Framed is the durable per-run receipt of a completed frame (terminalframedpg),
+// so a successor leader does not re-fire what an earlier one finished. It is in
+// ADDITION to per-hook idempotency: a frame that crashed before its receipt was
+// written is re-fired.
+type Framed interface {
+	Framed(ctx context.Context, instanceID, runID string) (bool, error)
+	MarkFramed(ctx context.Context, handle *lease.Handle, runID string) error
+	// Prune drops receipts older than cutoff.
+	Prune(ctx context.Context, handle *lease.Handle, cutoff time.Time) (int64, error)
 }
 
 // Awaiters is the epoch's awaiter set (it satisfies epoch.Awaiters).
@@ -262,6 +275,14 @@ func (a *Awaiters) discoverClosed(ctx context.Context) ([]ClosedRun, error) {
 		a.initialized, a.watermark, mark = true, through, through
 		a.mu.Unlock()
 	}
+	if a.cfg.Framed != nil {
+		// Receipts only matter while a run can still be re-listed; keep them twice
+		// the discovery window.
+		cutoff := a.cfg.Now().Add(-2 * (a.cfg.LagBound + a.cfg.Margin))
+		if _, err := a.cfg.Framed.Prune(ctx, a.handle, cutoff); err != nil {
+			a.report(ctx, fmt.Errorf("terminal awaiter: prune framed receipts: %w", err))
+		}
+	}
 	closed, err := a.cfg.Closed(ctx, mark.Add(-a.cfg.Margin))
 	if err != nil {
 		return nil, fmt.Errorf("terminal awaiter: list closed runs: %w", err)
@@ -358,6 +379,17 @@ func (a *Awaiters) await(ctx context.Context, runID string) {
 		delete(a.running, runID)
 		a.mu.Unlock()
 	}()
+	if a.cfg.Framed != nil {
+		framed, err := a.cfg.Framed.Framed(ctx, a.handle.InstanceID, runID)
+		if err != nil {
+			a.report(ctx, fmt.Errorf("terminal awaiter: read framed receipt of run %s: %w", runID, err))
+			return
+		}
+		if framed {
+			a.markDone(runID) // an earlier leader finished this run's frame
+			return
+		}
+	}
 	id, err := a.cfg.Identify(ctx, runID)
 	if errors.Is(err, ErrUnidentifiable) {
 		// A generated child, or a run this instance never accepted: its owner
@@ -389,7 +421,7 @@ func (a *Awaiters) await(ctx context.Context, runID string) {
 		}
 		return
 	}
-	a.markDone(runID)
+	a.finished(ctx, runID)
 }
 
 // refinalize retries only the claim release of a run whose frame already ran.
@@ -410,6 +442,17 @@ func (a *Awaiters) refinalize(ctx context.Context, runID string, st *retryState)
 	a.mu.Lock()
 	delete(a.retry, runID)
 	a.mu.Unlock()
+	a.finished(ctx, runID)
+}
+
+// finished records the durable receipt (a failure is reported, and the run is
+// still done for this epoch) and then the in-epoch completion.
+func (a *Awaiters) finished(ctx context.Context, runID string) {
+	if a.cfg.Framed != nil {
+		if err := a.cfg.Framed.MarkFramed(ctx, a.handle, runID); err != nil {
+			a.report(ctx, fmt.Errorf("terminal awaiter: record framed receipt of run %s: %w", runID, err))
+		}
+	}
 	a.markDone(runID)
 }
 

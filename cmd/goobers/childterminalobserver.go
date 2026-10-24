@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
@@ -16,8 +15,6 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
-
-const childResultArtifactBytes = 1 << 20
 
 // captureTerminal runs only with registry custody after all execution owners
 // have joined. It reads source-owned journal evidence and the admitted fork;
@@ -31,7 +28,7 @@ func (l *queuedChildLauncher) captureTerminal(ctx context.Context, ref childExec
 	if phase == journal.PhaseRunning && journal.ParkedAtGate(events) {
 		return childExecutionResult{State: triggerqueue.ChildAwaitingHuman}, nil
 	}
-	input, found, err := childTerminalInput(rd, events, phase)
+	input, found, err := childworkflow.TerminalInputFromJournal(rd, events, phase)
 	if phase == journal.PhaseEscalated {
 		input, found, err = l.cancelledEscalationInput(ctx, ref, rd, events)
 		if err == nil && !found {
@@ -55,75 +52,6 @@ func (l *queuedChildLauncher) captureTerminal(ctx context.Context, ref childExec
 		return childExecutionResult{}, err
 	}
 	return childExecutionResult{State: result.Input.State, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, nil
-}
-
-func childTerminalInput(rd *journal.Reader, events []journal.Event, phase journal.RunPhase) (childworkflow.TerminalResultInput, bool, error) {
-	var state triggerqueue.ChildState
-	switch phase {
-	case journal.PhaseCompleted:
-		state = triggerqueue.ChildCompleted
-	case journal.PhaseFailed:
-		state = triggerqueue.ChildFailed
-	case journal.PhaseAborted:
-		state = triggerqueue.ChildCancelled
-	default:
-		return childworkflow.TerminalResultInput{}, false, nil
-	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type != journal.EventRunFinished {
-			continue
-		}
-		if events[i].Status != string(phase) || events[i].Time.IsZero() {
-			return childworkflow.TerminalResultInput{}, false, errors.New("child terminal event disagrees with phase")
-		}
-		input := childworkflow.TerminalResultInput{State: state, FinishedAt: events[i].Time, Summary: "Child workflow " + string(phase)}
-		refs, summary, err := childResultEvidence(rd, events[:i+1])
-		if err != nil {
-			return childworkflow.TerminalResultInput{}, false, err
-		}
-		input.References = refs
-		if summary != "" {
-			input.Summary = summary
-		}
-		return input, true, nil
-	}
-	return childworkflow.TerminalResultInput{}, false, nil
-}
-
-func childResultEvidence(rd *journal.Reader, events []journal.Event) ([]string, string, error) {
-	seen := map[string]bool{}
-	var refs []string
-	var summary string
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if summary == "" && event.Type == journal.EventStageFinished {
-			if text, ok := event.Outputs["summary"].(string); ok && utf8.ValidString(text) {
-				summary = boundedChildSummary(text)
-			}
-		}
-		for _, ref := range event.Artifacts {
-			if len(refs) == 16 || seen[ref.Digest] || ref.Size > childResultArtifactBytes {
-				continue
-			}
-			if _, err := rd.ArtifactBytesBounded(ref, childResultArtifactBytes); err != nil {
-				return nil, "", err
-			}
-			seen[ref.Digest] = true
-			refs = append(refs, ref.Digest)
-		}
-	}
-	return refs, summary, nil
-}
-
-func boundedChildSummary(text string) string {
-	if len(text) <= 8192 {
-		return text
-	}
-	text = text[:8192]
-	for !utf8.ValidString(text) {
-		text = text[:len(text)-1]
-	}
-	return text
 }
 
 func (l *queuedChildLauncher) terminalWorkspace(ctx context.Context, coordinator *childworkflow.WorkspaceCoordinator, ref childExecutionRef, rd *journal.Reader, id journal.RunIdentity) (*childworkflow.YieldedWorkspace, error) {

@@ -450,6 +450,12 @@ type DeleteBranchResult struct {
 	Deleted bool `json:"deleted"`
 }
 
+// ErrBranchNotFound reports a branch delete that found no branch to remove.
+// A BranchDeleter returns DeleteBranchResult{Deleted: false} for it; callers
+// that carry only an error (the cloud provider writer) return this sentinel
+// so the absence is recorded as such rather than as a deletion.
+var ErrBranchNotFound = errors.New("branch not found")
+
 // BranchTipChangedError reports that a conditional branch deletion lost its
 // lease because the remote ref no longer points at the expected commit.
 type BranchTipChangedError struct {

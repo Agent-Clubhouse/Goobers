@@ -38,7 +38,16 @@ func (b *Backend) OpenSchedulerLog(ctx context.Context, report func(error)) (*Sc
 }
 
 // Append commits one event under the epoch fence.
+//
+// Once the epoch context is done it refuses every append explicitly. The
+// scheduler journals "run.finished: error: context canceled" when a blocked
+// cloud Starter unwinds at epoch end; that run is still live in Temporal, so
+// the record must not be written, and this must not depend on the driver's
+// handling of a cancelled context.
 func (l *SchedulerLog) Append(event journal.Event) error {
+	if err := l.ctx.Err(); err != nil {
+		return err
+	}
 	return l.backend.InstanceAppend(l.ctx, l.handle, l.token, event)
 }
 

@@ -209,3 +209,23 @@ func TestWebhookRecipientsAreOnePerWorkflow(t *testing.T) {
 		t.Fatalf("other repository recipients = %d, want 0", len(subs))
 	}
 }
+
+func TestInstanceConfigIsTheAppliedCandidatesPolicy(t *testing.T) {
+	policy := denyConfig()
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: policy, Set: workflowSet(eligible())}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InstanceConfig() != nil {
+		t.Fatal("instance config served before the first apply")
+	}
+	if err := cfg.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InstanceConfig() != policy {
+		t.Fatal("instance config is not the applied candidate's")
+	}
+}

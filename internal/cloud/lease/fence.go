@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -68,13 +69,14 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 	return nil
 }
 
-// commitError classifies a failed COMMIT. A server error is a definite
-// rollback. Anything else (a lost connection, or the deadline passing while
-// COMMIT was in flight) leaves the outcome unknown, so it never reports a
-// self-fence or timeout, whose contract is that nothing committed.
+// commitError classifies a failed COMMIT. Only a server error that leaves the
+// session running is a definite rollback. Anything else leaves the outcome
+// unknown, so it never reports a self-fence or timeout, whose contract is that
+// nothing committed: a lost connection, the deadline passing while COMMIT was
+// in flight, or the server ending the session (sessionEnded).
 func commitError(ctx context.Context, err error) error {
 	var serverErr *pgconn.PgError
-	if errors.As(err, &serverErr) {
+	if errors.As(err, &serverErr) && !sessionEnded(serverErr) {
 		return fmt.Errorf("commit fenced transaction: %w", err)
 	}
 	if cause := context.Cause(ctx); cause != nil {
@@ -84,6 +86,33 @@ func commitError(ctx context.Context, err error) error {
 		return fmt.Errorf("%w: %w (deadline: %v)", ErrCommitUnknown, err, cause) //nolint:errorlint // see above
 	}
 	return fmt.Errorf("%w: %w", ErrCommitUnknown, err)
+}
+
+// sessionEnded reports a server error that ends the session rather than the
+// transaction: a FATAL or PANIC, a connection exception (class 08), or an
+// operator shutdown (57P01-57P03). Such an error at COMMIT proves nothing about
+// the outcome: the commit may already be durable when it is raised, as with an
+// interrupt that arrives after the commit record is flushed but before the
+// reply, or a PANIC while flushing it. (A backend killed outright gives the
+// client a closed connection, not an error, which was already unknown.)
+// Severity is read unlocalized: under a non-English lc_messages the localized
+// field would not say FATAL or PANIC.
+func sessionEnded(err *pgconn.PgError) bool {
+	severity := err.SeverityUnlocalized
+	if severity == "" {
+		severity = err.Severity
+	}
+	switch {
+	case severity == "FATAL" || severity == "PANIC":
+		return true
+	case strings.HasPrefix(err.Code, "08"):
+		return true
+	}
+	switch err.Code {
+	case "57P01", "57P02", "57P03":
+		return true
+	}
+	return false
 }
 
 // Confirm share-locks the acquired epoch inside a caller-owned transaction

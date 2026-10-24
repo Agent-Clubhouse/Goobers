@@ -54,7 +54,22 @@ func (s *Source) BindFence(handle *cloudlease.Handle) {
 }
 
 // Acquire pins, verifies, extracts, loads, and read-protects one generation.
+// A missing or invalid generation is a permanent refusal; every other failure
+// (a pointer read, blob GET or reader pin that could not be made) is
+// ErrGenerationUnavailable, so callers retry instead of refusing (#8085 c).
 func (s *Source) Acquire(
+	ctx context.Context,
+	generation string,
+) (childworkflow.Generation, error) {
+	acquired, err := s.acquire(ctx, generation)
+	if err != nil && !errors.Is(err, ErrGenerationNotFound) && !errors.Is(err, ErrGenerationInvalid) &&
+		!errors.Is(err, ErrGenerationUnavailable) {
+		err = fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
+	}
+	return acquired, err
+}
+
+func (s *Source) acquire(
 	ctx context.Context,
 	generation string,
 ) (childworkflow.Generation, error) {

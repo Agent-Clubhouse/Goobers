@@ -104,7 +104,7 @@ func TestControlAssemblyRoutesEachConstructorToItsRole(t *testing.T) {
 	// journal.* and control.claim are granted to goobers_controller only
 	// (writepaths.yaml), so the journal and claims planes, and everything that
 	// reads the journal, run on its pool.
-	controllerFields := map[string]bool{"Configuration": true, "EngineChildAdmissions": true, "Resolve": true, "Epoch": true, "Journal": true, "Claims": true}
+	controllerFields := map[string]bool{"Configuration": true, "EngineChildAdmissions": true, "EngineChildAuthority": true, "ChildWorkflows": true, "Resolve": true, "Epoch": true, "Journal": true, "Claims": true}
 	for i := range controlAssembly {
 		field := controlAssembly[i].field
 		want := api

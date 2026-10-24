@@ -68,24 +68,40 @@ func (s *Store) recordRunPins(ctx context.Context, tx pgx.Tx, pins RunPins, epoc
 		pins.GooberDigest, pins.ConfigGeneration, repo, pins.BranchNamespace, pins.InputDigest, epoch); err != nil {
 		return err
 	}
-	var recorded RunPins
-	var recordedRepo []byte
-	err = tx.QueryRow(ctx, `
-		SELECT run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest, config_generation,
-		  repo_ref, branch_namespace, input_digest
-		FROM control.run_pin WHERE instance_id=$1 AND run_id=$2`, s.instanceID, pins.RunID,
-	).Scan(&recorded.RunID, &recorded.AcceptanceID, &recorded.Gaggle, &recorded.Workflow, &recorded.WorkflowVersion, &recorded.WorkflowDigest,
-		&recorded.GooberDigest, &recorded.ConfigGeneration, &recordedRepo, &recorded.BranchNamespace, &recorded.InputDigest)
+	recorded, err := scanRunPins(tx.QueryRow(ctx, runPinsQuery, s.instanceID, pins.RunID))
 	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(recordedRepo, &recorded.RepoRef); err != nil {
 		return err
 	}
 	if recorded != pins {
 		return ErrRunPinsDiffer
 	}
 	return nil
+}
+
+const runPinsQuery = `
+	SELECT run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest, config_generation,
+	  repo_ref, branch_namespace, input_digest
+	FROM control.run_pin WHERE instance_id=$1 AND run_id=$2`
+
+func scanRunPins(row pgx.Row) (RunPins, error) {
+	var pins RunPins
+	var repo []byte
+	if err := row.Scan(&pins.RunID, &pins.AcceptanceID, &pins.Gaggle, &pins.Workflow, &pins.WorkflowVersion, &pins.WorkflowDigest,
+		&pins.GooberDigest, &pins.ConfigGeneration, &repo, &pins.BranchNamespace, &pins.InputDigest); err != nil {
+		return RunPins{}, noRows(err)
+	}
+	if err := json.Unmarshal(repo, &pins.RepoRef); err != nil {
+		return RunPins{}, err
+	}
+	return pins, nil
+}
+
+// RunPinsOf reads the pins the start fence recorded for runID. A run with no
+// row (never started by this instance's start fence, or started before the
+// pins existed) returns sql.ErrNoRows. Rows are immutable apart from
+// terminal_at, so the read is unfenced.
+func (s *Store) RunPinsOf(ctx context.Context, runID string) (RunPins, error) {
+	return scanRunPins(s.pool.QueryRow(ctx, runPinsQuery, s.instanceID, runID))
 }
 
 // runPinSweepBatch bounds one retention pass.
@@ -189,4 +205,18 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 		return RunPinSweep{Next: after, Unconfirmed: sweep.Unconfirmed, Halted: sweep.Halted, HaltedAt: sweep.HaltedAt}, err
 	}
 	return sweep, nil
+}
+
+// StartPending reports whether acceptanceID's start is still dispatching: the
+// Temporal start may have happened, but the fenced confirmation that records
+// the run's pins has not committed yet.
+func (s *Store) StartPending(ctx context.Context, acceptanceID string) (bool, error) {
+	var pending bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT state='dispatching' FROM control.acceptance WHERE instance_id=$1 AND id=$2`,
+		s.instanceID, acceptanceID).Scan(&pending)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return pending, err
 }
