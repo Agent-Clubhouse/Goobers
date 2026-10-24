@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -10,10 +16,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
 )
 
 func TestConfigurationConstructorFailsClosedWithoutItsDependencies(t *testing.T) {
@@ -142,5 +144,72 @@ func TestAnUnparseableTriggerRefusesTheGenerationAtApplyTime(t *testing.T) {
 	findings := refusal.Workflows["g/nightly"]
 	if len(findings) == 0 || findings[len(findings)-1].Code != schedentries.CodeTrigger {
 		t.Fatalf("refusal = %+v, want TRIGGER001 on g/nightly", refusal.Workflows)
+	}
+}
+
+type recordingActivator struct{ candidates []cloudconfig.Candidate }
+
+func (a *recordingActivator) Activate(_ context.Context, c cloudconfig.Candidate) error {
+	a.candidates = append(a.candidates, c)
+	return nil
+}
+
+// referenceInstance mounts the reference workflows the way the control role's
+// config volume does: instance.yaml beside a config/ definitions tree.
+func referenceInstance(t *testing.T) string {
+	t.Helper()
+	reference := filepath.Join("..", "..", "reference-workflows")
+	root := t.TempDir()
+	if err := os.CopyFS(filepath.Join(root, "config"), os.DirFS(reference)); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := os.ReadFile(filepath.Join(reference, "instance.yaml.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cloud refuses a placement that can execute stages.
+	policy = append(policy, []byte("\nplacement:\n  selfExecution: deny\n")...)
+	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), policy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// A generation without admission pins refuses every start (Admit finds no pin
+// for any workflow), so the candidates the control role's source produces must
+// carry them. The source is the one the control role builds, so a merge that
+// drops the pin computation fails here instead of in production.
+func TestControlSourceProducesCandidatesThatCarryAdmissionPins(t *testing.T) {
+	candidate, err := controlDirSource(referenceInstance(t), "instance-a").Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Pins) == 0 || len(candidate.Pins) != len(candidate.Set.Workflows) {
+		t.Fatalf("candidate carries %d pins for %d workflows", len(candidate.Pins), len(candidate.Set.Workflows))
+	}
+	for _, workflow := range candidate.Set.Workflows {
+		pins := candidate.Pins[workflow.Spec.Gaggle+"/"+workflow.Name]
+		if pins.WorkflowDigest == "" || pins.GooberDigest == "" {
+			t.Fatalf("workflow %s/%s has no usable pins: %+v", workflow.Spec.Gaggle, workflow.Name, pins)
+		}
+	}
+}
+
+// The constructor the control role uses wires the real assessor: the reference workflows
+// need local runners, so the cloud must refuse the whole generation rather than
+// publish it.
+func TestControlConfigurationRefusesAGenerationTheCloudCannotRun(t *testing.T) {
+	activator := &recordingActivator{}
+	configuration, err := newControlConfiguration(activator, referenceInstance(t), "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported []error
+	configuration.SetReporter(func(err error) { reported = append(reported, err) })
+	if err := configuration.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(activator.candidates) != 0 || len(reported) != 1 || !strings.Contains(reported[0].Error(), "not eligible") {
+		t.Fatalf("activated %d candidates, reported %v; want a refusal and no publication", len(activator.candidates), reported)
 	}
 }
