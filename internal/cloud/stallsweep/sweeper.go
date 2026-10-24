@@ -359,7 +359,11 @@ func (s *StallSweeper) due(
 // creditedElapsed is the run's age less its durable child waits (design 10.3,
 // the same journal.ChildExecutionElapsed the local sweep uses), all on the
 // database clock. When every record carries the journal's commit clock the
-// waits are measured on it and writer skew is irrelevant. Otherwise (events
+// waits are measured on it and writer skew is irrelevant. Across a database
+// failover those stamps come from a different primary's clock and may step
+// slightly backwards; if ChildExecutionElapsed rejects the resulting history,
+// the waits get no credit and the run is measured by its raw age, which can
+// only end it sooner, never extend it. Otherwise (events
 // stored before the journal recorded it) the writer clocks are used inside a
 // window widened by at most maxEventClockSkew, failing CLOSED: an event
 // stamped further outside it, or an unreadable wait history, gives the child
