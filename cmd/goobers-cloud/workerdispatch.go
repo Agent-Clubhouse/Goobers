@@ -238,31 +238,43 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	dispatch := stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}
 	if seams != nil {
 		// Pods reach control at WriteAPIBase, which is daemonAPI.
-		dispatch.ChildAuthority = probedChildAuthority(childadmissionclient.AuthorityForWorker(daemonAPI, daemonAPI, owner, signed, seams.SharedRegistry()), seams, instanceID)
+		// Probe the plane the stage pods are handed (GOOBERS_BLOB_ENDPOINT),
+		// not the worker's own store: only that proves pods can read what
+		// control writes.
+		podPlane := &dispatcher.BlobClient{BaseURL: blobEndpoint, TokenSource: func() (string, error) { return signed.MintWorkerBlob(owner, 2*time.Minute) }}
+		dispatch.ChildAuthority = probedChildAuthority(childadmissionclient.AuthorityForWorker(daemonAPI, daemonAPI, owner, signed, seams.SharedRegistry()), podPlane, instanceID, seams.log)
 	}
 	return dispatch, nil
 }
 
-// probedChildAuthority withholds child-workflow authority until the stage
-// blob plane is shown to serve control's object store: control's canary for
-// this instance must be readable through it (#8085 d, #8188). The probe runs
-// at boot and again, paced, while it fails.
-func probedChildAuthority(authority engine.ChildWorkflowAuthority, seams *workerSeams, instanceID string) engine.ChildWorkflowAuthority {
+// canaryPlane is the blob plane a canary probe reads through.
+type canaryPlane interface {
+	Get(ctx context.Context, digest string) ([]byte, error)
+	Describe() string
+}
+
+// probedChildAuthority withholds child-workflow authority until the blob
+// plane the stage pods use is shown to serve control's object store:
+// control's canary for this instance must be readable through it (#8085 d,
+// #8188). The probe runs at boot and again, paced, while it fails. Without a
+// plane to probe it fails closed.
+func probedChildAuthority(authority engine.ChildWorkflowAuthority, plane canaryPlane, instanceID string, logf func(string, ...any)) engine.ChildWorkflowAuthority {
 	if authority == nil {
 		return nil
 	}
 	digest, _ := childresult.BlobPlaneCanary(instanceID)
 	probed := &childadmissionclient.ProbedAuthority{Inner: authority}
-	if seams == nil || seams.store == nil {
-		// No stage blob store to probe: fail closed, never lend unprobed.
-		probed.Probe = func(context.Context) error { return errors.New("the worker has no stage blob store to probe") }
+	if plane == nil {
+		probed.Probe = func(context.Context) error { return errors.New("the worker has no stage blob plane to probe") }
 	} else {
 		probed.Probe = func(ctx context.Context) error {
-			_, err := seams.store.Get(ctx, digest)
+			_, err := plane.Get(ctx, digest)
 			return err
 		}
 		probed.Report = func(err error) {
-			seams.log("ERROR: %v: canary %s not readable through the stage blob plane %s", err, digest, seams.store.Describe())
+			if logf != nil {
+				logf("ERROR: %v: canary %s not readable through the stage blob plane %s", err, digest, plane.Describe())
+			}
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
