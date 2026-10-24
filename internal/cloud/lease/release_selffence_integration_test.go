@@ -132,3 +132,35 @@ func waitForReleaseLock(t *testing.T, pool *pgxpool.Pool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestReleaseIsBoundedBySelfFenceWindow: a release stuck behind the heartbeat
+// row lock gives up when the holder's self-fence window runs out, as a fenced
+// write does, rather than waiting to commit a handoff after its authority
+// lapsed. The blocker is never released while Release runs.
+func TestReleaseIsBoundedBySelfFenceWindow(t *testing.T) {
+	pool := testPool(t)
+	manager := selfFencingManager(t, pool, &offsetClock{})
+	handle, err := manager.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.WithoutCancel(t.Context())) }()
+	if _, err := blocker.Exec(t.Context(), `
+		SELECT 1 FROM control.lease_heartbeat WHERE instance_id='instance' AND name='control' FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() { released <- manager.Release(t.Context(), handle) }()
+	select {
+	case err := <-released:
+		if !errors.Is(err, lease.ErrSelfFenced) {
+			t.Fatalf("release behind a held row lock = %v, want ErrSelfFenced at the window", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("release waited on the row lock past its self-fence window")
+	}
+}
