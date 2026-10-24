@@ -351,7 +351,7 @@ func TestControlControllerInventoryCoversDispatchSnapshotsAndPrune(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ConfirmStart(t.Context(), record.ID, authority.RunID); err != nil {
+	if err := store.ConfirmStart(t.Context(), record.ID, authority.RunID, acceptance.RunPins{RunID: authority.RunID, AcceptanceID: record.ID}); err != nil {
 		t.Fatal(err)
 	}
 	observations := cloudcontrol.Observations{Pool: controller, InstanceID: instance, Lease: manager, Handle: handle}
