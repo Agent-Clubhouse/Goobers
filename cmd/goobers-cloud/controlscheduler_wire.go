@@ -117,6 +117,11 @@ func constructScheduler(_ context.Context, db databaseServices, _ controlAuth, m
 			})
 		},
 		Quota: quota,
+		Counters: compositionCounters(p, func(err error) {
+			if epochWiring.Report != nil {
+				epochWiring.Report(err)
+			}
+		}),
 		Acquire: func(ctx context.Context, generation string) (func(), error) {
 			held, err := p.generations.Acquire(ctx, generation)
 			if err != nil {

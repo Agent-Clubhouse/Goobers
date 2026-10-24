@@ -207,6 +207,7 @@ type schedulerAdmission struct {
 	prepared   bool
 	disabled   bool
 	capacity   *childengine.SchedulerCapacity
+	warned     map[string]bool
 }
 
 func (a *schedulerAdmission) starterConfig() schedstart.Config {
@@ -318,6 +319,14 @@ func (a *schedulerAdmission) commitGates(counters generationCounters, cause erro
 		return
 	}
 	a.clearDisabled()
+	// Composed counters can still leave a gate unenforced (schedule-demand
+	// without the claims plane): keep exactly those reported.
+	if reporter, ok := counters.(gateReporter); ok && a.c.Gates != nil {
+		for gate, reason := range reporter.DisabledGates() {
+			a.c.Gates.Set(gate, reason)
+			a.warnGate(gate, reason)
+		}
+	}
 }
 
 const providerGatesReason = "provider-backed counters are not composed (no provider opener); backlog, demand and refill workflows stay disabled and MaxOpenPRs fails open"
@@ -588,4 +597,22 @@ func (a *schedulerAdmission) retireCapacity() {
 		a.c.Capacity.retire(a.capacity)
 	}
 	a.capacity = nil
+}
+
+// warnGate journals ONE warning per epoch for a gate that is composed but not
+// enforced, besides marking it on the readiness checks.
+func (a *schedulerAdmission) warnGate(gate, reason string) {
+	if a.warned == nil {
+		a.warned = map[string]bool{}
+	}
+	if a.warned[gate] || a.log == nil {
+		return
+	}
+	a.warned[gate] = true
+	a.log.AppendBestEffort(journal.Event{
+		Type: journal.EventRunnerAnnotation, Name: "scheduler.gate-not-enforced",
+		Reason: fmt.Sprintf("%s: %s", gate, reason),
+		Runner: map[string]any{"emitKey": fmt.Sprintf("scheduler.gate-not-enforced/%s/epoch-%d", gate, a.deps.Handle.Epoch)},
+	})
+	a.c.report(fmt.Errorf("scheduler gate %s not enforced: %s", gate, reason))
 }
