@@ -25,12 +25,14 @@ func TestCommitOutcomeUnknownIsNeverASelfFence(t *testing.T) {
 		"server rejected":             {ctx: context.Background(), err: &pgconn.PgError{Severity: "ERROR", Code: "40001"}},
 		"connection lost":             {ctx: context.Background(), err: io.ErrUnexpectedEOF, unknown: true},
 		"self-fence while committing": {ctx: fenced, err: context.DeadlineExceeded, unknown: true},
-		// A terminated backend may already have committed locally (synchronous
-		// replication), so the server ending the session proves nothing.
+		// The server ending the session proves nothing about COMMIT.
 		"backend terminated":       {ctx: context.Background(), err: &pgconn.PgError{Severity: "FATAL", Code: "57P01"}, unknown: true},
 		"server crash shutdown":    {ctx: context.Background(), err: &pgconn.PgError{Severity: "FATAL", Code: "57P02"}, unknown: true},
 		"connection failure class": {ctx: context.Background(), err: &pgconn.PgError{Severity: "ERROR", Code: "08006"}, unknown: true},
 		"panic":                    {ctx: context.Background(), err: &pgconn.PgError{Severity: "PANIC", Code: "XX000"}, unknown: true},
+		// Under a non-English lc_messages only the unlocalized field says FATAL.
+		"localized fatal": {ctx: context.Background(), err: &pgconn.PgError{Severity: "SCHWERWIEGEND", SeverityUnlocalized: "FATAL", Code: "XX000"}, unknown: true},
+		"localized error": {ctx: context.Background(), err: &pgconn.PgError{Severity: "FEHLER", SeverityUnlocalized: "ERROR", Code: "40001"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := commitError(tc.ctx, tc.err)

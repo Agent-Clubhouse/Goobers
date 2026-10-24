@@ -32,9 +32,10 @@ func (k *commitKiller) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data
 
 func (*commitKiller) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// TestFencedWriteReportsATerminatedCommitAsUnknown: the server ending the
-// session at COMMIT (57P01) is not proof of a rollback; under synchronous
-// replication the transaction may already have committed locally.
+// TestFencedWriteReportsATerminatedCommitAsUnknown: a session-ending server
+// error at COMMIT (here the FATAL 57P01 the client receives when its backend
+// is terminated as COMMIT is sent) is not proof of a rollback, and must read
+// as ErrCommitUnknown rather than a definite failure.
 func TestFencedWriteReportsATerminatedCommitAsUnknown(t *testing.T) {
 	pool := testPool(t)
 	killer := &commitKiller{admin: pool}
