@@ -163,7 +163,20 @@ func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter eng
 			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			in, err := r.resolve(attempt, record)
-			if err == nil {
+			if errors.Is(err, acceptance.ErrNotOrdinaryStart) {
+				// A generated child's custody is owned by its own lifecycle. A
+				// payload that is not even a readable kind is corrupt and nothing
+				// else will ever look at it, so it is reported (still never rejected).
+				if errors.Is(err, acceptance.ErrCorruptStart) && r.Report != nil {
+					r.Report(fmt.Errorf("accepted row %s: %w", record.ID, err))
+				}
+				return
+			}
+			if errors.Is(err, acceptance.ErrPermanentStart) {
+				// Retrying can never succeed and would re-pin the generation on
+				// every sweep: finish the row as rejected with the reason.
+				err = errors.Join(err, store.RejectAccepted(attempt, record.ID, err.Error(), time.Now()))
+			} else if err == nil {
 				_, err = starter.Start(attempt, in)
 			}
 			if err != nil && r.Report != nil {

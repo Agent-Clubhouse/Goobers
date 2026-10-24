@@ -21,6 +21,12 @@ func settleWalk(ctx workflow.Context, rec *runJournal, hitl *hitlSession, out Ru
 	}
 	if plan.stage != "" && plan.addendum != "" {
 		addenda[plan.stage] = plan.addendum
+		if hitl.liveTerminal {
+			if rec.humanReruns == nil {
+				rec.humanReruns = map[string]int{}
+			}
+			rec.humanReruns[plan.stage] = plan.attempt
+		}
 	}
 	return plan.state, true, nil
 }

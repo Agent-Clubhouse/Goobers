@@ -106,6 +106,7 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.reportOutOfOrder(applied)
 	for _, migration := range r.Catalog {
 		if migration.Version > leaseSchemaVersion {
 			continue
@@ -114,7 +115,7 @@ func (r Runner) Apply(ctx context.Context) error {
 			continue
 		}
 		if err := retryLockTimeout(ctx, migration, func() error {
-			return applyOne(ctx, session.conn, migration, r.BackupRef)
+			return applyOne(ctx, session.conn, migration, r.BackupRef, inventory)
 		}); err != nil {
 			return err
 		}
@@ -133,7 +134,7 @@ func (r Runner) Apply(ctx context.Context) error {
 				continue
 			}
 			if err := retryLockTimeout(runCtx, migration, func() error {
-				return r.applyLeased(runCtx, manager, handle, session.conn, migration)
+				return r.applyLeased(runCtx, manager, handle, session.conn, migration, inventory)
 			}); err != nil {
 				return err
 			}
@@ -256,10 +257,31 @@ func loadApplied(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) 
 	return applied, nil
 }
 
+// reportOutOfOrder warns about each pending migration numbered below the
+// highest one already applied: it will still be applied, but after migrations
+// that were written to follow it. Pre-merge, test/migrationorder refuses such a
+// number; this only reports it, so a deploy that reaches one is not stopped.
+func (r Runner) reportOutOfOrder(applied map[int]bool) {
+	if r.Report == nil {
+		return
+	}
+	highest := 0
+	for version := range applied {
+		highest = max(highest, version)
+	}
+	for _, migration := range r.Catalog {
+		if !applied[migration.Version] && migration.Version < highest {
+			r.Report(fmt.Errorf("cloud migration %d is applied out of order: this database already has migration %d", migration.Version, highest))
+		}
+	}
+}
+
 // applyLeased runs one versioned migration as a leased step.
-func (r Runner) applyLeased(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, migration Migration) error {
+func (r Runner) applyLeased(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, migration Migration, inventory cloudschema.Inventory) error {
 	return r.leasedStep(ctx, manager, handle, conn, fmt.Sprintf("cloud migration %d", migration.Version),
-		func(stepCtx context.Context, tx pgx.Tx) error { return applyInTx(stepCtx, tx, migration, r.BackupRef) })
+		func(stepCtx context.Context, tx pgx.Tx) error {
+			return applyInTx(stepCtx, tx, migration, r.BackupRef, inventory)
+		})
 }
 
 // leasedStep runs step on the advisory-locked direct session. Migration work
@@ -310,13 +332,13 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 	return nil
 }
 
-func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, backupRef string) error {
+func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, backupRef string, inventory cloudschema.Inventory) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin cloud migration %d: %w", migration.Version, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := applyInTx(ctx, tx, migration, backupRef); err != nil {
+	if err := applyInTx(ctx, tx, migration, backupRef, inventory); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -336,7 +358,13 @@ var (
 	migrationLockBackoff = 2 * time.Second
 )
 
-func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string) error {
+// applyInTx applies one migration and records it, then applies this binary's
+// whole inventory to what now exists (GrantExisting, grants only) in the same
+// transaction, so a column the migration adds is never visible to a
+// still-serving previous binary without its grant. Widenings of existing
+// objects therefore take effect at the run's first migration and persist if
+// the run fails; narrowings wait for the full reconcile after the last one.
+func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string, inventory cloudschema.Inventory) error {
 	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)",
 		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
 		return fmt.Errorf("bound cloud migration %d lock wait: %w", migration.Version, err)
@@ -351,6 +379,9 @@ func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef st
 		migration.Version, migration.Kind, migration.BinaryVersion, migration.MinCompatibleBinary, backupRef,
 	); err != nil {
 		return fmt.Errorf("record cloud migration %d: %w", migration.Version, err)
+	}
+	if err := cloudschema.GrantExisting(ctx, tx, inventory); err != nil {
+		return fmt.Errorf("cloud migration %d: %w", migration.Version, err)
 	}
 	return nil
 }

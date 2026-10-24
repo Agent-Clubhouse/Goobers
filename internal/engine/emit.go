@@ -146,13 +146,19 @@ func (r *runJournal) assignEmitKeys() {
 		if r.proj.Ops[i].EmitKey != "" {
 			continue
 		}
-		scope, attempt := opEmitScope(r.proj.Ops[i])
-		branch := opEmitBranch(r.proj.Ops[i])
-		group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
-		ordinal := r.ordinals[group]
-		r.ordinals[group] = ordinal + 1
-		r.proj.Ops[i].EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", r.proj.Identity.RunID, branch, scope, attempt, ordinal)
+		assignJournalKey(r.proj.Identity.RunID, r.ordinals, &r.proj.Ops[i])
 	}
+}
+
+// assignJournalKey also reserves keys for a bounded terminal transition before
+// publishing it to the repair projection. Gaps from refused intents are safe.
+func assignJournalKey(runID string, ordinals map[string]int, op *JournalOp) {
+	scope, attempt := opEmitScope(*op)
+	branch := opEmitBranch(*op)
+	group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
+	ordinal := ordinals[group]
+	ordinals[group] = ordinal + 1
+	op.EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", runID, branch, scope, attempt, ordinal)
 }
 
 // opEmitScope resolves the (scope, attempt) an op's idempotency key is

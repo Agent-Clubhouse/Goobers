@@ -13,13 +13,17 @@ import (
 // Closing the issue makes the hosted verify-pending check fail until the
 // regression is promoted to full equivalence.
 func PendingFixtures() map[string]string {
-	return map[string]string{"gate-fail-rerun": "7899", "terminal-resume": "7899"}
+	return map[string]string{}
 }
 
 // VerifyPending uses the same live GitHub issue-state check as HA chaos.
 func VerifyPending(ctx context.Context, exec chaos.Executor) error {
+	return verifyPendingFixtures(ctx, exec, PendingFixtures())
+}
+
+func verifyPendingFixtures(ctx context.Context, exec chaos.Executor, fixtures map[string]string) error {
 	var refs []string
-	for _, ref := range PendingFixtures() {
+	for _, ref := range fixtures {
 		if !slices.Contains(refs, ref) {
 			refs = append(refs, ref)
 		}

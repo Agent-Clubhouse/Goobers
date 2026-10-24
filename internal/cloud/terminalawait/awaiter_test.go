@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
@@ -21,7 +23,10 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/terminalhooks/frame"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/providers"
 )
 
 // fakeRun is a workflow that closes when release is closed (or immediately
@@ -755,5 +760,176 @@ func TestAClosedRunWhoseVisibilityLagsPastTheMarginIsStillFramed(t *testing.T) {
 	}
 	if counts["laggy"] != 1 || counts["prompt"] != 1 || len(counts) != 2 {
 		t.Fatalf("frames per run = %v, want each exactly once", counts)
+	}
+}
+
+type memFramed struct {
+	mu     sync.Mutex
+	runs   map[string]bool
+	pruned []time.Time
+}
+
+func (f *memFramed) Framed(_ context.Context, _, runID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runs[runID], nil
+}
+
+func (f *memFramed) MarkFramed(_ context.Context, _ *lease.Handle, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs[runID] = true
+	return nil
+}
+
+func (f *memFramed) Prune(_ context.Context, _ *lease.Handle, cutoff time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pruned = append(f.pruned, cutoff)
+	return 0, nil
+}
+
+func TestASuccessorEpochSkipsRunsAnEarlierLeaderFramed(t *testing.T) {
+	r := newRig()
+	r.temporal.runs["run-1"] = &fakeRun{id: "run-1", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.claims.held["run-1"] = []string{"1"}
+	r.open["run-1"] = true
+	receipts := &memFramed{runs: map[string]bool{}}
+	epoch := func(n int64) *Awaiters {
+		handle := &lease.Handle{InstanceID: "i", Epoch: n}
+		a, err := New(handle, Config{
+			Temporal: r.temporal, Framed: receipts,
+			Identify: func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+			Open:     func(context.Context) (map[string]bool, error) { return r.open, nil },
+			Hooks:    func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(a)
+		_ = a.Stop(t.Context())
+		return a
+	}
+	epoch(2)
+	if !receipts.runs["run-1"] {
+		t.Fatal("a completed frame left no receipt")
+	}
+	// Epoch 3 sees the same run (still listed open by lagging visibility).
+	epoch(3)
+	epoch(4)
+	if got := len(r.claims.calls); got != 1 {
+		t.Fatalf("the frame fired %d times across 3 epochs, want once", got)
+	}
+}
+
+func TestAFrameThatNeverCompletedLeavesNoReceipt(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 2}
+	r.temporal.runs["run-1"] = &fakeRun{id: "run-1", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.claims.err = errors.New("claims plane unavailable") // Finalize fails
+	r.open["run-1"] = true
+	receipts := &memFramed{runs: map[string]bool{}}
+	a, err := New(handle, Config{
+		Temporal: r.temporal, Framed: receipts,
+		Identify: func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+		Open:     func(context.Context) (map[string]bool, error) { return r.open, nil },
+		Hooks:    func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.claims.released = nil
+	if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(a)
+	_ = a.Stop(t.Context())
+	if receipts.runs["run-1"] {
+		t.Fatal("a receipt was written for a frame whose Finalize failed")
+	}
+}
+
+type recWriter struct {
+	providerwriter.Pending
+	mu   sync.Mutex
+	refs []providerwriter.ItemRef
+	reqs []providers.UpdateWorkItemRequest
+}
+
+func (w *recWriter) Comments(context.Context, providerwriter.ItemRef) ([]providers.Comment, error) {
+	return nil, nil
+}
+
+func (w *recWriter) Update(_ context.Context, ref providerwriter.ItemRef, req providers.UpdateWorkItemRequest) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.refs, w.reqs = append(w.refs, ref), append(w.reqs, req)
+	return nil
+}
+
+type recState struct {
+	blocks []parking.Block
+}
+
+func (s *recState) ClaimedItemIDs(string) ([]string, error)                             { return nil, nil }
+func (s *recState) BacklogRepository(r providers.RepositoryRef) providers.RepositoryRef { return r }
+func (s *recState) RecordBlock(b parking.Block) (blockedcycle.Result, error) {
+	s.blocks = append(s.blocks, b)
+	return blockedcycle.Result{}, nil
+}
+
+func blockedByOutcome() frame.Outcome {
+	return frame.Outcome{
+		RunID: "run-1", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseEscalated,
+		Item: &apiv1.BacklogItem{ID: "42"},
+		Result: engine.RunResult{
+			Status: engine.StatusEscalated, FinalState: "implement",
+			Outputs: map[string]apiv1.ResultEnvelope{"implement": {Status: apiv1.ResultBlocked, Summary: "waiting on 41", Outputs: map[string]interface{}{"blockedBy": "41"}}},
+		},
+	}
+}
+
+func TestParkingHooksRecordTheBlockEscalateAndParkThroughTheWriter(t *testing.T) {
+	r := newRig()
+	w, st := &recWriter{}, &recState{}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	r.claims.held["run-1"] = nil
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithParking(w, st)).Run(t.Context(), blockedByOutcome())
+	if len(st.blocks) != 1 || st.blocks[0].ItemID != "42" || !slices.Equal(st.blocks[0].Blockers, []string{"41"}) {
+		t.Fatalf("recorded blocks = %+v", st.blocks)
+	}
+	var comment, park bool
+	for i, req := range w.reqs {
+		if w.refs[i].RunID != "run-1" {
+			t.Fatalf("write not made on behalf of the run: %+v", w.refs[i])
+		}
+		comment = comment || (req.Comment != "" && req.IdempotencyKey != "")
+		park = park || slices.Contains(req.AddLabels, providers.LabelBlockedOnSibling)
+	}
+	if !comment || !park {
+		t.Fatalf("escalation comment keyed = %v, sibling park = %v; requests %+v", comment, park, w.reqs)
+	}
+	if slices.Contains(r.rec.kinds(), CodeHookPending) && countKind(r.rec, CodeHookPending) > 3 {
+		t.Fatalf("blocked and escalation still recorded as pending: %v", r.rec.kinds())
+	}
+}
+
+func TestParkingHooksWithAPendingWriterReportFailureButStillRecordTheBlock(t *testing.T) {
+	r := newRig()
+	st := &recState{}
+	id := Identity{Gaggle: "web", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithParking(providerwriter.Pending{}, st)).Run(t.Context(), blockedByOutcome())
+	if len(st.blocks) != 1 {
+		t.Fatalf("the state-backed block was not recorded without provider credentials: %+v", st.blocks)
+	}
+	var failed bool
+	for _, ev := range r.rec.events {
+		failed = failed || (ev.Error != nil && strings.Contains(ev.Error.Message, "#8093"))
+	}
+	if !failed {
+		t.Fatalf("a provider write that cannot happen yet was not reported as pending #8093: %+v", r.rec.events)
 	}
 }

@@ -34,6 +34,9 @@ import (
 // redelivery safe — a retried or replayed batch can only be a no-op on the
 // server side.
 type HTTPEmitter struct {
+	// TerminalWorkerID enables the resident worker's dedicated terminal seam.
+	// Stage pod emitters leave this unset and cannot mint its credential.
+	TerminalWorkerID string
 	// BaseURL is the daemon API root, e.g. "http://127.0.0.1:7777".
 	BaseURL string
 	// Token is the bearer presented as Authorization; empty sends none.
