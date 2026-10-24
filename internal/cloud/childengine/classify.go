@@ -7,7 +7,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -27,11 +30,15 @@ func classify(err error) error {
 		return err
 	case errors.Is(err, cloudlease.ErrStale), errors.Is(err, cloudlease.ErrSelfFenced),
 		errors.Is(err, cloudlease.ErrFencedTransactionTimeout), errors.Is(err, cloudlease.ErrHeld),
+		errors.Is(err, acceptance.ErrStaleChildEpoch), errors.Is(err, objstore.ErrGenerationUnavailable),
 		pgconn.SafeToRetry(err):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, err)
 	case errors.Is(err, errNotLiveChild), errors.Is(err, errBindingDiffers), errors.Is(err, sql.ErrNoRows),
 		errors.Is(err, triggerqueue.ErrParentCancelled), errors.Is(err, triggerqueue.ErrParentSettled),
-		errors.Is(err, triggerqueue.ErrChildAuthorityChanged), errors.Is(err, triggerqueue.ErrChildProposalUnavailable):
+		errors.Is(err, triggerqueue.ErrChildAuthorityChanged), errors.Is(err, triggerqueue.ErrChildProposalUnavailable),
+		// The accepted child no longer reproduces from its pinned generation.
+		errors.Is(err, childworkflow.ErrFrozenChildDrift), errors.Is(err, childworkflow.ErrAuthorityUnavailable), errors.Is(err, childworkflow.ErrSubmissionInvalid),
+		errors.Is(err, objstore.ErrGenerationNotFound), errors.Is(err, objstore.ErrGenerationInvalid):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	default:
 		return err
