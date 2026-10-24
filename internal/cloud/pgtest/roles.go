@@ -5,8 +5,10 @@
 package pgtest
 
 import (
+	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/pgroles"
@@ -28,4 +30,22 @@ func EnsureRoles(t testing.TB, pool *pgxpool.Pool) {
 	if _, err := pgroles.ProvisionRoles(t.Context(), conn.Conn(), nil); err != nil {
 		t.Fatalf("provision cloud roles: %v", err)
 	}
+}
+
+// ControllerPool returns a pool whose every connection runs SET ROLE
+// goobers_controller, so a store built on it is exercised under exactly the
+// grants the write-path inventory reviewed, not as the superuser fixture.
+func ControllerPool(t testing.TB, pool *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := pool.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	controller, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(controller.Close)
+	return controller
 }

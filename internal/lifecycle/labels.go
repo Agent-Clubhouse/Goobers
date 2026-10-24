@@ -10,5 +10,6 @@ const (
 	LabelNeedsRemediation = "goobers:needs-remediation"
 	LabelBlockedOnSibling = "goobers:blocked-on-sibling"
 	LabelMergeEscalated   = "goobers:merge-escalated"
+	LabelRunAborted       = "goobers:run-aborted"
 	LabelStatusInReview   = "goobers/status:in-review"
 )
