@@ -66,3 +66,19 @@ func TestConfiguredBackendsRebuildCredentialsWhenTheAppliedDigestMoves(t *testin
 		t.Fatal("credentials survived a new applied configuration")
 	}
 }
+
+func TestGiteaBranchDeleteIsRefusedNotRetried(t *testing.T) {
+	t.Setenv("TERMINALWRITER_TEST_TOKEN", "token-value")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "gitea", BaseURL: "https://gitea.example", Owner: "acme", Name: "service", Token: instance.TokenRef{Env: "TERMINALWRITER_TEST_TOKEN"}}}}
+	bound := binding("run-1")
+	bound.Project.Provider = "gitea"
+	bound.Workspace.Provider = providers.ProviderGitea
+	backends := configuredBackends(t, func() (*instance.Config, string, bool) { return cfg, "d1", true })
+	backend, err := backends.For(t.Context(), bound, bound.Workspace, string(capability.GitHubBranchDelete))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.DeleteBranch(t.Context(), providers.DeleteBranchRequest{Repository: bound.Workspace, Name: "goobers/run-1"}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("gitea delete in the control role: %v, want ErrUnsupported", err)
+	}
+}

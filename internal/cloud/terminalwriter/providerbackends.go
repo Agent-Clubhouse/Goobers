@@ -22,7 +22,16 @@ type restProvider interface {
 type restBackend struct{ restProvider }
 
 func githubBackend(p *providers.GitHubProvider) Backend { return restBackend{p} }
-func giteaBackend(p *providers.GiteaProvider) Backend   { return restBackend{p} }
+func giteaBackend(p *providers.GiteaProvider) Backend   { return giteaRESTBackend{restBackend{p}} }
+
+// giteaRESTBackend refuses branch deletion: Gitea deletes a branch with a git
+// push, and the control role has neither a command runner nor git. Without
+// this the delete would fail as a retryable error on every attempt.
+type giteaRESTBackend struct{ restBackend }
+
+func (giteaRESTBackend) DeleteBranch(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+	return providers.DeleteBranchResult{}, fmt.Errorf("gitea branch delete needs git in the control role: %w", ErrUnsupported)
+}
 
 func (b restBackend) PullLabels(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]string, error) {
 	item, err := b.GetWorkItem(ctx, repo, pullID)
