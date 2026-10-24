@@ -73,7 +73,16 @@ func TestDefectAggregatesWireShapeAndReplay(t *testing.T) {
 			FirstPROpenAt:   now.Add(-30 * time.Minute),
 		},
 	}
+	// Gate noise is derived from complete totals, not sent as a finding.
+	batch.Gates = []GateRow{{
+		Gaggle: "g", Workflow: "w", Gate: "review", Total: 10, NonPass: 4, Escalated: 4,
+		ObservedAt:    now,
+		EscalatedRuns: []telemetryclient.JournalPointer{{RunID: "run-gate", Seq: 8}},
+	}}
 	for _, fixture := range findings {
+		if fixture.aggregate == telemetryclient.AggregateGateNoise {
+			continue
+		}
 		batch.Aggregates = append(batch.Aggregates, AggregateRow{
 			Gaggle: "g", Workflow: "w", Aggregate: fixture.aggregate,
 			ObservedAt: now, Finding: fixture.finding,
@@ -454,5 +463,21 @@ func TestStreamsKeepIndependentAggregateContributions(t *testing.T) {
 	}
 	if got := contributions(); got != 2 {
 		t.Fatalf("contributions = %d after more scheduler writes, want 2", got)
+	}
+}
+
+// Gate noise is derived from Batch.Gates totals; a materialized gate-noise
+// finding would reintroduce the per-kind denominator problem, so it is refused.
+func TestGateNoiseFindingsCannotBeMaterialized(t *testing.T) {
+	store, _ := telemetryTestStore(t, "gate-refused")
+	err := store.Apply(t.Context(), Batch{
+		Consumer: "rollup", Current: journal.StreamCursor{Stream: journal.StreamScheduler}, NextSeq: 2,
+		Aggregates: []AggregateRow{{
+			Gaggle: "g", Workflow: "w", Aggregate: telemetryclient.AggregateGateNoise, ObservedAt: time.Now(),
+			Finding: telemetryclient.Finding{Kind: "gate-never-fails", Subject: "review", Metrics: map[string]float64{"totalEvaluations": 5}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("a materialized gate-noise finding was accepted")
 	}
 }

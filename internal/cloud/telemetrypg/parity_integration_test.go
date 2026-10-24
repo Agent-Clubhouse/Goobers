@@ -171,3 +171,112 @@ func localPointerIDs(pointers []rollup.JournalPointer) []string {
 	sort.Strings(ids)
 	return ids
 }
+
+// Gate noise: the two kinds depend on each other's counts, so cloud sources
+// report COMPLETE per-gate totals (even for streams that flagged nothing) and
+// the read derives both kinds from the sums with the local decision
+// (gatenoise.Evaluate). Source A has five passing evaluations and source B five
+// escalated non-passes: the local rollup over both reports only churn at 5/10 =
+// 0.5, never a false "never fails".
+func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
+	store, _ := telemetryTestStore(t, "gate-parity")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	root := t.TempDir()
+	all, err := rollup.Open(filepath.Join(root, "all.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = all.Close() }()
+	request := rollup.StatsRequest{Gaggle: "g", Workflow: "w", Since: now.Add(-time.Hour)}
+	detect := func(db *rollup.DB) []rollup.Finding {
+		t.Helper()
+		found, err := db.Detect(t.Context(), rollup.DetectRequest{StatsRequest: request, Thresholds: rollup.DefaultThresholds()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gates []rollup.Finding
+		for _, finding := range found {
+			if finding.Kind == rollup.FindingGateNeverFails || finding.Kind == rollup.FindingGateRepassChurn {
+				gates = append(gates, finding)
+			}
+		}
+		return gates
+	}
+	for i, verdict := range []string{"pass", "fail"} {
+		id := fmt.Sprintf("%032d", i+1)
+		run, err := journal.Create(filepath.Join(root, "runs"), journal.RunIdentity{
+			RunID: id, Gaggle: "g", Workflow: "w", WorkflowVersion: 1, StartedAt: now,
+		}, nil, journal.WithClock(func() time.Time { return now }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for n := 0; n < 5; n++ {
+			if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: verdict,
+				Runner: map[string]any{"repassAttempt": 1, "escalated": i == 1}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(root, "runs", id)
+		one, err := rollup.Open(filepath.Join(root, id+".db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := one.IngestRun(t.Context(), dir); err != nil {
+			t.Fatal(err)
+		}
+		totals, err := one.GateTotals(t.Context(), request, 10)
+		_ = one.Close()
+		if err != nil || len(totals) != 1 {
+			t.Fatalf("source %d totals = %+v %v", i, totals, err)
+		}
+		if err := all.IngestRun(t.Context(), dir); err != nil {
+			t.Fatal(err)
+		}
+		pointers := func(in []rollup.JournalPointer) []telemetryclient.JournalPointer {
+			out := make([]telemetryclient.JournalPointer, len(in))
+			for j, pointer := range in {
+				out[j] = telemetryclient.JournalPointer{RunID: pointer.RunID, Seq: pointer.Seq}
+			}
+			return out
+		}
+		batch := Batch{Consumer: "rollup", Current: journal.StreamCursor{Stream: "run:" + id}, NextSeq: 7}
+		for _, total := range totals {
+			batch.Gates = append(batch.Gates, GateRow{
+				Gaggle: "g", Workflow: "w", Gate: total.Gate,
+				Total: int64(total.Total), NonPass: int64(total.NonPass), Escalated: int64(total.Escalated),
+				ObservedAt:    now.Add(time.Duration(i) * time.Second),
+				EvaluatedRuns: pointers(total.EvaluatedRuns), EscalatedRuns: pointers(total.EscalatedRuns),
+			})
+		}
+		if err := store.Apply(t.Context(), batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local := detect(all)
+	remote, err := store.DefectAggregates(t.Context(), httpapi.TelemetryDefectAggregateRequest{
+		Gaggle: "g", Workflow: "w", Since: now.Add(-time.Hour),
+		Aggregates: []telemetryclient.Aggregate{telemetryclient.AggregateGateNoise},
+		Thresholds: telemetryclient.Thresholds{MinGateEvaluations: 5, MaxGateEscalationRate: 0.2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(local) != 1 || local[0].Kind != rollup.FindingGateRepassChurn ||
+		local[0].Metrics["totalEvaluations"] != 10 || local[0].Metrics["escalationRate"] != 0.5 {
+		t.Fatalf("test precondition: local = %+v, want only churn at 5/10", local)
+	}
+	if len(remote.Findings) != 1 {
+		t.Fatalf("PG findings = %+v, want exactly the local churn finding (no false never-fails)", remote.Findings)
+	}
+	got := remote.Findings[0]
+	if got.Kind != string(local[0].Kind) || got.Subject != local[0].Subject || !maps.Equal(got.Metrics, local[0].Metrics) ||
+		got.Threshold != local[0].Threshold || fmt.Sprint(pointerIDs(got.FlaggedRuns)) != fmt.Sprint(localPointerIDs(local[0].FlaggedRuns)) {
+		t.Fatalf("PG %+v != local rollup %+v", got, local[0])
+	}
+}

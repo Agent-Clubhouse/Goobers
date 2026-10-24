@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/gatenoise"
 	"github.com/goobers/goobers/internal/telemetryclient"
 )
 
@@ -67,6 +68,23 @@ type Batch struct {
 	NextSeq    uint64
 	Milestones Milestones
 	Aggregates []AggregateRow
+	// Gates are this source's COMPLETE per-gate evaluation totals, including
+	// gates below every threshold. Gate-noise findings are derived from them at
+	// read time (gate-noise cannot be sent as Aggregates).
+	Gates []GateRow
+}
+
+// GateRow is one gate's complete evaluation counts at the batch's source position.
+type GateRow struct {
+	Gaggle        string
+	Workflow      string
+	Gate          string
+	Total         int64
+	NonPass       int64
+	Escalated     int64
+	ObservedAt    time.Time
+	EvaluatedRuns []telemetryclient.JournalPointer
+	EscalatedRuns []telemetryclient.JournalPointer
 }
 
 // Apply commits one exact stream prefix under the live fence.
@@ -85,6 +103,11 @@ func (s *Store) Apply(ctx context.Context, batch Batch) error {
 	batch.Aggregates = collapseAggregates(batch.Aggregates)
 	batch.Milestones.InitCompletedAt = normalizeTimestamp(batch.Milestones.InitCompletedAt)
 	batch.Milestones.FirstPROpenAt = normalizeTimestamp(batch.Milestones.FirstPROpenAt)
+	gates, err := normalizeGates(batch.Gates)
+	if err != nil {
+		return err
+	}
+	batch.Gates = gates
 	fingerprint, err := telemetryBatchFingerprint(batch)
 	if err != nil {
 		return err
@@ -142,6 +165,11 @@ func (s *Store) Apply(ctx context.Context, batch Batch) error {
 				return journal.ErrStreamCursorConflict
 			}
 		}
+		for _, gate := range batch.Gates {
+			if err := s.applyGate(txCtx, tx, gate, batch.Current.Stream, int64(batch.NextSeq), epoch); err != nil {
+				return err
+			}
+		}
 		return s.advanceCursor(
 			txCtx, tx, batch.Consumer, batch.Current, batch.NextSeq,
 			fingerprint, epoch)
@@ -197,8 +225,9 @@ func (s *Store) checkApplyCursor(
 func normalizeAggregate(row *AggregateRow) error {
 	switch row.Aggregate {
 	case telemetryclient.AggregateStageFailureRate,
-		telemetryclient.AggregateGateNoise,
 		telemetryclient.AggregateCreditAssignment:
+	case telemetryclient.AggregateGateNoise:
+		return errors.New("telemetrypg: gate-noise is derived from Batch.Gates totals, not materialized findings")
 	case telemetryclient.AggregateErrorSignature:
 		subject, signature := telemetryclient.NormalizeErrorSignature(
 			row.Finding.Subject)
@@ -509,6 +538,13 @@ func (s *Store) DefectAggregates(
 		return response, err
 	}
 	flush()
+	if allowed[string(telemetryclient.AggregateGateNoise)] {
+		gateFindings, err := s.gateNoiseFindings(ctx, request)
+		if err != nil {
+			return response, err
+		}
+		response.Findings = append(response.Findings, gateFindings...)
+	}
 	sort.Slice(response.Findings, func(i, j int) bool {
 		left, right := response.Findings[i], response.Findings[j]
 		if left.Kind != right.Kind {
@@ -556,11 +592,9 @@ const defaultMaxFlaggedRuns = 10
 //   - stage-failure-rate: totalAttempts and failedAttempts add; failureRate =
 //     failed/total.
 //   - error-signature: count adds.
-//   - gate-repass-churn: totalEvaluations and escalatedCount add; escalationRate
-//     = escalated/total.
-//   - gate-never-fails: totalEvaluations adds. A source that saw a non-pass
-//     contributes no such row, so every source that evaluates a gate must
-//     contribute its complete counts for this claim to be exact.
+//   - gate-noise is NOT merged here: its two kinds depend on each other's
+//     counts, so it is derived from summed per-source Batch.Gates totals
+//     (gateNoiseFindings).
 //   - credit-assignment (and any other kind): a causal estimate is not a sum of
 //     partial estimates, so the newest contribution stands.
 //
@@ -589,14 +623,6 @@ func mergeContributions(contributions []telemetryclient.Finding, maxFlagged int)
 			}
 		case "error-signature":
 			merged.Metrics["count"] = sum("count")
-		case "gate-repass-churn":
-			total, escalated := sum("totalEvaluations"), sum("escalatedCount")
-			merged.Metrics["totalEvaluations"], merged.Metrics["escalatedCount"] = total, escalated
-			if total > 0 {
-				merged.Metrics["escalationRate"] = escalated / total
-			}
-		case "gate-never-fails":
-			merged.Metrics["totalEvaluations"] = sum("totalEvaluations")
 		}
 	}
 	seen := map[telemetryclient.JournalPointer]bool{}
@@ -616,4 +642,184 @@ func mergeContributions(contributions []telemetryclient.Finding, maxFlagged int)
 		merged.FlaggedRuns = flagged
 	}
 	return merged
+}
+
+func normalizeGates(rows []GateRow) ([]GateRow, error) {
+	out := append([]GateRow(nil), rows...)
+	seen := map[[3]string]bool{}
+	for index := range out {
+		row := &out[index]
+		if row.Gaggle == "" || row.Gate == "" || row.ObservedAt.IsZero() ||
+			row.Total < 0 || row.NonPass < 0 || row.Escalated < 0 ||
+			row.NonPass > row.Total || row.Escalated > row.Total {
+			return nil, errors.New("telemetrypg: invalid gate totals")
+		}
+		key := [3]string{row.Gaggle, row.Workflow, row.Gate}
+		if seen[key] {
+			return nil, errors.New("telemetrypg: duplicate gate totals in one batch")
+		}
+		seen[key] = true
+		row.ObservedAt = normalizeTimestamp(row.ObservedAt)
+		if row.EvaluatedRuns == nil {
+			row.EvaluatedRuns = []telemetryclient.JournalPointer{}
+		}
+		if row.EscalatedRuns == nil {
+			row.EscalatedRuns = []telemetryclient.JournalPointer{}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Gaggle != b.Gaggle {
+			return a.Gaggle < b.Gaggle
+		}
+		if a.Workflow != b.Workflow {
+			return a.Workflow < b.Workflow
+		}
+		return a.Gate < b.Gate
+	})
+	return out, nil
+}
+
+// applyGate upserts one source stream's complete totals for a gate. The
+// watermark compares source_seq only within that stream's own sequence domain.
+func (s *Store) applyGate(ctx context.Context, tx pgx.Tx, gate GateRow, stream string, seq, epoch int64) error {
+	evaluated, err := json.Marshal(gate.EvaluatedRuns)
+	if err != nil {
+		return err
+	}
+	escalated, err := json.Marshal(gate.EscalatedRuns)
+	if err != nil {
+		return err
+	}
+	if len(evaluated) > maxFindingBytes || len(escalated) > maxFindingBytes {
+		return errors.New("telemetrypg: gate run evidence exceeds storage bound")
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO telemetry.gate_total (
+			instance_id,gaggle,workflow,gate,source_stream,total,non_pass,
+			escalated,evaluated_runs,escalated_runs,observed_at,source_seq,owner_epoch
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (instance_id,gaggle,workflow,gate,source_stream) DO UPDATE
+		SET total=excluded.total,non_pass=excluded.non_pass,escalated=excluded.escalated,
+		    evaluated_runs=excluded.evaluated_runs,escalated_runs=excluded.escalated_runs,
+		    observed_at=excluded.observed_at,source_seq=excluded.source_seq,
+		    owner_epoch=excluded.owner_epoch
+		WHERE telemetry.gate_total.instance_id=$1
+		  AND telemetry.gate_total.owner_epoch<=$13
+		  AND telemetry.gate_total.source_seq<excluded.source_seq`,
+		s.instanceID, gate.Gaggle, gate.Workflow, gate.Gate, stream,
+		gate.Total, gate.NonPass, gate.Escalated, evaluated, escalated,
+		gate.ObservedAt.UTC(), seq, epoch)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return journal.ErrStreamCursorConflict
+	}
+	return nil
+}
+
+// gateNoiseFindings derives both gate-noise kinds from the summed per-source
+// totals with the SAME decision the local rollup uses (gatenoise.Evaluate), so
+// a source that produced no finding of its own still contributes its
+// denominator and its non-pass evidence.
+func (s *Store) gateNoiseFindings(ctx context.Context, request httpapi.TelemetryDefectAggregateRequest) ([]telemetryclient.Finding, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT workflow,gate,total,non_pass,escalated,evaluated_runs,escalated_runs
+		FROM telemetry.gate_total
+		WHERE instance_id=$1 AND gaggle=$2 AND ($3='' OR workflow=$3)
+		  AND observed_at>=$4
+		ORDER BY workflow,gate,observed_at DESC,source_stream ASC`,
+		s.instanceID, request.Gaggle, request.Workflow, request.Since.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	thresholds := request.Thresholds
+	minEvaluations, maxEscalation := thresholds.MinGateEvaluations, thresholds.MaxGateEscalationRate
+	if thresholds == (telemetryclient.Thresholds{}) { // an unset request means the local defaults
+		minEvaluations, maxEscalation = 5, 0.2
+	}
+	maxFlagged := thresholds.MaxFlaggedRuns
+	if maxFlagged <= 0 {
+		maxFlagged = defaultMaxFlaggedRuns
+	}
+	type gateGroup struct {
+		totals    gatenoise.Totals
+		evaluated []telemetryclient.JournalPointer
+		escalated []telemetryclient.JournalPointer
+	}
+	groups := map[[2]string]*gateGroup{}
+	var order [][2]string
+	for rows.Next() {
+		var workflow, gate string
+		var total, nonPass, escalated int64
+		var evaluatedRaw, escalatedRaw []byte
+		if err := rows.Scan(&workflow, &gate, &total, &nonPass, &escalated, &evaluatedRaw, &escalatedRaw); err != nil {
+			return nil, err
+		}
+		key := [2]string{workflow, gate}
+		group := groups[key]
+		if group == nil {
+			group = &gateGroup{}
+			groups[key] = group
+			order = append(order, key)
+		}
+		group.totals = group.totals.Add(gatenoise.Totals{Total: total, NonPass: nonPass, Escalated: escalated})
+		var evaluated, escalatedRuns []telemetryclient.JournalPointer
+		if err := json.Unmarshal(evaluatedRaw, &evaluated); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(escalatedRaw, &escalatedRuns); err != nil {
+			return nil, err
+		}
+		group.evaluated = append(group.evaluated, evaluated...)
+		group.escalated = append(group.escalated, escalatedRuns...)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var findings []telemetryclient.Finding
+	for _, key := range order {
+		group := groups[key]
+		verdict := gatenoise.Evaluate(group.totals, minEvaluations, maxEscalation)
+		if verdict.NeverFails {
+			findings = append(findings, telemetryclient.Finding{
+				Kind: "gate-never-fails", Subject: key[1],
+				Metrics:     map[string]float64{"totalEvaluations": float64(group.totals.Total)},
+				Threshold:   float64(minEvaluations),
+				FlaggedRuns: boundedPointers(group.evaluated, maxFlagged),
+			})
+		}
+		if verdict.Churn {
+			findings = append(findings, telemetryclient.Finding{
+				Kind: "gate-repass-churn", Subject: key[1],
+				Metrics: map[string]float64{
+					"escalationRate":   verdict.EscalationRate,
+					"totalEvaluations": float64(group.totals.Total),
+					"escalatedCount":   float64(group.totals.Escalated),
+				},
+				Threshold:   maxEscalation,
+				FlaggedRuns: boundedPointers(group.escalated, maxFlagged),
+			})
+		}
+	}
+	return findings, nil
+}
+
+// boundedPointers de-duplicates (first occurrence wins, so the newest source
+// comes first) and bounds example run pointers.
+func boundedPointers(pointers []telemetryclient.JournalPointer, limit int) []telemetryclient.JournalPointer {
+	seen := map[telemetryclient.JournalPointer]bool{}
+	out := []telemetryclient.JournalPointer{}
+	for _, pointer := range pointers {
+		if len(out) >= limit {
+			break
+		}
+		if !seen[pointer] {
+			seen[pointer] = true
+			out = append(out, pointer)
+		}
+	}
+	return out
 }

@@ -1075,6 +1075,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/telemetry/gatenoise",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure gate-noise decision arithmetic with no platform seam; runs on the Linux unit shards."
+    },
+    {
       "package": "internal/telemetry/rollup",
       "coverage": "partial",
       "category": "seam-selection",

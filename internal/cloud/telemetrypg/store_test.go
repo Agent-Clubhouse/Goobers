@@ -28,14 +28,6 @@ func TestMergeContributionsCombinesLikeTheLocalRollup(t *testing.T) {
 			finding("error-signature", map[string]float64{"count": 3}),
 			finding("error-signature", map[string]float64{"count": 4}),
 		}, map[string]float64{"count": 7}},
-		{"gate repass churn", []telemetryclient.Finding{
-			finding("gate-repass-churn", map[string]float64{"escalationRate": 1, "totalEvaluations": 2, "escalatedCount": 2}),
-			finding("gate-repass-churn", map[string]float64{"escalationRate": 0, "totalEvaluations": 8, "escalatedCount": 0}),
-		}, map[string]float64{"escalationRate": 0.2, "totalEvaluations": 10, "escalatedCount": 2}},
-		{"gate never fails", []telemetryclient.Finding{
-			finding("gate-never-fails", map[string]float64{"totalEvaluations": 6}),
-			finding("gate-never-fails", map[string]float64{"totalEvaluations": 5}),
-		}, map[string]float64{"totalEvaluations": 11}},
 		{"credit assignment: newest stands", []telemetryclient.Finding{
 			finding("credit-assignment", map[string]float64{"runs": 9, "failureShare": 0.8}),
 			finding("credit-assignment", map[string]float64{"runs": 50, "failureShare": 0.1}),
