@@ -111,3 +111,29 @@ func TestCommentsSplitCompleteMemberList(t *testing.T) {
 		}
 	}
 }
+
+func TestCommentsNameUnverifiedMembersOnlyWhenThereAreSome(t *testing.T) {
+	cycle := Result{
+		Affected: []Node{{ItemID: "1"}, {ItemID: "2"}},
+		Paths:    [][]string{{"1", "2", "1"}},
+	}
+	base := Comments(cycle)
+	for _, c := range base {
+		if strings.Contains(c, "could not be checked") {
+			t.Fatalf("a fully verified cycle carries an unverified note: %q", c)
+		}
+	}
+	cycle.Unverified = []string{"#2: unverifiable: rate limited"}
+	withNote := Comments(cycle)
+	if len(withNote) != len(base)+1 {
+		t.Fatalf("comments %d -> %d, want exactly one more", len(base), len(withNote))
+	}
+	last := withNote[len(withNote)-1]
+	if !strings.Contains(last, "#2: unverifiable: rate limited") || !strings.Contains(last, "needs-human") {
+		t.Fatalf("note = %q", last)
+	}
+	cycle.Unverified = []string{strings.Repeat("x", 3*MaxCommentLength)}
+	if long := Comments(cycle); len(long[len(long)-1]) > MaxCommentLength+4 {
+		t.Fatalf("note not bounded: %d", len(long[len(long)-1]))
+	}
+}
