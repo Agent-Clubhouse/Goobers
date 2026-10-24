@@ -704,6 +704,7 @@ type handlerConfig struct {
 	journal                   JournalService
 	engineChildren            EngineChildPlane
 	engineChildAuthority      EngineChildAuthority
+	engineChildProtocol       EngineChildProtocol
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService

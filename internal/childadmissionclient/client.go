@@ -28,10 +28,6 @@ const (
 	maxManifestReply = httpapi.MaxEngineChildManifestBytes*4/3 + 4<<10
 )
 
-// ErrCustodyUnmapped reports an operation this plane does not serve yet.
-// Callers fail closed; the engine keeps child execution refused meanwhile.
-var ErrCustodyUnmapped = errors.New("childadmissionclient: child custody operation is not served by the control plane yet")
-
 // Client implements engine.ChildService over the plane. TokenSource mints a
 // short-lived worker child-admission credential per request.
 type Client struct {
@@ -133,17 +129,26 @@ func (c *Client) ReleaseChildAuthority(ctx context.Context, release engine.Child
 	return c.call(ctx, apicontract.EngineChildAuthorityReleasePath, release, http.StatusNoContent, 0, nil)
 }
 
-// Park is not served yet.
-func (c *Client) Park(context.Context, engine.ChildParkInput) error { return ErrCustodyUnmapped }
+// maxResultReply bounds a sealed child result: its bounded summary and
+// references, plus identity.
+const maxResultReply = 64 << 10
 
-// Finalize is not served yet.
-func (c *Client) Finalize(context.Context, engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
-	return childresult.TerminalReturn{}, ErrCustodyUnmapped
+// Park lends the parked parent's capacity back to control's scheduler.
+func (c *Client) Park(ctx context.Context, in engine.ChildParkInput) error {
+	return c.call(ctx, apicontract.EngineChildParkPath, in, http.StatusNoContent, 0, nil)
 }
 
-// Complete is not served yet.
-func (c *Client) Complete(context.Context, engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
-	return apiv1.ContextPointer{}, ErrCustodyUnmapped
+// Finalize asks control to seal the child's result from its journal.
+func (c *Client) Finalize(ctx context.Context, in engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
+	var out childresult.TerminalReturn
+	return out, c.call(ctx, apicontract.EngineChildFinalizePath, in, http.StatusOK, maxResultReply, &out)
+}
+
+// Complete asks control to verify the sealed result, reacquire the parent's
+// capacity and return its continuation; the engine validates the pointer.
+func (c *Client) Complete(ctx context.Context, in engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
+	var out apiv1.ContextPointer
+	return out, c.call(ctx, apicontract.EngineChildCompletePath, in, http.StatusOK, maxReceiptBytes, &out)
 }
 
 func (c *Client) call(ctx context.Context, path string, body any, want int, limit int64, out any) error {

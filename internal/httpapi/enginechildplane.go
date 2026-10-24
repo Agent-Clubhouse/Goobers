@@ -45,6 +45,28 @@ type EngineChildAuthority interface {
 	Release(ctx context.Context, decode func(any) error) error
 }
 
+// EngineChildProtocol is the rest of the engine child protocol behind the
+// same plane (#8085 d): Park lends a parked parent's capacity, Finalize seals
+// a child's result, Complete resumes the parent with it. Engine-type free for
+// the same reason as EngineChildPlane.
+type EngineChildProtocol interface {
+	Park(ctx context.Context, decode func(any) error) error
+	Finalize(ctx context.Context, decode func(any) error) (any, error)
+	Complete(ctx context.Context, decode func(any) error) (any, error)
+}
+
+// WithEngineChildProtocol installs the parking, finalizing and completing
+// owner behind the engine child-admission plane.
+func WithEngineChildProtocol(protocol EngineChildProtocol) HandlerOption {
+	return func(config *handlerConfig) error {
+		if protocol == nil {
+			return errors.New("http API engine child protocol is required")
+		}
+		config.engineChildProtocol = protocol
+		return nil
+	}
+}
+
 // WithEngineChildAuthority installs the owner of engine parents' child-workflow
 // grants behind the engine child-admission plane.
 func WithEngineChildAuthority(authority EngineChildAuthority) HandlerOption {
@@ -71,7 +93,8 @@ func WithEngineChildAdmissions(plane EngineChildPlane) HandlerOption {
 
 func engineChildPlanePath(path string) bool {
 	return path == apicontract.EngineChildAdmitPath || path == apicontract.EngineChildLoadPath || path == apicontract.EngineChildCancelPath ||
-		path == apicontract.EngineChildAuthorityPath || path == apicontract.EngineChildAuthorityReleasePath
+		path == apicontract.EngineChildAuthorityPath || path == apicontract.EngineChildAuthorityReleasePath ||
+		path == apicontract.EngineChildParkPath || path == apicontract.EngineChildFinalizePath || path == apicontract.EngineChildCompletePath
 }
 
 // engineChildAuthorized enforces the dedicated worker credential even under a
@@ -166,4 +189,17 @@ func registerEngineChildPlaneRoutes(router *Router, config handlerConfig, errorL
 			return nil, authority.Release(ctx, decode)
 		},
 		func(w http.ResponseWriter, _ any) { w.WriteHeader(http.StatusNoContent) }))
+	protocol := config.engineChildProtocol
+	served := protocol != nil
+	router.Handle(apicontract.RouteEngineChildPark, handleEngineChild(served, errorLog, "park engine child parent",
+		func(ctx context.Context, decode func(any) error) (any, error) {
+			return nil, protocol.Park(ctx, decode)
+		},
+		func(w http.ResponseWriter, _ any) { w.WriteHeader(http.StatusNoContent) }))
+	router.Handle(apicontract.RouteEngineChildFinalize, handleEngineChild(served, errorLog, "finalize engine child",
+		func(ctx context.Context, decode func(any) error) (any, error) { return protocol.Finalize(ctx, decode) },
+		func(w http.ResponseWriter, result any) { writeJSON(w, http.StatusOK, result) }))
+	router.Handle(apicontract.RouteEngineChildComplete, handleEngineChild(served, errorLog, "complete engine child",
+		func(ctx context.Context, decode func(any) error) (any, error) { return protocol.Complete(ctx, decode) },
+		func(w http.ResponseWriter, pointer any) { writeJSON(w, http.StatusOK, pointer) }))
 }

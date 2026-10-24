@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -255,5 +256,46 @@ func TestFinalizeSettlesAChildBoundByAnOlderControlPlane(t *testing.T) {
 	}
 	if child, err := other.controller.GetChild(t.Context(), unbound); err != nil || child.State != triggerqueue.ChildQueued || child.AcceptanceID != started.AcceptanceID {
 		t.Fatalf("unbound child after a refused dispatch = %+v, %v; want unchanged", child, err)
+	}
+}
+
+// The control role serves the child protocol under the live lease, as the
+// controller role: Finalize seals from the child's journal, Park and Complete
+// stay unavailable until the capacity plane is composed, and a replica that
+// holds no lease serves nothing.
+func TestFencedProtocolServesTheChildProtocolUnderTheLiveLease(t *testing.T) {
+	f := newProtocolFamily(t)
+	fenced := fencedOn(t, f.family, controllerPool(t, f.pool), func() *cloudlease.Handle { return f.handle })
+	if err := (FencedProtocol{Fenced: fenced}).Validate(); err == nil {
+		t.Fatal("a protocol without the control journal validated")
+	}
+	protocol := FencedProtocol{Fenced: fenced, Journal: f.service.Journal}
+	if err := protocol.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := protocol.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: f.binding.Child.AcceptedAt.Add(time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sealed.Validate(f.binding.Child); err != nil {
+		t.Fatalf("sealed result does not validate as the engine checks it: %v", err)
+	}
+	wait := livejournal.AppendReceipt{Key: "wait-1", Seq: 7, Type: journal.EventRunnerAnnotation}
+	if err := protocol.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
+		t.Fatalf("park without the capacity plane = %v", err)
+	}
+	capacity := &recordedCapacity{}
+	protocol.Capacity = capacity
+	if err := protocol.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); err != nil || capacity.released != 1 {
+		t.Fatalf("park = %v (released %d)", err, capacity.released)
+	}
+	pointer, err := protocol.Complete(t.Context(), engine.ChildCompletionInput{Binding: f.binding, Wait: wait, Result: sealed})
+	if err != nil || capacity.reacquired != 1 || pointer.Artifact == nil || pointer.Artifact.Digest != sealed.ResultRef {
+		t.Fatalf("complete = %+v, %v (reacquired %d)", pointer, err, capacity.reacquired)
+	}
+	unowned := protocol
+	unowned.Fenced.Owner = func() *cloudlease.Handle { return nil }
+	if _, err := unowned.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: sealed.Input.FinishedAt}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
+		t.Fatalf("finalize on a replica without the lease = %v, want unavailable", err)
 	}
 }
