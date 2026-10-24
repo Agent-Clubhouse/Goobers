@@ -284,8 +284,15 @@ func registerChildProtocol(r childRegistrar, a *Activities, f *childFixture) {
 	r.RegisterActivity(a.FinalizeEngineChild)
 	r.RegisterActivity(a.CompleteEngineChild)
 	r.RegisterActivity(a.EvaluateAutomated)
+	r.RegisterActivity(a.EvaluateAutomatedCancelSafe)
 	r.RegisterActivityWithOptions(f.Invoke, activity.RegisterOptions{Name: ActInvokeGoober})
+	r.RegisterActivityWithOptions(f.Invoke, activity.RegisterOptions{
+		Name: actInvokeGooberCancelSafe,
+	})
 	r.RegisterActivityWithOptions(f.Det, activity.RegisterOptions{Name: ActRunDeterministic})
+	r.RegisterActivityWithOptions(f.Det, activity.RegisterOptions{
+		Name: actRunDeterministicCancelSafe,
+	})
 }
 
 func childEnvironment(t *testing.T, f *childFixture) (*testsuite.TestWorkflowEnvironment, string) {

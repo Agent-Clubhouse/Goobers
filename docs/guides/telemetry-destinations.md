@@ -5,6 +5,21 @@
 Local journals are written once, regardless of the number of remote destinations.
 No destination is configured by default.
 
+## Cloud analytics scope
+
+`goobers-cloud` deliberately does not host the full local `telemetry.db`
+analytics surface. It retains only first-success milestones and the four
+defect-nomination families `stage-failure-rate`, `gate-noise`,
+`credit-assignment`, and `error-signature`. Other telemetry is exported only
+through OTLP to an operator-configured collector; Goobers does not install or
+select a collector and does not phone home by default.
+
+Local rollup families such as general stats and trends, costs and usage,
+CI-check analytics, learning episodes, coverage gaps, efficacy, labels, shadow
+comparisons, and compact/prune operations are unavailable in cloud mode. They
+fail closed rather than returning an empty result that could be mistaken for
+“no defect found.”
+
 ```yaml
 telemetry:
   collectionProfile: standard

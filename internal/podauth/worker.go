@@ -17,6 +17,7 @@ const (
 	workerBlobTokenPrefix      = "goobers-worker-blob."
 	workerSurrenderTokenPrefix = "goobers-worker-surrender-read."
 	workerChildTokenPrefix     = "goobers-worker-child-admission."
+	workerTerminalTokenPrefix  = "goobers-worker-terminal-intervention."
 )
 
 // workerTokenKind parameterises one worker credential. The MAC domain is
@@ -33,11 +34,12 @@ var (
 	workerConfigDigestKind = workerTokenKind{workerTokenPrefix, "goobers/worker-config-digest/v1\x00", httpapi.WorkerPrincipalIssuer}
 	workerBlobKind         = workerTokenKind{workerBlobTokenPrefix, "goobers/worker-blob/v1\x00", httpapi.WorkerBlobPrincipalIssuer}
 	workerSurrenderKind    = workerTokenKind{workerSurrenderTokenPrefix, "goobers/worker-surrender-read/v1\x00", httpapi.WorkerSurrenderPrincipalIssuer}
+	workerTerminalKind     = workerTokenKind{workerTerminalTokenPrefix, "goobers/worker-terminal-intervention/v1\x00", httpapi.WorkerTerminalInterventionPrincipalIssuer}
 	workerChildKind        = workerTokenKind{workerChildTokenPrefix, "goobers/worker-child-admission/v1\x00", httpapi.WorkerChildAdmissionPrincipalIssuer}
 )
 
 // workerTokenKinds lists longer prefixes before the config-digest prefix they extend.
-var workerTokenKinds = []workerTokenKind{workerChildKind, workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
+var workerTokenKinds = []workerTokenKind{workerTerminalKind, workerChildKind, workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
 
 const maxWorkerTokenBodyBytes = 512
 
@@ -73,6 +75,13 @@ func (s *SignedKey) MintWorkerSurrender(workerID string, ttl time.Duration) (str
 // the instance (see docs/design/worker-blob-transport.md).
 func (s *SignedKey) MintWorkerChildAdmission(workerID string, ttl time.Duration) (string, error) {
 	return s.mintWorkerToken(workerChildKind, workerID, ttl)
+}
+
+// MintWorkerTerminalIntervention grants only the trusted workflow host's keyed
+// terminal journal transition. This credential must never be passed to a pod.
+// Its MAC domain is disjoint from pod, child-admission and config credentials.
+func (s *SignedKey) MintWorkerTerminalIntervention(workerID string, ttl time.Duration) (string, error) {
+	return s.mintWorkerToken(workerTerminalKind, workerID, ttl)
 }
 
 func (s *SignedKey) mintWorkerToken(kind workerTokenKind, workerID string, ttl time.Duration) (string, error) {

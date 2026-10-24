@@ -30,9 +30,16 @@ func (g *Guard) Admit(digest, gaggle, name string) error {
 	case gen.digest != digest:
 		return fmt.Errorf("%w: generation %q is not the bound generation %q", ErrIneligible, digest, gen.digest)
 	}
-	if _, ok := gen.eligible[workflowKey(gaggle, name)]; ok {
+	return gen.admits(gaggle, name)
+}
+
+// admits is the one eligibility check: nil only when this generation assessed
+// gaggle/name eligible. Guard.Admit and Configuration.AdmitApplied both end here,
+// so the scheduler guard and the trigger plane cannot disagree.
+func (g *Generation) admits(gaggle, name string) error {
+	if _, ok := g.eligible[workflowKey(gaggle, name)]; ok {
 		return nil
 	}
 	return fmt.Errorf("%w: workflow %s was not assessed eligible in generation %q",
-		ErrIneligible, workflowKey(gaggle, name), gen.digest)
+		ErrIneligible, workflowKey(gaggle, name), g.digest)
 }
