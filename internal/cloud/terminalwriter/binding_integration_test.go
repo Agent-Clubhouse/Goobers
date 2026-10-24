@@ -31,6 +31,8 @@ import (
 
 type pinnedGenerations map[string]*instance.ConfigSet
 
+const bindingGenerationDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 func (g pinnedGenerations) Acquire(_ context.Context, generation string) (childworkflow.Generation, error) {
 	set, ok := g[generation]
 	if !ok {
@@ -112,7 +114,7 @@ func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
 	fork := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "fork"}
 	boards := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "Code", Name: "service"}
 	identity := func(runID, gaggle string, workspace *apiv1.RepoRef) journal.RunIdentity {
-		return journal.RunIdentity{RunID: runID, Gaggle: gaggle, Workflow: "implementation", ConfigGeneration: "gen-1", WorkspaceRepository: workspace}
+		return journal.RunIdentity{RunID: runID, Gaggle: gaggle, Workflow: "implementation", ConfigGeneration: bindingGenerationDigest, WorkspaceRepository: workspace}
 	}
 	for _, id := range []journal.RunIdentity{
 		identity("run-engine", "core", nil),
@@ -129,14 +131,14 @@ func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
 		}
 	}
 	pins := map[string]RunPin{
-		"run-engine":        {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
-		"run-agreeing":      {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
-		"run-forked":        {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
-		"run-forged-gaggle": {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
-		"run-ado":           {Gaggle: "boards", ConfigGeneration: "gen-1", RepoRef: boards},
-		"run-ghost":         {Gaggle: "ghost", ConfigGeneration: "gen-1", RepoRef: service},
-		"run-elsewhere":     {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: fork},
-		"run-no-journal":    {Gaggle: "core", ConfigGeneration: "gen-1", RepoRef: service},
+		"run-engine":        {Gaggle: "core", ConfigGeneration: bindingGenerationDigest, RepoRef: service},
+		"run-agreeing":      {Gaggle: "core", ConfigGeneration: bindingGenerationDigest, RepoRef: service},
+		"run-forked":        {Gaggle: "core", ConfigGeneration: bindingGenerationDigest, RepoRef: service},
+		"run-forged-gaggle": {Gaggle: "core", ConfigGeneration: bindingGenerationDigest, RepoRef: service},
+		"run-ado":           {Gaggle: "boards", ConfigGeneration: bindingGenerationDigest, RepoRef: boards},
+		"run-ghost":         {Gaggle: "ghost", ConfigGeneration: bindingGenerationDigest, RepoRef: service},
+		"run-elsewhere":     {Gaggle: "core", ConfigGeneration: bindingGenerationDigest, RepoRef: fork},
+		"run-no-journal":    {Gaggle: "core", ConfigGeneration: bindingGenerationDigest, RepoRef: service},
 	}
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{
 		ObjectMeta: metav1.ObjectMeta{Name: "core"},
@@ -157,7 +159,7 @@ func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
 			return ChildLink{}, sql.ErrNoRows
 		},
 		Journal:     backend,
-		Generations: pinnedGenerations{"gen-1": set},
+		Generations: pinnedGenerations{bindingGenerationDigest: set},
 	}
 
 	serviceRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "service"}
@@ -167,7 +169,7 @@ func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
 			t.Fatalf("%s: %v", runID, err)
 		}
 		// A same-provider GitHub backlog lives in the gaggle's project.
-		if !sameRepository(bound.Workspace, serviceRef) || !sameRepository(bound.WorkItems, serviceRef) || bound.Gaggle != "core" || bound.Generation != "gen-1" {
+		if !sameRepository(bound.Workspace, serviceRef) || !sameRepository(bound.WorkItems, serviceRef) || bound.Gaggle != "core" || bound.Generation != bindingGenerationDigest {
 			t.Fatalf("%s binding = %+v", runID, bound)
 		}
 	}
@@ -225,7 +227,7 @@ func TestJournalRunsBindsFromTheStartFencesRunPin(t *testing.T) {
 	backend, owner, controller := controllerJournal(t)
 	service := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"}
 	if _, _, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: journal.RunIdentity{
-		RunID: "run-pinned", Gaggle: "core", Workflow: "implementation", ConfigGeneration: "gen-1"}}); err != nil {
+		RunID: "run-pinned", Gaggle: "core", Workflow: "implementation", ConfigGeneration: bindingGenerationDigest}}); err != nil {
 		t.Fatal(err)
 	}
 	repo, err := json.Marshal(service)
@@ -235,17 +237,16 @@ func TestJournalRunsBindsFromTheStartFencesRunPin(t *testing.T) {
 	if _, err := owner.Exec(t.Context(), `
 		INSERT INTO control.run_pin (instance_id, run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest,
 		  goober_digest, config_generation, repo_ref, branch_namespace, input_digest, owner_epoch)
-		VALUES ('test-instance','run-pinned','acc-1','core','implementation',1,'wd','gd','gen-1',$1,'','id',1)`, repo); err != nil {
+		VALUES ('test-instance','run-pinned','acc-1','core','implementation',1,'wd','gd',$1,$2,'','id',1)`, bindingGenerationDigest, repo); err != nil {
 		t.Fatal(err)
 	}
-	digest := "sha256:" + strings.Repeat("a", 64)
 	if _, _, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: journal.RunIdentity{
 		RunID: "run-child", Gaggle: "core", Workflow: "implementation",
-		ConfigGeneration: "gen-1", WorkflowDigest: digest, GooberDigest: digest,
+		ConfigGeneration: bindingGenerationDigest, WorkflowDigest: bindingGenerationDigest, GooberDigest: bindingGenerationDigest,
 		Child: &journal.ChildLineage{
 			Gaggle: "core", ParentRunID: "run-pinned", ParentWorkflow: "implementation",
 			StageOccurrence: "build/visit-1", InvocationKey: "first-child",
-			AcceptanceID: "trigger-run-child", SourceDigest: digest, EnvelopeDigest: digest,
+			AcceptanceID: "trigger-run-child", SourceDigest: bindingGenerationDigest, EnvelopeDigest: bindingGenerationDigest,
 		},
 	}}); err != nil {
 		t.Fatal(err)
@@ -256,19 +257,28 @@ func TestJournalRunsBindsFromTheStartFencesRunPin(t *testing.T) {
 		) VALUES (
 			'test-instance','trigger-run-child','child-start','test',decode(repeat('aa',32),'hex'),
 			'{}','dispatched',1,'run-child',clock_timestamp()
-		);
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(t.Context(), `
 		INSERT INTO control.child_parent (instance_id,gaggle,parent_run_id,owner_epoch)
-		VALUES ('test-instance','core','run-pinned',1);
+		VALUES ('test-instance','core','run-pinned',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(t.Context(), `
 		INSERT INTO control.child_occurrence (
 			instance_id,gaggle,parent_run_id,occurrence,accepted_count,max_children,owner_epoch
-		) VALUES ('test-instance','core','run-pinned','build/visit-1',1,1,1);
+		) VALUES ('test-instance','core','run-pinned','build/visit-1',1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(t.Context(), `
 		INSERT INTO control.child_lineage (
 			instance_id,gaggle,parent_run_id,occurrence,invocation_key,sequence,child_id,
 			acceptance_id,start_key,actor_digest,payload_digest,state,accepted_at,updated_at,owner_epoch
 		) VALUES (
 			'test-instance','core','run-pinned','build/visit-1','first-child',1,'child-run-child',
 			'trigger-run-child','child-start',$1,$1,'running',clock_timestamp(),clock_timestamp(),1
-		)`, digest); err != nil {
+		)`, bindingGenerationDigest); err != nil {
 		t.Fatal(err)
 	}
 	store, err := acceptance.New(controller, "test-instance")
@@ -281,13 +291,13 @@ func TestJournalRunsBindsFromTheStartFencesRunPin(t *testing.T) {
 	}}}
 	runs := JournalRuns{
 		Pins: AcceptancePins(store.RunPinsOf), Children: AcceptanceChildren(store.ChildForExecutionRun),
-		Journal: backend, Generations: pinnedGenerations{"gen-1": set},
+		Journal: backend, Generations: pinnedGenerations{bindingGenerationDigest: set},
 	}
 	bound, err := runs.Bind(t.Context(), "run-pinned")
 	if err != nil {
 		t.Fatalf("bind from the real run pin as goobers_controller: %v", err)
 	}
-	if !sameRepository(bound.Workspace, repositoryRef(service)) || bound.Gaggle != "core" || bound.Generation != "gen-1" {
+	if !sameRepository(bound.Workspace, repositoryRef(service)) || bound.Gaggle != "core" || bound.Generation != bindingGenerationDigest {
 		t.Fatalf("binding = %+v", bound)
 	}
 	childBound, err := runs.Bind(t.Context(), "run-child")
@@ -295,7 +305,7 @@ func TestJournalRunsBindsFromTheStartFencesRunPin(t *testing.T) {
 		t.Fatalf("bind child through parent pin as goobers_controller: %v", err)
 	}
 	if childBound.RunID != "run-child" || !sameRepository(childBound.Workspace, repositoryRef(service)) ||
-		childBound.Gaggle != "core" || childBound.Generation != "gen-1" {
+		childBound.Gaggle != "core" || childBound.Generation != bindingGenerationDigest {
 		t.Fatalf("child binding = %+v", childBound)
 	}
 	// A run the start fence never pinned has no row: a permanent refusal.

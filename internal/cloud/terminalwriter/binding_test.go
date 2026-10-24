@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 type untouchedJournal struct{ t *testing.T }
@@ -188,6 +190,60 @@ func TestBindChildFallbackRefusals(t *testing.T) {
 				t.Fatalf("%v, want a permanent ErrRepositoryNotPinned", err)
 			}
 		})
+	}
+}
+
+func TestBindChildControlGuardsRefuseBeforeJournalOrGeneration(t *testing.T) {
+	for name, mutate := range map[string]func(*JournalRuns, *ChildLink){
+		"lineage gaggle": func(_ *JournalRuns, link *ChildLink) {
+			link.Gaggle = ""
+		},
+		"custody acceptance ID": func(_ *JournalRuns, link *ChildLink) {
+			link.AcceptanceID = "trigger-another-run"
+		},
+		"parent custody gaggle": func(r *JournalRuns, _ *ChildLink) {
+			parentPin := r.Pins
+			r.Pins = func(ctx context.Context, runID string) (RunPin, error) {
+				pin, err := parentPin(ctx, runID)
+				if err == nil {
+					pin.Gaggle = "other"
+				}
+				return pin, err
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runs, link, _ := childBindingFixture()
+			mutate(&runs, &link)
+			runs.Children = func(context.Context, string) (ChildLink, error) { return link, nil }
+			runs.Journal = untouchedJournal{t}
+			runs.Generations = untouchedGenerations{t}
+			_, err := runs.Bind(t.Context(), "child-run")
+			if !errors.Is(err, providerwriter.ErrRepositoryNotPinned) || !providerwriter.Permanent(err) {
+				t.Fatalf("%v, want a permanent ErrRepositoryNotPinned", err)
+			}
+		})
+	}
+}
+
+func TestBindChildRefusesTombstonedAcceptanceCustody(t *testing.T) {
+	runs, link, _ := childBindingFixture()
+	runs.Children = AcceptanceChildren(func(context.Context, string) (triggerqueue.ChildRecord, error) {
+		return triggerqueue.ChildRecord{
+			Identity: triggerqueue.ChildIdentity{
+				ChildParent:     triggerqueue.ChildParent{Gaggle: link.Gaggle, ParentRunID: link.ParentRunID},
+				StageOccurrence: link.StageOccurrence,
+				InvocationKey:   link.InvocationKey,
+			},
+			AcceptanceID: link.AcceptanceID,
+			TombstonedAt: time.Now(),
+		}, nil
+	})
+	runs.Journal = untouchedJournal{t}
+	runs.Generations = untouchedGenerations{t}
+	_, err := runs.Bind(t.Context(), "child-run")
+	if !errors.Is(err, providerwriter.ErrRepositoryNotPinned) || !providerwriter.Permanent(err) {
+		t.Fatalf("%v, want a permanent ErrRepositoryNotPinned", err)
 	}
 }
 

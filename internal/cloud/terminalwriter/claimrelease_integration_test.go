@@ -48,7 +48,10 @@ func TestCleanupCustodyUsesThePinnedProviderWriter(t *testing.T) {
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "core"}, Spec: apiv1.GaggleSpec{
 		Project: project, Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "acme/service"},
 	}}}}
-	runs := JournalRuns{Pins: AcceptancePins(pins.RunPinsOf), Journal: backend, Generations: pinnedGenerations{"gen-1": set}}
+	runs := JournalRuns{
+		Pins: AcceptancePins(pins.RunPinsOf), Children: AcceptanceChildren(pins.ChildForExecutionRun),
+		Journal: backend, Generations: pinnedGenerations{"gen-1": set},
+	}
 	provider := &fakeBackend{calls: &[]call{}, err: errors.New("provider temporarily unavailable")}
 	writer, err := New(runs, fakeBackends{provider}, journal.NewRegistryScrubber())
 	if err != nil {

@@ -65,6 +65,7 @@ type ChildLink struct {
 	StageOccurrence string
 	InvocationKey   string
 	AcceptanceID    string
+	Tombstoned      bool
 }
 
 // ChildSource reads generated-child custody by the immutable execution run ID.
@@ -95,8 +96,8 @@ var _ Runs = JournalRuns{}
 // providerwriter.ErrRepositoryNotPinned, which is permanent; a failed read is
 // returned as is, to be retried.
 func (r JournalRuns) Bind(ctx context.Context, runID string) (Binding, error) {
-	if r.Pins == nil || r.Children == nil || r.Journal == nil || r.Generations == nil {
-		return Binding{}, errors.New("terminal writer requires run pins, child custody, a journal and a generation source")
+	if r.Pins == nil || r.Journal == nil || r.Generations == nil {
+		return Binding{}, errors.New("terminal writer requires run pins, a journal and a generation source")
 	}
 	if !apiv1.ValidRunID(runID) {
 		return Binding{}, notPinned(runID, "is not a valid run ID")
@@ -150,6 +151,9 @@ func (r JournalRuns) bindingPin(ctx context.Context, runID string) (RunPin, *Chi
 	if !errors.Is(err, sql.ErrNoRows) {
 		return RunPin{}, nil, fmt.Errorf("read run %s pin: %w", runID, err)
 	}
+	if r.Children == nil {
+		return RunPin{}, nil, notPinned(runID, "has no start-fence pin")
+	}
 	child, err := r.Children(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RunPin{}, nil, notPinned(runID, "has no start-fence pin and no durable child custody")
@@ -157,7 +161,7 @@ func (r JournalRuns) bindingPin(ctx context.Context, runID string) (RunPin, *Chi
 	if err != nil {
 		return RunPin{}, nil, fmt.Errorf("read run %s child custody: %w", runID, err)
 	}
-	if child.Gaggle == "" || !apiv1.ValidRunID(child.ParentRunID) ||
+	if child.Tombstoned || child.Gaggle == "" || !apiv1.ValidRunID(child.ParentRunID) ||
 		child.ParentRunID == runID || child.StageOccurrence == "" ||
 		child.InvocationKey == "" || child.AcceptanceID != "trigger-"+runID {
 		return RunPin{}, nil, notPinned(runID, "has invalid durable child custody")
@@ -268,6 +272,7 @@ func AcceptanceChildren(childForExecutionRun func(ctx context.Context, runID str
 			StageOccurrence: child.Identity.StageOccurrence,
 			InvocationKey:   child.Identity.InvocationKey,
 			AcceptanceID:    child.AcceptanceID,
+			Tombstoned:      !child.TombstonedAt.IsZero(),
 		}, nil
 	}
 }
