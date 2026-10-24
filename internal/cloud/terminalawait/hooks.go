@@ -199,6 +199,8 @@ func prepareHook(deps PrepareDeps, id Identity, record frame.Recorder) func(cont
 			if err := deps.Writer.DeleteBranch(ctx, out.RunID, req.Name); err != nil {
 				return providers.DeleteBranchResult{}, err
 			}
+			// The writer treats an absent branch as success and reports no result, so an
+			// absent branch is journaled succeeded where the daemon says branch-not-found.
 			return providers.DeleteBranchResult{Deleted: true}, nil
 		}
 		labelPR := func(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {

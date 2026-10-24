@@ -2,6 +2,7 @@ package escalationnotify
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -40,5 +41,37 @@ func TestFailureProjectionReplaysWithoutClaimsOrRechargingStreak(t *testing.T) {
 				t.Fatalf("projection=%+v", poster.updates)
 			}
 		})
+	}
+}
+
+// guardedState is a State whose controller re-fires terminals: it remembers
+// which runs already charged which streak.
+type guardedState struct {
+	*fakeState
+	charged map[string]bool
+}
+
+func (g guardedState) StreakChargedBy(_ context.Context, infra bool, _ providers.RepositoryRef, itemID, runID string) (bool, error) {
+	return g.charged[fmt.Sprintf("%v/%s/%s", infra, itemID, runID)], nil
+}
+
+func TestAStreakChargeGuardSkipsARunThatAlreadyCharged(t *testing.T) {
+	p, poster, state := newTestPolicy(t)
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	state.items["run-1"] = []Item{{Repo: repo, ItemID: "42"}}
+	p.State = guardedState{fakeState: state, charged: map[string]bool{"false/42/run-1": true}}
+	if err := p.applyCircuitBreaker(context.Background(), "run-1", "ci", ""); err != nil {
+		t.Fatal(err)
+	}
+	if state.streaks["app#42"] != 0 || len(poster.updates) != 0 {
+		t.Fatalf("a re-fired charge was applied again: streak %v, %d writes", state.streaks, len(poster.updates))
+	}
+	// A different run, and the other streak kind, still charge.
+	state.items["run-2"] = []Item{{Repo: repo, ItemID: "42"}}
+	if err := p.applyCircuitBreaker(context.Background(), "run-2", "ci", ""); err != nil {
+		t.Fatal(err)
+	}
+	if state.streaks["app#42"] != 1 {
+		t.Fatalf("a new run did not charge: %v", state.streaks)
 	}
 }

@@ -27,6 +27,8 @@ const InfraFailureStreakThreshold = 2 * FailureStreakThreshold
 // streak is one of the breaker's two counters: the genuine/work streak, or the
 // infrastructure streak counted separately at a higher threshold.
 type streak struct {
+	// infra selects the infrastructure streak, for StreakChargeGuard.
+	infra     bool
 	threshold int
 	load      func(ctx context.Context, repo providers.RepositoryRef, itemID string) (int, error)
 	write     func(repo providers.RepositoryRef, itemID string, count int, runID, stage string) error
@@ -52,6 +54,7 @@ func (p *Policy) workStreak() streak {
 
 func (p *Policy) infraStreak() streak {
 	return streak{
+		infra:     true,
 		threshold: InfraFailureStreakThreshold,
 		load:      p.State.LoadInfraFailureStreak,
 		write:     p.State.WriteInfraFailureStreak,
@@ -121,8 +124,29 @@ func (p *Policy) chargeStreak(ctx context.Context, s streak, runID, stage, runUR
 	return errors.Join(errs...)
 }
 
+// StreakChargeGuard is an optional State capability for a controller whose
+// terminal frames can be re-fired (the cloud: a successor leader repeats a frame
+// whose receipt was not written). StreakChargedBy reports whether runID already
+// advanced the item's work or infrastructure streak, in which case the charge is
+// not applied again: the count and its comment and park already reflect that
+// run, and a lost projection self-heals on the item's next terminal, which
+// charges a count at or past the threshold. The daemon never re-fires a
+// terminal, so its State does not implement this and behaves exactly as before.
+type StreakChargeGuard interface {
+	StreakChargedBy(ctx context.Context, infra bool, repo providers.RepositoryRef, itemID, runID string) (bool, error)
+}
+
 func (p *Policy) chargeItem(ctx context.Context, s streak, item Item, runID, stage, runURL string) error {
 	repoRef, itemID := item.Repo, item.ItemID
+	if guard, ok := p.State.(StreakChargeGuard); ok {
+		charged, err := guard.StreakChargedBy(ctx, s.infra, repoRef, itemID, runID)
+		if err != nil {
+			return fmt.Errorf("check failure streak charge on %s#%s: %w", repoRef.Name, itemID, err)
+		}
+		if charged {
+			return nil
+		}
+	}
 	prevCount, loadErr := s.load(ctx, repoRef, itemID)
 	if loadErr != nil {
 		return fmt.Errorf("load failure streak state on %s#%s: %w", repoRef.Name, itemID, loadErr)

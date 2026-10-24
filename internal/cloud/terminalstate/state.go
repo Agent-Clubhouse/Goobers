@@ -51,7 +51,10 @@ type State struct {
 	RunLink func(runID string) (string, error)
 }
 
-var _ escalationnotify.State = State{}
+var (
+	_ escalationnotify.State             = State{}
+	_ escalationnotify.StreakChargeGuard = State{}
+)
 
 // ClaimedItems returns the run's claimed items, each in the gaggle's backlog
 // repository.
@@ -93,6 +96,16 @@ func (s State) write(kind failurestreakpg.Kind, repo providers.RepositoryRef, it
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	return s.Streaks.Write(ctx, s.Handle, kind, repo, itemID, count, runID, stage)
+}
+
+// StreakChargedBy reports whether runID already advanced the item's streak, so a
+// re-fired frame does not charge it twice.
+func (s State) StreakChargedBy(ctx context.Context, infra bool, repo providers.RepositoryRef, itemID, runID string) (bool, error) {
+	kind := failurestreakpg.Work
+	if infra {
+		kind = failurestreakpg.Infra
+	}
+	return s.Streaks.ChargedBy(ctx, s.Handle.InstanceID, kind, repo, itemID, runID)
 }
 
 // ReconcileParkOutbox does nothing: parks are terminal_report effects.
@@ -138,7 +151,7 @@ func (s State) SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, ru
 			terminal, ok := nowork.TerminalFromEvents(events, finalState)
 			return terminal, ok, nil
 		},
-		Increment: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (nowork.Record, nowork.Record, error) {
+		Increment: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (nowork.Record, nowork.Record, bool, error) {
 			return s.NoWork.Increment(ctx, s.Handle, repo, itemID, runID, t)
 		},
 		Reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string) (nowork.Record, error) {

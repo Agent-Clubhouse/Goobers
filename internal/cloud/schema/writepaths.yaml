@@ -887,6 +887,7 @@ tables:
     - run_id
     - stage
     - owner_epoch
+    - recent_runs
     - updated_at
   writers:
   - role: goobers_controller
@@ -899,11 +900,13 @@ tables:
     - run_id
     - stage
     - owner_epoch
+    - recent_runs
     update:
     - count
     - run_id
     - stage
     - owner_epoch
+    - recent_runs
     - updated_at
     delete: true
 - schema: control
@@ -920,6 +923,7 @@ tables:
     - item_id
     - record
     - owner_epoch
+    - recent_runs
     - updated_at
   writers:
   - role: goobers_controller
@@ -929,9 +933,11 @@ tables:
     - item_id
     - record
     - owner_epoch
+    - recent_runs
     update:
     - record
     - owner_epoch
+    - recent_runs
     - updated_at
     delete: true
 - schema: control

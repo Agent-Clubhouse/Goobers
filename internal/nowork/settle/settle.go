@@ -36,8 +36,10 @@ type Deps struct {
 	// streak alone.
 	Terminal func(runID, finalState string) (nowork.Terminal, bool, error)
 	// Increment advances an item's count in one atomic step and returns the
-	// record it wrote and the one it replaced.
-	Increment func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (next, previous nowork.Record, err error)
+	// record it wrote and the one it replaced. replayed is true when runID had
+	// already advanced the count (a controller that re-fires terminals): nothing
+	// was changed, and the policy applies no effect a second time.
+	Increment func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (next, previous nowork.Record, replayed bool, err error)
 	// Reset clears an item's count and returns the record it cleared (zero when
 	// there was none).
 	Reset func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string) (nowork.Record, error)
@@ -127,9 +129,12 @@ func apply(ctx context.Context, poster Poster, d Deps, runID string, terminal no
 		return nil
 	}
 	repoRef, itemID := items[0].Repo, items[0].ItemID
-	recorded, previous, err := d.Increment(ctx, repoRef, itemID, runID, terminal)
+	recorded, previous, replayed, err := d.Increment(ctx, repoRef, itemID, runID, terminal)
 	if err != nil {
 		return fmt.Errorf("persist no-work streak on %s#%s: %w", repoRef.Name, itemID, err)
+	}
+	if replayed {
+		return nil
 	}
 	contradiction := nowork.VerdictConflict(previous, recorded)
 	if recorded.Count < nowork.StreakThreshold {

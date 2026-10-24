@@ -75,3 +75,27 @@ func TestTerminalHandlersAttributeProviderWrites(t *testing.T) {
 		})
 	}
 }
+
+// TestTerminalAttributionMatchesTheJournalLookupOnTheLocalPath pins that routing
+// the local TerminalNotifier through terminalHandlerAttributionContext (so the
+// cloud can supply the run's attribution up front) changed nothing for the
+// daemon: with no attribution on the incoming context — the only context the
+// notifier gives it — both paths yield the identical attribution, and both leave
+// the context untouched for a run with no readable journal or no run id.
+func TestTerminalAttributionMatchesTheJournalLookupOnTheLocalPath(t *testing.T) {
+	p, _, _ := newTestPolicy(t)
+	createRunJournal(t, p.RunsDir, "run-1")
+	base := context.Background()
+	for _, runID := range []string{"run-1", "missing", ""} {
+		old, _ := AttributionContextForRun(base, p.RunsDir, runID, "implement")
+		got := p.terminalHandlerAttributionContext(base, runID, "implement")
+		oldAttr, oldOK := providers.AttributionFromContext(old)
+		gotAttr, gotOK := providers.AttributionFromContext(got)
+		if oldOK != gotOK || oldAttr != gotAttr {
+			t.Errorf("run %q: journal lookup = %+v (%v), terminal handler = %+v (%v)", runID, oldAttr, oldOK, gotAttr, gotOK)
+		}
+		if !oldOK && (old != base || got != base) {
+			t.Errorf("run %q: an unattributable run changed the context", runID)
+		}
+	}
+}

@@ -50,8 +50,9 @@ func settleNoWorkStreak(
 		Terminal: func(runID, finalState string) (nowork.Terminal, bool, error) {
 			return noWorkTerminalForRun(l, runID, finalState)
 		},
-		Increment: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (nowork.Record, nowork.Record, error) {
-			return incrementNoWorkStreak(ctx, l, repo, itemID, runID, t)
+		Increment: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (nowork.Record, nowork.Record, bool, error) {
+			next, previous, err := incrementNoWorkStreak(ctx, l, repo, itemID, runID, t)
+			return next, previous, false, err // the daemon never re-fires a terminal
 		},
 		Reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string) (nowork.Record, error) {
 			return resetNoWorkStreakState(ctx, l, repo, itemID, runID)

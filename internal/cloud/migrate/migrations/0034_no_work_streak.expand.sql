@@ -11,6 +11,8 @@ CREATE TABLE control.no_work_streak (
     item_id text NOT NULL CHECK (item_id <> ''),
     record jsonb NOT NULL,
     owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
+    -- Runs that already advanced this record; a re-fired frame never counts twice.
+    recent_runs text[] NOT NULL DEFAULT '{}',
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (instance_id, repo_key, item_id)
 );

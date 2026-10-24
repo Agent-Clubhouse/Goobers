@@ -14,6 +14,10 @@ CREATE TABLE control.failure_streak (
     run_id text NOT NULL,
     stage text NOT NULL DEFAULT '',
     owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
+    -- The most recent runs that advanced this streak. A terminal frame can be
+    -- re-fired by a successor leader; a run already listed here never charges the
+    -- item a second time.
+    recent_runs text[] NOT NULL DEFAULT '{}',
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (instance_id, kind, repo_key, item_id)
 );

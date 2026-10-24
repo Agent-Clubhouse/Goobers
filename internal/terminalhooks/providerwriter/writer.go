@@ -33,7 +33,10 @@ type ItemRef struct {
 	ItemID string
 }
 
-// Writer is the provider access terminal hooks need. Transient provider or
+// Writer is the provider access terminal hooks need. Errors that reach a journal
+// or a comment must already be scrubbed of credentials: scrubbing is the
+// implementation's job (the daemon scrubs at the call, scrubTerminalError), the
+// shared policies and hooks do not. Transient provider or
 // credential failures are returned wrapped and are retryable.
 type Writer interface {
 	WorkItem(ctx context.Context, ref ItemRef) (providers.WorkItem, error)
@@ -48,7 +51,10 @@ type Writer interface {
 	// PullLabels and DeleteBranch target the run's WorkspaceRepository. Labelling a
 	// pull request is Update with the pull request number as ref.ItemID.
 	PullLabels(ctx context.Context, runID, pullID string) ([]string, error)
-	// DeleteBranch treats an already-absent branch as success. A branch an open
+	// DeleteBranch treats an already-absent branch as success, so the caller
+	// cannot tell "deleted" from "not found": the daemon journals the latter as
+	// branch-not-found, the cloud journals both as succeeded (a known gap; a
+	// (deleted bool, error) result would close it). A branch an open
 	// pull request uses is kept: it returns *providers.BranchInUseError, which the
 	// caller records as a decision rather than a failure.
 	DeleteBranch(ctx context.Context, runID, branch string) error

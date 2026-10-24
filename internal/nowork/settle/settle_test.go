@@ -3,6 +3,7 @@ package settle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -32,11 +33,14 @@ func (f *fixture) deps() Deps {
 	return Deps{
 		Items:    func(string) ([]Item, error) { return f.items, nil },
 		Terminal: func(string, string) (nowork.Terminal, bool, error) { return f.terminal, f.noWork, f.termErr },
-		Increment: func(_ context.Context, _ providers.RepositoryRef, id, run string, t nowork.Terminal) (nowork.Record, nowork.Record, error) {
+		Increment: func(_ context.Context, _ providers.RepositoryRef, id, run string, t nowork.Terminal) (nowork.Record, nowork.Record, bool, error) {
 			prev := f.records[id]
+			if prev.RunID == run {
+				return prev, prev, true, nil
+			}
 			next := nowork.Advance(prev, t, run, time.Unix(1, 0))
 			f.records[id] = next
-			return next, prev, nil
+			return next, prev, false, nil
 		},
 		Reset: func(_ context.Context, _ providers.RepositoryRef, id, _ string) (nowork.Record, error) {
 			cleared := f.records[id]
@@ -58,7 +62,7 @@ func newFixture() *fixture {
 func TestRepeatedNoWorkParksAtTheThresholdAndProductiveCompletionResets(t *testing.T) {
 	f, p := newFixture(), &poster{}
 	for i := 0; i < nowork.StreakThreshold; i++ {
-		if err := Settle(t.Context(), p, f.deps(), "run", "implement", ""); err != nil {
+		if err := Settle(t.Context(), p, f.deps(), fmt.Sprintf("run-%d", i), "implement", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,5 +106,17 @@ func TestAnUnreadableTerminalLeavesTheStreakAlone(t *testing.T) {
 	}
 	if f.records["7"].Count != 2 || len(p.reqs) != 0 {
 		t.Fatalf("streak or item changed: %+v %v", f.records, p.reqs)
+	}
+}
+
+func TestAReplayedRunAppliesNoEffectTwice(t *testing.T) {
+	f, p := newFixture(), &poster{}
+	for range 3 {
+		if err := Settle(t.Context(), p, f.deps(), "run-1", "implement", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.records["7"].Count != 1 || len(p.reqs) != 1 {
+		t.Fatalf("count %d with %d requests after a re-fired run; want one of each", f.records["7"].Count, len(p.reqs))
 	}
 }

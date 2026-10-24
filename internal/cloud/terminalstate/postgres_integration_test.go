@@ -4,6 +4,7 @@ package terminalstate_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -172,7 +173,7 @@ func TestRepeatedNoWorkParksAcrossEpochs(t *testing.T) {
 	streaks := failurestreakpg.Store{Pool: controller, Fence: oldManager}
 	policy := policyFor(oldManager, old, streaks, p)
 	for i := 0; i < nowork.StreakThreshold-1; i++ {
-		if err := policy.Terminal(attributed(t), "r", journal.PhaseCompleted, "implement"); err != nil {
+		if err := policy.Terminal(attributed(t), fmt.Sprintf("r%d", i), journal.PhaseCompleted, "implement"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -181,14 +182,114 @@ func TestRepeatedNoWorkParksAcrossEpochs(t *testing.T) {
 	}
 	newManager := pgtest.ControllerManager(t, pool, "new", 0)
 	successor := pgtest.Takeover(t, pool, newManager)
-	if err := policyFor(oldManager, old, streaks, p).Terminal(attributed(t), "r", journal.PhaseCompleted, "implement"); err == nil {
+	if err := policyFor(oldManager, old, streaks, p).Terminal(attributed(t), "r-stale", journal.PhaseCompleted, "implement"); err == nil {
 		t.Fatal("a stale leader advanced the no-work streak")
 	}
 	next := policyFor(newManager, successor, failurestreakpg.Store{Pool: controller, Fence: newManager}, p)
-	if err := next.Terminal(attributed(t), "r", journal.PhaseCompleted, "implement"); err != nil {
+	if err := next.Terminal(attributed(t), "r-last", journal.PhaseCompleted, "implement"); err != nil {
 		t.Fatal(err)
 	}
 	if !p.parked() {
 		t.Fatalf("the threshold no-work verdict did not park the item: %+v", p.updates)
+	}
+}
+
+var repoKeyed = providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+
+func writes(p *poster) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.updates)
+}
+
+// A successor leader re-fires a frame whose receipt was never written; the
+// charge it already applied must not be applied again, nor its effect sent again.
+func TestARefiredFailedFrameChargesOnce(t *testing.T) {
+	pool := pgtest.Pool(t, "tsst")
+	controller := pgtest.ControllerPool(t, pool)
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	streaks := failurestreakpg.Store{Pool: controller, Fence: manager}
+	p := &poster{}
+	policy := policyFor(manager, handle, streaks, p)
+	load := func() int {
+		n, err := streaks.Load(t.Context(), pgtest.InstanceID, failurestreakpg.Work, repoKeyed, "42")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err := policy.Failed(attributed(t), failed("r1")); err != nil {
+		t.Fatal(err)
+	}
+	effects := writes(p)
+	if err := policy.Failed(attributed(t), failed("r1")); err != nil {
+		t.Fatal(err)
+	}
+	if load() != 1 || writes(p) != effects {
+		t.Fatalf("a re-fired frame: streak %d (want 1), effects %d -> %d (want unchanged)", load(), effects, writes(p))
+	}
+	// Other runs charging in between do not make an earlier run chargeable again.
+	if err := policy.Failed(attributed(t), failed("r2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.Failed(attributed(t), failed("r1")); err != nil {
+		t.Fatal(err)
+	}
+	if load() != 2 {
+		t.Fatalf("streak after r1, r2, r1 again = %d, want 2", load())
+	}
+}
+
+func TestARefiredEscalatedFrameChargesOnce(t *testing.T) {
+	pool := pgtest.Pool(t, "tsst")
+	controller := pgtest.ControllerPool(t, pool)
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	streaks := failurestreakpg.Store{Pool: controller, Fence: manager}
+	p := &poster{}
+	productive := func(string) ([]journal.Event, error) { return nil, nil }
+	policy := policyWith(manager, handle, streaks, noworkstreakpg.Store{Fence: manager}, p, productive)
+	for range 3 {
+		if err := policy.Terminal(attributed(t), "r1", journal.PhaseEscalated, "implement"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, _ := streaks.Load(t.Context(), pgtest.InstanceID, failurestreakpg.Work, repoKeyed, "42"); n != 1 || p.parked() {
+		t.Fatalf("one escalated run re-fired three times: streak %d parked %v; want 1, not parked", n, p.parked())
+	}
+}
+
+func TestARefiredNoWorkFrameCountsOnce(t *testing.T) {
+	pool := pgtest.Pool(t, "tsst")
+	controller := pgtest.ControllerPool(t, pool)
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	p := &poster{}
+	policy := policyFor(manager, handle, failurestreakpg.Store{Pool: controller, Fence: manager}, p)
+	count := func() int {
+		var n int
+		if err := controller.QueryRow(t.Context(), `SELECT coalesce((SELECT (record->>'count')::int FROM control.no_work_streak), 0)`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err := policy.Terminal(attributed(t), "r1", journal.PhaseCompleted, "implement"); err != nil {
+		t.Fatal(err)
+	}
+	effects := writes(p)
+	for range 3 {
+		if err := policy.Terminal(attributed(t), "r1", journal.PhaseCompleted, "implement"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count() != 1 || writes(p) != effects {
+		t.Fatalf("a re-fired no-work frame: count %d (want 1), effects %d -> %d (want unchanged)", count(), effects, writes(p))
+	}
+	if err := policy.Terminal(attributed(t), "r2", journal.PhaseCompleted, "implement"); err != nil {
+		t.Fatal(err)
+	}
+	if count() != 2 {
+		t.Fatalf("a second run's verdict: count %d, want 2", count())
 	}
 }
