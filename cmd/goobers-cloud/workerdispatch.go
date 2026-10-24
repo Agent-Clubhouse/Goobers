@@ -9,9 +9,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/runtimewiring"
 
 	"strconv"
@@ -236,9 +238,37 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	dispatch := stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}
 	if seams != nil {
 		// Pods reach control at WriteAPIBase, which is daemonAPI.
-		dispatch.ChildAuthority = childadmissionclient.AuthorityForWorker(daemonAPI, daemonAPI, owner, signed, seams.SharedRegistry())
+		dispatch.ChildAuthority = probedChildAuthority(childadmissionclient.AuthorityForWorker(daemonAPI, daemonAPI, owner, signed, seams.SharedRegistry()), seams, instanceID)
 	}
 	return dispatch, nil
+}
+
+// probedChildAuthority withholds child-workflow authority until the stage
+// blob plane is shown to serve control's object store: control's canary for
+// this instance must be readable through it (#8085 d, #8188). The probe runs
+// at boot and again, paced, while it fails.
+func probedChildAuthority(authority engine.ChildWorkflowAuthority, seams *workerSeams, instanceID string) engine.ChildWorkflowAuthority {
+	if authority == nil {
+		return nil
+	}
+	digest, _ := childresult.BlobPlaneCanary(instanceID)
+	probed := &childadmissionclient.ProbedAuthority{Inner: authority}
+	if seams == nil || seams.store == nil {
+		// No stage blob store to probe: fail closed, never lend unprobed.
+		probed.Probe = func(context.Context) error { return errors.New("the worker has no stage blob store to probe") }
+	} else {
+		probed.Probe = func(ctx context.Context) error {
+			_, err := seams.store.Get(ctx, digest)
+			return err
+		}
+		probed.Report = func(err error) {
+			seams.log("ERROR: %v: canary %s not readable through the stage blob plane %s", err, digest, seams.store.Describe())
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = probed.Verify(ctx)
+	return probed
 }
 
 // validateStageDispatchConfig checks the remote planes before the worker can

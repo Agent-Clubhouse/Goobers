@@ -4724,7 +4724,7 @@ func TestTerminalBranchRetentionDuration(t *testing.T) {
 func TestLoadConfigRefusesEngineChildWorkflowsUntilTheProtocolIsComplete(t *testing.T) {
 	base := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n"
 	if _, err := LoadConfig(writeInstanceYAML(t, base+"  childWorkflows:\n    enabled: true\n")); !errors.Is(err, ErrEngineChildWorkflowsIncomplete) ||
-		!strings.Contains(err.Error(), "parent capacity plane is not composed") || !strings.Contains(err.Error(), "#8174") || !strings.Contains(err.Error(), "product decision") {
+		!strings.Contains(err.Error(), "parent capacity plane is not composed") || !strings.Contains(err.Error(), "#8188") || !strings.Contains(err.Error(), "product decision") {
 		t.Fatalf("LoadConfig with child workflows enabled = %v, want the named refusal", err)
 	}
 	for name, yaml := range map[string]string{"explicitly off": base + "  childWorkflows:\n    enabled: false\n", "absent": base} {
