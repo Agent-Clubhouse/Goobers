@@ -193,6 +193,11 @@ const (
 	EnvDaemonAPI = "GOOBERS_DAEMON_API"
 	// EnvPodToken carries the per-run podauth bearer.
 	EnvPodToken = "GOOBERS_POD_TOKEN"
+	// EnvChildWorkflowAccess carries an engine parent stage's child-workflow
+	// grant as JSON ({endpoint, bearerToken}), bound by control for exactly
+	// this attempt (#8085 b). Only the in-pod harness launcher reads it, into
+	// the child-workflow tool's private config; the stage never sees it.
+	EnvChildWorkflowAccess = "GOOBERS_CHILD_WORKFLOW_ACCESS"
 	// EnvStageCommand carries the stage's DeterministicRun.Command as a JSON
 	// array, when set — the in-pod dispatch-exec entrypoint's argv (#3699).
 	EnvStageCommand = "GOOBERS_STAGE_COMMAND"
@@ -380,7 +385,7 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
 	EnvChildExecutionDigest,
-	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
+	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken, EnvChildWorkflowAccess,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication, EnvStageOutbox,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
@@ -1239,6 +1244,9 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	}
 	if attempt.PodToken != "" {
 		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: literalPodEnv(attempt.PodToken)})
+	}
+	if attempt.ChildWorkflowAccess != "" {
+		env = append(env, corev1.EnvVar{Name: EnvChildWorkflowAccess, Value: literalPodEnv(attempt.ChildWorkflowAccess)})
 	}
 	env = append(env, planeEnv(cfg, attempt)...)
 	env = append(env, agenticMergeJournalEnv(cfg, attempt)...)

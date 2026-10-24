@@ -22,11 +22,21 @@ func (r *Runtime) AcquireForContainedPod(ctx context.Context, env apiv1.Invocati
 	defer r.mu.RUnlock()
 	issuer := r.issuer
 	issuer.Secrets = secrets
-	access, closeAccess, err := issuer.Acquire(ctx, env)
+	return issuer.AcquireOrRecover(ctx, env)
+}
+
+// AcquireOrRecover is Acquire for a trusted host that may retry delivery of
+// the same attempt's live grant (a contained pod's exchange, or the cloud
+// engine worker whose response was lost): where Acquire refuses because the
+// attempt already holds an unexpired binding, the bound grant is re-signed
+// after the same authority and delivery checks. A revoked or replaced binding
+// still refuses.
+func (s *GrantIssuer) AcquireOrRecover(ctx context.Context, env apiv1.InvocationEnvelope) (*mcpio.ChildWorkflowAccess, func() error, error) {
+	access, closeAccess, err := s.Acquire(ctx, env)
 	if !errors.Is(err, ErrAuthorityChanged) && !errors.Is(err, triggerqueue.ErrChildAuthorityChanged) {
 		return access, closeAccess, err
 	}
-	return issuer.recoverDelivery(ctx, env)
+	return s.recoverDelivery(ctx, env)
 }
 
 func (s *GrantIssuer) recoverDelivery(ctx context.Context, env apiv1.InvocationEnvelope) (*mcpio.ChildWorkflowAccess, func() error, error) {

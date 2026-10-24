@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
@@ -122,15 +123,19 @@ func validateControlObjectStore(options controlOptions) error {
 type controlPlanes struct {
 	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
-	Configuration         control.Configuration
-	Reader                readservice.Reader
-	Claims                httpapi.ClaimService
-	Triggers              httpapi.TriggerService
-	Journal               httpapi.JournalService
-	RunJournal            httpapi.RunJournalService
-	Resolve               acceptance.StartInputResolver
-	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
-	RunnerHosts           []string
+	// EngineChildAuthority binds engine parents' child-workflow grants for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildAuthority httpapi.HandlerOption
+	engineChildren       *childengine.Fenced
+	Configuration        control.Configuration
+	Reader               readservice.Reader
+	Claims               httpapi.ClaimService
+	Triggers             httpapi.TriggerService
+	Journal              httpapi.JournalService
+	RunJournal           httpapi.RunJournalService
+	Resolve              acceptance.StartInputResolver
+	Epoch                func(context.Context, *lease.Handle) (control.EpochServices, error)
+	RunnerHosts          []string
 
 	// generations reads retained config generations under the live epoch; the
 	// Configuration constructor owns it and later seams consume it.
@@ -197,6 +202,14 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		}
 		return host.EpochHandle()
 	}
+	// Dialled before assembly: the child-authority seam reads live engine
+	// executions. Control cannot serve without Temporal either way.
+	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
+	if err != nil {
+		return err
+	}
+	defer temporal.Close()
+	db.Controller.Temporal = temporal
 	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
@@ -208,11 +221,6 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err := services.validate(); err != nil {
 		return err
 	}
-	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
-	if err != nil {
-		return err
-	}
-	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
 	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
 		reporter.SetReporter(report)
@@ -257,7 +265,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	var handler http.Handler
 	var err error
 	if p.complete() {
-		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions)
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority)
 	}
 	if err != nil {
 		return nil, err
