@@ -178,7 +178,18 @@ func localPointerIDs(pointers []rollup.JournalPointer) []string {
 // (gatenoise.Evaluate). Source A has five passing evaluations and source B five
 // escalated non-passes: the local rollup over both reports only churn at 5/10 =
 // 0.5, never a false "never fails".
-func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
+func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) { gateNoiseParity(t, false) }
+
+// With the workflow omitted the local rollup groups by GATE across every
+// workflow in scope, so the same gate fed by two workflows is one finding over
+// the summed totals, not two per-workflow ones that each miss the threshold.
+func TestGateNoiseAcrossWorkflowsMatchesLocalRollup(t *testing.T) { gateNoiseParity(t, true) }
+
+func gateNoiseParity(t *testing.T, crossWorkflow bool) {
+	queryWorkflow := "w"
+	if crossWorkflow {
+		queryWorkflow = ""
+	}
 	store, _ := telemetryTestStore(t, "gate-parity")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	root := t.TempDir()
@@ -187,7 +198,7 @@ func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = all.Close() }()
-	request := rollup.StatsRequest{Gaggle: "g", Workflow: "w", Since: now.Add(-time.Hour)}
+	request := rollup.StatsRequest{Gaggle: "g", Workflow: queryWorkflow, Since: now.Add(-time.Hour)}
 	detect := func(db *rollup.DB) []rollup.Finding {
 		t.Helper()
 		found, err := db.Detect(t.Context(), rollup.DetectRequest{StatsRequest: request, Thresholds: rollup.DefaultThresholds()})
@@ -204,8 +215,12 @@ func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
 	}
 	for i, verdict := range []string{"pass", "fail"} {
 		id := fmt.Sprintf("%032d", i+1)
+		sourceWorkflow := "w"
+		if crossWorkflow {
+			sourceWorkflow = fmt.Sprintf("w%d", i)
+		}
 		run, err := journal.Create(filepath.Join(root, "runs"), journal.RunIdentity{
-			RunID: id, Gaggle: "g", Workflow: "w", WorkflowVersion: 1, StartedAt: now,
+			RunID: id, Gaggle: "g", Workflow: sourceWorkflow, WorkflowVersion: 1, StartedAt: now,
 		}, nil, journal.WithClock(func() time.Time { return now }))
 		if err != nil {
 			t.Fatal(err)
@@ -230,7 +245,7 @@ func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
 		if err := one.IngestRun(t.Context(), dir); err != nil {
 			t.Fatal(err)
 		}
-		totals, err := one.GateTotals(t.Context(), request, 10)
+		totals, err := one.GateTotals(t.Context(), rollup.StatsRequest{Gaggle: "g", Workflow: sourceWorkflow, Since: now.Add(-time.Hour)}, 10)
 		_ = one.Close()
 		if err != nil || len(totals) != 1 {
 			t.Fatalf("source %d totals = %+v %v", i, totals, err)
@@ -248,7 +263,7 @@ func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
 		batch := Batch{Consumer: "rollup", Current: journal.StreamCursor{Stream: "run:" + id}, NextSeq: 7}
 		for _, total := range totals {
 			batch.Gates = append(batch.Gates, GateRow{
-				Gaggle: "g", Workflow: "w", Gate: total.Gate,
+				Gaggle: "g", Workflow: sourceWorkflow, Gate: total.Gate,
 				Total: int64(total.Total), NonPass: int64(total.NonPass), Escalated: int64(total.Escalated),
 				ObservedAt:    now.Add(time.Duration(i) * time.Second),
 				EvaluatedRuns: pointers(total.EvaluatedRuns), EscalatedRuns: pointers(total.EscalatedRuns),
@@ -260,7 +275,7 @@ func TestGateNoiseMergeMatchesLocalRollup(t *testing.T) {
 	}
 	local := detect(all)
 	remote, err := store.DefectAggregates(t.Context(), httpapi.TelemetryDefectAggregateRequest{
-		Gaggle: "g", Workflow: "w", Since: now.Add(-time.Hour),
+		Gaggle: "g", Workflow: queryWorkflow, Since: now.Add(-time.Hour),
 		Aggregates: []telemetryclient.Aggregate{telemetryclient.AggregateGateNoise},
 		Thresholds: telemetryclient.Thresholds{MinGateEvaluations: 5, MaxGateEscalationRate: 0.2},
 	})

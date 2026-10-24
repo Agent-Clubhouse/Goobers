@@ -499,10 +499,8 @@ func (s *Store) DefectAggregates(
 		Findings:            []telemetryclient.Finding{},
 		PromotionCandidates: []telemetryclient.PromotionSignal{},
 	}
-	maxFlagged := request.Thresholds.MaxFlaggedRuns
-	if maxFlagged <= 0 {
-		maxFlagged = defaultMaxFlaggedRuns
-	}
+	thresholds := effectiveThresholds(request.Thresholds)
+	maxFlagged := thresholds.MaxFlaggedRuns
 	var group []telemetryclient.Finding
 	var groupKey aggregateKey
 	var groupAggregate string
@@ -511,7 +509,7 @@ func (s *Store) DefectAggregates(
 			return
 		}
 		finding := mergeContributions(group, maxFlagged)
-		if allowed[groupAggregate] && telemetryclient.FindingPassesThresholds(finding, request.Thresholds) {
+		if allowed[groupAggregate] && telemetryclient.FindingPassesThresholds(finding, thresholds) {
 			response.Findings = append(response.Findings, finding)
 		}
 		group = group[:0]
@@ -735,22 +733,15 @@ func (s *Store) gateNoiseFindings(ctx context.Context, request httpapi.Telemetry
 		return nil, err
 	}
 	defer rows.Close()
-	thresholds := request.Thresholds
-	minEvaluations, maxEscalation := thresholds.MinGateEvaluations, thresholds.MaxGateEscalationRate
-	if thresholds == (telemetryclient.Thresholds{}) { // an unset request means the local defaults
-		minEvaluations, maxEscalation = 5, 0.2
-	}
-	maxFlagged := thresholds.MaxFlaggedRuns
-	if maxFlagged <= 0 {
-		maxFlagged = defaultMaxFlaggedRuns
-	}
+	thresholds := effectiveThresholds(request.Thresholds)
+	minEvaluations, maxEscalation, maxFlagged := thresholds.MinGateEvaluations, thresholds.MaxGateEscalationRate, thresholds.MaxFlaggedRuns
 	type gateGroup struct {
 		totals    gatenoise.Totals
 		evaluated []telemetryclient.JournalPointer
 		escalated []telemetryclient.JournalPointer
 	}
-	groups := map[[2]string]*gateGroup{}
-	var order [][2]string
+	groups := map[string]*gateGroup{}
+	var order []string
 	for rows.Next() {
 		var workflow, gate string
 		var total, nonPass, escalated int64
@@ -758,7 +749,9 @@ func (s *Store) gateNoiseFindings(ctx context.Context, request httpapi.Telemetry
 		if err := rows.Scan(&workflow, &gate, &total, &nonPass, &escalated, &evaluatedRaw, &escalatedRaw); err != nil {
 			return nil, err
 		}
-		key := [2]string{workflow, gate}
+		// The local rollup groups by GATE across the requested scope (the
+		// workflow filter above narrows the scope, it does not split gates).
+		key := gate
 		group := groups[key]
 		if group == nil {
 			group = &gateGroup{}
@@ -785,7 +778,7 @@ func (s *Store) gateNoiseFindings(ctx context.Context, request httpapi.Telemetry
 		verdict := gatenoise.Evaluate(group.totals, minEvaluations, maxEscalation)
 		if verdict.NeverFails {
 			findings = append(findings, telemetryclient.Finding{
-				Kind: "gate-never-fails", Subject: key[1],
+				Kind: "gate-never-fails", Subject: key,
 				Metrics:     map[string]float64{"totalEvaluations": float64(group.totals.Total)},
 				Threshold:   float64(minEvaluations),
 				FlaggedRuns: boundedPointers(group.evaluated, maxFlagged),
@@ -793,7 +786,7 @@ func (s *Store) gateNoiseFindings(ctx context.Context, request httpapi.Telemetry
 		}
 		if verdict.Churn {
 			findings = append(findings, telemetryclient.Finding{
-				Kind: "gate-repass-churn", Subject: key[1],
+				Kind: "gate-repass-churn", Subject: key,
 				Metrics: map[string]float64{
 					"escalationRate":   verdict.EscalationRate,
 					"totalEvaluations": float64(group.totals.Total),
@@ -820,6 +813,50 @@ func boundedPointers(pointers []telemetryclient.JournalPointer, limit int) []tel
 			seen[pointer] = true
 			out = append(out, pointer)
 		}
+	}
+	return out
+}
+
+// effectiveThresholds folds a request's overrides onto the local defaults, one
+// field at a time, exactly as the daemon's telemetry plane does
+// (cmd/goobers planeThresholds over rollup.DefaultThresholds): a zero field
+// means "use the default", never "no limit", and an unrelated knob cannot move
+// another family's threshold. The defaults are pinned to rollup's by a test.
+func effectiveThresholds(overrides telemetryclient.Thresholds) telemetryclient.Thresholds {
+	out := telemetryclient.Thresholds{
+		MinSamples: 5, MaxFailureRate: 0.3, MinErrorSignatureCount: 5,
+		MinGateEvaluations: 5, MaxGateEscalationRate: 0.2, MaxFlaggedRuns: defaultMaxFlaggedRuns,
+		MinCreditRuns: 5, MinCreditFailureShare: 0.3, MinCICheckFailureRuns: 2,
+	}
+	if overrides.MinSamples > 0 {
+		out.MinSamples = overrides.MinSamples
+	}
+	if overrides.MaxFailureRate > 0 {
+		out.MaxFailureRate = overrides.MaxFailureRate
+	}
+	if overrides.MinErrorSignatureCount > 0 {
+		out.MinErrorSignatureCount = overrides.MinErrorSignatureCount
+	}
+	if overrides.MinGateEvaluations > 0 {
+		out.MinGateEvaluations = overrides.MinGateEvaluations
+	}
+	if overrides.MaxGateEscalationRate > 0 {
+		out.MaxGateEscalationRate = overrides.MaxGateEscalationRate
+	}
+	if overrides.MaxFlaggedRuns > 0 {
+		out.MaxFlaggedRuns = overrides.MaxFlaggedRuns
+	}
+	if overrides.MinCreditRuns > 0 {
+		out.MinCreditRuns = overrides.MinCreditRuns
+	}
+	if overrides.MinCreditFailureShare > 0 {
+		out.MinCreditFailureShare = overrides.MinCreditFailureShare
+	}
+	if overrides.MinCICheckFailureRuns > 0 {
+		out.MinCICheckFailureRuns = overrides.MinCICheckFailureRuns
+	}
+	if out.MaxFlaggedRuns > telemetryclient.MaxFlaggedRuns {
+		out.MaxFlaggedRuns = telemetryclient.MaxFlaggedRuns
 	}
 	return out
 }

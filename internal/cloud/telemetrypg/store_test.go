@@ -3,6 +3,7 @@ package telemetrypg
 import (
 	"testing"
 
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/telemetryclient"
 )
 
@@ -61,5 +62,22 @@ func TestMergeContributionsFlaggedRunsDeduplicateAndBound(t *testing.T) {
 	}
 	if bounded := mergeContributions([]telemetryclient.Finding{finding("error-signature", map[string]float64{"count": 1}, "x", "y", "z")}, 2); len(bounded.FlaggedRuns) != 2 {
 		t.Fatalf("flagged runs not bounded: %v", bounded.FlaggedRuns)
+	}
+}
+
+// The read's defaults are the local daemon's: a drift in rollup's defaults
+// must fail here rather than silently change what the cloud read flags.
+func TestEffectiveThresholdsMatchRollupDefaults(t *testing.T) {
+	want := rollup.DefaultThresholds()
+	got := effectiveThresholds(telemetryclient.Thresholds{})
+	if got.MinSamples != want.MinSamples || got.MaxFailureRate != want.MaxFailureRate ||
+		got.MinErrorSignatureCount != want.MinErrorSignatureCount || got.MinGateEvaluations != want.MinGateEvaluations ||
+		got.MaxGateEscalationRate != want.MaxGateEscalationRate || got.MinCreditRuns != want.MinCreditRuns ||
+		got.MinCreditFailureShare != want.MinCreditFailureShare || got.MinCICheckFailureRuns != want.MinCICheckFailureRuns ||
+		got.MaxFlaggedRuns != want.MaxFlaggedRuns {
+		t.Fatalf("defaults drifted: got %+v rollup %+v", got, want)
+	}
+	if one := effectiveThresholds(telemetryclient.Thresholds{MaxFlaggedRuns: 2}); one.MaxFlaggedRuns != 2 || one.MaxGateEscalationRate != want.MaxGateEscalationRate {
+		t.Fatalf("one override moved another field: %+v", one)
 	}
 }

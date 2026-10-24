@@ -481,3 +481,31 @@ func TestGateNoiseFindingsCannotBeMaterialized(t *testing.T) {
 		t.Fatal("a materialized gate-noise finding was accepted")
 	}
 }
+
+// An omitted threshold means the local default for THAT field: setting an
+// unrelated knob (or only the evidence bound) must not zero the gate decision
+// and report churn for a gate that never escalates.
+func TestGatePartialThresholdsKeepDefaults(t *testing.T) {
+	s, _ := telemetryTestStore(t, "gate-defaults")
+	now := time.Now().UTC()
+	if err := s.Apply(t.Context(), Batch{Consumer: "rollup", Current: journal.StreamCursor{Stream: "run:a"}, NextSeq: 1,
+		Gates: []GateRow{{Gaggle: "g", Workflow: "w", Gate: "review", Total: 10, ObservedAt: now}}}); err != nil {
+		t.Fatal(err)
+	}
+	for name, thresholds := range map[string]telemetryclient.Thresholds{
+		"default": {}, "only evidence bound": {MaxFlaggedRuns: 2}, "only sample bound": {MinGateEvaluations: 5}, "unrelated stage knob": {MinSamples: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := s.DefectAggregates(t.Context(), httpapi.TelemetryDefectAggregateRequest{
+				Gaggle: "g", Workflow: "w", Since: now.Add(-time.Hour),
+				Aggregates: []telemetryclient.Aggregate{telemetryclient.AggregateGateNoise}, Thresholds: thresholds,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Findings) != 1 || got.Findings[0].Kind != "gate-never-fails" || got.Findings[0].Threshold != 5 {
+				t.Fatalf("zero fields must keep the local defaults; got %+v", got.Findings)
+			}
+		})
+	}
+}
