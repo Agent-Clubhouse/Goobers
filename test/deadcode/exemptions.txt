@@ -448,8 +448,29 @@ github.com/goobers/goobers/internal/cloud/migrate.DropInstanceEventPartition # H
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Ensure # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Run # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
 
+# HA-P3-16 stall sweep awaits controller composition; no package-pattern exemptions supported.
+github.com/goobers/goobers/internal/cloud/stallsweep.NewStallSweeper # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.Sweep # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.beginTermination # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.claim # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.claimTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.due # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.finishTermination # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.processCandidate # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.recordFailure # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.retryTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.transition # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.withFence # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.report # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.changed # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+
 # #7818 start-input composition: the config loader fills Candidate.Pins with startpin.Compute and the webhook and trigger planes pin through Configuration.PinFor once the control assembly composes them. Remove on wiring.
 github.com/goobers/goobers/internal/cloud/startpin.Compute # Admission digest pinning for cloud starts (#7818); exercised by internal/cloud/config and internal/cloud/startpin tests. expires=2026-11-30
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.now # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.report # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.fresh # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.Capture # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/providerobs.Quota.Restore # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
 
 # Read-only read-model reader and projector health, consumed by the cloud Reader composition (#7818 R3).
 github.com/goobers/goobers/internal/cloud/projectorpg.Health.Snapshot # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
@@ -467,6 +488,20 @@ github.com/goobers/goobers/internal/cloud/readmodelpg.ActiveReader.store # Lande
 github.com/goobers/goobers/internal/cloud/readmodelpg.NewActiveReader # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.readOnlyFence.WithFence # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.withStore # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/engine.IsSelfExecutionDenied # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fire # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireExistingFix # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireBlocked # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireStageEscalation # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.fireFailed # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.FailureCode # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.FaultClass # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.PhaseFor # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.itemID # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.terminalItemIDs # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.recordFailure # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.annotate # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.Run # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
 github.com/goobers/goobers/internal/cloud/startinput.Resolver.compile # Cloud start-input resolver (#7818) awaiting control-assembly wiring; exercised by internal/cloud/startinput tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/startinput.gaggleOf # Cloud start-input resolver (#7818) awaiting control-assembly wiring; exercised by internal/cloud/startinput tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/startinput.trigger # Cloud start-input resolver (#7818) awaiting control-assembly wiring; exercised by internal/cloud/startinput tests. expires=2026-11-30
