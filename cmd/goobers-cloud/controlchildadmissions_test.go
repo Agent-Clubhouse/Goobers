@@ -124,3 +124,25 @@ func TestChildWorkflowsComposeAfterTheAuthorityAndFailClosedWithoutIt(t *testing
 		t.Fatalf("child workflows (%d) must compose after the engine child authority (%d)", workflows, authority)
 	}
 }
+
+func TestEngineChildProtocolComposesAfterTheAdmissionsAndFailsClosedWithoutThem(t *testing.T) {
+	planes := controlPlanes{}
+	if err := constructEngineChildProtocol(t.Context(), databaseServices{}, controlAuth{}, &lease.Manager{}, func() *lease.Handle { return nil }, &planes); err == nil || planes.EngineChildProtocol != nil {
+		t.Fatalf("construct without the admissions = %v (plane %v)", err, planes.EngineChildProtocol != nil)
+	}
+	admissions, protocol := -1, -1
+	for i, seam := range controlAssembly {
+		switch seam.field {
+		case "EngineChildAdmissions":
+			admissions = i
+		case "EngineChildProtocol":
+			protocol = i
+			if !seam.controller || seam.construct == nil {
+				t.Fatalf("engine child protocol seam = %+v, want a controller-side constructor", seam)
+			}
+		}
+	}
+	if admissions < 0 || protocol <= admissions {
+		t.Fatalf("engine child protocol (%d) must compose after the admissions (%d)", protocol, admissions)
+	}
+}

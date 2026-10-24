@@ -121,6 +121,7 @@ func populatedControlPlanes() controlPlanes {
 	return controlPlanes{
 		EngineChildAdmissions: httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
 		EngineChildAuthority:  httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
+		EngineChildProtocol:   httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
 		ChildWorkflows:        httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
 		Configuration:         struct{ control.Configuration }{},
 		Reader:                struct{ readservice.Reader }{}, Claims: struct{ httpapi.ClaimService }{},

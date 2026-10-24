@@ -12,12 +12,16 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/enginechildplane"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 // unusedReader satisfies the handler's read service; the plane never reads.
@@ -112,18 +116,107 @@ func TestPlaneRefusesEveryOtherCredential(t *testing.T) {
 	}
 }
 
-func TestUnservedCustodyOperationsFailClosed(t *testing.T) {
-	c := &Client{}
-	if err := c.Park(t.Context(), engine.ChildParkInput{}); !errors.Is(err, ErrCustodyUnmapped) {
+// recordingProtocol is the control-side child protocol owner behind the routes.
+type recordingProtocol struct {
+	parked    []engine.ChildParkInput
+	finalized []engine.ChildFinalizeInput
+	completed []engine.ChildCompletionInput
+	fail      error
+}
+
+func (r *recordingProtocol) Park(_ context.Context, in engine.ChildParkInput) error {
+	r.parked = append(r.parked, in)
+	return r.fail
+}
+func (r *recordingProtocol) Finalize(_ context.Context, in engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
+	r.finalized = append(r.finalized, in)
+	return childresult.TerminalReturn{Version: childresult.TerminalReturnVersion, RunID: in.Binding.Child.RunID, Input: childresult.TerminalResultInput{State: in.State, Summary: "sealed"}}, r.fail
+}
+func (r *recordingProtocol) Complete(_ context.Context, in engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
+	r.completed = append(r.completed, in)
+	return apiv1.ContextPointer{Name: "child-result", Artifact: &apiv1.ArtifactPointer{Path: "child-results/r.json", Digest: in.Result.ResultRef, Size: 10}}, r.fail
+}
+
+func protocolServer(t *testing.T, protocol enginechildplane.ChildProtocol) (*podauth.SignedKey, string) {
+	t.Helper()
+	signer, err := podauth.NewSignedKey([]byte(strings.Repeat("k", 32)))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Finalize(t.Context(), engine.ChildFinalizeInput{}); !errors.Is(err, ErrCustodyUnmapped) {
+	auth, err := podauth.NewAuthenticator(signer, httpapi.DenyAllAuthenticator{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Complete(t.Context(), engine.ChildCompletionInput{}); !errors.Is(err, ErrCustodyUnmapped) {
+	plane, err := enginechildplane.NewProtocol(protocol)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Admit(t.Context(), engine.ChildAdmissionInput{}); err == nil {
+	handler, err := httpapi.NewHandler(unusedReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithEngineChildProtocol(plane))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return signer, server.URL
+}
+
+// Park, Finalize and Complete reach control's child protocol through the
+// authenticated plane and carry its custody error classes back.
+func TestChildProtocolRoundTripsThroughThePlane(t *testing.T) {
+	backend := &recordingProtocol{}
+	signer, url := protocolServer(t, backend)
+	client := &Client{BaseURL: url, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission("engine-worker", time.Minute) }}
+	var binding engine.ChildRunBinding
+	binding.Request.RequestID = journal.Digest([]byte("request"))
+	binding.Child.RunID = "child-1"
+	wait := livejournal.AppendReceipt{Key: "wait", Seq: 7, Type: journal.EventRunnerAnnotation}
+	if err := client.Park(t.Context(), engine.ChildParkInput{Binding: binding, Wait: wait}); err != nil || len(backend.parked) != 1 || backend.parked[0].Wait != wait {
+		t.Fatalf("park = %v (backend saw %+v)", err, backend.parked)
+	}
+	sealed, err := client.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: binding, State: triggerqueue.ChildCompleted})
+	if err != nil || sealed.RunID != "child-1" || sealed.Input.Summary != "sealed" || len(backend.finalized) != 1 {
+		t.Fatalf("finalize = %+v, %v", sealed, err)
+	}
+	sealed.ResultRef = journal.Digest([]byte("receipt"))
+	pointer, err := client.Complete(t.Context(), engine.ChildCompletionInput{Binding: binding, Wait: wait, Result: sealed})
+	if err != nil || pointer.Artifact == nil || pointer.Artifact.Digest != sealed.ResultRef || len(backend.completed) != 1 || backend.completed[0].Result.ResultRef != sealed.ResultRef {
+		t.Fatalf("complete = %+v, %v", pointer, err)
+	}
+	for _, tc := range []struct {
+		fail  error
+		class error
+	}{
+		{fmt.Errorf("pool full: %w", engine.ErrChildCustodyUnavailable), engine.ErrChildCustodyUnavailable},
+		{fmt.Errorf("forged: %w", engine.ErrChildCustodyRefused), engine.ErrChildCustodyRefused},
+	} {
+		backend.fail = tc.fail
+		if err := client.Park(t.Context(), engine.ChildParkInput{Binding: binding, Wait: wait}); !errors.Is(err, tc.class) {
+			t.Fatalf("park failure %v surfaced as %v", tc.fail, err)
+		}
+		if _, err := client.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: binding}); !errors.Is(err, tc.class) {
+			t.Fatalf("finalize failure %v surfaced as %v", tc.fail, err)
+		}
+		if _, err := client.Complete(t.Context(), engine.ChildCompletionInput{Binding: binding}); !errors.Is(err, tc.class) {
+			t.Fatalf("complete failure %v surfaced as %v", tc.fail, err)
+		}
+	}
+}
+
+// A control plane that does not serve the protocol (an older one, or one
+// whose capacity plane is not composed) answers retryably, never as success.
+func TestChildProtocolUnservedIsRetryable(t *testing.T) {
+	signer, url := planeServer(t, &recordingAdmissions{})
+	client := &Client{BaseURL: url, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission("engine-worker", time.Minute) }}
+	if err := client.Park(t.Context(), engine.ChildParkInput{}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
+		t.Fatalf("park on a server without the protocol = %v, want unavailable", err)
+	}
+	if _, err := client.Finalize(t.Context(), engine.ChildFinalizeInput{}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
+		t.Fatalf("finalize on a server without the protocol = %v, want unavailable", err)
+	}
+	if _, err := client.Complete(t.Context(), engine.ChildCompletionInput{}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
+		t.Fatalf("complete on a server without the protocol = %v, want unavailable", err)
+	}
+	if _, err := (&Client{}).Admit(t.Context(), engine.ChildAdmissionInput{}); err == nil {
 		t.Fatal("unconfigured client called out")
 	}
 }
