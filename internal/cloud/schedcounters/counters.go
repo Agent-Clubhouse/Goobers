@@ -6,9 +6,15 @@
 // have, so what is shared here is the selection logic, and everything that
 // touches a forge goes through one injected seam.
 //
-// Credentials never enter this package. Deps.Open returns a ready provider for a
-// repository, resolving (and scrubbing) the token on every call so rotation
-// takes effect; the control composition binds it to the applied instance config.
+// Credentials stay outside the counters: they only see an Opener, which
+// resolves (and scrubs) the token on every poll so rotation takes effect.
+// GitHubSource is the GitHub opener; it also applies the poll's quota Access.
+//
+// Quota: when Deps.Quota is set every poll spends and feeds that ledger exactly
+// as the local daemon's counters do (observer, request gate, prepaid
+// reservation, no in-tick rate-limit sleeping), and the open-PR refresher
+// reserves its polls from it. L1e must hand the SAME state to the scheduler and
+// to observationsFor(state); see Deps.Quota.
 //
 // Not yet supplied: the schedule-demand counter (scheduled update-behind-pr
 // remediation). It needs the cloud claims ledger and live-origin filters, so the
@@ -31,6 +37,19 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// Opener builds a provider for one poll.
+type Opener func(ctx context.Context, repo providers.RepositoryRef, access Access) (Provider, error)
+
+// Access is the quota accounting of ONE poll: the provider it opens must report
+// every response to Observer and reserve every request attempt through Gate,
+// and must not sleep out a rate limit inside the poll (the scheduler waits for
+// the next reset-aware admission instead). Both are nil when no quota ledger is
+// configured.
+type Access struct {
+	Observer providers.QuotaObserver
+	Gate     providers.QuotaRequestGate
+}
+
 // Provider is the forge surface the counters read.
 type Provider interface {
 	ListWorkItems(ctx context.Context, req providers.ListWorkItemsRequest) ([]providers.WorkItem, error)
@@ -44,8 +63,17 @@ type Deps struct {
 	Config *instance.Config
 	Set    *instance.ConfigSet
 	// Open returns a provider for repo with freshly resolved credentials. It is
-	// called once per poll, never cached, so a rotated token is picked up.
-	Open func(ctx context.Context, repo providers.RepositoryRef) (Provider, error)
+	// called exactly once per poll, never cached, so a rotated token is picked
+	// up. It MUST honour the Access it is handed (see Access); GitHubSource.Open
+	// does, and is the way to build one.
+	Open Opener
+	// Quota is the provider quota ledger. L1e MUST pass the very state it gives
+	// the scheduler (localscheduler.WithProviderQuota) and builds the observations
+	// ledger from (observationsFor(state)): the scheduler budgets polls against it
+	// and the counters feed it the rate-limit headers they see, so a private copy
+	// here would let polling spend quota the scheduler believes it still has. nil
+	// disables accounting (tests, or an instance with no quota tracking).
+	Quota *localscheduler.ProviderQuotaState
 	// SelfIdentity is the login a respectAssignee backlog-query matches.
 	SelfIdentity string
 	// OpenPRInterval overrides localscheduler.DefaultOpenPRRefreshInterval.
@@ -58,7 +86,7 @@ type Deps struct {
 type Counters struct {
 	deps    Deps
 	gaggles map[string]apiv1.Gaggle
-	open    *localscheduler.OpenPRRefresherSet
+	open    openCounter
 
 	mu    sync.Mutex
 	built map[localscheduler.WorkflowIdentity]schedentries.Counters
@@ -76,11 +104,10 @@ func New(deps Deps) (*Counters, error) {
 	for _, gaggle := range deps.Set.Gaggles {
 		c.gaggles[gaggle.Name] = gaggle
 	}
-	open, err := c.buildOpenPRs()
-	if err != nil {
+	// Validate the capped repositories now; Run builds a fresh set per epoch.
+	if _, err := c.buildOpenPRs(); err != nil {
 		return nil, err
 	}
-	c.open = open
 	return c, nil
 }
 
@@ -105,19 +132,46 @@ func (c *Counters) For(identity localscheduler.WorkflowIdentity) schedentries.Co
 }
 
 // OpenPRs is the counter behind readiness.maxOpenPRs. It reports unknown (so
-// admission fails open) until a refresher's first poll completes, and always for
-// a gaggle with no refresher.
-func (c *Counters) OpenPRs() localscheduler.OpenPRCounter { return c.open }
+// admission fails open) until a refresher's first poll completes in the current
+// Run, and always for a gaggle with no refresher.
+func (c *Counters) OpenPRs() localscheduler.OpenPRCounter { return &c.open }
 
 // Run polls the open-PR refreshers until ctx ends and then returns. The caller
-// binds ctx to the leadership epoch, so a deposed controller stops polling and a
-// new one starts again from "unknown".
+// binds ctx to the leadership epoch. Every Run starts from fresh refreshers, so
+// a count measured in an earlier epoch is never served: it reads unknown until
+// this Run's first poll lands. The counter keeps the last count it served when
+// the quota ledger sheds a poll, but only within one Run.
 func (c *Counters) Run(ctx context.Context) error {
-	if c.open != nil {
-		c.open.Run(ctx)
+	set, err := c.buildOpenPRs()
+	if err != nil {
+		return err
+	}
+	c.open.install(set)
+	defer c.open.install(nil)
+	if set != nil {
+		set.Run(ctx)
 	}
 	<-ctx.Done()
 	return nil
+}
+
+// openCounter serves the current Run's refresher set.
+type openCounter struct {
+	mu  sync.RWMutex
+	set *localscheduler.OpenPRRefresherSet
+}
+
+func (o *openCounter) install(set *localscheduler.OpenPRRefresherSet) {
+	o.mu.Lock()
+	o.set = set
+	o.mu.Unlock()
+}
+
+func (o *openCounter) OpenPRCount(gaggle, workflow string) (int, bool) {
+	o.mu.RLock()
+	set := o.set
+	o.mu.RUnlock()
+	return set.OpenPRCount(gaggle, workflow)
 }
 
 func (c *Counters) workflow(identity localscheduler.WorkflowIdentity) (*apiv1.Workflow, apiv1.Gaggle, bool) {
@@ -186,7 +240,7 @@ func (c *Counters) buildOpenPRs() (*localscheduler.OpenPRRefresherSet, error) {
 			// goobers:merge-escalated marks a PR parked pending a human; it cannot
 			// be drained, so counting it only starves new work (#986).
 			refresher = localscheduler.NewOpenPRRefresher(
-				&lister{open: c.deps.Open, report: c.deps.Report}, repo, c.deps.OpenPRInterval,
+				&lister{open: c.deps.Open, quota: c.deps.Quota, report: c.deps.Report}, repo, c.deps.OpenPRInterval,
 				[]string{providers.LabelMergeEscalated}, namespaces)
 			byRepo[key] = refresher
 		}
@@ -217,16 +271,66 @@ func (c *Counters) repoFor(project apiv1.RepoRef) (providers.RepositoryRef, erro
 	}
 }
 
-// lister adapts the per-call opener to the refresher's lister.
+// lister adapts the per-call opener to the refresher's lister and routes every
+// poll through the quota ledger. A poll the ledger sheds serves the last list
+// this lister read instead of failing: a failed poll leaves the refresher's
+// count unknown, and an unknown count lifts the cap, which would turn a quota
+// shortage into unthrottled dispatch.
 type lister struct {
-	open   func(context.Context, providers.RepositoryRef) (Provider, error)
+	open   Opener
+	quota  *localscheduler.ProviderQuotaState
 	report func(error)
+
+	mu   sync.Mutex
+	last []providers.OpenPRSummary
+	have bool
 }
 
 func (l *lister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
-	provider, err := l.open(ctx, repo)
+	// ReserveCurrentPolls, not ReservePolls: retiring an expired window is the
+	// scheduler's transition to report, and this poll must not consume it.
+	if l.quota != nil {
+		budget := l.quota.ReserveCurrentPolls(apiv1.Provider(repo.Provider), 1)
+		if budget.Allowed == 0 {
+			return l.shed(&localscheduler.ProviderPollBudgetError{Provider: budget.Provider, Remaining: budget.RemainingBefore, Requested: 1, ResetAt: budget.ResetAt})
+		}
+		ctx = localscheduler.WithProviderPollBudget(ctx, budget)
+	}
+	access, done := accountFor(ctx, l.quota)
+	defer done()
+	provider, err := l.open(ctx, repo, access)
 	if err != nil {
 		return nil, fmt.Errorf("open provider for open-pr-list of %s/%s: %w", repo.Owner, repo.Name, err)
 	}
-	return provider.ListOpenPullRequests(ctx, repo)
+	prs, err := provider.ListOpenPullRequests(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	l.last, l.have = append(l.last[:0], prs...), true
+	l.mu.Unlock()
+	return prs, nil
+}
+
+func (l *lister) shed(shedErr error) ([]providers.OpenPRSummary, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.have {
+		return nil, shedErr
+	}
+	return append([]providers.OpenPRSummary(nil), l.last...), nil
+}
+
+// accountFor builds the quota accounting of one poll. An admitted poll carries
+// its prepaid reservation in ctx (the scheduler's, or the refresher's above);
+// whatever it does not spend is refunded when the poll ends.
+func accountFor(ctx context.Context, quota *localscheduler.ProviderQuotaState) (Access, func()) {
+	if quota == nil {
+		return Access{}, func() {}
+	}
+	accounting := &runtimewiring.ProviderQuotaAccounting{State: quota}
+	if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
+		accounting.Prepaid = &reservation
+	}
+	return Access{Observer: accounting, Gate: accounting}, accounting.RefundUnused
 }

@@ -3,6 +3,9 @@ package schedcounters
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,8 +50,8 @@ func (f *fakeProvider) ListOpenPullRequests(context.Context, providers.Repositor
 	return f.prs, f.prErr
 }
 
-func opener(f *fakeProvider) func(context.Context, providers.RepositoryRef) (Provider, error) {
-	return func(context.Context, providers.RepositoryRef) (Provider, error) { return f, nil }
+func opener(f *fakeProvider) Opener {
+	return func(context.Context, providers.RepositoryRef, Access) (Provider, error) { return f, nil }
 }
 
 func generation(triggers ...apiv1.Trigger) (*instance.Config, *instance.ConfigSet) {
@@ -217,7 +220,7 @@ func TestAProviderThatCannotBeOpenedFailsThePollNotTheController(t *testing.T) {
 	t.Parallel()
 	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}})
 	boom := errors.New("no credential")
-	c, err := New(Deps{Config: cfg, Set: set, Open: func(context.Context, providers.RepositoryRef) (Provider, error) { return nil, boom }})
+	c, err := New(Deps{Config: cfg, Set: set, Open: func(context.Context, providers.RepositoryRef, Access) (Provider, error) { return nil, boom }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,5 +379,275 @@ func waitFor(t *testing.T, ok func() bool) {
 			t.Fatal("condition not reached")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// forge is a GitHub stand-in that reports a rate-limit window on every response.
+type forge struct {
+	*httptest.Server
+	requests  atomic.Int32
+	remaining int
+	reset     time.Time
+}
+
+func newForge(t *testing.T, remaining int, reset time.Time) *forge {
+	t.Helper()
+	f := &forge{remaining: remaining, reset: reset}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests.Add(1)
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(f.remaining))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(f.reset.Unix(), 10))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(f.Close)
+	return f
+}
+
+func (f *forge) source() GitHubSource {
+	return GitHubSource{
+		Resolve: func(context.Context, string) (string, error) { return "token", nil },
+		Options: []func(*providers.GitHubProvider){func(p *providers.GitHubProvider) { p.BaseURL = f.URL }},
+	}
+}
+
+func backlogCounterOver(t *testing.T, quota *localscheduler.ProviderQuotaState, source GitHubSource) localscheduler.BacklogCounter {
+	t.Helper()
+	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}})
+	c, err := New(Deps{Config: cfg, Set: set, Open: source.Open, Quota: quota})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.For(identity).Backlog
+}
+
+// An exhausted window sheds the poll before any request is sent: the quota gate
+// is inside the provider, so even a caller that skipped the scheduler's own
+// reservation cannot spend quota the ledger says is gone.
+func TestAnExhaustedQuotaWindowShedsThePollBeforeAnyRequest(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	f := newForge(t, 4000, reset)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 0, reset)
+	counter := backlogCounterOver(t, quota, f.source())
+	var budget *localscheduler.ProviderPollBudgetError
+	if _, err := counter.EligibleCount(t.Context()); !errors.As(err, &budget) {
+		t.Fatalf("EligibleCount = %v, want a poll budget error", err)
+	}
+	if f.requests.Load() != 0 {
+		t.Fatalf("an exhausted window still sent %d request(s)", f.requests.Load())
+	}
+}
+
+// A poll feeds the ledger the window it saw and spends exactly one unit of it.
+func TestAPollSpendsOneUnitAndRecordsTheObservedWindow(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	f := newForge(t, 3, reset)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 5, reset)
+	counter := backlogCounterOver(t, quota, f.source())
+	if _, err := counter.EligibleCount(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := quota.ReserveCurrentPolls(apiv1.ProviderGitHub, 100).Allowed; got != 3 || f.requests.Load() != 1 {
+		t.Fatalf("remaining after the poll = %d with %d request(s), want 3 and 1", got, f.requests.Load())
+	}
+}
+
+// The scheduler pays for an admitted poll up front and hands the reservation in
+// the context; the request must use it rather than reserve a second unit.
+func TestAPrepaidReservationIsNotChargedTwice(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	f := newForge(t, 4, reset)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 5, reset)
+	counter := backlogCounterOver(t, quota, f.source())
+	budget := quota.ReservePolls(apiv1.ProviderGitHub, time.Now(), 1)
+	if _, err := counter.EligibleCount(localscheduler.WithProviderPollBudget(t.Context(), budget)); err != nil {
+		t.Fatal(err)
+	}
+	if got := quota.ReserveCurrentPolls(apiv1.ProviderGitHub, 100).Allowed; got != 4 {
+		t.Fatalf("remaining after a prepaid poll = %d, want 4 (charged twice would leave 3)", got)
+	}
+}
+
+// A poll the provider never sent (a failed credential, a cache hit) hands its
+// prepaid unit back.
+func TestAnUnspentPrepaidReservationIsRefunded(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 5, reset)
+	source := GitHubSource{Resolve: func(context.Context, string) (string, error) { return "", errors.New("no credential") }}
+	counter := backlogCounterOver(t, quota, source)
+	budget := quota.ReservePolls(apiv1.ProviderGitHub, time.Now(), 1)
+	if _, err := counter.EligibleCount(localscheduler.WithProviderPollBudget(t.Context(), budget)); err == nil {
+		t.Fatal("EligibleCount succeeded without a credential")
+	}
+	if got := quota.ReserveCurrentPolls(apiv1.ProviderGitHub, 100).Allowed; got != 5 {
+		t.Fatalf("remaining after an unspent reservation = %d, want 5", got)
+	}
+}
+
+func TestCountersAdvertiseQuotaGuardingOnlyWithALedger(t *testing.T) {
+	t.Parallel()
+	for name, quota := range map[string]*localscheduler.ProviderQuotaState{"with a ledger": localscheduler.NewProviderQuotaState(), "without": nil} {
+		counter := backlogCounterOver(t, quota, GitHubSource{})
+		guarded, ok := counter.(localscheduler.ProviderQuotaGuardedBacklogCounter)
+		if !ok || guarded.ProviderQuotaGuarded() != (quota != nil) {
+			t.Errorf("%s: guarded = %v (implements %v)", name, ok && guarded.ProviderQuotaGuarded(), ok)
+		}
+	}
+}
+
+// consuming is an opener that, like the real provider, spends the poll's quota
+// reservation through the gate before it answers.
+func consuming(f *fakeProvider, opens *atomic.Int32) Opener {
+	return func(ctx context.Context, repo providers.RepositoryRef, access Access) (Provider, error) {
+		opens.Add(1)
+		if access.Gate != nil {
+			if err := access.Gate.AcquireQuotaRequest(ctx, repo.Provider); err != nil {
+				return nil, err
+			}
+		}
+		return f, nil
+	}
+}
+
+// The open-PR refresher spends the same ledger. When the ledger sheds a poll the
+// last list is served, so a quota shortage cannot turn into an unknown count
+// that lifts the cap.
+func TestTheRefresherSpendsQuotaAndKeepsItsLastCountWhenShed(t *testing.T) {
+	t.Parallel()
+	cfg, set := cappedGeneration()
+	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}, {Head: "goobers/wf/b"}}}
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 1, time.Now().Add(time.Hour))
+	var opens atomic.Int32
+	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	waitFor(t, func() bool { _, known := c.OpenPRs().OpenPRCount("g", "wf"); return known })
+	// Many intervals pass with the window empty: no further provider call, and the
+	// count stays known.
+	settled := f.prCalls.Load()
+	waitFor(t, func() bool { return quota.ReserveCurrentPolls(apiv1.ProviderGitHub, 1).Allowed == 0 })
+	time.Sleep(20 * time.Millisecond)
+	if n, known := c.OpenPRs().OpenPRCount("g", "wf"); !known || n != 2 || f.prCalls.Load() != settled || settled != 1 {
+		t.Fatalf("after shedding: count %d known=%v with %d provider calls (settled at %d), want 2 known and exactly 1 call", n, known, f.prCalls.Load(), settled)
+	}
+	cancel()
+	<-done
+}
+
+// Every poll opens exactly one provider: the credential is resolved per poll,
+// and a poll never reuses (or leaks) another's accounting.
+func TestEveryPollOpensExactlyOneProvider(t *testing.T) {
+	t.Parallel()
+	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}})
+	var opens atomic.Int32
+	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(&fakeProvider{}, &opens), Quota: localscheduler.NewProviderQuotaState()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if _, err := c.For(identity).Backlog.EligibleCount(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if int(opens.Load()) != i {
+			t.Fatalf("after %d poll(s) Open ran %d time(s)", i, opens.Load())
+		}
+	}
+	ccfg, cset := cappedGeneration()
+	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
+	opens.Store(0)
+	r, err := New(Deps{Config: ccfg, Set: cset, Open: consuming(f, &opens), OpenPRInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	waitFor(t, func() bool { return f.prCalls.Load() >= 3 })
+	cancel()
+	<-done
+	if opens.Load() != f.prCalls.Load() {
+		t.Fatalf("%d provider opens for %d refresher polls", opens.Load(), f.prCalls.Load())
+	}
+}
+
+// A count measured in one epoch is never served in the next: Run resets the
+// refreshers, so the new epoch reads unknown until its own first poll lands.
+func TestRunResetsTheOpenPRCountForANewEpoch(t *testing.T) {
+	t.Parallel()
+	cfg, set := cappedGeneration()
+	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
+	gate := make(chan struct{})
+	var blocked atomic.Bool
+	c, err := New(Deps{Config: cfg, Set: set, OpenPRInterval: time.Millisecond, Open: func(ctx context.Context, _ providers.RepositoryRef, _ Access) (Provider, error) {
+		if blocked.Load() {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return f, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(first) }()
+	waitFor(t, func() bool { _, known := c.OpenPRs().OpenPRCount("g", "wf"); return known })
+	stop()
+	<-done
+	if _, known := c.OpenPRs().OpenPRCount("g", "wf"); known {
+		t.Fatal("a stopped epoch still serves its count")
+	}
+
+	blocked.Store(true)
+	second, stop2 := context.WithCancel(t.Context())
+	go func() { done <- c.Run(second) }()
+	time.Sleep(20 * time.Millisecond)
+	if _, known := c.OpenPRs().OpenPRCount("g", "wf"); known {
+		t.Fatal("a new epoch served the previous epoch's count before its first poll")
+	}
+	close(gate)
+	waitFor(t, func() bool { _, known := c.OpenPRs().OpenPRCount("g", "wf"); return known })
+	stop2()
+	<-done
+}
+
+// A rate-limited response fails the poll at once. Sleeping the limit out would
+// hold a scheduler tick for minutes; the next reset-aware admission retries.
+func TestARateLimitedPollFailsImmediatelyInsteadOfSleepingInsideTheTick(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(server.Close)
+	source := GitHubSource{
+		Resolve: func(context.Context, string) (string, error) { return "token", nil },
+		Options: []func(*providers.GitHubProvider){func(p *providers.GitHubProvider) { p.BaseURL = server.URL }},
+	}
+	counter := backlogCounterOver(t, localscheduler.NewProviderQuotaState(), source)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if _, err := counter.EligibleCount(ctx); err == nil || ctx.Err() != nil || requests.Load() != 1 {
+		t.Fatalf("err=%v ctx=%v after %d request(s), want a prompt failure after exactly one", err, ctx.Err(), requests.Load())
 	}
 }

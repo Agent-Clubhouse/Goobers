@@ -22,7 +22,8 @@ const pageSize = 100
 // counter sizes a workflow's fan-out (or refill) to the work items the
 // backlog-query stage would find eligible.
 type counter struct {
-	open            func(context.Context, providers.RepositoryRef) (Provider, error)
+	open            Opener
+	quota           *localscheduler.ProviderQuotaState
 	repo            providers.RepositoryRef
 	labels          []string
 	labelPredicate  *labelpredicate.Predicate
@@ -36,13 +37,20 @@ type counter struct {
 
 var _ localscheduler.BacklogCounter = (*counter)(nil)
 
+// ProviderQuotaGuarded tells the scheduler this counter enforces the quota
+// ledger itself, so it may still poll (and be shed by the request gate) when the
+// scheduler's own reservation found the window empty.
+func (c *counter) ProviderQuotaGuarded() bool { return c.quota != nil }
+
 func (c *counter) EligibleCount(ctx context.Context) (int, error) {
 	snapshot, err := c.EligibleSnapshot(ctx)
 	return snapshot.Count, err
 }
 
 func (c *counter) EligibleSnapshot(ctx context.Context) (localscheduler.BacklogSnapshot, error) {
-	provider, err := c.open(ctx, c.repo)
+	access, done := accountFor(ctx, c.quota)
+	defer done()
+	provider, err := c.open(ctx, c.repo, access)
 	if err != nil {
 		return localscheduler.BacklogSnapshot{}, fmt.Errorf("open provider for backlog count of %s/%s: %w", c.repo.Owner, c.repo.Name, err)
 	}
@@ -127,7 +135,7 @@ func (c *Counters) backlog(gaggle apiv1.Gaggle, wf *apiv1.Workflow) (*counter, e
 	if err != nil {
 		return nil, err
 	}
-	return &counter{open: c.deps.Open, repo: repo, labels: labels, labelPredicate: predicate, fieldPredicate: fields}, nil
+	return &counter{open: c.deps.Open, quota: c.deps.Quota, repo: repo, labels: labels, labelPredicate: predicate, fieldPredicate: fields}, nil
 }
 
 // refill is the eligibility counter behind readiness.desiredConcurrentRuns for a
@@ -183,7 +191,7 @@ func (c *Counters) refill(gaggle apiv1.Gaggle, wf *apiv1.Workflow) (*counter, er
 	if err != nil {
 		return nil, err
 	}
-	return &counter{open: c.deps.Open, repo: repo, labels: required, labelPredicate: predicate, fieldPredicate: fields, respectAssignee: respect, assignedTo: assignedTo}, nil
+	return &counter{open: c.deps.Open, quota: c.deps.Quota, repo: repo, labels: required, labelPredicate: predicate, fieldPredicate: fields, respectAssignee: respect, assignedTo: assignedTo}, nil
 }
 
 // compileSelection mirrors the local backlog-query selection: park labels are
