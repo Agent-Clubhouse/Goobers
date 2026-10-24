@@ -133,10 +133,8 @@ func TestBuildRefusesWhatWouldAdmitUnpinnedOrUnstartableWork(t *testing.T) {
 	cfg, set := fixture(apiv1.Trigger{Type: apiv1.TriggerManual})
 	for name, in := range map[string]Input{
 		"no generation":  {Config: cfg, Set: set, Pins: pins(set), Starter: starters},
-		"no starter":     {Generation: "g", Config: cfg, Set: set, Pins: pins(set)},
 		"no pins":        {Generation: "g", Config: cfg, Set: set, Starter: starters},
 		"half a pin":     {Generation: "g", Config: cfg, Set: set, Starter: starters, Pins: map[string]cloudconfig.Pins{"g/wf": {WorkflowDigest: "w"}}},
-		"nil starter":    {Generation: "g", Config: cfg, Set: set, Pins: pins(set), Starter: func(localscheduler.WorkflowIdentity) localscheduler.Starter { return nil }},
 		"unknown gaggle": {Generation: "g", Config: cfg, Set: func() *instance.ConfigSet { _, s := fixture(); s.Workflows[0].Spec.Gaggle = "missing"; return s }(), Pins: pins(set), Starter: starters},
 		"bad time zone":  {Generation: "g", Config: &instance.Config{Timezone: "Not/AZone"}, Set: set, Pins: pins(set), Starter: starters},
 	} {
@@ -321,4 +319,50 @@ func (f failingRelease) Acquire(context.Context, string) (childworkflow.Generati
 
 type nopQueue struct {
 	triggerqueue.SchedulerPolicyStore
+}
+
+type fakeCounter struct{}
+
+func (fakeCounter) EligibleCount(context.Context) (int, error) { return 1, nil }
+
+func TestSuppliedCountersClearOnlyTheirOwnPendingReason(t *testing.T) {
+	t.Parallel()
+	repos := []instance.RepoRef{{Provider: "github", Owner: "o", Name: "r"}}
+	cfg, set := fixture(apiv1.Trigger{Type: apiv1.TriggerBacklogItem}, apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"})
+	cfg.Repos = repos
+	startingWith(set, "goobers", "update-behind-pr")
+	entry := func(c Counters) localscheduler.WorkflowEntry {
+		entries, err := Build(Input{Generation: "g", Config: cfg, Set: set, Pins: pins(set), Starter: starters, Counters: func(localscheduler.WorkflowIdentity) Counters { return c }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries[0]
+	}
+	if got := entry(Counters{}).DisabledReason; got != BacklogPendingReason+"; "+ScheduleDemandPendingReason {
+		t.Fatalf("no counters: %q", got)
+	}
+	if got := entry(Counters{Backlog: fakeCounter{}}).DisabledReason; got != ScheduleDemandPendingReason {
+		t.Fatalf("backlog counter only: %q", got)
+	}
+	full := entry(Counters{Backlog: fakeCounter{}, ScheduleDemand: fakeCounter{}})
+	if full.DisabledReason != "" || full.BacklogCounter == nil || full.ScheduleDemandCounter == nil || full.RefillDemandCounter != nil {
+		t.Fatalf("with counters: reason %q, backlog=%v scheduleDemand=%v refill=%v", full.DisabledReason, full.BacklogCounter != nil, full.ScheduleDemandCounter != nil, full.RefillDemandCounter != nil)
+	}
+}
+
+func TestMissingStartersYieldAnEntryThatRefusesToStart(t *testing.T) {
+	t.Parallel()
+	cfg, set := fixture(apiv1.Trigger{Type: apiv1.TriggerManual})
+	for name, factory := range map[string]func(localscheduler.WorkflowIdentity) localscheduler.Starter{
+		"nil factory": nil,
+		"nil result":  func(localscheduler.WorkflowIdentity) localscheduler.Starter { return nil },
+	} {
+		entries, err := Build(Input{Generation: "g", Config: cfg, Set: set, Pins: pins(set), Starter: factory})
+		if err != nil || len(entries) != 1 || entries[0].Starter == nil {
+			t.Fatalf("%s: %v %+v", name, err, entries)
+		}
+		if _, err := entries[0].Starter.Start(t.Context(), localscheduler.StartRequest{}); !errors.Is(err, ErrNoStarter) {
+			t.Fatalf("%s: start = %v, want ErrNoStarter", name, err)
+		}
+	}
 }

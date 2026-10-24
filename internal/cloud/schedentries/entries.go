@@ -10,6 +10,7 @@
 package schedentries
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -43,6 +44,28 @@ const (
 	RefillPendingReason = "desired-concurrency refill pending cloud provider counters (L1d)"
 )
 
+// ErrNoStarter is what a start returns when no cloud starter was supplied for
+// the workflow: the entry can be built and inspected, but never starts a run.
+var ErrNoStarter = errors.New("schedentries: no cloud starter is configured for this workflow")
+
+type unavailableStarter struct{}
+
+func (unavailableStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	return localscheduler.StartResult{}, ErrNoStarter
+}
+
+// Counters are the provider-backed demand counters of one workflow (L1d). A nil
+// counter means none exists for that role, and a workflow that needs it is
+// disabled with the matching pending reason rather than left to misbehave.
+type Counters struct {
+	// Backlog sizes a backlog-item trigger's fan-out.
+	Backlog localscheduler.BacklogCounter
+	// ScheduleDemand sizes a due scheduled-remediation fire to eligible work.
+	ScheduleDemand localscheduler.BacklogCounter
+	// RefillDemand reports eligibility for desired-concurrency refill.
+	RefillDemand localscheduler.BacklogCounter
+}
+
 // Input is the applied generation and the cloud starter factory.
 type Input struct {
 	// Generation is the applied generation's digest (entry.ConfigGeneration).
@@ -53,9 +76,14 @@ type Input struct {
 	Set *instance.ConfigSet
 	// Pins are the admission digests keyed "gaggle/workflow" (Candidate.Pins).
 	Pins map[string]cloudconfig.Pins
-	// Starter returns the cloud starter for one workflow. It must not be nil for
-	// a workflow the generation contains.
+	// Starter returns the cloud starter for one workflow. A nil factory (or a nil
+	// result) yields a starter that refuses every start with ErrNoStarter, so
+	// entries can be built without a real starter and fail loudly if ticked.
 	Starter func(localscheduler.WorkflowIdentity) localscheduler.Starter
+	// Counters supplies the provider-backed counters (L1d). nil, or a zero
+	// Counters for a workflow, leaves that workflow's counter-dependent behavior
+	// explicitly disabled.
+	Counters func(localscheduler.WorkflowIdentity) Counters
 }
 
 // CodeTrigger is the finding code for a trigger the scheduler cannot parse.
@@ -113,8 +141,8 @@ func Validate(cfg *instance.Config, set *instance.ConfigSet) error {
 // order. A workflow with no pins is an error: admitting an unpinned workflow
 // would let a start run against whatever is applied later.
 func Build(in Input) ([]localscheduler.WorkflowEntry, error) {
-	if in.Generation == "" || in.Config == nil || in.Set == nil || in.Starter == nil {
-		return nil, errors.New("schedentries: generation, configuration, definitions and a starter factory are required")
+	if in.Generation == "" || in.Config == nil || in.Set == nil {
+		return nil, errors.New("schedentries: generation, configuration and definitions are required")
 	}
 	loc, err := in.Config.Location()
 	if err != nil {
@@ -136,33 +164,42 @@ func Build(in Input) ([]localscheduler.WorkflowEntry, error) {
 		if !ok || pins.WorkflowDigest == "" || pins.GooberDigest == "" {
 			return nil, fmt.Errorf("workflow %q (gaggle %q) has no admission pins in generation %s", wf.Name, wf.Spec.Gaggle, in.Generation)
 		}
-		starter := in.Starter(identity)
-		if starter == nil {
-			return nil, fmt.Errorf("workflow %q (gaggle %q) has no starter", wf.Name, wf.Spec.Gaggle)
+		var starter localscheduler.Starter = unavailableStarter{}
+		if in.Starter != nil {
+			if built := in.Starter(identity); built != nil {
+				starter = built
+			}
 		}
 		t, err := triggers(wf, loc)
 		if err != nil {
 			return nil, err
 		}
+		var counters Counters
+		if in.Counters != nil {
+			counters = in.Counters(identity)
+		}
 		entry := localscheduler.WorkflowEntry{
-			ConfigGeneration:     in.Generation,
-			Workflow:             wf.Name,
-			WorkflowVersion:      workflowVersion,
-			WorkflowDigest:       pins.WorkflowDigest,
-			GooberDigest:         pins.GooberDigest,
-			Gaggle:               wf.Spec.Gaggle,
-			Readiness:            wf.Spec.Readiness,
-			Schedules:            t.schedules,
-			ScheduleCatchUpAll:   wf.Spec.ScheduleCatchUp == "all",
-			ScheduleBackoffs:     t.scheduleBackoffs,
-			WebhookBackoff:       t.webhookBackoff,
-			Signals:              t.signals,
-			PollProvider:         apiv1.ProviderGitHub,
-			PollPriority:         t.pollPriority,
-			Starter:              starter,
-			RepoRef:              gaggle.Spec.Project,
-			RequiredCapabilities: instance.WorkflowRequiredCapabilities(gaggle, *wf),
-			DisabledReason:       disabledReason(in.Config, gaggle, wf, t),
+			ConfigGeneration:      in.Generation,
+			Workflow:              wf.Name,
+			WorkflowVersion:       workflowVersion,
+			WorkflowDigest:        pins.WorkflowDigest,
+			GooberDigest:          pins.GooberDigest,
+			Gaggle:                wf.Spec.Gaggle,
+			Readiness:             wf.Spec.Readiness,
+			Schedules:             t.schedules,
+			ScheduleCatchUpAll:    wf.Spec.ScheduleCatchUp == "all",
+			ScheduleBackoffs:      t.scheduleBackoffs,
+			WebhookBackoff:        t.webhookBackoff,
+			Signals:               t.signals,
+			PollProvider:          apiv1.ProviderGitHub,
+			PollPriority:          t.pollPriority,
+			Starter:               starter,
+			RepoRef:               gaggle.Spec.Project,
+			RequiredCapabilities:  instance.WorkflowRequiredCapabilities(gaggle, *wf),
+			BacklogCounter:        counters.Backlog,
+			ScheduleDemandCounter: counters.ScheduleDemand,
+			RefillDemandCounter:   counters.RefillDemand,
+			DisabledReason:        disabledReason(in.Config, gaggle, wf, t, counters),
 			// ProviderAuth is deliberately unset: the local gate checks the
 			// controller's own provider credentials before autonomous dispatch, but
 			// the cloud control plane runs no stage and holds no stage credentials.
@@ -263,7 +300,7 @@ func triggerDisabled(trigger apiv1.Trigger) bool {
 	return trigger.Type != apiv1.TriggerManual
 }
 
-func disabledReason(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, t parsedTriggers) string {
+func disabledReason(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, t parsedTriggers, counters Counters) string {
 	switch {
 	case gaggle.Spec.Enabled != nil && !*gaggle.Spec.Enabled:
 		return fmt.Sprintf("gaggle %q is disabled (spec.enabled=false)", gaggle.Name)
@@ -271,13 +308,13 @@ func disabledReason(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflo
 		return fmt.Sprintf("workflow %q is disabled (spec.enabled=false)", wf.Name)
 	}
 	var pending []string
-	if t.backlog {
+	if t.backlog && counters.Backlog == nil {
 		pending = append(pending, BacklogPendingReason)
 	}
-	if needsScheduleDemand(cfg, gaggle, wf, t) {
+	if counters.ScheduleDemand == nil && needsScheduleDemand(cfg, gaggle, wf, t) {
 		pending = append(pending, ScheduleDemandPendingReason)
 	}
-	if needsRefill(cfg, wf, t) {
+	if counters.RefillDemand == nil && needsRefill(cfg, wf, t) {
 		pending = append(pending, RefillPendingReason)
 	}
 	return strings.Join(pending, "; ")
