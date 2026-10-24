@@ -29,9 +29,6 @@ var ErrProviderCleanupRefused = errors.New("cloud claims: provider cleanup refus
 // held and its cleanup retryable; no one else may take, renew or release it
 // meanwhile. The provider call runs outside the fence, serialized per key.
 func (p *Plane) providerCleanup(ctx context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
-	if p.releaseMarker == nil {
-		return httpapi.ClaimResponse{}, errProviderCleanupUnavailable()
-	}
 	if err := requireKey(request); err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
@@ -41,6 +38,24 @@ func (p *Plane) providerCleanup(ctx context.Context, request httpapi.ClaimReques
 	if localscheduler.IsPublicationClaimKey(request.ItemID) {
 		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusConflict, "publication_custody",
 			"publication custody cannot use provider cleanup", nil)
+	}
+	handle := p.owner()
+	if handle == nil {
+		return httpapi.ClaimResponse{}, errAuthorityMoving(nil)
+	}
+	shared, err := p.sharedRequest(ctx, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if shared != nil {
+		if !shared.ClaimedAt.Equal(request.ClaimedAt) {
+			return httpapi.ClaimResponse{Ok: false}, nil
+		}
+		ok, err := p.releaseShared(ctx, handle, *shared, request.Reason, false)
+		return httpapi.ClaimResponse{Ok: ok}, err
+	}
+	if p.releaseMarker == nil {
+		return httpapi.ClaimResponse{}, errProviderCleanupUnavailable()
 	}
 	reason := request.Reason.Normalize()
 	key := localscheduler.ClaimKey{Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID}

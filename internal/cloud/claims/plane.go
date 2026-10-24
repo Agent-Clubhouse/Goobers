@@ -42,6 +42,7 @@ type Plane struct {
 	defaultLease time.Duration
 	// releaseMarker performs provider-cleanup releases; nil refuses them.
 	releaseMarker MarkerReleaser
+	shared        SharedResolver
 }
 
 // PlaneConfig wires a Plane to the controller pool and the live lease.
@@ -60,6 +61,8 @@ type PlaneConfig struct {
 	// releases. Nil (no provider credentials) refuses them with a 503 naming
 	// the issue that composes it.
 	ReleaseMarker MarkerReleaser
+	// Shared resolves the immutable run policy and provider binding. Nil keeps local-only admission.
+	Shared SharedResolver
 }
 
 var (
@@ -75,7 +78,7 @@ func NewPlane(config PlaneConfig) (*Plane, error) {
 	}
 	return &Plane{
 		pool: config.Pool, instanceID: config.InstanceID, lease: config.Lease,
-		owner: config.Owner, defaultLease: config.DefaultLease, releaseMarker: config.ReleaseMarker,
+		owner: config.Owner, defaultLease: config.DefaultLease, releaseMarker: config.ReleaseMarker, shared: config.Shared,
 	}, nil
 }
 

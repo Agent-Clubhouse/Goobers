@@ -57,12 +57,23 @@ func (p *Plane) releaseOne(ctx context.Context, request httpapi.ClaimRequest, re
 		return httpapi.ClaimResponse{}, err
 	}
 	reason = reason.Normalize()
+	shared, err := p.sharedRequest(ctx, request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	if shared != nil {
+		if p.shared == nil && reason.Disposition != claimrelease.ForceReleased {
+			return httpapi.ClaimResponse{}, errReleasePending()
+		}
+		_, err := p.releaseShared(ctx, p.owner(), *shared, reason, false)
+		return httpapi.ClaimResponse{Ok: err == nil}, err
+	}
 	if localscheduler.IsPublicationClaimKey(request.ItemID) && reason.Code != localscheduler.PublicationLockReleaseCode {
 		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusConflict, "publication_custody",
 			"publication custody ends only by verified release ("+localscheduler.PublicationLockReleaseCode+") or expiry", nil)
 	}
 	key := localscheduler.ClaimKey{Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID}
-	err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+	err = p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 		row, err := p.lockRow(ctx, tx, key)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -106,15 +117,32 @@ func (p *Plane) releaseRun(
 	ctx context.Context, handle *cloudlease.Handle, runID, gaggle, provider string, reason claimrelease.Reason,
 ) ([]localscheduler.ClaimEntry, error) {
 	reason = reason.Normalize()
+	entries, err := p.selectEntries(ctx, p.pool, `run_id=$2`, runID)
+	if err != nil {
+		return nil, err
+	}
 	var released []localscheduler.ClaimEntry
-	err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-		released = nil
+	for _, entry := range entries {
+		if entry.SharedDeadline.IsZero() || (gaggle != "" && (entry.Gaggle != gaggle || entry.Provider != provider)) {
+			continue
+		}
+		ok, err := p.releaseShared(ctx, handle, entry, reason, false)
+		if err != nil {
+			return released, err
+		}
+		if ok {
+			released = append(released, entry)
+		}
+	}
+	sharedReleased := len(released)
+	err = p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		released = released[:sharedReleased]
 		entries, err := p.runEntries(ctx, tx, runID)
 		if err != nil {
 			return err
 		}
 		for _, entry := range entries {
-			if entry.IsPublicationClaim() || entry.ReleasePending ||
+			if entry.IsPublicationClaim() || entry.ReleasePending || !entry.SharedDeadline.IsZero() ||
 				(gaggle != "" && (entry.Gaggle != gaggle || entry.Provider != provider)) {
 				continue
 			}

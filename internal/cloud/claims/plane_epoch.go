@@ -54,13 +54,35 @@ func (p *Plane) RenewRuns(ctx context.Context, handle *cloudlease.Handle, open m
 	if err != nil {
 		return nil, err
 	}
-	var candidates []localscheduler.ClaimEntry
+	var candidates, renewed []localscheduler.ClaimEntry
 	for _, entry := range entries {
-		if open[entry.RunID] && !entry.IsPublicationClaim() {
+		if !open[entry.RunID] || entry.IsPublicationClaim() {
+			continue
+		}
+		if entry.SharedDeadline.IsZero() {
 			candidates = append(candidates, entry)
+			continue
+		}
+		if p.shared == nil {
+			continue
+		}
+		binding, err := p.shared.Admission(ctx, storedKey(entry), entry.RunID, entry.Workflow)
+		if err != nil {
+			return renewed, err
+		}
+		if binding == nil {
+			return renewed, errors.New("shared renewal requires its pinned shared policy")
+		}
+		request := httpapi.ClaimRequest{Gaggle: entry.Gaggle, Provider: entry.Provider,
+			ItemID: entry.ExternalID, RunID: entry.RunID, Workflow: entry.Workflow}
+		response, err := p.claimShared(ctx, handle, request, p.defaultLease, *binding, &entry)
+		if err != nil {
+			return renewed, err
+		}
+		if response.Ok {
+			renewed = append(renewed, entry)
 		}
 	}
-	var renewed []localscheduler.ClaimEntry
 	for start := 0; start < len(candidates); start += recoverBatch {
 		batch := candidates[start:min(start+recoverBatch, len(candidates))]
 		var done []localscheduler.ClaimEntry
