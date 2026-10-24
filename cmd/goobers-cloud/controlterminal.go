@@ -217,6 +217,9 @@ func quotaReserver() func(providers.ProviderKind) bool {
 		if state == nil {
 			return true
 		}
-		return state.ReservePolls(apiv1.Provider(provider), time.Now(), 1).Allowed > 0
+		// The current window only: ReservePolls would retire an expired window and
+		// hand the one-time reset to this caller, which would drop it and cost the
+		// scheduler its reset journal and resume pacing.
+		return state.ReserveCurrentPolls(apiv1.Provider(provider), 1).Allowed > 0
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -128,5 +129,54 @@ func TestHealForgetsClosedItemsAndTheirTrailAndIsFenced(t *testing.T) {
 	var raw string
 	if err := controller.QueryRow(t.Context(), `SELECT record::text FROM control.blocked_record`).Scan(&raw); err != nil || !strings.Contains(raw, `"3"`) || strings.Contains(raw, `"2"`) {
 		t.Fatalf("remaining record = %s, %v", raw, err)
+	}
+}
+
+// When the read budget is spent before the cycle's members are verified, nothing
+// is escalated yet: the block is recorded, no cycle is reported, and the caller
+// is told verification was deferred.
+func TestACycleWithAnUnverifiedMemberIsNotEscalatedWhenTheBudgetIsSpent(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	closed := &closedSet{closed: map[string]bool{}}
+	budget := true
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Reserve: func(providers.ProviderKind) bool { return budget }}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	budget = false
+	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if !errors.Is(err, blockedrecordspg.ErrVerificationDeferred) || len(cycle.Affected) != 0 {
+		t.Fatalf("cycle %+v, err %v; want no cycle and ErrVerificationDeferred", cycle, err)
+	}
+	// The block IS recorded, so the cycle is seen again once the budget returns.
+	budget = true
+	cycle, err = store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 {
+		t.Fatalf("after the budget returned: cycle %+v, err %v; want the verified 2-member cycle", cycle, err)
+	}
+}
+
+// A block being decided now verifies its cycle even for an item the heal has
+// backed off, and the outcome clears the backoff.
+func TestRecordBlockIgnoresTheHealBackoff(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	closed := &closedSet{closed: map[string]bool{}}
+	backoff := &blockedrecordspg.Backoff{}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Backoff: backoff}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	node := blockedcycle.Node{Repository: repo, ItemID: "2"}
+	backoff.Failed(node) // the heal could not verify 2 a moment ago
+	closed.closed["2"] = true
+	if cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1")); err != nil || len(cycle.Affected) != 0 {
+		t.Fatalf("cycle %+v, err %v; a backed-off but closed blocker must still be verified when a block is decided", cycle, err)
+	}
+	if !backoff.Allowed(node) {
+		t.Fatal("the verification did not clear the item's backoff")
 	}
 }

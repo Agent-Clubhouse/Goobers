@@ -10,12 +10,15 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/terminalcompose"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/providers"
 )
 
 type fakeEpochClaims struct{}
@@ -198,5 +201,36 @@ func TestAFailedTerminalCompositionRefusesWithItsCause(t *testing.T) {
 	})
 	if _, err := constructedEpoch(t)(context.Background(), testHandle); err == nil || !strings.Contains(err.Error(), "no secret store") {
 		t.Fatalf("Epoch = %v, want the construction cause", err)
+	}
+}
+
+// The heal's read accounting must not steal the scheduler's quota reset: with the
+// real ledger, an EXPIRED window is still reported by ResetIfDue after a
+// reservation (ReservePolls would have retired it and handed the reset to us).
+func TestQuotaReserverAccountsReadsWithoutConsumingTheSchedulersReset(t *testing.T) {
+	state := localscheduler.NewProviderQuotaState()
+	past := time.Now().Add(-time.Minute)
+	state.Record(apiv1.ProviderGitHub, 5, past)
+	original := epochWiring
+	t.Cleanup(func() { epochWiring = original })
+	epochWiring.Quota = func() *localscheduler.ProviderQuotaState { return state }
+
+	if !quotaReserver()(providers.ProviderGitHub) {
+		t.Fatal("a window with budget refused a read")
+	}
+	if reset, due := state.ResetIfDue(apiv1.ProviderGitHub, time.Now()); !due || reset.ResetAt.IsZero() {
+		t.Fatalf("ResetIfDue = %+v, %v after the heal's reservation; the scheduler lost its one-time reset", reset, due)
+	}
+	// Reads are accounted: an exhausted window refuses.
+	live := localscheduler.NewProviderQuotaState()
+	live.Record(apiv1.ProviderGitHub, 1, time.Now().Add(time.Hour))
+	epochWiring.Quota = func() *localscheduler.ProviderQuotaState { return live }
+	if !quotaReserver()(providers.ProviderGitHub) || quotaReserver()(providers.ProviderGitHub) {
+		t.Fatal("a one-read window should allow exactly one read")
+	}
+	// No scheduler composed yet: unmetered.
+	epochWiring.Quota = nil
+	if !quotaReserver()(providers.ProviderGitHub) {
+		t.Fatal("without a ledger reads must be allowed")
 	}
 }
