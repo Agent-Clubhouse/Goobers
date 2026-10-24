@@ -48,6 +48,18 @@ func childProtocolEnabled(ctx workflow.Context) bool {
 	return ctx.Value(childProtocolContextKey{}) == true
 }
 
+// childWorkflowsSwitchChange gates the production child-workflow switch
+// (#8085 d). The marker is recorded only for a run that opted in and whose
+// definition declares task.childWorkflows, so every other history is
+// byte-identical, and a history recorded before the switch replays refused.
+const childWorkflowsSwitchChange = "engine-child-workflows-switch-v1"
+
+// childWorkflowsEnabled lets a run that pinned the instance's opt-in use the
+// generated-child protocol.
+func childWorkflowsEnabled(ctx workflow.Context, in RunInput) bool {
+	return in.ChildWorkflowsEnabled && workflow.GetVersion(ctx, childWorkflowsSwitchChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+}
+
 // ChildRunBinding is an immutable admission receipt, never agent-provided
 // authority. The service fences every operation by acceptance and parent epoch.
 // ManifestDigest addresses the entire frozen manifest, not a mutable catalog name.
