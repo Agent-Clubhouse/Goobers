@@ -44,6 +44,10 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 		return err
 	}
 	p.Configuration = configuration
+	p.appliedSet = func() (*instance.ConfigSet, bool) {
+		candidate, ok := configuration.Applied()
+		return candidate.Set, ok && candidate.Set != nil
+	}
 	p.generations = leasedGenerations{inner: source, owner: db.EpochHandle}
 	return nil
 }

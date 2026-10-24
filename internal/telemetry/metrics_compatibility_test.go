@@ -65,7 +65,7 @@ func TestOTLPMetricTemporalityAndTerminalCompatibility(t *testing.T) {
 	} {
 		assertMetricKindAndTemporality(t, req, name, want.kind, want.temporality, want.monotonic)
 	}
-	for _, name := range []string{EventWorktreeDiskUsage, EventWorkcopyDiskUsage, MetricStorageFreeBytes, MetricQueueDepth, MetricQueueOldestAge, MetricWorkersAvailable} {
+	for _, name := range []string{EventWorktreeDiskUsage, EventWorkcopyDiskUsage, MetricStorageFreeBytes, MetricQueueDepth, MetricQueueOldestAge, MetricWorkersAvailable, MetricContinuationClaims, MetricContinuationOldestClaimAge} {
 		assertGaugeMetric(t, req, name)
 	}
 
@@ -389,6 +389,9 @@ func buildAllMetricsCompatibilityScenario(t *testing.T) metricCompatibilityScena
 		{QueueKind: "backlog", OperatingSystem: metricCompatibilityOS, Depth: 4, OldestEnqueuedAt: base.Add(-90 * time.Second), ObservedAt: base},
 		{QueueKind: "refill", OperatingSystem: metricCompatibilityOS, Depth: 1, OldestEnqueuedAt: base.Add(-30 * time.Second), ObservedAt: base},
 	}, &WorkerAvailabilitySample{OperatingSystem: metricCompatibilityOS, Available: 2})
+	client.RecordContinuationClaims(context.Background(), ContinuationClaimsSample{
+		OperatingSystem: metricCompatibilityOS, Count: 2, OldestSince: base.Add(-120 * time.Second), ObservedAt: base,
+	})
 	client.RecordWorkcopyUsage(context.Background(), worktree.UsageMeasurement{
 		Gaggle:           "acme-web",
 		Operation:        worktree.UsageOperationCreate,

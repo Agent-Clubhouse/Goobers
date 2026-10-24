@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/projectorpg"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	sharedauth "github.com/goobers/goobers/internal/podauth"
@@ -164,6 +165,12 @@ type controlPlanes struct {
 	// projectorHealth is the projector's progress, shared across lease epochs, for
 	// the read service to report.
 	projectorHealth *projectorpg.Health
+	// claimedItems lists the items a run holds (the claims plane's
+	// ClaimedItems); the run-journal plane answers stranded work from it.
+	claimedItems func(ctx context.Context, runID string) ([]string, error)
+	// appliedSet is the applied generation's configuration, false before the
+	// first apply; the run-journal plane resolves workflow definitions from it.
+	appliedSet func() (*instance.ConfigSet, bool)
 	// journalBackend is the journal plane's PG backend, for the scheduler's
 	// fenced instance log.
 	journalBackend *journalpg.Backend
