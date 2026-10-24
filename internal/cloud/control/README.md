@@ -91,6 +91,13 @@ controller pool. Migration grant reconciliation removes the previous API DELETE
 and controller revocation INSERT grants. PG16 tests use the shared role provisioner
 and the real inventory, including a rolling-upgrade grant removal regression.
 
-Cloud webhook intake remains tracked by #7914 under #7698. CHAOS-9 depends on
-that intake adapter (authenticated delivery receipts and cross-replica dedup),
-not merely on the existence of this combined role.
+Cloud webhook intake (#7914, `internal/cloud/webhookintake`) is mounted by the
+combined role at `/webhooks/github` when `--github-webhook-secret-file` is set.
+The delivery HMAC is verified before any durable write. The API pool, connected
+as `goobers_api` with no controller credentials, records one source receipt per
+`X-GitHub-Delivery` and its recipient acceptances in a single transaction
+serialised on the delivery key, so concurrent redelivery to different replicas
+returns the same receipt and acceptance IDs. Workflow digest pinning
+(`webhookPin`) arrives with the start-input resolver composition; until then
+intake answers 503 and records nothing. CHAOS-9 stays pending until a hosted
+nightly runs it against a deployed stack.
