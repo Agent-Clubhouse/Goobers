@@ -265,6 +265,12 @@
       "reason": "Terminal-hook frame tests are pure and run in the Linux unit job; the frame is exercised on the cloud control plane, which has no Windows deployment target, and the local runner keeps its own Windows coverage through the type aliases."
     },
     {
+      "package": "internal/cloud/terminalawait",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud terminal-awaiter tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/startpin",
       "coverage": "none",
       "category": "not-selected",
