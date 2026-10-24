@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 // Custody still owned by an earlier epoch is a distinct, retryable condition
@@ -45,5 +47,18 @@ func TestStaleChildEpochIsDistinctAndClearedByAdoption(t *testing.T) {
 	}
 	if _, _, err := successor.AcceptChild(t.Context(), request, time.Now()); err != nil {
 		t.Fatalf("child acceptance after adoption: %v", err)
+	}
+}
+
+// A parent cancelled on the current epoch refuses new authority permanently:
+// ErrParentCancelled, never the retryable stale-epoch class.
+func TestBindChildAuthorityOnACurrentEpochCancelledParentIsRefused(t *testing.T) {
+	store, _ := childTestStore(t)
+	grant := reviewAuthority("parent-cancelled", "stage")
+	if err := store.FenceChildParent(t.Context(), grant.ChildParent, "operator", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindChildAuthority(t.Context(), grant, "", time.Now()); !errors.Is(err, triggerqueue.ErrParentCancelled) {
+		t.Fatalf("bind on a current-epoch cancelled parent = %v, want ErrParentCancelled", err)
 	}
 }
