@@ -143,9 +143,8 @@ func (p *Plane) beginSharedAdmission(ctx context.Context, tx pgx.Tx, epoch int64
 				return lockedRow{}, false, "", err
 			}
 		}
-		if err := p.insertSharedReservation(ctx, tx, epoch, key, request, owner); err != nil {
-			return lockedRow{}, false, "", err
-		}
+		// Replace the earlier ErrNoRows: a successful insert establishes custody.
+		err = p.insertSharedReservation(ctx, tx, epoch, key, request, owner)
 	}
 	if err != nil {
 		return lockedRow{}, false, "", err

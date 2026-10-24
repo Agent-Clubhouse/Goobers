@@ -39,6 +39,10 @@ func (p *Plane) providerCleanup(ctx context.Context, request httpapi.ClaimReques
 		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusConflict, "publication_custody",
 			"publication custody cannot use provider cleanup", nil)
 	}
+	handle := p.owner()
+	if handle == nil {
+		return httpapi.ClaimResponse{}, errAuthorityMoving(nil)
+	}
 	shared, err := p.sharedRequest(ctx, request)
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
@@ -47,7 +51,7 @@ func (p *Plane) providerCleanup(ctx context.Context, request httpapi.ClaimReques
 		if !shared.ClaimedAt.Equal(request.ClaimedAt) {
 			return httpapi.ClaimResponse{Ok: false}, nil
 		}
-		ok, err := p.releaseShared(ctx, p.owner(), *shared, request.Reason, false)
+		ok, err := p.releaseShared(ctx, handle, *shared, request.Reason, false)
 		return httpapi.ClaimResponse{Ok: ok}, err
 	}
 	if p.releaseMarker == nil {

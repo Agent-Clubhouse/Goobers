@@ -406,6 +406,7 @@ tables:
     - shared_admission_pending
     - shared_revoked
     update:
+    - owner_token
     - renewed_at
     - expires_at
     - verification
