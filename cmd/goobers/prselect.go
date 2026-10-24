@@ -1380,23 +1380,6 @@ func splitLabelList(value string) []string {
 	return labels
 }
 
-// hasAnyLabel reports whether labels contains any of wants (case-sensitive,
-// matching GitHub's own label-name comparison).
-func hasAnyLabel(labels, wants []string) bool {
-	for _, w := range wants {
-		w = strings.TrimSpace(w)
-		if w == "" {
-			continue
-		}
-		for _, l := range labels {
-			if l == w {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func hasPRSelectExclusion(labels, excludeLabels []string) bool {
 	acknowledgedScopeGate := hasAnyLabel(labels, []string{scopeGateLabel}) &&
 		hasAnyLabel(labels, []string{scopeGateAckLabel})

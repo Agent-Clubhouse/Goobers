@@ -19,11 +19,15 @@ import (
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/startintent"
+	"github.com/goobers/goobers/internal/terminalhooks"
 	"github.com/goobers/goobers/internal/terminalhooks/frame"
 	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/providerposter"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/providers"
@@ -931,5 +935,169 @@ func TestParkingHooksWithAPendingWriterReportFailureButStillRecordTheBlock(t *te
 	}
 	if !failed {
 		t.Fatalf("a provider write that cannot happen yet was not reported as pending #8093: %+v", r.rec.events)
+	}
+}
+
+type breakerState struct {
+	escalationnotify.State // only the methods the failed path calls are implemented
+	streaks                map[string]int
+	repo                   providers.RepositoryRef
+}
+
+func (s *breakerState) ClaimedItems(string) ([]escalationnotify.Item, error) {
+	return []escalationnotify.Item{{ItemID: "42", Repo: s.repo}}, nil
+}
+func (s *breakerState) ReconcileParkOutbox(context.Context, gate.Commenter) error { return nil }
+func (s *breakerState) RunURL(string) (string, error)                             { return "", nil }
+func (s *breakerState) LoadFailureStreak(_ context.Context, _ gate.Commenter, _ providers.RepositoryRef, item string) (int, error) {
+	return s.streaks[item], nil
+}
+func (s *breakerState) WriteFailureStreak(_ providers.RepositoryRef, item string, count int, _, _ string) error {
+	s.streaks[item] = count
+	return nil
+}
+
+func TestTheFailedHookChargesTheStreakUnderTheRunsAttribution(t *testing.T) {
+	r := newRig()
+	w := &recWriter{}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	st := &breakerState{streaks: map[string]int{}, repo: repo}
+	var attributed providers.Attribution
+	policyFor := func(runID string) *escalationnotify.Policy {
+		return &escalationnotify.Policy{Poster: providerposter.Poster{Writer: w, RunID: runID}, State: st, Gaggle: "web"}
+	}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	hooks := Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithFailed(policyFor))
+	hooks.Failed = wrapFailed(hooks.Failed, func(ctx context.Context) { attributed, _ = providers.AttributionFromContext(ctx) })
+	hooks.Run(t.Context(), frame.Outcome{
+		RunID: "run-9", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseFailed,
+		Result: engine.RunResult{Status: engine.StatusFailed, FinalState: "implement", FailureCode: "run_failed"},
+	})
+	if st.streaks["42"] != 1 {
+		t.Fatalf("streak = %v, want the failed terminal counted", st.streaks)
+	}
+	if attributed.Run != "run-9" || attributed.Gaggle != "web" || !attributed.Goobers {
+		t.Fatalf("hook context lacks the run's attribution: %+v", attributed)
+	}
+	if len(w.reqs) == 0 || w.refs[0].RunID != "run-9" {
+		t.Fatalf("failure comment not written on behalf of the run: %+v", w.refs)
+	}
+}
+
+func wrapFailed(next terminalhooks.FailedHandler, observe func(context.Context)) terminalhooks.FailedHandler {
+	return func(ctx context.Context, o terminalhooks.FailedOutcome) error {
+		observe(ctx)
+		return next(ctx, o)
+	}
+}
+
+func TestTheNotifyHookChargesAnEscalatedTerminalUnderTheRunsAttribution(t *testing.T) {
+	r := newRig()
+	w := &recWriter{}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	st := &breakerState{streaks: map[string]int{}, repo: repo}
+	policyFor := func(runID string) *escalationnotify.Policy {
+		return &escalationnotify.Policy{
+			Poster: providerposter.Poster{Writer: w, RunID: runID}, State: st, Gaggle: "web",
+			Events: func(string) ([]journal.Event, error) { return nil, nil },
+		}
+	}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithNotify(policyFor)).Run(t.Context(), frame.Outcome{
+		RunID: "run-7", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseEscalated,
+		Result: engine.RunResult{Status: engine.StatusEscalated, FinalState: "ci"},
+	})
+	if st.streaks["42"] != 1 {
+		t.Fatalf("streak = %v, want the escalated terminal charged", st.streaks)
+	}
+	if len(w.refs) == 0 || w.refs[0].RunID != "run-7" {
+		t.Fatalf("breaker comment not written on behalf of the run: %+v", w.refs)
+	}
+}
+
+type branchWriter struct {
+	recWriter
+	deleted []string
+	inUse   bool
+	missing bool
+}
+
+func (w *branchWriter) DeleteBranch(_ context.Context, runID, branch string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deleted = append(w.deleted, runID+":"+branch)
+	if w.inUse {
+		return &providers.BranchInUseError{}
+	}
+	if w.missing {
+		return fmt.Errorf("delete: %w", providers.ErrBranchNotFound)
+	}
+	return nil
+}
+
+func pushedBranch() []journal.Event {
+	return []journal.Event{
+		{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Kind: "branch", ID: "goobers/x"}},
+		{Type: journal.EventStageFinished, Stage: "push-branch", Status: string(apiv1.ResultSuccess)},
+	}
+}
+
+func TestThePrepareHookDeletesAnUnusedBranchAndRecordsItInTheInstanceLog(t *testing.T) {
+	r := newRig()
+	w := &branchWriter{}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	deps := PrepareDeps{Writer: w, Events: func(string) ([]journal.Event, error) { return pushedBranch(), nil }}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithPrepare(deps)).Run(t.Context(), frame.Outcome{
+		RunID: "run-3", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseCompleted,
+	})
+	if !slices.Equal(w.deleted, []string{"run-3:goobers/x"}) {
+		t.Fatalf("deleted = %v, want the run's branch through the writer", w.deleted)
+	}
+	var recorded bool
+	for _, ev := range r.rec.events {
+		recorded = recorded || (ev.Type == journal.EventRefTouched && ev.Runner["outcome"] == "succeeded" && ev.RunID == "run-3")
+	}
+	if !recorded {
+		t.Fatalf("the cleanup outcome was not recorded under the run: %+v", r.rec.events)
+	}
+}
+
+func TestThePrepareHookKeepsABranchAnOpenPullRequestUsesAndLabelsAnOrphanedPR(t *testing.T) {
+	r := newRig()
+	w := &branchWriter{inUse: true}
+	id := Identity{Gaggle: "web", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	events := []journal.Event{
+		{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Kind: "pr", ID: "9"}, Runner: map[string]any{"operation": "open"}},
+	}
+	events = append(pushedBranch()[:1], events...) // branch ref + opened PR, never "pushed" in this segment
+	deps := PrepareDeps{Writer: w, Events: func(string) ([]journal.Event, error) { return events, nil }}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithPrepare(deps)).Run(t.Context(), frame.Outcome{
+		RunID: "run-4", Gaggle: "web", Phase: journal.PhaseAborted,
+	})
+	var labeled bool
+	for i, req := range w.reqs {
+		labeled = labeled || (w.refs[i].ItemID == "9" && slices.Contains(req.AddLabels, "goobers:run-aborted") && w.refs[i].RunID == "run-4")
+	}
+	if !labeled {
+		t.Fatalf("the orphaned PR was not labeled through the writer: %+v", w.reqs)
+	}
+}
+
+func TestAnAbsentBranchIsJournaledBranchNotFoundLikeTheDaemon(t *testing.T) {
+	r := newRig()
+	w := &branchWriter{missing: true}
+	id := Identity{Gaggle: "web", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	deps := PrepareDeps{Writer: w, Events: func(string) ([]journal.Event, error) { return pushedBranch(), nil }}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithPrepare(deps)).Run(t.Context(), frame.Outcome{
+		RunID: "run-5", Gaggle: "web", Phase: journal.PhaseCompleted,
+	})
+	var reason, outcome any
+	for _, ev := range r.rec.events {
+		if ev.Type == journal.EventRefTouched && ev.RunID == "run-5" {
+			reason, outcome = ev.Runner["reason"], ev.Runner["outcome"]
+		}
+	}
+	if outcome != "unnecessary" || reason != "branch-not-found" {
+		t.Fatalf("an absent branch was journaled %v/%v, want unnecessary/branch-not-found", outcome, reason)
 	}
 }

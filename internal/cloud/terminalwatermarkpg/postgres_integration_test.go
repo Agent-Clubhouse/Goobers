@@ -14,9 +14,10 @@ import (
 
 func TestWatermarkMovesForwardOnlyAndOnlyForTheLiveLease(t *testing.T) {
 	pool := pgtest.Pool(t, "twpg")
-	oldManager := pgtest.Manager(t, pool, "old", 0)
+	controller := pgtest.ControllerPool(t, pool) // every store call runs as goobers_controller
+	oldManager := pgtest.ControllerManager(t, pool, "old", 0)
 	old := pgtest.Acquire(t, oldManager)
-	store := terminalwatermarkpg.Store{Pool: pool, Fence: oldManager}
+	store := terminalwatermarkpg.Store{Pool: controller, Fence: oldManager}
 	if _, ok, err := store.Load(t.Context(), pgtest.InstanceID); err != nil || ok {
 		t.Fatalf("fresh Load = %v, %v; want none", ok, err)
 	}
@@ -31,12 +32,12 @@ func TestWatermarkMovesForwardOnlyAndOnlyForTheLiveLease(t *testing.T) {
 		t.Fatalf("Load = %v %v %v, want %v (an earlier Advance must not move it back)", got, ok, err, t1)
 	}
 
-	newManager := pgtest.Manager(t, pool, "new", 0)
+	newManager := pgtest.ControllerManager(t, pool, "new", 0)
 	successor := pgtest.Takeover(t, pool, newManager)
 	if err := store.Advance(t.Context(), old, t1.Add(time.Hour)); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("stale leader Advance = %v, want ErrStale", err)
 	}
-	next := terminalwatermarkpg.Store{Pool: pool, Fence: newManager}
+	next := terminalwatermarkpg.Store{Pool: controller, Fence: newManager}
 	t2 := t1.Add(2 * time.Hour)
 	if err := next.Advance(t.Context(), successor, t2); err != nil {
 		t.Fatal(err)
@@ -46,29 +47,12 @@ func TestWatermarkMovesForwardOnlyAndOnlyForTheLiveLease(t *testing.T) {
 	}
 }
 
-// The reviewed column grants are enough for the controller role to run the
-// upsert (ON CONFLICT ... EXCLUDED needs SELECT on the excluded columns).
-func TestWatermarkUpsertRunsAsTheControllerRole(t *testing.T) {
+// The controller role cannot delete the watermark: the reviewed write path only
+// moves it forward.
+func TestControllerCannotDeleteTheWatermark(t *testing.T) {
 	pool := pgtest.Pool(t, "twpg")
-	conn, err := pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Release()
-	if _, err := conn.Exec(t.Context(), "SET ROLE goobers_controller"); err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Exec(t.Context(), "RESET ROLE") //nolint:errcheck
-	for i := range 2 {
-		if _, err := conn.Exec(t.Context(), `
-			INSERT INTO control.terminal_watermark (instance_id, closed_through, owner_epoch) VALUES ('i', now(), $1)
-			ON CONFLICT (instance_id) DO UPDATE
-			SET closed_through = GREATEST(control.terminal_watermark.closed_through, EXCLUDED.closed_through),
-			    owner_epoch = EXCLUDED.owner_epoch, updated_at = now()`, i+1); err != nil {
-			t.Fatalf("controller upsert %d: %v", i, err)
-		}
-	}
-	if _, err := conn.Exec(t.Context(), "DELETE FROM control.terminal_watermark"); err == nil {
+	controller := pgtest.ControllerPool(t, pool)
+	if _, err := controller.Exec(t.Context(), "DELETE FROM control.terminal_watermark"); err == nil {
 		t.Fatal("controller role may delete the watermark; the grant is wider than the reviewed write path")
 	}
 }

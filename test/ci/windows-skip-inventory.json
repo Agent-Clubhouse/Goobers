@@ -337,6 +337,18 @@
       "reason": "Provider-writer seam tests are pure and run in the Linux unit job; the seam serves the cloud control plane, which has no Windows deployment target."
     },
     {
+      "package": "internal/nowork/settle",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No-work streak policy tests are pure and run in the Linux unit job; the policy serves the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
+    },
+    {
+      "package": "internal/terminalhooks/prepare",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Terminal prepare-hook tests are pure and run in the Linux unit job; the policy is exercised on the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
+    },
+    {
       "package": "internal/cloud/startpin",
       "coverage": "none",
       "category": "not-selected",
@@ -1013,6 +1025,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/remediationselect",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure remediation-selection logic extracted from cmd/goobers (#8131); no Windows-specific seam, covered by the cmd/goobers Windows run through its re-exports and by the Linux unit shards."
     },
     {
       "package": "internal/retryutil",
