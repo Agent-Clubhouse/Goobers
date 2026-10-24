@@ -553,7 +553,7 @@ func TestPlacedGateQueueRoutingAndHistoryReplay(t *testing.T) {
 			scheduled = append(scheduled, attrs.ActivityType.Name+"@"+attrs.TaskQueue.Name)
 		}
 	}
-	if want := "InvokeGoober@" + workflowQueue + ",PrepareReviewerDiff@" + remoteGatePin().Queue + ",DispatchStage@" + remoteGatePin().Queue + ",RunDeterministic@" + workflowQueue; strings.Join(scheduled, ",") != want {
+	if want := actInvokeGooberCancelSafe + "@" + workflowQueue + ",PrepareReviewerDiff@" + remoteGatePin().Queue + ",DispatchStage@" + remoteGatePin().Queue + "," + actRunDeterministicCancelSafe + "@" + workflowQueue; strings.Join(scheduled, ",") != want {
 		t.Fatalf("scheduled activities = %v, want %s (no ReviewGoober anywhere)", scheduled, want)
 	}
 	replayer := temporalworker.NewWorkflowReplayer()
@@ -703,6 +703,11 @@ type skewedDispatchHost struct{ real *Activities }
 
 func (h *skewedDispatchHost) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
 	return h.real.InvokeGoober(ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout)
+}
+
+func (h *skewedDispatchHost) InvokeGooberCancelSafe(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
+	return h.real.InvokeGooberCancelSafe(
+		ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout)
 }
 
 func (h *skewedDispatchHost) DispatchStage(context.Context, DispatchStageInput) (stageActivityResult, error) {

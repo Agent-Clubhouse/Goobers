@@ -119,7 +119,6 @@ func TestChildSuccessorAdoptionFencesPredecessor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	predecessorEpoch := old.handle.Epoch
 	if err := old.manager.Release(t.Context(), old.handle); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +127,7 @@ func TestChildSuccessorAdoptionFencesPredecessor(t *testing.T) {
 	if err := current.BeginDispatch(t.Context(), child.AcceptanceID); !errors.Is(err, triggerqueue.ErrTransition) {
 		t.Fatalf("dispatch before adoption = %v", err)
 	}
-	adopted, err := current.AdoptChildren(t.Context(), predecessorEpoch)
+	adopted, err := current.AdoptStaleChildCustody(t.Context())
 	if err != nil || adopted < 3 {
 		t.Fatalf("adopted=%d err=%v", adopted, err)
 	}

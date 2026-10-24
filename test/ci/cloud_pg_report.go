@@ -36,7 +36,7 @@ type packageResult struct {
 
 // cloudPGRoots are the trees the cloud-pg job tests; every package in them
 // with PostgreSQL-tagged tests (cloudintegration or cloudpg) must run.
-var cloudPGRoots = []string{"internal/cloud", "internal/livejournal", "test/ha/invariants", "test/journalequivalence"}
+var cloudPGRoots = []string{"cmd/goobers-cloud", "internal/cloud", "internal/livejournal", "test/ha/invariants", "test/journalequivalence"}
 
 // runCloudPGReport reads the cloud-pg job's `go test -json` stream, prints
 // failing tests' output, and fails when any package with PostgreSQL-tagged

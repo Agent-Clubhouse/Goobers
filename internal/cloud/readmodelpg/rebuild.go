@@ -526,6 +526,8 @@ func versionDDL(schema string) string {
 			run_cursor text NOT NULL DEFAULT '',
 			base_complete boolean NOT NULL DEFAULT false,
 			catchup_seq bigint NOT NULL DEFAULT 0 CHECK (catchup_seq >= 0),
+			last_pass_at timestamptz,
+			open_failures integer NOT NULL DEFAULT 0 CHECK (open_failures >= 0),
 			owner_epoch bigint NOT NULL CHECK (owner_epoch > 0)
 		);
 		CREATE TABLE %[1]s.run (

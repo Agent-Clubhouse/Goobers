@@ -99,12 +99,11 @@ func (s *Source) Acquire(
 	directory, err = os.MkdirTemp(s.tempRoot, "goobers-generation-")
 	if err != nil {
 		_ = cleanup()
-		return childworkflow.Generation{}, err
+		return childworkflow.Generation{}, materializeError("create generation directory", err)
 	}
 	if err := archive.Extract(ctx, directory); err != nil {
 		_ = cleanup()
-		return childworkflow.Generation{}, fmt.Errorf(
-			"%w: extract archive: %w", ErrGenerationInvalid, err)
+		return childworkflow.Generation{}, materializeError("extract archive", err)
 	}
 	configDir := filepath.Join(directory, "config")
 	set, report, err := instance.LoadConfigDir(configDir)
@@ -117,7 +116,7 @@ func (s *Source) Acquire(
 	}
 	if err := makeTreeReadOnly(directory); err != nil {
 		_ = cleanup()
-		return childworkflow.Generation{}, err
+		return childworkflow.Generation{}, materializeError("protect generation directory", err)
 	}
 	var once sync.Once
 	var releaseErr error
@@ -195,3 +194,11 @@ func makeTreeWritable(root string) error {
 }
 
 var _ childworkflow.GenerationSource = (*Source)(nil)
+
+// materializeError classifies a failure to lay a generation out on local disk.
+// Decode has already validated every entry and the digest, so these are local
+// IO (a full or failing volume) or cancellation, never a bad archive: they are
+// transient, not ErrGenerationInvalid.
+func materializeError(step string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrGenerationUnavailable, step, err)
+}

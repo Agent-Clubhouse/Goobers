@@ -47,6 +47,13 @@ grants as the superuser. That step is the single flip point to `bootstrap`.
 
 The migrate Job must finish before `control` rolls.
 
+A migration that cannot take its table locks (behind a long-running reader, or
+another migration) does not queue: it is retried with backoff for up to 20
+minutes inside the Job. If the database is still busy, the Job exits **75**
+(EX_TEMPFAIL) and the sync fails having applied nothing in the busy step. That
+is contention, not a broken migration: re-sync once the contention ends. Any
+other failure exits 1.
+
 **Argo CD.** Create two Applications from the same repo: `prereqs/` first (earlier
 sync wave), then `workload/`, where `migrate-job.yaml` is a PreSync hook. The hook
 needs the Namespace, ServiceAccounts, PriorityClasses and ConfigMaps to exist,
