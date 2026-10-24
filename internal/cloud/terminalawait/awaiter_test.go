@@ -1019,6 +1019,7 @@ type branchWriter struct {
 	recWriter
 	deleted []string
 	inUse   bool
+	missing bool
 }
 
 func (w *branchWriter) DeleteBranch(_ context.Context, runID, branch string) error {
@@ -1027,6 +1028,9 @@ func (w *branchWriter) DeleteBranch(_ context.Context, runID, branch string) err
 	w.deleted = append(w.deleted, runID+":"+branch)
 	if w.inUse {
 		return &providers.BranchInUseError{}
+	}
+	if w.missing {
+		return fmt.Errorf("delete: %w", providers.ErrBranchNotFound)
 	}
 	return nil
 }
@@ -1076,5 +1080,24 @@ func TestThePrepareHookKeepsABranchAnOpenPullRequestUsesAndLabelsAnOrphanedPR(t 
 	}
 	if !labeled {
 		t.Fatalf("the orphaned PR was not labeled through the writer: %+v", w.reqs)
+	}
+}
+
+func TestAnAbsentBranchIsJournaledBranchNotFoundLikeTheDaemon(t *testing.T) {
+	r := newRig()
+	w := &branchWriter{missing: true}
+	id := Identity{Gaggle: "web", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	deps := PrepareDeps{Writer: w, Events: func(string) ([]journal.Event, error) { return pushedBranch(), nil }}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithPrepare(deps)).Run(t.Context(), frame.Outcome{
+		RunID: "run-5", Gaggle: "web", Phase: journal.PhaseCompleted,
+	})
+	var reason, outcome any
+	for _, ev := range r.rec.events {
+		if ev.Type == journal.EventRefTouched && ev.RunID == "run-5" {
+			reason, outcome = ev.Runner["reason"], ev.Runner["outcome"]
+		}
+	}
+	if outcome != "unnecessary" || reason != "branch-not-found" {
+		t.Fatalf("an absent branch was journaled %v/%v, want unnecessary/branch-not-found", outcome, reason)
 	}
 }

@@ -196,11 +196,13 @@ func prepareHook(deps PrepareDeps, id Identity, record frame.Recorder) func(cont
 		annotate := instanceAnnotator{record: record, out: out}
 		repo := providers.RepositoryRef{Provider: providers.ProviderKind(id.RepoRef.Provider), Owner: id.RepoRef.Owner, Project: id.RepoRef.Project, Name: id.RepoRef.Name}
 		deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
-			if err := deps.Writer.DeleteBranch(ctx, out.RunID, req.Name); err != nil {
+			err := deps.Writer.DeleteBranch(ctx, out.RunID, req.Name)
+			if errors.Is(err, providers.ErrBranchNotFound) {
+				return providers.DeleteBranchResult{Deleted: false}, nil // journaled branch-not-found, as the daemon does
+			}
+			if err != nil {
 				return providers.DeleteBranchResult{}, err
 			}
-			// The writer treats an absent branch as success and reports no result, so an
-			// absent branch is journaled succeeded where the daemon says branch-not-found.
 			return providers.DeleteBranchResult{Deleted: true}, nil
 		}
 		labelPR := func(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {

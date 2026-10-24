@@ -229,15 +229,18 @@ func TestARefiredFailedFrameChargesOnce(t *testing.T) {
 	if load() != 1 || writes(p) != effects {
 		t.Fatalf("a re-fired frame: streak %d (want 1), effects %d -> %d (want unchanged)", load(), effects, writes(p))
 	}
-	// Other runs charging in between do not make an earlier run chargeable again.
+	// Other runs charging in between do not make an earlier run chargeable again,
+	// and a run that charged on the UPDATE path (r2) is remembered as well.
 	if err := policy.Failed(attributed(t), failed("r2")); err != nil {
 		t.Fatal(err)
 	}
-	if err := policy.Failed(attributed(t), failed("r1")); err != nil {
-		t.Fatal(err)
+	for _, again := range []string{"r2", "r1"} {
+		if err := policy.Failed(attributed(t), failed(again)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if load() != 2 {
-		t.Fatalf("streak after r1, r2, r1 again = %d, want 2", load())
+		t.Fatalf("streak after r1, r2, then re-fires of r2 and r1 = %d, want 2", load())
 	}
 }
 

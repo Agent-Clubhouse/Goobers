@@ -132,6 +132,15 @@ func (p *Policy) chargeStreak(ctx context.Context, s streak, runID, stage, runUR
 // run, and a lost projection self-heals on the item's next terminal, which
 // charges a count at or past the threshold. The daemon never re-fires a
 // terminal, so its State does not implement this and behaves exactly as before.
+//
+// Limits, both inherent to remembering only a bounded set of recent runs per
+// item: a productive completion resets (drops) the streak and with it the
+// memory, so a re-fire of an EARLIER run after that reset, inside the re-fire
+// window, charges once more; and a re-fire of a run that is more than the
+// remembered number of charges old does the same. The window is the discovery
+// window (about an hour) and the memory is sixteen runs, so both need an item to
+// churn through a reset or sixteen terminals while a frame is still being
+// re-fired; the cost is one stray strike, never a double count of a live run.
 type StreakChargeGuard interface {
 	StreakChargedBy(ctx context.Context, infra bool, repo providers.RepositoryRef, itemID, runID string) (bool, error)
 }

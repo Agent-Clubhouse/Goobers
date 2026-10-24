@@ -51,12 +51,11 @@ type Writer interface {
 	// PullLabels and DeleteBranch target the run's WorkspaceRepository. Labelling a
 	// pull request is Update with the pull request number as ref.ItemID.
 	PullLabels(ctx context.Context, runID, pullID string) ([]string, error)
-	// DeleteBranch treats an already-absent branch as success, so the caller
-	// cannot tell "deleted" from "not found": the daemon journals the latter as
-	// branch-not-found, the cloud journals both as succeeded (a known gap; a
-	// (deleted bool, error) result would close it). A branch an open
-	// pull request uses is kept: it returns *providers.BranchInUseError, which the
-	// caller records as a decision rather than a failure.
+	// DeleteBranch deletes the run's branch. An absent branch returns
+	// providers.ErrBranchNotFound (errors.Is), which the caller records as
+	// branch-not-found rather than as a deletion. A branch an open pull request
+	// uses is kept: it returns *providers.BranchInUseError, which the caller records
+	// as a decision rather than a failure.
 	DeleteBranch(ctx context.Context, runID, branch string) error
 	// ReleaseClaimMarker removes the provider-visible claim marker for
 	// ref.ItemID held by ref.RunID; an already-absent marker is success. The
