@@ -116,5 +116,19 @@ func compositionCounters(p *controlPlanes, report func(error)) func(cloudconfig.
 	if r, ok := p.RunJournal.(remediationselect.BranchOwnershipReader); ok {
 		reader = r
 	}
-	return newProviderCounters(productionCounterCredentials(registrar), claims, reader, registrar, report)
+	return newProviderCounters(productionCounterCredentials(registrar), claims, reader, registrar, scrubbedReport(registrar, report))
+}
+
+// scrubbedReport redacts every secret the counters registered before a
+// counter error reaches the control log, the only place report writes.
+func scrubbedReport(scrubber interface{ Scrub([]byte) []byte }, report func(error)) func(error) {
+	return func(err error) {
+		if err == nil || report == nil {
+			if report != nil {
+				report(err)
+			}
+			return
+		}
+		report(errors.New(string(scrubber.Scrub([]byte(err.Error())))))
+	}
 }
