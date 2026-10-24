@@ -115,6 +115,11 @@ func TestStageChildAuthorityFailsClosed(t *testing.T) {
 			if final == tc.retryable {
 				t.Fatalf("acquire error %v: final=%v, want retryable=%v", err, final, tc.retryable)
 			}
+			// A retryable acquire failure is the control plane's, never the
+			// stage's: it must not charge the run's stage budget.
+			if tc.retryable && (application == nil || application.Type() != FailureTypeInfrastructure || !errors.Is(err, ErrChildCustodyUnavailable)) {
+				t.Fatalf("unavailable acquire error = %v, want a %s failure wrapping the unavailability", err, FailureTypeInfrastructure)
+			}
 		})
 	}
 }
