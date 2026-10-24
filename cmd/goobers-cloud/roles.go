@@ -236,8 +236,11 @@ type databaseServices struct {
 	// HA-P3-18 binds acquired controller authority before starting workflows.
 	BindControllerFence func(*cloudlease.Manager, *cloudlease.Handle)
 	NewStarter          func(client.Client, string) engine.Starter
-	Pools               *cloudpg.Pools
-	InstanceID          string
+	// Temporal is the control role's client, for seams that must read live
+	// engine executions (the child-authority bound-execution check).
+	Temporal   client.Client
+	Pools      *cloudpg.Pools
+	InstanceID string
 	// ConfigDir is the control role's mounted instance configuration directory.
 	ConfigDir string
 	// EpochHandle is bound by serveControl: the controller lease handle of the

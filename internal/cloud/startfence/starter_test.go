@@ -235,3 +235,33 @@ func (testStartAdmission) AdmitStart(_ context.Context, in engine.RunInput) (eng
 func (testStartAdmission) ConfirmStart(context.Context, engine.RunInput, engine.StartResult) error {
 	return nil
 }
+
+func TestDescribeStartedDecodesStatusAndStartOwner(t *testing.T) {
+	memo, err := converter.GetDefaultDataConverter().ToPayload(StartOwnerMemo{InstanceID: "instance", InputDigest: "sha256:input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	describe := func(memo *commonpb.Memo, workflowType string) *fakeStarter {
+		return &fakeStarter{desc: &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+			Status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, Type: &commonpb.WorkflowType{Name: workflowType}, Memo: memo,
+		}}}
+	}
+	started, err := DescribeStarted(t.Context(), describe(&commonpb.Memo{Fields: map[string]*commonpb.Payload{StartOwnerMemoKey: memo}}, "Run"), "run")
+	if err != nil || !started.Engine || started.Status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING || started.Owner == nil || started.Owner.InputDigest != "sha256:input" {
+		t.Fatalf("DescribeStarted = %+v, %v", started, err)
+	}
+	if started, err := DescribeStarted(t.Context(), describe(nil, "Other"), "run"); err != nil || started.Engine || started.Owner != nil {
+		t.Fatalf("foreign execution without a memo = %+v, %v", started, err)
+	}
+	corrupt := &commonpb.Memo{Fields: map[string]*commonpb.Payload{StartOwnerMemoKey: {Data: []byte("not json")}}}
+	if _, err := DescribeStarted(t.Context(), describe(corrupt, "Run"), "run"); err == nil {
+		t.Fatal("an undecodable start-owner memo was read as no owner")
+	}
+	if _, err := DescribeStarted(t.Context(), &fakeStarter{desc: &workflowservice.DescribeWorkflowExecutionResponse{}}, "run"); err == nil {
+		t.Fatal("an incomplete description was accepted")
+	}
+	outage := serviceerror.NewUnavailable("down")
+	if _, err := DescribeStarted(t.Context(), &fakeStarter{descErr: outage}, "run"); !errors.Is(err, outage) {
+		t.Fatalf("describe error = %v, want it returned", err)
+	}
+}

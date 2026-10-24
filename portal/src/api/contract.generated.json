@@ -720,6 +720,28 @@
       "recoverySafe": false
     },
     {
+      "id": "engineChildAuthority",
+      "method": "POST",
+      "path": "/api/v1/engine/children/authority",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "engineChildAuthorityRelease",
+      "method": "POST",
+      "path": "/api/v1/engine/children/authority/release",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "blobGet",
       "method": "GET",
       "path": "/api/v1/blobs/{digest}",

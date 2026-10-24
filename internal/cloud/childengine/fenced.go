@@ -13,7 +13,10 @@ import (
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/objstore"
+	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/podauth"
 )
 
 // Fenced serves engine.ChildAdmissions from whichever controller lease epoch
@@ -68,29 +71,39 @@ func (f Fenced) Validate() error {
 	return nil
 }
 
-func (f Fenced) service(ctx context.Context) (*Service, error) {
+// bind returns child custody and the retained generations bound to the live
+// lease epoch, after that epoch has adopted every predecessor's custody.
+func (f Fenced) bind(ctx context.Context) (*acceptance.Store, *objstore.Source, error) {
 	if err := f.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	handle := f.Owner()
 	if handle == nil {
-		return nil, fmt.Errorf("%w: this replica holds no controller lease", engine.ErrChildCustodyUnavailable)
+		return nil, nil, fmt.Errorf("%w: this replica holds no controller lease", engine.ErrChildCustodyUnavailable)
 	}
 	store, err := acceptance.New(f.Pool, f.InstanceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	store.BindFence(f.Lease, handle)
 	store.BindChildBlobs(f.Blobs)
 	// A new epoch serves only after it owns every predecessor's custody.
 	if err := f.Adoption.ensure(ctx, store, handle.Epoch); err != nil {
-		return nil, classify(err)
+		return nil, nil, classify(err)
 	}
 	source, err := objstore.NewGenerationSource(f.Objects, f.InstanceID, "")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	source.BindFence(handle)
+	return store, source, nil
+}
+
+func (f Fenced) service(ctx context.Context) (*Service, error) {
+	store, source, err := f.bind(ctx)
+	if err != nil {
+		return nil, err
+	}
 	resolve, err := PinnedResolver(f.InstanceID, source, f.Applied)
 	if err != nil {
 		return nil, err
@@ -123,4 +136,61 @@ func (f Fenced) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
 		return err
 	}
 	return service.Cancel(ctx, b)
+}
+
+// FencedAuthority serves engine.ChildWorkflowAuthority from the replica's live
+// controller lease epoch, exactly as Fenced serves admissions, and shares its
+// epoch adoption.
+type FencedAuthority struct {
+	Fenced Fenced
+	// Journal opens a run's journal read-only from the control-side backend.
+	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
+	// Execution describes the run's live engine execution.
+	Execution func(ctx context.Context, runID string) (startfence.StartedExecution, error)
+	// Grants mints child-workflow grants in the credential-grant key domain.
+	Grants *podauth.SignedKey
+}
+
+var _ engine.ChildWorkflowAuthority = FencedAuthority{}
+
+// Validate reports a missing dependency before the plane is served.
+func (a FencedAuthority) Validate() error {
+	if err := a.Fenced.Validate(); err != nil {
+		return err
+	}
+	if a.Journal == nil || a.Execution == nil || a.Grants == nil {
+		return errors.New("childengine: fenced child authority requires the journal, the engine execution and a grant key")
+	}
+	return nil
+}
+
+func (a FencedAuthority) authorities(ctx context.Context) (Authorities, error) {
+	if err := a.Validate(); err != nil {
+		return Authorities{}, err
+	}
+	store, source, err := a.Fenced.bind(ctx)
+	if err != nil {
+		return Authorities{}, err
+	}
+	parents := ParentAuthority{InstanceID: a.Fenced.InstanceID, Pins: store.RunPinsOf, Journal: a.Journal, Execution: a.Execution,
+		Generations: source, Applied: a.Fenced.Applied}
+	return Authorities{Queue: store, Parents: parents, Grants: a.Grants, Now: a.Fenced.Now}, nil
+}
+
+// AcquireChildAuthority binds the attempt's grant under the live lease.
+func (a FencedAuthority) AcquireChildAuthority(ctx context.Context, request engine.ChildAuthorityRequest) (engine.ChildAuthorityGrant, error) {
+	authorities, err := a.authorities(ctx)
+	if err != nil {
+		return engine.ChildAuthorityGrant{}, err
+	}
+	return authorities.AcquireChildAuthority(ctx, request)
+}
+
+// ReleaseChildAuthority revokes the named grant under the live lease.
+func (a FencedAuthority) ReleaseChildAuthority(ctx context.Context, release engine.ChildAuthorityRelease) error {
+	authorities, err := a.authorities(ctx)
+	if err != nil {
+		return err
+	}
+	return authorities.ReleaseChildAuthority(ctx, release)
 }

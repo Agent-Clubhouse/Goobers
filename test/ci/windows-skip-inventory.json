@@ -289,6 +289,30 @@
       "reason": "Cloud terminal-awaiter tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/blockedrecords",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Blocked-record projection tests are pure and run in the Linux unit job; the records are consumed by the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
+    },
+    {
+      "package": "internal/terminalhooks/parking",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Terminal-hook parking tests are pure and run in the Linux unit job; the policy is exercised on the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through internal/escalationnotify."
+    },
+    {
+      "package": "internal/terminalhooks/providerposter",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Provider-writer adapter tests are pure and run in the Linux unit job; the adapter serves the cloud control plane, which has no Windows deployment target."
+    },
+    {
+      "package": "internal/terminalhooks/providerwriter",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Provider-writer seam tests are pure and run in the Linux unit job; the seam serves the cloud control plane, which has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/startpin",
       "coverage": "none",
       "category": "not-selected",

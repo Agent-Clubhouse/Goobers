@@ -703,6 +703,7 @@ type handlerConfig struct {
 	cancels                   CancelService
 	journal                   JournalService
 	engineChildren            EngineChildPlane
+	engineChildAuthority      EngineChildAuthority
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
