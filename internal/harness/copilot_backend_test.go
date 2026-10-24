@@ -28,16 +28,20 @@ func (r *fakeCopilotSDKRuntime) OpenSession(ctx context.Context, config copilotS
 }
 
 type fakeCopilotSDKSession struct {
-	prompt string
-	result copilotSDKResult
-	err    error
-	closed bool
-	ctx    context.Context
+	prompt   string
+	result   copilotSDKResult
+	err      error
+	complete func(context.Context) (copilotSDKResult, error)
+	closed   bool
+	ctx      context.Context
 }
 
 func (s *fakeCopilotSDKSession) Complete(ctx context.Context, prompt string) (copilotSDKResult, error) {
 	s.ctx = ctx
 	s.prompt = prompt
+	if s.complete != nil {
+		return s.complete(ctx)
+	}
 	return s.result, s.err
 }
 
@@ -150,6 +154,70 @@ func TestCopilotSDKBackendPropagatesSessionDeadline(t *testing.T) {
 	remaining := time.Until(openDeadline)
 	if remaining <= 0 || remaining > timeout {
 		t.Fatalf("SDK deadline remaining = %v, want within (0, %v]", remaining, timeout)
+	}
+}
+
+func TestCopilotSDKBackendClassifiesSessionContextErrors(t *testing.T) {
+	sdkFailure := errors.New("sdk session stopped")
+	tests := []struct {
+		name    string
+		context func() (context.Context, context.CancelFunc)
+		timeout time.Duration
+		want    error
+		notWant error
+	}{
+		{
+			name: "deadline",
+			context: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+			timeout: 10 * time.Millisecond,
+			want:    ErrTimeout,
+			notWant: ErrCanceled,
+		},
+		{
+			name: "caller cancellation",
+			context: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			timeout: time.Minute,
+			want:    ErrCanceled,
+			notWant: ErrTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := tt.context()
+			defer cancel()
+			session := &fakeCopilotSDKSession{
+				complete: func(ctx context.Context) (copilotSDKResult, error) {
+					<-ctx.Done()
+					return copilotSDKResult{}, sdkFailure
+				},
+			}
+			adapter := &CopilotAdapter{backend: copilotSDKBackend{
+				runtime: &fakeCopilotSDKRuntime{session: session},
+			}}
+
+			_, err := adapter.Run(ctx, RunRequest{
+				Envelope:              testEnvelope(t.TempDir()),
+				Workspace:             t.TempDir(),
+				Timeout:               tt.timeout,
+				HarnessConfigResolved: true,
+			})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Run error = %v, want %v", err, tt.want)
+			}
+			if errors.Is(err, tt.notWant) {
+				t.Fatalf("Run error = %v, must not include %v", err, tt.notWant)
+			}
+			if !errors.Is(err, sdkFailure) {
+				t.Fatalf("Run error = %v, want SDK failure preserved", err)
+			}
+		})
 	}
 }
 

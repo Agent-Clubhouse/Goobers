@@ -107,7 +107,7 @@ func (b copilotSDKBackend) Run(ctx context.Context, req RunRequest) (out Outcome
 		ModelCredential: credential,
 	})
 	if err != nil {
-		return Outcome{}, fmt.Errorf("harness: copilot-sdk: open session: %w", err)
+		return Outcome{}, copilotSDKOperationError(runCtx, "open session", err)
 	}
 	defer func() {
 		runErr = errors.Join(runErr, session.Close())
@@ -124,12 +124,24 @@ func (b copilotSDKBackend) Run(ctx context.Context, req RunRequest) (out Outcome
 		AgentTelemetryDetail:   "direct Copilot SDK event projection is not implemented",
 	}
 	if err != nil {
-		return out, fmt.Errorf("harness: copilot-sdk: complete session: %w", err)
+		return out, copilotSDKOperationError(runCtx, "complete session", err)
 	}
 	if err := validateCompletion(req, result.Completion, nil); err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+func copilotSDKOperationError(ctx context.Context, operation string, err error) error {
+	wrapped := fmt.Errorf("harness: copilot-sdk: %s: %w", operation, err)
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return errors.Join(ErrTimeout, wrapped)
+	case errors.Is(ctx.Err(), context.Canceled):
+		return errors.Join(ErrCanceled, wrapped)
+	default:
+		return wrapped
+	}
 }
 
 func copilotSDKModelCredential(ctx context.Context, req RunRequest) (string, error) {
