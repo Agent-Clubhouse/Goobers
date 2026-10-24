@@ -415,5 +415,5 @@ func TestOneMembersPermanentRefusalDoesNotStopATransientlyFailingCycle(t *testin
 }
 
 func nothingDone(res blockedrecordspg.SweepResult) bool {
-	return res.Dropped == 0 && res.Escalated == 0 && res.Deferred == 0 && len(res.Refused) == 0
+	return res.Dropped == 0 && res.Escalated == 0 && res.Deferred == 0 && len(res.NewlyRefused) == 0
 }
