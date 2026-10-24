@@ -67,7 +67,8 @@ func runPinTestServices(t *testing.T, pool *pgxpool.Pool, instance string, tempo
 			s.RestoreObservations = func(context.Context, []Observation) error { return nil }
 			s.CaptureObservations = func(context.Context) ([]Observation, error) { return nil, nil }
 			return s, nil
-		}}
+		},
+		Admission: inertAdmissionFactory}
 	services, err := runtime.Build(t.Context(), handle)
 	if err != nil {
 		t.Fatal(err)
