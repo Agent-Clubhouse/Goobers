@@ -6,6 +6,7 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/projectorpg"
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
@@ -35,7 +36,16 @@ func constructJournal(_ context.Context, db databaseServices, _ controlAuth, man
 	if err != nil {
 		return err
 	}
-	options := []livejournal.Option{livejournal.WithBackend(backend), livejournal.WithSpanSource(db.Blobs)}
+	// The projector keeps the read model current from committed history; each
+	// commit only nudges it (best effort), and its catch-up pass is what
+	// guarantees convergence.
+	wake := make(chan struct{}, 1)
+	options := []livejournal.Option{livejournal.WithBackend(backend), livejournal.WithSpanSource(db.Blobs), livejournal.WithContextObserver(func(context.Context, string, uint64) {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})}
 	if bounded, ok := db.Blobs.(livejournal.ArtifactSource); ok {
 		// Prepared artifact sets carry content references; a store that cannot
 		// bound reads must not accept them.
@@ -46,6 +56,7 @@ func constructJournal(_ context.Context, db databaseServices, _ controlAuth, man
 		return err
 	}
 	p.Journal = writer
+	p.journalReader, p.projectorWake, p.projectorHealth = backend, wake, &projectorpg.Health{}
 	p.closers = append(p.closers, writer.Close)
 	return nil
 }

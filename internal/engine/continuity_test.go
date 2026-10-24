@@ -577,8 +577,10 @@ func TestRepassUsesOwnPriorDelta(t *testing.T) {
 	if len(implementDeltas) != 2 || implementDeltas[0] != deltaA || implementDeltas[1] != deltaB {
 		t.Fatalf("implement deltas = %v, want [seed's %s, its own prior %s]", implementDeltas, deltaA, deltaB)
 	}
-	if len(reviewDeltas) != 2 || reviewDeltas[0] != deltaB || reviewDeltas[1] != deltaX {
-		t.Fatalf("review deltas = %v, want each pass to review the implement publication before it", reviewDeltas)
+	// Each pass first prepares evidence, then provisions the reviewer against
+	// the identical publication. Neither may fall back to the seed's delta.
+	if len(reviewDeltas) != 4 || reviewDeltas[0] != deltaB || reviewDeltas[1] != deltaB || reviewDeltas[2] != deltaX || reviewDeltas[3] != deltaX {
+		t.Fatalf("review deltas = %v, want preparation/reviewer pairs for each implement publication", reviewDeltas)
 	}
 }
 

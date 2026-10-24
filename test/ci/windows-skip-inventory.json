@@ -247,6 +247,12 @@
       "reason": "Cloud PostgreSQL journal tests run in Linux unit and local PG16 cloudintegration jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/startpin",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud start-pin digest tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",
@@ -1468,7 +1474,7 @@
       "package": "test/journalequivalence",
       "coverage": "none",
       "category": "not-selected",
-      "reason": "Local-runner equivalence corpus exercises backend semantics on the Linux unit shards; it does not select a Windows-specific seam."
+      "reason": "Local journal corpus runs on Linux unit shards; engine/PG equivalence runs in cloud-pg with Temporal worker drain and controller-role grants."
     },
     {
       "package": "test/markdownlinks",
