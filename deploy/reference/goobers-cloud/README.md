@@ -78,6 +78,36 @@ kubectl apply -f /tmp/cloud.yaml
 `kubectl apply -k deploy/reference/goobers-cloud` applies both halves at once
 (used by the nightly kind job, where ordering is enforced by waiting on the Job).
 
+## Stage blob plane
+
+Workers and their stage pods read and write content-addressed blobs (stage artifacts, spans, an engine child's sealed result) over the blob plane. `control` serves that plane directly over its object store (#8188).
+
+**Worker contract.** Every per-build worker Deployment (the rainbow overlay; see `components/worker-base`) passes the `control` Service as its blob endpoint:
+
+```yaml
+args:
+  - --blob-endpoint
+  - https://goobers-control.goobers-cloud.svc:8080
+```
+
+- The dispatcher hands the same URL to stage pods as `GOOBERS_BLOB_ENDPOINT`.
+- The base NetworkPolicies already admit worker and stage pods to `control` on 8080 (`allow-worker-control`, `allow-control-ingress`).
+- Workers and stage pods must trust the issuer of `goobers-cloud-control-tls`.
+- Authentication is the pod and worker-blob bearers minted from `goobers-cloud-pod-key`. No other credential reaches the plane.
+- At boot, a worker checks the wiring: it reads control's per-instance canary through this endpoint, and withholds engine child workflows until it can.
+
+**When it is live.**
+- `control` serves its API, the blob plane included, only once its plane assembly is complete. Check `goobers-cloud control --check-assembly`. Until then, keep workers on the mode-2 endpoint (below).
+- The blob routes are served whether or not the replica holds the controller lease. The `goobers-control` Service only routes to the Ready (lease-holding) pod, which is the single replica in this base. Multi-replica serving arrives with P5.
+
+**The mode-2 `goobers-blobs` PVC stays.** It backs the `goobers` API's blob plane in `../goobers-system` (modes 1 and 2) and is unchanged. The cloud install never mounts it.
+
+**Migrating a mode-2 install.** Blobs written to `goobers-blobs` before the switch are not in the object store:
+- Either copy them across before switching. The layout is identical, `blobs/sha256/<aa>/<rest>`, so it is a straight tree copy into the container.
+- Or drain in-flight runs on the old endpoint first, and switch workers only for new runs.
+
+A stage whose context points at a blob only the PVC holds fails closed when it resolves that context. It never silently skips the blob.
+
 ## Shutdown
 
 There is no preStop hook: SIGTERM makes the `control` role stop its loops and
