@@ -672,6 +672,9 @@ type Router struct {
 	// letting a handler run against subsystems recovery has not finished
 	// opening yet.
 	recoveryGate func() bool
+	// recoveryExempt names the routes served whatever recoveryGate reports,
+	// beyond the contract's RecoverySafe ones (WithLeaseFreeBlobPlane).
+	recoveryExempt map[apicontract.RouteID]bool
 	// recoveryHints, when set, decorates the recovery gate's 503 with the
 	// daemon's startup hints (#6895).
 	recoveryHints func(http.Header)
@@ -730,6 +733,7 @@ type handlerConfig struct {
 	instanceReadiness         InstanceReadinessService
 	portalAssets              http.Handler
 	recoveryGate              func() bool
+	leaseFreeBlobPlane        bool
 	recoveryHints             func(http.Header)
 	discoveryIdentity         DiscoveryIdentity
 	telemetryReadsAvailable   bool
@@ -884,6 +888,20 @@ func WithPortalAssetHandler(handler http.Handler) HandlerOption {
 			return errors.New("http API portal asset handler is required")
 		}
 		c.portalAssets = handler
+		return nil
+	}
+}
+
+// WithLeaseFreeBlobPlane serves the blob plane's GET and PUT whatever the
+// recovery gate reports, and only those two routes (#8188). A cloud control
+// replica's gate is closed while it does not hold the controller lease, but
+// blobs are content-addressed, digest-verified and serialized with GC by
+// their own per-digest storage lease, so a standby (or a replica mid
+// takeover) can serve them safely, and must: gating them on leadership would
+// stall every running stage's artifact I/O across a failover.
+func WithLeaseFreeBlobPlane() HandlerOption {
+	return func(c *handlerConfig) error {
+		c.leaseFreeBlobPlane = true
 		return nil
 	}
 }
@@ -1144,7 +1162,7 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// matters here is that a request against a still-recovering daemon never
 	// reaches a handler whose subsystems have not opened yet, regardless of
 	// whether it would otherwise have authenticated.
-	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
+	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryExempt[route.ID] && !r.recoveryGate() {
 		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
 		if r.recoveryHints != nil {
 			r.recoveryHints(w.Header())
@@ -1247,6 +1265,9 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, err
 	}
 	router.recoveryGate = config.recoveryGate
+	if config.leaseFreeBlobPlane {
+		router.recoveryExempt = map[apicontract.RouteID]bool{apicontract.RouteBlobGet: true, apicontract.RouteBlobPut: true}
+	}
 	router.recoveryHints = config.recoveryHints
 	router.budgetLog = errorLog
 	discovery, err := registerDiscoveryRoutes(router, config)
