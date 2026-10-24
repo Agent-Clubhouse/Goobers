@@ -33,6 +33,9 @@ func newGateStatus() *gateStatus { return &gateStatus{reasons: map[string]string
 
 // Set marks a gate as not enforced.
 func (g *gateStatus) Set(name, reason string) {
+	if g == nil {
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.reasons[name] = reason
@@ -40,6 +43,9 @@ func (g *gateStatus) Set(name, reason string) {
 
 // Clear forgets every recorded gate (an epoch starts from nothing).
 func (g *gateStatus) Clear() {
+	if g == nil {
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.reasons = map[string]string{}
@@ -48,6 +54,9 @@ func (g *gateStatus) Clear() {
 // Checks maps "scheduler-gate:<name>" to false for every gate not enforced, for
 // httpapi.ReadinessStatus.Checks.
 func (g *gateStatus) Checks() map[string]bool {
+	if g == nil {
+		return nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if len(g.reasons) == 0 {
@@ -62,6 +71,9 @@ func (g *gateStatus) Checks() map[string]bool {
 
 // Reasons returns the recorded reasons, sorted by gate name.
 func (g *gateStatus) Reasons() []string {
+	if g == nil {
+		return nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	names := make([]string, 0, len(g.reasons))
