@@ -71,6 +71,12 @@ func TestTerminalInputFromJournalCharacterization(t *testing.T) {
 			t.Fatalf("%s child = %+v, %v, %v", phase, input, found, err)
 		}
 	}
+	// Evidence recorded after run.finished is not the child's result.
+	late := recordArtifact(t, run, "after-finish.txt")
+	after := append(append([]journal.Event{}, events...), journal.Event{Type: journal.EventStageFinished, Stage: "after", Outputs: map[string]any{"summary": "after finish"}, Artifacts: []journal.Ref{late}})
+	if input, found, err := TerminalInputFromJournal(open(), after, journal.PhaseCompleted); err != nil || !found || fmt.Sprint(input) != fmt.Sprint(want) {
+		t.Fatalf("child with evidence after run.finished = %+v, %v, %v; want %+v", input, found, err, want)
+	}
 	if _, found, err := TerminalInputFromJournal(open(), events, journal.PhaseRunning); found || err != nil {
 		t.Fatalf("running child = found %v, %v; want not terminal", found, err)
 	}
@@ -102,6 +108,11 @@ func TestTerminalInputFromJournalCharacterization(t *testing.T) {
 	_, summary, err = ResultEvidence(open(), []journal.Event{{Type: journal.EventStageFinished, Outputs: map[string]any{"summary": long}}})
 	if err != nil || summary != strings.Repeat("a", 8191) {
 		t.Fatalf("bounded summary = %d bytes (%v), want 8191", len(summary), err)
+	}
+	// An ASCII summary one byte over the bound keeps exactly 8 KiB.
+	_, summary, err = ResultEvidence(open(), []journal.Event{{Type: journal.EventStageFinished, Outputs: map[string]any{"summary": strings.Repeat("b", 8193)}}})
+	if err != nil || summary != strings.Repeat("b", 8192) {
+		t.Fatalf("bounded ASCII summary = %d bytes (%v), want 8192", len(summary), err)
 	}
 	for name, value := range map[string]any{"not a string": 42, "invalid UTF-8": string([]byte{0xff, 0xfe})} {
 		if _, summary, err := ResultEvidence(open(), []journal.Event{{Type: journal.EventStageFinished, Outputs: map[string]any{"summary": value}}}); err != nil || summary != "" {
