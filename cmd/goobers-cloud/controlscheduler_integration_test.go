@@ -135,7 +135,14 @@ type controller struct {
 }
 
 func (w *world) controller(holder string, handle func(*lease.Manager) *lease.Handle, entry localscheduler.WorkflowEntry, withSources bool) *controller {
+	return w.skewedController(holder, 0, handle, entry, withSources)
+}
+
+// skewedController is a controller whose node clock runs skew ahead of (or, when
+// negative, behind) the shared test clock: separate pods have separate clocks.
+func (w *world) skewedController(holder string, skew time.Duration, handle func(*lease.Manager) *lease.Handle, entry localscheduler.WorkflowEntry, withSources bool) *controller {
 	w.t.Helper()
+	clock := func() time.Time { return w.clock().Add(skew) }
 	manager := pgtest.Manager(w.t, w.pool, holder, 0)
 	h := handle(manager)
 	store, err := acceptance.New(w.pool, pgtest.InstanceID)
@@ -143,7 +150,7 @@ func (w *world) controller(holder string, handle func(*lease.Manager) *lease.Han
 		w.t.Fatal(err)
 	}
 	store.BindFence(manager, h)
-	backend, err := journalpg.New(journalpg.Config{Pool: w.pool, InstanceID: pgtest.InstanceID, Lease: manager, LiveOwner: func() *lease.Handle { return h }, InstanceClock: w.clock})
+	backend, err := journalpg.New(journalpg.Config{Pool: w.pool, InstanceID: pgtest.InstanceID, Lease: manager, LiveOwner: func() *lease.Handle { return h }, InstanceClock: clock})
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -217,8 +224,8 @@ func (w *world) controller(holder string, handle func(*lease.Manager) *lease.Han
 			return []localscheduler.WorkflowEntry{e}, nil
 		},
 		Quota:   localscheduler.NewProviderQuotaState(),
-		Now:     w.clock,
-		Options: []localscheduler.Option{localscheduler.WithClock(w.clock, func(time.Duration) <-chan time.Time { return nil })},
+		Now:     clock,
+		Options: []localscheduler.Option{localscheduler.WithClock(clock, func(time.Duration) <-chan time.Time { return nil })},
 	}
 	if withSources {
 		comp.Sources = func(deps control.AdmissionDeps, build func(context.Context, startintent.Target) (startintent.Prepared, error)) (localscheduler.SourceQueue, error) {
@@ -427,6 +434,67 @@ func TestCronAtHandoverFiresOnceAndStartsOnce(t *testing.T) {
 	w.settle(2, "the new leader's occurrence")
 	if accepted() != 2 {
 		t.Fatalf("accepted occurrences = %d, want 2", accepted())
+	}
+	if dup := w.duplicates(); len(dup) != 0 {
+		t.Fatalf("runs reached the engine more than once: %v", dup)
+	}
+	second.stop()
+	first.stop()
+}
+
+// TestSuccessorWithAClockBehindDoesNotStallOrDoubleFire: the controllers are
+// different pods, so the successor's clock can trail the predecessor's by
+// seconds. The predecessor (6s ahead) stores an evaluation time that the
+// successor's reconstruction (its own earlier now) would regress; the successor
+// must still prepare, must not fire an occurrence twice, and must not miss the
+// next one once its clock reaches it.
+func TestSuccessorWithAClockBehindDoesNotStallOrDoubleFire(t *testing.T) {
+	w := newWorld(t)
+	schedule, err := localscheduler.ParseSchedule("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := testEntry(4)
+	entry.Schedules = []localscheduler.Schedule{schedule}
+	const skew = 6 * time.Second
+	first := w.skewedController("replica-1", skew, func(m *lease.Manager) *lease.Handle { return pgtest.Acquire(t, m) }, entry, true)
+	if err := first.admission.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	base := w.clock()
+	first.tickConcurrently(1, 2) // nothing due; its Prepare stored base+6s
+	if w.startCount() != 0 {
+		t.Fatalf("an occurrence fired before it was due: %d", w.startCount())
+	}
+
+	// Immediate takeover onto a node whose clock is 6s behind the shared clock: it
+	// reconstructs base-6s, earlier than the stored base+6s.
+	second := w.skewedController("replica-2", -skew, func(m *lease.Manager) *lease.Handle { return pgtest.Takeover(t, w.admin, m) }, entry, true)
+	if err := second.admission.Prepare(t.Context()); err != nil {
+		t.Fatalf("a successor with a slower clock refused to prepare: %v", err)
+	}
+	second.tickConcurrently(2, 2)
+	if w.startCount() != 0 {
+		t.Fatalf("an occurrence fired early on the slow clock: %d", w.startCount())
+	}
+
+	// The schedule cursor is in the ahead leader's clock domain (base+6s), so on
+	// the slow node (6s behind) the next occurrence is due one RELATIVE skew late:
+	// 12s after the ideal minute. Not before, and not later than that.
+	w.now.Store(base.Add(time.Minute).UnixNano())
+	second.tickConcurrently(2, 2)
+	if w.startCount() != 0 {
+		t.Fatalf("the occurrence fired before it was due on the slow clock: %d", w.startCount())
+	}
+	w.now.Store(base.Add(time.Minute + 2*skew + time.Second).UnixNano())
+	second.tickConcurrently(3, 3)
+	w.settle(1, "the successor's first due occurrence (late by at most the relative skew)")
+	// Re-evaluating the same span (the slow clock re-covers it) never fires it twice.
+	second.tickConcurrently(3, 3)
+	w.settle(1, "no duplicate fire after re-evaluation")
+	var accepted int
+	if err := w.admin.QueryRow(t.Context(), `SELECT count(*) FROM control.acceptance`).Scan(&accepted); err != nil || accepted != 1 {
+		t.Fatalf("accepted occurrences = %d (%v), want 1", accepted, err)
 	}
 	if dup := w.duplicates(); len(dup) != 0 {
 		t.Fatalf("runs reached the engine more than once: %v", dup)

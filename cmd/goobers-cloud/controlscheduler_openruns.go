@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -29,6 +30,12 @@ type openRunInputs struct {
 	// admitting over them could exceed MaxConcurrentRuns.
 	Uncertain []triggerqueue.Record
 	Closed    runClosedFunc
+	// Parked reports, per run, whether it is parked on a child workflow (and so
+	// holds no scheduler slot, as locally). nil, or an error, leaves every run
+	// holding its slot: the conservative direction (under-admit, never
+	// over-admit). Its failure is reported through ParkedFailed.
+	Parked       func(ctx context.Context, runIDs []string) (map[string]bool, error)
+	ParkedFailed func(error)
 }
 
 // collectOpenRuns merges pinned runs the engine does not confirm closed with
@@ -79,6 +86,25 @@ func collectOpenRuns(ctx context.Context, in openRunInputs) ([]schedstart.OpenRu
 		out = append(out, run)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	if in.Parked != nil && len(out) > 0 {
+		ids := make([]string, len(out))
+		for i, run := range out {
+			ids[i] = run.RunID
+		}
+		parked, err := in.Parked(ctx, ids)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if in.ParkedFailed != nil {
+				in.ParkedFailed(fmt.Errorf("parked-on-child lookup failed; every open run keeps its slot: %w", err))
+			}
+			return out, nil
+		}
+		for i := range out {
+			out[i].Suspended = parked[out[i].RunID]
+		}
+	}
 	return out, nil
 }
 
