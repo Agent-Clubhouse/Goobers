@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/blockedrecords"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 )
 
 // A cycle that cannot be verified yet is not escalated on a guess and not parked
@@ -151,6 +152,12 @@ func requireWritten(rows int64) error {
 	return nil
 }
 
+// ErrEscalationRefused means the provider permanently refused to escalate a
+// deferred cycle (a refusal that retrying cannot change). The sweep stops retrying
+// that cycle and reports it, so it is surfaced loudly instead of retried in
+// silence forever.
+var ErrEscalationRefused = errors.New("blocked-record cycle escalation permanently refused")
+
 // EscalateFunc performs the provider writes that escalate a cycle (needs-human on
 // every member, the cycle report, a journal entry); cycle.Unverified names what
 // could not be confirmed. A failure keeps the marker, so the next pass retries it.
@@ -171,6 +178,9 @@ type SweepOptions struct {
 // SweepResult counts what one pass did.
 type SweepResult struct {
 	Dropped, Escalated, Deferred int
+	// Refused names the cycles whose escalation was permanently refused; their
+	// markers are cleared and the caller must surface them.
+	Refused []string
 }
 
 // Sweep re-checks the cycles whose deferral has fallen due. For each: recompute
@@ -205,6 +215,9 @@ func (s Store) Sweep(ctx context.Context, handle *lease.Handle, opt SweepOptions
 		if err != nil {
 			if isStale(err) {
 				return result, err
+			}
+			if errors.Is(err, ErrEscalationRefused) {
+				result.Refused = append(result.Refused, d.Key)
 			}
 			errs = append(errs, fmt.Errorf("re-check deferred cycle %s: %w", d.Key, err))
 			continue
@@ -273,6 +286,11 @@ func (s Store) recheck(ctx context.Context, handle *lease.Handle, d Deferral, bo
 // marker: a crash in between repeats the (idempotent) writes.
 func (s Store) escalateDeferred(ctx context.Context, handle *lease.Handle, d Deferral, cycle blockedcycle.Result, escalate EscalateFunc) error {
 	if err := escalate(ctx, cycle, d); err != nil {
+		if providerwriter.Permanent(err) {
+			// Retrying cannot help: stop, and say so. The members stay parked, but
+			// the refusal is reported and journaled by the caller, not retried quietly.
+			return errors.Join(fmt.Errorf("%w: %w", ErrEscalationRefused, err), s.clearDeferral(ctx, handle, d.Key))
+		}
 		return err
 	}
 	return s.clearDeferral(ctx, handle, d.Key)

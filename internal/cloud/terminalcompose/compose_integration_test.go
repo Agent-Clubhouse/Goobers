@@ -82,6 +82,12 @@ type recorder struct {
 	events []journal.Event
 }
 
+// Append is the fenced append the instance-level writer journals through.
+func (r *recorder) Append(ev journal.Event) error {
+	r.AppendBestEffort(ev)
+	return nil
+}
+
 func (r *recorder) AppendBestEffort(ev journal.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -198,6 +204,20 @@ func newRig(t *testing.T, tm temporal, claimed map[string][]string) *rig {
 
 func newRigTuned(t *testing.T, tm temporal, claimed map[string][]string, tuning terminalcompose.Tuning) *rig {
 	t.Helper()
+	return newRigFull(t, tm, claimed, tuning, false)
+}
+
+// escalatorFor returns the instance-level writer as the composition's escalator,
+// or a true nil interface (never a nil pointer inside one) to compose without it.
+func escalatorFor(w *terminalwriter.InstanceWriter, without bool) parking.Poster {
+	if without {
+		return nil
+	}
+	return w
+}
+
+func newRigFull(t *testing.T, tm temporal, claimed map[string][]string, tuning terminalcompose.Tuning, noEscalator bool) *rig {
+	t.Helper()
 	pool := pgtest.Pool(t, "tcomp")
 	controller := pgtest.ControllerPool(t, pool)
 	manager := pgtest.ControllerManager(t, pool, "leader", 0)
@@ -213,7 +233,7 @@ func newRigTuned(t *testing.T, tm temporal, claimed map[string][]string, tuning 
 	gaggle.Spec.Project = pinRepo
 	escalator, err := terminalwriter.NewInstanceWriter(func() (*instance.ConfigSet, string, bool) {
 		return &instance.ConfigSet{Gaggles: []apiv1.Gaggle{gaggle}}, "g1", true
-	}, backends{r.backend}, journal.NewRegistryScrubber(), r.log.AppendBestEffort)
+	}, backends{r.backend}, journal.NewRegistryScrubber(), r.log.Append)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +263,7 @@ func newRigTuned(t *testing.T, tm temporal, claimed map[string][]string, tuning 
 		Log:       r.log,
 		Report:    func(err error) { r.reported = append(r.reported, err) },
 		Backends:  backends{r.backend},
-		Escalator: escalator,
+		Escalator: escalatorFor(escalator, noEscalator),
 		Reserve:   func(providers.ProviderKind) bool { return !r.noBudget.Load() },
 		Instance: func(repo providers.RepositoryRef) (terminalwriter.Binding, bool) {
 			return terminalwriter.Binding{Gaggle: "web", Generation: "g1", Project: pinRepo, Workspace: workspace, WorkItems: workspace}, repo == workspace
@@ -583,5 +603,35 @@ func TestADeferredCycleIsEscalatedByTheSweepThroughTheInstanceWriter(t *testing.
 	}
 	if st := r.comp.Delivery.Status(); st.DeferredCycles != 0 {
 		t.Fatalf("status still shows %d deferred cycles", st.DeferredCycles)
+	}
+}
+
+// Without the instance-level escalator there is no driver, so the composition must
+// not defer: an unverifiable cycle is escalated at once, labelled, never parked with
+// nobody to escalate it.
+func TestWithoutAnEscalatorTheCompositionEscalatesAnUnverifiableCycleAtOnce(t *testing.T) {
+	blockedOn := func(on string) engine.RunResult {
+		return engine.RunResult{
+			Status: engine.StatusEscalated, FinalState: "implement",
+			Outputs: map[string]apiv1.ResultEnvelope{"implement": {Status: apiv1.ResultBlocked, Summary: "waits", Outputs: map[string]any{"blockedBy": on}}},
+		}
+	}
+	tm := temporal{"run-a": {id: "run-a", result: blockedOn("43")}, "run-b": {id: "run-b", result: blockedOn("42")}}
+	r := newRigFull(t, tm, map[string][]string{"run-a": {"42"}, "run-b": {"43"}},
+		terminalcompose.Tuning{DeliveryEvery: time.Millisecond, HealEvery: time.Millisecond}, true)
+	r.noBudget.Store(true)
+	r.run(t)
+	var deferred int
+	if err := r.controller.QueryRow(t.Context(), `SELECT count(*) FROM control.blocked_record WHERE verify_after IS NOT NULL`).Scan(&deferred); err != nil || deferred != 0 {
+		t.Fatalf("deferred markers = %d, %v; a composition without a driver must not defer", deferred, err)
+	}
+	escalated := map[string]bool{}
+	for _, u := range updates(r) {
+		if slices.Contains(u.AddLabels, providers.LabelNeedsHuman) {
+			escalated[u.ID] = true
+		}
+	}
+	if !escalated["42"] || !escalated["43"] {
+		t.Fatalf("escalated = %v; want both members escalated at once (updates %+v, reported %v)", escalated, updates(r), r.reported)
 	}
 }

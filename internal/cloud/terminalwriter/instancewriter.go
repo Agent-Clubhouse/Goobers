@@ -29,7 +29,9 @@ type AppliedSet func() (set *instance.ConfigSet, digest string, ok bool)
 //   - nothing else can be expressed: no title, body, assignee, milestone, state (so
 //     an issue is never opened or closed), revision, and no pull-request operation
 //     at all;
-//   - every write is journaled before it is made.
+//   - every write is journaled before it is made, and a write whose journal entry
+//     cannot be appended (a failed or fenced append: a deposed leader's included) is
+//     refused.
 //
 // Credentials are materialized per call for issues:write on that repository alone,
 // exactly as for the run-bound Writer, and every failure is scrubbed.
@@ -37,12 +39,14 @@ type InstanceWriter struct {
 	applied  AppliedSet
 	backends Backends
 	scrubber journal.Scrubber
-	// Journal receives one event per write, before it is attempted. Required.
-	Journal func(journal.Event)
+	// Journal appends one event per write, before it is attempted; its failure
+	// refuses the write. Required, and it should be the epoch's fenced append, so
+	// that a deposed leader cannot make a credentialed write.
+	Journal func(journal.Event) error
 }
 
 // NewInstanceWriter returns an InstanceWriter over the applied configuration.
-func NewInstanceWriter(applied AppliedSet, backends Backends, scrubber journal.Scrubber, record func(journal.Event)) (*InstanceWriter, error) {
+func NewInstanceWriter(applied AppliedSet, backends Backends, scrubber journal.Scrubber, record func(journal.Event) error) (*InstanceWriter, error) {
 	if applied == nil || backends == nil || scrubber == nil || record == nil {
 		return nil, errors.New("instance writer requires an applied configuration, backends, a scrubber and a journal")
 	}
@@ -75,14 +79,18 @@ func (w *InstanceWriter) UpdateWorkItem(ctx context.Context, req providers.Updat
 		// Azure Boards ignores IdempotencyKey: a retried post would duplicate.
 		return providers.WorkItem{}, failWith(w.scrubber, "instance escalation", fmt.Errorf("comment on %s: %w", backend.Kind(), ErrUnsupported))
 	}
-	w.Journal(journal.Event{
+	if err := w.Journal(journal.Event{
 		Type: journal.EventRunnerAnnotation, Reason: "instance-level escalation write",
 		Runner: map[string]any{
 			"kind": InstanceWriteOperation, "repository": req.Repository.CanonicalKey(), "itemId": req.ID,
 			"addLabels": req.AddLabels, "removeLabels": req.RemoveLabels, "idempotencyKey": req.IdempotencyKey,
 			"commented": req.Comment != "", "driver": string(journal.DriverEngine),
 		},
-	})
+	}); err != nil {
+		// Not journaled, not written. The failure is the fenced append's own, so a
+		// deposed leader's ErrStale passes through for the caller to end its epoch.
+		return providers.WorkItem{}, fmt.Errorf("journal the escalation write: %w", err)
+	}
 	item, err := backend.UpdateWorkItem(ctx, req)
 	return item, failWith(w.scrubber, "instance escalation", err)
 }

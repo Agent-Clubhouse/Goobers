@@ -41,11 +41,26 @@ func (p Poster) UpdateComment(ctx context.Context, repo providers.RepositoryRef,
 // UpdateWorkItem applies req. A request carrying a comment is made idempotent
 // across retries and successor leaders: unless the caller keyed it, the key is
 // derived from the run, the item and the comment text.
+//
+// Azure Boards cannot dedupe a retried comment, so the writer refuses an ADO
+// request that carries one, and with it every label in the same request. The
+// labels are what park or escalate an item, so on ADO they are sent first on their
+// own and the comment is attempted after: a refused comment then costs the comment,
+// never the park.
 func (p Poster) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	if req.Comment != "" && req.IdempotencyKey == "" {
 		req.IdempotencyKey = IdempotencyKey(p.RunID, req.ID, req.Comment)
 	}
-	return providers.WorkItem{}, p.Writer.Update(ctx, p.ref(req.Repository, req.ID), req)
+	ref := p.ref(req.Repository, req.ID)
+	if req.Repository.Provider == providers.ProviderADO && req.Comment != "" && (len(req.AddLabels) > 0 || len(req.RemoveLabels) > 0) {
+		labels := req
+		labels.Comment, labels.IdempotencyKey = "", ""
+		if err := p.Writer.Update(ctx, ref, labels); err != nil {
+			return providers.WorkItem{}, err
+		}
+		req.AddLabels, req.RemoveLabels = nil, nil
+	}
+	return providers.WorkItem{}, p.Writer.Update(ctx, ref, req)
 }
 
 // IdempotencyKey derives the key for a comment a run posts on an item.

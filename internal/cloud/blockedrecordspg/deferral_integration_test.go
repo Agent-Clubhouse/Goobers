@@ -16,6 +16,8 @@ import (
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -97,7 +99,7 @@ func (r *deferralRig) sweep(t *testing.T, store blockedrecordspg.Store, handle *
 func TestADeferredCycleIsNotDueUntilItsMarkerSaysSoAndIsThenEscalatedOnceWhenReal(t *testing.T) {
 	r := newDeferralRig(t)
 	r.deferCycle(t)
-	if res, err := r.sweep(t, r.store, r.handle); err != nil || res != (blockedrecordspg.SweepResult{}) || r.esc.count() != 0 {
+	if res, err := r.sweep(t, r.store, r.handle); err != nil || !nothingDone(res) || r.esc.count() != 0 {
 		t.Fatalf("sweep before the marker is due: %+v, %v, escalations %d", res, err, r.esc.count())
 	}
 	r.makeDue(t, 10*time.Minute)
@@ -112,7 +114,7 @@ func TestADeferredCycleIsNotDueUntilItsMarkerSaysSoAndIsThenEscalatedOnceWhenRea
 		t.Fatalf("deferrals after escalation = %d, want the marker cleared", n)
 	}
 	r.makeDue(t, 0) // nothing marked: nothing happens
-	if res, err := r.sweep(t, r.store, r.handle); err != nil || res != (blockedrecordspg.SweepResult{}) || r.esc.count() != 1 {
+	if res, err := r.sweep(t, r.store, r.handle); err != nil || !nothingDone(res) || r.esc.count() != 1 {
 		t.Fatalf("a second sweep: %+v, %v, escalations %d; want exactly one escalation in total", res, err, r.esc.count())
 	}
 }
@@ -258,4 +260,55 @@ func TestARecordedBlockSupersedesItsOwnDeferral(t *testing.T) {
 	if n, _ := r.store.Deferrals(t.Context(), r.handle); n != 0 {
 		t.Fatalf("deferrals = %d after the seed was re-recorded without a cycle", n)
 	}
+}
+
+// Azure DevOps is never deferred: the instance-level writer cannot comment there,
+// and the labels would go with the refused comment, so a deferred ADO cycle could
+// never be escalated.
+func TestACycleOnAzureDevOpsIsEscalatedNowNotDeferred(t *testing.T) {
+	r := newDeferralRig(t)
+	ado := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Project: "board", Name: "board"}
+	blockADO := func(item, on string) parking.Block {
+		b := block(item, on)
+		b.Repository = ado
+		return b
+	}
+	if _, err := r.store.RecordBlock(t.Context(), r.handle, blockADO("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	r.budget = false
+	cycle, err := r.store.RecordBlock(t.Context(), r.handle, blockADO("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) != 2 {
+		t.Fatalf("cycle %+v, err %v; want an immediate, labelled escalation", cycle, err)
+	}
+	if n, _ := r.store.Deferrals(t.Context(), r.handle); n != 0 {
+		t.Fatalf("deferrals = %d; an ADO cycle must never be deferred", n)
+	}
+}
+
+// A permanent refusal of the escalation itself ends the retries and is reported,
+// instead of being retried in silence on every sweep forever.
+func TestAPermanentEscalationRefusalStopsTheRetriesAndIsReported(t *testing.T) {
+	r := newDeferralRig(t)
+	r.deferCycle(t)
+	r.makeDue(t, 10*time.Minute)
+	r.esc.err = errors.Join(providerwriter.ErrPermanent, errors.New("comment refused"))
+	res, err := r.sweep(t, r.store, r.handle)
+	if !errors.Is(err, blockedrecordspg.ErrEscalationRefused) || len(res.Refused) != 1 {
+		t.Fatalf("sweep: %+v, %v; want the refusal reported with the cycle named", res, err)
+	}
+	if n, _ := r.store.Deferrals(t.Context(), r.handle); n != 0 {
+		t.Fatalf("deferrals = %d; the marker must be cleared so it is not retried forever", n)
+	}
+	// Nothing further is attempted.
+	r.esc.err = nil
+	r.makeDue(t, 10*time.Minute)
+	if res, err := r.sweep(t, r.store, r.handle); err != nil || !nothingDone(res) {
+		t.Fatalf("next sweep: %+v, %v; want nothing left to retry", res, err)
+	}
+	// A transient refusal, by contrast, keeps the marker (covered above).
+}
+
+func nothingDone(res blockedrecordspg.SweepResult) bool {
+	return res.Dropped == 0 && res.Escalated == 0 && res.Deferred == 0 && len(res.Refused) == 0
 }

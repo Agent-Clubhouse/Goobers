@@ -224,7 +224,11 @@ func (s Store) settle(ctx context.Context, handle *lease.Handle, key string, cyc
 	if len(skipped) == 0 && len(unverifiable) == 0 {
 		return cycle, nil
 	}
-	if s.Defer && !slices.ContainsFunc(unverifiable, func(u unverified) bool { return u.Permanent }) {
+	// Azure DevOps is never deferred: the instance-level writer cannot post a cycle
+	// comment there (Azure Boards cannot dedupe a retried one) and the labels go with
+	// it, so a deferred ADO cycle could never be escalated. It is escalated now,
+	// through the run-bound path, which sends the labels on their own.
+	if s.Defer && !hasADO(cycle) && !slices.ContainsFunc(unverifiable, func(u unverified) bool { return u.Permanent }) {
 		if err := s.deferCycle(ctx, handle, key, deferReason(skipped, unverifiable), FirstDeferralDelay); err == nil {
 			return blockedcycle.Result{}, nil
 		}
@@ -564,4 +568,9 @@ func readyNodes(nodes []blockedcycle.Node, backoff *Backoff) []blockedcycle.Node
 		}
 	}
 	return ready
+}
+
+// hasADO reports whether any member of the cycle lives on Azure DevOps.
+func hasADO(cycle blockedcycle.Result) bool {
+	return slices.ContainsFunc(cycle.Affected, func(n blockedcycle.Node) bool { return n.Repository.Provider == providers.ProviderADO })
 }

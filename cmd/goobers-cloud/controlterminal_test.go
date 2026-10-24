@@ -144,8 +144,8 @@ func TestTerminalOutboxStatusIsPublishedAndWithdrawn(t *testing.T) {
 		return terminalcompose.Status{Pending: 3, OldestAge: 90 * time.Second, Healthy: false}
 	}
 	terminalStatus.Store(&status)
-	if checks := terminalOutboxChecks(); checks == nil || checks["terminalOutbox"] {
-		t.Fatalf("checks = %v, want terminalOutbox false while unhealthy", checks)
+	if checks := terminalOutboxChecks(); checks == nil || checks["terminalOutbox"] || !checks["blockedCycleEscalation"] {
+		t.Fatalf("checks = %v, want terminalOutbox false while unhealthy and no refused escalation", checks)
 	}
 	if lag := currentTerminalOutboxLag(); lag == nil || lag.Pending != 3 || lag.OldestSeconds != 90 || lag.Healthy {
 		t.Fatalf("lag = %+v", lag)
@@ -232,5 +232,21 @@ func TestQuotaReserverAccountsReadsWithoutConsumingTheSchedulersReset(t *testing
 	epochWiring.Quota = nil
 	if !quotaReserver()(providers.ProviderGitHub) {
 		t.Fatal("without a ledger reads must be allowed")
+	}
+}
+
+// A permanently refused escalation is a standing readiness failure and appears on
+// the status page.
+func TestARefusedCycleEscalationFailsItsReadinessCheck(t *testing.T) {
+	t.Cleanup(func() { terminalStatus.Store(nil) })
+	status := func() terminalcompose.Status {
+		return terminalcompose.Status{Healthy: true, DeferredCycles: 1, RefusedCycles: []string{"github/acme/web#7"}}
+	}
+	terminalStatus.Store(&status)
+	if checks := terminalOutboxChecks(); checks["blockedCycleEscalation"] || !checks["terminalOutbox"] {
+		t.Fatalf("checks = %v; want only blockedCycleEscalation failing", checks)
+	}
+	if lag := currentTerminalOutboxLag(); lag == nil || lag.DeferredCycles != 1 || len(lag.RefusedCycles) != 1 {
+		t.Fatalf("lag = %+v", lag)
 	}
 }

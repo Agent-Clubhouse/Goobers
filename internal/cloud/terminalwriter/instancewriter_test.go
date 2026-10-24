@@ -2,11 +2,13 @@ package terminalwriter
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
@@ -25,6 +27,8 @@ type instanceRig struct {
 	backend *fakeBackend
 	events  []journal.Event
 	applied bool
+	// journalErr fails the next appends (a failed or fenced instance log).
+	journalErr error
 }
 
 func newInstanceRig(t *testing.T) *instanceRig {
@@ -32,7 +36,13 @@ func newInstanceRig(t *testing.T) *instanceRig {
 	r := &instanceRig{backend: &fakeBackend{kind: providers.ProviderGitHub, calls: &[]call{}, labels: map[string][]string{}}, applied: true}
 	_, scrubber := journal.DefaultScrubber()
 	w, err := NewInstanceWriter(func() (*instance.ConfigSet, string, bool) { return escalationSet(), "digest-1", r.applied },
-		fakeBackends{r.backend}, scrubber, func(ev journal.Event) { r.events = append(r.events, ev) })
+		fakeBackends{r.backend}, scrubber, func(ev journal.Event) error {
+			if r.journalErr != nil {
+				return r.journalErr
+			}
+			r.events = append(r.events, ev)
+			return nil
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +135,7 @@ func TestInstanceWriterScrubsProviderFailuresAndKeepsTheirKind(t *testing.T) {
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte("tok-123"))
 	r.backend.err = &providers.RateLimitError{Provider: providers.ProviderGitHub, Endpoint: "https://x/tok-123"}
-	w, err := NewInstanceWriter(func() (*instance.ConfigSet, string, bool) { return escalationSet(), "d", true }, fakeBackends{r.backend}, scrubber, func(journal.Event) {})
+	w, err := NewInstanceWriter(func() (*instance.ConfigSet, string, bool) { return escalationSet(), "d", true }, fakeBackends{r.backend}, scrubber, func(journal.Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,16 +151,89 @@ func TestInstanceWriterScrubsProviderFailuresAndKeepsTheirKind(t *testing.T) {
 func TestNewInstanceWriterRequiresEverything(t *testing.T) {
 	_, scrubber := journal.DefaultScrubber()
 	applied := func() (*instance.ConfigSet, string, bool) { return nil, "", false }
-	if _, err := NewInstanceWriter(nil, fakeBackends{}, scrubber, func(journal.Event) {}); err == nil {
+	if _, err := NewInstanceWriter(nil, fakeBackends{}, scrubber, func(journal.Event) error { return nil }); err == nil {
 		t.Fatal("no applied configuration accepted")
 	}
-	if _, err := NewInstanceWriter(applied, nil, scrubber, func(journal.Event) {}); err == nil {
+	if _, err := NewInstanceWriter(applied, nil, scrubber, func(journal.Event) error { return nil }); err == nil {
 		t.Fatal("no backends accepted")
 	}
-	if _, err := NewInstanceWriter(applied, fakeBackends{}, nil, func(journal.Event) {}); err == nil {
+	if _, err := NewInstanceWriter(applied, fakeBackends{}, nil, func(journal.Event) error { return nil }); err == nil {
 		t.Fatal("no scrubber accepted")
 	}
 	if _, err := NewInstanceWriter(applied, fakeBackends{}, scrubber, nil); err == nil {
 		t.Fatal("no journal accepted: an unjournaled write path must not exist")
+	}
+}
+
+// A write whose journal entry cannot be appended is not made. The journal is the
+// epoch's fenced log, so this is also what stops a deposed leader's credentialed
+// write: its append fails with ErrStale before the provider is touched.
+func TestInstanceWriterRefusesAWriteItCannotJournal(t *testing.T) {
+	r := newInstanceRig(t)
+	r.journalErr = errors.New("instance log unavailable")
+	if _, err := r.writer.UpdateWorkItem(t.Context(), escalation()); err == nil || !strings.Contains(err.Error(), "journal the escalation write") {
+		t.Fatalf("err = %v, want the write refused for want of a journal entry", err)
+	}
+	if len(*r.backend.calls) != 0 {
+		t.Fatalf("the provider was written despite a failed journal append: %+v", *r.backend.calls)
+	}
+	// A deposed leader's fenced append fails with ErrStale, which is passed through.
+	r.journalErr = lease.ErrStale
+	_, err := r.writer.UpdateWorkItem(t.Context(), escalation())
+	if !errors.Is(err, lease.ErrStale) || len(*r.backend.calls) != 0 {
+		t.Fatalf("a fenced leader's write: err %v, calls %+v; want ErrStale and no provider call", err, *r.backend.calls)
+	}
+	// And a journal failure is not permanent: the sweep retries it.
+	if providerwriter.Permanent(err) {
+		t.Fatal("a journal failure was classified permanent")
+	}
+}
+
+// Every field of UpdateWorkItemRequest is either allowed by the escalation
+// allowlist or refused. A field added to the provider request later fails this
+// test until the allowlist decides it, so a new capability cannot slip into the one
+// credentialed write path unnoticed.
+func TestInstanceWriterDecidesEveryUpdateWorkItemRequestField(t *testing.T) {
+	decided := map[string]string{
+		"Repository":       "required: must be a configured gaggle's backlog repository",
+		"ID":               "required",
+		"AddLabels":        "allowlist: needs-human only",
+		"RemoveLabels":     "allowlist: ready and claimed only",
+		"Comment":          "allowed with an idempotency key",
+		"IdempotencyKey":   "required with a comment",
+		"ExpectedRevision": "refused",
+		"Title":            "refused",
+		"Body":             "refused",
+		"Assignee":         "refused",
+		"Milestone":        "refused",
+		"State":            "refused",
+	}
+	typ := reflect.TypeOf(providers.UpdateWorkItemRequest{})
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if _, ok := decided[name]; !ok {
+			t.Errorf("UpdateWorkItemRequest.%s is new: decide it in validateEscalation and list it here", name)
+		}
+	}
+	for name := range decided {
+		if _, ok := typ.FieldByName(name); !ok {
+			t.Errorf("%s is listed but no longer a field", name)
+		}
+	}
+	// The refused fields really are refused: set each in turn on a valid request.
+	str, num := "x", 1
+	for name, set := range map[string]func(*providers.UpdateWorkItemRequest){
+		"ExpectedRevision": func(r *providers.UpdateWorkItemRequest) { r.ExpectedRevision = "r" },
+		"Title":            func(r *providers.UpdateWorkItemRequest) { r.Title = &str },
+		"Body":             func(r *providers.UpdateWorkItemRequest) { r.Body = &str },
+		"Assignee":         func(r *providers.UpdateWorkItemRequest) { r.Assignee = &str },
+		"Milestone":        func(r *providers.UpdateWorkItemRequest) { r.Milestone = &num },
+		"State":            func(r *providers.UpdateWorkItemRequest) { r.State = "closed" },
+	} {
+		req := escalation()
+		set(&req)
+		if validateEscalation(req) == nil {
+			t.Errorf("%s was accepted", name)
+		}
 	}
 }

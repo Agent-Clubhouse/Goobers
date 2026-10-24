@@ -12,8 +12,6 @@ package terminalcompose
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -339,7 +337,7 @@ var (
 // is cleared) writes nothing new. The escalation is also journaled once.
 func (c *composer) escalateCycle(ctx context.Context, cycle blockedcycle.Result, _ blockedrecordspg.Deferral) error {
 	key := blockedrecordspg.CycleKey(cycle.Affected)
-	err := parking.EscalateCycle(ctx, keyedPoster{inner: c.deps.Escalator, cycle: key}, cycle)
+	err := parking.EscalateCycle(ctx, newKeyedPoster(c.deps.Escalator, key), cycle)
 	if err == nil {
 		c.deps.Log.AppendBestEffort(journal.Event{
 			Type: journal.EventRunnerAnnotation, Reason: "blocked-record cycle escalated by the sweep",
@@ -349,17 +347,26 @@ func (c *composer) escalateCycle(ctx context.Context, cycle blockedcycle.Result,
 	return err
 }
 
-// keyedPoster gives every cycle comment a key derived from the cycle and the
-// comment, so the provider dedupes a repeated escalation.
+// keyedPoster gives every cycle comment a key derived from the cycle, the item and
+// the comment's position among that item's comments, NOT its text: the notes in a
+// comment can change between attempts (a member verified, another not), and a retry
+// must still land on the same key rather than duplicate. One keyedPoster serves
+// one escalation.
 type keyedPoster struct {
 	inner parking.Poster
 	cycle string
+	next  map[string]int
 }
 
-func (p keyedPoster) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+func newKeyedPoster(inner parking.Poster, cycle string) *keyedPoster {
+	return &keyedPoster{inner: inner, cycle: cycle, next: map[string]int{}}
+}
+
+func (p *keyedPoster) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	if req.Comment != "" && req.IdempotencyKey == "" {
-		sum := sha256.Sum256([]byte(req.Comment))
-		req.IdempotencyKey = p.cycle + "/" + req.ID + "/" + hex.EncodeToString(sum[:6])
+		index := p.next[req.ID]
+		p.next[req.ID]++
+		req.IdempotencyKey = fmt.Sprintf("%s/%s/%d", p.cycle, req.ID, index)
 	}
 	return p.inner.UpdateWorkItem(ctx, req)
 }

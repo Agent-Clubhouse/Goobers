@@ -44,7 +44,8 @@ func terminalOutboxChecks() map[string]bool {
 	if status == nil {
 		return nil
 	}
-	return map[string]bool{"terminalOutbox": (*status)().Healthy}
+	current := (*status)()
+	return map[string]bool{"terminalOutbox": current.Healthy, "blockedCycleEscalation": len(current.RefusedCycles) == 0}
 }
 
 // terminalOutboxLag is the control status page's view of the outbox backlog.
@@ -52,8 +53,10 @@ type terminalOutboxLag struct {
 	Pending       int     `json:"pending"`
 	OldestSeconds float64 `json:"oldestSeconds"`
 	Healthy       bool    `json:"healthy"`
-	// DeferredCycles is the blocked-record cycles awaiting re-verification.
-	DeferredCycles int `json:"deferredCycles"`
+	// DeferredCycles is the blocked-record cycles awaiting re-verification;
+	// RefusedCycles those whose escalation the provider permanently refused.
+	DeferredCycles int      `json:"deferredCycles"`
+	RefusedCycles  []string `json:"refusedCycles,omitempty"`
 }
 
 func currentTerminalOutboxLag() *terminalOutboxLag {
@@ -62,7 +65,7 @@ func currentTerminalOutboxLag() *terminalOutboxLag {
 		return nil
 	}
 	s := (*status)()
-	return &terminalOutboxLag{Pending: s.Pending, OldestSeconds: s.OldestAge.Seconds(), Healthy: s.Healthy, DeferredCycles: s.DeferredCycles}
+	return &terminalOutboxLag{Pending: s.Pending, OldestSeconds: s.OldestAge.Seconds(), Healthy: s.Healthy, DeferredCycles: s.DeferredCycles, RefusedCycles: s.RefusedCycles}
 }
 
 // terminalPart returns the Terminal part composed from the control planes, or nil
@@ -108,7 +111,7 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		escalator, err := terminalwriter.NewInstanceWriter(func() (*instance.ConfigSet, string, bool) {
 			candidate, ok := owner.Applied()
 			return candidate.Set, candidate.Digest, ok
-		}, backends, registrar, log.AppendBestEffort)
+		}, backends, registrar, log.Append)
 		if err != nil {
 			return terminalEpoch{}, fmt.Errorf("terminal hooks: instance writer: %w", err)
 		}
