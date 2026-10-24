@@ -77,6 +77,8 @@ func cancelOutcomeRunInput(runID string) RunInput {
 
 func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_TEMPORAL_CLI")
+	// never-assert-wall-clock: the server context is a 90s hang guard, not
+	// a cancellation latency SLO. Assert journal ordering below instead.
 	ctx, server := cancellationDevServer(t)
 	c := server.Client()
 	for _, test := range []struct {
@@ -111,8 +113,11 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			<-executor.started
-			cancelStarted := time.Now()
+			select {
+			case <-executor.started:
+			case <-ctx.Done():
+				t.Fatal("executor did not start:", ctx.Err())
+			}
 			if err := c.CancelWorkflow(
 				ctx, run.GetID(), run.GetRunID()); err != nil {
 				t.Fatal(err)
@@ -132,10 +137,6 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 			if status := description.WorkflowExecutionInfo.Status; status != enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED {
 				t.Fatalf("workflow status = %s, want CANCELED", status)
 			}
-			if elapsed := time.Since(cancelStarted); elapsed >= 2*dispatchHeartbeatTimeout {
-				t.Fatalf("cancel-to-terminal = %s, want <%s",
-					elapsed, 2*dispatchHeartbeatTimeout)
-			}
 			if test.acknowledge {
 				select {
 				case <-executor.cancelSeen:
@@ -144,15 +145,28 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 				}
 			}
 			events := liveEvents(t, runsDir, runID)
-			finished := 0
+			finished, terminals := 0, 0
 			for _, event := range events {
 				if event.Type == journal.EventStageFinished {
+					if terminals != 0 {
+						t.Fatalf("stage.finished recorded after run.finished: %+v", events)
+					}
 					finished++
+				}
+				if event.Type == journal.EventRunFinished {
+					terminals++
+					if event.Status != string(journal.PhaseAborted) || finished != test.wantFinished {
+						t.Fatalf("run.finished=%+v after %d stage.finished, want aborted after %d",
+							event, finished, test.wantFinished)
+					}
 				}
 				if event.Type == journal.EventError && event.Error != nil &&
 					event.Error.Code == JournalEmitFailedErrorCode {
 					t.Fatalf("cancellation emitted infra noise: %+v", event)
 				}
+			}
+			if terminals != 1 {
+				t.Fatalf("run.finished=%d, want 1; events=%+v", terminals, events)
 			}
 			if finished != test.wantFinished {
 				t.Fatalf("stage.finished=%d, want %d; events=%+v",
