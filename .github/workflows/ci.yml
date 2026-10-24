@@ -907,6 +907,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # New migrations must be numbered above the base's highest: the runner
+      # applies any version a database lacks, so a lower number would run out
+      # of order. The base (not the merge-base) makes a stale PR fail on
+      # update-branch until it is renumbered.
+      - name: Enforce migration numbering above the base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.base_sha || 'HEAD' }}
+        run: |
+          if [ "$BASE_REF" != HEAD ]; then git fetch --no-tags --depth=1 origin "$BASE_REF"; fi
+          go run ./test/migrationorder -base-ref "$BASE_REF" -head-ref HEAD
+
       - name: Restore Temporal CLI
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -956,7 +967,7 @@ jobs:
         env:
           TESTDEP_STRICT: "1"
           GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
-        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey)|HealthStreamAndConsumerCursor|Cloud(Stall|MaxRunDuration|StaleSweeper|FailingRun|FailedTerminal))'
+        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey|StoreAdapter)|EpochEndWritesNoRunFinished|HealthStreamAndConsumerCursor|Cloud(Stall|MaxRunDuration|StaleSweeper|FailingRun|FailedTerminal))'
 
       - name: Stop Azurite
         if: always()

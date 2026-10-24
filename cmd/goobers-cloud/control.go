@@ -16,7 +16,9 @@ import (
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/control"
+	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
@@ -56,6 +58,7 @@ Options:
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
   --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
   --self-execution POLICY        Must be deny (default deny)
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
@@ -74,6 +77,7 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
+	webhookSecretFile                                                           string
 	objectStoreURL, objectStoreContainer                                        string
 	objectStoreAccountName, objectStoreAccountKeyFile                           string
 	checkAssembly                                                               bool
@@ -85,6 +89,7 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.cert, "tls-cert", "", "TLS certificate")
 	f.StringVar(&o.key, "tls-key", "", "TLS private key")
 	f.StringVar(&o.podKey, "pod-key-file", environmentOr("GOOBERS_POD_KEY_FILE", ""), "signed pod key file")
+	f.StringVar(&o.webhookSecretFile, "github-webhook-secret-file", environmentOr("GOOBERS_GITHUB_WEBHOOK_SECRET_FILE", ""), "GitHub webhook HMAC secret file")
 	f.StringVar(&o.selfExecution, "self-execution", "deny", "must be deny")
 	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
 	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
@@ -119,15 +124,23 @@ func validateControlObjectStore(options controlOptions) error {
 type controlPlanes struct {
 	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
-	Configuration         control.Configuration
-	Reader                readservice.Reader
-	Claims                httpapi.ClaimService
-	Triggers              httpapi.TriggerService
-	Journal               httpapi.JournalService
-	RunJournal            httpapi.RunJournalService
-	Resolve               acceptance.StartInputResolver
-	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
-	RunnerHosts           []string
+	// EngineChildAuthority binds engine parents' child-workflow grants for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildAuthority httpapi.HandlerOption
+	engineChildren       *childengine.Fenced
+	engineChildAuthority *childengine.FencedAuthority
+	// ChildWorkflows serves the child-workflow routes to engine parents'
+	// stage pods.
+	ChildWorkflows httpapi.HandlerOption
+	Configuration  control.Configuration
+	Reader         readservice.Reader
+	Claims         httpapi.ClaimService
+	Triggers       httpapi.TriggerService
+	Journal        httpapi.JournalService
+	RunJournal     httpapi.RunJournalService
+	Resolve        acceptance.StartInputResolver
+	Epoch          func(context.Context, *lease.Handle) (control.EpochServices, error)
+	RunnerHosts    []string
 
 	// generations reads retained config generations under the live epoch; the
 	// Configuration constructor owns it and later seams consume it.
@@ -194,6 +207,16 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		}
 		return host.EpochHandle()
 	}
+	// Dialled before assembly: the child-authority seam reads live engine
+	// executions. Control cannot serve without Temporal either way.
+	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
+	if err != nil {
+		return err
+	}
+	defer temporal.Close()
+	db.Controller.Temporal = temporal
+	dialed := epoch.Temporal(temporal)
+	epochTemporal.Store(&dialed)
 	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
@@ -205,11 +228,6 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err := services.validate(); err != nil {
 		return err
 	}
-	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
-	if err != nil {
-		return err
-	}
-	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
 	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
 		reporter.SetReporter(report)
@@ -226,6 +244,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	handler, stopWebhook, err := mountWebhook(ctx, o, db, services.Configuration, handler, logger)
+	if err != nil {
+		return err
+	}
+	defer stopWebhook()
 	var opts []httpapi.ServerOption
 	if o.cert != "" || o.key != "" {
 		opts = append(opts, httpapi.WithTLS(o.cert, o.key))
@@ -249,7 +272,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	var handler http.Handler
 	var err error
 	if p.complete() {
-		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions)
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority, p.ChildWorkflows)
 	}
 	if err != nil {
 		return nil, err

@@ -60,7 +60,11 @@ func New(config Config) (*Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Auth{PodKeys: keys, GrantKeys: grants, verifier: verifier.WithCredentialGrants(grants), revocations: config.Revocations}, nil
+	// Child-workflow grants share the credential-grant key domain; their
+	// revocation is the bound custody row, checked by the child-workflow
+	// service on every request, not the grant revocation table.
+	verifier = verifier.WithCredentialGrants(grants).WithChildWorkflowGrants(grants)
+	return &Auth{PodKeys: keys, GrantKeys: grants, verifier: verifier, revocations: config.Revocations}, nil
 }
 
 // Authenticate verifies grants and their durable revocation before minting a

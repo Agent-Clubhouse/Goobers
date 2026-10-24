@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,13 +21,18 @@ func TestChildOriginAgenticDispatchCopy(t *testing.T) {
 	input := dispatchInput("parent", "work", 2)
 	input.Envelope.Goober = "coder"
 	input.Envelope.ChildWorkflowOrigin = &apiv1.ChildWorkflowOrigin{StageOccurrence: journal.StageAttemptID("parent", 1, "work", 2), AttemptID: journal.StageAttemptID("parent", 1, "work", 7)}
-	activities := &Activities{Dispatcher: fake, Surrenders: store}
+	authority := &fakeChildAuthority{grant: ChildAuthorityGrant{Endpoint: "https://control.example", BearerToken: "goobers-child.signed", GrantID: "grant-1"}}
+	activities := &Activities{Dispatcher: fake, Surrenders: store, ChildAuthority: authority}
 	if _, err := activities.DispatchStage(context.Background(), input); err != nil {
 		t.Fatal(err)
 	}
 	attempts, _ := fake.recorded()
 	if len(attempts) != 1 || attempts[0].Envelope == nil || !reflect.DeepEqual(attempts[0].Envelope.ChildWorkflowOrigin, input.Envelope.ChildWorkflowOrigin) {
 		t.Fatalf("dispatch lost origin: %+v", attempts)
+	}
+	// The pod got the attempt's grant, and the settled stage released it.
+	if !strings.Contains(attempts[0].ChildWorkflowAccess, "goobers-child.signed") || len(authority.released) != 1 || authority.released[0].GrantID != "grant-1" {
+		t.Fatalf("grant delivered %q, released %+v", attempts[0].ChildWorkflowAccess, authority.released)
 	}
 	input.Envelope.ChildWorkflowOrigin.AttemptID = "changed-after-dispatch"
 	if attempts[0].Envelope.ChildWorkflowOrigin.AttemptID == input.Envelope.ChildWorkflowOrigin.AttemptID {

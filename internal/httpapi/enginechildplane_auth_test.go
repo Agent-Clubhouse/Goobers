@@ -10,7 +10,8 @@ import (
 )
 
 func TestWorkerChildAdmissionIdentityIsConfinedToItsPlane(t *testing.T) {
-	plane := map[string]bool{apicontract.EngineChildAdmitPath: true, apicontract.EngineChildLoadPath: true, apicontract.EngineChildCancelPath: true}
+	plane := map[string]bool{apicontract.EngineChildAdmitPath: true, apicontract.EngineChildLoadPath: true, apicontract.EngineChildCancelPath: true,
+		apicontract.EngineChildAuthorityPath: true, apicontract.EngineChildAuthorityReleasePath: true}
 	paths := []string{apicontract.ConfigDigestPath, RunsPath, EventsPath, HealthPath, apicontract.EngineChildAdmitPath + "/", "/api/v1/unknown"}
 	for _, route := range apicontract.V1Routes() {
 		paths = append(paths, route.Path)
@@ -30,7 +31,9 @@ func TestWorkerChildAdmissionIdentityIsConfinedToItsPlane(t *testing.T) {
 	// No other issuer reaches the plane at the authorizer, even an admin or a
 	// credential-refresh grant, independent of the handler's own re-check.
 	for path := range plane {
-		for _, issuer := range []string{"", WorkerPrincipalIssuer, WorkerBlobPrincipalIssuer, WorkerSurrenderPrincipalIssuer, GeneratedChildPrincipalIssuer, WorkflowParentPrincipalIssuer, CredentialGrantPrincipalIssuer} {
+		// A child-workflow grant, the bearer the authority route issues, can
+		// never call the plane that issued it.
+		for _, issuer := range []string{"", WorkerPrincipalIssuer, WorkerBlobPrincipalIssuer, WorkerSurrenderPrincipalIssuer, GeneratedChildPrincipalIssuer, WorkflowParentPrincipalIssuer, CredentialGrantPrincipalIssuer, ChildWorkflowPrincipalIssuer} {
 			request := httptest.NewRequest(http.MethodPost, path, nil)
 			principal := Principal{Subject: "operator", Issuer: issuer, Roles: []Role{RoleAdmin}, Scopes: knownPodScopes()}
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))

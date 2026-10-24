@@ -150,6 +150,9 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
+	// Armed only by a committed, versioned terminal rerun; consumed on dispatch.
+	humanReruns map[string]int
+
 	// Receipts are separate from projection ordinals and remain workflow state
 	// reconstructed from recorded activity results, never mutable journal reads.
 	childOrigins map[string]livejournal.ChildOriginReceipt

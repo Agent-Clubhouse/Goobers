@@ -37,11 +37,13 @@ type Config struct {
 // Backend is safe for concurrent use. Each recovered writer gets a new token;
 // old process handles cannot acquire new authority through a lease refresh.
 type Backend struct {
-	config    Config
-	mu        sync.Mutex
-	runs      map[journal.RunHandle]*runOwner
-	instances map[journal.InstanceHandle]*instanceOwner
-	dirty     chan struct{}
+	config     Config
+	mu         sync.Mutex
+	runs       map[journal.RunHandle]*runOwner
+	instances  map[journal.InstanceHandle]*instanceOwner
+	dirty      chan struct{}
+	unresolved map[journal.RunKey]mintedOwner
+	minting    map[journal.RunKey]bool
 }
 
 type runOwner struct {
@@ -65,7 +67,7 @@ func New(config Config) (*Backend, error) {
 	if config.InstanceClock == nil {
 		config.InstanceClock = time.Now
 	}
-	return &Backend{config: config, runs: map[journal.RunHandle]*runOwner{}, instances: map[journal.InstanceHandle]*instanceOwner{}, dirty: make(chan struct{}, 1)}, nil
+	return &Backend{config: config, runs: map[journal.RunHandle]*runOwner{}, instances: map[journal.InstanceHandle]*instanceOwner{}, dirty: make(chan struct{}, 1), unresolved: map[journal.RunKey]mintedOwner{}, minting: map[journal.RunKey]bool{}}, nil
 }
 
 func (b *Backend) liveOwner() (*lease.Handle, error) {

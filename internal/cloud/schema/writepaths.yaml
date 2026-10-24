@@ -240,9 +240,20 @@ tables:
 - schema: control
   table: source_receipt
   provisioned: true
-  fence: epoch
-  rationale: The controller records one immutable receipt per source delivery inside the controller-lease fence.
+  fence: unique key
+  rationale: One immutable receipt per source delivery, unique by (instance_id, source_key). The controller records
+    schedule and signal receipts inside the controller-lease fence. An API replica records authenticated webhook
+    deliveries without a lease; its transaction serialises on the source key, so concurrent redelivery resolves to
+    one receipt.
   readers:
+  - role: goobers_api
+    columns:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
   - role: goobers_controller
     columns:
     - instance_id
@@ -252,6 +263,14 @@ tables:
     - acceptance_ids
     - accepted_at
   writers:
+  - role: goobers_api
+    insert:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
   - role: goobers_controller
     insert:
     - instance_id
@@ -412,6 +431,58 @@ tables:
     - provider
     - external_id
     - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    delete: true
+- schema: control
+  table: claim_run_history
+  provisioned: true
+  fence: epoch
+  rationale: One record per run and key, as the file ledger keeps, recorded on every grant, renewal and verification and
+    completed on release; retention prunes runs that hold nothing and went quiet. All under the controller-lease fence.
+    The upserts take every column from EXCLUDED, which needs SELECT on each.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - gaggle
+    - provider
+    - external_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - gaggle
+    - provider
+    - external_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    update:
     - workflow
     - owner_token
     - owner_epoch
@@ -980,6 +1051,51 @@ tables:
     - closed_through
     - owner_epoch
     - updated_at
+- schema: control
+  table: terminal_framed
+  provisioned: true
+  fence: owner_token
+  rationale: The terminal awaiter records each run whose terminal frame completed, under the controller-lease fence, so a successor
+    does not re-fire it; rows older than the discovery window are pruned under the same fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - owner_epoch
+    - framed_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - owner_epoch
+    delete: true
+- schema: control
+  table: blocked_record
+  provisioned: true
+  fence: owner_token
+  rationale: The blocked terminal hook records a learned dependency block and reads every record to detect the cycle it closes,
+    under the controller-lease fence. Records are replaced whole by key.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - record_key
+    - record
+    - owner_epoch
+    - recorded_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - record_key
+    - record
+    - owner_epoch
+    update:
+    - record
+    - owner_epoch
+    - recorded_at
 - schema: journal
   table: run
   provisioned: true

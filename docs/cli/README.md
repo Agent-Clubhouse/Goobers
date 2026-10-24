@@ -3917,6 +3917,9 @@ which clears the rate window only by destroying everything with it.
 Takes effect on the next `goobers up`/`goobers run` (stop the daemon
 first if one is running; the reset is applied when the scheduler next
 reconstructs its budget window). Default path ".".
+Local instances only: the marker is a file under the instance directory,
+so a cloud (goobers-cloud) scheduler never reads it. The cloud refuses a
+reset explicitly and has no equivalent yet (tracked in L1d/L1e).
 Exit codes: 0 = reset written, 2 = usage/IO error.
 ~~~
 
