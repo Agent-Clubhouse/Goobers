@@ -26,10 +26,14 @@ this base.
 | `goobers-cloud-db-api`, `goobers-cloud-db-controller` | Secrets | keys `url` (PgBouncer) and `direct-url` as roles `goobers_api` / `goobers_controller`; both mounted as files into `control`, which holds two pools. Never in argv. |
 | `goobers-cloud-control-tls` | Secret (`kubernetes.io/tls`) | the `control` role requires TLS off loopback; workers and stage pods must trust the issuer. |
 | `goobers-cloud-pod-key` | Secret | key `keyring.json`: `{"current":{"id":"k1","key":"<base64, >=32 bytes>"}}`. |
-| `goobers-cloud`, `goobers-cloud-migration` | ConfigMaps | shipped in `prereqs/configmaps.yaml` (`instance-id`, `database-auth`, `backup-ref`); patch the values in your overlay. Set `instance-id` once (no default; it also names the database `goobers_<instance-id>`). |
+| `goobers-cloud`, `goobers-cloud-migration` | ConfigMaps | shipped in `prereqs/configmaps.yaml` (`instance-id`, `database-auth`, object-store URL/container, `backup-ref`); patch the CHANGE-ME values. Set `instance-id` once (it also names `goobers_<instance-id>`). |
+| `goobers-cloud-instance` | ConfigMap | generated from `prereqs/config/instance.yaml` and mounted read-only at `/etc/goobers/config`; replace that reference instance with the configuration generation source your controller applies. |
 
 `database-auth` is `entra` in the base and applies to both migrate and control;
 the migrate Job and the NetworkPolicy `allow-migrate-identity` assume it.
+The control role likewise uses Entra for object storage by default. Emulator or
+private shared-key overlays opt in with `--object-store-account-name` and
+`--object-store-account-key-file`; the key stays in a mounted Secret file.
 
 ## Provisioning
 
@@ -46,6 +50,13 @@ grants as the superuser. That step is the single flip point to `bootstrap`.
 ## Rollout order
 
 The migrate Job must finish before `control` rolls.
+
+A migration that cannot take its table locks (behind a long-running reader, or
+another migration) does not queue: it is retried with backoff for up to 20
+minutes inside the Job. If the database is still busy, the Job exits **75**
+(EX_TEMPFAIL) and the sync fails having applied nothing in the busy step. That
+is contention, not a broken migration: re-sync once the contention ends. Any
+other failure exits 1.
 
 **Argo CD.** Create two Applications from the same repo: `prereqs/` first (earlier
 sync wave), then `workload/`, where `migrate-job.yaml` is a PreSync hook. The hook
