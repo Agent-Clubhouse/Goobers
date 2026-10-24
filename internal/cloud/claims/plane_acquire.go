@@ -78,6 +78,10 @@ func (p *Plane) claimRow(
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
 		return httpapi.ClaimResponse{}, err
+	case row.entry.ReleasePending:
+		// Cleanup custody blocks every admission, the run's own included,
+		// until FinishProviderRelease (ClaimLedger.claim's transitionPending).
+		return httpapi.ClaimResponse{Ok: false, Holder: row.entry.RunID}, nil
 	case row.live && row.entry.RunID != request.RunID:
 		return httpapi.ClaimResponse{Ok: false, Holder: row.entry.RunID}, nil
 	case row.live && row.entry.IsPublicationClaim():

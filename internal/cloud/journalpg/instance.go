@@ -28,7 +28,7 @@ func (b *Backend) openInstanceStream(ctx context.Context, stream string) (journa
 		return "", "", journal.RecoverReport{}, err
 	}
 	owner := &instanceOwner{
-		token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, stream: stream,
+		token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, stream: stream, lease: h,
 	}
 	var seq int64
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
@@ -156,16 +156,20 @@ func (b *Backend) RetireInstance(ctx context.Context, handle journal.InstanceHan
 	if err != nil {
 		return err
 	}
-	err = b.withInstance(ctx, owner, func(ctx context.Context, tx pgx.Tx, _ int64) error {
-		tag, err := tx.Exec(ctx, `UPDATE journal.instance_seq SET owner_token=NULL WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, owner.stream, owner.token, owner.epoch)
-		return requireWrite(tag.RowsAffected(), err)
-	})
-	if err == nil {
+	// The owner entry is dropped on ANY outcome: a retire that lost its lease has
+	// nothing more to do for this incarnation (the successor takes the stream over
+	// by epoch), and keeping the entry would leak one per epoch.
+	defer func() {
 		b.mu.Lock()
 		delete(b.instances, handle)
 		b.mu.Unlock()
-	}
-	return err
+	}()
+	// Fenced with the lease the stream was opened under, not the live owner: the
+	// host clears the live owner when the epoch ends, but still holds the lease.
+	return b.config.Lease.WithFence(ctx, owner.lease, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE journal.instance_seq SET owner_token=NULL WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, owner.stream, owner.token, owner.epoch)
+		return requireWrite(tag.RowsAffected(), err)
+	})
 }
 
 // InstanceRead returns committed scheduler events after a durable stream cursor.

@@ -57,6 +57,11 @@ type instanceOwner struct {
 	token  journal.OwnerToken
 	epoch  int64
 	stream string
+	// lease is the handle the stream was opened under. Retire fences with it, not
+	// with the live owner: by the time an epoch ends the host has cancelled the
+	// epoch context and cleared its live owner, but the lease itself is held until
+	// the host releases it.
+	lease *lease.Handle
 }
 
 // New constructs a writer/reader backend without acquiring journal ownership.
