@@ -103,9 +103,9 @@ func TestClosedNodesAccountsEveryReadAndSkipsOnlyASpentProvider(t *testing.T) {
 		reserved = append(reserved, k)
 		return k != providers.ProviderGitHub // GitHub's budget is spent
 	}}
-	closed, deferred := store.closedNodes(t.Context(), nil, []blockedcycle.Node{gh1, gh2, ado}, "run", false)
-	if !deferred {
-		t.Fatal("a skipped item was not reported as deferred")
+	closed, skipped, _ := store.closedNodes(t.Context(), nil, []blockedcycle.Node{gh1, gh2, ado}, "run", false)
+	if len(skipped) != 2 || skipped[0] != gh1 || skipped[1] != gh2 {
+		t.Fatalf("skipped = %v, want the spent provider's two items reported unread", skipped)
 	}
 	if len(closed) != 1 || closed[0] != ado {
 		t.Fatalf("closed = %v; want only the other provider's item checked (a spent provider must not stop the rest)", closed)
@@ -119,8 +119,8 @@ func TestClosedNodesAccountsEveryReadAndSkipsOnlyASpentProvider(t *testing.T) {
 	// With no budget at all, nothing is read.
 	p.calls = nil
 	none := Store{Closed: p.closedFunc, Reserve: func(providers.ProviderKind) bool { return false }}
-	if closed, deferred := none.closedNodes(t.Context(), nil, []blockedcycle.Node{gh1, ado}, "run", false); len(closed) != 0 || !deferred || len(p.calls) != 0 {
-		t.Fatalf("with no budget: closed %v deferred %v reads %v", closed, deferred, p.calls)
+	if closed, skipped, _ := none.closedNodes(t.Context(), nil, []blockedcycle.Node{gh1, ado}, "run", false); len(closed) != 0 || len(skipped) != 2 || len(p.calls) != 0 {
+		t.Fatalf("with no budget: closed %v skipped %v reads %v", closed, skipped, p.calls)
 	}
 }
 
@@ -131,10 +131,10 @@ func TestClosedNodesHonoursTheBackoffOnlyWhenAsked(t *testing.T) {
 	b.Failed(n)
 	p := &probe{closed: map[string]bool{"7": true}}
 	store := Store{Closed: p.closedFunc, Backoff: b}
-	if closed, _ := store.closedNodes(t.Context(), nil, []blockedcycle.Node{n}, "run", true); len(closed) != 0 || len(p.calls) != 0 {
+	if closed, _, _ := store.closedNodes(t.Context(), nil, []blockedcycle.Node{n}, "run", true); len(closed) != 0 || len(p.calls) != 0 {
 		t.Fatalf("the heal read a backed-off item: closed %v reads %v", closed, p.calls)
 	}
-	if closed, _ := store.closedNodes(t.Context(), nil, []blockedcycle.Node{n}, "run", false); len(closed) != 1 || len(p.calls) != 1 {
+	if closed, _, _ := store.closedNodes(t.Context(), nil, []blockedcycle.Node{n}, "run", false); len(closed) != 1 || len(p.calls) != 1 {
 		t.Fatalf("a block being decided skipped a backed-off item: closed %v reads %v", closed, p.calls)
 	}
 	if !b.Allowed(n) {
@@ -142,7 +142,7 @@ func TestClosedNodesHonoursTheBackoffOnlyWhenAsked(t *testing.T) {
 	}
 	// A failing read backs the item off.
 	p.failing = map[string]bool{"7": true}
-	_, _ = store.closedNodes(t.Context(), nil, []blockedcycle.Node{n}, "run", false)
+	_, _, _ = store.closedNodes(t.Context(), nil, []blockedcycle.Node{n}, "run", false)
 	if b.Allowed(n) {
 		t.Fatal("a failed read did not back the item off")
 	}

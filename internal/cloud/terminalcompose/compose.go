@@ -285,11 +285,15 @@ func readItem(ctx context.Context, deps Deps, runID string, repo providers.Repos
 }
 
 // scrub redacts an instance-level read's error; the run-bound writer scrubs its own.
+// The failure's kind (rate limited, not found, refused, ...) is classified BEFORE
+// the text is scrubbed and kept on the error, so the blocked-record store can still
+// decide whether to hold or escalate.
 func (d Deps) scrub(err error) error {
 	if err == nil || d.Scrubber == nil {
 		return err
 	}
-	return errors.New(string(d.Scrubber.Scrub([]byte(err.Error()))))
+	class, permanent := blockedrecordspg.ClassifyVerification(err)
+	return &blockedrecordspg.VerifyError{Class: class, Permanent: permanent, Message: string(d.Scrubber.Scrub([]byte(err.Error())))}
 }
 
 // watermark binds terminalwatermarkpg.Store to the epoch's instance.

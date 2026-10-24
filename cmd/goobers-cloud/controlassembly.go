@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -67,7 +69,7 @@ var controlAssembly = []controlAssemblySeam{
 	// After Configuration, Claims, Journal and Reader: the cross-run journal
 	// read plane answers from all four.
 	{field: "RunJournal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.RunJournal != nil }, construct: constructRunJournal, requires: requiresObjectStore},
-	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
+	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }, construct: constructResolve, requires: requiresConfigDirectory},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }, construct: constructEpoch},
 }
 
@@ -202,9 +204,15 @@ func constructEngineChildAuthority(_ context.Context, db databaseServices, auth 
 // to engine workers (#8085 d): Finalize seals a child's result from its
 // control-side journal; Park and Complete stay unavailable until the control
 // scheduler is composed as the parent capacity plane.
-func constructEngineChildProtocol(_ context.Context, db databaseServices, _ controlAuth, manager *lease.Manager, owner func() *lease.Handle, p *controlPlanes) error {
+func constructEngineChildProtocol(ctx context.Context, db databaseServices, _ controlAuth, manager *lease.Manager, owner func() *lease.Handle, p *controlPlanes) error {
 	if p.engineChildren == nil {
 		return errors.New("engine child protocol requires the engine child admissions (#7879)")
+	}
+	if err := putBlobPlaneCanary(ctx, db.Blobs, db.InstanceID); err != nil {
+		return err
+	}
+	if db.Pools == nil {
+		return errors.New("engine child protocol requires the controller database")
 	}
 	backend, err := journalpg.New(journalpg.Config{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Lease: manager, LiveOwner: owner})
 	if err != nil {
@@ -222,6 +230,21 @@ func constructEngineChildProtocol(_ context.Context, db databaseServices, _ cont
 		return err
 	}
 	p.EngineChildProtocol = httpapi.WithEngineChildProtocol(plane)
+	return nil
+}
+
+// putBlobPlaneCanary puts the instance's canary in control's object store.
+// Workers fetch it through their stage blob plane before lending stages
+// child-workflow authority: proof that pods can read what control writes,
+// such as a child's sealed result (#8085 d, #8188). The put is idempotent.
+func putBlobPlaneCanary(ctx context.Context, blobs blobstore.Store, instanceID string) error {
+	if blobs == nil {
+		return errors.New("engine child protocol requires the object store (--object-store-url)")
+	}
+	digest, canary := childresult.BlobPlaneCanary(instanceID)
+	if err := blobs.Put(ctx, digest, canary); err != nil {
+		return fmt.Errorf("engine child protocol: put the blob plane canary: %w", err)
+	}
 	return nil
 }
 

@@ -17,6 +17,25 @@ const pathSeparator = " -> "
 // report itself, followed by the affected-issue list, split across additional
 // comments when it does not fit alongside the report.
 func Comments(cycle Result) []string {
+	comments := cycleComments(cycle)
+	if len(cycle.Unverified) > 0 {
+		comments = append(comments, unverifiedComment(cycle.Unverified))
+	}
+	return comments
+}
+
+// unverifiedComment says which members were escalated without confirmation, so a
+// human knows the cycle may include an item that has since been closed.
+func unverifiedComment(notes []string) string {
+	text := "Some issues in this cycle could not be checked against the provider before escalating, so one of them may already be closed: " +
+		strings.Join(notes, "; ") + ". If the cycle is not real, remove the needs-human label."
+	if len(text) > MaxCommentLength {
+		text = text[:MaxCommentLength-1] + "…"
+	}
+	return text
+}
+
+func cycleComments(cycle Result) []string {
 	report := Comment(cycle.Paths, cycle.MorePaths)
 	itemIDs := make([]string, len(cycle.Affected))
 	for i, item := range cycle.Affected {

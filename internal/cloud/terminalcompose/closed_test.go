@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/terminalwriter"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
@@ -101,6 +102,41 @@ func TestClosedViaPrefersTheInstanceBindingAndFallsBackToTheRun(t *testing.T) {
 	_, err := closedVia(deps)(t.Context(), "run-1", repo, "7")
 	if err == nil || containsSecret(err.Error(), "tok-123") {
 		t.Fatalf("instance read failure = %v, want an error with the credential redacted", err)
+	}
+}
+
+// Scrubbing must not erase the failure's kind: the store decides to hold or
+// escalate a cycle by it.
+func TestTheInstanceReadKeepsTheFailureKindThroughScrubbing(t *testing.T) {
+	scrub := journal.NewRegistryScrubber()
+	scrub.Register([]byte("tok-123"))
+	for name, tc := range map[string]struct {
+		err       error
+		class     string
+		permanent bool
+	}{
+		"unauthorized": {errors.New("GET /issues/7 failed: status 401: bad token tok-123"), "unauthorized", true},
+		"unavailable":  {errors.New("GET /issues/7 failed: status 503: tok-123 unavailable"), "provider unavailable", false},
+		"limited":      {&providers.RateLimitError{Provider: providers.ProviderGitHub, Endpoint: "https://x/tok-123"}, "rate limited", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := Deps{
+				Writer:   &stateWriter{},
+				Backends: stateBackends{backend: stateBackend{err: tc.err}},
+				Instance: func(providers.RepositoryRef) (terminalwriter.Binding, bool) {
+					return terminalwriter.Binding{Gaggle: "web"}, true
+				},
+				Scrubber: scrub,
+			}
+			_, err := closedVia(deps)(t.Context(), "run-1", repo, "7")
+			var kept *blockedrecordspg.VerifyError
+			if !errors.As(err, &kept) || kept.Class != tc.class || kept.Permanent != tc.permanent {
+				t.Fatalf("error %v (%T); want a VerifyError %q permanent=%v", err, err, tc.class, tc.permanent)
+			}
+			if containsSecret(err.Error(), "tok-123") {
+				t.Fatalf("credential leaked: %v", err)
+			}
+		})
 	}
 }
 

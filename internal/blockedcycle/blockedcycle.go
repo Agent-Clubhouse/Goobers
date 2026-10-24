@@ -42,6 +42,10 @@ type Result struct {
 	Affected  []Node
 	Paths     [][]string
 	MorePaths bool
+	// Unverified names members whose open state could not be confirmed with the
+	// provider when the cycle was escalated (for example "#7: unverifiable: rate
+	// limited"). It is empty for the daemon, which reads its own records.
+	Unverified []string
 }
 
 type edge struct {
