@@ -1,10 +1,13 @@
 package blockedrecordspg
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/blockedcycle"
+	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -59,3 +62,31 @@ func TestNextDelayDoublesCapsAndNeverOvershootsTheBound(t *testing.T) {
 		}
 	}
 }
+
+func TestAllPermanentRefusesOnlyWhenEveryFailureIsPermanent(t *testing.T) {
+	perm := func(s string) error { return fmt.Errorf("%s: %w", s, providerwriter.ErrPermanent) }
+	plain := errors.New("provider unavailable")
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                        {nil, false},
+		"plain":                      {plain, false},
+		"one permanent":              {perm("a"), true},
+		"not pinned":                 {fmt.Errorf("x: %w", providerwriter.ErrRepositoryNotPinned), true},
+		"all permanent members":      {errors.Join(perm("a"), perm("b")), true},
+		"permanent and transient":    {errors.Join(perm("a"), plain), false},
+		"nested joins all permanent": {errors.Join(perm("a"), fmt.Errorf("wrap: %w", errors.Join(perm("b"), perm("c")))), true},
+		"nested join with transient": {errors.Join(perm("a"), fmt.Errorf("wrap: %w", errors.Join(perm("b"), plain))), false},
+		"empty multi-unwrap":         {emptyJoin{}, false},
+	} {
+		if got := allPermanent(tc.err); got != tc.want {
+			t.Errorf("%s: allPermanent = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+type emptyJoin struct{}
+
+func (emptyJoin) Error() string   { return "empty" }
+func (emptyJoin) Unwrap() []error { return nil }

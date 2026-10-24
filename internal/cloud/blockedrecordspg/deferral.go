@@ -145,6 +145,96 @@ func (s Store) Deferrals(ctx context.Context, handle *lease.Handle) (int, error)
 	return n, err
 }
 
+// refusedPrefix marks a seed record whose escalation the provider permanently
+// refused. The row keeps verify_after and deferred_since NULL (so it is never due
+// and the pair CHECK holds) and is told apart by defer_reason alone; it therefore
+// survives a failover, and clears itself the way every marker does: a re-recorded
+// block resets defer_reason, and Forget deletes the row.
+const refusedPrefix = "refused: "
+
+// refusedClass is the short, scrubbed class stored with a refusal: never the
+// provider's own text.
+func refusedClass(err error) string {
+	if errors.Is(err, providerwriter.ErrRepositoryNotPinned) {
+		return "repository not configured"
+	}
+	return "provider refused"
+}
+
+// markRefused latches the seed's cycle as permanently refused, ending its deferral.
+func (s Store) markRefused(ctx context.Context, handle *lease.Handle, key, class string) error {
+	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE control.blocked_record
+			SET verify_after = NULL, deferred_since = NULL, defer_reason = $3, owner_epoch = $4
+			WHERE instance_id=$1 AND record_key=$2`,
+			handle.InstanceID, key, refusedPrefix+class, handle.Epoch)
+		if err != nil {
+			return fmt.Errorf("latch refused blocked-record cycle: %w", err)
+		}
+		return requireWritten(tag.RowsAffected())
+	})
+}
+
+// MaxRefusedListed bounds the refused cycles one read returns.
+const MaxRefusedListed = 50
+
+// Refused lists the seeds whose cycle escalation stands permanently refused, from
+// the database: a standing condition, not a process-local memory.
+func (s Store) Refused(ctx context.Context, handle *lease.Handle) ([]string, error) {
+	var keys []string
+	err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT record_key FROM control.blocked_record
+			WHERE instance_id=$1 AND starts_with(defer_reason, $2) ORDER BY record_key LIMIT $3`,
+			handle.InstanceID, refusedPrefix, MaxRefusedListed)
+		if err != nil {
+			return fmt.Errorf("list refused cycles: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				return err
+			}
+			keys = append(keys, key)
+		}
+		return rows.Err()
+	})
+	return keys, err
+}
+
+// reconcileRefused releases the refusals whose cycle no longer exists (a member
+// closed or the dependency was removed without the seed being re-recorded). The
+// refusals whose cycle stands are returned.
+func (s Store) reconcileRefused(ctx context.Context, handle *lease.Handle) ([]string, error) {
+	keys, err := s.Refused(ctx, handle)
+	if err != nil || len(keys) == 0 {
+		return nil, err
+	}
+	recs, err := s.snapshot(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+	var standing []string
+	for _, key := range keys {
+		if len(blockedrecords.FindCycle(recs, key).Affected) > 0 {
+			standing = append(standing, key)
+			continue
+		}
+		if err := s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `
+				UPDATE control.blocked_record SET defer_reason = '', owner_epoch = $3
+				WHERE instance_id=$1 AND record_key=$2 AND starts_with(defer_reason, $4)`,
+				handle.InstanceID, key, handle.Epoch, refusedPrefix)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return standing, nil
+}
+
 func requireWritten(rows int64) error {
 	if rows == 0 {
 		return errors.New("blocked record is gone")
@@ -178,9 +268,11 @@ type SweepOptions struct {
 // SweepResult counts what one pass did.
 type SweepResult struct {
 	Dropped, Escalated, Deferred int
-	// Refused names the cycles whose escalation was permanently refused; their
-	// markers are cleared and the caller must surface them.
-	Refused []string
+	// NewlyRefused names the cycles whose escalation was permanently refused in this
+	// pass (for the caller to journal once); Refused names every cycle whose refusal
+	// stands, durably, so readiness survives a failover and clears when the cycle
+	// resolves.
+	NewlyRefused, Refused []string
 }
 
 // Sweep re-checks the cycles whose deferral has fallen due. For each: recompute
@@ -231,6 +323,14 @@ func (s Store) Sweep(ctx context.Context, handle *lease.Handle, opt SweepOptions
 			result.Deferred++
 		}
 	}
+	standing, err := once.reconcileRefused(ctx, handle)
+	if err != nil {
+		if isStale(err) {
+			return result, err
+		}
+		errs = append(errs, fmt.Errorf("reconcile refused cycles: %w", err))
+	}
+	result.Refused = standing
 	return result, errors.Join(errs...)
 }
 
@@ -286,14 +386,38 @@ func (s Store) recheck(ctx context.Context, handle *lease.Handle, d Deferral, bo
 // marker: a crash in between repeats the (idempotent) writes.
 func (s Store) escalateDeferred(ctx context.Context, handle *lease.Handle, d Deferral, cycle blockedcycle.Result, escalate EscalateFunc) error {
 	if err := escalate(ctx, cycle, d); err != nil {
-		if providerwriter.Permanent(err) {
-			// Retrying cannot help: stop, and say so. The members stay parked, but
-			// the refusal is reported and journaled by the caller, not retried quietly.
-			return errors.Join(fmt.Errorf("%w: %w", ErrEscalationRefused, err), s.clearDeferral(ctx, handle, d.Key))
+		if allPermanent(err) {
+			// Retrying cannot help: stop, and say so. The members stay parked, but the
+			// refusal is latched in the seed row (durable, readiness-visible) and
+			// journaled by the caller, not retried quietly.
+			return errors.Join(fmt.Errorf("%w: %w", ErrEscalationRefused, err), s.markRefused(ctx, handle, d.Key, refusedClass(err)))
 		}
 		return err
 	}
 	return s.clearDeferral(ctx, handle, d.Key)
+}
+
+// allPermanent reports whether every failure inside err is permanent. An
+// escalation joins one failure per member write, so a permanent refusal of one
+// member must not stop the cycle while another member's failure is still
+// transient: that one is retried, and only a cycle whose every failure is
+// permanent is refused.
+func allPermanent(err error) bool {
+	if err == nil {
+		return false
+	}
+	// The type assertions are deliberate: they walk the tree one node at a time,
+	// which errors.As/Is (any-match) cannot express.
+	if multi, ok := err.(interface{ Unwrap() []error }); ok { //nolint:errorlint // structural walk, not a match
+		children := multi.Unwrap()
+		return len(children) > 0 && !slices.ContainsFunc(children, func(c error) bool { return !allPermanent(c) })
+	}
+	if single, ok := err.(interface{ Unwrap() error }); ok { //nolint:errorlint // structural walk, not a match
+		if inner := single.Unwrap(); inner != nil {
+			return allPermanent(inner)
+		}
+	}
+	return providerwriter.Permanent(err)
 }
 
 // nextDelay doubles from FirstDeferralDelay up to MaxDeferralDelay, and never past
