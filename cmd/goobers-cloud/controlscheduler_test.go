@@ -99,6 +99,12 @@ func newAdmissionFixture(t *testing.T, readiness apiv1.ReadinessConditions, with
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fixture, not the admission, opened this log: an admission that never
+	// ran Prepare (TestAdmissionStopIsSafeWithoutPrepare) is never handed it, so
+	// nothing else closes it. Windows cannot remove the temp directory while
+	// events.jsonl is open. Registered after TempDir, so it runs before the
+	// directory's removal.
+	t.Cleanup(func() { _ = log.Close() })
 	f := &admissionFixture{t: t, queue: queue, log: log, started: make(chan string, 32), gates: newGateStatus()}
 	f.entry = localscheduler.WorkflowEntry{Workflow: testWorkflow, Gaggle: testGaggle, Readiness: readiness, ConfigGeneration: "gen-1"}
 	f.setApplied("gen-1")
