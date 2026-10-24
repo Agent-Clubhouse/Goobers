@@ -29,7 +29,7 @@ func runtimeFixture(t *testing.T) (*Runtime, *authorityFixture, apiv1.Invocation
 	}
 	definitions := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{f.pinned.Admission.Gaggle}}
 	runtime, err := NewRuntime(RuntimeConfig{Queue: queue, Grants: key, Endpoint: "http://localhost:8080", Definitions: definitions,
-		OpenJournal: f.resolver.OpenJournal,
+		OpenJournal: f.open,
 		LoadPinnedStage: func(ctx context.Context, _ *instance.ConfigSet, id journal.RunIdentity, stage string) (PinnedStageAdmission, error) {
 			return f.resolver.LoadPinnedStage(ctx, id, stage)
 		},
