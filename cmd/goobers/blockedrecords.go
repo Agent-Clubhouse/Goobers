@@ -8,9 +8,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/goobers/goobers/internal/blockedcycle"
+	"github.com/goobers/goobers/internal/blockedrecords"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
@@ -31,17 +31,22 @@ import (
 // (stateclient.KeyBlockedRecords) as well as the file's name.
 const blockedRecordsFileName = stateclient.KeyBlockedRecords
 
-// blockedRecord is one learned dependency block: the issue numbers the item
-// was reported blocked on, plus provenance for a human inspecting the file.
-type blockedRecord struct {
-	Repository providers.RepositoryRef `json:"repository"`
-	ItemID     string                  `json:"itemId"`
-	Blockers   []string                `json:"blockers"`
-	RunID      string                  `json:"runId"`
-	Stage      string                  `json:"stage,omitempty"`
-	Reason     string                  `json:"reason,omitempty"`
-	RecordedAt time.Time               `json:"recordedAt"`
-}
+// The record shape and its cycle projection live in internal/blockedrecords, shared
+// with the cloud controller; these keep this package's own vocabulary.
+type blockedRecord = blockedrecords.Record
+
+var (
+	blockedCycleRecords              = blockedrecords.CycleRecords
+	findBlockedCycle                 = blockedrecords.FindCycle
+	findAllBlockedCycles             = blockedrecords.FindAllCycles
+	blockedRecordKey                 = blockedrecords.Key
+	blockedRecordItemID              = blockedrecords.ItemID
+	blockedRepositoryEmpty           = blockedrecords.RepositoryEmpty
+	sameBlockedRepository            = blockedrecords.SameRepository
+	blockedLookupID                  = blockedrecords.LookupID
+	blockedRepositoryIdentity        = blockedcycle.RepositoryIdentity
+	blockedRecordAppliesToRepository = blockedrecords.AppliesToRepository
+)
 
 // blockedCycleNode and blockedCycleResult are the cycle detector's own types
 // (internal/blockedcycle), aliased here so this package's blocked-record
@@ -51,54 +56,6 @@ type blockedCycleNode = blockedcycle.Node
 type blockedCycleResult = blockedcycle.Result
 
 const maxBlockedCyclePaths = blockedcycle.MaxPaths
-
-// blockedCycleRecords projects the recorded blocks onto the detector's input:
-// repository-scoped, provider-lookup-normalized ids in deterministic key
-// order, skipping records that carry no repository scoping.
-func blockedCycleRecords(recs map[string]blockedRecord) []blockedcycle.Record {
-	keys := make([]string, 0, len(recs))
-	for key := range recs {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	records := make([]blockedcycle.Record, 0, len(keys))
-	for _, key := range keys {
-		rec := recs[key]
-		if blockedRepositoryEmpty(rec.Repository) {
-			continue
-		}
-		blockers := make([]string, len(rec.Blockers))
-		for i, blockerID := range rec.Blockers {
-			blockers[i] = blockedLookupID(blockerID)
-		}
-		records = append(records, blockedcycle.Record{
-			Repository: rec.Repository,
-			ItemID:     blockedLookupID(blockedRecordItemID(key, rec)),
-			Blockers:   blockers,
-		})
-	}
-	return records
-}
-
-// findBlockedCycle identifies the cycle containing the newly recorded item.
-func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycleResult {
-	record, ok := recs[itemKey]
-	if !ok || blockedRepositoryEmpty(record.Repository) {
-		return blockedCycleResult{}
-	}
-	item := blockedCycleNode{
-		Repository: record.Repository,
-		ItemID:     blockedLookupID(blockedRecordItemID(itemKey, record)),
-	}
-	return blockedcycle.Find(blockedCycleRecords(recs), item)
-}
-
-// findAllBlockedCycles enumerates every cycle currently present in recs, not
-// just the one touching a single just-written key (#1405).
-func findAllBlockedCycles(recs map[string]blockedRecord) []blockedCycleResult {
-	return blockedcycle.FindAll(blockedCycleRecords(recs))
-}
 
 // reconcileBlockedCycleLabels is the ongoing, tick-driven half of the
 // blocked-cycle escalation guarantee (#1405).
@@ -194,54 +151,6 @@ func (s blockedEligibilitySkip) reason() string {
 		)
 	}
 	return fmt.Sprintf("learned block: item %s parked on open blocker(s): %s", s.ItemID, strings.Join(s.OpenBlockers, ","))
-}
-
-func blockedRepositoryIdentity(repo providers.RepositoryRef) string {
-	return blockedcycle.RepositoryIdentity(repo)
-}
-
-func blockedRecordKey(repo providers.RepositoryRef, itemID string) string {
-	return blockedRepositoryIdentity(repo) + "#" + url.PathEscape(itemID)
-}
-
-func blockedRecordItemID(key string, rec blockedRecord) string {
-	if rec.ItemID != "" {
-		return rec.ItemID
-	}
-	return key
-}
-
-func blockedRepositoryEmpty(repo providers.RepositoryRef) bool {
-	return blockedcycle.RepositoryEmpty(repo)
-}
-
-func sameBlockedRepository(a, b providers.RepositoryRef) bool {
-	return a.Provider == b.Provider && a.Owner == b.Owner && a.Project == b.Project && a.Name == b.Name
-}
-
-func blockedRecordAppliesToRepository(rec blockedRecord, repo providers.RepositoryRef) bool {
-	// The provider-backed selection path migrates legacy records before calling
-	// this helper. Keep any remaining unscoped record quarantined rather than
-	// applying it to every repository.
-	return !blockedRepositoryEmpty(rec.Repository) && sameBlockedRepository(rec.Repository, repo)
-}
-
-// blockedLookupID converts a recorded item id into the id a provider lookup
-// expects. Item ids come from whatever the claim ledger used for the run's
-// driving item, so a pr-remediation run records its claim name — "pr/955" —
-// while issue-driven runs record a bare "955".
-//
-// GetWorkItem builds its URL as .../issues/{id} literally, so a "pr/"-
-// prefixed id produced .../issues/pr/955: an invalid path, a 404, and (before
-// this was handled) a hard failure of every query-backlog tick — which took
-// down every workflow whose first stage is query-backlog, implementation and
-// backlog-curation alike (#971). Stripping the prefix is correct rather than
-// merely expedient: GitHub numbers issues and pull requests in one shared
-// sequence and serves both at /issues/{number}, so the bare number resolves
-// the pull request, and its state drives the same self-heal/prune logic every
-// other record gets.
-func blockedLookupID(key string) string {
-	return strings.TrimPrefix(key, pullRequestClaimPrefix)
 }
 
 // loadBlockedRecords reads the records map; a missing file is an empty map
