@@ -98,6 +98,7 @@ type Generation struct {
 	refusal  *Refusal
 	webhooks []WebhookSubscription
 	pins     map[string]Pins
+	cfg      *instance.Config
 }
 
 // Digest identifies the generation the assessment was computed for.
