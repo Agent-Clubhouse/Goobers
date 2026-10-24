@@ -84,10 +84,10 @@ func (g leasedGenerations) Acquire(ctx context.Context, generation string) (chil
 
 var _ childworkflow.GenerationSource = leasedGenerations{}
 
-// bindControlConfiguration gives the controller role its mounted config
-// directory. The directory must exist at boot: a control plane with no
-// configuration source can never admit anything, so it refuses to start.
-func bindControlConfiguration(controller *databaseServices, dir string) error {
+// validateControlConfigDir refuses to boot without a mounted config directory:
+// a control plane with no configuration source can never admit anything. It
+// runs before any database is opened so the operator sees the real cause.
+func validateControlConfigDir(dir string) error {
 	if dir == "" {
 		return errors.New("--config-dir (or GOOBERS_CONFIG_DIR) is required: the control role admits only from a mounted instance config directory")
 	}
@@ -97,6 +97,15 @@ func bindControlConfiguration(controller *databaseServices, dir string) error {
 	}
 	if !info.IsDir() {
 		return errors.New("config directory is not a directory: " + dir)
+	}
+	return nil
+}
+
+// bindControlConfiguration gives the controller role its mounted config
+// directory, rechecked at bind time.
+func bindControlConfiguration(controller *databaseServices, dir string) error {
+	if err := validateControlConfigDir(dir); err != nil {
+		return err
 	}
 	controller.ConfigDir = dir
 	return nil
