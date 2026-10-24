@@ -51,6 +51,7 @@ func constructScheduler(_ context.Context, db databaseServices, _ controlAuth, m
 	quota := localscheduler.NewProviderQuotaState()
 	gates := newGateStatus()
 	p.schedulerGates = gates
+	p.schedulerQuota = quota
 	// ONE quota state: the scheduler gates on it, the counters feed it, and the
 	// observations ledger persists it (the producer behind epochWiring).
 	epochWiring.Observations = observationsFor(quota, func(err error) {
@@ -119,6 +120,7 @@ func constructScheduler(_ context.Context, db databaseServices, _ controlAuth, m
 			}
 		},
 	}
+	p.schedulerComposition = composition
 	p.Admission = composition.admission
 	return nil
 }

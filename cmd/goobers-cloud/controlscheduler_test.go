@@ -4,7 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/goobers/goobers/internal/childworkflow"
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
+	"github.com/goobers/goobers/internal/cloud/journalpg"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/sdk/client"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -443,5 +449,76 @@ func TestSkewTolerantStateClampsRegressionsOnly(t *testing.T) {
 	_ = skewTolerantState{SchedulerState: inner}.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{testIdentity: stored.Add(time.Minute)})
 	if !inner.written[testIdentity].Equal(stored.Add(time.Minute)) {
 		t.Fatalf("an advance was altered: %v", inner.written[testIdentity])
+	}
+}
+
+type schedulerAppliedOnly struct{ control.Configuration }
+
+func (schedulerAppliedOnly) Applied() (cloudconfig.Candidate, bool) {
+	return cloudconfig.Candidate{Digest: "gen-1"}, true
+}
+
+type noGenerations struct{}
+
+func (noGenerations) Acquire(context.Context, string) (childworkflow.Generation, error) {
+	return childworkflow.Generation{Release: func() error { return nil }}, nil
+}
+
+// The production seam binds ONE provider quota state: what the observations
+// ledger persists is what the scheduler's gate and the counters see. A private
+// copy anywhere would let the ledger capture an empty snapshot with every other
+// test green.
+func TestConstructSchedulerBindsOneQuotaStateToObservations(t *testing.T) {
+	prior := epochWiring
+	t.Cleanup(func() { epochWiring = prior })
+	backend, err := journalpg.New(journalpg.Config{Pool: &pgxpool.Pool{}, InstanceID: "i"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := controlPlanes{Configuration: schedulerAppliedOnly{}, journalBackend: backend, generations: noGenerations{}}
+	db := databaseServices{Temporal: struct{ client.Client }{}, NewClaims: func(*lease.Manager, *lease.Handle) (cloudclaims.Services, error) {
+		return nil, errors.New("unused")
+	}}
+	if err := constructScheduler(t.Context(), db, controlAuth{}, &lease.Manager{}, nil, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Admission == nil || p.schedulerQuota == nil || p.schedulerGates == nil {
+		t.Fatal("constructScheduler composed nothing")
+	}
+	if p.schedulerComposition.Quota != p.schedulerQuota {
+		t.Fatal("the composition (scheduler gate, counters) and the planes hold different quota states")
+	}
+	if epochWiring.Observations == nil {
+		t.Fatal("the observations ledger has no producer")
+	}
+	// Recording into the process quota state must show up in the persisted
+	// snapshot.
+	p.schedulerQuota.Record(apiv1.ProviderGitHub, 7, time.Now().Add(time.Hour))
+	rows, err := epochWiring.Observations().Capture(t.Context())
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("Capture = %v, %v; want the recorded quota window", rows, err)
+	}
+	found := false
+	for _, row := range rows {
+		if strings.Contains(string(row.Payload), `"remaining":7`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the observations ledger is not bound to the scheduler's quota state: %+v", rows)
+	}
+}
+
+// Disabled gates are visible on the readiness probe.
+func TestReadinessReportsDisabledSchedulerGates(t *testing.T) {
+	gates := newGateStatus()
+	gates.Set("max-open-prs", "no opener")
+	checks := gates.Checks()
+	if v, ok := checks["scheduler-gate:max-open-prs"]; !ok || v {
+		t.Fatalf("checks = %v", checks)
+	}
+	var none *gateStatus
+	if none.Checks() != nil {
+		t.Fatal("a controller without a scheduler gate record must report no checks")
 	}
 }

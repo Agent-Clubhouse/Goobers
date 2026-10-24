@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	sharedauth "github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/version"
@@ -158,6 +159,11 @@ type controlPlanes struct {
 	journalBackend *journalpg.Backend
 	// schedulerGates reports the scheduler gates this controller does not enforce.
 	schedulerGates *gateStatus
+	// schedulerQuota is the ONE provider quota state of the process: the
+	// scheduler gates on it, counters feed it, observations persist it.
+	schedulerQuota *localscheduler.ProviderQuotaState
+	// schedulerComposition is what built Admission, for inspection.
+	schedulerComposition schedulerComposition
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }
