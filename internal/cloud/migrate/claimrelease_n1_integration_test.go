@@ -47,6 +47,9 @@ func writePathsBefore0035() (cloudschema.Inventory, error) {
 	if err != nil {
 		return inventory, err
 	}
+	inventory.Tables = slices.DeleteFunc(inventory.Tables, func(table cloudschema.Table) bool {
+		return table.Schema == "control" && table.Name == "shared_claim_repository"
+	})
 	added := func(column string) bool {
 		return slices.Contains([]string{"release_pending_at", "verify_after", "deferred_since", "defer_attempts", "defer_reason",
 			"shared_owner", "shared_deadline", "shared_admission_pending", "shared_revoked"}, column)
