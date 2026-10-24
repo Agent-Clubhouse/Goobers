@@ -130,3 +130,36 @@ func maxConcurrentRuns(r apiv1.ReadinessConditions) int {
 	}
 	return int(r.MaxConcurrentRuns)
 }
+
+// ContinuationClaimStats is a snapshot of the live waiting-continuation claims.
+type ContinuationClaimStats struct {
+	// Count is the number of parked parents holding a claim.
+	Count int
+	// ByWorkflow splits Count by the claimer's workflow identity.
+	ByWorkflow map[WorkflowIdentity]int
+	// Oldest is when the oldest live claim was first made; zero when Count is 0.
+	Oldest time.Time
+}
+
+// ContinuationClaims reports the live waiting-continuation claims: how many
+// parked parents are waiting to resume, per workflow, and how long the longest
+// has waited. Claims are in memory per scheduler epoch, so right after a
+// control-plane failover this is 0 until the waiting parents retry their
+// resume; that is expected, not a lost claim.
+func (c *Conditions) ContinuationClaims() ContinuationClaimStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneClaimsLocked(c.clockNow())
+	stats := ContinuationClaimStats{Count: len(c.claims)}
+	if stats.Count == 0 {
+		return stats
+	}
+	stats.ByWorkflow = make(map[WorkflowIdentity]int, len(c.claims))
+	for _, claim := range c.claims {
+		stats.ByWorkflow[claim.identity]++
+		if stats.Oldest.IsZero() || claim.since.Before(stats.Oldest) {
+			stats.Oldest = claim.since
+		}
+	}
+	return stats
+}
