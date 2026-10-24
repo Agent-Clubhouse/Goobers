@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
@@ -178,5 +179,57 @@ func TestRecordBlockIgnoresTheHealBackoff(t *testing.T) {
 	}
 	if !backoff.Allowed(node) {
 		t.Fatal("the verification did not clear the item's backoff")
+	}
+}
+
+// A member the provider cannot answer holds the cycle while the failure may be
+// transient, then the cycle is escalated with that member named; a failure that
+// can never succeed escalates at once.
+func TestAnUnverifiableMemberHoldsTheCycleThenEscalatesWithANote(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	now := time.Now()
+	backoff := &blockedrecordspg.Backoff{Now: func() time.Time { return now }}
+	closed := &closedSet{closed: map[string]bool{}, err: errors.New("GET /issues/2 failed: status 503: unavailable")}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Backoff: backoff}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	// First failure: held, nothing escalated.
+	if cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1")); !errors.Is(err, blockedrecordspg.ErrVerificationDeferred) || len(cycle.Affected) != 0 {
+		t.Fatalf("first failed verification: cycle %+v, err %v; want held", cycle, err)
+	}
+	// A second attempt inside the hold is still held.
+	now = now.Add(blockedrecordspg.UnverifiedHold / 2)
+	if _, err := store.RecordBlock(t.Context(), handle, block("2", "1")); !errors.Is(err, blockedrecordspg.ErrVerificationDeferred) {
+		t.Fatalf("second attempt inside the hold = %v, want held", err)
+	}
+	// Past the hold, with at least two attempts: escalated, member named.
+	now = now.Add(blockedrecordspg.UnverifiedHold)
+	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) == 0 || !strings.Contains(cycle.Unverified[0], "unverifiable: provider unavailable") {
+		t.Fatalf("after the hold: cycle %+v, err %v; want the cycle escalated naming the unverifiable member", cycle, err)
+	}
+	// Recovery clears the failures: a verified-open member escalates plainly.
+	closed.err = nil
+	cycle, err = store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) != 0 {
+		t.Fatalf("after recovery: cycle %+v, err %v; want a verified cycle with no notes", cycle, err)
+	}
+}
+
+func TestAPermanentVerificationFailureEscalatesAtOnce(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	closed := &closedSet{closed: map[string]bool{}, err: &blockedrecordspg.VerifyError{Class: "not found", Permanent: true, Message: "[REDACTED]"}}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Backoff: &blockedrecordspg.Backoff{}}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) == 0 || !strings.Contains(cycle.Unverified[0], "unverifiable: not found") {
+		t.Fatalf("permanent failure: cycle %+v, err %v; want an immediate escalation naming the reason", cycle, err)
 	}
 }

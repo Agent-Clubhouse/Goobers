@@ -67,7 +67,9 @@ type Backoff struct {
 
 type backoffState struct {
 	failures int
-	until    time.Time
+	// first is when the item first failed verification, kept until it verifies.
+	first time.Time
+	until time.Time
 }
 
 func (b *Backoff) now() time.Time {
@@ -106,12 +108,27 @@ func (b *Backoff) Failed(node blockedcycle.Node) {
 	}
 	st := b.state[node]
 	st.failures++
+	if st.first.IsZero() {
+		st.first = b.now()
+	}
 	delay := base
 	for i := 1; i < st.failures && delay < limit; i++ {
 		delay *= 2
 	}
 	st.until = b.now().Add(min(delay, limit))
 	b.state[node] = st
+}
+
+// Failures reports how many times node has failed verification since it last
+// verified, and when it first failed.
+func (b *Backoff) Failures(node blockedcycle.Node) (attempts int, first time.Time) {
+	if b == nil {
+		return 0, time.Time{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	st := b.state[node]
+	return st.failures, st.first
 }
 
 // Retain drops the state of every node not in live, so entries for items that no
@@ -154,17 +171,22 @@ func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.
 	// does account its reads; if the read budget is spent before every member is
 	// verified, nothing is escalated yet.
 	key := blockedrecords.Key(b.Repository, b.ItemID)
+	// The loop is bounded by the cycle's size, so it normally ends by the cycle
+	// disappearing or a pass with nothing to forget. If the bound is ever reached
+	// after a pass that closed some members and left others unchecked, the last
+	// pass's deferral and unverifiable members decide the answer: the cycle is
+	// never handed back as if it were verified.
+	var deferred bool
+	var lastUnverified []unverified
 	for range cycle.Affected {
 		recs, serr := s.snapshot(ctx, handle)
 		if serr != nil {
 			return cycle, serr
 		}
-		closed, deferred := s.closedNodes(ctx, recs, cycle.Affected, b.RunID, false)
+		closed, passDeferred, unverified := s.closedNodes(ctx, recs, cycle.Affected, b.RunID, false)
+		deferred, lastUnverified = passDeferred, unverified
 		if len(closed) == 0 {
-			if deferred {
-				return blockedcycle.Result{}, ErrVerificationDeferred
-			}
-			return cycle, nil
+			return s.decide(cycle, passDeferred, unverified)
 		}
 		if ferr := s.Forget(ctx, handle, closed); ferr != nil {
 			return cycle, ferr
@@ -177,7 +199,38 @@ func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.
 			return cycle, nil
 		}
 	}
+	return s.decide(cycle, deferred, lastUnverified)
+}
+
+// decide turns a verification pass into the answer RecordBlock gives. A cycle
+// whose read budget ran out is deferred, never escalated unverified. A member the
+// provider could not answer is held (deferred) while its failure may be transient,
+// until it has failed at least MinAttempts times over UnverifiedHold; after that, or
+// at once for a failure that can never succeed, the cycle is escalated with the
+// unverifiable members named in its comment, so a human knows what was not checked.
+func (s Store) decide(cycle blockedcycle.Result, deferred bool, unv []unverified) (blockedcycle.Result, error) {
+	if deferred {
+		return blockedcycle.Result{}, ErrVerificationDeferred
+	}
+	var notes []string
+	for _, u := range unv {
+		if !u.Permanent && !s.ripe(u.Node) {
+			return blockedcycle.Result{}, ErrVerificationDeferred
+		}
+		notes = append(notes, "#"+u.Node.ItemID+": unverifiable: "+u.Class)
+	}
+	cycle.Unverified = notes
 	return cycle, nil
+}
+
+// ripe reports whether a retryable failure has been held long enough. Without a
+// backoff to track it there is nothing to wait on.
+func (s Store) ripe(node blockedcycle.Node) bool {
+	if s.Backoff == nil {
+		return true
+	}
+	attempts, first := s.Backoff.Failures(node)
+	return attempts >= MinAttempts && !first.IsZero() && s.Backoff.now().Sub(first) >= UnverifiedHold
 }
 
 func (s Store) record(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
@@ -308,14 +361,15 @@ func runIDs(recs map[string]blockedrecords.Record) map[blockedcycle.Node]string 
 	return nodes
 }
 
-// closedNodes returns the candidates verified closed, and whether any candidate
-// went unchecked because its provider's read budget was spent. An unverifiable
+// closedNodes returns the candidates verified closed, whether any candidate went
+// unchecked because its provider's read budget was spent, and the candidates whose
+// read failed (with why). An unverifiable
 // candidate is kept: a record is only dropped on positive evidence. With
 // honourBackoff, an item that recently failed verification is skipped (the heal
 // sweep); the outcome of every check updates the backoff either way. A provider
 // whose budget is spent is skipped for the rest of the pass, but other providers'
 // items are still checked.
-func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.Record, candidates []blockedcycle.Node, fallbackRun string, honourBackoff bool) (closed []blockedcycle.Node, deferred bool) {
+func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.Record, candidates []blockedcycle.Node, fallbackRun string, honourBackoff bool) (closed []blockedcycle.Node, deferred bool, unverifiable []unverified) {
 	runs := runIDs(recs)
 	spent := map[providers.ProviderKind]bool{}
 	for _, node := range candidates {
@@ -339,6 +393,8 @@ func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.R
 		done, err := s.Closed(ctx, run, node.Repository, node.ItemID)
 		if err != nil {
 			s.Backoff.Failed(node)
+			class, permanent := classify(err)
+			unverifiable = append(unverifiable, unverified{Node: node, Class: class, Permanent: permanent})
 			continue
 		}
 		s.Backoff.Verified(node)
@@ -346,7 +402,7 @@ func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.R
 			closed = append(closed, node)
 		}
 	}
-	return closed, deferred
+	return closed, deferred, unverifiable
 }
 
 // Forget drops what a closed item leaves behind: its own record, and its
@@ -434,7 +490,7 @@ func (s Store) Heal(ctx context.Context, handle *lease.Handle, limit int) (int, 
 		start := int(now().Unix()/60) % len(nodes)
 		nodes = append(nodes[start:], nodes[:start]...)[:limit]
 	}
-	closed, _ := s.closedNodes(ctx, recs, nodes, "", true)
+	closed, _, _ := s.closedNodes(ctx, recs, nodes, "", true)
 	return len(closed), s.Forget(ctx, handle, closed)
 }
 
