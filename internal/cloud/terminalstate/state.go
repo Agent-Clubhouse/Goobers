@@ -21,8 +21,12 @@ import (
 
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/failurestreakpg"
+	"github.com/goobers/goobers/internal/cloud/noworkstreakpg"
 	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/nowork"
+	"github.com/goobers/goobers/internal/nowork/settle"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -35,6 +39,11 @@ type State struct {
 	// epoch's lease handle every write is fenced by.
 	blockedrecordspg.State
 	Streaks failurestreakpg.Store
+	NoWork  noworkstreakpg.Store
+	// Journal reads a run's journal events (the PostgreSQL journal): the terminal
+	// classification and the no-work verdict come from it. A missing journal is
+	// (nil, nil).
+	Journal func(runID string) ([]journal.Event, error)
 	// CodeRepo is the gaggle's code repository; its backlog repository is where
 	// claimed items live.
 	CodeRepo providers.RepositoryRef
@@ -105,9 +114,37 @@ func (State) SettleSupersededRun(context.Context, gate.Commenter, string, string
 	return false, nil
 }
 
-// SettleNoWorkStreak is not implemented in the cloud yet (3b-2b).
-func (State) SettleNoWorkStreak(context.Context, gate.Commenter, string, string, string) error {
-	return nil
+// SettleNoWorkStreak applies the repeated-no-work policy (settle.Settle) to a
+// completed run. The cloud records no claim purpose, so no claim is treated as a
+// curation claim; a run holding several items is never counted regardless.
+func (s State) SettleNoWorkStreak(ctx context.Context, poster gate.Commenter, runID, finalState, runURL string) error {
+	return settle.Settle(ctx, poster, settle.Deps{
+		Items: func(runID string) ([]settle.Item, error) {
+			claimed, err := s.ClaimedItems(runID)
+			items := make([]settle.Item, 0, len(claimed))
+			for _, c := range claimed {
+				items = append(items, settle.Item{ItemID: c.ItemID, Repo: c.Repo})
+			}
+			return items, err
+		},
+		Terminal: func(runID, finalState string) (nowork.Terminal, bool, error) {
+			if finalState == "" || s.Journal == nil {
+				return nowork.Terminal{}, false, nil
+			}
+			events, err := s.Journal(runID)
+			if err != nil {
+				return nowork.Terminal{}, false, err
+			}
+			terminal, ok := nowork.TerminalFromEvents(events, finalState)
+			return terminal, ok, nil
+		},
+		Increment: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string, t nowork.Terminal) (nowork.Record, nowork.Record, error) {
+			return s.NoWork.Increment(ctx, s.Handle, repo, itemID, runID, t)
+		},
+		Reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID string) (nowork.Record, error) {
+			return s.NoWork.Reset(ctx, s.Handle, repo, itemID, runID)
+		},
+	}, runID, finalState, runURL)
 }
 
 // RunURL is the run's portal link.

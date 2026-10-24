@@ -96,6 +96,9 @@ type Policy struct {
 	RunsDir            string
 	State              State
 	EngineInterruption func(runID string) (string, error)
+	// Events reads a run's journal for its terminal classification; nil reads the
+	// run directory under RunsDir (the daemon). An absent journal is (nil, nil).
+	Events func(runID string) ([]journal.Event, error)
 	// Reports durably retains provider projections without replaying charges.
 	Reports terminalreport.Outbox
 	Gaggle  string
@@ -175,18 +178,9 @@ func (p *Policy) ExistingFix(ctx context.Context, o terminalhooks.ExistingFixOut
 // durable outbox entry.
 func (p *Policy) TerminalNotifier(inner terminalhooks.TerminalNotifier) terminalhooks.TerminalNotifier {
 	return func(runID string, phase journal.RunPhase, finalState string) error {
-		var errs []error
-		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			attributedCtx, _ := AttributionContextForRun(ctx, p.RunsDir, runID, finalState)
-			runURL, _ := p.State.RunURL(runID)
-			if phase == journal.PhaseCompleted {
-				errs = append(errs, p.settleCompleted(attributedCtx, runID, finalState, runURL)...)
-			} else if err := p.chargeTerminal(attributedCtx, runID, finalState, runURL); err != nil {
-				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
-			}
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		errs := []error{p.Terminal(ctx, runID, phase, finalState)}
 		if inner != nil {
 			if err := inner(runID, phase, finalState); err != nil {
 				errs = append(errs, err)
@@ -194,6 +188,24 @@ func (p *Policy) TerminalNotifier(inner terminalhooks.TerminalNotifier) terminal
 		}
 		return errors.Join(errs...)
 	}
+}
+
+// Terminal is TerminalNotifier's policy under the caller's context (the cloud
+// controller attributes it to the run itself): the circuit breaker for an
+// escalated or aborted terminal, the streak resets for a completed one.
+func (p *Policy) Terminal(ctx context.Context, runID string, phase journal.RunPhase, finalState string) error {
+	if phase != journal.PhaseCompleted && phase != journal.PhaseEscalated && phase != journal.PhaseAborted {
+		return nil
+	}
+	attributedCtx := p.terminalHandlerAttributionContext(ctx, runID, finalState)
+	runURL, _ := p.State.RunURL(runID)
+	if phase == journal.PhaseCompleted {
+		return errors.Join(p.settleCompleted(attributedCtx, runID, finalState, runURL)...)
+	}
+	if err := p.chargeTerminal(attributedCtx, runID, finalState, runURL); err != nil {
+		return fmt.Errorf("apply circuit breaker for run %q: %w", runID, err)
+	}
+	return nil
 }
 
 // settleCompleted is TerminalNotifier's completed-run arm. A superseded run
@@ -255,10 +267,15 @@ func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL s
 }
 
 func (p *Policy) journaledTerminalFault(runID string) (terminalhooks.TerminalFault, error) {
-	reader, err := journal.OpenReadOnly(filepath.Join(p.RunsDir, runID))
 	var events []journal.Event
-	if err == nil {
-		events, err = reader.Events()
+	var err error
+	if p.Events != nil {
+		events, err = p.Events(runID)
+	} else {
+		var reader journal.RunReader
+		if reader, err = journal.OpenReadOnly(filepath.Join(p.RunsDir, runID)); err == nil {
+			events, err = reader.Events()
+		}
 	}
 	switch {
 	case err == nil:

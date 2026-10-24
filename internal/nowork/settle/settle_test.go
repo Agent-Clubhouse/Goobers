@@ -11,7 +11,9 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-type poster struct{ reqs []providers.UpdateWorkItemRequest }
+type poster struct {
+	reqs []providers.UpdateWorkItemRequest
+}
 
 func (p *poster) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	p.reqs = append(p.reqs, req)

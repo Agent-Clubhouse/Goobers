@@ -121,6 +121,7 @@ type options struct {
 	writer  providerwriter.Writer
 	parking parking.State
 	failed  func(runID string) *escalationnotify.Policy
+	notify  func(runID string) *escalationnotify.Policy
 }
 
 // WithFailed implements the failed hook: the failure-streak circuit breaker
@@ -138,6 +139,14 @@ func WithFailed(policyFor func(runID string) *escalationnotify.Policy) Option {
 // silently dropped).
 func WithParking(writer providerwriter.Writer, state parking.State) Option {
 	return func(o *options) { o.writer, o.parking = writer, state }
+}
+
+// WithNotify implements the notify hook: the circuit breaker for an escalated or
+// aborted terminal, and the failure and no-work streak resets for a completed
+// one (escalationnotify.Policy.Terminal), through the policy policyFor builds
+// for the run.
+func WithNotify(policyFor func(runID string) *escalationnotify.Policy) Option {
+	return func(o *options) { o.notify = policyFor }
 }
 
 // Hooks assembles the cloud frame for one run: the implemented hooks (claim
@@ -172,7 +181,7 @@ func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Reco
 		Finalize: Finalize(claims, handle, record),
 		Record:   record,
 	}
-	if o.failed != nil || (o.writer != nil && o.parking != nil) {
+	if o.failed != nil || o.notify != nil || (o.writer != nil && o.parking != nil) {
 		// The shared policies attribute provider writes to the run; the daemon
 		// reads that from the run's journal, the cloud supplies it.
 		h.Context = func(ctx context.Context, out frame.Outcome) context.Context {
@@ -184,6 +193,11 @@ func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Reco
 	if o.failed != nil {
 		h.Failed = func(ctx context.Context, f terminalhooks.FailedOutcome) error {
 			return o.failed(f.RunID).Failed(ctx, f)
+		}
+	}
+	if o.notify != nil {
+		h.Notify = func(ctx context.Context, out frame.Outcome) error {
+			return o.notify(out.RunID).Terminal(ctx, out.RunID, out.Phase, out.Result.FinalState)
 		}
 	}
 	if o.writer != nil && o.parking != nil {

@@ -907,6 +907,34 @@ tables:
     - updated_at
     delete: true
 - schema: control
+  table: no_work_streak
+  provisioned: true
+  fence: owner_token
+  rationale: A completed run that ended on a no-work verdict advances the item's repeated-no-work record, and a productive completion
+    deletes it, under the controller-lease fence. The increment is a read-modify-write serialized per item.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - repo_key
+    - item_id
+    - record
+    - owner_epoch
+    - updated_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - repo_key
+    - item_id
+    - record
+    - owner_epoch
+    update:
+    - record
+    - owner_epoch
+    - updated_at
+    delete: true
+- schema: control
   table: blocked_record
   provisioned: true
   fence: owner_token

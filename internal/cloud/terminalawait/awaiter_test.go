@@ -990,3 +990,27 @@ func wrapFailed(next terminalhooks.FailedHandler, observe func(context.Context))
 		return next(ctx, o)
 	}
 }
+
+func TestTheNotifyHookChargesAnEscalatedTerminalUnderTheRunsAttribution(t *testing.T) {
+	r := newRig()
+	w := &recWriter{}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	st := &breakerState{streaks: map[string]int{}, repo: repo}
+	policyFor := func(runID string) *escalationnotify.Policy {
+		return &escalationnotify.Policy{
+			Poster: providerposter.Poster{Writer: w, RunID: runID}, State: st, Gaggle: "web",
+			Events: func(string) ([]journal.Event, error) { return nil, nil },
+		}
+	}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithNotify(policyFor)).Run(t.Context(), frame.Outcome{
+		RunID: "run-7", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseEscalated,
+		Result: engine.RunResult{Status: engine.StatusEscalated, FinalState: "ci"},
+	})
+	if st.streaks["42"] != 1 {
+		t.Fatalf("streak = %v, want the escalated terminal charged", st.streaks)
+	}
+	if len(w.refs) == 0 || w.refs[0].RunID != "run-7" {
+		t.Fatalf("breaker comment not written on behalf of the run: %+v", w.refs)
+	}
+}
