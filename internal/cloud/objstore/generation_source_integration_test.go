@@ -5,9 +5,11 @@ package objstore
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -358,5 +360,62 @@ func TestGenerationSourceOutagesAreUnavailable(t *testing.T) {
 	}
 	if _, err := source.Acquire(t.Context(), digest); !errors.Is(err, ErrGenerationUnavailable) {
 		t.Fatalf("reader pin under a released lease = %v, want ErrGenerationUnavailable", err)
+	}
+}
+
+// A valid generation that cannot be laid out on local disk (a full volume
+// mid-extract, an unwritable temp root) is transient at Acquire itself, never
+// the permanent ErrGenerationInvalid, and leaves no reader pin behind.
+func TestGenerationSourceMaterializeFailuresAreTransientAtAcquire(t *testing.T) {
+	_, admin, store := testMetadata(t, "goobers-generation-materialize")
+	controller := controllerRolePool(t, admin)
+	metadata, err := NewMetadataWithOptions(controller, store, MetadataOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, digest, err := configgeneration.CaptureForInstance(t.Context(), filepath.Join("..", "..", "instance", "starter"), "instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	_, handle := controllerLease(t, controller, "generation-materialize")
+	unwritable := t.TempDir()
+	if err := os.Chmod(unwritable, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
+	for name, build := range map[string]func() *Source{
+		"volume full mid-extract": func() *Source {
+			source, err := NewGenerationSource(metadata, "instance", t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			source.extract = func(context.Context, *configgeneration.Archive, string) error {
+				return &fs.PathError{Op: "write", Path: "config/workflow.yaml", Err: syscall.ENOSPC}
+			}
+			return source
+		},
+		"unwritable temp root": func() *Source {
+			source, err := NewGenerationSource(metadata, "instance", unwritable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return source
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := build()
+			source.BindFence(handle)
+			_, err := source.Acquire(t.Context(), digest)
+			if !errors.Is(err, ErrGenerationUnavailable) || errors.Is(err, ErrGenerationInvalid) {
+				t.Fatalf("acquire = %v, want transient ErrGenerationUnavailable", err)
+			}
+			var pins int
+			if err := admin.QueryRow(t.Context(), `SELECT count(*) FROM control.config_generation_pin WHERE instance_id='instance' AND owner LIKE 'generation-reader:%'`).Scan(&pins); err != nil || pins != 0 {
+				t.Fatalf("a failed acquire left %d reader pins (%v)", pins, err)
+			}
+		})
 	}
 }

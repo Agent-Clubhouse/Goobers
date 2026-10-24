@@ -59,11 +59,12 @@ var controlAssembly = []controlAssemblySeam{
 	// After EngineChildAuthority: every child-workflow call re-resolves the
 	// parent through the same authority and checks the grant it bound.
 	{field: "ChildWorkflows", label: "child workflows", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.ChildWorkflows != nil }, construct: constructChildWorkflows, requires: requiresObjectStore},
-	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Claims != nil }, construct: constructClaims},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }, construct: constructTriggers},
 	{field: "Journal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Journal != nil }, construct: constructJournal, requires: requiresObjectStore},
 	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
+	// After Journal: reads come from the journal plane and its projector.
+	{field: "Reader", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Reader != nil }, construct: constructReader},
 	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }, construct: constructEpoch},
 	// After Configuration, Journal and Epoch: the scheduler admission reads the

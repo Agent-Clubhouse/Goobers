@@ -105,11 +105,14 @@ type Result struct {
 type FeatureBlocker struct {
 	Path  string
 	Issue int
+	// Remaining, when set, names what still blocks the feature beyond the
+	// tracking issue, for the operator's action.
+	Remaining string
 }
 
 var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
 	"workflow.spec.parallels": {Path: "spec.parallels", Issue: 7753},
-	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758},
+	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758, Remaining: instance.EngineChildWorkflowsBlockers},
 	"task.experiment":         {Path: "task.experiment", Issue: 7763},
 }
 
@@ -288,11 +291,15 @@ func genericFeaturePath(spec apiv1.WorkflowSpec, feature, stage string) string {
 func featureBlocker(id workflow.FeatureID, stage, path string) Blocker {
 	meta := featureBlockers[id]
 	feature := meta.Path
+	description := fmt.Sprintf("wait for engine parity in #%d", meta.Issue)
+	if meta.Remaining != "" {
+		description += ": " + meta.Remaining
+	}
 	return Blocker{
 		Code: CodeFeature, Feature: feature, Stage: stage, Path: path,
 		Message: fmt.Sprintf("engine does not support %s", feature),
 		Action: Action{
-			Kind: "p4", Description: fmt.Sprintf("wait for engine parity in #%d", meta.Issue),
+			Kind: "p4", Description: description,
 			Issue:    meta.Issue,
 			IssueURL: fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/issues/%d", meta.Issue),
 		},

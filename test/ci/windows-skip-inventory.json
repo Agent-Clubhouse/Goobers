@@ -223,6 +223,12 @@
       "reason": "Cloud control-plane child custody adapter has no Windows deployment target; unit and PostgreSQL integration tests run on Linux."
     },
     {
+      "package": "internal/cloud/cloudreader",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud control-plane read service has no Windows deployment target; its tests run on the Linux unit shards."
+    },
+    {
       "package": "internal/cloud/claims",
       "coverage": "none",
       "category": "not-selected",
