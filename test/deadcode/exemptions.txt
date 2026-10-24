@@ -559,3 +559,20 @@ github.com/goobers/goobers/internal/cloud/terminalwatermarkpg.Store.Advance # Te
 github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.RunFinalizing # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
 github.com/goobers/goobers/internal/terminalhooks/frame.Hooks.Refinalize # Terminal-hook frame (#7818 group D) awaiting the cloud awaiter that fires it; exercised by internal/terminalhooks tests. expires=2026-12-15
 github.com/goobers/goobers/internal/cloud/terminalreportpg.Store.AdoptAll # HA-P3 epoch services (#7818 group D) call this at epoch start once the control Epoch row is composed; exercised by the cloudintegration two-takeover test. expires=2026-12-15
+
+# L1c cloud admission path (internal/cloud/schedstart), composed in L1e.
+github.com/goobers/goobers/internal/cloud/schedstart.Drain.dispatchOne # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Drain.Run # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Drain.bind # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.NewReconciler # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.reconciler.FromRoots # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.reconciler.FromRunDirs # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.reconciler.inventory # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Tracker.Wait # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Config.StarterFor # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.starter.RegisterDispatch # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Tracker.register # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.starter.Start # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Config.WatchReconciled # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Backoff.next # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Config.awaitTerminal # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22

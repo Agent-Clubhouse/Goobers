@@ -253,6 +253,12 @@
       "reason": "Cloud start-input resolver tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/schedstart",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud admission tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/webhookintake",
       "coverage": "none",
       "category": "not-selected",
