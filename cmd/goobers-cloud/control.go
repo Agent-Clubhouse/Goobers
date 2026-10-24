@@ -63,6 +63,8 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
   --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
                                  optional goobers/ (or GOOBERS_CONFIG_DIR); required
 
@@ -73,6 +75,7 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
 	objectStoreURL, objectStoreContainer                                        string
+	objectStoreAccountName, objectStoreAccountKeyFile                           string
 	checkAssembly                                                               bool
 }
 
@@ -88,6 +91,8 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
 	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	f.StringVar(&o.objectStoreAccountName, "object-store-account-name", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_NAME"), "Azure storage account for shared-key authentication")
+	f.StringVar(&o.objectStoreAccountKeyFile, "object-store-account-key-file", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_KEY_FILE"), "file containing the Azure storage account key")
 	f.StringVar(&o.configDir, "config-dir", environmentOr("GOOBERS_CONFIG_DIR", ""), "mounted instance config directory")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {

@@ -220,6 +220,8 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
   --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
                                  optional goobers/ (or GOOBERS_CONFIG_DIR); required
 

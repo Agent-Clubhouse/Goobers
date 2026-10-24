@@ -39,6 +39,8 @@ env:
   TOXIPROXY_SHA256: bf529e8bb9a05cd293f45a3f1d0aa66ff9469680dcdca7e0ebeae21f1b83de89
   TOXIPROXY_API_URL: http://127.0.0.1:8474/version
   TEMPORAL_UPGRADE_ADDRESS: 127.0.0.1:17233
+  TEMPORAL_WORKER_CONTROLLER_CHART_VERSION: 0.32.0
+  CERT_MANAGER_CHART_VERSION: v1.18.2
 
 jobs:
   smoke:
@@ -126,6 +128,37 @@ jobs:
           HA_BIN_DIR: ${{ runner.temp }}/ha-nightly/bin
           HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
         run: go run ./test/ha/kind/cmd/nightly run
+
+      - name: Install Temporal Worker Controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm upgrade --install cert-manager \
+            oci://quay.io/jetstack/charts/cert-manager \
+            --version "$CERT_MANAGER_CHART_VERSION" \
+            --namespace cert-manager --create-namespace \
+            --set crds.enabled=true --wait --timeout 5m
+          helm upgrade --install temporal-worker-controller-crds \
+            oci://docker.io/temporalio/temporal-worker-controller-crds \
+            --version "$TEMPORAL_WORKER_CONTROLLER_CHART_VERSION" \
+            --namespace temporal-worker-system --create-namespace --wait --timeout 5m
+          helm upgrade --install temporal-worker-controller \
+            oci://docker.io/temporalio/temporal-worker-controller \
+            --version "$TEMPORAL_WORKER_CONTROLLER_CHART_VERSION" \
+            --namespace temporal-worker-system \
+            --values deploy/reference/workers/controller-values.yaml \
+            --wait --timeout 5m
+          kubectl -n temporal-worker-system wait --for=condition=Ready pod \
+            -l app.kubernetes.io/instance=temporal-worker-controller --timeout=5m
+          worker_secret="$(mktemp -d)"
+          trap 'rm -rf "$worker_secret"' EXIT
+          chmod 700 "$worker_secret"
+          openssl rand -base64 48 | tr -d '\n' > "$worker_secret/key"
+          kubectl -n goobers-system create secret generic goobers-pod-token-key \
+            --from-file=key="$worker_secret/key" --dry-run=client -o yaml |
+            kubectl apply -f -
+          kubectl apply -k test/ha/kind/workers
+          kubectl -n goobers-system get workerdeployment.temporal.io/goobers
 
       - name: Freeze smoke (CgroupFreeze on kind)
         shell: bash
@@ -236,20 +269,28 @@ jobs:
             "$HA_EVIDENCE_DIR/chaos-summary.json" CHAOS-13 UPGRADE-11
 
       # HA-P3-20: apply the goobers-cloud reference to the same kind cluster.
-      # Gated on the built CLI reporting a complete control-plane assembly:
-      # `control --check-assembly` exits 0 only when the role exists and its
-      # composition (HA-P3-18) is complete. A role without it would crash-loop
-      # goobers-control, so any non-zero exit (including an older CLI that does
-      # not know the flag) skips with an explicit notice.
+      # Gated on the built CLI reporting a complete control-plane assembly with
+      # the same object-store/config flags the Deployment receives. Explicitly
+      # pending seams warn and defer; any other check failure is red. Once every
+      # seam is implemented, deployment and rollout are mandatory.
       - name: Detect goobers-cloud control assembly
         id: cloud
+        shell: bash
         run: |
-          if go run ./cmd/goobers-cloud control --check-assembly >/dev/null 2>&1; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=cloud reference skipped::goobers-cloud control --check-assembly did not report a complete assembly"
-          fi
+          set -euo pipefail
+          flags=(
+            --object-store-url=http://azurite.goobers-cloud.svc:10000/devstoreaccount1
+            --object-store-container=goobers
+            --object-store-account-name=devstoreaccount1
+            --object-store-account-key-file=/var/run/secrets/goobers/object-store/account-key
+            --config-dir=/etc/goobers/config
+          )
+          set +e
+          assembly="$(go run ./cmd/goobers-cloud control --check-assembly "${flags[@]}" 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$assembly" |
+            go run ./test/ha/kind/cmd/assemblyclassify "$status"
 
       - name: Apply goobers-cloud reference and check rollout
         if: ${{ steps.cloud.outputs.ready == 'true' }}
@@ -295,10 +336,21 @@ jobs:
           done
           secret tls goobers-cloud-control-tls --cert="$secrets/tls.crt" --key="$secrets/tls.key"
           secret generic goobers-cloud-pod-key --from-file=keyring.json="$secrets/keyring.json"
+          openssl rand -base64 32 | tr -d '\n' > "$secrets/azurite-key"
+          {
+            printf 'devstoreaccount1:'
+            cat "$secrets/azurite-key"
+          } > "$secrets/azurite-accounts"
+          secret generic goobers-cloud-object-store \
+            --from-literal=account-name=devstoreaccount1 \
+            --from-file=account-key="$secrets/azurite-key" \
+            --from-file=accounts="$secrets/azurite-accounts"
           # kind has no Entra: the overlay sets database-auth=password in the
           # shared ConfigMap. Outside Argo the PreSync hook is just a Job: apply
           # everything, then require it to complete before the rollout check.
           kubectl apply -k test/ha/kind/cloud-reference
+          kubectl -n goobers-cloud rollout status deployment/azurite --timeout=5m
+          kubectl -n goobers-cloud wait --for=condition=complete job/azurite-bootstrap --timeout=5m
           kubectl -n goobers-cloud wait --for=condition=complete job/goobers-cloud-migrate --timeout=10m
           kubectl -n goobers-cloud rollout status deployment/goobers-control --timeout=5m
           kubectl -n goobers-cloud wait --for=condition=Ready pod -l app.kubernetes.io/name=goobers-control --timeout=2m
