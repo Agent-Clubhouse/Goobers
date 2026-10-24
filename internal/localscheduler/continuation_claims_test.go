@@ -475,3 +475,37 @@ func TestYoungerSameWorkflowWaiterHoldsNoInstanceSlot(t *testing.T) {
 		t.Fatalf("the older parent's resume = %v", err)
 	}
 }
+
+func TestContinuationClaimsReportsCountPerWorkflowAndOldest(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	c := &Conditions{clock: func() time.Time { return now }}
+	if stats := c.ContinuationClaims(); stats.Count != 0 || stats.ByWorkflow != nil || !stats.Oldest.IsZero() {
+		t.Fatalf("no claims = %+v, want the zero value (expected right after a failover)", stats)
+	}
+	a, b := WorkflowIdentity{Gaggle: "g", Workflow: "a"}, WorkflowIdentity{Gaggle: "g", Workflow: "b"}
+	c.mu.Lock()
+	c.markContinuationWaitingLocked("run-1", a, 1, now.Add(-5*time.Minute))
+	c.markContinuationWaitingLocked("run-2", a, 1, now.Add(-2*time.Minute))
+	c.markContinuationWaitingLocked("run-3", b, 1, now.Add(-time.Minute))
+	c.mu.Unlock()
+	stats := c.ContinuationClaims()
+	if stats.Count != 3 || stats.ByWorkflow[a] != 2 || stats.ByWorkflow[b] != 1 || !stats.Oldest.Equal(now.Add(-5*time.Minute)) {
+		t.Fatalf("claims = %+v, want 3 (a:2 b:1) oldest 5m old", stats)
+	}
+	// A renewal keeps the claim's place, so the oldest does not move.
+	c.mu.Lock()
+	c.markContinuationWaitingLocked("run-1", a, 1, now)
+	c.mu.Unlock()
+	if got := c.ContinuationClaims().Oldest; !got.Equal(now.Add(-5 * time.Minute)) {
+		t.Fatalf("oldest after a renewal = %v, want unchanged", got)
+	}
+	// Cleared and expired claims drop out.
+	c.ClearContinuationClaim("run-1")
+	if got := c.ContinuationClaims().Count; got != 2 {
+		t.Fatalf("count after a clear = %d, want 2", got)
+	}
+	now = now.Add(ContinuationClaimTTL + time.Minute)
+	if got := c.ContinuationClaims(); got.Count != 0 {
+		t.Fatalf("claims after the TTL = %+v, want none", got)
+	}
+}

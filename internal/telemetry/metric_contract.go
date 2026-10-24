@@ -297,6 +297,24 @@ var firstClassMetricRegistry = []metricContract{
 		AllowedDimensions: []string{MetricAttrOS},
 		Lifecycle:         stableContractLifecycle(),
 	},
+	{
+		Name:              MetricContinuationClaims,
+		Kind:              metricKindGauge,
+		NumberType:        metricNumberTypeInt64,
+		Unit:              "{claim}",
+		Description:       "Parked parent runs holding a waiting-continuation claim on scheduler capacity, by operating system. Zero right after a control-plane failover is expected until the waiting parents retry.",
+		AllowedDimensions: []string{MetricAttrOS},
+		Lifecycle:         stableContractLifecycle(),
+	},
+	{
+		Name:              MetricContinuationOldestClaimAge,
+		Kind:              metricKindGauge,
+		NumberType:        metricNumberTypeInt64,
+		Unit:              "s",
+		Description:       "Age in seconds of the oldest live waiting-continuation claim, by operating system.",
+		AllowedDimensions: []string{MetricAttrOS},
+		Lifecycle:         stableContractLifecycle(),
+	},
 }
 
 var resourceAttributeRegistry = []resourceAttributeContract{
