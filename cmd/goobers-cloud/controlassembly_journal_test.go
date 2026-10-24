@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestJournalConstructorFailsClosedWithoutItsDependencies(t *testing.T) {
@@ -76,3 +77,21 @@ func TestFailedConstructionReleasesEarlierPlanes(t *testing.T) {
 		t.Fatalf("closed = %v, want the earlier journal released", closed)
 	}
 }
+
+func TestProjectorServiceFailsClosedWithoutItsDependencies(t *testing.T) {
+	reader := &fakeJournalReader{}
+	for name, tc := range map[string]struct {
+		db       databaseServices
+		services controlPlanes
+	}{
+		"no controller database": {db: databaseServices{InstanceID: "instance-a"}, services: controlPlanes{journalReader: reader}},
+		"no instance":            {db: databaseServices{Pools: &cloudpg.Pools{}}, services: controlPlanes{journalReader: reader}},
+		"no journal plane":       {db: databaseServices{Pools: &cloudpg.Pools{}, InstanceID: "instance-a"}},
+	} {
+		if run, err := projectorService(tc.db, tc.services, func(error) {}); err == nil || run != nil {
+			t.Fatalf("%s: projector service built (%v)", name, err)
+		}
+	}
+}
+
+type fakeJournalReader struct{ journal.ReaderBackend }
