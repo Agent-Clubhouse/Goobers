@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
@@ -38,10 +40,15 @@ type Runner struct {
 	InstanceID       string
 	Holder           string
 	PartitionIndexes []PartitionIndexPlan
+	// Partitions defaults to DefaultPartitionPlans; plans whose table is not
+	// present yet are skipped.
+	Partitions       []PartitionPlan
 	Readmodels       []ReadmodelPlan
 	ReadmodelBuilder ReadmodelBuilder
 	// StepTimeout bounds each migration step; zero uses DefaultStepTimeout.
 	StepTimeout time.Duration
+	// Report receives non-fatal findings (a deferred partition pass); nil drops them.
+	Report func(error)
 }
 
 // PartitionIndexPlan describes one parent index and all child indexes.
@@ -99,7 +106,9 @@ func (r Runner) Apply(ctx context.Context) error {
 		if applied[migration.Version] {
 			continue
 		}
-		if err := applyOne(ctx, session.conn, migration, r.BackupRef); err != nil {
+		if err := retryLockTimeout(ctx, migration, func() error {
+			return applyOne(ctx, session.conn, migration, r.BackupRef)
+		}); err != nil {
 			return err
 		}
 	}
@@ -116,7 +125,9 @@ func (r Runner) Apply(ctx context.Context) error {
 			if migration.Version <= leaseSchemaVersion || applied[migration.Version] {
 				continue
 			}
-			if err := r.applyLeased(runCtx, manager, handle, session.conn, migration); err != nil {
+			if err := retryLockTimeout(runCtx, migration, func() error {
+				return r.applyLeased(runCtx, manager, handle, session.conn, migration)
+			}); err != nil {
 				return err
 			}
 		}
@@ -124,7 +135,8 @@ func (r Runner) Apply(ctx context.Context) error {
 	})
 }
 
-// finish runs the steps after the versioned migrations: partition indexes,
+// finish runs the steps after the versioned migrations: partition maintenance,
+// partition indexes,
 // read-model rebuilds, and the grant reconcile.
 func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, inventory cloudschema.Inventory) error {
 	for _, index := range r.PartitionIndexes {
@@ -145,10 +157,39 @@ func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle 
 	// grants never require rewriting an applied migration. The reconcile and
 	// its verification scale with the schema, so they run as a leased step,
 	// not inside the 2s fenced transaction.
-	return r.leasedStep(ctx, manager, handle, conn, "cloud grant reconcile",
+	if err := r.leasedStep(ctx, manager, handle, conn, "cloud grant reconcile",
 		func(stepCtx context.Context, tx pgx.Tx) error {
 			return cloudschema.ReconcileGrants(stepCtx, tx, inventory)
-		})
+		}); err != nil {
+		return err
+	}
+	return r.maintainPartitions(ctx, manager, handle, conn)
+}
+
+// maintainPartitions runs after the grant reconcile on purpose: it is
+// housekeeping the deploy must not depend on. Another maintainer holding the
+// lock (the control role's periodic job) is doing this same work, and so is a
+// DEFAULT lock that a long reader keeps us from taking (55P03): both leave the
+// next periodic pass to finish, and the latter is reported, not fatal.
+func (r Runner) maintainPartitions(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn) error {
+	plans := r.Partitions
+	if plans == nil {
+		plans = DefaultPartitionPlans
+	}
+	maintainer := PartitionMaintainer{Pool: r.Direct, Lease: manager,
+		Handle: func() *cloudlease.Handle { return handle }, Plans: plans,
+		DeferCurrentMonth: true}
+	err := maintainer.EnsureOn(ctx, conn)
+	switch {
+	case err == nil, errors.Is(err, ErrMigrationBusy):
+		return nil
+	case isLockTimeout(err):
+		if r.Report != nil {
+			r.Report(fmt.Errorf("partition maintenance deferred to the periodic job: %w", err))
+		}
+		return nil
+	}
+	return err
 }
 
 type heldLock struct {
@@ -240,7 +281,17 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 			return fmt.Errorf("bound %s: %w", label, err)
 		}
 	}
+	// Every leased step (migrations, partition indexes, read-model rebuilds,
+	// the grant reconcile) takes table locks; like migration DDL it must give
+	// up rather than queue behind a long reader, and is reported as busy.
+	if _, err := tx.Exec(stepCtx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound %s lock wait: %w", label, err)
+	}
 	if err := step(stepCtx, tx); err != nil {
+		if isLockTimeout(err) {
+			return fmt.Errorf("%w: %s could not take its locks: %w", ErrMigrationBusy, label, err)
+		}
 		return err
 	}
 	if err := manager.Confirm(stepCtx, tx, handle); err != nil {
@@ -267,7 +318,22 @@ func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, back
 	return nil
 }
 
+// Migration DDL takes ACCESS EXCLUSIVE locks. Queued behind one long reader,
+// such a lock request would queue every later append and read behind itself
+// and stall the journal for the whole deploy, so each migration gives up on a
+// lock it cannot take within migrationLockTimeout and is retried, then fails
+// as busy (the Job retries later), as partition maintenance does (55P03).
+var (
+	migrationLockTimeout = 5 * time.Second
+	migrationLockTries   = 3
+	migrationLockBackoff = 2 * time.Second
+)
+
 func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string) error {
+	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound cloud migration %d lock wait: %w", migration.Version, err)
+	}
 	if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 		return fmt.Errorf("apply cloud migration %d: %w", migration.Version, err)
 	}
@@ -280,6 +346,27 @@ func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef st
 		return fmt.Errorf("record cloud migration %d: %w", migration.Version, err)
 	}
 	return nil
+}
+
+// retryLockTimeout reruns one migration's transaction when it gave up on a
+// lock (55P03), and reports ErrMigrationBusy once the tries are spent. Each
+// attempt rolled back whole, so a retry starts clean.
+func retryLockTimeout(ctx context.Context, migration Migration, apply func() error) error {
+	var err error
+	for attempt := 1; attempt <= migrationLockTries; attempt++ {
+		if err = apply(); err == nil || !isLockTimeout(err) {
+			return err
+		}
+		if attempt == migrationLockTries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(migrationLockBackoff):
+		}
+	}
+	return fmt.Errorf("%w: cloud migration %d could not take its locks: %w", ErrMigrationBusy, migration.Version, err)
 }
 
 // AppliedMigrations loads compatibility metadata for startup readiness checks.
@@ -309,4 +396,13 @@ func CheckPoolCompatibility(ctx context.Context, pool *pgxpool.Pool, binary stri
 		return fmt.Errorf("load cloud schema for compatibility check: %w", err)
 	}
 	return CheckCompatibility(binary, applied, catalog)
+}
+
+// WarningTo returns a Runner.Report that prints a non-fatal finding (a partition
+// pass deferred to the periodic job) as a warning on w, so it shows in the
+// Job's logs. The diagnostic is the sanitized class, as for errors.
+func WarningTo(w io.Writer, command string) func(error) {
+	return func(err error) {
+		_, _ = fmt.Fprintf(w, "goobers-cloud %s: warning: partition maintenance deferred to the periodic job: %s\n", command, cloudpg.SafeDiagnostic(err))
+	}
 }

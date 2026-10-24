@@ -217,6 +217,11 @@ Options:
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
   --task-queue NAME              Remote engine task queue (default goobers)
+  --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
+                                 journal span source and config generations live there
+  --object-store-container NAME  Azure Blob container (default goobers)
+  --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
+                                 optional goobers/ (or GOOBERS_CONFIG_DIR); required
 
 Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.
@@ -304,6 +309,12 @@ Options:
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+
+A migration that cannot take its locks (a long reader, or another migration
+holding the migration lock) is retried with backoff for up to 20 minutes.
+If the database stays busy that long the command exits 75 (EX_TEMPFAIL):
+nothing was applied in the busy step, and re-syncing the deployment once the
+contention ends applies the remaining migrations. Any other failure exits 1.
 ~~~
 
 ## `goobers-cloud migrate status`

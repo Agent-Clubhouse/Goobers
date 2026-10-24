@@ -13,11 +13,11 @@ import (
 
 func TestEpochSeamIsFailClosedUntilItsPartsAreComposed(t *testing.T) {
 	var planes controlPlanes
-	if err := constructEpoch(context.Background(), databaseServices{}, controlAuth{}, nil, &planes); err == nil {
+	if err := constructEpoch(context.Background(), databaseServices{}, controlAuth{}, nil, nil, &planes); err == nil {
 		t.Fatal("epoch seam composed without the controller's direct pool")
 	}
 	db := databaseServices{Pools: &cloudpg.Pools{Direct: &pgxpool.Pool{}}}
-	if err := constructEpoch(context.Background(), db, controlAuth{}, nil, &planes); err != nil {
+	if err := constructEpoch(context.Background(), db, controlAuth{}, nil, nil, &planes); err != nil {
 		t.Fatal(err)
 	}
 	if planes.Epoch == nil {

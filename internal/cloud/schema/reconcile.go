@@ -198,7 +198,7 @@ func objectStatements(o object, tables map[string]Table, sequences map[string]Se
 	case o.kind == "r" || o.kind == "p":
 		policy, ok := tables[o.qualified()]
 		if !ok {
-			return nil, fmt.Errorf("cloud table %s has no write-path inventory entry", o.qualified())
+			return nil, fmt.Errorf("cloud table %s has no write-path inventory entry%s", o.qualified(), orphanPartitionHint(o, tables))
 		}
 		if !policy.Provisioned {
 			return nil, fmt.Errorf("cloud table %s exists but the inventory marks it unprovisioned", o.qualified())
@@ -383,4 +383,16 @@ func VerifyEffectivePrivileges(ctx context.Context, tx pgx.Tx, inventory Invento
 		return fmt.Errorf("%w: %s", ErrPrivilegeMismatch, strings.Join(differences, "; "))
 	}
 	return nil
+}
+
+// orphanPartitionHint names the remedy when an unattached table looks like a
+// leftover monthly partition (<root>_YYYYMM) of an inventoried table.
+func orphanPartitionHint(o object, tables map[string]Table) string {
+	for root := range tables {
+		suffix := strings.TrimPrefix(o.qualified(), root+"_")
+		if suffix != o.qualified() && len(suffix) == 6 && strings.Trim(suffix, "0123456789") == "" {
+			return "; if it is an empty leftover partition from an interrupted partition pass, drop it (DROP TABLE " + o.qualified() + ")"
+		}
+	}
+	return ""
 }

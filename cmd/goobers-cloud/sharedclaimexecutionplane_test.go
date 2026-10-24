@@ -49,7 +49,7 @@ func TestWorkerExecutorFactoriesEnforceExecutionFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder, registrar := seams.recorderFor(gaggle, "fenced-run", pinGaggle)
+	recorder, registrar := seams.recorderFor(t.Context(), gaggle, "fenced-run", pinGaggle)
 	deterministic, err := gaggle.cfg.NewDeterministic(recorder, registrar)
 	if err != nil {
 		t.Fatal(err)

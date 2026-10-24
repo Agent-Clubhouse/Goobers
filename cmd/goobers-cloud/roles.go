@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -77,6 +78,12 @@ Options:
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+
+A migration that cannot take its locks (a long reader, or another migration
+holding the migration lock) is retried with backoff for up to 20 minutes.
+If the database stays busy that long the command exits 75 (EX_TEMPFAIL):
+nothing was applied in the busy step, and re-syncing the deployment once the
+contention ends applies the remaining migrations. Any other failure exits 1.
 `
 )
 
@@ -133,12 +140,55 @@ func runMigrateRole(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pools.Close()
-	if err := runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder); err != nil {
+	err = retryMigrationsWhileBusy(ctx, stderr, func() error {
+		return runCloudMigrations(ctx, pools, *backupRef, *instanceID, *holder, cloudmigrate.WarningTo(stderr, "migrate"))
+	})
+	switch {
+	case errors.Is(err, cloudmigrate.ErrMigrationBusy):
+		writef(stderr, "goobers-cloud migrate: database still busy after %s: %s; re-sync the deployment once the contention ends\n",
+			migrateBusyBudget, cloudpg.SafeDiagnostic(err))
+		return exitTempFail
+	case err != nil:
 		writef(stderr, "goobers-cloud migrate: %s\n", cloudpg.SafeDiagnostic(err))
 		return 1
 	}
 	writeln(stdout, "cloud migrations applied")
 	return 0
+}
+
+// exitTempFail (sysexits EX_TEMPFAIL) tells a deploy that the migration was
+// refused by contention, not broken: re-syncing later applies it.
+const exitTempFail = 75
+
+// The migrate Job (backoffLimit 0, 1800s deadline) has no retry of its own,
+// so the role retries a busy database here: each migration step already
+// waits migrate's per-attempt lock timeout, and this budget bounds the whole
+// retry inside the Job's deadline.
+var (
+	migrateBusyBudget     = 20 * time.Minute
+	migrateBusyBackoff    = 5 * time.Second
+	migrateBusyBackoffMax = 2 * time.Minute
+)
+
+// retryMigrationsWhileBusy reruns apply while it fails as busy, with
+// exponential backoff, until it succeeds, fails otherwise, or the budget is
+// spent (then the last busy error is returned).
+func retryMigrationsWhileBusy(ctx context.Context, stderr io.Writer, apply func() error) error {
+	deadline := time.Now().Add(migrateBusyBudget)
+	wait := migrateBusyBackoff
+	for {
+		err := apply()
+		if !errors.Is(err, cloudmigrate.ErrMigrationBusy) || !time.Now().Add(wait).Before(deadline) {
+			return err
+		}
+		writef(stderr, "goobers-cloud migrate: database busy, retrying in %s: %s\n", wait, cloudpg.SafeDiagnostic(err))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, migrateBusyBackoffMax)
+	}
 }
 
 var (
@@ -153,14 +203,14 @@ var (
 	runAPIHost         = unavailableDatabaseRole
 	runControllerHost  = unavailableDatabaseRole
 	checkCloudSchema   = cloudmigrate.CheckPoolCompatibility
-	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef, instanceID, holder string) error {
+	runCloudMigrations = func(ctx context.Context, pools *cloudpg.Pools, backupRef, instanceID, holder string, report func(error)) error {
 		catalog, err := cloudmigrate.Catalog()
 		if err != nil {
 			return err
 		}
 		return (cloudmigrate.Runner{
 			Direct: pools.Direct, Catalog: catalog, BackupRef: backupRef,
-			InstanceID: instanceID, Holder: holder,
+			InstanceID: instanceID, Holder: holder, Report: report,
 		}).Apply(ctx)
 	}
 	loadMigrationStatus = cloudmigrate.Status
@@ -180,6 +230,14 @@ type databaseServices struct {
 	BindControllerFence func(*cloudlease.Manager, *cloudlease.Handle)
 	NewStarter          func(client.Client, string) engine.Starter
 	Pools               *cloudpg.Pools
+	InstanceID          string
+	// ConfigDir is the control role's mounted instance configuration directory.
+	ConfigDir string
+	// EpochHandle is bound by serveControl: the controller lease handle of the
+	// epoch being built or run, available before recovery completes. Publishing
+	// the applied configuration happens during recovery, so it needs this and not
+	// the readiness-gated live owner.
+	EpochHandle         func() *cloudlease.Handle
 	Blobs               blobstore.Store
 	Surrenders          dispatcher.SurrenderPlane
 	Objects             *objstore.Metadata

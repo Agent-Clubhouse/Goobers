@@ -51,7 +51,7 @@ func (p epochWiringParts) missing() []string {
 // constructEpoch composes the Epoch seam over the controller's direct pool. The
 // fence is a second lease.Manager for the SAME lease: WithFence verifies the
 // handle against the database, so it never acquires or renews anything.
-func constructEpoch(_ context.Context, db databaseServices, _ controlAuth, _ func() *lease.Handle, p *controlPlanes) error {
+func constructEpoch(_ context.Context, db databaseServices, _ controlAuth, _ *lease.Manager, _ func() *lease.Handle, p *controlPlanes) error {
 	if db.Pools == nil || db.Pools.Direct == nil {
 		return errors.New("epoch services require the controller's direct pool")
 	}
