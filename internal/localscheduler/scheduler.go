@@ -665,7 +665,7 @@ func (s *Scheduler) reconcileDurableState(
 	// destroyed runs/ (the durable run journals). It only ever moves the floor
 	// forward — a reset older than the rolling window is a natural no-op,
 	// since the window has already advanced past it.
-	if resetAt, ok, rerr := ReadRateReset(s.log.Dir()); rerr != nil {
+	if resetAt, ok, rerr := s.readRateReset(); rerr != nil {
 		return fmt.Errorf("localscheduler: read rate-limit reset: %w", rerr)
 	} else if ok && resetAt.After(startsCutoff) {
 		startsCutoff = resetAt
