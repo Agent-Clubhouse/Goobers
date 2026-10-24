@@ -27,7 +27,7 @@ const (
 const legacyNamespace = "legacy"
 
 // Plane is the cloud claims plane (httpapi.ClaimService) over control.claim
-// and control.claim_history. Every write runs in one controller-lease fenced
+// and control.claim_run_history. Every write runs in one controller-lease fenced
 // transaction under the instance's claims advisory lock. A row written by an
 // earlier epoch is adopted by the write that touches it: authority moved, the
 // claim did not, so the predicate is owner_epoch <= epoch and the write stamps

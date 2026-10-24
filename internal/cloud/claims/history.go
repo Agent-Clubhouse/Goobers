@@ -18,12 +18,7 @@ import (
 // time and reason. Overwriting an expired lease leaves its owner's record
 // untouched, unreleased.
 //
-// Records live in control.claim_run_history. Every release is also appended
-// to control.claim_history, one row per released incarnation, exactly as the
-// previous binary writes it, so that binary can still read and release during
-// a rolling upgrade (migration 0022 is an expand). Reads merge the two and
-// keep each run and key's newest activity, so a release the previous binary
-// made still completes the run's record.
+// Records live in control.claim_run_history, one record per run and key.
 
 const runHistoryColumns = `instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,owner_epoch,
 	claimed_at,renewed_at,expires_at,released_at,release_reason,verification,release_pending_at,
@@ -56,11 +51,9 @@ func recordGrant(ctx context.Context, tx pgx.Tx, instanceID string, key localsch
 	return changed(tag.RowsAffected(), err)
 }
 
-// releaseToHistory deletes the run's lease for key, appends the released
-// incarnation to control.claim_history as the previous binary does, and
-// completes the run's record (recordReleasedHistory), all at one release
-// instant. token, when set, pins one incarnation; requireExpired rechecks
-// expiry under the fence. custody finishes a provider-cleanup release: only a
+// releaseToHistory deletes the run's lease for key and completes the run's
+// record (recordReleasedHistory) atomically at one release instant. token,
+// when set, pins one incarnation; requireExpired rechecks expiry under the fence. custody finishes a provider-cleanup release: only a
 // row under cleanup custody is released, while an ordinary release never
 // discards custody (the ledger's ErrClaimReleasePending).
 func releaseToHistory(
@@ -82,15 +75,6 @@ func releaseToHistory(
 			RETURNING instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,
 			          claimed_at,renewed_at,expires_at,verification,clock_timestamp() AS released,
 			          shared_owner,shared_deadline,shared_admission_pending,shared_revoked
-		), incarnation AS (
-			INSERT INTO control.claim_history
-				(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-				 claimed_at,renewed_at,expires_at,released_at,release_reason,verification,
-				 shared_owner,shared_deadline,shared_admission_pending,shared_revoked)
-			SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,$6,
-			       claimed_at,renewed_at,expires_at,released,$7,verification,
-			       shared_owner,shared_deadline,false,shared_revoked
-			FROM moved
 		)
 		INSERT INTO control.claim_run_history (`+runHistoryColumns+`)
 		SELECT instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,$6,
@@ -105,64 +89,36 @@ func releaseToHistory(
 	return tag.RowsAffected() == 1, nil
 }
 
-// pruneHistory applies each store's retention: the previous binary's rule for
-// released incarnations, and the ledger's retainedHistory for run records (a
-// run holding any lease keeps every record; otherwise its records go once its
-// newest activity across both stores, release else last grant, passes
-// ClaimHistoryTTL). Revoked records are permanent run/key denials.
+// pruneHistory applies the ledger's retainedHistory to run records: a run
+// holding any lease keeps every record; otherwise its records go once its
+// newest activity, release else last grant, passes ClaimHistoryTTL.
+// Revoked records are permanent run/key denials.
 func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64) error {
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM control.claim_history
-		WHERE instance_id=$1 AND owner_epoch<=$2
-		  AND NOT shared_revoked
-		  AND released_at<(clock_timestamp()-$3::interval)`,
-		instanceID, epoch, localscheduler.ClaimHistoryTTL,
-	); err != nil {
-		return err
-	}
-	// A run's newest activity is taken over the same merge history reads use:
-	// a release the previous binary appended to claim_history keeps the run's
-	// records, so retention never drops records a merged read still keeps.
 	_, err := tx.Exec(ctx, `
 		DELETE FROM control.claim_run_history AS h
 		WHERE h.instance_id=$1 AND h.owner_epoch<=$2 AND NOT h.shared_revoked
 		  AND NOT EXISTS (SELECT 1 FROM control.claim AS held WHERE held.instance_id=$1 AND held.run_id=h.run_id)
 		  AND h.run_id IN (
-			SELECT run_id FROM (
-				SELECT run_id, coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity
-				FROM control.claim_run_history WHERE instance_id=$1
-				UNION ALL
-				SELECT run_id, released_at FROM control.claim_history WHERE instance_id=$1
-			) AS merged
+			SELECT run_id FROM control.claim_run_history WHERE instance_id=$1
 			GROUP BY run_id
-			HAVING max(activity) <= clock_timestamp()-$3::interval
+			HAVING max(coalesce(released_at, greatest(claimed_at, renewed_at))) <= clock_timestamp()-$3::interval
 		  )`,
 		instanceID, epoch, localscheduler.ClaimHistoryTTL,
 	)
 	return err
 }
 
-// historyRecords is each run and key's newest record across both stores,
-// with its activity time (release, else last grant). On a tie the run record
-// wins; the two then carry the same release. A revocation always wins over a
-// non-revoked record, including a release appended by a previous binary.
-const historyRecords = `WITH merged AS (
+// historyRecords is each run and key's record with its activity time
+// (release, else last grant).
+const historyRecords = `WITH records AS (
 		SELECT run_id,gaggle,provider,external_id,workflow,claimed_at,renewed_at,expires_at,
 		       verification,released_at,release_reason,release_pending_at IS NOT NULL AS release_pending,
-		       coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity, 0 AS source,
+		       coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity,
 		       shared_owner,shared_deadline,shared_admission_pending,shared_revoked
 		FROM control.claim_run_history WHERE instance_id=$1
-		UNION ALL
-		SELECT run_id,gaggle,provider,external_id,workflow,claimed_at,renewed_at,expires_at,
-		       verification,released_at,release_reason,false,released_at, 1,
-		       shared_owner,shared_deadline,shared_admission_pending,shared_revoked
-		FROM control.claim_history WHERE instance_id=$1
-	), records AS (
-		SELECT DISTINCT ON (run_id,gaggle,provider,external_id) *
-		FROM merged ORDER BY run_id,gaggle,provider,external_id,shared_revoked DESC,activity DESC,source
 	)`
 
-// historyRetained is the ledger's retainedHistory over the merged records:
+// historyRetained is the ledger's retainedHistory over the run records:
 // a run holding any lease keeps every record, otherwise its records are kept
 // while its newest activity is within the TTL (%s is the TTL parameter).
 // Revocations remain visible even after the run's ordinary history expires.

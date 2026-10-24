@@ -1,0 +1,48 @@
+tables:
+- schema: control
+  table: claim_history
+  provisioned: true
+  fence: epoch
+  rationale: Released claims are appended once and expired history is pruned, both under the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - provider
+    - external_id
+    - run_id
+    - workflow
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - provider
+    - external_id
+    - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
+    delete: true

@@ -4,6 +4,7 @@ package migrate
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -12,13 +13,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gopkg.in/yaml.v3"
 
 	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 // upgradeTo0022 applies the catalog without 0022 and its dependent alterations
 // (0035 and 0037), runs seed against the pre-0022 schema, then applies the
-// full catalog.
+// catalog through 0038. The later 0039 contract is outside this expand test.
 func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	t.Helper()
 	pool := privatePool(t)
@@ -27,6 +29,7 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	catalog = slices.DeleteFunc(catalog, func(m Migration) bool { return m.Version >= 39 })
 	var before []Migration
 	for _, migration := range catalog {
 		if migration.Version != 22 && migration.Version != 35 && migration.Version != 37 {
@@ -41,7 +44,7 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 	if _, err := pool.Exec(t.Context(), seed); err != nil {
 		t.Fatal(err)
 	}
-	runner.Catalog, runner.writePaths = catalog, nil
+	runner.Catalog, runner.writePaths = catalog, writePathsBefore0039
 	if err := runner.Apply(t.Context()); err != nil {
 		t.Fatalf("apply 0022: %v", err)
 	}
@@ -51,7 +54,7 @@ func upgradeTo0022(t *testing.T, seed string) *pgxpool.Pool {
 // writePathsBefore0022 removes the claim_run_history table and the later
 // cleanup/shared-custody columns from the current inventory.
 func writePathsBefore0022() (cloudschema.Inventory, error) {
-	inventory, err := cloudschema.LoadWritePaths()
+	inventory, err := writePathsBefore0039()
 	if err != nil {
 		return inventory, err
 	}
@@ -192,8 +195,8 @@ func TestClaim0022KeepsPredecessorHistoryReaderAndWriter(t *testing.T) {
 	if n := predecessorSnapshot("after upgrade"); n != 3 {
 		t.Fatalf("predecessor snapshot after upgrade = %d rows, want 3", n)
 	}
-	// The current binary's release appends the predecessor-shaped incarnation
-	// alongside the run record (claims.releaseToHistory); simulate it here.
+	// The 0022 binary's release appends the predecessor-shaped incarnation
+	// alongside the run record; preserve that historical statement here.
 	if _, err := conn.Exec(context.WithoutCancel(t.Context()), `
 		WITH moved AS (
 			DELETE FROM control.claim WHERE instance_id='i' AND external_id='2' RETURNING *, clock_timestamp() AS released
@@ -223,4 +226,22 @@ func TestClaim0022KeepsPredecessorHistoryReaderAndWriter(t *testing.T) {
 	if n := predecessorSnapshot("after mixed releases"); n != 5 {
 		t.Fatalf("predecessor snapshot after mixed releases = %d rows, want 5", n)
 	}
+}
+
+//go:embed testdata/claim_history_writepaths.yaml
+var retiredClaimHistoryInventory []byte
+
+// writePathsBefore0039 restores the retired table's grants for tests of earlier
+// expand migrations. Production's current inventory intentionally omits it.
+func writePathsBefore0039() (cloudschema.Inventory, error) {
+	inventory, err := cloudschema.LoadWritePaths()
+	if err != nil {
+		return inventory, err
+	}
+	var retired cloudschema.Inventory
+	if err := yaml.Unmarshal(retiredClaimHistoryInventory, &retired); err != nil {
+		return inventory, err
+	}
+	inventory.Tables = append(inventory.Tables, retired.Tables...)
+	return inventory, inventory.Validate()
 }

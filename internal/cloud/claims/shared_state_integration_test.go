@@ -95,11 +95,9 @@ func TestSharedStateSurvivesReleaseAndHistoryRetentionAsController(t *testing.T)
 				t.Fatalf("released shared metadata = %+v", history)
 			}
 			// Age history using fixture authority; reads and pruning remain runtime-role operations.
-			for _, table := range []string{"claim_history", "claim_run_history"} {
-				if _, err := f.owner.Exec(ctx, `UPDATE control.`+table+` SET released_at=clock_timestamp()-$2::interval
-					WHERE instance_id=$1`, p.instanceID, 2*localscheduler.ClaimHistoryTTL); err != nil {
-					t.Fatal(err)
-				}
+			if _, err := f.owner.Exec(ctx, `UPDATE control.claim_run_history SET released_at=clock_timestamp()-$2::interval
+				WHERE instance_id=$1`, p.instanceID, 2*localscheduler.ClaimHistoryTTL); err != nil {
+				t.Fatal(err)
 			}
 			err = p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 				return pruneHistory(ctx, tx, p.instanceID, epoch)
@@ -115,11 +113,9 @@ func TestSharedStateSurvivesReleaseAndHistoryRetentionAsController(t *testing.T)
 			if err != nil || len(histories) != want {
 				t.Fatalf("retained revoked=%v history = %+v, %v", revoked, histories, err)
 			}
-			for _, table := range []string{"claim_history", "claim_run_history"} {
-				var count int
-				if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM control.`+table+` WHERE instance_id=$1`, p.instanceID).Scan(&count); err != nil || count != want {
-					t.Fatalf("%s count=%d, %v; want %d", table, count, err, want)
-				}
+			var count int
+			if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM control.claim_run_history WHERE instance_id=$1`, p.instanceID).Scan(&count); err != nil || count != want {
+				t.Fatalf("claim_run_history count=%d, %v; want %d", count, err, want)
 			}
 		})
 	}
