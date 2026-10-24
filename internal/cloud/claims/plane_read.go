@@ -99,6 +99,31 @@ func (p *Plane) executionSnapshot(ctx context.Context, request httpapi.ClaimList
 	return response, tx.Commit(ctx)
 }
 
+// ClaimedRuns lists the runs that currently hold at least one claim, and
+// ClaimedItems the items one run holds. Unlike the scheduler store's snapshot
+// reads, a database failure is returned rather than read as "no claims": the
+// terminal hooks decide what to park and which runs to pick up from these.
+func (p *Plane) ClaimedRuns(ctx context.Context) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `SELECT DISTINCT run_id FROM control.claim WHERE instance_id=$1 ORDER BY run_id`, p.instanceID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// ClaimedItems returns the item IDs runID holds.
+func (p *Plane) ClaimedItems(ctx context.Context, runID string) ([]string, error) {
+	entries, err := p.selectEntries(ctx, p.pool, `run_id=$2`, runID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, entry.ItemID)
+	}
+	return items, nil
+}
+
 func (p *Plane) selectEntries(ctx context.Context, q querier, predicate string, args ...any) ([]localscheduler.ClaimEntry, error) {
 	rows, err := q.Query(ctx, claimSelect+`
 		FROM control.claim WHERE instance_id=$1 AND `+predicate+`

@@ -74,12 +74,13 @@ func (p *ChildParentSuspension) Resume(ctx context.Context) error {
 	}
 	a, ok := s.admittedRuns[p.runID]
 	if !ok || a.generation != p.generation {
+		s.conditions.ClearContinuationClaim(p.runID)
 		return errors.New("localscheduler: parent admission ended")
 	}
 	if !a.suspended {
 		return nil
 	}
-	if err := s.resumeChildParent(a.identity); err != nil {
+	if err := s.resumeChildParent(p.runID, a.identity); err != nil {
 		return err
 	}
 	a.suspended = false
@@ -91,12 +92,13 @@ func (p *ChildParentSuspension) resumeReconciled() error {
 	s := p.scheduler
 	a, ok := s.reconciledRuns[p.runID]
 	if !ok {
+		s.conditions.ClearContinuationClaim(p.runID)
 		return errors.New("localscheduler: parent admission ended")
 	}
 	if !a.Suspended {
 		return nil
 	}
-	if err := s.resumeChildParent(a.Identity); err != nil {
+	if err := s.resumeChildParent(p.runID, a.Identity); err != nil {
 		return err
 	}
 	a.Suspended = false
@@ -106,8 +108,10 @@ func (p *ChildParentSuspension) resumeReconciled() error {
 
 // Both scheduler locks are held by the caller. Reuse continuation policy: a
 // resumed run already consumed its start budget; current disabled/placement
-// policy still forbids returning to agent execution.
-func (s *Scheduler) resumeChildParent(identity WorkflowIdentity) error {
+// policy still forbids returning to agent execution. A capacity refusal
+// leaves the parent a claim on the next slot that frees, ahead of new
+// admissions (#8174).
+func (s *Scheduler) resumeChildParent(runID string, identity WorkflowIdentity) error {
 	entry, ok := s.workflows[identity]
 	if !ok {
 		return errors.New("localscheduler: parent workflow unavailable")
@@ -115,7 +119,7 @@ func (s *Scheduler) resumeChildParent(identity WorkflowIdentity) error {
 	if reason, refused := s.permanentDispatchRefusal(entry); refused {
 		return &TriggerRejectedError{Workflow: identity.Workflow, Reason: reason}
 	}
-	if ok, reason := s.conditions.ReserveContinuation(identity, entry.Readiness); !ok {
+	if ok, reason := s.conditions.reserveParentContinuation(runID, identity, entry.Readiness); !ok {
 		return &TriggerRejectedError{Workflow: identity.Workflow, Reason: reason}
 	}
 	return nil

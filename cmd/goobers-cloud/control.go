@@ -232,6 +232,7 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		return err
 	}
 	report := func(err error) { logger.Printf("%v", err) }
+	epochWiring.Report = report
 	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
 		reporter.SetReporter(report)
 	}
@@ -285,13 +286,16 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 		return struct {
 			Ready  bool                     `json:"ready"`
 			Starts []acceptance.StartStatus `json:"uncertainStarts"`
-		}{host.Ready(), rows}, err
+			// TerminalOutbox is the undelivered terminal-report backlog and its
+			// age, the lag metric of the outbox delivery loop; nil on a standby.
+			TerminalOutbox *terminalOutboxLag `json:"terminalOutbox,omitempty"`
+		}{host.Ready(), rows, currentTerminalOutboxLag()}, err
 	}, handler)
 	if err != nil {
 		return nil, err
 	}
 	return httpapi.WrapWithProbes(handler, func() bool { return true }, func() httpapi.ReadinessStatus {
-		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready()}
+		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: terminalOutboxChecks()}
 	}), nil
 }
 

@@ -367,6 +367,18 @@
       "reason": "Cloud start-pin digest tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/blockedrecordspg",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Blocked-record backoff tests are pure and run in the Linux unit job; the store serves the cloud control plane, which has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/terminalcompose",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Terminal composition unit tests are pure and run in the Linux unit job; the composition serves the cloud control plane, which has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",

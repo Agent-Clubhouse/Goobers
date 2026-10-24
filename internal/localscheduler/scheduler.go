@@ -771,6 +771,10 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
+	if (admitted && admission.workflowName() == workflow) || (reconciled && reconciledIdentity.Workflow == workflow) {
+		// An ended admission can never resume: its claim holds nothing (#8174).
+		s.conditions.ClearContinuationClaim(runID)
+	}
 
 	released := false
 	var releasedIdentity WorkflowIdentity
@@ -807,6 +811,7 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 	}
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
+	s.conditions.ClearContinuationClaim(runID)
 
 	if !admission.suspended {
 		s.conditions.ReleaseWorkflow(admission.identity)
@@ -859,6 +864,7 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 	}
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
+	s.conditions.ClearContinuationClaim(runID)
 
 	if !admission.suspended {
 		s.conditions.ReleaseWorkflow(admission.identity)
