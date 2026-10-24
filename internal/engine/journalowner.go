@@ -118,12 +118,7 @@ func (o *journalCommitOwner) assignEmitKeys(pending int) {
 		if op.EmitKey != "" {
 			continue
 		}
-		scope, attempt := opEmitScope(*op)
-		branch := opEmitBranch(*op)
-		group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
-		ordinal := o.ordinals[group]
-		o.ordinals[group] = ordinal + 1
-		op.EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", o.root.proj.Identity.RunID, branch, scope, attempt, ordinal)
+		assignJournalKey(o.root.proj.Identity.RunID, o.ordinals, op)
 	}
 }
 

@@ -309,6 +309,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 	gateDecisions := newGateDecisionSession(in, m, func() uint64 { return hitl.generation })
 	hitl.gateDecisions = gateDecisions
+	bindOperatorRequestLedger(ctx, hitl, gateDecisions)
 	if err := gateDecisions.register(ctx); err != nil {
 		return RunResult{}, fmt.Errorf("engine: register human-gate decision handler: %w", err)
 	}
@@ -364,6 +365,9 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		// are recorded.
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
+		if handled, reconcileErr := hitl.cancelTerminalDelivery(abortCtx); handled {
+			return RunResult{}, errors.Join(err, reconcileErr)
+		}
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
 		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runsemantics.RunCanceledErrorCode
 		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
@@ -1136,6 +1140,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		return outcome, nil, GateReviewResult{}, nil
 
 	case apiv1.EvaluatorAgentic:
+		rec.prepareHumanGateRerun(ctx, g.Name, &ev, &priorDiffDigest, gatePolicyAttempts)
 		// The reviewer runs a real goober subprocess, so — unlike an
 		// automated/human gate — it needs its capability-scoped credentials
 		// (#294). AgenticGate carries no stage-level capabilities, so they are
