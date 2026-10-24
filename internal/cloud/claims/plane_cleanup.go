@@ -80,7 +80,7 @@ func (p *Plane) beginCleanup(ctx context.Context, key localscheduler.ClaimKey, r
 		if err != nil {
 			return err
 		}
-		if row.entry.RunID != request.RunID || !row.entry.ClaimedAt.Equal(request.ClaimedAt) {
+		if row.entry.RunID != request.RunID || !row.entry.ClaimedAt.Equal(request.ClaimedAt) || !row.entry.SharedDeadline.IsZero() {
 			return nil
 		}
 		held, reserved = row, true
