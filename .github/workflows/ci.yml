@@ -857,7 +857,8 @@ jobs:
     needs: [scope, temporal-cli]
     if: ${{ needs.scope.outputs.cloud == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Hang guard only; the 15-minute design budget is reported, never asserted.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
@@ -916,6 +917,11 @@ jobs:
       - name: Export Temporal CLI path
         run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
 
+      - name: Verify journal equivalence pending issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./test/journalequivalence/cmd/equivalence verify-pending
+
       - name: Run cloud integration smoke
         env:
           TESTDEP_STRICT: "1"
@@ -932,7 +938,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... \
+          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... \
             | tee "$RUNNER_TEMP/cloud-pg-test.json" > /dev/null || status=$?
           go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1
           exit "$status"
@@ -957,6 +963,27 @@ jobs:
         continue-on-error: true
         run: docker rm --force goobers-cloud-azurite-ci
 
+      - name: Report cloud job timing budget
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          started_at="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.name == "cloud PostgreSQL and Azurite integration") | .started_at')"
+          go run ./test/testtiming wall -job cloud-pg -started-at "$started_at" \
+            -out test-timings/cloud-pg.json -budget .github/test-timing-budgets.json
+
+      - name: Upload cloud job timing
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-timings-cloud-pg
+          path: test-timings/cloud-pg.json
+          if-no-files-found: warn
+
       - name: Record CI diagnostics
         if: always()
         continue-on-error: true
@@ -973,6 +1000,7 @@ jobs:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
+
 
   unit:
     concurrency:
