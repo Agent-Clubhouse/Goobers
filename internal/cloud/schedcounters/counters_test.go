@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/schedentries"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -100,7 +101,7 @@ var identity = localscheduler.WorkflowIdentity{Gaggle: "g", Workflow: "wf"}
 
 func newCounters(t *testing.T, cfg *instance.Config, set *instance.ConfigSet, f *fakeProvider) *Counters {
 	t.Helper()
-	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(f), SelfIdentity: "bot", Report: func(err error) { t.Errorf("unexpected report: %v", err) }})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(f), Report: func(err error) { t.Errorf("unexpected report: %v", err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +207,7 @@ func TestBacklogCounterResumesAPagedScanByCursor(t *testing.T) {
 func TestRefillCounterReadsTheBacklogQueryStagesOwnSelection(t *testing.T) {
 	t.Parallel()
 	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerManual})
+	cfg.SelfIdentity = "bot"
 	set.Workflows[0].Spec.Readiness.DesiredConcurrentRuns = 2
 	startingWith(set, "goobers", "backlog-query")
 	set.Workflows[0].Spec.Tasks[0].Inputs = map[string]string{
@@ -783,5 +785,92 @@ func TestNewRefusesWithoutAnOpenerOrALedger(t *testing.T) {
 	}
 	if _, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{})}); !errors.Is(err, ErrNoQuota) {
 		t.Fatalf("New without a ledger = %v, want ErrNoQuota", err)
+	}
+}
+
+// refillAssignee runs the refill counter of one gaggle's backlog-query workflow
+// with the given inputs and returns the assignee the provider was asked for.
+func refillAssignee(t *testing.T, cfg *instance.Config, set *instance.ConfigSet, gaggle string, inputs map[string]string) string {
+	t.Helper()
+	for i := range set.Workflows {
+		if set.Workflows[i].Spec.Gaggle == gaggle {
+			set.Workflows[i].Spec.Tasks[0].Inputs = inputs
+		}
+	}
+	f := &fakeProvider{}
+	c := newCounters(t, cfg, set, f)
+	counter := c.For(localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: gaggle + "-wf"}).RefillDemand
+	if counter == nil {
+		t.Fatalf("gaggle %s: no refill counter was built", gaggle)
+	}
+	if _, err := counter.EligibleCount(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return f.requests[0].Assignee
+}
+
+// twoGaggles is an instance with a default selfIdentity and two gaggles, each
+// with a desired-occupancy backlog-query workflow.
+func twoGaggles(instanceIdentity, overrideA string) (*instance.Config, *instance.ConfigSet) {
+	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerManual})
+	cfg.SelfIdentity = instanceIdentity
+	second := set.Gaggles[0]
+	second.Name = "g2"
+	set.Gaggles = append(set.Gaggles, second)
+	set.Gaggles[0].Spec.SelfIdentity = overrideA
+	wf := set.Workflows[0]
+	wf.Name, wf.Spec.Gaggle = "g2-wf", "g2"
+	set.Workflows[0].Name = "g-wf"
+	set.Workflows = append(set.Workflows, wf)
+	for i := range set.Workflows {
+		set.Workflows[i].Spec.Readiness.DesiredConcurrentRuns = 2
+		set.Workflows[i].Spec.Start = "first"
+		set.Workflows[i].Spec.Tasks = []apiv1.Task{{Name: "first", Type: apiv1.TaskDeterministic, Goal: "g",
+			Run: &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}}}}
+	}
+	return cfg, set
+}
+
+// A respectAssignee refill asks for the assignee the local daemon would use for
+// the SAME gaggle (runtimewiring.SelfIdentitiesByGaggle): the gaggle's own
+// spec.selfIdentity, else the instance default. Each case is checked against that
+// shared resolver as well as the literal expectation, so the two cannot drift.
+func TestRefillAssigneeResolvesPerGaggleLikeTheLocalDaemon(t *testing.T) {
+	t.Parallel()
+	respect := map[string]string{"respectAssignee": "true"}
+	for name, tc := range map[string]struct {
+		instance, override string
+		inputs             map[string]string
+		wantG, wantG2      string
+	}{
+		"the gaggle override wins over the instance default": {"instance-bot", "gaggle-bot", respect, "gaggle-bot", "instance-bot"},
+		"no override inherits the instance default":          {"instance-bot", "", respect, "instance-bot", "instance-bot"},
+		"an override without an instance default":            {"", "gaggle-bot", respect, "gaggle-bot", ""},
+		"no identity anywhere asks for the unassigned":       {"", "", respect, "", ""},
+		"an explicit assignedTo input beats both": {"instance-bot", "gaggle-bot",
+			map[string]string{"respectAssignee": "true", "assignedTo": "someone"}, "someone", "someone"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg, set := twoGaggles(tc.instance, tc.override)
+			local := runtimewiring.SelfIdentitiesByGaggle(cfg, set)
+			if got := refillAssignee(t, cfg, set, "g", tc.inputs); got != tc.wantG || (tc.inputs["assignedTo"] == "" && got != local["g"]) {
+				t.Errorf("gaggle g: assignee %q, want %q (local daemon resolves %q)", got, tc.wantG, local["g"])
+			}
+			cfg, set = twoGaggles(tc.instance, tc.override)
+			if got := refillAssignee(t, cfg, set, "g2", tc.inputs); got != tc.wantG2 || (tc.inputs["assignedTo"] == "" && got != local["g2"]) {
+				t.Errorf("gaggle g2: assignee %q, want %q (local daemon resolves %q)", got, tc.wantG2, local["g2"])
+			}
+		})
+	}
+}
+
+// Without respectAssignee no assignee filter is sent at all, whatever identity
+// is configured.
+func TestRefillWithoutRespectAssigneeSendsNoAssigneeFilter(t *testing.T) {
+	t.Parallel()
+	cfg, set := twoGaggles("instance-bot", "gaggle-bot")
+	if got := refillAssignee(t, cfg, set, "g", map[string]string{}); got != "" {
+		t.Fatalf("assignee = %q, want none", got)
 	}
 }
