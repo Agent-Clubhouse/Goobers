@@ -69,9 +69,34 @@ func (s *Store) BindChildEngineStart(ctx context.Context, identity triggerqueue.
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 			s.instanceID, child.ChildID, start.ManifestDigest, start.ParentWorkflow, start.ParentWorkflowID,
 			start.ParentTemporalRunID, start.Deadline.UTC(), epoch)
+		if err != nil {
+			return err
+		}
+		// The engine bind is the child's dispatch (#8085 d): the parent's
+		// workflow starts it as a Temporal child, never the start loop. Record
+		// that, so the child can run and settle through the ordinary lifecycle
+		// and the start loop never sees an undispatched engine child.
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance
+			SET state='dispatched', owner_epoch=$3, start_retry_at=NULL,
+			    dispatch_started_at=COALESCE(dispatch_started_at,clock_timestamp()),
+			    finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
+			WHERE instance_id=$1 AND id=$2 AND state='accepted'`,
+			s.instanceID, child.AcceptanceID, epoch)
+		if err := changed(tag.RowsAffected(), err); err != nil {
+			return err
+		}
+		tag, err = tx.Exec(txCtx, `
+			UPDATE control.child_lineage
+			SET state='running', updated_at=clock_timestamp(), owner_epoch=$3
+			WHERE instance_id=$1 AND child_id=$2 AND state='queued' AND owner_epoch=$3`,
+			s.instanceID, child.ChildID, epoch)
+		if err := changed(tag.RowsAffected(), err); err != nil {
+			return err
+		}
 		bound = start
 		bound.Deadline = start.Deadline.UTC()
-		return err
+		return nil
 	})
 	return bound, err
 }
