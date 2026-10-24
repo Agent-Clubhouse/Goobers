@@ -95,6 +95,10 @@ func (s *Store) ClaimScoped(
 			switch {
 			case rowErr == nil:
 				holder = entry.RunID
+				if entry.ReleasePending {
+					ok = false
+					return nil
+				}
 				if entry.RunID == runID && live {
 					if entry.Workflow != workflow {
 						return ErrConflict
@@ -233,7 +237,7 @@ func (s *Store) ReleaseScoped(key localscheduler.ClaimKey, runID string, reason 
 		if err := lockClaims(ctx, tx, s.instanceID); err != nil {
 			return err
 		}
-		released, err := releaseToHistory(ctx, tx, s.instanceID, epoch, key, runID, "", false, reason)
+		released, err := releaseToHistory(ctx, tx, s.instanceID, epoch, key, runID, "", false, false, reason)
 		if err == nil && !released {
 			return ErrTransition
 		}
@@ -409,8 +413,10 @@ func (s *Store) readClaimForUpdateBlocking(
 	))
 }
 
+// claimSelect reads a claim, with release_pending_at as the ledger's
+// ReleasePending (cleanup custody).
 const claimSelect = `SELECT external_id,gaggle,provider,run_id,workflow,
-	claimed_at,renewed_at,expires_at,verification`
+	claimed_at,renewed_at,expires_at,verification,release_pending_at IS NOT NULL`
 const claimSelectWithToken = claimSelect + `,owner_token`
 const claimSelectWithOwnership = claimSelectWithToken + `,owner_epoch`
 
@@ -423,7 +429,7 @@ func scanClaimRow(row interface{ Scan(...any) error }) (localscheduler.ClaimEntr
 	var verification []byte
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
-		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification,
+		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification, &entry.ReleasePending,
 	)
 	entry.ExternalID = entry.ItemID
 	if len(verification) > 0 {
@@ -442,7 +448,7 @@ func scanClaimWithOwnershipAndLive(
 	var live bool
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
-		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification,
+		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification, &entry.ReleasePending,
 		&token, &ownerEpoch, &live,
 	)
 	entry.ExternalID = entry.ItemID
@@ -460,7 +466,7 @@ func scanHistoryClaim(row pgx.CollectableRow) (localscheduler.ClaimEntry, error)
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
 		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification,
-		&entry.ReleasedAt, &reason,
+		&entry.ReleasedAt, &reason, &entry.ReleasePending,
 	)
 	entry.ExternalID = entry.ItemID
 	if len(verification) > 0 {
