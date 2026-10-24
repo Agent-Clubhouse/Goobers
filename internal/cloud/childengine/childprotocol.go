@@ -98,6 +98,15 @@ func (s *Service) Finalize(ctx context.Context, in engine.ChildFinalizeInput) (_
 	if err != nil {
 		return childresult.TerminalReturn{}, err
 	}
+	if child.State == triggerqueue.ChildQueued {
+		// Bound by a control plane that predates bind-as-dispatch.
+		if err := s.Custody.DispatchEngineChild(ctx, child.Identity); err != nil {
+			return childresult.TerminalReturn{}, err
+		}
+		if child, err = s.boundChild(ctx, in.Binding); err != nil {
+			return childresult.TerminalReturn{}, err
+		}
+	}
 	rd, err := s.Journal(ctx, child.RunID)
 	if err != nil {
 		return childresult.TerminalReturn{}, fmt.Errorf("%w: child journal: %w", engine.ErrChildCustodyUnavailable, err)
