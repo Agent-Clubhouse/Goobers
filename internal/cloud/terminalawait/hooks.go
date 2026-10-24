@@ -2,19 +2,23 @@ package terminalawait
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/terminalhooks"
 	"github.com/goobers/goobers/internal/terminalhooks/frame"
 	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/prepare"
 	"github.com/goobers/goobers/internal/terminalhooks/providerposter"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
+	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -119,6 +123,17 @@ type Option func(*options)
 type options struct {
 	writer  providerwriter.Writer
 	parking parking.State
+	failed  func(runID string) *escalationnotify.Policy
+	notify  func(runID string) *escalationnotify.Policy
+	prepare *PrepareDeps
+}
+
+// WithFailed implements the failed hook: the failure-streak circuit breaker
+// (#1054), through the policy policyFor builds for the run (its poster, state and
+// terminal_report outbox are the caller's). The provider writes inside it are
+// reported as failed while the writer is Pending, but the streak is counted.
+func WithFailed(policyFor func(runID string) *escalationnotify.Policy) Option {
+	return func(o *options) { o.failed = policyFor }
 }
 
 // WithParking implements the existing-fix, escalation and blocked hooks: the
@@ -128,6 +143,78 @@ type options struct {
 // silently dropped).
 func WithParking(writer providerwriter.Writer, state parking.State) Option {
 	return func(o *options) { o.writer, o.parking = writer, state }
+}
+
+// WithNotify implements the notify hook: the circuit breaker for an escalated or
+// aborted terminal, and the failure and no-work streak resets for a completed
+// one (escalationnotify.Policy.Terminal), through the policy policyFor builds
+// for the run.
+func WithNotify(policyFor func(runID string) *escalationnotify.Policy) Option {
+	return func(o *options) { o.notify = policyFor }
+}
+
+// PrepareDeps is what the prepare hook (branch cleanup and the aborted-run
+// pull-request label) needs.
+type PrepareDeps struct {
+	// Writer performs the provider writes (providerwriter.Pending until #8093).
+	Writer providerwriter.Writer
+	// Events reads a run's journal events (the PostgreSQL journal).
+	Events func(runID string) ([]journal.Event, error)
+	// Reports is the terminal_report outbox the label is published through (nil
+	// applies it directly), and Gaggle stamps the effect.
+	Reports terminalreport.Outbox
+	Gaggle  string
+}
+
+// WithPrepare implements the prepare hook through prepare.FinalizeBranch and
+// prepare.LabelAbortedPR. Their outcome is recorded in the instance log (the run's
+// own journal is closed), and a re-fire repeats only idempotent provider writes.
+func WithPrepare(deps PrepareDeps) Option {
+	return func(o *options) { o.prepare = &deps }
+}
+
+// instanceAnnotator records a prepare step's journal event to the instance log
+// under the run's identity.
+type instanceAnnotator struct {
+	record frame.Recorder
+	out    frame.Outcome
+}
+
+func (a instanceAnnotator) Append(ev journal.Event) error {
+	if a.record != nil {
+		a.record.AppendBestEffort(stamp(a.out, ev))
+	}
+	return nil
+}
+
+func prepareHook(deps PrepareDeps, id Identity, record frame.Recorder) func(context.Context, frame.Outcome) error {
+	return func(ctx context.Context, out frame.Outcome) error {
+		events, err := deps.Events(out.RunID)
+		if err != nil {
+			return fmt.Errorf("read terminal run events of %s: %w", out.RunID, err)
+		}
+		annotate := instanceAnnotator{record: record, out: out}
+		repo := providers.RepositoryRef{Provider: providers.ProviderKind(id.RepoRef.Provider), Owner: id.RepoRef.Owner, Project: id.RepoRef.Project, Name: id.RepoRef.Name}
+		deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+			err := deps.Writer.DeleteBranch(ctx, out.RunID, req.Name)
+			if errors.Is(err, providers.ErrBranchNotFound) {
+				return providers.DeleteBranchResult{Deleted: false}, nil // journaled branch-not-found, as the daemon does
+			}
+			if err != nil {
+				return providers.DeleteBranchResult{}, err
+			}
+			return providers.DeleteBranchResult{Deleted: true}, nil
+		}
+		labelPR := func(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+			ref := providerwriter.ItemRef{RunID: out.RunID, Repo: req.Repository, ItemID: req.ID}
+			return providers.WorkItem{}, deps.Writer.Update(ctx, ref, req)
+		}
+		errs := []error{prepare.FinalizeBranch(events, annotate, repo, deleteBranch)}
+		if prepare.LabelsPhase(out.Phase) {
+			errs = append(errs, prepare.LabelAbortedPR(events, out.RunID, annotate, repo, labelPR, deps.Reports, deps.Gaggle))
+		}
+		return errors.Join(errs...)
+	}
 }
 
 // Hooks assembles the cloud frame for one run: the implemented hooks (claim
@@ -161,6 +248,28 @@ func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Reco
 		Notify:   pending("notify (circuit breaker, terminal notification)"),
 		Finalize: Finalize(claims, handle, record),
 		Record:   record,
+	}
+	if o.failed != nil || o.notify != nil || o.prepare != nil || (o.writer != nil && o.parking != nil) {
+		// The shared policies attribute provider writes to the run; the daemon
+		// reads that from the run's journal, the cloud supplies it.
+		h.Context = func(ctx context.Context, out frame.Outcome) context.Context {
+			return providers.WithAttributionContext(ctx, providers.Attribution{
+				Schema: 1, Goobers: true, Gaggle: out.Gaggle, Workflow: out.Workflow, Goober: "runner", Run: out.RunID,
+			})
+		}
+	}
+	if o.failed != nil {
+		h.Failed = func(ctx context.Context, f terminalhooks.FailedOutcome) error {
+			return o.failed(f.RunID).Failed(ctx, f)
+		}
+	}
+	if o.prepare != nil {
+		h.Prepare = prepareHook(*o.prepare, id, record)
+	}
+	if o.notify != nil {
+		h.Notify = func(ctx context.Context, out frame.Outcome) error {
+			return o.notify(out.RunID).Terminal(ctx, out.RunID, out.Phase, out.Result.FinalState)
+		}
 	}
 	if o.writer != nil && o.parking != nil {
 		h.ExistingFix = func(ctx context.Context, e terminalhooks.ExistingFixOutcome) error {

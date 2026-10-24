@@ -12,6 +12,12 @@
 // a durable idempotency key derived from the run, either an IdempotencyKey on
 // the provider write or an effect key in the terminal_report outbox.
 //
+// The framed receipt is written once Finalize succeeds. A non-finalize hook that
+// failed (a provider write reported pending #8093, an unreachable provider) is
+// recorded in the instance log and is NOT re-fired after that: there is no
+// retroactive delivery when the missing capability later arrives, so an operator
+// reconciles those runs from the log.
+//
 // A run is picked up while it is open, while it still holds claims, and, so that
 // a run which closed while no leader was awaiting it (a leader gap, the
 // concurrency cap) is never lost, by a durable closed-run watermark: every Tick

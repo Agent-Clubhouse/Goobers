@@ -7,9 +7,15 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/schedentries"
 	"github.com/goobers/goobers/internal/cloud/startpin"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestConfigurationConstructorFailsClosedWithoutItsDependencies(t *testing.T) {
@@ -112,5 +118,31 @@ func TestDirSourcePinsEveryWorkflowOfARealInstance(t *testing.T) {
 		if pins.WorkflowDigest == "" || pins.GooberDigest == "" {
 			t.Fatalf("%s has an incomplete pin %+v", key, pins)
 		}
+	}
+}
+
+// TestAnUnparseableTriggerRefusesTheGenerationAtApplyTime proves the composed
+// assessor refuses a generation the cloud scheduler could not tick, in the
+// config status shape: the offending workflow is named with its finding.
+func TestAnUnparseableTriggerRefusesTheGenerationAtApplyTime(t *testing.T) {
+	cfg := &instance.Config{Placement: &instance.PlacementConfig{SelfExecution: "deny"}}
+	set := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "g"}}},
+		Workflows: []apiv1.Workflow{{
+			ObjectMeta: metav1.ObjectMeta{Name: "nightly"}, DSLVersion: supportmatrix.V3DSLVersion,
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "g", Start: "t",
+				Tasks:    []apiv1.Task{{Name: "t", Type: apiv1.TaskDeterministic, Goal: "run", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "not a cron"}},
+			},
+		}},
+	}
+	refusal := cloudconfig.Admit(configurationAssessor, "sha256:x", cfg, set)
+	if refusal == nil {
+		t.Fatal("a generation with an unparseable cron trigger was admitted")
+	}
+	findings := refusal.Workflows["g/nightly"]
+	if len(findings) == 0 || findings[len(findings)-1].Code != schedentries.CodeTrigger {
+		t.Fatalf("refusal = %+v, want TRIGGER001 on g/nightly", refusal.Workflows)
 	}
 }

@@ -80,7 +80,8 @@ func (p *Plane) recoveryCandidates(ctx context.Context, terminal bool) ([]recove
 		       c.expires_at<=clock_timestamp(), coalesce(k.terminal,false)
 		FROM control.claim AS c
 		LEFT JOIN journal.run_checkpoint AS k ON k.instance_id=c.instance_id AND k.run_id=c.run_id
-		WHERE c.instance_id=$1 AND (c.expires_at<=clock_timestamp() OR ($3 AND k.terminal))
+		WHERE c.instance_id=$1 AND c.release_pending_at IS NULL
+		  AND (c.expires_at<=clock_timestamp() OR ($3 AND k.terminal))
 		ORDER BY c.gaggle,c.provider,c.external_id
 		LIMIT $2`,
 		p.instanceID, MaxClaims, terminal,

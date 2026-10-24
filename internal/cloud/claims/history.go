@@ -26,7 +26,7 @@ import (
 // made still completes the run's record.
 
 const runHistoryColumns = `instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,owner_epoch,
-	claimed_at,renewed_at,expires_at,released_at,release_reason,verification`
+	claimed_at,renewed_at,expires_at,released_at,release_reason,verification,release_pending_at`
 
 // runHistoryUpsert replaces the run and key's record with the incoming state.
 const runHistoryUpsert = `
@@ -34,7 +34,7 @@ const runHistoryUpsert = `
 	SET workflow=excluded.workflow, owner_token=excluded.owner_token, owner_epoch=excluded.owner_epoch,
 	    claimed_at=excluded.claimed_at, renewed_at=excluded.renewed_at, expires_at=excluded.expires_at,
 	    released_at=excluded.released_at, release_reason=excluded.release_reason,
-	    verification=excluded.verification`
+	    verification=excluded.verification, release_pending_at=excluded.release_pending_at`
 
 // recordGrant records the key's current lease as its holder's history, the
 // ledger's storeClaim/recordHistory.
@@ -42,7 +42,7 @@ func recordGrant(ctx context.Context, tx pgx.Tx, instanceID string, key localsch
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO control.claim_run_history (`+runHistoryColumns+`)
 		SELECT instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,$5,
-		       claimed_at,renewed_at,expires_at,NULL,NULL,verification
+		       claimed_at,renewed_at,expires_at,NULL,NULL,verification,release_pending_at
 		FROM control.claim
 		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4`+runHistoryUpsert,
 		instanceID, key.Gaggle, key.Provider, key.ExternalID, epoch,
@@ -54,10 +54,12 @@ func recordGrant(ctx context.Context, tx pgx.Tx, instanceID string, key localsch
 // incarnation to control.claim_history as the previous binary does, and
 // completes the run's record (recordReleasedHistory), all at one release
 // instant. token, when set, pins one incarnation; requireExpired rechecks
-// expiry under the fence.
+// expiry under the fence. custody finishes a provider-cleanup release: only a
+// row under cleanup custody is released, while an ordinary release never
+// discards custody (the ledger's ErrClaimReleasePending).
 func releaseToHistory(
 	ctx context.Context, tx pgx.Tx, instanceID string, epoch int64, key localscheduler.ClaimKey,
-	runID, token string, requireExpired bool, reason claimrelease.Reason,
+	runID, token string, requireExpired, custody bool, reason claimrelease.Reason,
 ) (bool, error) {
 	rawReason, err := json.Marshal(reason)
 	if err != nil {
@@ -69,7 +71,9 @@ func releaseToHistory(
 			WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
 			  AND run_id=$5 AND owner_epoch<=$6 AND ($8='' OR owner_token=$8)
 			  AND (NOT $9 OR expires_at<=clock_timestamp())
-			RETURNING *, clock_timestamp() AS released
+			  AND (release_pending_at IS NOT NULL) = $10
+			RETURNING instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,
+			          claimed_at,renewed_at,expires_at,verification,clock_timestamp() AS released
 		), incarnation AS (
 			INSERT INTO control.claim_history
 				(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
@@ -80,9 +84,9 @@ func releaseToHistory(
 		)
 		INSERT INTO control.claim_run_history (`+runHistoryColumns+`)
 		SELECT instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,$6,
-		       claimed_at,renewed_at,expires_at,released,$7,verification
+		       claimed_at,renewed_at,expires_at,released,$7,verification,NULL
 		FROM moved`+runHistoryUpsert,
-		instanceID, key.Gaggle, key.Provider, key.ExternalID, runID, epoch, rawReason, token, requireExpired,
+		instanceID, key.Gaggle, key.Provider, key.ExternalID, runID, epoch, rawReason, token, requireExpired, custody,
 	)
 	if err != nil {
 		return false, err
@@ -131,12 +135,12 @@ func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64
 // wins; the two then carry the same release.
 const historyRecords = `WITH merged AS (
 		SELECT run_id,gaggle,provider,external_id,workflow,claimed_at,renewed_at,expires_at,
-		       verification,released_at,release_reason,
+		       verification,released_at,release_reason,release_pending_at IS NOT NULL AS release_pending,
 		       coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity, 0 AS source
 		FROM control.claim_run_history WHERE instance_id=$1
 		UNION ALL
 		SELECT run_id,gaggle,provider,external_id,workflow,claimed_at,renewed_at,expires_at,
-		       verification,released_at,release_reason,released_at, 1
+		       verification,released_at,release_reason,false,released_at, 1
 		FROM control.claim_history WHERE instance_id=$1
 	), records AS (
 		SELECT DISTINCT ON (run_id,gaggle,provider,external_id) *
@@ -167,7 +171,8 @@ func queryHistory(ctx context.Context, q querier, instanceID, predicate, order s
 	ttl := "$" + argIndex(len(args)+2)
 	rows, err := q.Query(ctx, historyRecords+`
 		SELECT h.external_id,h.gaggle,h.provider,h.run_id,h.workflow,
-		       h.claimed_at,h.renewed_at,h.expires_at,h.verification,h.released_at,h.release_reason
+		       h.claimed_at,h.renewed_at,h.expires_at,h.verification,h.released_at,h.release_reason,
+		       h.release_pending
 		FROM records AS h
 		WHERE `+predicate+` AND `+fmt.Sprintf(historyRetained, ttl)+`
 		`+order,
