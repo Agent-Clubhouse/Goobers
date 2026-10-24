@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/epoch"
+	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
@@ -27,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	sharedauth "github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/version"
@@ -144,7 +146,10 @@ type controlPlanes struct {
 	RunJournal     httpapi.RunJournalService
 	Resolve        acceptance.StartInputResolver
 	Epoch          func(context.Context, *lease.Handle) (control.EpochServices, error)
-	RunnerHosts    []string
+	// Admission builds each epoch's scheduler-backed admission of accepted starts
+	// (control.Runtime.Admission).
+	Admission   func(context.Context, control.AdmissionDeps) (control.Admission, error)
+	RunnerHosts []string
 
 	// generations reads retained config generations under the live epoch; the
 	// Configuration constructor owns it and later seams consume it.
@@ -163,6 +168,16 @@ type controlPlanes struct {
 	// appliedSet is the applied generation's configuration, false before the
 	// first apply; the run-journal plane resolves workflow definitions from it.
 	appliedSet func() (*instance.ConfigSet, bool)
+	// journalBackend is the journal plane's PG backend, for the scheduler's
+	// fenced instance log.
+	journalBackend *journalpg.Backend
+	// schedulerGates reports the scheduler gates this controller does not enforce.
+	schedulerGates *gateStatus
+	// schedulerQuota is the ONE provider quota state of the process: the
+	// scheduler gates on it, counters feed it, observations persist it.
+	schedulerQuota *localscheduler.ProviderQuotaState
+	// schedulerComposition is what built Admission, for inspection.
+	schedulerComposition schedulerComposition
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }
@@ -243,7 +258,7 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
 		reporter.SetReporter(report)
 	}
-	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
+	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Admission: services.Admission, Report: report}
 	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
 		return checkCloudSchema(ctx, db.Controller.Pools.Transaction, version.Get().Version)
 	}, BuildEpoch: runtime.Build, Report: report})
@@ -302,7 +317,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 		return nil, err
 	}
 	return httpapi.WrapWithProbes(handler, func() bool { return true }, func() httpapi.ReadinessStatus {
-		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: terminalOutboxChecks()}
+		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: mergeReadinessChecks(p.schedulerGates.Checks(), terminalOutboxChecks())}
 	}), nil
 }
 
@@ -362,4 +377,20 @@ func (o *controlDatabaseOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.auth, "database-auth", environmentOr("GOOBERS_DATABASE_AUTH", "password"), "password or entra")
 	f.IntVar(&o.max, "database-max-conns", int(cloudpg.DefaultMaxConnections), "total connection budget across both roles")
 	f.IntVar(&o.direct, "database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct connection reservation per role")
+}
+
+// mergeReadinessChecks combines the informational readiness checks of the
+// scheduler gates and the terminal outbox into one map, or nil when neither
+// reports anything.
+func mergeReadinessChecks(sets ...map[string]bool) map[string]bool {
+	var out map[string]bool
+	for _, set := range sets {
+		for name, ok := range set {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[name] = ok
+		}
+	}
+	return out
 }

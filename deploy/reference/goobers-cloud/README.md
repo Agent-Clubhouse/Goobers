@@ -88,3 +88,21 @@ grace covers the release and the HTTP shutdown.
 
 Readiness requires holding the lease, so `RollingUpdate` with `maxUnavailable: 0`
 would deadlock. The hot standby and per-role namespaces arrive in P5.
+
+## Node clocks
+
+Keep node clocks synchronised (NTP or the cloud provider's time service). The
+lease itself is measured on the database clock, but the scheduler evaluates its
+schedules on the controller node's own clock. After a failover, a successor
+whose clock is behind the predecessor's resumes safely (the persisted
+evaluation cursor never moves backward and an occurrence is accepted exactly
+once), but a due schedule occurrence can fire late by up to the relative clock
+skew between the two controllers. The maximum tolerated skew is **30 seconds**:
+beyond it, schedule timing is no longer predictable, and `MaxRunsPerHour`
+windows shift by the same amount. With synchronised clocks the effect is
+negligible.
+
+Provider-backed scheduler gates (`MaxOpenPRs`, backlog, schedule-demand and
+refill workflows) are reported as failed `scheduler-gate:*` checks on the
+readiness probe while their counters are not composed; the controller still
+serves, and those workflows stay disabled.

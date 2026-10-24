@@ -12,6 +12,11 @@ type OpenRun struct {
 	Identity  localscheduler.WorkflowIdentity
 	RunID     string
 	Suspended bool
+	// AcceptanceID is set for a holder whose start is still UNCERTAIN (an
+	// acceptance row left 'dispatching' by a predecessor): its workflow may not
+	// exist yet, so Temporal's NotFound is not evidence it is gone (see
+	// Config.Settled).
+	AcceptanceID string
 }
 
 // OpenRuns enumerates the instance's open runs (claims and Temporal), the cloud
