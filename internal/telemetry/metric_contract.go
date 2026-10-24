@@ -307,7 +307,7 @@ var firstClassMetricRegistry = []metricContract{
 		Lifecycle:         stableContractLifecycle(),
 	},
 	{
-		Name:              MetricContinuationClaimsOldestAge,
+		Name:              MetricContinuationOldestClaimAge,
 		Kind:              metricKindGauge,
 		NumberType:        metricNumberTypeInt64,
 		Unit:              "s",

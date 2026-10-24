@@ -75,7 +75,7 @@
                       }
                     },
                     {
-                      "name": "goobers.continuation.claims.oldest_age",
+                      "name": "goobers.continuation.oldest_claim_age",
                       "description": "Age in seconds of the oldest live waiting-continuation claim, by operating system.",
                       "unit": "s",
                       "gauge": {

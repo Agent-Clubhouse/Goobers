@@ -955,9 +955,9 @@ func TestContinuationClaimMetricsRecordCountAndOldestAge(t *testing.T) {
 		t.Fatalf("%s points = %+v, want one point of 3", MetricContinuationClaims, counts)
 	}
 	assertPointAttr(t, counts[0], MetricAttrOS, runtime.GOOS)
-	ages := metricPoints(t, collected, MetricContinuationClaimsOldestAge)
+	ages := metricPoints(t, collected, MetricContinuationOldestClaimAge)
 	if len(ages) != 1 || ages[0].value != 420 {
-		t.Fatalf("%s points = %+v, want one point of 420s", MetricContinuationClaimsOldestAge, ages)
+		t.Fatalf("%s points = %+v, want one point of 420s", MetricContinuationOldestClaimAge, ages)
 	}
 }
 
@@ -973,7 +973,7 @@ func TestContinuationClaimMetricsPublishZeroWhenNothingIsWaiting(t *testing.T) {
 		OperatingSystem: runtime.GOOS, Count: 0, OldestSince: observedAt.Add(-time.Hour), ObservedAt: observedAt,
 	})
 	collected := collectMetrics(t, reader)
-	for _, name := range []string{MetricContinuationClaims, MetricContinuationClaimsOldestAge} {
+	for _, name := range []string{MetricContinuationClaims, MetricContinuationOldestClaimAge} {
 		points := metricPoints(t, collected, name)
 		if len(points) != 1 || points[0].value != 0 {
 			t.Fatalf("%s points = %+v, want a zero point", name, points)

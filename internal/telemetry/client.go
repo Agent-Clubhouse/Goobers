@@ -275,7 +275,7 @@ func (c *Client) RecordContinuationClaims(ctx context.Context, sample Continuati
 			ageSeconds = int64(age.Seconds())
 		}
 	}
-	c.instruments.continuationClaimsAge.Record(ctx, ageSeconds, attrs)
+	c.instruments.continuationOldestClaimAge.Record(ctx, ageSeconds, attrs)
 }
 
 // RecordSchedulerQueueSaturation publishes queue depth, oldest queue age, and

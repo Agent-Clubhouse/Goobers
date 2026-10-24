@@ -529,7 +529,7 @@
       }
     },
     {
-      "name": "goobers.continuation.claims.oldest_age",
+      "name": "goobers.continuation.oldest_claim_age",
       "kind": "gauge",
       "numberType": "int64",
       "unit": "s",

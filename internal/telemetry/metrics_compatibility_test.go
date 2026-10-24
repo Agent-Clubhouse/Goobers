@@ -65,7 +65,7 @@ func TestOTLPMetricTemporalityAndTerminalCompatibility(t *testing.T) {
 	} {
 		assertMetricKindAndTemporality(t, req, name, want.kind, want.temporality, want.monotonic)
 	}
-	for _, name := range []string{EventWorktreeDiskUsage, EventWorkcopyDiskUsage, MetricStorageFreeBytes, MetricQueueDepth, MetricQueueOldestAge, MetricWorkersAvailable, MetricContinuationClaims, MetricContinuationClaimsOldestAge} {
+	for _, name := range []string{EventWorktreeDiskUsage, EventWorkcopyDiskUsage, MetricStorageFreeBytes, MetricQueueDepth, MetricQueueOldestAge, MetricWorkersAvailable, MetricContinuationClaims, MetricContinuationOldestClaimAge} {
 		assertGaugeMetric(t, req, name)
 	}
 
