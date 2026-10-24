@@ -35,7 +35,7 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	if err != nil {
 		return err
 	}
-	configuration, err := cloudconfig.NewDirConfiguration(configurationAssessor, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID, Pins: startpin.Compute})
+	configuration, err := newControlConfiguration(leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, db.ConfigDir, db.InstanceID)
 	if err != nil {
 		return err
 	}
@@ -46,6 +46,19 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	p.Configuration = configuration
 	p.generations = leasedGenerations{inner: source, owner: db.EpochHandle}
 	return nil
+}
+
+// newControlConfiguration is the one place the control role's configuration is
+// assembled: the composed assessor and the admission pins are what make a
+// generation startable, so a test builds through these rather than around them.
+func newControlConfiguration(activator cloudconfig.Activator, root, instanceID string) (*cloudconfig.DirConfiguration, error) {
+	return cloudconfig.NewDirConfiguration(configurationAssessor, activator, controlDirSource(root, instanceID))
+}
+
+// controlDirSource is the control role's candidate source: the mounted instance
+// directory, with admission pins computed from the generation's own tree.
+func controlDirSource(root, instanceID string) cloudconfig.DirSource {
+	return cloudconfig.DirSource{Root: root, InstanceID: instanceID, Pins: startpin.Compute}
 }
 
 // configurationAssessor is the apply-time eligibility check: engine-only
