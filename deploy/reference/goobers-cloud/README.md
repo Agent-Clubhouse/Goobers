@@ -102,7 +102,14 @@ beyond it, schedule timing is no longer predictable, and `MaxRunsPerHour`
 windows shift by the same amount. With synchronised clocks the effect is
 negligible.
 
-Provider-backed scheduler gates (`MaxOpenPRs`, backlog, schedule-demand and
-refill workflows) are reported as failed `scheduler-gate:*` checks on the
-readiness probe while their counters are not composed; the controller still
-serves, and those workflows stay disabled.
+Provider-backed scheduler gates (`MaxOpenPRs`, and the backlog, refill and
+schedule-demand workflows) are enforced from the applied configuration's
+repositories, using the same instance-level credentials the local daemon's
+counters use (a token per repository, or a GitHub App installation token,
+resolved on every poll). Like the local daemon's counters they are GitHub-backed:
+a repository on another provider fails its poll with a clear error, which leaves
+its open-PR count unknown (the cap fails open for it) and its backlog trigger
+without work. A gate that is not enforced is reported as a failed
+`scheduler-gate:*` check on the readiness probe and journaled once per epoch; the
+controller still serves. `MaxOpenPRs` also fails open until a repository's first
+poll completes, as locally.
