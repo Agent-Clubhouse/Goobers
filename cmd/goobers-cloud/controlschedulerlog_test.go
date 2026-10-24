@@ -207,3 +207,21 @@ func TestRetireFailuresAreReportedOnlyWhenTheyMeanSomething(t *testing.T) {
 		})
 	}
 }
+
+// The process-wide opener is one instance: two consumers asking it in the same
+// epoch share a log.
+func TestTheProcessWideOpenerSharesOneLogPerEpoch(t *testing.T) {
+	epoch := int64(11)
+	opener := &fakeOpener{taken: map[int64]bool{}, epoch: &epoch}
+	epochSchedulerLogs.retire = func(*journalpg.SchedulerLog) error { return nil }
+	t.Cleanup(func() { epochSchedulerLogs = schedulerLogs{} })
+	handle := &lease.Handle{InstanceID: "i", Epoch: 11}
+	scheduler, err := epochSchedulerLogs.For(t.Context(), opener, handle, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, err := epochSchedulerLogs.For(t.Context(), opener, handle, nil)
+	if err != nil || hooks != scheduler || opener.opens != 1 {
+		t.Fatalf("second consumer = %p, %v after %d opens; want the scheduler's log", hooks, err, opener.opens)
+	}
+}
