@@ -40,6 +40,8 @@ type Plane struct {
 	lease        *cloudlease.Manager
 	owner        func() *cloudlease.Handle
 	defaultLease time.Duration
+	// releaseMarker performs provider-cleanup releases; nil refuses them.
+	releaseMarker MarkerReleaser
 }
 
 // PlaneConfig wires a Plane to the controller pool and the live lease.
@@ -54,6 +56,10 @@ type PlaneConfig struct {
 	Owner func() *cloudlease.Handle
 	// DefaultLease applies to acquire and renew requests without leaseSeconds.
 	DefaultLease time.Duration
+	// ReleaseMarker removes provider claim markers for provider-cleanup
+	// releases. Nil (no provider credentials) refuses them with a 503 naming
+	// the issue that composes it.
+	ReleaseMarker MarkerReleaser
 }
 
 var (
@@ -69,7 +75,7 @@ func NewPlane(config PlaneConfig) (*Plane, error) {
 	}
 	return &Plane{
 		pool: config.Pool, instanceID: config.InstanceID, lease: config.Lease,
-		owner: config.Owner, defaultLease: config.DefaultLease,
+		owner: config.Owner, defaultLease: config.DefaultLease, releaseMarker: config.ReleaseMarker,
 	}, nil
 }
 
@@ -127,7 +133,15 @@ func errAuthorityMoving(cause error) error {
 
 func errProviderCleanupUnavailable() error {
 	return httpapi.NewInterventionError(http.StatusServiceUnavailable, "claims_provider_cleanup_unavailable",
-		fmt.Sprintf("provider-cleanup release is not available in cloud yet (#%d)", ProviderCleanupIssue), nil)
+		fmt.Sprintf("provider-cleanup release needs provider credentials in the control role (#%d)", ProviderCleanupIssue), nil)
+}
+
+// errReleasePending is the ledger's ErrClaimReleasePending: an ordinary
+// release must not discard cleanup custody; the provider-cleanup release that
+// took it finishes it.
+func errReleasePending() error {
+	return httpapi.NewInterventionError(http.StatusConflict, "claim_release_pending",
+		"claim provider release is pending; retry provider cleanup", nil)
 }
 
 func invalidRequest(message string) error {
