@@ -199,6 +199,9 @@ func changedPaths(raw string) ([]string, error) {
 }
 
 func cloudPath(name string) bool {
+	if name == ".github/workflows/ci.yml" || name == ".github/test-timing-budgets.json" {
+		return true
+	}
 	for _, prefix := range []string{
 		"cmd/goobers-cloud/",
 		"internal/cloud/",
@@ -212,6 +215,8 @@ func cloudPath(name string) bool {
 		"internal/engine/",
 		"internal/engineadmission/",
 		"internal/startintent/",
+		"test/journalequivalence/",
+		"test/testtiming/",
 	} {
 		if strings.HasPrefix(name, prefix) {
 			return true
