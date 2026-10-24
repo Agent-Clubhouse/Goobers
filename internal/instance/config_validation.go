@@ -74,10 +74,13 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 }
 
 // ErrEngineChildWorkflowsIncomplete refuses opting an instance into generated
-// child workflows before the control plane serves the whole child protocol
-// (#8085 d): a parent could start children it can never park on, finalize or
-// resume from. Lifted when Park, Finalize and Complete are served.
-var ErrEngineChildWorkflowsIncomplete = errors.New("engine.childWorkflows.enabled: child protocol incomplete: Park/Finalize/Complete not served (#8085)")
+// child workflows until the child protocol can run safely end to end (#8085 d).
+// Control serves Park, Finalize and Complete, but a parked parent cannot yet
+// lend its slot: the control scheduler is not composed as the parent capacity
+// plane (L1e). A resuming parent can also be starved by new starts (#8174).
+// Lifting the refusal is the product owner's enablement decision once both
+// are resolved.
+var ErrEngineChildWorkflowsIncomplete = errors.New("engine.childWorkflows.enabled: child workflows are not enabled yet: the parent capacity plane is not composed (L1e), resume starvation is open (#8174), and enablement awaits a product decision (#8085)")
 
 func (c *Config) validateEngineChildWorkflows() error {
 	if c.EngineChildWorkflowsEnabled() {

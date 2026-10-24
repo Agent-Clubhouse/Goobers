@@ -229,6 +229,12 @@
       "reason": "Cloud control-plane read service has no Windows deployment target; its tests run on the Linux unit shards."
     },
     {
+      "package": "internal/cloud/claims",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud PostgreSQL claims plane; its tests run in the Linux unit and cloud-pg jobs, and the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/config",
       "coverage": "none",
       "category": "not-selected",

@@ -986,3 +986,139 @@ func TestPlaneDualWriteIsAtomicAtOneInstant(t *testing.T) {
 		}
 	}
 }
+
+// ListNamespace is the controller's own namespace read. It sees the namespace's
+// holders and history, shows live legacy claims in the ledger's unscoped form,
+// and, unlike Store.Snapshot, never reports a failed read as an empty namespace.
+func TestPlaneListNamespaceIsTheControllersErrorReturningRead(t *testing.T) {
+	f := newPlaneFixture(t)
+	leader := f.leader(t, "a")
+	plane := leader.plane
+	ctx := t.Context()
+
+	if listing, err := plane.ListNamespace(ctx, "g", "github"); err != nil || len(listing.Entries) != 0 || len(listing.History) != 0 {
+		t.Fatalf("empty namespace = %+v, %v", listing, err)
+	}
+	for _, item := range []string{"pr/41", "pr/42"} {
+		if got, err := plane.Acquire(ctx, request(item, "run-"+item)); err != nil || !got.Ok {
+			t.Fatalf("acquire %s = %+v, %v", item, got, err)
+		}
+	}
+	// Another namespace's claim must not appear.
+	other := request("pr/43", "run-x")
+	other.Gaggle = "h"
+	if got, err := plane.Acquire(ctx, other); err != nil || !got.Ok {
+		t.Fatalf("acquire in another namespace = %+v, %v", got, err)
+	}
+	// A live legacy (unscoped) claim is exclusive against every namespace.
+	// Only the scheduler-side store writes them (the plane refuses the namespace).
+	store, err := New(f.controller, pgtest.InstanceID, leader.manager, leader.handle.Load())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := store.Claim("pr/9", "run-legacy", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("legacy claim = %v, %v", ok, err)
+	}
+	settle := request("pr/41", "run-pr/41")
+	settle.Outcome = "completed"
+	if got, err := plane.Settle(ctx, settle); err != nil || !got.Ok {
+		t.Fatalf("settle = %+v, %v", got, err)
+	}
+
+	listing, err := plane.ListNamespace(ctx, "g", "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live []string
+	for _, entry := range listing.Entries {
+		live = append(live, entry.Gaggle+"/"+entry.Provider+"/"+entry.ExternalID)
+	}
+	if !reflect.DeepEqual(live, []string{"g/github/pr/42", "//pr/9"}) {
+		t.Fatalf("live holders = %v, want pr/42 and the legacy claim (unscoped) only", live)
+	}
+	// History is the plane's own (queryHistory): the settled claim carries its
+	// release, and the namespace read agrees with the API's listing of it.
+	viaAPI, err := plane.List(ctx, httpapi.ClaimListRequest{Gaggle: "g", Provider: "github", RunID: "run-pr/42", Scope: httpapi.ClaimListScopeNamespace, IncludeHistory: true})
+	if err != nil || len(viaAPI.History) != len(listing.History) {
+		t.Fatalf("namespace history has %d records, the API's listing has %d (%v)", len(listing.History), len(viaAPI.History), err)
+	}
+	settled := false
+	for _, record := range listing.History {
+		if record.ExternalID == "pr/41" && record.ReleasedAt != nil && record.ReleaseReason.Disposition == claimrelease.Completed {
+			settled = true
+		}
+	}
+	if !settled {
+		t.Fatalf("history = %+v, want the settled pr/41 with its release", listing.History)
+	}
+	legacyOnly, err := plane.ListNamespace(ctx, "", "")
+	if err != nil || len(legacyOnly.Entries) != 1 || legacyOnly.Entries[0].ExternalID != "pr/9" || legacyOnly.Entries[0].Gaggle != "" {
+		t.Fatalf("legacy namespace = %+v, %v", legacyOnly, err)
+	}
+	if _, err := plane.ListNamespace(ctx, "g", ""); err == nil {
+		t.Fatal("a half-specified namespace was accepted")
+	}
+}
+
+func TestPlaneListNamespaceReturnsQueryErrorsInsteadOfAnEmptyNamespace(t *testing.T) {
+	f := newPlaneFixture(t)
+	plane := f.leader(t, "a").plane
+	if got, err := plane.Acquire(t.Context(), request("pr/41", "run-a")); err != nil || !got.Ok {
+		t.Fatalf("acquire = %+v, %v", got, err)
+	}
+	// The same call, with the read failing: Snapshot would answer "no claims".
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	listing, err := plane.ListNamespace(cancelled, "g", "github")
+	if err == nil {
+		t.Fatalf("a failed read returned %+v with no error: it would read as an unclaimed namespace", listing)
+	}
+	if len(listing.Entries) != 0 || len(listing.History) != 0 {
+		t.Fatalf("a failed read returned partial data: %+v", listing)
+	}
+}
+
+// A failure of EITHER of the two reads fails ListNamespace: failing only the
+// entries query, then only the history query, each yields an error and no
+// listing. (A cancelled context fails both at once, so it cannot tell a read
+// that swallows one error from one that propagates it.) The failures are column
+// privileges revoked from the controller on exactly one table's column, which
+// only that table's query selects.
+func TestPlaneListNamespaceFailsWhenEitherReadFails(t *testing.T) {
+	f := newPlaneFixture(t)
+	plane := f.leader(t, "a").plane
+	ctx := t.Context()
+	for _, item := range []string{"pr/41", "pr/42"} {
+		if got, err := plane.Acquire(ctx, request(item, "run-"+item)); err != nil || !got.Ok {
+			t.Fatalf("acquire %s = %+v, %v", item, got, err)
+		}
+	}
+	settle := request("pr/41", "run-pr/41")
+	settle.Outcome = "completed"
+	if got, err := plane.Settle(ctx, settle); err != nil || !got.Ok {
+		t.Fatalf("settle = %+v, %v", got, err)
+	}
+	if listing, err := plane.ListNamespace(ctx, "g", "github"); err != nil || len(listing.Entries) == 0 || len(listing.History) == 0 {
+		t.Fatalf("baseline listing = %+v, %v; both reads need rows for this test to mean anything", listing, err)
+	}
+
+	role := pgx.Identifier{pgroles.Controller}.Sanitize()
+	for name, table := range map[string]string{"entries": "control.claim", "history": "control.claim_history"} {
+		if _, err := f.owner.Exec(ctx, "REVOKE SELECT (verification) ON "+table+" FROM "+role); err != nil {
+			t.Fatal(err)
+		}
+		listing, err := plane.ListNamespace(ctx, "g", "github")
+		if err == nil {
+			t.Fatalf("with the %s read failing ListNamespace returned %+v and no error", name, listing)
+		}
+		if len(listing.Entries) != 0 || len(listing.History) != 0 {
+			t.Fatalf("with the %s read failing ListNamespace returned partial data: %+v", name, listing)
+		}
+		if _, err := f.owner.Exec(ctx, "GRANT SELECT (verification) ON "+table+" TO "+role); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := plane.ListNamespace(ctx, "g", "github"); err != nil {
+			t.Fatalf("restoring the %s read did not restore ListNamespace: %v", name, err)
+		}
+	}
+}

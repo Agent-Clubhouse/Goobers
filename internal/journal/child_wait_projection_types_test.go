@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -72,6 +73,15 @@ func TestChildWaitProjectionTypesAreExactlyWhatTheProjectorReads(t *testing.T) {
 		t.Fatalf("branch-filtered fixture = %+v, %v; want parked", p, err)
 	}
 	histories := [][]Event{events, events[:3], events[:4], filtered}
+	// The noise varies over the root and both declared branches, each with
+	// that branch's stage, and over Runner content the projector keys on (a
+	// child wait or continuation payload) on a type it must still ignore.
+	_, wa, _ := parallelWaitFixture()
+	runners := []map[string]any{
+		nil,
+		{"kind": ChildWaitKind, "childWait": wa.Runner["childWait"]},
+		{"kind": ChildContinuedKind, "requestId": wa.Runner["childWait"].(ChildWaitHeader).Request.RequestID},
+	}
 	for _, kind := range declaredEventTypes(t) {
 		if slices.Contains(read, kind) {
 			continue
@@ -79,10 +89,15 @@ func TestChildWaitProjectionTypesAreExactlyWhatTheProjectorReads(t *testing.T) {
 		for h, history := range histories {
 			want, wantErr := ProjectChildWaits(history)
 			for at := 0; at <= len(history); at++ {
-				noisy := append(append(append([]Event{}, history[:at]...), Event{Type: kind, Branch: 1, Stage: "stage-1", Attempt: 1, Parallel: "fan"}), history[at:]...)
-				got, err := ProjectChildWaits(noisy)
-				if (err == nil) != (wantErr == nil) || !reflect.DeepEqual(got, want) {
-					t.Fatalf("a %s event at %d in history %d changed the projection: %+v (%v), want %+v (%v); add it to ChildWaitProjectionTypes", kind, at, h, got, err, want, wantErr)
+				for branch := 0; branch <= 2; branch++ {
+					for r, runner := range runners {
+						noise := Event{Type: kind, Branch: branch, Stage: fmt.Sprintf("stage-%d", branch), Attempt: 1, Parallel: "fan", Runner: runner}
+						noisy := append(append(append([]Event{}, history[:at]...), noise), history[at:]...)
+						got, err := ProjectChildWaits(noisy)
+						if (err == nil) != (wantErr == nil) || !reflect.DeepEqual(got, want) {
+							t.Fatalf("a %s event (branch %d, runner %d) at %d in history %d changed the projection: %+v (%v), want %+v (%v); add it to ChildWaitProjectionTypes", kind, branch, r, at, h, got, err, want, wantErr)
+						}
+					}
 				}
 			}
 		}

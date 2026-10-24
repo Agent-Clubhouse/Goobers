@@ -109,6 +109,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// advancing a run's generated-child custody. POSTs carrying receipts.
 		"engineChildAdmit": true, "engineChildLoad": true, "engineChildCancel": true,
 		"engineChildAuthority": true, "engineChildAuthorityRelease": true,
+		"engineChildPark": true, "engineChildFinalize": true, "engineChildComplete": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.
 		"runRecoveryPublish": true,

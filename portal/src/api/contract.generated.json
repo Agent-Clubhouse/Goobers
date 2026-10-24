@@ -742,6 +742,39 @@
       "recoverySafe": false
     },
     {
+      "id": "engineChildPark",
+      "method": "POST",
+      "path": "/api/v1/engine/children/park",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "engineChildFinalize",
+      "method": "POST",
+      "path": "/api/v1/engine/children/finalize",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "engineChildComplete",
+      "method": "POST",
+      "path": "/api/v1/engine/children/complete",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "blobGet",
       "method": "GET",
       "path": "/api/v1/blobs/{digest}",
