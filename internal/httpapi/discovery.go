@@ -261,6 +261,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.engineChildren != nil
 	case apicontract.RouteEngineChildAuthority, apicontract.RouteEngineChildAuthorityRelease:
 		available = config.engineChildAuthority != nil
+	case apicontract.RouteEngineChildPark, apicontract.RouteEngineChildFinalize, apicontract.RouteEngineChildComplete:
+		available = config.engineChildProtocol != nil
 	case apicontract.RouteConfigSnapshot:
 		available = config.configSnapshots != nil
 	case apicontract.RouteWorkerConfigDivergence:

@@ -9,7 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/objstore"
@@ -203,4 +205,65 @@ func (a FencedAuthority) ReleaseChildAuthority(ctx context.Context, release engi
 		return err
 	}
 	return authorities.ReleaseChildAuthority(ctx, release)
+}
+
+// FencedProtocol serves the rest of the engine child protocol (#8085 d):
+// parking a parent on its child, sealing the child's result from its
+// journal, and resuming the parent with it, under the live lease.
+type FencedProtocol struct {
+	Fenced Fenced
+	// Journal opens a child's journal read-only from the control-side
+	// backend, for the finalizer's result evidence.
+	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
+	// Capacity lends and reacquires the parent's scheduler slot; nil refuses
+	// Park and Complete as unavailable until the control scheduler is
+	// composed (ErrCapacityPlaneNotComposed).
+	Capacity ParentCapacity
+}
+
+// Validate reports a missing dependency before the plane is served.
+func (p FencedProtocol) Validate() error {
+	if err := p.Fenced.Validate(); err != nil {
+		return err
+	}
+	if p.Journal == nil {
+		return errors.New("childengine: the fenced child protocol requires the control journal")
+	}
+	return nil
+}
+
+func (p FencedProtocol) service(ctx context.Context) (*Service, error) {
+	service, err := p.Fenced.service(ctx)
+	if err != nil {
+		return nil, err
+	}
+	service.Journal, service.Capacity = p.Journal, p.Capacity
+	return service, nil
+}
+
+// Park lends the parked parent's capacity while it waits on its child.
+func (p FencedProtocol) Park(ctx context.Context, in engine.ChildParkInput) error {
+	service, err := p.service(ctx)
+	if err != nil {
+		return err
+	}
+	return service.Park(ctx, in)
+}
+
+// Finalize seals the child's terminal result from its journal.
+func (p FencedProtocol) Finalize(ctx context.Context, in engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
+	service, err := p.service(ctx)
+	if err != nil {
+		return childresult.TerminalReturn{}, err
+	}
+	return service.Finalize(ctx, in)
+}
+
+// Complete resumes the parent with exactly the sealed result.
+func (p FencedProtocol) Complete(ctx context.Context, in engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
+	service, err := p.service(ctx)
+	if err != nil {
+		return apiv1.ContextPointer{}, err
+	}
+	return service.Complete(ctx, in)
 }
