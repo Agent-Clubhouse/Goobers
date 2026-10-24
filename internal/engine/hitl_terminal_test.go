@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
@@ -190,4 +191,38 @@ func atTerminalHold(t *testing.T, env *testsuite.TestWorkflowEnvironment, call f
 		env.RegisterDelayedCallback(poll, 100*time.Millisecond)
 	}
 	env.RegisterDelayedCallback(poll, 100*time.Millisecond)
+}
+
+func TestHumanGateRerunResetsPolicyAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version workflow.Version
+		want    int
+	}{{"current", 1, 1}, {"legacy", workflow.DefaultVersion, 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&suite)
+			env.OnGetVersion(humanGateRerunBudgetChange, workflow.DefaultVersion, 1).Return(tc.version)
+			env.ExecuteWorkflow(func(ctx workflow.Context) (int, error) {
+				rec := &runJournal{humanReruns: map[string]int{"review": 2}}
+				attempts := map[string]int{"review": 1, "other": 3}
+				evidence, prior := gateEvidence{}, "prior"
+				rec.prepareHumanGateRerun(ctx, "review", &evidence, &prior, attempts)
+				if attempts["other"] != 3 {
+					return 0, errors.New("unrelated gate budget changed")
+				}
+				return attempts["review"] + 1, nil
+			})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			var attempt int
+			if err := env.GetWorkflowResult(&attempt); err != nil {
+				t.Fatal(err)
+			}
+			if attempt != tc.want {
+				t.Fatalf("gate.started repassAttempt=%d want=%d", attempt, tc.want)
+			}
+		})
+	}
 }

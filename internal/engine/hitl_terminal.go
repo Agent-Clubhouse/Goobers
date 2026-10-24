@@ -217,11 +217,16 @@ func (r *runJournal) takeHumanRerun(stage string) (int32, journal.AttemptClass) 
 // Local runGate clears empty-diff short circuits for an explicit reviewer
 // addendum, and resetRerunGateSeeds clears its prior diff. Keep that intent
 // authoritative after the versioned terminal commit on the cloud path too.
-func (r *runJournal) prepareHumanGateRerun(stage string, evidence *gateEvidence, priorDiff *string) {
+const humanGateRerunBudgetChange = "human-gate-rerun-budget-v1"
+
+func (r *runJournal) prepareHumanGateRerun(ctx workflow.Context, stage string, evidence *gateEvidence, priorDiff *string, attempts map[string]int) {
 	if _, ok := r.humanReruns[stage]; !ok {
 		return
 	}
 	delete(r.humanReruns, stage)
+	if workflow.GetVersion(ctx, humanGateRerunBudgetChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		delete(attempts, stage)
+	}
 	evidence.CachedVerdict = nil
 	evidence.CacheHit = false
 	evidence.RequireDiff = false
