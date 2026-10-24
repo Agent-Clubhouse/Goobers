@@ -32,5 +32,6 @@ func constructClaims(_ context.Context, db databaseServices, _ controlAuth, mana
 		return err
 	}
 	p.Claims = plane
+	p.claimedItems = plane.ClaimedItems
 	return nil
 }
