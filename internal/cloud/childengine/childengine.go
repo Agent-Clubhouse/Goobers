@@ -69,10 +69,9 @@ type Service struct {
 	// Journal opens a run's journal read-only from the control journal, for
 	// the finalizer to read a child's result evidence.
 	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
-	// Capacity and Continuations are the parent capacity plane and the
-	// continuation path; nil refuses Park and Complete as unavailable.
-	Capacity      ParentCapacity
-	Continuations ContinuationWriter
+	// Capacity is the parent capacity plane; nil refuses Park and Complete
+	// as unavailable.
+	Capacity ParentCapacity
 }
 
 // GenerationUnpins releases a child's pinned config generation.

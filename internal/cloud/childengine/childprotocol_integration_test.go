@@ -5,13 +5,11 @@ package childengine
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -27,13 +25,6 @@ func (c *recordedCapacity) Release(context.Context, engine.ChildParkInput) error
 func (c *recordedCapacity) Reacquire(context.Context, engine.ChildCompletionInput) error {
 	c.reacquired++
 	return nil
-}
-
-type recordedContinuations struct{ written [][]byte }
-
-func (w *recordedContinuations) WriteChildContinuation(_ context.Context, _ engine.ChildRunBinding, _ livejournal.AppendReceipt, data []byte) (apiv1.ContextPointer, error) {
-	w.written = append(w.written, data)
-	return apiv1.ContextPointer{Name: "child-completion", Artifact: &apiv1.ArtifactPointer{Path: "stages/plan/child-completion.json", Digest: journal.Digest(data), Size: int64(len(data))}}, nil
 }
 
 // protocolFamily is a bound engine child with its own journal, served by the
@@ -125,10 +116,10 @@ func TestFinalizeSealsACancelledChild(t *testing.T) {
 	}
 }
 
-// Parking and resuming need the capacity plane and the continuation path;
-// without them both are a named unavailability, never a silent no-op that
-// would keep a parked parent's permit.
-func TestParkAndCompleteNeedTheCapacityPlaneAndContinuationPath(t *testing.T) {
+// Parking and resuming need the capacity plane; without it both are a named
+// unavailability, never a silent no-op that would keep a parked parent's
+// permit.
+func TestParkAndCompleteNeedTheCapacityPlane(t *testing.T) {
 	f := newProtocolFamily(t)
 	wait := livejournal.AppendReceipt{Key: "wait-1", Seq: 7, Type: journal.EventStageFinished}
 	if err := f.service.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
@@ -139,27 +130,93 @@ func TestParkAndCompleteNeedTheCapacityPlaneAndContinuationPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	completion := engine.ChildCompletionInput{Binding: f.binding, Wait: wait, Result: sealed}
-	if _, err := f.service.Complete(t.Context(), completion); !errors.Is(err, ErrContinuationNotComposed) {
-		t.Fatalf("complete without a continuation path = %v", err)
+	if _, err := f.service.Complete(t.Context(), completion); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
+		t.Fatalf("complete without a capacity plane = %v", err)
 	}
 
-	capacity, continuations := &recordedCapacity{}, &recordedContinuations{}
-	f.service.Capacity, f.service.Continuations = capacity, continuations
+	capacity := &recordedCapacity{}
+	f.service.Capacity = capacity
 	if err := f.service.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); err != nil || capacity.released != 1 {
 		t.Fatalf("park = %v (released %d)", err, capacity.released)
 	}
 	forged := completion
 	forged.Result.Input.Summary = "a result the child never sealed"
-	if _, err := f.service.Complete(t.Context(), forged); !errors.Is(err, engine.ErrChildCustodyRefused) || len(continuations.written) != 0 {
-		t.Fatalf("complete with a forged result = %v (wrote %d)", err, len(continuations.written))
+	if _, err := f.service.Complete(t.Context(), forged); !errors.Is(err, engine.ErrChildCustodyRefused) || capacity.reacquired != 0 {
+		t.Fatalf("complete with a forged result = %v (reacquired %d)", err, capacity.reacquired)
 	}
-	pointer, err := f.service.Complete(t.Context(), completion)
-	if err != nil || capacity.reacquired != 1 || len(continuations.written) != 1 || pointer.Artifact == nil {
-		t.Fatalf("complete = %+v, %v (reacquired %d, wrote %d)", pointer, err, capacity.reacquired, len(continuations.written))
+	if _, err := f.service.Complete(t.Context(), completion); err != nil || capacity.reacquired != 1 {
+		t.Fatalf("complete = %v (reacquired %d)", err, capacity.reacquired)
 	}
-	var recorded childresult.TerminalReturn
-	if err := json.Unmarshal(continuations.written[0], &recorded); err != nil || recorded.ResultRef != sealed.ResultRef {
-		t.Fatalf("continuation carries %+v (%v), want the sealed result", recorded, err)
+}
+
+// The continuation is the sealed result receipt itself, which a pod can
+// materialize by digest. Control writes nothing new: no blob and no journal
+// event. The receipt stays referenced against blob GC from Finalize until the
+// child is tombstoned, so a collector running between Complete and the
+// parent's resume cannot take it.
+func TestCompleteReturnsTheSealedReceiptRetainedAgainstGC(t *testing.T) {
+	f := newProtocolFamily(t)
+	f.service.Capacity = &recordedCapacity{}
+	sealed, err := f.service.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait := livejournal.AppendReceipt{Key: "wait-1", Seq: 7, Type: journal.EventStageFinished}
+	pointer, err := f.service.Complete(t.Context(), engine.ChildCompletionInput{Binding: f.binding, Wait: wait, Result: sealed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pointer.Artifact == nil || pointer.Artifact.Digest != sealed.ResultRef || pointer.RunID != "" || pointer.Artifact.Validate() != nil {
+		t.Fatalf("continuation = %+v, want a contained pointer to the sealed receipt", pointer)
+	}
+	data, err := f.controller.ChildResult(t.Context(), f.binding.Child.Identity)
+	if err != nil || journal.Digest(data.Receipt) != pointer.Artifact.Digest || int64(len(data.Receipt)) != pointer.Artifact.Size {
+		t.Fatalf("receipt = %d bytes (%v); pointer = %+v", len(data.Receipt), err, pointer.Artifact)
+	}
+	if again, err := f.service.Complete(t.Context(), engine.ChildCompletionInput{Binding: f.binding, Wait: wait, Result: sealed}); err != nil || !reflect.DeepEqual(again, pointer) {
+		t.Fatalf("repeated complete = %+v, %v", again, err)
+	}
+
+	// Qualify every writer class, so the census is not failing closed, and
+	// age a collection candidate for the receipt, as a collector would see it
+	// in the window before the parent resumes.
+	if _, err := f.pool.Exec(t.Context(), `
+		INSERT INTO control.blob_reference_writer_protocol (writer_class,protocol_version)
+		VALUES ('journal',1),('recovery',1),('child-custody',1) ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	referenced := func() bool {
+		t.Helper()
+		var ok bool
+		if err := f.pool.QueryRow(t.Context(), `SELECT control.blob_is_referenced($1)`, pointer.Artifact.Digest).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if !referenced() {
+		t.Fatal("the continuation receipt is collectable before the parent resumes")
+	}
+	// The child's custody holds it until the child is retired: still after
+	// the parent consumed the result and settled, released only by the
+	// retention pass's tombstone, and by nothing else.
+	identity := f.binding.Child.Identity
+	if err := f.controller.AcknowledgeChild(t.Context(), identity, sealed.ResultRef, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.controller.MarkChildParentSettled(t.Context(), identity.ChildParent, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := f.controller.PruneChildren(t.Context(), time.Now(), 100); err != nil || result.Tombstoned != 0 || !referenced() {
+		t.Fatalf("prune within retention = %+v, %v (referenced %v); want the receipt kept", result, err, referenced())
+	}
+	if _, err := f.pool.Exec(t.Context(), `UPDATE control.child_parent SET settled_at=clock_timestamp()-interval '31 days' WHERE instance_id=$1`, testInstance); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := f.controller.PruneChildren(t.Context(), time.Now(), 100); err != nil || result.Tombstoned != 1 {
+		t.Fatalf("prune after retention = %+v, %v; want the child retired", result, err)
+	}
+	if referenced() {
+		t.Fatal("the continuation receipt is still referenced after the child is retired; the test is not exercising the child's reference")
 	}
 }
 
