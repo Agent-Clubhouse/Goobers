@@ -15,10 +15,13 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 const generatedChild = `apiVersion: goobers.dev/v1alpha1
@@ -52,6 +55,30 @@ type childWorkflowFamily struct {
 	*authorityFamily
 	pins  *recordedPins
 	grant engine.ChildAuthorityGrant
+	// Faults injected into the per-request reads.
+	pinsErr, journalErr, boundErr error
+	execution                     func(n int) (startfence.StartedExecution, error)
+	executions                    int
+}
+
+// faultyCustody fails the bound-grant reads with err when set.
+type faultyCustody struct {
+	*acceptance.Store
+	err *error
+}
+
+func (q faultyCustody) ChildAuthority(ctx context.Context, parent triggerqueue.ChildParent, occurrence string) (triggerqueue.ChildAuthority, error) {
+	if *q.err != nil {
+		return triggerqueue.ChildAuthority{}, *q.err
+	}
+	return q.Store.ChildAuthority(ctx, parent, occurrence)
+}
+
+func (q faultyCustody) CheckChildAuthority(ctx context.Context, grant triggerqueue.ChildAuthority, now time.Time) error {
+	if *q.err != nil {
+		return *q.err
+	}
+	return q.Store.CheckChildAuthority(ctx, grant, now)
 }
 
 func newChildWorkflowFamily(t *testing.T) *childWorkflowFamily {
@@ -67,8 +94,26 @@ func newChildWorkflowFamily(t *testing.T) *childWorkflowFamily {
 
 func (f *childWorkflowFamily) service() *childworkflow.HTTPService {
 	parents := f.parent.authority()
-	parents.Pins = f.controller.RunPinsOf
-	return childWorkflowService(f.controller, f.pins, parents, f.grants, time.Now)
+	parents.Pins = func(ctx context.Context, runID string) (acceptance.RunPins, error) {
+		if f.pinsErr != nil {
+			return acceptance.RunPins{}, f.pinsErr
+		}
+		return f.controller.RunPinsOf(ctx, runID)
+	}
+	open := parents.Journal
+	parents.Journal = func(ctx context.Context, runID string) (journal.RunReader, error) {
+		if f.journalErr != nil {
+			return nil, f.journalErr
+		}
+		return open(ctx, runID)
+	}
+	if f.execution != nil {
+		parents.Execution = func(context.Context, string) (startfence.StartedExecution, error) {
+			f.executions++
+			return f.execution(f.executions)
+		}
+	}
+	return childWorkflowService(faultyCustody{Store: f.controller, err: &f.boundErr}, f.pins, parents, f.grants, time.Now)
 }
 
 // operations are every child-workflow route, each with its own credential.
@@ -234,5 +279,105 @@ func TestEngineBindReleasesTheChildGenerationPin(t *testing.T) {
 	}
 	if len(unpins.unpinned) != 2 || unpins.unpinned[0] != want || unpins.unpinned[1] != want {
 		t.Fatalf("released %v, want the child's generation owned by its acceptance (%s), on both admits", unpins.unpinned, want)
+	}
+}
+
+// Only an explicit refusal tells the pod its authority ended. A check that
+// could not be made (the run pins, the parent journal or the bound grant row
+// unreadable) is a retry on every route (#8085 c review).
+func TestChildWorkflowCheckOutagesAreRetryableOnEveryRoute(t *testing.T) {
+	outage := errors.New("connection reset by peer")
+	for name, inject := range map[string]func(*childWorkflowFamily){
+		"run pin read":   func(f *childWorkflowFamily) { f.pinsErr = outage },
+		"parent journal": func(f *childWorkflowFamily) { f.journalErr = outage },
+		"bound grant row": func(f *childWorkflowFamily) {
+			f.boundErr = outage
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newChildWorkflowFamily(t)
+			if _, err := f.service().StartChildWorkflow(t.Context(), f.grant.BearerToken, f.parent.pins.RunID, "call-1", []byte(generatedChild)); err != nil {
+				t.Fatal(err)
+			}
+			inject(f)
+			for op, call := range f.operations("call-1") {
+				if status, code := statusOf(t, call(f.grant.BearerToken)); status != http.StatusServiceUnavailable || code != "child_workflow_authority_unavailable" {
+					t.Fatalf("%s during a %s outage = %d %s, want a retryable 503", op, name, status, code)
+				}
+			}
+		})
+	}
+}
+
+// The cloud store returns a bound-grant check that could not run as the
+// error it is, never as "authority changed".
+func TestCloudCheckChildAuthorityReturnsQueryErrors(t *testing.T) {
+	f := newChildWorkflowFamily(t)
+	bound, err := f.controller.ChildAuthority(t.Context(), triggerqueue.ChildParent{Gaggle: f.parent.pins.Gaggle, ParentRunID: f.parent.pins.RunID}, f.parent.origin.StageOccurrence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.controller.CheckChildAuthority(t.Context(), bound, time.Now()); err != nil {
+		t.Fatalf("live grant: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := f.controller.CheckChildAuthority(cancelled, bound, time.Now()); err == nil || errors.Is(err, triggerqueue.ErrChildAuthorityChanged) {
+		t.Fatalf("a check that could not run = %v, want the query error, not a refusal", err)
+	}
+	other := bound
+	other.GrantID = "another-grant"
+	if err := f.controller.CheckChildAuthority(t.Context(), other, time.Now()); !errors.Is(err, triggerqueue.ErrChildAuthorityChanged) {
+		t.Fatalf("another grant = %v, want ErrChildAuthorityChanged", err)
+	}
+}
+
+// Every operation re-resolves the parent after its work, not only before: a
+// parent that stops running mid-request refuses that request.
+func TestChildWorkflowRequestRechecksAuthorityAfterItsWork(t *testing.T) {
+	f := newChildWorkflowFamily(t)
+	running := f.parent.execution
+	f.execution = func(n int) (startfence.StartedExecution, error) {
+		if n == 1 {
+			return running, nil
+		}
+		stopped := running
+		stopped.Status = enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED
+		return stopped, nil
+	}
+	_, err := f.service().ValidateChildWorkflow(t.Context(), f.grant.BearerToken, f.parent.pins.RunID, []byte(generatedChild))
+	if status, code := statusOf(t, err); status != http.StatusForbidden || code != "child_workflow_authority_changed" {
+		t.Fatalf("validate across a parent stop = %d %s, want the recheck's refusal", status, code)
+	}
+	if f.executions < 2 {
+		t.Fatalf("parent execution described %d times, want a recheck after the work", f.executions)
+	}
+}
+
+// A duplicate start of a child the engine already bound takes no new pin:
+// the bind released the acceptance's pin, and nothing would ever release a
+// new one before the tombstone.
+func TestDuplicateStartAfterBindLeavesNoPin(t *testing.T) {
+	f := newChildWorkflowFamily(t)
+	run := f.parent.pins.RunID
+	started, err := f.service().StartChildWorkflow(t.Context(), f.grant.BearerToken, run, "call-1", []byte(generatedChild))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := journal.ChildHandoffRequest{Gaggle: f.parent.pins.Gaggle, ParentRunID: run, RequestID: journal.Digest([]byte(started.RunID)),
+		Action: "wait", ChildRunID: started.RunID, AcceptanceID: started.AcceptanceID, InvocationKey: "call-1", SourceDigest: started.SourceDigest, Origin: f.parent.origin}
+	unpins := &recordedUnpins{}
+	service := &Service{Custody: f.controller, Freeze: freezeForTest, Wait: time.Hour, Actor: "control-plane", Now: time.Now, Generations: unpins}
+	if _, err := service.Admit(t.Context(), engine.ChildAdmissionInput{Request: request, ParentWorkflow: f.parent.pins.Workflow, ParentWorkflowID: run,
+		ParentTemporalRunID: "temporal-run-1", Stage: "plan", OriginSeq: 2}); err != nil {
+		t.Fatal(err)
+	}
+	pinsBefore := len(f.pins.pinned)
+	again, err := f.service().StartChildWorkflow(t.Context(), f.grant.BearerToken, run, "call-1", []byte(generatedChild))
+	if err != nil || !again.Duplicate {
+		t.Fatalf("duplicate start = %+v, %v", again, err)
+	}
+	if len(f.pins.pinned) != pinsBefore {
+		t.Fatalf("a duplicate start after the bind pinned again: %v", f.pins.pinned)
 	}
 }

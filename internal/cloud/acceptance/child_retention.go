@@ -250,19 +250,17 @@ func (s *Store) tombstoneChildrenTx(
 		if err := changed(tag.RowsAffected(), err); err != nil {
 			return 0, err
 		}
-		// A child the engine never bound never reached the bind's release of
-		// the generation pin its acceptance took (#8085 c); release it with
-		// the tombstone, or it would hold the generation past retention
-		// forever. A bound child's pin is the bind's to release.
+		// Release the generation pin the child's acceptance took (#8085 c).
+		// Nothing needs the generation once the child is tombstoned: a bound
+		// child's frozen manifest carries what it recompiled, and an unbound
+		// one never will be. The bind normally released it already; one it
+		// never reached (or a release that failed) would otherwise hold the
+		// generation past retention forever.
 		if _, err := tx.Exec(ctx, `
 			DELETE FROM control.config_generation_pin AS pin
 			USING control.child_lineage AS c
 			WHERE c.instance_id=$1 AND c.child_id=$2
-			  AND pin.instance_id=c.instance_id AND pin.owner=c.acceptance_id
-			  AND NOT EXISTS (
-				SELECT 1 FROM control.child_engine_start AS bound
-				WHERE bound.instance_id=c.instance_id AND bound.child_id=c.child_id
-			  )`,
+			  AND pin.instance_id=c.instance_id AND pin.owner=c.acceptance_id`,
 			s.instanceID, candidate.childID,
 		); err != nil {
 			return 0, err

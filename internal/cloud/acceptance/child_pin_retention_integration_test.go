@@ -9,11 +9,11 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
-// A child tombstoned before the engine bound it never reached the bind's
-// release of its acceptance's generation pin; retention releases it with the
-// tombstone. A bound child's pin is the bind's to release and is untouched.
-// The pass is idempotent (#8085 c).
-func TestChildTombstoneReleasesAnUnboundChildsGenerationPin(t *testing.T) {
+// The tombstone releases the generation pin a child's acceptance took, bound
+// or not: nothing needs the generation once the child is tombstoned, and a
+// child the bind never reached (or whose release failed) would otherwise hold
+// it past retention forever. The pass is idempotent (#8085 c).
+func TestChildTombstoneReleasesTheChildsGenerationPin(t *testing.T) {
 	store, owner := childTestStore(t)
 	const generation = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	if _, err := owner.Exec(t.Context(), `INSERT INTO control.config_generation (instance_id,digest,blob_digest) VALUES ($1,$2,$2)`,
@@ -66,13 +66,10 @@ func TestChildTombstoneReleasesAnUnboundChildsGenerationPin(t *testing.T) {
 	if pinned(unbound) {
 		t.Fatal("the unbound tombstoned child's generation pin outlived it")
 	}
-	if !pinned(bound) {
-		t.Fatal("retention released a bound child's pin, which is the bind's to release")
+	if pinned(bound) {
+		t.Fatal("the bound tombstoned child's generation pin outlived it")
 	}
 	if _, err := store.PruneChildren(t.Context(), time.Now(), 100); err != nil {
 		t.Fatalf("a repeated pass: %v", err)
-	}
-	if !pinned(bound) {
-		t.Fatal("a repeated pass released the bound child's pin")
 	}
 }

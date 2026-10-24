@@ -2,6 +2,7 @@ package childengine
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -45,8 +47,15 @@ func (c FencedChildWorkflows) service(ctx context.Context) (*childworkflow.HTTPS
 
 // childWorkflowService is the one composition of the child-workflow service
 // over bound custody, generation pins and the parent authority.
-func childWorkflowService(store childworkflow.ChildQueue, pins generationPins, parents ParentAuthority, grants *podauth.SignedKey, now func() time.Time) *childworkflow.HTTPService {
-	submission := &childworkflow.SubmissionService{Queue: pinningQueue{ChildQueue: store, pins: pins}, Authority: retryableAuthority{parents}, Now: now}
+// custodyQueue is child custody that also reports the engine's bind.
+// *acceptance.Store implements it.
+type custodyQueue interface {
+	childworkflow.ChildQueue
+	ChildEngineStart(ctx context.Context, identity triggerqueue.ChildIdentity) (acceptance.ChildEngineStart, error)
+}
+
+func childWorkflowService(store custodyQueue, pins generationPins, parents ParentAuthority, grants *podauth.SignedKey, now func() time.Time) *childworkflow.HTTPService {
+	submission := &childworkflow.SubmissionService{Queue: pinningQueue{custodyQueue: store, pins: pins}, Authority: retryableAuthority{parents}, Now: now}
 	return &childworkflow.HTTPService{Submission: submission, Grants: grants}
 }
 
@@ -86,17 +95,30 @@ func (c FencedChildWorkflows) ResolveChildWorkflow(ctx context.Context, grant, r
 	return service.ResolveChildWorkflow(ctx, grant, run, request)
 }
 
-// retryableAuthority marks the parent-authority failures that are a brief
-// loss of control, journal or engine as retryable, so the pod is told to
-// retry rather than that its authority ended.
+// explicitRefusal reports a definite "no": the stage's authority ended,
+// was replaced or revoked, or never existed. Anything else is a check that
+// could not be made.
+func explicitRefusal(err error) bool {
+	class := classify(err)
+	return errors.Is(class, engine.ErrChildCustodyRefused) && !errors.Is(class, engine.ErrChildCustodyUnavailable)
+}
+
+// retryableUnlessRefused marks every failure that is not an explicit refusal
+// as retryable, so the pod is told its authority ended only when it did, and
+// otherwise to retry.
+func retryableUnlessRefused(err error) error {
+	if err == nil || explicitRefusal(err) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", childworkflow.ErrAuthorityRetryable, err)
+}
+
+// retryableAuthority classifies the parent authority's failures.
 type retryableAuthority struct{ parents ParentAuthority }
 
 func (r retryableAuthority) Resolve(ctx context.Context, origin childworkflow.Origin) (childworkflow.Authority, error) {
 	authority, err := r.parents.Resolve(ctx, origin)
-	if err != nil && errors.Is(classify(err), engine.ErrChildCustodyUnavailable) {
-		return childworkflow.Authority{}, fmt.Errorf("%w: %w", childworkflow.ErrAuthorityRetryable, err)
-	}
-	return authority, err
+	return authority, retryableUnlessRefused(err)
 }
 
 // generationPins retains a child's pinned config generation for its owner.
@@ -108,10 +130,23 @@ var _ generationPins = (*objstore.Source)(nil)
 
 // pinningQueue pins each accepted child's config generation, owned by its
 // acceptance, so the generation its freeze recompiles from cannot be pruned
-// before the engine binds the child; the bind releases it.
+// before the engine binds the child; the bind releases it. It also classifies
+// the bound-grant reads every request makes.
 type pinningQueue struct {
-	childworkflow.ChildQueue
+	custodyQueue
 	pins generationPins
+}
+
+// ChildAuthority reads the bound grant row; an outage is retryable.
+func (q pinningQueue) ChildAuthority(ctx context.Context, parent triggerqueue.ChildParent, occurrence string) (triggerqueue.ChildAuthority, error) {
+	bound, err := q.custodyQueue.ChildAuthority(ctx, parent, occurrence)
+	return bound, retryableUnlessRefused(err)
+}
+
+// CheckChildAuthority checks the presented grant is the bound, live one; an
+// outage is retryable, a mismatch is a refusal.
+func (q pinningQueue) CheckChildAuthority(ctx context.Context, grant triggerqueue.ChildAuthority, now time.Time) error {
+	return retryableUnlessRefused(q.custodyQueue.CheckChildAuthority(ctx, grant, now))
 }
 
 func (q pinningQueue) AcceptChild(ctx context.Context, request triggerqueue.ChildAcceptance, now time.Time) (triggerqueue.ChildRecord, bool, error) {
@@ -119,12 +154,23 @@ func (q pinningQueue) AcceptChild(ctx context.Context, request triggerqueue.Chil
 	if err != nil {
 		return triggerqueue.ChildRecord{}, false, err
 	}
-	child, duplicate, err := q.ChildQueue.AcceptChild(ctx, request, now)
+	child, duplicate, err := q.custodyQueue.AcceptChild(ctx, request, now)
 	if err != nil {
 		return child, duplicate, err
 	}
-	// Repeated for a duplicate: a pin lost to an earlier failed response is
-	// restored, and re-pinning the same owner is idempotent.
+	if duplicate {
+		// A child the engine already bound has released its pin and needs
+		// none: re-pinning would leak it. An unbound duplicate re-pins, which
+		// restores a pin lost to an earlier failed response and is otherwise
+		// idempotent.
+		_, err := q.custodyQueue.ChildEngineStart(ctx, child.Identity)
+		if err == nil {
+			return child, duplicate, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return triggerqueue.ChildRecord{}, false, err
+		}
+	}
 	if err := q.pins.PinGeneration(ctx, envelope.ConfigGeneration, child.AcceptanceID); err != nil {
 		return triggerqueue.ChildRecord{}, false, fmt.Errorf("%w: pin the child's config generation: %w", triggerqueue.ErrChildProposalUnavailable, err)
 	}

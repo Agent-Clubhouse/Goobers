@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"time"
 
@@ -119,7 +120,7 @@ func (p ParentAuthority) resolver(ctx context.Context, runID string) (*childwork
 		ConfigGeneration: pins.ConfigGeneration, Driver: journal.DriverEngine, WorkspaceRepository: &repo}
 	pinned := &pinnedParent{}
 	return &childworkflow.JournalAuthorityResolver{
-		OpenJournal: p.Journal,
+		OpenJournal: p.openJournal,
 		LoadPinnedStage: func(ctx context.Context, journaled journal.RunIdentity, stage string) (childworkflow.PinnedStageAdmission, error) {
 			if err := journalAgrees(journaled, parent); err != nil {
 				return childworkflow.PinnedStageAdmission{}, err
@@ -135,6 +136,38 @@ func (p ParentAuthority) resolver(ctx context.Context, runID string) (*childwork
 			return admission.PinnedStageAdmission, nil
 		},
 	}, pinned, nil
+}
+
+// openJournal opens the parent's journal, marking a failure that says nothing
+// about the run (the journal backend is unreachable) as unavailable. The
+// shared resolver joins every journal failure with its refusal sentinel; a
+// missing run is a refusal, an outage must stay a retry.
+func (p ParentAuthority) openJournal(ctx context.Context, runID string) (journal.RunReader, error) {
+	rd, err := p.Journal(ctx, runID)
+	if err != nil {
+		return nil, journalUnavailable(err)
+	}
+	return unavailableReader{rd}, nil
+}
+
+// unavailableReader marks the parent journal's read failures the same way.
+type unavailableReader struct{ journal.RunReader }
+
+func (r unavailableReader) Events() ([]journal.Event, error) {
+	events, err := r.RunReader.Events()
+	return events, journalUnavailable(err)
+}
+
+func (r unavailableReader) ArtifactBytes(ref journal.Ref) ([]byte, error) {
+	data, err := r.RunReader.ArtifactBytes(ref)
+	return data, journalUnavailable(err)
+}
+
+func journalUnavailable(err error) error {
+	if err == nil || errors.Is(err, os.ErrNotExist) || errors.Is(err, journal.ErrNotRunDirectory) {
+		return err
+	}
+	return fmt.Errorf("%w: parent journal: %w", engine.ErrChildCustodyUnavailable, err)
 }
 
 // missingPin names the first pin the bind needs that the start left empty.
