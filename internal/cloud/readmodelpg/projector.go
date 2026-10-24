@@ -57,3 +57,9 @@ func (p *Projector) Feed() *readmodel.ChangeFeed { return p.store.feed }
 
 // Store exposes the backend for read paths.
 func (p *Projector) Store() *Store { return p.store }
+
+// RecordPass records a completed catch-up pass and its open failure count, so
+// readers in either role can tell a live projector from a dead one.
+func (p *Projector) RecordPass(ctx context.Context, openFailures int) error {
+	return p.store.RecordPass(ctx, openFailures)
+}

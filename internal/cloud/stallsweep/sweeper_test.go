@@ -9,11 +9,22 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// dueFor evaluates a history stored before the journal recorded its commit
+// clock: records carry only the writer's Time.
 func dueFor(t *testing.T, started, now time.Time, events []journal.Event, maxDuration time.Duration, report func(error)) (string, bool, error) {
+	t.Helper()
+	records := make([]journal.EventRecord, len(events))
+	for i, event := range events {
+		records[i] = journal.EventRecord{Event: event}
+	}
+	return dueForRecords(t, started, now, records, maxDuration, report)
+}
+
+func dueForRecords(t *testing.T, started, now time.Time, records []journal.EventRecord, maxDuration time.Duration, report func(error)) (string, bool, error) {
 	t.Helper()
 	sweeper := &StallSweeper{config: StallConfig{
 		StalledTimeout: time.Hour, MaxRunDuration: maxDuration, Report: report,
-		Events: func(context.Context, string) ([]journal.Event, error) { return events, nil },
+		Events: func(context.Context, string) ([]journal.EventRecord, error) { return records, nil },
 	}}
 	reason, _, due, err := sweeper.due(t.Context(), StallActivity{
 		Identity:     journal.RunIdentity{RunID: "run", StartedAt: started},
@@ -60,5 +71,34 @@ func TestMaxDurationFailsClosedOnFarSkewedEventClocks(t *testing.T) {
 		[]journal.Event{{Type: journal.EventRunStarted, Time: now.Add(-30 * time.Minute)}}, time.Hour, nil)
 	if err != nil || due {
 		t.Fatalf("honest run: reason=%q due=%v err=%v", reason, due, err)
+	}
+}
+
+// With the journal's commit clock on every record, writer clocks are never
+// consulted: a writer skewed by a year produces no finding and no fail-closed
+// verdict, and an honest 30m run stays inside its 1h budget.
+func TestRecordedClockReplacesWriterClock(t *testing.T) {
+	now := time.Now().UTC()
+	started := now.Add(-30 * time.Minute)
+	for name, skew := range map[string]time.Duration{"ahead": 365 * 24 * time.Hour, "behind": -365 * 24 * time.Hour} {
+		records := []journal.EventRecord{
+			{Event: journal.Event{Type: journal.EventRunStarted, Time: started.Add(skew)}, RecordedAt: started},
+			{Event: journal.Event{Type: journal.EventRunnerAnnotation, Time: now.Add(skew)}, RecordedAt: now.Add(-time.Minute)},
+		}
+		var reported []error
+		reason, due, err := dueForRecords(t, started, now, records, time.Hour, func(err error) { reported = append(reported, err) })
+		if err != nil || due || len(reported) != 0 {
+			t.Fatalf("%s: reason=%q due=%v err=%v reported=%v, want an honest verdict with no skew finding", name, reason, due, err, reported)
+		}
+	}
+	// One record without the commit clock sends the whole history to the
+	// writer-clock path, where the year of skew fails closed.
+	mixed := []journal.EventRecord{
+		{Event: journal.Event{Type: journal.EventRunStarted, Time: started}, RecordedAt: started},
+		{Event: journal.Event{Type: journal.EventRunnerAnnotation, Time: now.Add(365 * 24 * time.Hour)}},
+	}
+	var reported []error
+	if _, _, err := dueForRecords(t, now.Add(-2*time.Hour), now, mixed, time.Hour, func(err error) { reported = append(reported, err) }); err != nil || len(reported) != 1 {
+		t.Fatalf("mixed history: err=%v reported=%v, want the writer-clock skew finding", err, reported)
 	}
 }
