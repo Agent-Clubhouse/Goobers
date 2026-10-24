@@ -213,6 +213,7 @@ Options:
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
   --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
   --self-execution POLICY        Must be deny (default deny)
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
@@ -220,6 +221,8 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
   --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
                                  optional goobers/ (or GOOBERS_CONFIG_DIR); required
 

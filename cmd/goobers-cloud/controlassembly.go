@@ -56,7 +56,7 @@ var controlAssembly = []controlAssemblySeam{
 	// After EngineChildAdmissions: grants bind in the same fenced custody.
 	{field: "EngineChildAuthority", label: "engine child authority", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAuthority != nil }, construct: constructEngineChildAuthority, requires: requiresObjectStore},
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
-	{field: "Claims", issue: "#7808", present: func(p controlPlanes) bool { return p.Claims != nil }},
+	{field: "Claims", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Claims != nil }, construct: constructClaims},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }, construct: constructTriggers},
 	{field: "Journal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Journal != nil }, construct: constructJournal, requires: requiresObjectStore},
 	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},

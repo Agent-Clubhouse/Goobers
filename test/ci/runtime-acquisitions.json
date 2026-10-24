@@ -74,6 +74,7 @@
       ".github/workflows/ha-nightly.yml#smoke/Verify chaos pending references are still open:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Verify worker HA scenario contracts:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly:go-modules",
+      ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly[2]:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Render Temporal HA values:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Validate Windows daemon and implementation workflow:go-modules",
@@ -507,7 +508,9 @@
       "Makefile#deploy-validate:[7]:kubernetes-schemas",
       "Makefile#deploy-validate:[8]:kubernetes-schemas",
       "Makefile#deploy-validate:[9]:kubernetes-schemas",
-      "Makefile#deploy-validate:[10]:kubernetes-schemas"
+      "Makefile#deploy-validate:[10]:kubernetes-schemas",
+      "Makefile#deploy-validate:[11]:kubernetes-schemas",
+      "Makefile#deploy-validate:[12]:kubernetes-schemas"
     ]
   },
   {

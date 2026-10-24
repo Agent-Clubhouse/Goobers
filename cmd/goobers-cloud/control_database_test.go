@@ -101,9 +101,10 @@ func TestControlAssemblyRoutesEachConstructorToItsRole(t *testing.T) {
 	prior := controlAssembly
 	controlAssembly = append([]controlAssemblySeam(nil), prior...)
 	t.Cleanup(func() { controlAssembly = prior })
-	// journal.* is granted to goobers_controller only (writepaths.yaml), so the
-	// journal plane and everything that reads the journal runs on its pool.
-	controllerFields := map[string]bool{"Configuration": true, "EngineChildAdmissions": true, "EngineChildAuthority": true, "Resolve": true, "Epoch": true, "Journal": true}
+	// journal.* and control.claim are granted to goobers_controller only
+	// (writepaths.yaml), so the journal and claims planes, and everything that
+	// reads the journal, run on its pool.
+	controllerFields := map[string]bool{"Configuration": true, "EngineChildAdmissions": true, "EngineChildAuthority": true, "Resolve": true, "Epoch": true, "Journal": true, "Claims": true}
 	for i := range controlAssembly {
 		field := controlAssembly[i].field
 		want := api
@@ -142,6 +143,34 @@ func TestControlRequiresAnObjectStoreAtBoot(t *testing.T) {
 	}
 }
 
+func TestControlRequiresAConfigDirBeforeDatabase(t *testing.T) {
+	prior := newCloudPools
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
+		t.Fatal("opened a pool before the config directory was checked")
+		return nil, errors.New("unreachable")
+	}
+	t.Cleanup(func() { newCloudPools = prior })
+	t.Setenv("GOOBERS_CONFIG_DIR", "")
+	t.Setenv("GOOBERS_API_DATABASE_URL", "postgres://goobers_api:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_API_DATABASE_DIRECT_URL", "postgres://goobers_api:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_CONTROLLER_DATABASE_URL", "postgres://goobers_controller:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_CONTROLLER_DATABASE_DIRECT_URL", "postgres://goobers_controller:secret@localhost/goobers_team_blue")
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ dir, want string }{
+		{"", "--config-dir (or GOOBERS_CONFIG_DIR) is required"},
+		{filepath.Join(t.TempDir(), "missing"), "config directory is not readable"},
+		{file, "config directory is not a directory"},
+	} {
+		code, _, stderr := runForTest("control", "--instance-id", "team-blue", "--object-store-url", "https://store.invalid", "--config-dir", tc.dir)
+		if code != 2 || !strings.Contains(stderr, tc.want) || strings.Contains(stderr, "database operation failed") {
+			t.Fatalf("config dir %q: code=%d error=%s", tc.dir, code, stderr)
+		}
+	}
+}
+
 func TestBindControlObjectStoreIsRequiredAndControllerOnly(t *testing.T) {
 	controller := databaseServices{Pools: &cloudpg.Pools{Direct: &pgxpool.Pool{}}}
 	for name, tc := range map[string]struct{ url, container string }{
@@ -149,14 +178,14 @@ func TestBindControlObjectStoreIsRequiredAndControllerOnly(t *testing.T) {
 		"blank url":    {"  ", "goobers"},
 		"no container": {"https://store.invalid", ""},
 	} {
-		if err := bindControlObjectStore(&controller, tc.url, tc.container); err == nil || controller.Blobs != nil || controller.Objects != nil {
+		if err := bindControlObjectStore(&controller, tc.url, tc.container, "", ""); err == nil || controller.Blobs != nil || controller.Objects != nil {
 			t.Fatalf("%s: bound an object store (%v)", name, err)
 		}
 	}
 	priorCredential := newDefaultAzureCredential
 	newDefaultAzureCredential = func() (azcore.TokenCredential, error) { return fakeTokenCredential{}, nil }
 	t.Cleanup(func() { newDefaultAzureCredential = priorCredential })
-	if err := bindControlObjectStore(&controller, "https://store.invalid", "goobers"); err != nil {
+	if err := bindControlObjectStore(&controller, "https://store.invalid", "goobers", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if controller.Blobs == nil || controller.Objects == nil {
