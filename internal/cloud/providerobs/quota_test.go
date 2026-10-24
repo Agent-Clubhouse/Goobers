@@ -144,3 +144,19 @@ func TestNilStateFailsClosed(t *testing.T) {
 		t.Fatal("restore without state succeeded")
 	}
 }
+
+// Rows this adapter does not own are carried forward only while their writer is
+// plausibly alive; a day-old orphan (a rolled-back newer binary) ages out.
+func TestPassthroughRowsAgeOut(t *testing.T) {
+	q, _ := newQuota(epoch0)
+	fresh := control.Observation{Key: "other/fresh", Payload: json.RawMessage(`{"a":1}`), ObservedAt: epoch0.Add(-time.Hour)}
+	stale := control.Observation{Key: "other/stale", Payload: json.RawMessage(`{"a":2}`), ObservedAt: epoch0.Add(-25 * time.Hour)}
+	staleV2 := control.Observation{Key: "provider-quota/ado", Payload: json.RawMessage(`{"version":2}`), ObservedAt: epoch0.Add(-48 * time.Hour)}
+	if err := q.Restore(t.Context(), []control.Observation{fresh, stale, staleV2}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := q.Capture(t.Context())
+	if err != nil || len(snapshot) != 1 || snapshot[0].Key != "other/fresh" {
+		t.Fatalf("capture = %+v %v, want only the fresh foreign row", snapshot, err)
+	}
+}

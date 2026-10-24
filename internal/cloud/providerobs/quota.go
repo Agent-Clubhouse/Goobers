@@ -22,6 +22,11 @@ import (
 )
 
 const (
+	// passthroughMaxAge bounds how long a foreign or unknown-version row is carried
+	// forward without its writer refreshing it. A newer binary that is still active
+	// rewrites its rows every L1 tick, so a day-old row is an orphan of a binary
+	// that was rolled back, not live state.
+	passthroughMaxAge = 24 * time.Hour
 	// maxObservations is control.Observations' snapshot bound.
 	maxObservations = 128
 	quotaKeyPrefix  = "provider-quota/"
@@ -65,6 +70,11 @@ func (q *Quota) report(err error) {
 	if q.Report != nil {
 		q.Report(err)
 	}
+}
+
+// fresh reports whether a row we do not own is young enough to carry forward.
+func (q *Quota) fresh(observation control.Observation, now time.Time) bool {
+	return !observation.ObservedAt.IsZero() && now.Sub(observation.ObservedAt) <= passthroughMaxAge
 }
 
 // Capture snapshots the active quota windows for control.Observations.Replace,
@@ -120,7 +130,9 @@ func (q *Quota) Restore(_ context.Context, snapshot []control.Observation) error
 	for _, observation := range snapshot {
 		provider, owned := strings.CutPrefix(observation.Key, quotaKeyPrefix)
 		if !owned {
-			passthrough = append(passthrough, observation)
+			if q.fresh(observation, now) {
+				passthrough = append(passthrough, observation)
+			}
 			continue
 		}
 		var head struct {
@@ -131,7 +143,9 @@ func (q *Quota) Restore(_ context.Context, snapshot []control.Observation) error
 			continue
 		}
 		if head.Version != quotaVersion {
-			passthrough = append(passthrough, observation)
+			if q.fresh(observation, now) {
+				passthrough = append(passthrough, observation)
+			}
 			continue
 		}
 		var payload quotaPayload
