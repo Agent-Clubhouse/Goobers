@@ -1083,6 +1083,7 @@ func planeContributingPaths(paths []telemetryclient.ContributingPath) []creditgr
 		projected = append(projected, creditgraph.ContributingPath{
 			Nodes:      append([]string(nil), path.Nodes...),
 			Share:      path.Share,
+			Score:      path.Score,
 			Confidence: path.Confidence,
 			Evidence:   planeEvidenceLinks(path.Evidence),
 		})

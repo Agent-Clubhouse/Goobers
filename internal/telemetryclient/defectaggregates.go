@@ -273,6 +273,7 @@ type AttributionEvidenceLink struct {
 type ContributingPath struct {
 	Nodes      []string                  `json:"nodes,omitempty"`
 	Share      float64                   `json:"share"`
+	Score      *float64                  `json:"score,omitempty"`
 	Confidence float64                   `json:"confidence"`
 	Evidence   []AttributionEvidenceLink `json:"evidence,omitempty"`
 }

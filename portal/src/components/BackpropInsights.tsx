@@ -141,7 +141,16 @@ function Cohort({ cohort }: { cohort: AttributionCohort }) {
           <dl className="backprop-metrics">
             <div><dt>Signed score</dt><dd>{path.score === undefined
               ? "Unavailable (older attribution payload)"
-              : `${path.score > 0 ? "+" : ""}${path.score.toFixed(3)}`}</dd></div>
+              : `${path.score > 0 ? "+" : ""}${path.score.toFixed(3)}`}
+              {path.score !== undefined && (
+                <span aria-hidden="true" className="backprop-score-bar">
+                  <span
+                    className={path.score < 0 ? "backprop-score-negative" : "backprop-score-positive"}
+                    style={{ width: `${Math.min(Math.abs(path.score), 1) * 50}%` }}
+                  />
+                </span>
+              )}
+            </dd></div>
             <div><dt>Responsibility</dt><dd>{percent(path.share)}</dd></div>
             <div><dt>Confidence</dt><dd>{percent(path.confidence)}</dd></div>
           </dl>

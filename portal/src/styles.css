@@ -2,6 +2,34 @@
   box-sizing: border-box;
 }
 
+.insight-view-tabs {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.insight-view-tabs .ui-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-family: var(--font-family);
+  padding: 10px 4px;
+}
+
+.insight-view-tabs .ui-tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.backprop-insights {
+  font-family: var(--font-family);
+  font-size: var(--font-ui);
+  line-height: 1.5;
+}
+
 .backprop-insights .backprop-cohort {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -42,6 +70,39 @@
 
 .backprop-insights summary {
   cursor: pointer;
+}
+
+.backprop-score-bar {
+  background: var(--surface);
+  display: block;
+  height: 8px;
+  margin-top: 4px;
+  position: relative;
+  width: 100px;
+}
+
+.backprop-score-bar::before {
+  background: var(--line-strong);
+  content: "";
+  height: 100%;
+  left: 50%;
+  position: absolute;
+  width: 1px;
+}
+
+.backprop-score-bar span {
+  height: 100%;
+  position: absolute;
+}
+
+.backprop-score-negative {
+  background: var(--danger);
+  right: 50%;
+}
+
+.backprop-score-positive {
+  background: var(--success);
+  left: 50%;
 }
 
 .instance-warning-link {

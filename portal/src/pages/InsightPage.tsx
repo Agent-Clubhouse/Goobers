@@ -121,7 +121,7 @@ export function InsightPage({
     <>
       <PageHeading title="Insight" className="" description="Run outcomes, usage, and latency." />
 
-      <TabList aria-label="Insight views">
+      <TabList aria-label="Insight views" className="insight-view-tabs">
         <Tab
           aria-controls="insight-operations-panel"
           aria-selected={!backprop}
