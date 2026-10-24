@@ -986,7 +986,7 @@
           "$ref": "#/$defs/engineTLS"
         },
         "childWorkflows": {
-          "description": "Opt-in generated child workflows for engine-driven runs (#8085). Off by default: an engine run whose workflow declares `task.childWorkflows` is refused before any stage. The posture is pinned into each run at start, so a change here affects new runs only. Enabling it is refused at load until the parent capacity plane is composed, the cloud blob plane serves the object store (#8188), and enablement is decided.",
+          "description": "Opt-in generated child workflows for engine-driven runs (#8085). Off by default: an engine run whose workflow declares `task.childWorkflows` is refused before any stage. The posture is pinned into each run at start, so a change here affects new runs only. Enabling it is refused at load until enablement is decided (#8085).",
           "$ref": "#/$defs/engineChildWorkflows"
         },
         "workerVersioning": {

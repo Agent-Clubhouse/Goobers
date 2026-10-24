@@ -74,16 +74,13 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 }
 
 // EngineChildWorkflowsBlockers names what still prevents enabling generated
-// child workflows on the engine (#8085 d). Control serves Park, Finalize and
-// Complete; what remains:
-//   - a parked parent cannot yet lend its slot: L1e has not composed the
-//     control scheduler as the parent capacity plane;
-//   - stage pods cannot read the child result receipts control writes: no
-//     cloud blob plane serves the object store yet (#8188);
-//   - lifting the refusal is the product owner's enablement decision.
+// child workflows on the engine (#8085 d). The engineering is done: control
+// serves the whole child protocol, the parent capacity plane is composed per
+// epoch, and the stage blob plane serves control's object store. What remains
+// is the product owner's enablement decision.
 //
 // The config refusal and cloud readiness both report it, so they cannot drift.
-const EngineChildWorkflowsBlockers = "the parent capacity plane is not composed (L1e), stage pods cannot read control-written child results until the cloud blob plane serves the object store (#8188), and enablement awaits a product decision (#8085)"
+const EngineChildWorkflowsBlockers = "enablement awaits a product decision (#8085)"
 
 // ErrEngineChildWorkflowsIncomplete refuses opting an instance into generated
 // child workflows until the child protocol can run safely end to end.
