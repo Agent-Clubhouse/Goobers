@@ -108,7 +108,7 @@ func (f Fenced) service(ctx context.Context) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{Custody: store, Freeze: EngineFreezer(resolve), Wait: f.Wait, Actor: f.Actor, Now: f.Now}, nil
+	return &Service{Custody: store, Freeze: EngineFreezer(resolve), Wait: f.Wait, Actor: f.Actor, Now: f.Now, Generations: source}, nil
 }
 
 // Admit freezes and binds one child start under the live lease.
@@ -164,16 +164,26 @@ func (a FencedAuthority) Validate() error {
 	return nil
 }
 
-func (a FencedAuthority) authorities(ctx context.Context) (Authorities, error) {
+// bound returns custody, retained generations and the parent authority, all
+// bound to the live lease epoch.
+func (a FencedAuthority) bound(ctx context.Context) (*acceptance.Store, *objstore.Source, ParentAuthority, error) {
 	if err := a.Validate(); err != nil {
-		return Authorities{}, err
+		return nil, nil, ParentAuthority{}, err
 	}
 	store, source, err := a.Fenced.bind(ctx)
 	if err != nil {
-		return Authorities{}, err
+		return nil, nil, ParentAuthority{}, err
 	}
 	parents := ParentAuthority{InstanceID: a.Fenced.InstanceID, Pins: store.RunPinsOf, Journal: a.Journal, Execution: a.Execution,
 		Generations: source, Applied: a.Fenced.Applied}
+	return store, source, parents, nil
+}
+
+func (a FencedAuthority) authorities(ctx context.Context) (Authorities, error) {
+	store, _, parents, err := a.bound(ctx)
+	if err != nil {
+		return Authorities{}, err
+	}
 	return Authorities{Queue: store, Parents: parents, Grants: a.Grants, Now: a.Fenced.Now}, nil
 }
 
