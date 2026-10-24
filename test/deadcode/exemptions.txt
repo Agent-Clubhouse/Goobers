@@ -454,7 +454,6 @@ github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.creditedElapse
 github.com/goobers/goobers/internal/cloud/stallsweep.recordedClockEvents # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
 
 # #7818 start-input composition: the config loader fills Candidate.Pins with startpin.Compute and the webhook and trigger planes pin through Configuration.PinFor once the control assembly composes them. Remove on wiring.
-github.com/goobers/goobers/internal/cloud/startpin.Compute # Admission digest pinning for cloud starts (#7818); exercised by internal/cloud/config and internal/cloud/startpin tests. expires=2026-11-30
 github.com/goobers/goobers/internal/cloud/providerobs.Quota.now # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/providerobs.Quota.report # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/providerobs.Quota.fresh # HA-P3 provider quota observations; cmd/goobers-cloud composes it into epochWiring.Observations once #8109 lands. Remove when that lands. expires=2026-11-22
