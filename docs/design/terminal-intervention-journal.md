@@ -3,6 +3,8 @@
 > Status: implemented
 > Tracking: #7899
 > Delivered-by: #8111, #7899
+> Scope-delta: Gate-based terminal interventions are delivered; a gateless-task operator resume route remains a product question in #8149.
+> Verified: 6f5f5454e2f9dcf29be4bbf04d72a73a1ac82a9a (2026-10-23)
 
 Issue #7899 has two layers: the fenced file/PG journal seam (#8111), and the
 versioned workflow/worker/API composition. A workflow advertises
@@ -11,6 +13,18 @@ versioned workflow/worker/API composition. A workflow advertises
 sequence and the API refuses terminal interventions on them before sending an
 Update. Ordinary journal emission remains closed after `run.finished`.
 
+## Scope-delta
+
+The fenced journal seam, worker transport, versioned workflow delivery,
+operator override/rerun/approval/deny routes, cancellation reconciliation and
+replay qualification are delivered. The operator corpus covers the keyed
+rerun and override paths through the real Service on both backends.
+
+No operator entry point currently resumes a failed task with no gate. The
+lower-level `ResumeFromTerminal` primitive remains tested separately with the
+`resume` action; it is not claimed as an operator-parity fixture. Issue #8149
+owns the product decision on whether rerun is the intended remedy or a resume
+route should be added. This delivery does not add that route.
 
 ## Authority and transport
 

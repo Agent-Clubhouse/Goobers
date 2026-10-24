@@ -84,7 +84,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
 | [Design: Source-owned backlog and objective workbench](source-owned-backlog-workbench.md) | `approved` | providers, source metadata, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
-| [Fenced terminal journal interventions](terminal-intervention-journal.md) | `implemented` | — | #7899 | #8111, #7899 | — | — | — |
+| [Fenced terminal journal interventions](terminal-intervention-journal.md) | `implemented` | — | #7899 | #8111, #7899 | — | — | 6f5f5454e2f9dcf29be4bbf04d72a73a1ac82a9a (2026-10-23) |
 | [Decision: dedicated workflows own repository and test-suite quality](test-suite-quality-workflow.md) | `implemented` | — | — | #1568, #1489 | — | — | — |
 | [Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels](trust-boundary-hardening.md) | `approved` | — | — | — | — | — | — |
 | [Design: trusted-local child execution](trusted-local-child-workflows.md) | `implemented` | — | — | #7663 | — | — | cf1da99bc858edde5284a2233acb4e88ccf03556 (2026-10-20) |
