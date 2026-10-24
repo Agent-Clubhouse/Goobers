@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -41,9 +42,9 @@ func (s *source) Acquire(_ context.Context, digest string) (childworkflow.Genera
 		return childworkflow.Generation{}, s.err
 	}
 	// A fresh load per acquire, like the object-store source.
-	set, _, err := instance.LoadConfigDir(s.dir)
+	set, findings, err := instance.LoadConfigDir(s.dir)
 	if err != nil {
-		return childworkflow.Generation{}, err
+		return childworkflow.Generation{}, fmt.Errorf("%w: %v", err, findings.Issues)
 	}
 	if variant := s.variants[digest]; variant != nil {
 		variant(set)
@@ -83,9 +84,9 @@ func newFixture(t *testing.T) *fixtureEnv {
 // pins computes the pins a generation digest's content admits.
 func (f *fixtureEnv) pins(t *testing.T, digest string) map[string]cloudconfig.Pins {
 	t.Helper()
-	set, _, err := instance.LoadConfigDir(f.root)
+	set, findings, err := instance.LoadConfigDir(f.root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%v: %v", err, findings.Issues)
 	}
 	if variant := f.src.variants[digest]; variant != nil {
 		variant(set)
@@ -302,9 +303,9 @@ func TestCompileCacheIsInsensitiveToRunnerPolicy(t *testing.T) {
 	} {
 		cfg := *f.cfg
 		mutate(&cfg)
-		set, _, err := instance.LoadConfigDir(f.root)
+		set, findings, err := instance.LoadConfigDir(f.root)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%v: %v", err, findings.Issues)
 		}
 		pins, err := startpin.Compute(f.root, &cfg, set)
 		if err != nil {
