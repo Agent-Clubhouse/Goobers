@@ -129,6 +129,9 @@ type controlPlanes struct {
 	// EngineChildAuthority binds engine parents' child-workflow grants for
 	// engine workers, over the admissions' fenced custody.
 	EngineChildAuthority httpapi.HandlerOption
+	// EngineChildProtocol parks, finalizes and completes engine children for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildProtocol  httpapi.HandlerOption
 	engineChildren       *childengine.Fenced
 	engineChildAuthority *childengine.FencedAuthority
 	// ChildWorkflows serves the child-workflow routes to engine parents'
@@ -287,7 +290,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	var handler http.Handler
 	var err error
 	if p.complete() {
-		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority, p.ChildWorkflows)
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority, p.EngineChildProtocol, p.ChildWorkflows)
 	}
 	if err != nil {
 		return nil, err

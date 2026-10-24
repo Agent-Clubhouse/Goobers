@@ -55,6 +55,7 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }, construct: constructEngineChildAdmissions, requires: requiresObjectStore},
 	// After EngineChildAdmissions: grants bind in the same fenced custody.
 	{field: "EngineChildAuthority", label: "engine child authority", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAuthority != nil }, construct: constructEngineChildAuthority, requires: requiresObjectStore},
+	{field: "EngineChildProtocol", label: "engine child protocol", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.EngineChildProtocol != nil }, construct: constructEngineChildProtocol, requires: requiresObjectStore},
 	// After EngineChildAuthority: every child-workflow call re-resolves the
 	// parent through the same authority and checks the grant it bound.
 	{field: "ChildWorkflows", label: "child workflows", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.ChildWorkflows != nil }, construct: constructChildWorkflows, requires: requiresObjectStore},
@@ -195,6 +196,33 @@ func constructEngineChildAuthority(_ context.Context, db databaseServices, auth 
 	}
 	p.EngineChildAuthority = httpapi.WithEngineChildAuthority(plane)
 	p.engineChildAuthority = &authority
+	return nil
+}
+
+// constructEngineChildProtocol serves the rest of the engine child protocol
+// to engine workers (#8085 d): Finalize seals a child's result from its
+// control-side journal; Park and Complete stay unavailable until the control
+// scheduler is composed as the parent capacity plane.
+func constructEngineChildProtocol(_ context.Context, db databaseServices, _ controlAuth, manager *lease.Manager, owner func() *lease.Handle, p *controlPlanes) error {
+	if p.engineChildren == nil {
+		return errors.New("engine child protocol requires the engine child admissions (#7879)")
+	}
+	backend, err := journalpg.New(journalpg.Config{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Lease: manager, LiveOwner: owner})
+	if err != nil {
+		return err
+	}
+	protocol := childengine.FencedProtocol{Fenced: *p.engineChildren,
+		Journal: func(ctx context.Context, runID string) (journal.RunReader, error) {
+			return backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
+		}}
+	if err := protocol.Validate(); err != nil {
+		return err
+	}
+	plane, err := enginechildplane.NewProtocol(protocol)
+	if err != nil {
+		return err
+	}
+	p.EngineChildProtocol = httpapi.WithEngineChildProtocol(plane)
 	return nil
 }
 
