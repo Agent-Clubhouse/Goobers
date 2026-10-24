@@ -19,8 +19,8 @@ type StartAuthority struct {
 // StartAdmissionStore is the fenced seam used by the cloud engine starter.
 type StartAdmissionStore interface {
 	ReadStartAuthority(context.Context, string) (StartAuthority, error)
-	ConfirmStart(context.Context, string, string) error
-	AdoptStart(context.Context, string, string, int64) error
+	ConfirmStart(context.Context, string, string, RunPins) error
+	AdoptStart(context.Context, string, string, int64, RunPins) error
 }
 
 // ReadStartAuthority loads identity while holding the current lease fence.
@@ -43,8 +43,11 @@ func (s *Store) ReadStartAuthority(ctx context.Context, acceptanceID string) (St
 	return authority, err
 }
 
-// ConfirmStart idempotently records a proven current-owner start.
-func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string) error {
+// ConfirmStart idempotently records a proven current-owner start and its pins.
+func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string, pins RunPins) error {
+	if pins.AcceptanceID != acceptanceID || pins.RunID != runID {
+		return triggerqueue.ErrTransition
+	}
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
    UPDATE control.acceptance SET state='dispatched', start_retry_at=NULL,
@@ -52,7 +55,10 @@ func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string) er
    WHERE instance_id=$1 AND id=$2 AND run_id=$3
      AND state IN ('dispatching','dispatched') AND owner_epoch=$4`,
 			s.instanceID, acceptanceID, runID, epoch)
-		return changed(tag.RowsAffected(), err)
+		if err := changed(tag.RowsAffected(), err); err != nil {
+			return err
+		}
+		return s.recordRunPins(txCtx, tx, pins, epoch)
 	})
 }
 
@@ -61,8 +67,9 @@ func (s *Store) AdoptStart(
 	ctx context.Context,
 	acceptanceID, runID string,
 	predecessorEpoch int64,
+	pins RunPins,
 ) error {
-	if predecessorEpoch < 1 {
+	if predecessorEpoch < 1 || pins.AcceptanceID != acceptanceID || pins.RunID != runID {
 		return triggerqueue.ErrTransition
 	}
 	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
@@ -75,7 +82,10 @@ finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
 			  AND owner_epoch<$5`,
 			s.instanceID, acceptanceID, runID, predecessorEpoch, epoch,
 		)
-		return changed(tag.RowsAffected(), err)
+		if err := changed(tag.RowsAffected(), err); err != nil {
+			return err
+		}
+		return s.recordRunPins(txCtx, tx, pins, epoch)
 	})
 }
 

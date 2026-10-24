@@ -134,10 +134,8 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 	workErr := work(runCtx, handle)
 	cancel()
 	renewalErr := <-renewalDone
-	// A timed-out callback or failed self-fence must not grant an early handoff.
-	// Stop renewal and let the database TTL expire instead.
-	if errors.Is(workErr, ErrWorkStillRunning) || errors.Is(renewalErr, ErrSelfFenced) {
-		return errors.Join(workErr, renewalErr)
+	if refusal := m.handoffRefusal(handle, workErr, renewalErr); refusal != nil {
+		return refusal
 	}
 
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), FencedTransactionTimeout)
@@ -153,6 +151,23 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 	default:
 		return nil
 	}
+}
+
+// handoffRefusal reports why Run must not release the lease voluntarily, or
+// nil. A timed-out callback or failed self-fence must not grant an early
+// handoff: renewal stops and the database TTL expires instead. The handle's
+// own state decides, not which exit the renewal loop took: when cancellation
+// wins the race against the loop's self-fence check, renewalErr is nil while
+// the handle is already self-fenced.
+func (m *Manager) handoffRefusal(handle *Handle, workErr, renewalErr error) error {
+	if errors.Is(workErr, ErrWorkStillRunning) || errors.Is(renewalErr, ErrSelfFenced) {
+		return errors.Join(workErr, renewalErr)
+	}
+	if m.SelfFenced(handle) {
+		return errors.Join(workErr, renewalErr,
+			fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter))
+	}
+	return nil
 }
 
 func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handle *Handle) error {

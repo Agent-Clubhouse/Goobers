@@ -81,7 +81,6 @@ func TestChildEngineStartSurvivesLeaseTakeover(t *testing.T) {
 	if _, err := old.BindChildEngineStart(t.Context(), child.Identity, want); err != nil {
 		t.Fatal(err)
 	}
-	predecessor := old.handle.Epoch
 	if err := old.manager.Release(t.Context(), old.handle); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +90,7 @@ func TestChildEngineStartSurvivesLeaseTakeover(t *testing.T) {
 	if _, err := current.BindChildEngineStart(t.Context(), child.Identity, want); !errors.Is(err, triggerqueue.ErrTransition) {
 		t.Fatalf("bind before adoption = %v", err)
 	}
-	if _, err := current.AdoptChildren(t.Context(), predecessor); err != nil {
+	if _, err := current.AdoptStaleChildCustody(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := current.BindChildEngineStart(t.Context(), child.Identity, want); err != nil || got != want {

@@ -247,6 +247,12 @@
       "reason": "Cloud PostgreSQL journal tests run in Linux unit and local PG16 cloudintegration jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/triggers",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud trigger plane tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/terminalhooks/frame",
       "coverage": "none",
       "category": "not-selected",
@@ -289,6 +295,12 @@
       "reason": "Provider-writer seam tests are pure and run in the Linux unit job; the seam serves the cloud control plane, which has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/startpin",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud start-pin digest tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",
@@ -325,10 +337,28 @@
       "reason": "Cloud grant-revocation and auth assembly tests run in Linux unit and cloud-pg jobs; shared key-ring portability is covered in internal/podauth, and the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/telemetrypg",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud telemetry store has no Windows deployment target; unit tests run on Linux and the PostgreSQL integration and local-rollup parity tests run in the cloud-pg job."
+    },
+    {
+      "package": "internal/cloud/providerobs",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud provider-observation adapter has no Windows deployment target; unit tests run on Linux and the PostgreSQL two-takeover test runs in the cloud-pg job."
+    },
+    {
       "package": "internal/cloud/schema",
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud PostgreSQL grant-policy tests run in Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/stallsweep",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud stall sweep has no Windows deployment target; unit tests and the PostgreSQL integration tests run on Linux."
     },
     {
       "package": "internal/cloud/startfence",
@@ -1105,6 +1135,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/telemetry/gatenoise",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure gate-noise decision arithmetic with no platform seam; runs on the Linux unit shards."
+    },
+    {
       "package": "internal/telemetry/rollup",
       "coverage": "partial",
       "category": "seam-selection",
@@ -1504,7 +1540,7 @@
       "package": "test/journalequivalence",
       "coverage": "none",
       "category": "not-selected",
-      "reason": "Local-runner equivalence corpus exercises backend semantics on the Linux unit shards; it does not select a Windows-specific seam."
+      "reason": "Local journal corpus runs on Linux unit shards; engine/PG equivalence runs in cloud-pg with Temporal worker drain and controller-role grants."
     },
     {
       "package": "test/markdownlinks",

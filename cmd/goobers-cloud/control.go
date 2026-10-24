@@ -14,13 +14,16 @@ import (
 
 	"go.temporal.io/sdk/client"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
+	"github.com/goobers/goobers/internal/cloud/projectorpg"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	sharedauth "github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/version"
@@ -60,15 +63,20 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
+  --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
+                                 optional goobers/ (or GOOBERS_CONFIG_DIR); required
 
 Readiness requires schema compatibility, complete plane/recovery wiring, and a
 live controller lease. SIGTERM stops controller loops and releases authority.
 `
 
 type controlOptions struct {
-	listen, cert, key, podKey, selfExecution, host, namespace, queue string
-	objectStoreURL, objectStoreContainer                             string
-	checkAssembly                                                    bool
+	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
+	objectStoreURL, objectStoreContainer                                        string
+	objectStoreAccountName, objectStoreAccountKeyFile                           string
+	checkAssembly                                                               bool
 }
 
 func (o *controlOptions) flags(f *flag.FlagSet) {
@@ -83,6 +91,9 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
 	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	f.StringVar(&o.objectStoreAccountName, "object-store-account-name", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_NAME"), "Azure storage account for shared-key authentication")
+	f.StringVar(&o.objectStoreAccountKeyFile, "object-store-account-key-file", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_KEY_FILE"), "file containing the Azure storage account key")
+	f.StringVar(&o.configDir, "config-dir", environmentOr("GOOBERS_CONFIG_DIR", ""), "mounted instance config directory")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {
 	return runControlConfigured(args, stdout, stderr)
@@ -106,8 +117,7 @@ func validateControlObjectStore(options controlOptions) error {
 // controlPlanes is the composition seam for independently landing PG backends.
 // No local filesystem implementation or successful no-op recovery is installed.
 type controlPlanes struct {
-	// EngineChildAdmissions installs the service's HTTP plane once #7879's
-	// service and worker client composition land together.
+	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
 	Configuration         control.Configuration
 	Reader                readservice.Reader
@@ -119,6 +129,17 @@ type controlPlanes struct {
 	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
 	RunnerHosts           []string
 
+	// generations reads retained config generations under the live epoch; the
+	// Configuration constructor owns it and later seams consume it.
+	generations childworkflow.GenerationSource
+	// journalReader and projectorWake connect the journal plane to the
+	// read-model projector: it reads committed history through the former and is
+	// nudged by the latter when an append commits.
+	journalReader journal.ReaderBackend
+	projectorWake chan struct{}
+	// projectorHealth is the projector's progress, shared across lease epochs, for
+	// the read service to report.
+	projectorHealth *projectorpg.Health
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }
@@ -166,6 +187,13 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	db.Controller.EpochHandle = func() *lease.Handle {
+		host := activeHost.Load()
+		if host == nil {
+			return nil
+		}
+		return host.EpochHandle()
+	}
 	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
@@ -183,6 +211,9 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	}
 	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
+	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
+		reporter.SetReporter(report)
+	}
 	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
 	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
 		return checkCloudSchema(ctx, db.Controller.Pools.Transaction, version.Get().Version)
@@ -207,7 +238,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		return err
 	}
 	logger.Printf("serving %s://%s", server.Scheme(), server.Address())
-	return runControlLifetime(ctx, cancel, host, auth, server, report)
+	projector, err := projectorService(db.Controller, services, report)
+	if err != nil {
+		return err
+	}
+	return runControlLifetime(ctx, cancel, host, auth, server, report, projector)
 }
 
 func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, host *control.Host, logger *log.Logger) (http.Handler, error) {
@@ -234,10 +269,16 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	}), nil
 }
 
-func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *control.Host, auth *cloudauth.Auth, server *httpapi.Server, report func(error)) error {
-	done := make(chan error, 2)
+// runControlLifetime runs the controller host, key reload and any background
+// services (the read-model projector) until one stops or the server fails.
+func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *control.Host, auth *cloudauth.Auth, server *httpapi.Server, report func(error), background ...func(context.Context) error) error {
+	total := 2 + len(background)
+	done := make(chan error, total)
 	go func() { done <- host.Run(ctx) }()
 	go func() { done <- auth.RunKeyReload(ctx, report) }()
+	for _, service := range background {
+		go func() { done <- service(ctx) }()
+	}
 	var err error
 	completed := 0
 	select {
@@ -253,7 +294,7 @@ func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *co
 	shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
 	err = errors.Join(err, server.Shutdown(shutdown))
-	for completed < 2 {
+	for completed < total {
 		select {
 		case result := <-done:
 			completed++

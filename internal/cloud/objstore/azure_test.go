@@ -11,7 +11,14 @@ func TestBlobKeyLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if key != "blobs/sha256/ab/"+strings.Repeat("ab", 31) {
 		t.Fatalf("key = %q", key)
+	}
+}
+
+func TestNewAzureSharedKeyRejectsInvalidCredential(t *testing.T) {
+	if _, err := NewAzureSharedKey("http://azurite:10000/account", "goobers", "account", "not-base64"); err == nil {
+		t.Fatal("invalid shared key was accepted")
 	}
 }
