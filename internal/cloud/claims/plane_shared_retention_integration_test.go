@@ -25,6 +25,7 @@ func TestSharedAdmissionPrunesExpiredHistoryAndKeepsRevocationsAsController(t *t
 		}
 		if run == "revoked" {
 			req.Reason = claimrelease.ForceReleased.Because("test", "administrator")
+			req.Reason.Actor = "administrator"
 		}
 		if got, err := p.Release(ctx, req); err != nil || !got.Ok {
 			t.Fatalf("%s shared release=%+v, %v", run, got, err)
