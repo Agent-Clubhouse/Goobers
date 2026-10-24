@@ -309,7 +309,7 @@ func (s Store) Sweep(ctx context.Context, handle *lease.Handle, opt SweepOptions
 				return result, err
 			}
 			if errors.Is(err, ErrEscalationRefused) {
-				result.Refused = append(result.Refused, d.Key)
+				result.NewlyRefused = append(result.NewlyRefused, d.Key)
 			}
 			errs = append(errs, fmt.Errorf("re-check deferred cycle %s: %w", d.Key, err))
 			continue
