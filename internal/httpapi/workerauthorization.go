@@ -9,8 +9,9 @@ import (
 // workerPlaneAuthorizers confines single-plane worker credentials. Each
 // issuer's grant is disjoint and ignores roles and scopes.
 var workerPlaneAuthorizers = map[string]func(*http.Request) error{
-	WorkerSurrenderPrincipalIssuer:      authorizeWorkerSurrender,
-	WorkerChildAdmissionPrincipalIssuer: authorizeWorkerChildAdmission,
+	WorkerTerminalInterventionPrincipalIssuer: authorizeWorkerTerminalIntervention,
+	WorkerSurrenderPrincipalIssuer:            authorizeWorkerSurrender,
+	WorkerChildAdmissionPrincipalIssuer:       authorizeWorkerChildAdmission,
 }
 
 // Worker transport credentials have disjoint grants regardless of roles.

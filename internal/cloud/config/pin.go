@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // Pins are one workflow's admission digests: the compiled workflow digest and
@@ -35,4 +37,15 @@ func (c *Configuration) PinFor(_ context.Context, generation, gaggle, workflow s
 		return "", "", fmt.Errorf("%w: no digests for %s/%s", ErrPinUnavailable, gaggle, workflow)
 	}
 	return pins.WorkflowDigest, pins.GooberDigest, nil
+}
+
+// InstanceConfig returns the applied candidate's instance-wide policy config
+// (runners, run conditions, HITL, self-execution), or nil before the first
+// apply. The retained generation archive excludes instance.yaml, so starts that
+// are reconstructed from an archive take their policy from here.
+func (c *Configuration) InstanceConfig() *instance.Config {
+	if gen := c.applier.Guard().current.Load(); gen != nil {
+		return gen.cfg
+	}
+	return nil
 }

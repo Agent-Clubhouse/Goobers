@@ -181,6 +181,10 @@ const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
 // plane. The grant is instance-wide: it is not bound to a run or child.
 const WorkerChildAdmissionPrincipalIssuer = "goobers/worker-child-admission"
 
+// WorkerTerminalInterventionPrincipalIssuer is reserved for the trusted
+// workflow host's keyed terminal transition, never ordinary pod journal emits.
+const WorkerTerminalInterventionPrincipalIssuer = "goobers/worker-terminal-intervention"
+
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
 // authorizer admits it to the credential refresh route and nothing else.
@@ -409,6 +413,11 @@ func telemetryPlanePath(path string) bool {
 // before any role or scope rule runs. handled is false for every other route.
 func authorizeIssuerBoundRoute(request *http.Request, principal Principal) (handled bool, err error) {
 	switch {
+	case terminalInterventionPath(request.URL.Path):
+		if principal.Issuer != WorkerTerminalInterventionPrincipalIssuer {
+			return true, errors.New("terminal journal intervention requires a dedicated worker credential")
+		}
+		return false, nil
 	case engineChildPlanePath(request.URL.Path):
 		// Defence in depth: no role, scope or other issuer reaches the engine
 		// child-admission plane, whatever later rules would grant.
@@ -694,6 +703,7 @@ type handlerConfig struct {
 	cancels                   CancelService
 	journal                   JournalService
 	engineChildren            EngineChildPlane
+	engineChildAuthority      EngineChildAuthority
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
@@ -1382,6 +1392,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
+	registerTerminalInterventionRoute(router, config, errorLog)
 	registerEngineChildPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)

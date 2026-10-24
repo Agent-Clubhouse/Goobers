@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/goobers/goobers/internal/claimrelease"
@@ -30,6 +31,12 @@ type SchedulerState interface {
 	WriteTriggerEvaluations(string, map[WorkflowIdentity]time.Time) error
 }
 
+// errNoSchedulerDir refuses file-backed scheduler state for a log with no
+// directory (a cloud InstanceStore). Joining "" would silently read and write
+// relative to the process working directory if composition ever forgot
+// WithSchedulerState.
+var errNoSchedulerDir = errors.New("localscheduler: file scheduler state requires a scheduler directory; install WithSchedulerState for logs without one")
+
 type fileSchedulerState struct{ owner *stateOwner }
 
 // NewFileSchedulerState returns today's guarded JSON state implementation.
@@ -38,18 +45,30 @@ func NewFileSchedulerState() SchedulerState {
 }
 
 func (s *fileSchedulerState) ReadScheduleDemand(dir string) (map[WorkflowIdentity]bool, error) {
+	if dir == "" {
+		return nil, errNoSchedulerDir
+	}
 	return readScheduleDemandState(dir)
 }
 
 func (s *fileSchedulerState) ReadTriggerEvaluations(dir string) (map[WorkflowIdentity]time.Time, error) {
+	if dir == "" {
+		return nil, errNoSchedulerDir
+	}
 	return ReadTriggerEvaluations(dir)
 }
 
 func (s *fileSchedulerState) WriteScheduleDemand(dir string, state map[WorkflowIdentity]bool) error {
+	if dir == "" {
+		return errNoSchedulerDir
+	}
 	return writeScheduleDemandState(dir, s.owner, state)
 }
 
 func (s *fileSchedulerState) WriteTriggerEvaluations(dir string, state map[WorkflowIdentity]time.Time) error {
+	if dir == "" {
+		return errNoSchedulerDir
+	}
 	return writeTriggerEvaluations(dir, s.owner, state)
 }
 

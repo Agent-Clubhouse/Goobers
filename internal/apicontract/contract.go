@@ -175,6 +175,10 @@ const (
 	// route as a span-kind op rather than a second endpoint.
 	RunJournalEmitPath = V1Prefix + "/runs/{run}/journal/emit"
 
+	// RunJournalTerminalInterventionPath is the trusted workflow host's fenced,
+	// keyed terminal transition. Ordinary journal credentials cannot call it.
+	RunJournalTerminalInterventionPath = V1Prefix + "/runs/{run}/journal/terminal-intervention"
+
 	// CredentialResolvePath is the credential plane's resolve endpoint
 	// (distributed-state-and-coordination.md §11, DS9/DS10): a stage pod,
 	// authenticated as its run, receives short-lived credentials scoped to
@@ -209,6 +213,12 @@ const (
 	EngineChildAdmitPath  = V1Prefix + "/engine/children/admit"
 	EngineChildLoadPath   = V1Prefix + "/engine/children/load"
 	EngineChildCancelPath = V1Prefix + "/engine/children/cancel"
+	// EngineChildAuthorityPath and EngineChildAuthorityReleasePath are the
+	// same plane's child-workflow grant acquire and release for an engine
+	// parent's stage attempt (#8085 b): the worker asks control to bind the
+	// grant at stage dispatch and to revoke it when the stage activity ends.
+	EngineChildAuthorityPath        = V1Prefix + "/engine/children/authority"
+	EngineChildAuthorityReleasePath = V1Prefix + "/engine/children/authority/release"
 
 	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
 	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
@@ -364,27 +374,32 @@ const (
 	// mutating a run's runtime state.
 	RouteWorkflowEnabled RouteID = "workflowEnabled"
 
-	RouteClaimAcquire       RouteID = "claimAcquire"
-	RouteClaimRenew         RouteID = "claimRenew"
-	RouteClaimRelease       RouteID = "claimRelease"
-	RouteClaimSettle        RouteID = "claimSettle"
-	RouteClaimList          RouteID = "claimList"
-	RouteClaimVerify        RouteID = "claimVerify"
-	RouteClaimsActive       RouteID = "claimsActive"
-	RouteClaimRecover       RouteID = "claimRecover"
-	RouteTriggerIngest      RouteID = "triggerIngest"
-	RouteTriggerStatus      RouteID = "triggerStatus"
-	RouteResolveEscalation  RouteID = "resolveEscalation"
-	RouteCancelRun          RouteID = "cancelRun"
-	RouteJournalEmit        RouteID = "journalEmit"
-	RouteCredentialResolve  RouteID = "credentialResolve"
-	RouteCredentialRefresh  RouteID = "credentialRefresh"
-	RouteStageSurrender     RouteID = "stageSurrender"
-	RouteStageSurrenderGet  RouteID = "stageSurrenderGet"
-	RouteStageSurrenderSeen RouteID = "stageSurrenderSeen"
-	RouteEngineChildAdmit   RouteID = "engineChildAdmit"
-	RouteEngineChildLoad    RouteID = "engineChildLoad"
-	RouteEngineChildCancel  RouteID = "engineChildCancel"
+	RouteClaimAcquire                RouteID = "claimAcquire"
+	RouteClaimRenew                  RouteID = "claimRenew"
+	RouteClaimRelease                RouteID = "claimRelease"
+	RouteClaimSettle                 RouteID = "claimSettle"
+	RouteClaimList                   RouteID = "claimList"
+	RouteClaimVerify                 RouteID = "claimVerify"
+	RouteClaimsActive                RouteID = "claimsActive"
+	RouteClaimRecover                RouteID = "claimRecover"
+	RouteTriggerIngest               RouteID = "triggerIngest"
+	RouteTriggerStatus               RouteID = "triggerStatus"
+	RouteResolveEscalation           RouteID = "resolveEscalation"
+	RouteCancelRun                   RouteID = "cancelRun"
+	RouteJournalEmit                 RouteID = "journalEmit"
+	RouteJournalTerminalIntervention RouteID = "journalTerminalIntervention"
+	RouteCredentialResolve           RouteID = "credentialResolve"
+	RouteCredentialRefresh           RouteID = "credentialRefresh"
+	RouteStageSurrender              RouteID = "stageSurrender"
+	RouteStageSurrenderGet           RouteID = "stageSurrenderGet"
+	RouteStageSurrenderSeen          RouteID = "stageSurrenderSeen"
+	RouteEngineChildAdmit            RouteID = "engineChildAdmit"
+	RouteEngineChildLoad             RouteID = "engineChildLoad"
+	RouteEngineChildCancel           RouteID = "engineChildCancel"
+	// RouteEngineChildAuthority and RouteEngineChildAuthorityRelease acquire
+	// and release an engine parent stage's child-workflow grant.
+	RouteEngineChildAuthority        RouteID = "engineChildAuthority"
+	RouteEngineChildAuthorityRelease RouteID = "engineChildAuthorityRelease"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
 	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
@@ -650,6 +665,7 @@ var v1Routes = []Route{
 	// The journal plane (§8, DS4) is machinery advancing a run's own record —
 	// a machine seam like the claims plane, not an operator capability, so it
 	// shares the workflow-execution class and stays outside runtime parity.
+	{ID: RouteJournalTerminalIntervention, Method: http.MethodPost, Path: RunJournalTerminalInterventionPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalEmit, Method: http.MethodPost, Path: RunJournalEmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The credential plane (§11, DS9/DS10) is a machine seam like the claims
@@ -676,6 +692,8 @@ var v1Routes = []Route{
 	{ID: RouteEngineChildAdmit, Method: http.MethodPost, Path: EngineChildAdmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildLoad, Method: http.MethodPost, Path: EngineChildLoadPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildCancel, Method: http.MethodPost, Path: EngineChildCancelPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildAuthority, Method: http.MethodPost, Path: EngineChildAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildAuthorityRelease, Method: http.MethodPost, Path: EngineChildAuthorityReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The blob plane (decision 010/012, §2a) is the network transport for the
 	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET

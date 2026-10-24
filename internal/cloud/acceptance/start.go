@@ -12,7 +12,7 @@ import (
 // from the persisted acceptance, and ConfirmStart performs fenced adoption.
 type StartStore interface {
 	ReadStart(context.Context, string) (engine.StartIdentity, error)
-	ConfirmStart(context.Context, engine.StartIdentity, bool) error
+	ConfirmStart(context.Context, engine.StartIdentity, bool, RunPins) error
 	CheckStartLease(context.Context) error
 }
 
@@ -50,8 +50,14 @@ func (a *startAdmission) ConfirmStart(ctx context.Context, in engine.RunInput, r
 	if result.RunID != in.RunID {
 		return errors.New("cloud start returned a different workflow ID")
 	}
+	// The classified start runs exactly in: a fresh start, or an existing
+	// workflow whose start-owner memo carries in's input digest.
+	pins, err := RunPinsFor(in)
+	if err != nil {
+		return err
+	}
 	return a.store.ConfirmStart(ctx, engine.StartIdentity{
 		AcceptanceID: in.AcceptanceID, RunID: in.RunID, InstanceID: in.InstanceID,
 		OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID, PredecessorEpoch: in.StartPredecessorEpoch,
-	}, result.Adopt)
+	}, result.Adopt, pins)
 }

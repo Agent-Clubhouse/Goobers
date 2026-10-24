@@ -123,6 +123,13 @@ func (s *Store) byKey(ctx context.Context, query rowQuerier, key string) (trigge
 	return scanRecord(query.QueryRow(ctx, acceptanceSelect+" AND idem_key=$2", s.instanceID, key))
 }
 
+// ByRun reads the acceptance that owns an engine run (the acceptance's run ID is
+// the workflow ID). The terminal awaiter identifies a closed run from it.
+func (s *Store) ByRun(ctx context.Context, runID string) (triggerqueue.Record, error) {
+	record, err := scanRecord(s.pool.QueryRow(ctx, acceptanceSelect+" AND run_id=$2", s.instanceID, runID))
+	return record, noRows(err)
+}
+
 // Get binds an acceptance read to its actor.
 func (s *Store) Get(ctx context.Context, id, actor string) (triggerqueue.Record, error) {
 	record, err := scanRecord(s.pool.QueryRow(ctx, acceptanceSelect+" AND id=$2 AND actor=$3", s.instanceID, id, actor))
@@ -254,6 +261,27 @@ func (s *Store) Finish(ctx context.Context, id string, state triggerqueue.State,
 			WHERE instance_id=$1 AND id=$2 AND state='dispatching'
 			  AND owner_epoch=$3 AND run_id=$7 AND finished_at IS NULL`,
 			s.instanceID, id, epoch, state, reason, now.UTC(), assignedRunID,
+		)
+		return changed(tag.RowsAffected(), err)
+	})
+}
+
+// RejectAccepted finishes a row that was never dispatched as rejected with a
+// reason, under the controller fence. It is the terminal outcome for an
+// accepted start the resolver refuses permanently; it cannot touch a row that
+// has begun dispatching or one a generated child owns (child custody ends only
+// through its own lifecycle).
+func (s *Store) RejectAccepted(ctx context.Context, id, reason string, now time.Time) error {
+	if _, assigned := strings.CutPrefix(id, "trigger-"); !assigned || len(reason) > 1024 || now.IsZero() {
+		return triggerqueue.ErrTransition
+	}
+	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+		tag, err := tx.Exec(txCtx, `
+			UPDATE control.acceptance AS a
+			SET state='rejected', reason=$4, owner_epoch=$3, finished_at=GREATEST(a.accepted_at, $5)
+			WHERE a.instance_id=$1 AND a.id=$2 AND a.state='accepted' AND a.finished_at IS NULL
+			  AND NOT EXISTS (`+childLineageOwned+`)`,
+			s.instanceID, id, epoch, reason, now.UTC(),
 		)
 		return changed(tag.RowsAffected(), err)
 	})

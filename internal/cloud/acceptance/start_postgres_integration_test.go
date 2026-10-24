@@ -4,10 +4,14 @@ package acceptance
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
@@ -77,7 +81,75 @@ func acceptedStartInput(t *testing.T, store *Store) engine.RunInput {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return engine.RunInput{AcceptanceID: record.ID, Gaggle: "web", WorkflowName: "flow", Version: 1}
+	return engine.RunInput{AcceptanceID: record.ID, Gaggle: "web", WorkflowName: "flow", Version: 1,
+		WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober", ConfigGeneration: "sha256:generation"}
+}
+
+func testRunPins(acceptanceID, runID string) RunPins {
+	return RunPins{RunID: runID, AcceptanceID: acceptanceID, Gaggle: "web", Workflow: "flow", WorkflowVersion: 1,
+		WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober", ConfigGeneration: "sha256:generation", InputDigest: "sha256:input"}
+}
+
+func TestPGStartRecordsTheStartedRunsPinsOnce(t *testing.T) {
+	store, pool := testStore(t, 1)
+	temporal := &pgStartClient{}
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
+	in := acceptedStartInput(t, store)
+	result, err := starter.Start(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generation, workflowDigest, inputDigest string
+	var epoch int64
+	if err := pool.QueryRow(t.Context(), `SELECT config_generation, workflow_digest, input_digest, owner_epoch FROM control.run_pin
+		WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID).Scan(&generation, &workflowDigest, &inputDigest, &epoch); err != nil {
+		t.Fatalf("start recorded no pins: %v", err)
+	}
+	if generation != in.ConfigGeneration || workflowDigest != in.WorkflowDigest || epoch != store.handle.Epoch || inputDigest == "" {
+		t.Fatalf("recorded pins %s/%s/%s@%d do not match the started input", generation, workflowDigest, inputDigest, epoch)
+	}
+	identity, err := (&startCustody{store: store}).ReadStart(t.Context(), in.AcceptanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := testRunPins(identity.AcceptanceID, identity.RunID)
+	var recorded RunPins
+	if err := pool.QueryRow(t.Context(), `SELECT input_digest FROM control.run_pin WHERE run_id=$1`, identity.RunID).Scan(&recorded.InputDigest); err != nil {
+		t.Fatal(err)
+	}
+	pins.InputDigest = recorded.InputDigest
+	pins.BranchNamespace = in.BranchNamespace
+	// Repeating the confirmation of the same start is a no-op ...
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, identity.RunID, pins); err != nil {
+		t.Fatalf("repeated confirmation of the same pins: %v", err)
+	}
+	// ... but no confirmation can rewrite a recorded run's pins.
+	moved := pins
+	moved.ConfigGeneration = "sha256:reloaded-generation"
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, identity.RunID, moved); !errors.Is(err, ErrRunPinsDiffer) {
+		t.Fatalf("confirmation with different pins = %v, want ErrRunPinsDiffer", err)
+	}
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, "other-run", pins); err == nil {
+		t.Fatal("confirmed pins for a different run")
+	}
+	// A confirmation that can never succeed still settles a dispatching
+	// acceptance, so recovery does not retry it forever; the first pins stand.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance SET state='dispatching', finished_at=NULL WHERE instance_id=$1 AND id=$2`,
+		store.instanceID, identity.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, identity.RunID, moved); !errors.Is(err, ErrRunPinsDiffer) {
+		t.Fatalf("confirmation of a dispatching start with different pins = %v, want ErrRunPinsDiffer", err)
+	}
+	var state, generationAfter string
+	if err := pool.QueryRow(t.Context(), `SELECT a.state, p.config_generation FROM control.acceptance a JOIN control.run_pin p
+		ON p.instance_id=a.instance_id AND p.run_id=a.run_id WHERE a.instance_id=$1 AND a.id=$2`,
+		store.instanceID, identity.AcceptanceID).Scan(&state, &generationAfter); err != nil {
+		t.Fatal(err)
+	}
+	if state != "dispatched" || generationAfter != pins.ConfigGeneration {
+		t.Fatalf("after a differing confirmation: acceptance %s, pinned generation %s; want dispatched with the first pins", state, generationAfter)
+	}
 }
 
 func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {
@@ -239,7 +311,7 @@ func TestPGStartConfirmationRejectsStaleAndCrossInstanceLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	current := successorStore(t, pool)
-	if err := (&startCustody{store: old}).ConfirmStart(t.Context(), identity, false); err == nil {
+	if err := (&startCustody{store: old}).ConfirmStart(t.Context(), identity, false, testRunPins(identity.AcceptanceID, identity.RunID)); err == nil {
 		t.Fatal("stale confirmation committed")
 	}
 	if err := (&startCustody{store: old}).CheckStartLease(t.Context()); err == nil {
@@ -273,16 +345,16 @@ func TestPGStartReadDoesNotAdoptAndDoubleAdoptRefuses(t *testing.T) {
 	if err != nil || observed != previous {
 		t.Fatalf("read adopted or hid predecessor: %+v, %v", observed, err)
 	}
-	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch); err != nil {
+	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch, testRunPins(observed.AcceptanceID, observed.RunID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch); err == nil {
+	if err := current.AdoptStart(t.Context(), observed.AcceptanceID, observed.RunID, observed.OwnerEpoch, testRunPins(observed.AcceptanceID, observed.RunID)); err == nil {
 		t.Fatal("double adoption did not enforce predecessor CAS")
 	}
-	if err := old.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID); err == nil {
+	if err := old.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID, testRunPins(observed.AcceptanceID, observed.RunID)); err == nil {
 		t.Fatal("stale owner confirmed after adoption")
 	}
-	if err := current.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID); err != nil {
+	if err := current.ConfirmStart(t.Context(), observed.AcceptanceID, observed.RunID, testRunPins(observed.AcceptanceID, observed.RunID)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -291,3 +363,239 @@ func TestPGStartReadDoesNotAdoptAndDoubleAdoptRefuses(t *testing.T) {
 type testGenerationAdmission struct{}
 
 func (testGenerationAdmission) Admit(string, string, string) error { return nil }
+
+// A parent that is still running long after its start finished keeps its pins:
+// acceptance pruning does not cascade to them, and the retention sweep marks
+// and removes them only once the run's execution is closed.
+func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
+	store, pool := testStore(t, 1)
+	temporal := &pgStartClient{}
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(store), testGenerationAdmission{})
+	in := acceptedStartInput(t, store)
+	result, err := starter.Start(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The start finished eight days ago; the run is still going.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance SET accepted_at=accepted_at-interval '8 days', finished_at=finished_at-interval '8 days' WHERE instance_id=$1 AND id=$2`,
+		store.instanceID, in.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE control.run_pin SET created_at=created_at-interval '8 days' WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Prune(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var acceptances int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM control.acceptance WHERE instance_id=$1 AND id=$2`, store.instanceID, in.AcceptanceID).Scan(&acceptances); err != nil || acceptances != 0 {
+		t.Fatalf("aged acceptance not pruned: %d (%v)", acceptances, err)
+	}
+	pinState := func() (present bool, terminal bool) {
+		t.Helper()
+		var terminalAt *time.Time
+		err := pool.QueryRow(t.Context(), `SELECT terminal_at FROM control.run_pin WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID).Scan(&terminalAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return true, terminalAt != nil
+	}
+	if present, _ := pinState(); !present {
+		t.Fatal("pruning the acceptance removed the live run's pins")
+	}
+	started := in
+	started.RunID = result.RunID
+	want, err := RunPinsFor(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.RunPinsOf(t.Context(), result.RunID)
+	if err != nil || got.InputDigest == "" {
+		t.Fatalf("RunPinsOf = %+v, %v", got, err)
+	}
+	// The start fence digests the input it actually started (the starter fills
+	// in more than this test input); everything else is the input as pinned.
+	want.InputDigest = got.InputDigest
+	if got != want {
+		t.Fatalf("RunPinsOf = %+v; want %+v", got, want)
+	}
+	if _, err := store.RunPinsOf(t.Context(), "never-started"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("RunPinsOf(unknown run) = %v, want sql.ErrNoRows", err)
+	}
+
+	if err := store.manager.Release(t.Context(), store.handle); err != nil {
+		t.Fatal(err)
+	}
+	controller := successorStore(t, childRolePool(t, pool, "goobers_controller"))
+	running := func(context.Context, string) (bool, error) { return false, nil }
+	if sweep, err := controller.SweepRunPins(t.Context(), running, "", time.Minute); err != nil || sweep.Marked != 0 || sweep.Deleted != 0 {
+		t.Fatalf("sweep of a running parent = %+v, %v", sweep, err)
+	}
+	if present, terminal := pinState(); !present || terminal {
+		t.Fatalf("running parent's pins: present=%v terminal=%v, want kept and live", present, terminal)
+	}
+
+	closed := func(context.Context, string) (bool, error) { return true, nil }
+	if sweep, err := controller.SweepRunPins(t.Context(), closed, "", time.Minute); err != nil || sweep.Marked != 1 || sweep.Deleted != 0 {
+		t.Fatalf("sweep of the closed run = %+v, %v", sweep, err)
+	}
+	if present, terminal := pinState(); !present || !terminal {
+		t.Fatalf("closed run's pins: present=%v terminal=%v, want kept and terminal", present, terminal)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE control.run_pin SET terminal_at=terminal_at-interval '8 days' WHERE instance_id=$1 AND run_id=$2`, store.instanceID, result.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if sweep, err := controller.SweepRunPins(t.Context(), closed, "", time.Minute); err != nil || sweep.Deleted != 1 {
+		t.Fatalf("sweep after retention deleted %d (%v), want 1", sweep.Deleted, err)
+	}
+	if present, _ := pinState(); present {
+		t.Fatal("pins outlived their retention after the run closed")
+	}
+}
+
+func TestPGRunPinSweepRotatesPastLiveRunsAndIsolatesUnconfirmed(t *testing.T) {
+	store, pool := testStore(t, 1)
+	runs := []string{"aa-unconfirmed", "zz-closed"}
+	for i := range runPinSweepBatch {
+		runs = append(runs, fmt.Sprintf("live-%03d", i))
+	}
+	for _, runID := range runs {
+		if _, err := pool.Exec(t.Context(), `
+			INSERT INTO control.run_pin (instance_id, run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest,
+				goober_digest, config_generation, repo_ref, branch_namespace, input_digest, owner_epoch, created_at)
+			VALUES ($1, $2, $2, 'g', 'w', 1, 'wd', 'gd', 'cg', '{}', 'goobers', 'id', 1, clock_timestamp()-interval '8 days')`,
+			store.instanceID, runID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.manager.Release(t.Context(), store.handle); err != nil {
+		t.Fatal(err)
+	}
+	controller := successorStore(t, childRolePool(t, pool, "goobers_controller"))
+	outage := errors.New("temporal cannot vouch for this run")
+	status := func(_ context.Context, runID string) (bool, error) {
+		switch runID {
+		case "aa-unconfirmed":
+			return false, outage
+		case "zz-closed", "live-010":
+			return true, nil
+		}
+		return false, nil
+	}
+
+	// A full batch of candidates: the unconfirmed run is reported, not failed
+	// on, and the closed run inside the batch is still marked.
+	first, err := controller.SweepRunPins(t.Context(), status, "", time.Minute)
+	if err != nil || first.Marked != 1 || first.Next == "" || len(first.Unconfirmed) != 1 || !errors.Is(first.Unconfirmed["aa-unconfirmed"], outage) || first.Halted != nil {
+		t.Fatalf("first pass = %+v, %v; want 1 marked, a cursor, and only the unconfirmed run reported", first, err)
+	}
+	// The cursor carries the sweep past the long-running parents to the closed
+	// run behind them, and the lap then wraps.
+	second, err := controller.SweepRunPins(t.Context(), status, first.Next, time.Minute)
+	if err != nil || second.Marked != 1 || second.Next != "" {
+		t.Fatalf("second pass = %+v, %v; want 1 marked and the lap complete", second, err)
+	}
+
+	// An engine outage halts the pass at once: one call, nothing marked, and
+	// the cursor stays put so the next pass retries from the same place.
+	calls := 0
+	unavailable := func(context.Context, string) (bool, error) {
+		calls++
+		return false, fmt.Errorf("%w: connection refused", ErrRunStatusUnavailable)
+	}
+	halted, err := controller.SweepRunPins(t.Context(), unavailable, first.Next, time.Minute)
+	if err != nil || calls != 1 || halted.Marked != 0 || halted.Next != first.Next || !errors.Is(halted.Halted, ErrRunStatusUnavailable) {
+		t.Fatalf("halted pass = %+v, %v after %d calls; want one call, the cursor kept and the halt reported", halted, err, calls)
+	}
+	rows, err := pool.Query(t.Context(), `SELECT run_id FROM control.run_pin WHERE instance_id=$1 AND terminal_at IS NOT NULL ORDER BY run_id`, store.instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(terminal) != "[live-010 zz-closed]" {
+		t.Fatalf("terminal pins = %v, want only the closed runs", terminal)
+	}
+}
+
+// StartPending is true exactly while a start is dispatching: before the
+// confirmation that records its pins commits.
+func TestPGStartPendingTracksTheUnconfirmedStart(t *testing.T) {
+	store, _ := testStore(t, 1)
+	record, _, err := store.Accept(t.Context(), "manual/pending", "operator", []byte(`{"workflow":"flow"}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.StartPending(t.Context(), record.ID); err != nil || pending {
+		t.Fatalf("accepted, not dispatching: pending=%v, %v", pending, err)
+	}
+	if err := store.BeginDispatch(t.Context(), record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.StartPending(t.Context(), record.ID); err != nil || !pending {
+		t.Fatalf("dispatching: pending=%v, %v; want true", pending, err)
+	}
+	authority, err := store.ReadStartAuthority(t.Context(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfirmStart(t.Context(), record.ID, authority.RunID, RunPins{RunID: authority.RunID, AcceptanceID: record.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.StartPending(t.Context(), record.ID); err != nil || pending {
+		t.Fatalf("confirmed: pending=%v, %v; want false", pending, err)
+	}
+	if pending, err := store.StartPending(t.Context(), "trigger-unknown"); err != nil || pending {
+		t.Fatalf("unknown acceptance: pending=%v, %v; want false", pending, err)
+	}
+}
+
+// An adoption whose pins differ from the recorded start still settles the
+// acceptance under the successor, so recovery does not re-pick it forever;
+// the first pins stand.
+func TestPGAdoptionWithDifferentPinsSettlesTheAcceptance(t *testing.T) {
+	old, pool := testStore(t, 1)
+	in := acceptedStartInput(t, old)
+	if err := old.BeginDispatch(t.Context(), in.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := old.ReadStartAuthority(t.Context(), in.AcceptanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := testRunPins(previous.AcceptanceID, previous.RunID)
+	if err := old.ConfirmStart(t.Context(), previous.AcceptanceID, previous.RunID, recorded); err != nil {
+		t.Fatal(err)
+	}
+	// The predecessor's pins are recorded but its acceptance is still
+	// dispatching when it loses the lease.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance SET state='dispatching', finished_at=NULL WHERE instance_id=$1 AND id=$2`,
+		old.instanceID, previous.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.manager.Release(t.Context(), old.handle); err != nil {
+		t.Fatal(err)
+	}
+	current := successorStore(t, pool)
+	moved := recorded
+	moved.ConfigGeneration = "sha256:reloaded-generation"
+	if err := current.AdoptStart(t.Context(), previous.AcceptanceID, previous.RunID, previous.OwnerEpoch, moved); !errors.Is(err, ErrRunPinsDiffer) {
+		t.Fatalf("adoption with different pins = %v, want ErrRunPinsDiffer", err)
+	}
+	var state, generation string
+	var epoch int64
+	if err := pool.QueryRow(t.Context(), `SELECT a.state, a.owner_epoch, p.config_generation FROM control.acceptance a JOIN control.run_pin p
+		ON p.instance_id=a.instance_id AND p.run_id=a.run_id WHERE a.instance_id=$1 AND a.id=$2`,
+		old.instanceID, previous.AcceptanceID).Scan(&state, &epoch, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if state != "dispatched" || epoch != current.handle.Epoch || generation != recorded.ConfigGeneration {
+		t.Fatalf("after a differing adoption: acceptance %s@%d, pinned generation %s; want dispatched@%d with the first pins",
+			state, epoch, generation, current.handle.Epoch)
+	}
+}

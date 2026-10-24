@@ -14,16 +14,24 @@ remain the reference.
 | human-gate | Exact equality through pause and approval |
 | infrastructure-retry | Exact equality, including domain error classification and causes |
 | stage-boundary-cancellation | Exact equality at worker drain; replacement worker continues without executing the first stage twice |
-| gate-fail-rerun | Known divergence, pending #7899; exact equality before intervention, then acknowledged Temporal update followed by terminal journal refusal |
-| terminal-resume | Known divergence, pending #7899; exact equality before intervention, then acknowledged Temporal update followed by terminal journal refusal |
+| gate-fail-rerun | Exact equality through the keyed operator rerun, fresh reviewer policy budget, resumed segment and new terminal |
+| gate-override | Exact equality through a keyed operator override and the downstream recovery stage |
 
-The two pending fixtures are assertions of the exact known failure, not blanket
-skips or claims of full equivalence. They compare their entire pre-intervention
-journal and projection, verify that refusal leaves that record unchanged, and
-require the recorded acknowledge-then-fail behavior. The issue evidence is in
-[Goobers#7899](https://github.com/Agent-Clubhouse/Goobers/issues/7899#issuecomment-6373994884).
-CI runs `go run ./test/journalequivalence/cmd/equivalence verify-pending` against
-GitHub; closing the issue fails this gate until the fixtures become fully equal.
+Terminal fixtures call `intervention.Service.RerunStage` / `Override` on both
+sides. The cloud service binds `EngineDecisions` to the production
+`enginedecision.Router` over real Temporal. Its retained identity/status reads
+use a PG-derived snapshot; all authoritative journal writes and comparison
+remain on PG, and the snapshot must remain unchanged. Both
+include `intervention.idempotency` and compare the full resumed journal.
+The pending registry is empty; `verify-pending` remains a guard for future
+explicitly tracked divergences.
+
+The former task-only `terminal-resume` fixture remains as
+`TestGatelessTerminalResumeRunnerSemantics`, outside operator parity. No
+operator route reaches that primitive for a failed task with no gate today;
+[Goobers#8149](https://github.com/Agent-Clubhouse/Goobers/issues/8149) tracks the
+product decision. It uses the accurate `resume` action; the cloud's mandatory
+keyed marker has no corresponding producer in this direct runner call.
 
 The cancellation fixture represents a daemon drain at a stage boundary, not an
 operator abort. Its cloud leg stops a real Temporal worker after the first

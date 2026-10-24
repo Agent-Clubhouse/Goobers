@@ -122,30 +122,54 @@ func (s *TemporalStarter) start(ctx context.Context, in engine.RunInput) (engine
 	return s.confirm(ctx, in, engine.StartResult{RunID: run.GetID()})
 }
 
+// StartedExecution is what the start fence left on a run's engine execution:
+// its status, whether it is the engine Run workflow, and its start-owner memo
+// (nil when the execution carries none).
+type StartedExecution struct {
+	Status enumspb.WorkflowExecutionStatus
+	Engine bool
+	Owner  *StartOwnerMemo
+}
+
+// DescribeStarted describes the latest execution of runID's workflow (the
+// workflow ID is the run ID) through the strongly consistent Describe call and
+// decodes its start-owner memo. A memo that does not decode is an error, never
+// an absent owner.
+func DescribeStarted(ctx context.Context, describer workflowDescriber, runID string) (StartedExecution, error) {
+	description, err := describer.DescribeWorkflowExecution(ctx, runID, "")
+	if err != nil {
+		return StartedExecution{}, err
+	}
+	info := description.GetWorkflowExecutionInfo()
+	if info == nil {
+		return StartedExecution{}, errors.New("engine: existing execution description is incomplete")
+	}
+	started := StartedExecution{Status: info.GetStatus(), Engine: info.GetType().GetName() == "Run"}
+	payload, exists := info.GetMemo().GetFields()[StartOwnerMemoKey]
+	if !exists {
+		return started, nil
+	}
+	var owner StartOwnerMemo
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &owner); err != nil {
+		return StartedExecution{}, errors.New("engine: existing start-owner memo is invalid")
+	}
+	started.Owner = &owner
+	return started, nil
+}
+
 func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
 	describer, ok := s.client.(workflowDescriber)
 	if !ok {
 		return engine.StartResult{}, errors.New("engine: cloud starter cannot describe existing execution")
 	}
-	description, err := describer.DescribeWorkflowExecution(ctx, in.RunID, "")
+	started, err := DescribeStarted(ctx, describer, in.RunID)
 	if err != nil {
 		return engine.StartResult{}, err
 	}
-	if description == nil || description.GetWorkflowExecutionInfo() == nil {
-		return engine.StartResult{}, errors.New("engine: existing execution description is incomplete")
-	}
-	if description.GetWorkflowExecutionInfo().GetType().GetName() != "Run" {
+	if !started.Engine || started.Owner == nil {
 		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
 	}
-	fields := description.GetWorkflowExecutionInfo().GetMemo().GetFields()
-	payload, exists := fields[StartOwnerMemoKey]
-	if !exists {
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
-	}
-	var owner StartOwnerMemo
-	if err := converter.GetDefaultDataConverter().FromPayload(payload, &owner); err != nil {
-		return engine.StartResult{}, errors.New("engine: existing start-owner memo is invalid")
-	}
+	owner := *started.Owner
 	expected, err := startOwner(in)
 	if err != nil {
 		return engine.StartResult{}, err
@@ -199,14 +223,25 @@ func runMemo(in engine.RunInput) (map[string]interface{}, error) {
 // startOwner binds immutable input identity while allowing a successor epoch.
 func startOwner(in engine.RunInput) (StartOwnerMemo, error) {
 	owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID, InstanceID: in.InstanceID}
-	in.OwnerEpoch, in.StarterID = 0, ""
-	raw, err := json.Marshal(in)
+	digest, err := InputDigest(in)
 	if err != nil {
 		return StartOwnerMemo{}, err
 	}
-	sum := sha256.Sum256(raw)
-	owner.InputDigest = "sha256:" + hex.EncodeToString(sum[:])
+	owner.InputDigest = digest
 	return owner, nil
+}
+
+// InputDigest is a start's immutable input identity: the RunInput without the
+// owner epoch and starter, which a lease successor may change. An existing
+// workflow is adopted only when its start-owner memo carries this digest.
+func InputDigest(in engine.RunInput) (string, error) {
+	in.OwnerEpoch, in.StarterID = 0, ""
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // New requires a durable admission adapter before any Temporal operation.

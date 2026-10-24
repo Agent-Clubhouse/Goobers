@@ -16,6 +16,7 @@ import (
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgroles"
+	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
 func TestPostgresMigrationApply(t *testing.T) {
@@ -169,7 +170,7 @@ func TestMigrationUpgradesLiveInstanceEventTable(t *testing.T) {
 		}
 	}
 	// #7853's runner applied the versioned migrations and nothing else: no
-	// partition maintenance. (Runner.Apply now also reconciles grants against
+	// partition maintenance and no grants (an empty inventory). (Runner.Apply now also reconciles grants against
 	// the CURRENT inventory, which a pre-0015 schema cannot satisfy, so apply
 	// the old catalog directly the way that runner's step did.)
 	conn, err := pool.Acquire(t.Context())
@@ -177,7 +178,7 @@ func TestMigrationUpgradesLiveInstanceEventTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, migration := range before {
-		if err := applyOne(t.Context(), conn, migration, "test"); err != nil {
+		if err := applyOne(t.Context(), conn, migration, "test", cloudschema.Inventory{}); err != nil {
 			conn.Release()
 			t.Fatalf("apply pre-0015 migration %d: %v", migration.Version, err)
 		}

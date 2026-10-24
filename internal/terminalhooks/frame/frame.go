@@ -96,9 +96,14 @@ const ExistingFixStage = "implement"
 // Handler failures are recorded and never abort the remaining hooks: a
 // blocked-notification failure that skipped Finalize would leak the very claims
 // this frame exists to release.
-func (h *Hooks) Run(ctx context.Context, out Outcome) {
+func (h *Hooks) Run(ctx context.Context, out Outcome) { _ = h.RunFinalizing(ctx, out) }
+
+// RunFinalizing is Run that also returns Finalize's error (already recorded), so
+// a caller that can retry the release knows to. Other hooks' failures stay
+// recorded-only.
+func (h *Hooks) RunFinalizing(ctx context.Context, out Outcome) error {
 	if h == nil {
-		return
+		return nil
 	}
 	if h.Context != nil {
 		ctx = h.Context(ctx, out)
@@ -106,23 +111,38 @@ func (h *Hooks) Run(ctx context.Context, out Outcome) {
 	h.fireExistingFix(ctx, out)
 	h.fireBlocked(ctx, out)
 	h.fireFailed(ctx, out)
-	h.fire(ctx, out, h.Prepare, "engine_terminal_prepare_failed")
+	_ = h.fire(ctx, out, h.Prepare, "engine_terminal_prepare_failed")
 	// Errors are recorded, never fatal: notification delivery can never affect
 	// run processing.
-	h.fire(ctx, out, h.Notify, "engine_terminal_notification_failed")
-	h.fire(ctx, out, h.Finalize, "engine_terminal_finalize_failed")
+	_ = h.fire(ctx, out, h.Notify, "engine_terminal_notification_failed")
+	finalizeErr := h.fire(ctx, out, h.Finalize, "engine_terminal_finalize_failed")
 	if out.Backprop {
-		h.fire(ctx, out, h.Attribute, "backprop_attribution_failed")
+		_ = h.fire(ctx, out, h.Attribute, "backprop_attribution_failed")
 	}
+	return finalizeErr
 }
 
-func (h *Hooks) fire(ctx context.Context, out Outcome, hook func(context.Context, Outcome) error, code string) {
-	if hook == nil {
-		return
+// Refinalize runs only Finalize (under the same Context), for retrying a release
+// that failed. Finalize is idempotent.
+func (h *Hooks) Refinalize(ctx context.Context, out Outcome) error {
+	if h == nil {
+		return nil
 	}
-	if err := hook(ctx, out); err != nil {
+	if h.Context != nil {
+		ctx = h.Context(ctx, out)
+	}
+	return h.fire(ctx, out, h.Finalize, "engine_terminal_finalize_failed")
+}
+
+func (h *Hooks) fire(ctx context.Context, out Outcome, hook func(context.Context, Outcome) error, code string) error {
+	if hook == nil {
+		return nil
+	}
+	err := hook(ctx, out)
+	if err != nil {
 		h.recordFailure(out, "", code, err)
 	}
+	return err
 }
 
 func (h *Hooks) fireExistingFix(ctx context.Context, out Outcome) {

@@ -25,6 +25,7 @@
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",
       ".github/workflows/ci.yml#checks/fmt \u00b7 tidy \u00b7 no-phone-home \u00b7 vet \u00b7 build \u00b7 portal:go-modules",
+      ".github/workflows/ci.yml#cloud-pg/Enforce migration numbering above the base:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Verify journal equivalence pending issues:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke[2]:go-modules",
@@ -74,6 +75,7 @@
       ".github/workflows/ha-nightly.yml#smoke/Verify chaos pending references are still open:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Verify worker HA scenario contracts:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly:go-modules",
+      ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly[2]:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Render Temporal HA values:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Validate Windows daemon and implementation workflow:go-modules",
@@ -507,7 +509,9 @@
       "Makefile#deploy-validate:[7]:kubernetes-schemas",
       "Makefile#deploy-validate:[8]:kubernetes-schemas",
       "Makefile#deploy-validate:[9]:kubernetes-schemas",
-      "Makefile#deploy-validate:[10]:kubernetes-schemas"
+      "Makefile#deploy-validate:[10]:kubernetes-schemas",
+      "Makefile#deploy-validate:[11]:kubernetes-schemas",
+      "Makefile#deploy-validate:[12]:kubernetes-schemas"
     ]
   },
   {

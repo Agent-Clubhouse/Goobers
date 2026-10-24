@@ -39,16 +39,23 @@ func (a ChildWorkflowAccess) GoString() string { return a.String() }
 
 // Validate rejects malformed trusted configuration without echoing its secrets.
 func (a ChildWorkflowAccess) Validate(run string) error {
-	endpoint, err := url.Parse(a.Endpoint)
-	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
-		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.RawPath != "" ||
-		(endpoint.Path != "" && endpoint.Path != "/") || !apiv1.ValidRunID(run) {
+	if !ValidChildWorkflowEndpoint(a.Endpoint) || !apiv1.ValidRunID(run) {
 		return errors.New("mcpio: invalid child workflow endpoint or run binding")
 	}
 	if !strings.HasPrefix(a.BearerToken, "goobers-child.") || len(a.BearerToken) <= len("goobers-child.") || len(a.BearerToken) > 4096 || strings.IndexFunc(a.BearerToken, unicode.IsSpace) >= 0 || strings.IndexFunc(a.BearerToken, unicode.IsControl) >= 0 {
 		return errors.New("mcpio: invalid child workflow grant")
 	}
 	return nil
+}
+
+// ValidChildWorkflowEndpoint reports whether endpoint is an HTTP(S) origin
+// without userinfo, path, query or fragment: where the child-workflow tool
+// may send its grant.
+func ValidChildWorkflowEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https") &&
+		parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" && parsed.RawPath == "" &&
+		(parsed.Path == "" || parsed.Path == "/")
 }
 
 // ChildWorkflowToolNames returns fresh names only for a complete trusted grant.

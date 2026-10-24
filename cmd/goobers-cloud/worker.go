@@ -322,8 +322,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// the run being emitted for. Env token still wins when present, which
 		// keeps the single-run/pod posture working unchanged.
 		emitter := &livejournal.HTTPEmitter{
-			BaseURL: *daemonAPI,
-			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
+			TerminalWorkerID: workerhost.Identity(version.Get().Version),
+			BaseURL:          *daemonAPI,
+			Token:            workerEnvOr("GOOBERS_POD_TOKEN", ""),
 		}
 		if emitter.Token == "" {
 			cfg, cerr := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
@@ -371,6 +372,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
 		engineRuntime.deps.EngineChildren = dispatch.Children
+		engineRuntime.deps.ChildAuthority = dispatch.ChildAuthority
 		recurringStageSweeper = dispatch.Sweeper
 		queues = mergeQueues(queues, dispatch.Queues)
 		pf(stdout, "goobers-cloud worker: mode-3 stage dispatch enabled as owner %s, routing each gaggle's stage pods to its own declared isolation.namespace; dispatch queues %s\n",

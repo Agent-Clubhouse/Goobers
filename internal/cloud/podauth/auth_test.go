@@ -124,3 +124,33 @@ func TestCloudRequiresExplicitJSONRing(t *testing.T) {
 		})
 	}
 }
+
+// A child-workflow grant control minted authenticates as the child-workflow
+// principal for its run; one signed by another key does not.
+func TestCloudAuthenticatesChildWorkflowGrants(t *testing.T) {
+	a := authFixture(t, &testRevocations{})
+	grant := shared.ChildWorkflowGrant{Gaggle: "web", RunID: "0123456789abcdef0123456789abcdef", StageOccurrence: "occ", AttemptID: "att",
+		ConfigDigest: "sha256:" + string(bytes.Repeat([]byte("a"), 64)), PolicyDigest: "sha256:" + string(bytes.Repeat([]byte("b"), 64))}
+	token, _, err := a.GrantKeys.MintChildWorkflowGrant(grant, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	principal, err := a.Authenticate(request)
+	if err != nil || principal.Issuer != httpapi.ChildWorkflowPrincipalIssuer || principal.Subject != "run:"+grant.RunID {
+		t.Fatalf("principal = %+v, %v", principal, err)
+	}
+	other, err := shared.NewSignedKey(bytes.Repeat([]byte("z"), 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged, _, err := other.MintChildWorkflowGrant(grant, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+forged)
+	if principal, err := a.Authenticate(request); err == nil {
+		t.Fatalf("a grant from another key authenticated: %+v", principal)
+	}
+}

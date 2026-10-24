@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -31,8 +32,8 @@ var localBaselineDigests = map[string]string{
 	"retry-artifact-inputs-and-gates": "sha256:65afb97a5cc6ea3e3c49d5e5226db8f26c1db206976648adcb92819fd0361976",
 	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
 	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
-	"gate-fail-rerun":                 "sha256:89140da2e0691dd07925ffca793a6d561dc2c1c8454de2e7958e0a8ae4185dbc",
-	"terminal-resume":                 "sha256:bcfc16278dbce9969be24de7dfd240c87e3960109399e9b6c79c923396ac1066",
+	"gate-fail-rerun":                 "sha256:e11b00332fd1152519db1885f347c3c23590183261a72e2abb37cb66accfdb1b",
+	"gate-override":                   "sha256:ef2f0a80211678180d27ef081f69f7f94cded5e42b6df20954f5324d2b367efa",
 	"infrastructure-retry":            "sha256:4020c3810b2d63ea427856a7952211490e4f134d71f87bfc2cccbccd4d612dbc",
 }
 
@@ -109,9 +110,9 @@ func localCorpus() []corpusScenario {
 			},
 		},
 		{
-			name: "terminal-resume", runID: strings.Repeat("5", 32),
-			fixture: "terminal-resume.yaml", run: startAndResumeTerminal,
-			script: deterministicConfig{businessFailFirst: true},
+			name: "gate-override", runID: strings.Repeat("5", 32),
+			fixture: "gate-override.yaml", run: startAndOverrideGate,
+			goober: gooberConfig{failReviewWithoutAddendum: true},
 			expect: []journal.EventType{
 				journal.EventRunFinished, journal.EventRunResumed, journal.EventStageStarted,
 			},
@@ -440,11 +441,10 @@ func startAndRerunGate(t *testing.T, ctx context.Context, r *runner.Runner, mach
 	if result.Phase != journal.PhaseEscalated {
 		t.Fatalf("initial rerun phase = %s", result.Phase)
 	}
-	result, err = r.RerunStage(context.Background(), runner.RerunStageInput{
-		RunID: runID, Machine: machine, RepoRef: fixtureRepoRef(), Stage: "review",
-		Actor: "operator:fixture", InstructionAddendum: "accept the deterministic fixture",
-		ExpectedTerminalSeq: terminalSequence(t, runsDir, runID),
+	response, err := corpusInterventions(t, r, machine, runsDir).RerunStage(context.Background(), httpapi.InterventionRequest{
+		RunID: runID, Stage: "review", Actor: "operator:fixture", IdempotencyKey: "fixture", InstructionAddendum: "accept the deterministic fixture",
 	})
+	result = runner.Result{Phase: journal.RunPhase(response.Phase), FinalState: response.State}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +467,7 @@ func startAndResumeTerminal(t *testing.T, ctx context.Context, r *runner.Runner,
 	cancel()
 	result, err = r.ResumeFromTerminal(cancelled, runner.ResumeFromTerminalInput{
 		RunID: runID, Machine: machine, RepoRef: fixtureRepoRef(), Target: "recover",
-		Actor: "operator:fixture", Action: "override", Rationale: "retry deterministic fixture",
+		Actor: "operator:fixture", Action: "resume", Rationale: "retry deterministic fixture",
 		ExpectedTerminalSeq: terminalSequence(t, runsDir, runID),
 	})
 	if err != nil {
