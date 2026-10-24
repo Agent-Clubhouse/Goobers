@@ -386,6 +386,9 @@ const (
 	RuntimeSelfExecutionRequired WarningCode = "RUNTIME002"
 	// RuntimeDSLVersionUnsupported identifies a pre-3.0 cloud workflow.
 	RuntimeDSLVersionUnsupported WarningCode = "RUNTIME003"
+	// RuntimeControlPlaneUnsupported identifies a workflow setting the cloud
+	// control plane cannot honour yet (claimVisibility: shared, #8094).
+	RuntimeControlPlaneUnsupported WarningCode = "RUNTIME004"
 	// WF024 was the "gate placement not yet honoured" warning that stood
 	// between the DSL half of decision 001 (#3848) and its engine/pod half
 	// (rulings 7–8). It retired with that half and the code is not reused.
