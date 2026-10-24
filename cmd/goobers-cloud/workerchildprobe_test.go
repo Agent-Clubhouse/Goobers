@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/childadmissionclient"
 	"github.com/goobers/goobers/internal/childresult"
@@ -45,9 +49,8 @@ func TestWorkerChildAuthorityRequiresControlsCanaryOnTheBlobPlane(t *testing.T) 
 			}
 		}
 		var logged []string
-		seams := &workerSeams{store: store, logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
 		inner := &grantingAuthority{}
-		authority := probedChildAuthority(inner, seams, instanceID)
+		authority := probedChildAuthority(inner, store, instanceID, func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
 		_, err = authority.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{})
 		switch {
 		case served && (err != nil || inner.acquired != 1 || len(logged) != 0):
@@ -56,7 +59,7 @@ func TestWorkerChildAuthorityRequiresControlsCanaryOnTheBlobPlane(t *testing.T) 
 			t.Fatalf("plane without control's canary: acquire = %v (control reached %d, logged %q), want withheld and logged", err, inner.acquired, logged)
 		}
 	}
-	if probedChildAuthority(nil, &workerSeams{}, instanceID) != nil {
+	if probedChildAuthority(nil, store0(t), instanceID, nil) != nil {
 		t.Fatal("a worker without child authority gained one")
 	}
 }
@@ -75,7 +78,7 @@ func TestControlPutsTheCanaryWorkersProbeFor(t *testing.T) {
 		t.Fatalf("a repeated put at the next boot = %v", err)
 	}
 	inner := &grantingAuthority{}
-	if _, err := probedChildAuthority(inner, &workerSeams{store: store}, "instance-probe").AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{}); err != nil || inner.acquired != 1 {
+	if _, err := probedChildAuthority(inner, store, "instance-probe", nil).AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{}); err != nil || inner.acquired != 1 {
 		t.Fatalf("a worker probing control's own canary = %v (reached %d)", err, inner.acquired)
 	}
 	if err := putBlobPlaneCanary(t.Context(), nil, "instance-probe"); err == nil {
@@ -107,16 +110,41 @@ func TestBuildStageDispatchProbesBeforeLendingChildAuthority(t *testing.T) {
 	preflightGaggleNamespaces = fakeClusterHasNoRealRBACSoSkipPreflight
 	t.Cleanup(func() { preflightGaggleNamespaces = previousPreflight })
 
-	store, err := blobstore.NewDir(t.TempDir())
+	// The worker's own store holds control's canary; the plane the pods are
+	// handed does not. Only the pods' plane counts.
+	workerStore, err := blobstore.NewDir(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	seams, err := newWorkerSeams(root, store)
+	podStore, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceID, err := instance.ReadRootIdentity(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := putBlobPlaneCanary(t.Context(), workerStore, instanceID); err != nil {
+		t.Fatal(err)
+	}
+	var bearers []string
+	podPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearers = append(bearers, r.Header.Get("Authorization"))
+		digest := strings.TrimPrefix(r.URL.Path, strings.TrimSuffix(apicontract.BlobDigestPath, "{digest}"))
+		data, err := podStore.Get(r.Context(), digest)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(podPlane.Close)
+	seams, err := newWorkerSeams(root, workerStore)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seams.logf = func(format string, args ...any) { t.Logf(format, args...) }
-	dispatch, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", seams, "")
+	dispatch, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", seams, podPlane.URL)
 	if err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
@@ -125,29 +153,35 @@ func TestBuildStageDispatchProbesBeforeLendingChildAuthority(t *testing.T) {
 		t.Fatalf("stage dispatch child authority = %T, want the canary-probed authority", dispatch.ChildAuthority)
 	}
 	if _, err := probed.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{}); !errors.Is(err, childresult.ErrBlobPlaneUnverified) {
-		t.Fatalf("acquire with control's canary absent = %v, want withheld", err)
+		t.Fatalf("acquire with the canary only in the worker's own store = %v, want withheld: the pods' plane does not serve it", err)
 	}
-	instanceID, err := instance.ReadRootIdentity(root)
-	if err != nil {
-		t.Fatal(err)
+	if len(bearers) == 0 || !strings.HasPrefix(bearers[0], "Bearer ") {
+		t.Fatalf("the probe did not reach the pods' plane with a worker bearer: %q", bearers)
 	}
-	if err := putBlobPlaneCanary(t.Context(), store, instanceID); err != nil {
+	if err := putBlobPlaneCanary(t.Context(), podStore, instanceID); err != nil {
 		t.Fatal(err)
 	}
 	if err := probed.Verify(t.Context()); err != nil {
-		t.Fatalf("verify once control's canary is on the plane = %v", err)
+		t.Fatalf("verify once control's canary is on the pods' plane = %v", err)
 	}
 }
 
-// Without a stage blob store to probe, the worker fails closed.
-func TestWorkerWithoutABlobStoreWithholdsChildAuthority(t *testing.T) {
+// Without a stage blob plane to probe, the worker fails closed.
+func TestWorkerWithoutABlobPlaneWithholdsChildAuthority(t *testing.T) {
 	inner := &grantingAuthority{}
-	for name, seams := range map[string]*workerSeams{"no seams": nil, "no store": {}} {
-		authority := probedChildAuthority(inner, seams, "instance-probe")
-		if _, err := authority.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{}); !errors.Is(err, childresult.ErrBlobPlaneUnverified) || inner.acquired != 0 {
-			t.Fatalf("%s: acquire = %v (reached %d), want withheld", name, err, inner.acquired)
-		}
+	authority := probedChildAuthority(inner, nil, "instance-probe", nil)
+	if _, err := authority.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{}); !errors.Is(err, childresult.ErrBlobPlaneUnverified) || inner.acquired != 0 {
+		t.Fatalf("acquire = %v (reached %d), want withheld", err, inner.acquired)
 	}
+}
+
+func store0(t *testing.T) blobstore.Store {
+	t.Helper()
+	store, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 // Composing control's engine child protocol puts the canary workers probe for.
