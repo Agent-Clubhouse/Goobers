@@ -48,8 +48,8 @@ func TestSchedulerPolicyStoreSuite(t *testing.T) {
 		if err := store.ReleaseScoped(key, "run-a", claimrelease.Completed.Reason()); err != nil {
 			t.Fatal(err)
 		}
-		if history := store.HistorySnapshot(); len(history) != 1 || history[0].RunID != "run-a" {
-			t.Fatalf("history = %+v", history)
+		if history, err := store.HistorySnapshotErr(t.Context()); err != nil || len(history) != 1 || history[0].RunID != "run-a" {
+			t.Fatalf("history = %+v, %v", history, err)
 		}
 	})
 }
@@ -237,7 +237,11 @@ func TestVerificationMatchesFileBackendRejections(t *testing.T) {
 	if ok, _, err := store.ClaimScoped(key, "run-a", "implementation", time.Hour); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	entry := store.Snapshot()[0]
+	entries, err := store.SnapshotErr(t.Context())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("snapshot = %+v, %v", entries, err)
+	}
+	entry := entries[0]
 	observedAt := databaseNow(t, pool)
 	valid := localscheduler.ClaimVerification{
 		State: "verified", ObservedAt: observedAt, ProviderRunID: "run-a",

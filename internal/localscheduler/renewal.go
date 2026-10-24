@@ -229,6 +229,8 @@ func ProbeLiveClaimHolders(ctx context.Context, entries []ClaimEntry, probe RunL
 // snapshot (outside the claims lock, since an engine probe can block on
 // network) cannot resurrect a claim released between snapshot and renewal,
 // because a released claim has no current entry to renew.
+// The receiver is the already-open file ledger, never a cloud ClaimStore; its
+// Snapshot is in-memory and cannot hide a database failure (#8146).
 func (l *ClaimLedger) RenewRuns(live map[string]bool, leaseDuration time.Duration) ([]ClaimEntry, error) {
 	var renewed []ClaimEntry
 	for _, entry := range l.Snapshot() {

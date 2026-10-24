@@ -1569,9 +1569,10 @@ type demandPoll struct {
 }
 
 type demandSnapshot struct {
-	ready         int
-	oldestReadyAt time.Time
-	observed      bool
+	claimReadFailed bool
+	ready           int
+	oldestReadyAt   time.Time
+	observed        bool
 }
 
 type scheduledDemand struct {
@@ -2052,6 +2053,10 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if snapshot.claimReadFailed {
+		s.deferClaimReadDecision(poll)
+		return
+	}
 	if s.applyQueuedDemand(poll, snapshot) {
 		return
 	}
@@ -2153,7 +2158,7 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 	defer cancel()
 	snapshot, err := eligibleSnapshot(pollCtx, poll.counter)
 	if err != nil {
-		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err)}
+		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err), claimReadFailed: errors.Is(err, ErrClaimRead)}
 	}
 	s.recordDemandPollSuccess(entry, poll)
 	if snapshot.Count < 0 {

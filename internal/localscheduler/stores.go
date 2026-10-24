@@ -18,9 +18,9 @@ type ClaimStore interface {
 	Release(string, string, claimrelease.Reason) error
 	ReleaseScoped(ClaimKey, string, claimrelease.Reason) error
 	ReleaseEntry(ClaimEntry, string, claimrelease.Reason) error
-	ForRunAll(string) []ClaimEntry
-	Snapshot() []ClaimEntry
-	HistorySnapshot() []ClaimEntry
+	ForRunAllErr(context.Context, string) ([]ClaimEntry, error)
+	SnapshotErr(context.Context) ([]ClaimEntry, error)
+	HistorySnapshotErr(context.Context) ([]ClaimEntry, error)
 }
 
 // SchedulerState persists the scheduler's file-backed observational state.

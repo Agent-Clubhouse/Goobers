@@ -351,3 +351,12 @@ func TestScheduleDemandNeedsAConfiguredRepository(t *testing.T) {
 		t.Fatalf("scheduleDemand without repositories = %v, %v; want no counter and no error", demand, err)
 	}
 }
+
+func TestAClaimReadDeadlineRetainsItsFailClosedMarker(t *testing.T) {
+	t.Parallel()
+	boom := errors.Join(localscheduler.ErrClaimRead, context.DeadlineExceeded)
+	c, _ := demandCounters(t, fixtureForge(t), &fakeClaims{err: boom}, &fakeJournal{}, nil)
+	if n, err := c.For(demandIdentity).ScheduleDemand.EligibleCount(t.Context()); !errors.Is(err, localscheduler.ErrClaimRead) || !errors.Is(err, context.DeadlineExceeded) || n != 0 {
+		t.Fatalf("eligible = %d (%v), want the claim read failure and no count", n, err)
+	}
+}
