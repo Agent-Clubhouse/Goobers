@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/worker"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -115,7 +116,8 @@ func (a *Activities) EvaluateAutomatedCancelSafe(
 }
 
 func cancelSafeActivityError(ctx context.Context, err error) error {
-	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) &&
+		!errors.Is(context.Cause(ctx), worker.ErrWorkerShutdown) {
 		return temporal.NewCanceledError()
 	}
 	return err

@@ -48,6 +48,33 @@ func (e *cancelOutcomeExecutor) Run(
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
+func cancelOutcomeRunInput(runID string) RunInput {
+	preview := true
+	return RunInput{
+		RunID: runID, Gaggle: "web",
+		WorkflowName: "cancel-outcome", Version: 1,
+		DSLVersion: "3.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "web", Start: "only",
+			Tasks: []apiv1.Task{{
+				Name: "only", Type: apiv1.TaskDeterministic,
+				Goal: "only",
+				Run: &apiv1.DeterministicRun{
+					Command:   []string{"true"},
+					Workspace: apiv1.WorkspaceScratch,
+				},
+			}},
+		},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub,
+			Owner:    "fixture", Name: "repo", Branch: "main",
+		},
+		TriggerKind:            string(journal.TriggerManual),
+		PreviewFeaturesEnabled: &preview,
+		LiveJournal:            true,
+	}
+}
+
 func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_TEMPORAL_CLI")
 	ctx, server := cancellationDevServer(t)
@@ -78,32 +105,9 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 			}
 			defer w.Stop()
 			runID := "cancel-outcome-" + test.name
-			preview := true
 			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 				ID: runID, TaskQueue: queue,
-			}, Run, RunInput{
-				RunID: runID, Gaggle: "web",
-				WorkflowName: "cancel-outcome", Version: 1,
-				DSLVersion: "3.0",
-				Spec: apiv1.WorkflowSpec{
-					Gaggle: "web", Start: "only",
-					Tasks: []apiv1.Task{{
-						Name: "only", Type: apiv1.TaskDeterministic,
-						Goal: "only",
-						Run: &apiv1.DeterministicRun{
-							Command:   []string{"true"},
-							Workspace: apiv1.WorkspaceScratch,
-						},
-					}},
-				},
-				RepoRef: apiv1.RepoRef{
-					Provider: apiv1.ProviderGitHub,
-					Owner:    "fixture", Name: "repo", Branch: "main",
-				},
-				TriggerKind:            string(journal.TriggerManual),
-				PreviewFeaturesEnabled: &preview,
-				LiveJournal:            true,
-			})
+			}, Run, cancelOutcomeRunInput(runID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -155,5 +159,100 @@ func TestIntegrationCancelWaitsForExecutorOutcome(t *testing.T) {
 					finished, test.wantFinished, events)
 			}
 		})
+	}
+}
+
+func TestIntegrationWorkerStopDoesNotBecomeOperatorCancel(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEMPORAL_CLI")
+	ctx, server := cancellationDevServer(t)
+	c := server.Client()
+	const queue = "cancel-outcome-worker-stop"
+	executor := &cancelOutcomeExecutor{
+		acknowledge: true,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+		cancelSeen:  make(chan struct{}),
+	}
+	writer, runsDir := newLiveWriter(t)
+	workerA := temporalworker.New(c, queue, temporalworker.Options{
+		Identity:          "worker-a",
+		WorkerStopTimeout: time.Second,
+	})
+	RegisterWith(workerA, &Activities{
+		Det: executor, Workspaces: testWorkspaces(t), Journal: writer,
+	})
+	if err := workerA.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if workerA != nil {
+			workerA.Stop()
+		}
+	})
+	const runID = "cancel-outcome-worker-stop"
+	input := cancelOutcomeRunInput(runID)
+	input.Spec.Tasks[0].Retry = &apiv1.RetryPolicy{MaxAttempts: 2}
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: runID, TaskQueue: queue,
+	}, Run, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-executor.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	workerB := temporalworker.New(c, queue, temporalworker.Options{
+		Identity: "worker-b",
+	})
+	RegisterWith(workerB, &Activities{
+		Det: &fakeRunner{run: func(
+			context.Context,
+			apiv1.InvocationEnvelope,
+			apiv1.DeterministicRun,
+		) (apiv1.ResultEnvelope, error) {
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		}},
+		Workspaces: testWorkspaces(t),
+		Journal:    writer,
+	})
+	if err := workerB.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(workerB.Stop)
+	workerA.Stop()
+	workerA = nil
+	select {
+	case <-executor.cancelSeen:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := run.Get(ctx, nil); err != nil {
+		t.Fatalf("worker stop became a terminal workflow error: %v", err)
+	}
+	description, err := c.DescribeWorkflowExecution(
+		ctx, run.GetID(), run.GetRunID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := description.WorkflowExecutionInfo.Status; status != enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED {
+		t.Fatalf("workflow status = %s, want COMPLETED", status)
+	}
+	finished := 0
+	for _, event := range liveEvents(t, runsDir, runID) {
+		if event.Type == journal.EventStageFinished {
+			finished++
+		}
+		if event.Type == journal.EventRunFinished &&
+			(event.Status == string(journal.PhaseAborted) ||
+				event.TerminalCause != nil &&
+					event.TerminalCause.Classification ==
+						journal.TerminalOperatorAbort) {
+			t.Fatalf("worker stop became operator abort: %+v", event)
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("stage.finished=%d, want 1", finished)
 	}
 }
