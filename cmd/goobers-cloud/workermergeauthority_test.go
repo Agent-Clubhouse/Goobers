@@ -38,7 +38,7 @@ func TestWorkerFactoriesKeepMergeRevocationAndPinnedConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder, registrar := seams.recorderFor(gaggle, "pinned-run", pinGaggle)
+	recorder, registrar := seams.recorderFor(t.Context(), gaggle, "pinned-run", pinGaggle)
 	deterministic, err := gaggle.cfg.NewDeterministic(recorder, registrar)
 	if err != nil {
 		t.Fatal(err)

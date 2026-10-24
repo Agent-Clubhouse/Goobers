@@ -44,10 +44,16 @@ func TestSelfExecutionDeniedFullDispatchedLifecycle(t *testing.T) {
 	}
 	putSurrendered(t, store, in.RunID, "review", 1, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "approved", Rationale: "reviewed implementation"}))
 	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-cli", Pod: "work-pod", Image: "example/worker:v1", Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true}}
-	proj := executeForProjection(t, in, &Activities{Dispatcher: fake, Surrenders: store, AdmitSelfExecution: func(stage string) error {
+	spaces := testWorkspaces(t)
+	proj := executeForProjection(t, in, &Activities{Dispatcher: fake, Surrenders: store, Workspaces: spaces, AdmitSelfExecution: func(stage string) error {
 		t.Errorf("self selected for %s", stage)
 		return &runsemantics.SelfExecutionRefusal{Stage: stage}
 	}}, false)
+	// Preparation observes the selected branch; every work/review execution
+	// still crosses the dispatch boundary and the fatal self guard above.
+	if provisioned := spaces.provisioned(); len(provisioned) != 1 || provisioned[0].Stage != "review" {
+		t.Fatalf("worker workspaces = %+v, want only reviewer preparation", provisioned)
+	}
 	attempts, _ := fake.recorded()
 	if len(attempts) != 3 {
 		t.Fatalf("attempts: %+v", attempts)
