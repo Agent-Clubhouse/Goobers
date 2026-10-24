@@ -467,3 +467,17 @@ github.com/goobers/goobers/internal/cloud/readmodelpg.ActiveReader.store # Lande
 github.com/goobers/goobers/internal/cloud/readmodelpg.NewActiveReader # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.readOnlyFence.WithFence # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/readmodelpg.withStore # Landed ahead of its first consumer: the cloud Reader composition (#7818 R3, read-only ActiveReader and projector health) reads it; exercised by the cloudintegration PG16 suites. Remove when R3 lands. expires=2026-11-22
+
+# L1c cloud admission path (internal/cloud/schedstart), composed in L1e.
+github.com/goobers/goobers/internal/cloud/schedstart.Drain.dispatchOne # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Drain.Run # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Drain.bind # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.NewReconciler # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.reconciler.FromRoots # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.reconciler.FromRunDirs # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.reconciler.inventory # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Tracker.Wait # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Config.StarterFor # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.starter.RegisterDispatch # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Tracker.register # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.starter.Start # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22

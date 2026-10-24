@@ -152,3 +152,73 @@ type nilStarter struct{}
 func (nilStarter) Start(context.Context, localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	return localscheduler.StartResult{}, fmt.Errorf("schedstart: placeholder starter must be replaced per record")
 }
+
+// Takeover: a successor epoch rebuilds admission from the predecessor's open
+// runs before its first drain, so those runs keep counting against
+// MaxConcurrentRuns and accepted starts wait instead of over-admitting.
+func TestSuccessorEpochCountsThePredecessorsOpenRuns(t *testing.T) {
+	const workflow, gaggle = "repair", "own"
+	identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}
+	queue, err := triggerqueue.Open(filepath.Join(t.TempDir(), "starts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = queue.Close() })
+	log, _, err := journal.OpenInstanceLog(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	engineCalls := make(chan string, 8)
+	config := Config{
+		Engine: engineFunc(func(_ context.Context, in engine.RunInput) (engine.StartResult, error) {
+			engineCalls <- in.RunID
+			return engine.StartResult{RunID: in.RunID}, nil
+		}),
+		Resolve: func(_ context.Context, r triggerqueue.Record) (engine.RunInput, error) {
+			return engine.RunInput{RunID: r.ID[len("trigger-"):]}, nil
+		},
+		Terminal: func(ctx context.Context, _ string) (Outcome, error) { <-ctx.Done(); return Outcome{}, ctx.Err() },
+	}
+	entry := localscheduler.WorkflowEntry{
+		Workflow: workflow, Gaggle: gaggle, Starter: nilStarter{},
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+	}
+	open := func(context.Context) ([]OpenRun, error) {
+		return []OpenRun{{Identity: identity, RunID: "predecessor-1"}, {Identity: identity, RunID: "predecessor-2"}}, nil
+	}
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{entry}, log, localscheduler.WithRunDirReconciler(NewReconciler(open)))
+	if err := scheduler.Reconcile("", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	service := startintent.Service{
+		Queue: queue, Now: time.Now,
+		Capture: func(context.Context, startintent.Request) (startintent.Target, func(), error) {
+			return startintent.Target{Gaggle: gaggle, Workflow: workflow, ConfigGeneration: "g1", WorkflowDigest: "w1", GooberDigest: "d1"}, func() {}, nil
+		},
+		Build: func(context.Context, startintent.Target) (startintent.Prepared, error) {
+			return startintent.Prepared{Entry: entry, Release: func() {}}, nil
+		},
+		Scheduler:    func() *localscheduler.Scheduler { return scheduler },
+		RunDirectory: func(context.Context, string) (string, error) { return "", nil },
+	}
+	for i := range 3 {
+		if _, _, err := service.Accept(t.Context(), fmt.Sprintf("k%d", i), "alice", startintent.Request{Workflow: workflow}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var tracker Tracker
+	epoch, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	drain := Drain{Pager: queue, Service: service, Config: config, Tracker: &tracker}
+	if _, err := drain.Run(epoch, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case run := <-engineCalls:
+		t.Fatalf("run %s started although the predecessor's 2 open runs fill MaxConcurrentRuns=2", run)
+	case <-time.After(150 * time.Millisecond):
+	}
+	cancel()
+	scheduler.Wait()
+}
