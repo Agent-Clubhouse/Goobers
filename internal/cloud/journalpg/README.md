@@ -53,9 +53,32 @@ compatibility API and is deliberately refused: arbitrary external appenders
 must not bypass PG fencing. The instance event table starts as a range-partitioned
 parent with one default partition; `(instance_id, stream, seq)` is the logical
 cursor and the primary key also carries the partition timestamp. The counter
-lock protects sequence allocation and emit-key dedup across partitions. #7810
-adds monthly partition management, health streams and consumer cursors without
-replacing the parent table or changing cursor identity.
+lock protects sequence allocation. Scheduler emit-key dedup uses the
+unpartitioned `journal.instance_emit_key` table written in the same
+transaction, so a retry is idempotent regardless of which month the append
+clock falls in (unique indexes cannot span partitions). Health dedup stays
+partition-local because its key hashes `OccurredAt`, which also picks the month.
+
+A row trigger on `instance_event` also records every emit key, so events
+written by the previous binary during a Recreate rollout are deduplicated too.
+
+Monthly partitions are created by `migrate.PartitionMaintainer` (DB clock, UTC
+months, current + 3 ahead, plus any past month still holding DEFAULT rows). Rows
+already in DEFAULT move into a private table and the table is attached in ONE
+transaction: until COMMIT every row is still visible through the parent, and any
+failure (lock not obtainable, lost lease, timeout) rolls back with nothing hidden,
+so `(stream, seq)` cursor consumers can never skip an event. Row movement uses
+bounded keyset statements and only row locks, so appends keep flowing; the final
+sweep + ATTACH hold the DEFAULT lock briefly with savepoint retries, and lease
+ownership is confirmed (share lock) right before COMMIT. `migrate apply` attaches
+only past and FUTURE months (the previous binary, with no retry for the ATTACH
+routing race, is still serving and only the current month has live writers); the
+current month is attached by the controller's periodic pass (#7882), which runs
+only the new binary. Until then current-month rows simply stay in DEFAULT. `InstanceAppend` retries the one-instant partition-routing race that the ATTACH
+of the current month can cause. Retention must drop a month with
+`migrate.DropInstanceEventPartition`, which also deletes that month's
+`instance_emit_key` rows in the same transaction. Health streams and consumer cursors extend the
+same schema without replacing the parent table or changing cursor identity.
 
 The full unchanged shared conformance suites and focused fencing/rollback tests
 run with `cloudintegration` against a local PostgreSQL 16 container, using

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,11 +98,21 @@ func TestControlLifetimeReportsStopTimeoutOnSIGTERM(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- runControlLifetime(ctx, cancel, host, auth, server, func(error) {}) }()
+	// A background service (the projector) is cancelled and awaited with the rest.
+	var backgroundStopped atomic.Bool
+	background := func(ctx context.Context) error {
+		<-ctx.Done()
+		backgroundStopped.Store(true)
+		return ctx.Err()
+	}
+	go func() { done <- runControlLifetime(ctx, cancel, host, auth, server, func(error) {}, background) }()
 	<-entered
 	cancel()
 	if err := <-done; !errors.Is(err, lease.ErrWorkStillRunning) {
 		t.Fatalf("SIGTERM hid hung epoch: %v", err)
+	}
+	if !backgroundStopped.Load() {
+		t.Fatal("shutdown returned before the background service stopped")
 	}
 }
 

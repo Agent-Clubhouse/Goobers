@@ -398,9 +398,9 @@ func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goo
 // journal: the worker did not mint the run, cannot author its identity without
 // inventing conformance-normative fields, and must not create a directory the
 // engine's projection will later try to create itself.
-func (w *workerSeams) recorderFor(g *gaggleSeams, runID, gaggle string) (stageexec.ArtifactRecorder, stageexec.SecretRegistrar) {
+func (w *workerSeams) recorderFor(ctx context.Context, g *gaggleSeams, runID, gaggle string) (stageexec.ArtifactRecorder, stageexec.SecretRegistrar) {
 	dir := workerhost.StagingArtifactsDir(g.runsDir, runID)
-	recorder := workerhost.NewStagingArtifacts(dir, w.scrubber, w.store)
+	recorder := workerhost.NewStagingArtifactsForInvocation(ctx, dir, w.scrubber, w.store)
 	if w.checkpointEmitter != nil {
 		return &checkpointWorkerArtifacts{StagingArtifacts: recorder, TranscriptTransport: livejournal.TranscriptTransport{
 			RunID: runID, Gaggle: gaggle, Emitter: w.checkpointEmitter, Blobs: w.store,
@@ -486,7 +486,7 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	if err := d.seams.materialize(ctx, g, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	rec, reg := d.seams.recorderFor(g, env.RunID, env.Gaggle)
+	rec, reg := d.seams.recorderFor(ctx, g, env.RunID, env.Gaggle)
 	exec, err := g.cfg.NewDeterministic(rec, reg)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: construct deterministic executor: %w", err)
@@ -554,7 +554,7 @@ func (a workerGoober) prepareExecutor(ctx context.Context, env apiv1.InvocationE
 	if err = g.refuseUnavailableHarness(env); err != nil {
 		return workerExecutorContext{}, err
 	}
-	exec, err := a.executor(g, env)
+	exec, err := a.executor(ctx, g, env)
 	if err != nil {
 		return workerExecutorContext{}, err
 	}
@@ -577,7 +577,7 @@ func (a workerGoober) prepareExecutor(ctx context.Context, env apiv1.InvocationE
 	return workerExecutorContext{ctx: ctx, exec: exec, release: release}, nil
 }
 
-func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (invoke.Goober, error) {
+func (a workerGoober) executor(ctx context.Context, g *gaggleSeams, env apiv1.InvocationEnvelope) (invoke.Goober, error) {
 	if env.Goober == "" {
 		// Fail closed and say why. Before the envelope carried a goober name
 		// this seam could not route at all, which is the gap that blocked the
@@ -587,7 +587,7 @@ func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (in
 	if g.cfg.NewAgentic == nil {
 		return nil, fmt.Errorf("worker: no agentic executor configured for gaggle %q", env.Gaggle)
 	}
-	rec, reg := a.seams.recorderFor(g, env.RunID, env.Gaggle)
+	rec, reg := a.seams.recorderFor(ctx, g, env.RunID, env.Gaggle)
 	exec, err := g.cfg.NewAgentic(env.Goober, rec, reg)
 	if err != nil {
 		return nil, fmt.Errorf("worker: construct agentic executor for goober %q: %w", env.Goober, err)

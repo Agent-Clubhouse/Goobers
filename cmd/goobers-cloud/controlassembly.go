@@ -27,6 +27,13 @@ type controlAssemblySeam struct {
 	requires func(controlOptions) string
 }
 
+func requiresConfigDirectory(o controlOptions) string {
+	if strings.TrimSpace(o.configDir) == "" {
+		return "--config-dir"
+	}
+	return requiresObjectStore(o)
+}
+
 func requiresObjectStore(o controlOptions) string {
 	if strings.TrimSpace(o.objectStoreURL) == "" {
 		return "--object-store-url"
@@ -39,7 +46,7 @@ func requiresObjectStore(o controlOptions) string {
 // hand-maintained list of implemented seams cannot claim success. Nil means
 // pending, never a successful no-op constructor.
 var controlAssembly = []controlAssemblySeam{
-	{field: "Configuration", label: "admission guard", issue: "#7860", controller: true, present: func(p controlPlanes) bool { return p.Configuration != nil }},
+	{field: "Configuration", label: "admission guard", issue: "#7860", controller: true, present: func(p controlPlanes) bool { return p.Configuration != nil }, construct: constructConfiguration, requires: requiresConfigDirectory},
 	// After Configuration: freezing a child resolves its pinned generation
 	// against the applied configuration.
 	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }, construct: constructEngineChildAdmissions, requires: requiresObjectStore},
