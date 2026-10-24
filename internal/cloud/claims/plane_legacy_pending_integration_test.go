@@ -30,13 +30,18 @@ func TestExpiredLegacyPendingCustodyBlocksNamespacedAdmissionAsController(t *tes
 				err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 					_, err := tx.Exec(ctx, `INSERT INTO control.claim
 						(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-						claimed_at,renewed_at,expires_at,release_pending_at,shared_owner,shared_deadline,shared_admission_pending)
+						claimed_at,renewed_at,expires_at,shared_owner,shared_deadline,shared_admission_pending)
 						VALUES($1,$2,$2,'42','legacy-run','wf','token',$3,
 						now()-interval '2 hours',now()-interval '2 hours',now()-interval '1 hour',
-						CASE WHEN $4 THEN now() END,
-						CASE WHEN $5 THEN '{"instance":"legacy","run":"legacy-run","token":"incarnation"}'::jsonb ELSE '{}'::jsonb END,
-						CASE WHEN $5 THEN now()-interval '1 hour' END,$5)`,
-						p.instanceID, legacyNamespace, epoch, custody == "release-pending", custody == "admission-pending")
+						CASE WHEN $4 THEN '{"instance":"legacy","run":"legacy-run","token":"incarnation"}'::jsonb ELSE '{}'::jsonb END,
+						CASE WHEN $4 THEN now()-interval '1 hour' END,$4)`,
+						p.instanceID, legacyNamespace, epoch, custody == "admission-pending")
+					if err != nil || custody != "release-pending" {
+						return err
+					}
+					_, err = tx.Exec(ctx, `UPDATE control.claim SET release_pending_at=now()
+						WHERE instance_id=$1 AND gaggle=$2 AND provider=$2 AND external_id='42' AND owner_epoch=$3`,
+						p.instanceID, legacyNamespace, epoch)
 					return err
 				})
 				if err != nil {
