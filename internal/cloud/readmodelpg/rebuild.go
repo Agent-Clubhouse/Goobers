@@ -11,6 +11,17 @@ import (
 
 const rebuildBatchSize = 100
 
+// The rebuild copies rows between version schemas with INSERT … SELECT. Each
+// copy names its target columns, so a value can never land in a different
+// column if a version's column order differs from its source's (#8156); the
+// trailing $3 of each SELECT is the copy's owner_epoch.
+const (
+	runCopyColumns       = "run_id,source_seq,projection,gaggle,workflow,phase,terminal,started_at,last_activity_at,disposition,stages,any_token_measured,any_premium_measured,any_cost_measured,any_retry_waste,owner_epoch"
+	stageCopyColumns     = "run_id,stage,run_terminal,had_success,had_failure,had_other,token_measured,premium_measured,cost_measured,retry_waste,owner_epoch"
+	watermarkCopyColumns = "run_id,source_seq,owner_epoch"
+	changeCopyColumns    = "seq,changed_at,kind,run_id,gaggle,workflow,owner_epoch"
+)
+
 // Builder implements migrate.ReadmodelBuilder. Rebuild progress is durable and
 // each bounded batch receives its own live fenced transaction.
 type Builder struct {
@@ -244,7 +255,7 @@ func copyRunBatch(
 		return nil
 	}
 	runCopy := fmt.Sprintf(`
-		INSERT INTO %[1]s.run
+		INSERT INTO %[1]s.run (`+runCopyColumns+`)
 		SELECT run_id,source_seq,projection,gaggle,workflow,phase,terminal,
 		       started_at,last_activity_at,disposition,stages,
 		       any_token_measured,any_premium_measured,any_cost_measured,
@@ -265,7 +276,7 @@ func copyRunBatch(
 		return fmt.Errorf("readmodelpg: copy run batch: %w", err)
 	}
 	stageCopy := fmt.Sprintf(`
-		INSERT INTO %[1]s.run_stage
+		INSERT INTO %[1]s.run_stage (`+stageCopyColumns+`)
 		SELECT run_id,stage,run_terminal,had_success,had_failure,had_other,
 		       token_measured,premium_measured,cost_measured,retry_waste,$3
 		FROM %[2]s.run_stage WHERE run_id>$1 AND run_id<=$2
@@ -281,7 +292,7 @@ func copyRunBatch(
 		return fmt.Errorf("readmodelpg: copy stage batch: %w", err)
 	}
 	watermarkCopy := fmt.Sprintf(`
-		INSERT INTO %[1]s.source_watermark
+		INSERT INTO %[1]s.source_watermark (`+watermarkCopyColumns+`)
 		SELECT run_id,source_seq,$3 FROM %[2]s.source_watermark
 		WHERE run_id>$1 AND run_id<=$2
 		ON CONFLICT (run_id) DO UPDATE
@@ -327,7 +338,7 @@ func copyChangeBatch(
 			"readmodelpg: change feed gap after %d through %d", after, through)
 	}
 	changes := fmt.Sprintf(`
-		INSERT INTO %[1]s.change
+		INSERT INTO %[1]s.change (`+changeCopyColumns+`)
 		SELECT seq,changed_at,kind,run_id,gaggle,workflow,$3
 		FROM %[2]s.change WHERE seq>$1 AND seq<=$2
 		ON CONFLICT (seq) DO NOTHING`, targetID, sourceID)
@@ -338,7 +349,7 @@ func copyChangeBatch(
 		`SELECT DISTINCT run_id FROM %s.change WHERE seq>$1 AND seq<=$2 AND run_id<>''`,
 		sourceID)
 	runRefresh := fmt.Sprintf(`
-		INSERT INTO %[1]s.run
+		INSERT INTO %[1]s.run (`+runCopyColumns+`)
 		SELECT r.run_id,r.source_seq,r.projection,r.gaggle,r.workflow,r.phase,r.terminal,
 		       r.started_at,r.last_activity_at,r.disposition,r.stages,
 		       r.any_token_measured,r.any_premium_measured,r.any_cost_measured,
@@ -367,7 +378,7 @@ func copyChangeBatch(
 		return 0, fmt.Errorf("readmodelpg: clear changed stages: %w", err)
 	}
 	stageRefresh := fmt.Sprintf(`
-		INSERT INTO %[1]s.run_stage
+		INSERT INTO %[1]s.run_stage (`+stageCopyColumns+`)
 		SELECT s.run_id,s.stage,s.run_terminal,s.had_success,s.had_failure,s.had_other,
 		       s.token_measured,s.premium_measured,s.cost_measured,s.retry_waste,$3
 		FROM %[2]s.run_stage AS s JOIN (%[3]s) AS changed USING (run_id)`,
@@ -376,7 +387,7 @@ func copyChangeBatch(
 		return 0, fmt.Errorf("readmodelpg: refresh changed stages: %w", err)
 	}
 	watermarks := fmt.Sprintf(`
-		INSERT INTO %[1]s.source_watermark
+		INSERT INTO %[1]s.source_watermark (`+watermarkCopyColumns+`)
 		SELECT w.run_id,w.source_seq,$3
 		FROM %[2]s.source_watermark AS w JOIN (%[3]s) AS changed USING (run_id)
 		ON CONFLICT (run_id) DO UPDATE
