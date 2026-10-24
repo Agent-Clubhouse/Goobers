@@ -2,6 +2,7 @@ package claims
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -19,11 +20,12 @@ var settleOutcomes = map[string]bool{"completed": true, "abandoned": true}
 
 // Release gives the item back. Releasing a claim the run does not hold is a
 // no-op answering Ok=true; with ItemID empty it releases every claim the run
-// holds except publication locks. Provider-cleanup release needs server-side
-// marker custody the cloud does not have yet.
+// holds except publication locks and claims under cleanup custody. A
+// provider-cleanup release takes cleanup custody of one exact incarnation and
+// removes its provider marker before releasing it (providerCleanup).
 func (p *Plane) Release(ctx context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
 	if request.ProviderCleanup {
-		return httpapi.ClaimResponse{}, errProviderCleanupUnavailable()
+		return p.providerCleanup(ctx, request)
 	}
 	if request.ItemID == "" {
 		return p.releaseAllForRun(ctx, request)
@@ -61,7 +63,17 @@ func (p *Plane) releaseOne(ctx context.Context, request httpapi.ClaimRequest, re
 	}
 	key := localscheduler.ClaimKey{Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID}
 	err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-		_, err := p.moveToHistory(ctx, tx, epoch, key, request.RunID, "", false, reason)
+		row, err := p.lockRow(ctx, tx, key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if row.entry.RunID == request.RunID && row.entry.ReleasePending {
+			return errReleasePending()
+		}
+		_, err = p.moveToHistory(ctx, tx, epoch, key, request.RunID, "", false, reason)
 		return err
 	})
 	if err != nil {
@@ -102,7 +114,8 @@ func (p *Plane) releaseRun(
 			return err
 		}
 		for _, entry := range entries {
-			if entry.IsPublicationClaim() || (gaggle != "" && (entry.Gaggle != gaggle || entry.Provider != provider)) {
+			if entry.IsPublicationClaim() || entry.ReleasePending ||
+				(gaggle != "" && (entry.Gaggle != gaggle || entry.Provider != provider)) {
 				continue
 			}
 			moved, err := p.moveToHistory(ctx, tx, epoch, storedKey(entry), runID, "", false, reason)
@@ -126,7 +139,7 @@ func (p *Plane) moveToHistory(
 	ctx context.Context, tx pgx.Tx, epoch int64, key localscheduler.ClaimKey,
 	runID, token string, requireExpired bool, reason claimrelease.Reason,
 ) (bool, error) {
-	return releaseToHistory(ctx, tx, p.instanceID, epoch, key, runID, token, requireExpired, reason)
+	return releaseToHistory(ctx, tx, p.instanceID, epoch, key, runID, token, requireExpired, false, reason)
 }
 
 // runEntries reads the run's active claims inside the transaction.
