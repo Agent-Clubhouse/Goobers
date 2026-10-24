@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
@@ -806,4 +807,87 @@ func testProjection(runID string, seq uint64) readmodel.Projection {
 		StartedAt: started, LastActivity: finished, FinishedAt: &finished,
 		LastSeq: seq,
 	}}
+}
+
+func rolePool(t *testing.T, admin *pgxpool.Pool, role string) *pgxpool.Pool {
+	t.Helper()
+	config := admin.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE "+role)
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// TestActiveReaderFollowsAFlipForBothRuntimeRoles is the #7865 wiring
+// condition: Build, then the grant reconcile, then Flip, so a newly active
+// readmodel_vN is usable by goobers_api and goobers_controller the moment it
+// becomes active. The control (reconcile skipped) proves the test would see the
+// window the ordering exists to close.
+func TestActiveReaderFollowsAFlipForBothRuntimeRoles(t *testing.T) {
+	for name, reconcile := range map[string]bool{"reconcile before flip": true, "reconcile skipped": false} {
+		t.Run(name, func(t *testing.T) {
+			admin := testPool(t)
+			applyMigrations(t, admin)
+			resetReadmodel(t, admin)
+			reconcileReadmodelGrants(t, admin)
+			fence := testFence{pool: admin, epoch: 7}
+			store, err := readmodelpg.New(t.Context(), admin, fence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.UpsertRun(t.Context(), testProjection("run", 1)); err != nil {
+				t.Fatal(err)
+			}
+			readers := map[string]*readmodelpg.ActiveReader{}
+			for role, pool := range map[string]*pgxpool.Pool{
+				"goobers_api": rolePool(t, admin, "goobers_api"), "goobers_controller": rolePool(t, admin, "goobers_controller"),
+			} {
+				reader, err := readmodelpg.NewActiveReader(t.Context(), pool)
+				if err != nil {
+					t.Fatalf("%s cannot open v1: %v", role, err)
+				}
+				if _, ok, err := reader.GetRun(t.Context(), "run"); err != nil || !ok {
+					t.Fatalf("%s reads v1: ok=%v err=%v", role, ok, err)
+				}
+				readers[role] = reader
+			}
+			builder, err := readmodelpg.NewBuilder(admin, fence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := builder.Build(t.Context(), "readmodel_v2"); err != nil {
+				t.Fatal(err)
+			}
+			if reconcile {
+				reconcileReadmodelGrants(t, admin)
+			}
+			if err := builder.Flip(t.Context(), "readmodel", 2); err != nil {
+				t.Fatal(err)
+			}
+			for role, reader := range readers {
+				_, ok, err := reader.GetRun(t.Context(), "run")
+				var refusal *pgconn.PgError
+				switch {
+				case reconcile && (err != nil || !ok):
+					t.Fatalf("%s cannot use the new version right after the flip: ok=%v err=%v", role, ok, err)
+				case !reconcile && (!errors.As(err, &refusal) || refusal.Code != "42501"):
+					t.Fatalf("%s without the reconcile = ok=%v err=%v, want 42501 (the grant window)", role, ok, err)
+				}
+			}
+			if reconcile {
+				for role, reader := range readers {
+					state, err := reader.State(t.Context())
+					if err != nil || !state.Ready {
+						t.Fatalf("%s state after flip = %+v %v", role, state, err)
+					}
+				}
+			}
+		})
+	}
 }

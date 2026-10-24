@@ -1474,7 +1474,7 @@
       "package": "test/journalequivalence",
       "coverage": "none",
       "category": "not-selected",
-      "reason": "Local-runner equivalence corpus exercises backend semantics on the Linux unit shards; it does not select a Windows-specific seam."
+      "reason": "Local journal corpus runs on Linux unit shards; engine/PG equivalence runs in cloud-pg with Temporal worker drain and controller-role grants."
     },
     {
       "package": "test/markdownlinks",
