@@ -287,6 +287,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.escalations != nil
 	case apicontract.RouteCancelRun:
 		available = config.cancels != nil
+	case apicontract.RouteJournalTerminalIntervention:
+		_, available = config.journal.(TerminalInterventionService)
 	case apicontract.RouteJournalEmit:
 		available = config.journal != nil
 	case apicontract.RouteJournalRunPhase, apicontract.RouteJournalConflictTouches,
