@@ -254,6 +254,12 @@ func (m *Manager) selfFenceRemaining(handle *Handle) time.Duration {
 
 // Release voluntarily gives up authority and bumps the epoch.
 func (m *Manager) Release(ctx context.Context, handle *Handle) error {
+	// A self-fenced holder must not hand the lease over early: its authority
+	// may already have been taken over, and in-flight effects outside the
+	// database are bounded only by the TTL. It lets the lease expire instead.
+	if m.SelfFenced(handle) {
+		return ErrSelfFenced
+	}
 	tx, err := m.config.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin lease release: %w", err)
@@ -273,6 +279,11 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 	}
 	if heartbeatHolder != handle.Holder || heartbeatEpoch != handle.Epoch {
 		return ErrStale
+	}
+	// The row lock can wait behind a takeover or a fenced write; recheck the
+	// window once it is held.
+	if m.SelfFenced(handle) {
+		return ErrSelfFenced
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE control.lease
