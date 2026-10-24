@@ -12,6 +12,16 @@ import (
 
 func TestSharedSnapshotRefusesChildWithoutItsOwnPolicyPin(t *testing.T) {
 	resolver, _, _ := resolverFixture(t, "shared")
+	reader, err := resolver.Journal.OpenRun(t.Context(), journal.RunRef{ID: "run-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Child = &journal.ChildLineage{ParentRunID: "parent"}
+	resolver.Journal = pinnedJournal{policyIdentityReader{RunReader: reader, identity: identity}}
 	resolver.Verify = ControlPins(func(context.Context, string) (acceptance.RunPins, error) {
 		return acceptance.RunPins{}, sql.ErrNoRows
 	})
@@ -60,3 +70,10 @@ func TestControlPinsMatchWorkflowAndKeepReadErrorsRetryable(t *testing.T) {
 		t.Fatalf("read failure=%v", err)
 	}
 }
+
+type policyIdentityReader struct {
+	journal.RunReader
+	identity journal.RunIdentity
+}
+
+func (r policyIdentityReader) Identity() (journal.RunIdentity, error) { return r.identity, nil }

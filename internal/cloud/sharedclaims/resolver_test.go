@@ -67,7 +67,7 @@ func resolverFixture(t *testing.T, mode string) (Resolver, *journal.Run, *resolv
 		t.Fatal(err)
 	}
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"}
-	run, err := journal.Create(t.TempDir(), journal.RunIdentity{InstanceID: "instance", RunID: "run-a", Workflow: "claim", WorkflowVersion: 1, Gaggle: "example", WorkflowDigest: machine.Digest(), WorkspaceRepository: &repo},
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{InstanceID: "instance", RunID: "run-a", Workflow: "claim", WorkflowVersion: 1, Gaggle: "example", WorkflowDigest: machine.Digest(), ConfigGeneration: "generation", WorkspaceRepository: &repo},
 		map[string][]byte{journal.PinnedWorkflowDefinitionInputName: raw}, journal.WithInputIntegrity(map[string]apiv1.Integrity{journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted}))
 	if err != nil {
 		t.Fatal(err)

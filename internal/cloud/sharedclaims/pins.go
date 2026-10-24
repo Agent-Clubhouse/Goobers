@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -27,7 +29,8 @@ func ControlPins(read func(context.Context, string) (acceptance.RunPins, error))
 		}
 		pin, err := read(ctx, id.RunID)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("run %s has no own start-time workflow pin: %w", id.RunID, ErrPolicyPinUnavailable)
+			return httpapi.NewInterventionError(http.StatusConflict, "shared_claim_policy_pin_unavailable",
+				fmt.Sprintf("run %s has no own start-time workflow pin; shared child policy is unavailable", id.RunID), ErrPolicyPinUnavailable)
 		}
 		if err != nil {
 			return err
