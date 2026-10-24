@@ -102,3 +102,25 @@ func TestEngineChildAuthorityIsControllerSideAfterAdmissions(t *testing.T) {
 		t.Fatalf("engine child authority (%d) must compose after the admissions (%d)", authority, admissions)
 	}
 }
+
+func TestChildWorkflowsComposeAfterTheAuthorityAndFailClosedWithoutIt(t *testing.T) {
+	planes := controlPlanes{}
+	if err := constructChildWorkflows(t.Context(), databaseServices{}, controlAuth{}, &lease.Manager{}, func() *lease.Handle { return nil }, &planes); err == nil || planes.ChildWorkflows != nil {
+		t.Fatalf("construct without the authority = %v (plane %v)", err, planes.ChildWorkflows != nil)
+	}
+	authority, workflows := -1, -1
+	for i, seam := range controlAssembly {
+		switch seam.field {
+		case "EngineChildAuthority":
+			authority = i
+		case "ChildWorkflows":
+			workflows = i
+			if !seam.controller || seam.construct == nil {
+				t.Fatalf("child workflows seam = %+v, want a controller-side constructor", seam)
+			}
+		}
+	}
+	if authority < 0 || workflows <= authority {
+		t.Fatalf("child workflows (%d) must compose after the engine child authority (%d)", workflows, authority)
+	}
+}

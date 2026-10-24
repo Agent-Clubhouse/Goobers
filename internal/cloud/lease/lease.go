@@ -329,8 +329,10 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 	}
 	if err := tx.Commit(ctx); err != nil {
 		// COMMIT failing on the deadline is not proof of a rollback, so it is
-		// never reported as a clean self-fence.
-		return fmt.Errorf("commit lease release: %w", err)
+		// never reported as a clean self-fence: a lost reply is
+		// ErrCommitUnknown, as for WithFence; only a server error that leaves the
+		// session running is a refusal.
+		return fmt.Errorf("lease release: %w", commitError(ctx, err))
 	}
 	return nil
 }
