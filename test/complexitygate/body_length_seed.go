@@ -33,7 +33,7 @@ var bodyLengthSeedCeilings = map[string]int{
 	"internal/executor/shell.go\t(*ShellExecutor).Run":                 553,
 	"internal/fleet/connector.go\t(*Connector).connectOnce":            227,
 	"internal/harness/claude.go\t(*ClaudeAdapter).Run":                 234,
-	"internal/harness/copilot.go\t(*CopilotAdapter).Run":               317,
+	"internal/harness/copilot.go\t(*CopilotAdapter).runCLI":            317,
 	"internal/harness/executor.go\t(*Executor).run":                    331,
 	"internal/localscheduler/scheduler.go\t(*Scheduler).Tick":          223,
 	"internal/readmodel/causal.go\t(*Store).CausalCredit":              214,
