@@ -392,6 +392,43 @@ func TestARefusedCycleClearsWhenTheCycleResolves(t *testing.T) {
 	})
 }
 
+// A cycle escalated afresh through another seed supersedes a refusal latched on the
+// first: the latch must not outlive the attempt it described.
+func TestARefusalLatchedOnOneSeedIsSupersededByAnotherSeedsEscalation(t *testing.T) {
+	t.Run("sweep", func(t *testing.T) {
+		r := newDeferralRig(t)
+		r.refuse(t) // latched on seed 2
+		// A new, deferred block on item 1 closes the same cycle through another seed.
+		r.budget = false
+		if _, err := r.store.RecordBlock(t.Context(), r.handle, block("1", "2")); err != nil {
+			t.Fatal(err)
+		}
+		r.budget = true
+		// The new seed is only deferred, so the old latch stands until it escalates.
+		if got := r.refused(t, r.store, r.handle); len(got) != 1 {
+			t.Fatalf("refused = %v, want the first seed's latch to stand while the new one is deferred", got)
+		}
+		r.makeDue(t, 10*time.Minute)
+		if res, err := r.sweep(t, r.store, r.handle); err != nil || res.Escalated != 1 {
+			t.Fatalf("sweep: %+v, %v; want the cycle escalated through the new seed", res, err)
+		}
+		if got := r.refused(t, r.store, r.handle); len(got) != 0 {
+			t.Fatalf("refused = %v after the cycle was escalated via another seed", got)
+		}
+	})
+	t.Run("inline", func(t *testing.T) {
+		r := newDeferralRig(t)
+		r.refuse(t)
+		cycle, err := r.store.RecordBlock(t.Context(), r.handle, block("1", "2"))
+		if err != nil || len(cycle.Affected) != 2 {
+			t.Fatalf("cycle %+v, err %v; want the cycle escalated inline", cycle, err)
+		}
+		if got := r.refused(t, r.store, r.handle); len(got) != 0 {
+			t.Fatalf("refused = %v after an inline escalation through another seed", got)
+		}
+	})
+}
+
 // One member's permanent refusal must not stop a cycle whose other members only
 // failed transiently: that cycle is retried, and refused only once every remaining
 // failure is permanent.

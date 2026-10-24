@@ -160,6 +160,12 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	if err := note(d.reconcile.Reconcile(ctx, d.budget, d.apply)); err != nil {
 		return err
 	}
+	// Refusals change only when a sweep or a re-recorded block changes them, so they
+	// are re-read on the heal cadence, not every pass; a failed read keeps the last
+	// answer rather than reporting none.
+	d.mu.Lock()
+	refused := d.snapshot.RefusedCycles
+	d.mu.Unlock()
 	if healDue {
 		if _, err := d.heal.Heal(ctx, d.deps.Handle, d.healLimit); err != nil {
 			if err := note(fmt.Errorf("heal blocked records: %w", err)); err != nil {
@@ -179,12 +185,17 @@ func (d *Delivery) Tick(ctx context.Context) error {
 			}
 		}
 	}
+	if healDue {
+		read, err := d.heal.Refused(ctx, d.deps.Handle)
+		if err := note(err); err != nil {
+			return err
+		}
+		if err == nil {
+			refused = read
+		}
+	}
 	deferred, deferErr := d.heal.Deferrals(ctx, d.deps.Handle)
 	if err := note(deferErr); err != nil {
-		return err
-	}
-	refused, refusedErr := d.heal.Refused(ctx, d.deps.Handle)
-	if err := note(refusedErr); err != nil {
 		return err
 	}
 	backlog, readErr := d.backlog.Backlog(ctx)

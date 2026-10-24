@@ -174,6 +174,18 @@ func (b *Backoff) Verified(node blockedcycle.Node) {
 // release), which is why deferral is a stored marker with a driver, not an
 // in-memory hold.
 func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
+	cycle, err := s.recordBlock(ctx, handle, b)
+	if err == nil && len(cycle.Affected) > 0 {
+		// The cycle is being escalated now, through this seed: a refusal latched on
+		// another seed of the same cycle is superseded by this fresh attempt.
+		if rerr := s.releaseRefused(ctx, handle, cycle.Affected); rerr != nil && isStale(rerr) {
+			return cycle, rerr
+		}
+	}
+	return cycle, err
+}
+
+func (s Store) recordBlock(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
 	cycle, err := s.record(ctx, handle, b)
 	if err != nil || len(cycle.Affected) == 0 || s.Closed == nil {
 		return cycle, err
