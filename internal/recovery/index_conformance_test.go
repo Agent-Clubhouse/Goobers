@@ -123,6 +123,10 @@ func (i inventoryIndex) Reap(ctx context.Context, limit int) ([]recovery.Indexed
 	return reaped, nil
 }
 
+// RetiredBundles is empty: the inventory deletes bundles during Reap, so none
+// is ever left awaiting deletion.
+func (inventoryIndex) RetiredBundles(context.Context, int) ([]string, error) { return nil, nil }
+
 // ReleaseBundle is a no-op: the inventory deletes bundles during Reap.
 func (inventoryIndex) ReleaseBundle(context.Context, string) error { return nil }
 

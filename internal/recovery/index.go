@@ -55,6 +55,11 @@ type RecordIndex interface {
 	Renew(ctx context.Context, key RecordKey, retention time.Duration) (IndexedRecord, error)
 	Get(ctx context.Context, key RecordKey) (IndexedRecord, error)
 	Reap(ctx context.Context, limit int) ([]IndexedRecord, error)
+	// RetiredBundles lists up to limit bundle locations a Reap retired and no
+	// ReleaseBundle has released yet: the bundles still to delete. It, not
+	// Reap's result, is what a reaper deletes from, so a Reap whose commit
+	// succeeded but whose result was lost is finished on the next pass.
+	RetiredBundles(ctx context.Context, limit int) ([]string, error)
 	ReleaseBundle(ctx context.Context, bundle string) error
 }
 

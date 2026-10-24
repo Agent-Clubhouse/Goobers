@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -236,6 +237,53 @@ func TestReapedBundleIsRetiredUntilReleased(t *testing.T) {
 	}
 	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-1", time.Hour); err != nil {
 		t.Fatalf("re-publication after release: %v", err)
+	}
+}
+
+// TestLostReapResultIsRecoveredFromTombstones (#8163): a Reap that committed
+// but whose result never reached the caller still tombstoned its bundles, and
+// the reaper finds them through RetiredBundles, read as goobers_controller.
+func TestLostReapResultIsRecoveredFromTombstones(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := recoverypg.Store{Pool: pool, Fence: manager}
+	r := record("run-lost")
+	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-lost", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.Reap(t.Context(), handle, 10); err != nil {
+		t.Fatal(err)
+	}
+	// The reap result is discarded, as a caller that lost the reply would.
+	config := pool.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	controller, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(controller.Close)
+	var role string
+	if err := controller.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != "goobers_controller" {
+		t.Fatalf("controller pool runs as %q (%v)", role, err)
+	}
+	reader := recoverypg.Store{Pool: controller, Fence: manager}
+	retired, err := reader.RetiredBundles(t.Context(), handle.InstanceID, 10)
+	if err != nil || len(retired) != 1 || retired[0] != "bundles/run-lost" {
+		t.Fatalf("retired bundles = %v, %v; want the lost reap's bundle", retired, err)
+	}
+	for range 2 {
+		// The second release is the retry after an ambiguous first: a no-op.
+		if err := store.ReleaseBundle(t.Context(), handle, "bundles/run-lost"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if left, err := reader.RetiredBundles(t.Context(), handle.InstanceID, 10); err != nil || len(left) != 0 {
+		t.Fatalf("after release, retired bundles = %v, %v; want none", left, err)
 	}
 }
 
