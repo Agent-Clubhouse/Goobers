@@ -119,11 +119,11 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 // These non-nil interfaces are only composition markers. No method is invoked.
 func populatedControlPlanes() controlPlanes {
 	return controlPlanes{
-		EngineChildAdmissions: httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
-		EngineChildAuthority:  httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
-		EngineChildProtocol:   httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
-		ChildWorkflows:        httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
-		BlobPlane:             httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
+		EngineChildAdmissions: httpapi.WithInterventionContext(context.Background()),
+		EngineChildAuthority:  httpapi.WithInterventionContext(context.Background()),
+		EngineChildProtocol:   httpapi.WithInterventionContext(context.Background()),
+		ChildWorkflows:        httpapi.WithInterventionContext(context.Background()),
+		BlobPlane:             httpapi.WithInterventionContext(context.Background()),
 		Configuration:         struct{ control.Configuration }{},
 		Reader:                struct{ readservice.Reader }{}, Claims: struct{ httpapi.ClaimService }{},
 		Triggers: struct{ httpapi.TriggerService }{}, Journal: struct{ httpapi.JournalService }{},

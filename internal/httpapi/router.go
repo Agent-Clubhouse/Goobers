@@ -692,6 +692,7 @@ func (r *Router) ensureAdmission() {
 type handlerConfig struct {
 	events                    eventSource
 	authenticator             Authenticator
+	authenticatorSet          bool
 	interventions             InterventionService
 	interventionContext       context.Context
 	runRevealer               func(context.Context, string) error
@@ -798,13 +799,19 @@ func WithChangeFeedStream(store readmodel.Backend, feed readmodel.Feed) HandlerO
 	}
 }
 
-// WithAuthenticator replaces the tier-1 NullAuthenticator.
+// WithAuthenticator replaces the tier-1 NullAuthenticator. It may be given at
+// most once: a second authenticator is refused rather than silently replacing
+// the first (#8199).
 func WithAuthenticator(authenticator Authenticator) HandlerOption {
 	return func(config *handlerConfig) error {
 		if authenticator == nil {
 			return errors.New("http API authenticator is required")
 		}
+		if config.authenticatorSet {
+			return errors.New("http API authenticator is already set")
+		}
 		config.authenticator = authenticator
+		config.authenticatorSet = true
 		return nil
 	}
 }

@@ -71,11 +71,6 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 	}
 	full := populatedControlPlanes()
 	full.RunJournal = phaseRunJournal{}
-	// The fixture fills the option-valued seams with a deny-all authenticator,
-	// which would replace the real one; here each re-installs the real one.
-	for _, option := range []*httpapi.HandlerOption{&full.EngineChildAdmissions, &full.EngineChildAuthority, &full.EngineChildProtocol, &full.ChildWorkflows} {
-		*option = httpapi.WithAuthenticator(auth)
-	}
 	// The blob plane is a real one over a store, so the test can observe it
 	// served on a standby as well as once ready (#8188).
 	blobs, err := blobstore.NewDir(t.TempDir())
