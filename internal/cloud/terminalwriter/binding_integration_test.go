@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
@@ -39,7 +41,7 @@ func (g pinnedGenerations) Acquire(_ context.Context, generation string) (childw
 
 // controllerJournal returns a journal backend whose every session is
 // goobers_controller, the role the control plane's writer reads runs as.
-func controllerJournal(t *testing.T) *journalpg.Backend {
+func controllerJournal(t *testing.T) (backend *journalpg.Backend, owner, controller *pgxpool.Pool) {
 	t.Helper()
 	url := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
 	if url == "" {
@@ -58,7 +60,7 @@ func controllerJournal(t *testing.T) *journalpg.Backend {
 	config := admin.Config()
 	config.ConnConfig.Database = database
 	config.MaxConns = lease.MaxFencedConnections
-	owner, err := pgxpool.NewWithConfig(t.Context(), config)
+	owner, err = pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +76,7 @@ func controllerJournal(t *testing.T) *journalpg.Backend {
 	if err := (migrate.Runner{Direct: owner, Catalog: catalog, BackupRef: "local-test", InstanceID: "migration", Holder: "test"}).Apply(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	controller := pgtest.ControllerPool(t, owner)
+	controller = controllerPool(t, owner)
 	var role string
 	if err := controller.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != "goobers_controller" {
 		t.Fatalf("fixture must read as goobers_controller, got %q (%v)", role, err)
@@ -88,18 +90,18 @@ func controllerJournal(t *testing.T) *journalpg.Backend {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = manager.Release(context.Background(), handle) })
-	backend, err := journalpg.New(journalpg.Config{Pool: controller, InstanceID: "test-instance", Lease: manager, LiveOwner: func() *lease.Handle { return handle }})
+	backend, err = journalpg.New(journalpg.Config{Pool: controller, InstanceID: "test-instance", Lease: manager, LiveOwner: func() *lease.Handle { return handle }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return backend
+	return backend, owner, controller
 }
 
 // TestJournalRunsBindsFromPinsAsTheControllerRole: the binding comes from the
 // start fence's pins; the worker-written journal, read as goobers_controller,
 // is only an agreement check, and a journal that disagrees refuses.
 func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
-	backend := controllerJournal(t)
+	backend, _, _ := controllerJournal(t)
 	service := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"}
 	fork := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "fork"}
 	boards := apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "Code", Name: "service"}
@@ -187,5 +189,64 @@ func TestJournalRunsBindsFromPinsAsTheControllerRole(t *testing.T) {
 	runs.Pins = func(context.Context, string) (RunPin, error) { return RunPin{}, errors.New("connection reset") }
 	if _, err := runs.Bind(t.Context(), "run-engine"); err == nil || providerwriter.Permanent(err) {
 		t.Fatalf("pin read failure: %v, want a retryable error", err)
+	}
+}
+
+// controllerPool opens a pool on base's database whose every session runs as
+// goobers_controller, so the binding reads only what that role is granted.
+func controllerPool(t *testing.T, base *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := base.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// TestJournalRunsBindsFromTheStartFencesRunPin: composed as the control role
+// will be, the pin comes from control.run_pin through acceptance.Store
+// .RunPinsOf, read as goobers_controller.
+func TestJournalRunsBindsFromTheStartFencesRunPin(t *testing.T) {
+	backend, owner, controller := controllerJournal(t)
+	service := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"}
+	if _, _, err := backend.CreateRun(t.Context(), journal.CreateRunRequest{Identity: journal.RunIdentity{
+		RunID: "run-pinned", Gaggle: "core", Workflow: "implementation", ConfigGeneration: "gen-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := json.Marshal(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(t.Context(), `
+		INSERT INTO control.run_pin (instance_id, run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest,
+		  goober_digest, config_generation, repo_ref, branch_namespace, input_digest, owner_epoch)
+		VALUES ('test-instance','run-pinned','acc-1','core','implementation',1,'wd','gd','gen-1',$1,'','id',1)`, repo); err != nil {
+		t.Fatal(err)
+	}
+	store, err := acceptance.New(controller, "test-instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{
+		ObjectMeta: metav1.ObjectMeta{Name: "core"},
+		Spec:       apiv1.GaggleSpec{Project: service, Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "acme/service"}},
+	}}}
+	runs := JournalRuns{Pins: AcceptancePins(store.RunPinsOf), Journal: backend, Generations: pinnedGenerations{"gen-1": set}}
+	bound, err := runs.Bind(t.Context(), "run-pinned")
+	if err != nil {
+		t.Fatalf("bind from the real run pin as goobers_controller: %v", err)
+	}
+	if !sameRepository(bound.Workspace, repositoryRef(service)) || bound.Gaggle != "core" || bound.Generation != "gen-1" {
+		t.Fatalf("binding = %+v", bound)
+	}
+	// A run the start fence never pinned has no row: a permanent refusal.
+	if _, err := runs.Bind(t.Context(), "run-unpinned"); !errors.Is(err, providerwriter.ErrRepositoryNotPinned) || !providerwriter.Permanent(err) {
+		t.Fatalf("unpinned run: %v, want a permanent ErrRepositoryNotPinned", err)
 	}
 }

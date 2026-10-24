@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/providerconfig"
 	"github.com/goobers/goobers/internal/runtimewiring"
@@ -180,4 +181,17 @@ func repositoryRef(repo apiv1.RepoRef) providers.RepositoryRef {
 func sameRepository(a, b providers.RepositoryRef) bool {
 	a.URL, a.ID, b.URL, b.ID = "", "", "", ""
 	return a.CanonicalKey() == b.CanonicalKey()
+}
+
+// AcceptancePins adapts the start fence's pin reader
+// (acceptance.Store.RunPinsOf) to a PinSource. Its sql.ErrNoRows for a run
+// with no pin passes through, so Bind refuses it permanently.
+func AcceptancePins(pinsOf func(ctx context.Context, runID string) (acceptance.RunPins, error)) PinSource {
+	return func(ctx context.Context, runID string) (RunPin, error) {
+		pins, err := pinsOf(ctx, runID)
+		if err != nil {
+			return RunPin{}, err
+		}
+		return RunPin{Gaggle: pins.Gaggle, ConfigGeneration: pins.ConfigGeneration, RepoRef: pins.RepoRef}, nil
+	}
 }
