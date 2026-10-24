@@ -35,6 +35,7 @@ func TestConfigurationPersistsAcrossEpochsAndReloadsBeforeRecovery(t *testing.T)
 				CaptureObservations: func(context.Context) ([]Observation, error) { return nil, nil },
 			}, nil
 		},
+		Admission: inertAdmissionFactory,
 	}
 	for epoch := int64(1); epoch <= 2; epoch++ {
 		services, err := runtime.Build(t.Context(), &lease.Handle{InstanceID: "instance", Epoch: epoch})

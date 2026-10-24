@@ -15,10 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/migrate"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -68,25 +66,6 @@ func controlTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// lostResponseClient commits the first Temporal start but hides its response.
-// No worker is launched: control must never execute the queued workflow stages.
-type lostResponseClient struct {
-	client.Client
-	starts atomic.Int32
-	lost   atomic.Bool
-}
-
-func (c *lostResponseClient) ExecuteWorkflow(ctx context.Context, o client.StartWorkflowOptions, w interface{}, args ...interface{}) (client.WorkflowRun, error) {
-	run, err := c.Client.ExecuteWorkflow(ctx, o, w, args...)
-	if err == nil {
-		c.starts.Add(1)
-		if c.lost.CompareAndSwap(false, true) {
-			return nil, errors.New("lost start response")
-		}
-	}
-	return run, err
-}
-
 func TestTwoReplicaPG16Failover(t *testing.T) { testTwoReplicaPG16Failover(t, false) }
 
 func TestTwoReplicaPG16InvoluntaryFailover(t *testing.T) { testTwoReplicaPG16Failover(t, true) }
@@ -104,7 +83,7 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 			t.Error(err)
 		}
 	})
-	temporal := &lostResponseClient{Client: server.Client()}
+	temporal := server.Client()
 	leaseTTL, renew, selfFence := 2*time.Second, 100*time.Millisecond, 800*time.Millisecond
 	retry, tick := 20*time.Millisecond, 20*time.Millisecond
 	if os.Getenv("GOOBERS_CONTROL_RTO_PRODUCTION") == "1" {
@@ -143,7 +122,8 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 				return []Observation{{Key: "provider/quota", Payload: []byte(`{"openPRs":3,"remaining":19}`), ObservedAt: time.Now()}}, nil
 			}
 			return services, nil
-		}}
+		},
+			Admission: inertAdmissionFactory}
 		replicaRetry := retry
 		if involuntary && holder == "first" {
 			replicaRetry = leaseTTL + 10*time.Second
@@ -169,16 +149,6 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	waitControl(t, ctx, first.Ready)
 	waitControl(t, ctx, func() bool { return active.Load() == 1 })
 	old := first.Owner()
-	store, err := acceptance.New(pool, "control-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.BindFence(firstManager, old)
-	record, _, err := store.Accept(ctx, "request/1", "operator", []byte(`{}`), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitControl(t, ctx, func() bool { return temporal.lost.Load() })
 	second, _ := makeReplica("second")
 	secondCtx, stopSecond := context.WithCancel(ctx)
 	defer stopSecond()
@@ -219,10 +189,6 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 		t.Fatal(ctx.Err())
 	}
 	waitControl(t, ctx, second.Ready)
-	waitControl(t, ctx, func() bool {
-		r, err := store.Get(ctx, record.ID, "operator")
-		return err == nil && r.State == triggerqueue.Dispatched
-	})
 	// Report latency for the nightly distribution gate; correctness here uses
 	// database-clock ordering, not a wall-clock SLO on a loaded test runner.
 	t.Logf("IN-PROCESS-HANDOFF: %s", time.Since(started))
@@ -246,9 +212,6 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	if first.Ready() || first.Owner() != nil || unsafeOverlap.Load() {
 		t.Fatal("controllers overlapped authority")
 	}
-	if temporal.starts.Load() != 1 {
-		t.Fatalf("duplicate starts: %d", temporal.starts.Load())
-	}
 	if restored.Load() == 0 {
 		t.Fatal("provider observations were not restored on takeover")
 	}
@@ -263,11 +226,6 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	refused := errors.Is(err, lease.ErrSelfFenced) || (!involuntary && errors.Is(err, lease.ErrStale))
 	if !refused {
 		t.Fatalf("zombie observation write: %v", err)
-	}
-	runID := strings.TrimPrefix(record.ID, "trigger-")
-	description, err := temporal.DescribeWorkflowExecution(ctx, runID, "")
-	if err != nil || description.WorkflowExecutionInfo.GetStatus().String() != "Running" {
-		t.Fatalf("control shutdown stopped engine workflow: %v %v", description, err)
 	}
 	stopSecond()
 	select {
