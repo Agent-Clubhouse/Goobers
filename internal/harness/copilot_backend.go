@@ -83,11 +83,14 @@ func (b copilotSDKBackend) Run(ctx context.Context, req RunRequest) (out Outcome
 		return Outcome{}, fmt.Errorf("harness: copilot-sdk: configuration must be resolved before execution")
 	}
 
+	runCtx, cancel := copilotSessionContext(ctx, req.Timeout)
+	defer cancel()
+
 	options, err := normalizeResolvedCopilotConfig(req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-sdk: invalid resolved configuration: %w", err)
 	}
-	credential, err := copilotSDKModelCredential(ctx, req)
+	credential, err := copilotSDKModelCredential(runCtx, req)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -97,7 +100,7 @@ func (b copilotSDKBackend) Run(ctx context.Context, req RunRequest) (out Outcome
 		}
 	}
 	prompt := renderResponseCompletionPrompt(req)
-	session, err := b.runtime.OpenSession(ctx, copilotSDKSessionConfig{
+	session, err := b.runtime.OpenSession(runCtx, copilotSDKSessionConfig{
 		Workspace:       req.Workspace,
 		Model:           req.Model,
 		Options:         options,
@@ -110,7 +113,7 @@ func (b copilotSDKBackend) Run(ctx context.Context, req RunRequest) (out Outcome
 		runErr = errors.Join(runErr, session.Close())
 	}()
 
-	result, err := session.Complete(ctx, prompt)
+	result, err := session.Complete(runCtx, prompt)
 	out = Outcome{
 		Payload:                result.Completion,
 		Transcript:             result.Transcript,

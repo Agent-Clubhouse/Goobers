@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -14,9 +15,11 @@ type fakeCopilotSDKRuntime struct {
 	config  copilotSDKSessionConfig
 	session *fakeCopilotSDKSession
 	err     error
+	ctx     context.Context
 }
 
-func (r *fakeCopilotSDKRuntime) OpenSession(_ context.Context, config copilotSDKSessionConfig) (copilotSDKSession, error) {
+func (r *fakeCopilotSDKRuntime) OpenSession(ctx context.Context, config copilotSDKSessionConfig) (copilotSDKSession, error) {
+	r.ctx = ctx
 	r.config = config
 	if r.err != nil {
 		return nil, r.err
@@ -29,9 +32,11 @@ type fakeCopilotSDKSession struct {
 	result copilotSDKResult
 	err    error
 	closed bool
+	ctx    context.Context
 }
 
-func (s *fakeCopilotSDKSession) Complete(_ context.Context, prompt string) (copilotSDKResult, error) {
+func (s *fakeCopilotSDKSession) Complete(ctx context.Context, prompt string) (copilotSDKResult, error) {
+	s.ctx = ctx
 	s.prompt = prompt
 	return s.result, s.err
 }
@@ -114,6 +119,37 @@ func TestCopilotBackendBoundaryRunsSDKThroughSessionAPI(t *testing.T) {
 	}
 	if !session.closed {
 		t.Fatal("SDK session was not closed")
+	}
+}
+
+func TestCopilotSDKBackendPropagatesSessionDeadline(t *testing.T) {
+	timeout := time.Minute
+	session := &fakeCopilotSDKSession{result: copilotSDKResult{
+		Completion: []byte(`{"status":"success","summary":"sdk"}`),
+	}}
+	runtime := &fakeCopilotSDKRuntime{session: session}
+	adapter := &CopilotAdapter{backend: copilotSDKBackend{runtime: runtime}}
+
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(t.TempDir()),
+		Workspace:             t.TempDir(),
+		Timeout:               timeout,
+		HarnessConfigResolved: true,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	openDeadline, openOK := runtime.ctx.Deadline()
+	completeDeadline, completeOK := session.ctx.Deadline()
+	if !openOK || !completeOK {
+		t.Fatalf("SDK deadlines: open=%v complete=%v", openOK, completeOK)
+	}
+	if !openDeadline.Equal(completeDeadline) {
+		t.Fatalf("SDK deadlines differ: open=%v complete=%v", openDeadline, completeDeadline)
+	}
+	remaining := time.Until(openDeadline)
+	if remaining <= 0 || remaining > timeout {
+		t.Fatalf("SDK deadline remaining = %v, want within (0, %v]", remaining, timeout)
 	}
 }
 
