@@ -16,9 +16,10 @@
 // reserves its polls from it. L1e must hand the SAME state to the scheduler and
 // to observationsFor(state); see Deps.Quota.
 //
-// Not yet supplied: the schedule-demand counter (scheduled update-behind-pr
-// remediation). It needs the cloud claims ledger and live-origin filters, so the
-// entry keeps its ScheduleDemandPendingReason until it lands.
+// The schedule-demand counter (scheduled update-behind-pr remediation) sizes a
+// due fire to the pull requests the remediation stages would actually select. It
+// runs the same selection the stages run (internal/remediationselect) over the
+// cloud claims namespace and the cloud journal's branch ownership.
 package schedcounters
 
 import (
@@ -33,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/schedentries"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/remediationselect"
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
@@ -50,10 +52,13 @@ type Access struct {
 	Gate     providers.QuotaRequestGate
 }
 
-// Provider is the forge surface the counters read.
+// Provider is the forge surface the counters read. The embedded
+// remediationselect.Provider is what the shared remediation selection reads.
 type Provider interface {
+	remediationselect.Provider
 	ListWorkItems(ctx context.Context, req providers.ListWorkItemsRequest) ([]providers.WorkItem, error)
 	ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error)
+	ListPullRequests(ctx context.Context, req providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
 }
 
 // Deps binds one applied generation's counters.
@@ -67,6 +72,16 @@ type Deps struct {
 	// up. It MUST honour the Access it is handed (see Access); GitHubSource.Open
 	// does, and is the way to build one.
 	Open Opener
+	// Claims and Journal feed the schedule-demand counter: the PR claim namespace
+	// of the cloud claims plane and the cross-run journal read behind branch
+	// ownership. Both are required for a workflow that needs schedule demand; a
+	// workflow that does not is unaffected, and one that does but has neither gets
+	// no counter (so schedentries keeps it disabled with its pending reason) and
+	// the cause is reported once.
+	Claims  remediationselect.NamespaceLister
+	Journal remediationselect.BranchOwnershipReader
+	// Now is the clock claim expiry is judged against. Defaults to time.Now.
+	Now func() time.Time
 	// Quota is the provider quota ledger. L1e MUST pass the very state it gives
 	// the scheduler (localscheduler.WithProviderQuota) and builds the observations
 	// ledger from (observationsFor(state)): the scheduler budgets polls against it
@@ -210,6 +225,13 @@ func (c *Counters) build(identity localscheduler.WorkflowIdentity) (schedentries
 	}
 	if refill != nil {
 		out.RefillDemand = refill
+	}
+	demand, err := c.scheduleDemand(gaggle, wf)
+	if err != nil {
+		return out, err
+	}
+	if demand != nil {
+		out.ScheduleDemand = demand
 	}
 	return out, nil
 }

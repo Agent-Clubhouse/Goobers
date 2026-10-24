@@ -50,6 +50,30 @@ func (f *fakeProvider) ListOpenPullRequests(context.Context, providers.Repositor
 	return f.prs, f.prErr
 }
 
+func (f *fakeProvider) ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error) {
+	return nil, nil
+}
+
+func (f *fakeProvider) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return nil, nil
+}
+
+func (f *fakeProvider) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+
+func (f *fakeProvider) GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error) {
+	return providers.PullRequestSummary{}, nil
+}
+
+func (f *fakeProvider) BranchTipSHA(context.Context, providers.RepositoryRef, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeProvider) CompareCommits(context.Context, providers.RepositoryRef, string, string) (providers.CompareResult, error) {
+	return providers.CompareResult{}, nil
+}
+
 func opener(f *fakeProvider) Opener {
 	return func(context.Context, providers.RepositoryRef, Access) (Provider, error) { return f, nil }
 }
@@ -110,18 +134,31 @@ func TestSuppliedCountersClearOnlyTheirOwnPendingReason(t *testing.T) {
 		t.Fatalf("refill workflow still disabled: %q", got)
 	}
 
+	// Scheduled remediation needs the claims namespace and the journal; without
+	// them it stays disabled with only its own reason, and the cause is reported.
 	cfg, set = generation(apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"})
 	startingWith(set, "goobers", "update-behind-pr")
-	if got := reasonWith(t, cfg, set, newCounters(t, cfg, set, &fakeProvider{})); got != schedentries.ScheduleDemandPendingReason {
-		t.Fatalf("scheduled remediation reason = %q, want only the schedule-demand reason", got)
+	var reported []error
+	bare, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reasonWith(t, cfg, set, bare); got != schedentries.ScheduleDemandPendingReason || len(reported) == 0 {
+		t.Fatalf("scheduled remediation reason = %q (reports %v), want only the schedule-demand reason and a report", got, reported)
 	}
 
-	// Backlog and schedule demand on one workflow: only the backlog reason clears.
+	// Backlog and schedule demand on one workflow: supplying only the planes the
+	// backlog counter does not need leaves the schedule-demand reason alone.
 	cfg, set = generation(
 		apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}},
 		apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"})
 	startingWith(set, "goobers", "update-behind-pr")
-	if got := reasonWith(t, cfg, set, newCounters(t, cfg, set, &fakeProvider{})); got != schedentries.ScheduleDemandPendingReason {
+	reported = nil
+	mixed, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reasonWith(t, cfg, set, mixed); got != schedentries.ScheduleDemandPendingReason {
 		t.Fatalf("mixed workflow reason = %q, want only the schedule-demand reason", got)
 	}
 }

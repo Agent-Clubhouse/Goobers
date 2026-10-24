@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/remediationselect"
 	"github.com/goobers/goobers/providers"
@@ -2078,7 +2079,6 @@ var parseVerdictComment = remediationselect.ParseVerdictComment
 var prReferencePattern = remediationselect.PrReferencePattern
 var pullRequestClaimKey = remediationselect.PullRequestClaimKey
 var pullRequestClaimLedgerKey = remediationselect.PullRequestClaimLedgerKey
-var pullRequestClaimListing = remediationselect.PullRequestClaimListing
 var pullRequestClaimStatus = remediationselect.PullRequestClaimStatus
 var pullRequestClaimStatusFor = remediationselect.PullRequestClaimStatusFor
 var remediationCauseOrder = remediationselect.RemediationCauseOrder
@@ -2092,3 +2092,7 @@ var substantiveFindingAppliesToPR = remediationselect.SubstantiveFindingAppliesT
 var unionBlockingPRs = remediationselect.UnionBlockingPRs
 var verdictHasSubstantiveFindingForPR = remediationselect.VerdictHasSubstantiveFindingForPR
 var verdictJSONPattern = remediationselect.VerdictJSONPattern
+
+func pullRequestClaimListing(ledger claimsclient.Ledger, gaggle string, provider providers.ProviderKind) (claimsclient.Listing, error) {
+	return remediationselect.PullRequestClaimListingContext(claimContext(), ledger, gaggle, provider)
+}
