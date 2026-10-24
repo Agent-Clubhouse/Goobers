@@ -144,6 +144,15 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		return response
 	}
+	blobPut := func(handler http.Handler, data []byte) *httptest.ResponseRecorder {
+		sum := sha256.Sum256(data)
+		request := httptest.NewRequest(http.MethodPut, strings.Replace(apicontract.BlobDigestPath, "{digest}", "sha256:"+hex.EncodeToString(sum[:]), 1), bytes.NewReader(data))
+		request.Header.Set("Authorization", "Bearer "+blobBearer)
+		request.Header.Set("Content-Type", "application/octet-stream")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
 	// discovery is recovery-safe: it passes the gate even on a standby (a pod
 	// principal is then refused by authentication, which is past the gate).
 	discovery := func(handler http.Handler) *httptest.ResponseRecorder {
@@ -166,6 +175,9 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 	if response := blobGet(handler); response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), blob) {
 		t.Fatalf("standby blob GET = %d %s, want the blob served lease-free", response.Code, response.Body.String())
 	}
+	if response := blobPut(handler, []byte("written on a standby")); response.Code != http.StatusNoContent {
+		t.Fatalf("standby blob PUT = %d %s, want it served lease-free", response.Code, response.Body.String())
+	}
 
 	// Ready: the host holds the lease and has finished its startup sequence.
 	go func() { _ = host.Run(ctx) }()
@@ -181,6 +193,9 @@ func TestControlHandlerServesTheFullAssembly(t *testing.T) {
 	}
 	if response := blobGet(handler); response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), blob) {
 		t.Fatalf("ready blob GET = %d %s, want the blob served", response.Code, response.Body.String())
+	}
+	if response := blobPut(handler, []byte("written once ready")); response.Code != http.StatusNoContent {
+		t.Fatalf("ready blob PUT = %d %s, want it served", response.Code, response.Body.String())
 	}
 
 	// Mutants: any one seam left unassigned must not serve the API.
