@@ -542,8 +542,8 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	if len(captured.ContextPointers) != 1 || captured.ContextPointers[0].Name != "implement.artifact[0]" {
 		t.Errorf("gate context pointers = %+v, want the subject stage's artifact", captured.ContextPointers)
 	}
-	if got := len(workspaces.provisioned()); got != 2 {
-		t.Errorf("workspaces provisioned = %d, want 2 (implement + the reviewer gate)", got)
+	if got := len(workspaces.provisioned()); got != 3 {
+		t.Errorf("workspaces provisioned = %d, want 3 (implement + diff preparation + reviewer)", got)
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
-func postgresLiveWriter(t *testing.T, config journalpg.Config) (*livejournal.Writer, *journalpg.Backend, string) {
+func postgresLiveWriter(t *testing.T, config journalpg.Config, options ...livejournal.Option) (*livejournal.Writer, *journalpg.Backend, string) {
 	t.Helper()
 	var role string
 	if err := config.Pool.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil {
@@ -32,7 +32,8 @@ func postgresLiveWriter(t *testing.T, config journalpg.Config) (*livejournal.Wri
 	}
 	backend := postgresBackend(t, config)
 	root := t.TempDir()
-	writer, err := livejournal.NewWriter(func(string) (string, bool) { return root, true }, livejournal.WithBackend(backend))
+	options = append(options, livejournal.WithBackend(backend))
+	writer, err := livejournal.NewWriter(func(string) (string, bool) { return root, true }, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

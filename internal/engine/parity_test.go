@@ -616,10 +616,11 @@ type parityEnvelope struct {
 // projected fields covers the envelope exactly, so a new envelope field cannot
 // join the exclusion set by being forgotten.
 var parityEnvelopeExcludedFields = map[string]string{
-	"ChildWorkflowOrigin": "derived from each backend's own committed stage-start sequence, so values differ; TestParityRowChildOriginCommittedBinding compares the journal relation",
-	"ArtifactPublication": "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
-	"Workspace":           "absolute path minted per attempt by each side's provisioner; never the same string",
-	"Attempt":             "infra retries renumber attempts independently on each side; dispatch order is the slice's",
+	"PreparedReviewerDiff": "engine-to-pod preparation acknowledgement; local records directly without this handoff. ContextPointers remains compared; TestReviewerPreparationCommitsBeforeReviewAndDeduplicatesLostAck and TestPostgresReviewerPreparationCommitsScrubbedEvidenceBeforeReview assert the keyed journal evidence and ordering",
+	"ChildWorkflowOrigin":  "derived from each backend's own committed stage-start sequence, so values differ; TestParityRowChildOriginCommittedBinding compares the journal relation",
+	"ArtifactPublication":  "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
+	"Workspace":            "absolute path minted per attempt by each side's provisioner; never the same string",
+	"Attempt":              "infra retries renumber attempts independently on each side; dispatch order is the slice's",
 }
 
 // String prints EVERY compared field. A projection that compares a field it
