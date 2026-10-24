@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"time"
 
 	"github.com/goobers/goobers/internal/runtimewiring"
 
@@ -13,60 +12,24 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runsemantics"
-	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalhooks/prepare"
 	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
-// abortedRunLabel marks a PR whose originating implementation run ended
-// without merging it (#2238, widened by #3490). Originally applied only to a
-// deliberately cancelled/aborted run; a run that instead fails or escalates
-// after opening a PR leaves exactly the same orphan behind — the PR is open,
-// unlabeled, and its CI may never settle to green (a run terminated mid
-// ci-poll, for instance), which makes it invisible to pr-select's normal
-// selection (prselect.go requires CheckStatePassing) with no other path back
-// into any lane. Stamping this label on non-completed work or policy outcomes
-// gives that PR the one disposition every other terminal state already has:
-// visibly excluded rather than silently unowned. Infrastructure failures are
-// excluded from the marker because the reviewed PR remains valid and must stay
-// eligible for a later merge-review run. pr-select excludes marked PRs
-// (prselect.go, the same mechanism as
-// noMergeReviewLabel) and merge-pr independently refuses to merge a PR
-// carrying it (mergepr.go), even with a green verdict and passing CI —
-// defense in depth so a bypass of selection can't bypass the block too.
-//
-// pr-select may clear a stale marker when the live PR is open, mergeable and
-// green and either has no prior review attention (#5437), or carries
-// provider-issued proof that a later reviewed remediation was published with
-// no unresolved feedback or newer abort (#6407). Anything less still requires
-// a human removing the label after deciding how to take over the orphan.
-const abortedRunLabel = "goobers:run-aborted"
-
-// prOpenOperation is the runner.operation value the mutation-sidecar replay
-// stamps on the ref.touched event for a PR this run itself OPENED
-// (finishTaskDispatch in internal/runner/run.go). It is the ONLY operation
-// that makes a PR ref "this run's PR" for run-abort labeling purposes.
-//
-// Other operations put a kind="pr" ref in a run's history without the run
-// having created it — most importantly merge-review's apply-verdict stage,
-// which journals operation="label" against somebody ELSE's PR. Treating that
-// as ownership was #2238's scope bug: aborting a needs-changes merge-review
-// run stamped the permanent, non-self-healing abortedRunLabel on the PR under
-// review, blocking pr-select and merge-pr forever and overriding the very
-// remediation loop the needs-changes verdict had just requested. Only the
-// originating implementation run (which carries operation="open") may label.
-const prOpenOperation = "open"
-
-// runAbortLabelOperation marks the ref.touched event this file appends once
-// it has labeled a PR for a given run, so a repeated terminal-preparer call
-// (e.g. a retried finalize) never re-issues the label mutation.
-const runAbortLabelOperation = "label-run-aborted"
+// abortedRunLabel, prOpenOperation and runAbortLabelOperation are the names of
+// prepare.AbortedRunLabel, prepare.PROpenOperation and
+// prepare.RunAbortLabelOperation (see there for what they mean).
+const (
+	abortedRunLabel        = prepare.AbortedRunLabel
+	prOpenOperation        = prepare.PROpenOperation
+	runAbortLabelOperation = prepare.RunAbortLabelOperation
+)
 
 // prLabelFunc adds labels to a PR, modeled as a work item — the same shape
 // every other label mutation in this codebase uses (UpdateWorkItem with a PR
 // number as ID; see remediationcheckpoint.go / mergedemotion.go).
-type prLabelFunc func(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+type prLabelFunc = prepare.PRLabelFunc
 
 // workItemUpdater is the narrow seam buildTerminalRunAbortLabeler needs —
 // just enough of providers.BacklogProvider to swap in a fake in tests,
@@ -152,31 +115,11 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 	return label, nil
 }
 
-// labelAbortedRunPR stamps abortedRunLabel on the PR this run opened, if any,
-// when the run ends on a non-infrastructure terminal phase other than
-// PhaseCompleted (#2238,
-// widened by #3490 to cover PhaseFailed and PhaseEscalated alongside the
-// original PhaseAborted — a run that fails or escalates after open-pr orphans
-// its PR exactly as an abort does). Called on every terminal run
-// (buildTerminalBranchPreparer's shared entrypoint), so it returns before
-// any journal I/O for the overwhelmingly common completed case. Locates the
-// PR via the ExternalRef{Kind:"pr"} the runner's own mutation-sidecar replay
-// journals for a successful open-pr stage (finishTaskDispatch in
-// internal/runner/run.go) — the same signal finalizeTerminalBranch reads to
-// detect "a PR was opened" — rather than re-deriving it from stage outputs.
-// The ref must carry runner.operation==prOpenOperation: a bare kind=="pr"
-// match also catches PRs this run merely touched (merge-review's
-// operation="label"), which are not ours to label.
-// Scans the FULL run history (not just the current resumed segment, unlike
-// finalizeTerminalBranch's branch-cleanup scan) because a PR opened in an
-// earlier segment must still be labeled if this run ultimately aborts.
+// labelAbortedRunPR stamps abortedRunLabel on the PR this run opened, if any;
+// the policy is prepare.LabelAbortedPR. Called on every terminal run, so it
+// returns before any journal I/O for the overwhelmingly common completed case.
 func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate terminalAnnotator, repo providers.RepositoryRef, labelPR prLabelFunc, reports ...*terminalreport.Queue) error {
-	if labelPR == nil {
-		return nil
-	}
-	switch phase {
-	case journal.PhaseAborted, journal.PhaseFailed, journal.PhaseEscalated:
-	default:
+	if labelPR == nil || !prepare.LabelsPhase(phase) {
 		return nil
 	}
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
@@ -187,84 +130,14 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate t
 	if err != nil {
 		return fmt.Errorf("read terminal run events for run-abort label: %w", err)
 	}
-	if terminalFailureWasInfrastructure(events) {
-		return nil
-	}
-
-	var pr *journal.ExternalRef
-	var alreadyLabeled bool
-	for i := range events {
-		ev := events[i]
-		if ev.ExternalRef == nil || ev.ExternalRef.Kind != "pr" {
-			continue
-		}
-		// Idempotency is keyed on the label event alone and stays
-		// outside the ownership filter: once we have labeled, a
-		// retried finalize must not re-issue the mutation.
-		if ev.Runner["operation"] == runAbortLabelOperation && ev.Error == nil {
-			alreadyLabeled = true
-			continue
-		}
-		if ev.Runner["operation"] != prOpenOperation {
-			continue
-		}
-		if pr == nil || (pr.ID == "" && ev.ExternalRef.ID != "") {
-			ref := *ev.ExternalRef
-			pr = &ref
-		}
-	}
-	if pr == nil || pr.ID == "" || alreadyLabeled {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	effect := terminalreport.Effect{Kind: terminalreport.AbortLabel, Repository: repo, ItemID: pr.ID, RunID: runID}
-	apply := func(ctx context.Context, e terminalreport.Effect) error {
-		_, err := labelPR(ctx, providers.UpdateWorkItemRequest{Repository: e.Repository, ID: e.ItemID, AddLabels: []string{abortedRunLabel}})
-		return err
-	}
-	var labelErr error
+	var outbox terminalreport.Outbox
+	var gaggle string
 	if len(reports) > 0 && reports[0] != nil {
-		effect.Gaggle = reports[0].Gaggle
-		labelErr = reports[0].Publish(ctx, effect, apply)
-	} else {
-		labelErr = apply(ctx, effect)
+		outbox, gaggle = reports[0], reports[0].Gaggle
 	}
-	return appendRunAbortLabelResult(annotate, pr, labelErr)
+	return prepare.LabelAbortedPR(events, runID, annotate, repo, labelPR, outbox, gaggle)
 }
 
 func terminalFailureWasInfrastructure(events []journal.Event) bool {
-	for i := len(events) - 1; i >= 0; i-- {
-		ev := events[i]
-		switch ev.Type {
-		case journal.EventRunResumed, journal.EventGateOverridden, journal.EventStageRerunRequested:
-			return false
-		}
-		if ev.Type == journal.EventRunFinished && ev.TerminalCause != nil {
-			return ev.TerminalCause.Classification == journal.TerminalInfrastructureFailure
-		}
-		if ev.Type != journal.EventError || ev.Error == nil || ev.Error.Code != "run_failed" {
-			continue
-		}
-		class, _ := ev.Runner["errorClass"].(string)
-		retryClass, _ := ev.Runner[runsemantics.RetryFailureClassKey].(string)
-		return retryClass == string(journal.AttemptInfra) || telemetry.ErrorClass(class).InfraFault()
-	}
-	return false
-}
-
-func appendRunAbortLabelResult(annotate terminalAnnotator, pr *journal.ExternalRef, labelErr error) error {
-	ev := journal.Event{
-		Type:        journal.EventRefTouched,
-		ExternalRef: pr,
-		Runner:      map[string]any{"operation": runAbortLabelOperation},
-	}
-	if labelErr != nil {
-		ev.Error = journal.ErrorDetailFor("run_abort_label_failed", labelErr)
-	}
-	if err := annotate.Append(ev); err != nil {
-		return fmt.Errorf("journal run-abort label: %w", err)
-	}
-	return labelErr
+	return prepare.FailureWasInfrastructure(events)
 }

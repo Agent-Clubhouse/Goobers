@@ -45,9 +45,12 @@ type Writer interface {
 	// IdempotencyKey as a permanent error rather than risk a duplicate post.
 	Update(ctx context.Context, ref ItemRef, req providers.UpdateWorkItemRequest) error
 	UpdateComment(ctx context.Context, ref ItemRef, commentID, body string) error
-	// PullLabels and DeleteBranch target the run's WorkspaceRepository.
+	// PullLabels and DeleteBranch target the run's WorkspaceRepository. Labelling a
+	// pull request is Update with the pull request number as ref.ItemID.
 	PullLabels(ctx context.Context, runID, pullID string) ([]string, error)
-	// DeleteBranch treats an already-absent branch as success.
+	// DeleteBranch treats an already-absent branch as success. A branch an open
+	// pull request uses is kept: it returns *providers.BranchInUseError, which the
+	// caller records as a decision rather than a failure.
 	DeleteBranch(ctx context.Context, runID, branch string) error
 	// ReleaseClaimMarker removes the provider-visible claim marker for
 	// ref.ItemID held by ref.RunID; an already-absent marker is success. The

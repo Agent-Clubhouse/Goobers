@@ -295,6 +295,12 @@
       "reason": "No-work streak policy tests are pure and run in the Linux unit job; the policy serves the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
     },
     {
+      "package": "internal/terminalhooks/prepare",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Terminal prepare-hook tests are pure and run in the Linux unit job; the policy is exercised on the cloud control plane, which has no Windows deployment target, and the local daemon keeps its Windows coverage through cmd/goobers."
+    },
+    {
       "package": "internal/cloud/lease",
       "coverage": "none",
       "category": "not-selected",

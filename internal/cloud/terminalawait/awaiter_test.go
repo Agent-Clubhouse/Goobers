@@ -1014,3 +1014,67 @@ func TestTheNotifyHookChargesAnEscalatedTerminalUnderTheRunsAttribution(t *testi
 		t.Fatalf("breaker comment not written on behalf of the run: %+v", w.refs)
 	}
 }
+
+type branchWriter struct {
+	recWriter
+	deleted []string
+	inUse   bool
+}
+
+func (w *branchWriter) DeleteBranch(_ context.Context, runID, branch string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deleted = append(w.deleted, runID+":"+branch)
+	if w.inUse {
+		return &providers.BranchInUseError{}
+	}
+	return nil
+}
+
+func pushedBranch() []journal.Event {
+	return []journal.Event{
+		{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Kind: "branch", ID: "goobers/x"}},
+		{Type: journal.EventStageFinished, Stage: "push-branch", Status: string(apiv1.ResultSuccess)},
+	}
+}
+
+func TestThePrepareHookDeletesAnUnusedBranchAndRecordsItInTheInstanceLog(t *testing.T) {
+	r := newRig()
+	w := &branchWriter{}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	deps := PrepareDeps{Writer: w, Events: func(string) ([]journal.Event, error) { return pushedBranch(), nil }}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithPrepare(deps)).Run(t.Context(), frame.Outcome{
+		RunID: "run-3", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseCompleted,
+	})
+	if !slices.Equal(w.deleted, []string{"run-3:goobers/x"}) {
+		t.Fatalf("deleted = %v, want the run's branch through the writer", w.deleted)
+	}
+	var recorded bool
+	for _, ev := range r.rec.events {
+		recorded = recorded || (ev.Type == journal.EventRefTouched && ev.Runner["outcome"] == "succeeded" && ev.RunID == "run-3")
+	}
+	if !recorded {
+		t.Fatalf("the cleanup outcome was not recorded under the run: %+v", r.rec.events)
+	}
+}
+
+func TestThePrepareHookKeepsABranchAnOpenPullRequestUsesAndLabelsAnOrphanedPR(t *testing.T) {
+	r := newRig()
+	w := &branchWriter{inUse: true}
+	id := Identity{Gaggle: "web", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	events := []journal.Event{
+		{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Kind: "pr", ID: "9"}, Runner: map[string]any{"operation": "open"}},
+	}
+	events = append(pushedBranch()[:1], events...) // branch ref + opened PR, never "pushed" in this segment
+	deps := PrepareDeps{Writer: w, Events: func(string) ([]journal.Event, error) { return events, nil }}
+	Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithPrepare(deps)).Run(t.Context(), frame.Outcome{
+		RunID: "run-4", Gaggle: "web", Phase: journal.PhaseAborted,
+	})
+	var labeled bool
+	for i, req := range w.reqs {
+		labeled = labeled || (w.refs[i].ItemID == "9" && slices.Contains(req.AddLabels, "goobers:run-aborted") && w.refs[i].RunID == "run-4")
+	}
+	if !labeled {
+		t.Fatalf("the orphaned PR was not labeled through the writer: %+v", w.reqs)
+	}
+}
