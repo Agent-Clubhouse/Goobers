@@ -1,0 +1,20 @@
+# Mounted cloud-control configuration, semantically matching the reference
+# instance policy in deploy/reference/instance.yaml.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+placement:
+  selfExecution: deny
+engine:
+  hostPort: temporal-frontend.goobers-temporal.svc.cluster.local:7233
+  namespace: default
+  taskQueue: goobers-engine
+  workerVersioning: true
+runners:
+  - name: linux-work
+    host: goobers-work
+    provides:
+      os: linux
+      shell: true
+      harnesses: [copilot]

@@ -4,7 +4,7 @@ metadata:
   name: goobers-worker
   namespace: goobers-system
 spec:
-  replicas: 0
+  replicas: 2
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

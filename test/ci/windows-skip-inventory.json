@@ -271,6 +271,12 @@
       "reason": "Terminal-hook frame tests are pure and run in the Linux unit job; the frame is exercised on the cloud control plane, which has no Windows deployment target, and the local runner keeps its own Windows coverage through the type aliases."
     },
     {
+      "package": "internal/cloud/terminalawait",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud terminal-awaiter tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/startpin",
       "coverage": "none",
       "category": "not-selected",
@@ -311,6 +317,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud grant-revocation and auth assembly tests run in Linux unit and cloud-pg jobs; shared key-ring portability is covered in internal/podauth, and the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/telemetrypg",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud telemetry store has no Windows deployment target; unit tests run on Linux and the PostgreSQL integration and local-rollup parity tests run in the cloud-pg job."
     },
     {
       "package": "internal/cloud/providerobs",
@@ -1103,6 +1115,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/telemetry/gatenoise",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure gate-noise decision arithmetic with no platform seam; runs on the Linux unit shards."
     },
     {
       "package": "internal/telemetry/rollup",
