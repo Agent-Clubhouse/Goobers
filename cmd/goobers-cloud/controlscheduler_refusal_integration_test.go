@@ -28,7 +28,8 @@ func TestPermanentResolveRefusalFinishesTheRowOnce(t *testing.T) {
 	if err := c.admission.Prepare(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(c.stop)
+	// Stop while the test context is live; t.Cleanup runs after it is canceled.
+	defer c.stop()
 
 	records := map[string]triggerqueue.Record{}
 	for _, key := range []string{"permanent", "transient", "dispatching", "racing"} {
