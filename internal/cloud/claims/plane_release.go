@@ -70,7 +70,7 @@ func (p *Plane) releaseOne(ctx context.Context, request httpapi.ClaimRequest, re
 		if err != nil {
 			return err
 		}
-		if row.entry.RunID == request.RunID && row.entry.ReleasePending {
+		if row.entry.RunID == request.RunID && (row.entry.ReleasePending || !row.entry.SharedDeadline.IsZero()) {
 			return errReleasePending()
 		}
 		_, err = p.moveToHistory(ctx, tx, epoch, key, request.RunID, "", false, reason)

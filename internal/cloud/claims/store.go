@@ -95,7 +95,7 @@ func (s *Store) ClaimScoped(
 			switch {
 			case rowErr == nil:
 				holder = entry.RunID
-				if entry.ReleasePending {
+				if entry.ReleasePending || !entry.SharedDeadline.IsZero() {
 					ok = false
 					return nil
 				}
@@ -134,7 +134,7 @@ func (s *Store) ClaimScoped(
 					DELETE FROM control.claim
 					WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
 					  AND owner_token=$5 AND owner_epoch=$6 AND owner_epoch<=$7
-					  AND expires_at<=clock_timestamp()`,
+					  AND expires_at<=clock_timestamp() AND shared_deadline IS NULL`,
 					s.instanceID, key.Gaggle, key.Provider, key.ExternalID,
 					token, rowEpoch, epoch,
 				)
@@ -147,7 +147,7 @@ func (s *Store) ClaimScoped(
 			if _, err := tx.Exec(ctx, `
 				DELETE FROM control.claim
 				WHERE instance_id=$1 AND owner_epoch<=$2
-				  AND expires_at<=clock_timestamp()`,
+				  AND expires_at<=clock_timestamp() AND shared_deadline IS NULL`,
 				s.instanceID, epoch,
 			); err != nil {
 				return err
@@ -427,7 +427,8 @@ func (s *Store) readClaimForUpdateBlocking(
 // claimSelect reads a claim, with release_pending_at as the ledger's
 // ReleasePending (cleanup custody).
 const claimSelect = `SELECT external_id,gaggle,provider,run_id,workflow,
-	claimed_at,renewed_at,expires_at,verification,release_pending_at IS NOT NULL`
+	claimed_at,renewed_at,expires_at,verification,release_pending_at IS NOT NULL,
+	shared_owner,shared_deadline,shared_admission_pending,shared_revoked`
 const claimSelectWithToken = claimSelect + `,owner_token`
 const claimSelectWithOwnership = claimSelectWithToken + `,owner_epoch`
 
@@ -437,12 +438,20 @@ func scanClaim(row pgx.CollectableRow) (localscheduler.ClaimEntry, error) {
 
 func scanClaimRow(row interface{ Scan(...any) error }) (localscheduler.ClaimEntry, error) {
 	var entry localscheduler.ClaimEntry
-	var verification []byte
+	var verification, sharedOwner []byte
+	var sharedDeadline *time.Time
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
 		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification, &entry.ReleasePending,
+		&sharedOwner, &sharedDeadline, &entry.SharedAdmissionPending, &entry.SharedRevoked,
 	)
 	entry.ExternalID = entry.ItemID
+	if sharedDeadline != nil {
+		entry.SharedDeadline = *sharedDeadline
+	}
+	if len(sharedOwner) > 0 {
+		err = errors.Join(err, json.Unmarshal(sharedOwner, &entry.SharedOwner))
+	}
 	if len(verification) > 0 {
 		err = errors.Join(err, json.Unmarshal(verification, &entry.Verification))
 	}
@@ -453,16 +462,24 @@ func scanClaimWithOwnershipAndLive(
 	row interface{ Scan(...any) error },
 ) (localscheduler.ClaimEntry, string, int64, bool, error) {
 	var entry localscheduler.ClaimEntry
-	var verification []byte
+	var verification, sharedOwner []byte
+	var sharedDeadline *time.Time
 	var token string
 	var ownerEpoch int64
 	var live bool
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
 		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification, &entry.ReleasePending,
+		&sharedOwner, &sharedDeadline, &entry.SharedAdmissionPending, &entry.SharedRevoked,
 		&token, &ownerEpoch, &live,
 	)
 	entry.ExternalID = entry.ItemID
+	if sharedDeadline != nil {
+		entry.SharedDeadline = *sharedDeadline
+	}
+	if len(sharedOwner) > 0 {
+		err = errors.Join(err, json.Unmarshal(sharedOwner, &entry.SharedOwner))
+	}
 	if len(verification) > 0 {
 		err = errors.Join(err, json.Unmarshal(verification, &entry.Verification))
 	}
@@ -473,13 +490,21 @@ func scanClaimWithOwnershipAndLive(
 // record has no release time or reason yet.
 func scanHistoryClaim(row pgx.CollectableRow) (localscheduler.ClaimEntry, error) {
 	var entry localscheduler.ClaimEntry
-	var verification, reason []byte
+	var verification, reason, sharedOwner []byte
+	var sharedDeadline *time.Time
 	err := row.Scan(
 		&entry.ItemID, &entry.Gaggle, &entry.Provider, &entry.RunID, &entry.Workflow,
 		&entry.ClaimedAt, &entry.RenewedAt, &entry.ExpiresAt, &verification,
 		&entry.ReleasedAt, &reason, &entry.ReleasePending,
+		&sharedOwner, &sharedDeadline, &entry.SharedAdmissionPending, &entry.SharedRevoked,
 	)
 	entry.ExternalID = entry.ItemID
+	if sharedDeadline != nil {
+		entry.SharedDeadline = *sharedDeadline
+	}
+	if len(sharedOwner) > 0 {
+		err = errors.Join(err, json.Unmarshal(sharedOwner, &entry.SharedOwner))
+	}
 	if len(verification) > 0 {
 		err = errors.Join(err, json.Unmarshal(verification, &entry.Verification))
 	}

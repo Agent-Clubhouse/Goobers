@@ -78,7 +78,7 @@ func (p *Plane) claimRow(
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
 		return httpapi.ClaimResponse{}, err
-	case row.entry.ReleasePending:
+	case row.entry.ReleasePending || !row.entry.SharedDeadline.IsZero():
 		// Cleanup custody blocks every admission, the run's own included,
 		// until FinishProviderRelease (ClaimLedger.claim's transitionPending).
 		return httpapi.ClaimResponse{Ok: false, Holder: row.entry.RunID}, nil

@@ -26,15 +26,20 @@ import (
 // made still completes the run's record.
 
 const runHistoryColumns = `instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,owner_epoch,
-	claimed_at,renewed_at,expires_at,released_at,release_reason,verification,release_pending_at`
+	claimed_at,renewed_at,expires_at,released_at,release_reason,verification,release_pending_at,
+	shared_owner,shared_deadline,shared_admission_pending,shared_revoked`
 
 // runHistoryUpsert replaces the run and key's record with the incoming state.
+// Administrative revocation is permanent even if a stale writer records a grant.
 const runHistoryUpsert = `
 	ON CONFLICT (instance_id,run_id,gaggle,provider,external_id) DO UPDATE
 	SET workflow=excluded.workflow, owner_token=excluded.owner_token, owner_epoch=excluded.owner_epoch,
 	    claimed_at=excluded.claimed_at, renewed_at=excluded.renewed_at, expires_at=excluded.expires_at,
 	    released_at=excluded.released_at, release_reason=excluded.release_reason,
-	    verification=excluded.verification, release_pending_at=excluded.release_pending_at`
+	    verification=excluded.verification, release_pending_at=excluded.release_pending_at,
+	    shared_owner=excluded.shared_owner, shared_deadline=excluded.shared_deadline,
+	    shared_admission_pending=excluded.shared_admission_pending,
+	    shared_revoked=control.claim_run_history.shared_revoked OR excluded.shared_revoked`
 
 // recordGrant records the key's current lease as its holder's history, the
 // ledger's storeClaim/recordHistory.
@@ -42,7 +47,8 @@ func recordGrant(ctx context.Context, tx pgx.Tx, instanceID string, key localsch
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO control.claim_run_history (`+runHistoryColumns+`)
 		SELECT instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,$5,
-		       claimed_at,renewed_at,expires_at,NULL,NULL,verification,release_pending_at
+		       claimed_at,renewed_at,expires_at,NULL,NULL,verification,release_pending_at,
+		       shared_owner,shared_deadline,shared_admission_pending,shared_revoked
 		FROM control.claim
 		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4`+runHistoryUpsert,
 		instanceID, key.Gaggle, key.Provider, key.ExternalID, epoch,
@@ -72,19 +78,24 @@ func releaseToHistory(
 			  AND run_id=$5 AND owner_epoch<=$6 AND ($8='' OR owner_token=$8)
 			  AND (NOT $9 OR expires_at<=clock_timestamp())
 			  AND (release_pending_at IS NOT NULL) = $10
+			  AND ($10 OR shared_deadline IS NULL)
 			RETURNING instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,
-			          claimed_at,renewed_at,expires_at,verification,clock_timestamp() AS released
+			          claimed_at,renewed_at,expires_at,verification,clock_timestamp() AS released,
+			          shared_owner,shared_deadline,shared_admission_pending,shared_revoked
 		), incarnation AS (
 			INSERT INTO control.claim_history
 				(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-				 claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
+				 claimed_at,renewed_at,expires_at,released_at,release_reason,verification,
+				 shared_owner,shared_deadline,shared_admission_pending,shared_revoked)
 			SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,$6,
-			       claimed_at,renewed_at,expires_at,released,$7,verification
+			       claimed_at,renewed_at,expires_at,released,$7,verification,
+			       shared_owner,shared_deadline,false,shared_revoked
 			FROM moved
 		)
 		INSERT INTO control.claim_run_history (`+runHistoryColumns+`)
 		SELECT instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,$6,
-		       claimed_at,renewed_at,expires_at,released,$7,verification,NULL
+		       claimed_at,renewed_at,expires_at,released,$7,verification,NULL,
+		       shared_owner,shared_deadline,false,shared_revoked
 		FROM moved`+runHistoryUpsert,
 		instanceID, key.Gaggle, key.Provider, key.ExternalID, runID, epoch, rawReason, token, requireExpired, custody,
 	)
@@ -98,11 +109,12 @@ func releaseToHistory(
 // released incarnations, and the ledger's retainedHistory for run records (a
 // run holding any lease keeps every record; otherwise its records go once its
 // newest activity across both stores, release else last grant, passes
-// ClaimHistoryTTL).
+// ClaimHistoryTTL). Revoked records are permanent run/key denials.
 func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64) error {
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM control.claim_history
 		WHERE instance_id=$1 AND owner_epoch<=$2
+		  AND NOT shared_revoked
 		  AND released_at<(clock_timestamp()-$3::interval)`,
 		instanceID, epoch, localscheduler.ClaimHistoryTTL,
 	); err != nil {
@@ -113,7 +125,7 @@ func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64
 	// records, so retention never drops records a merged read still keeps.
 	_, err := tx.Exec(ctx, `
 		DELETE FROM control.claim_run_history AS h
-		WHERE h.instance_id=$1 AND h.owner_epoch<=$2
+		WHERE h.instance_id=$1 AND h.owner_epoch<=$2 AND NOT h.shared_revoked
 		  AND NOT EXISTS (SELECT 1 FROM control.claim AS held WHERE held.instance_id=$1 AND held.run_id=h.run_id)
 		  AND h.run_id IN (
 			SELECT run_id FROM (
@@ -132,25 +144,29 @@ func pruneHistory(ctx context.Context, tx pgx.Tx, instanceID string, epoch int64
 
 // historyRecords is each run and key's newest record across both stores,
 // with its activity time (release, else last grant). On a tie the run record
-// wins; the two then carry the same release.
+// wins; the two then carry the same release. A revocation always wins over a
+// non-revoked record, including a release appended by a previous binary.
 const historyRecords = `WITH merged AS (
 		SELECT run_id,gaggle,provider,external_id,workflow,claimed_at,renewed_at,expires_at,
 		       verification,released_at,release_reason,release_pending_at IS NOT NULL AS release_pending,
-		       coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity, 0 AS source
+		       coalesce(released_at, greatest(claimed_at, renewed_at)) AS activity, 0 AS source,
+		       shared_owner,shared_deadline,shared_admission_pending,shared_revoked
 		FROM control.claim_run_history WHERE instance_id=$1
 		UNION ALL
 		SELECT run_id,gaggle,provider,external_id,workflow,claimed_at,renewed_at,expires_at,
-		       verification,released_at,release_reason,false,released_at, 1
+		       verification,released_at,release_reason,false,released_at, 1,
+		       shared_owner,shared_deadline,shared_admission_pending,shared_revoked
 		FROM control.claim_history WHERE instance_id=$1
 	), records AS (
 		SELECT DISTINCT ON (run_id,gaggle,provider,external_id) *
-		FROM merged ORDER BY run_id,gaggle,provider,external_id,activity DESC,source
+		FROM merged ORDER BY run_id,gaggle,provider,external_id,shared_revoked DESC,activity DESC,source
 	)`
 
 // historyRetained is the ledger's retainedHistory over the merged records:
 // a run holding any lease keeps every record, otherwise its records are kept
 // while its newest activity is within the TTL (%s is the TTL parameter).
-const historyRetained = `(EXISTS (
+// Revocations remain visible even after the run's ordinary history expires.
+const historyRetained = `(h.shared_revoked OR EXISTS (
 		SELECT 1 FROM control.claim AS held WHERE held.instance_id=$1 AND held.run_id=h.run_id
 	) OR h.run_id IN (
 		SELECT run_id FROM records GROUP BY run_id HAVING max(activity) > clock_timestamp()-%s::interval
@@ -172,7 +188,7 @@ func queryHistory(ctx context.Context, q querier, instanceID, predicate, order s
 	rows, err := q.Query(ctx, historyRecords+`
 		SELECT h.external_id,h.gaggle,h.provider,h.run_id,h.workflow,
 		       h.claimed_at,h.renewed_at,h.expires_at,h.verification,h.released_at,h.release_reason,
-		       h.release_pending
+		       h.release_pending,h.shared_owner,h.shared_deadline,h.shared_admission_pending,h.shared_revoked
 		FROM records AS h
 		WHERE `+predicate+` AND `+fmt.Sprintf(historyRetained, ttl)+`
 		`+order,

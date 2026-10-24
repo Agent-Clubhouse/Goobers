@@ -383,6 +383,10 @@ tables:
     - expires_at
     - verification
     - release_pending_at
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
   writers:
   - role: goobers_controller
     insert:
@@ -397,12 +401,20 @@ tables:
     - claimed_at
     - renewed_at
     - expires_at
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
     update:
     - renewed_at
     - expires_at
     - verification
     - owner_epoch
     - release_pending_at
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
     delete: true
 - schema: control
   table: claim_history
@@ -425,6 +437,10 @@ tables:
     - released_at
     - release_reason
     - verification
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
   writers:
   - role: goobers_controller
     insert:
@@ -442,6 +458,10 @@ tables:
     - released_at
     - release_reason
     - verification
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
     delete: true
 - schema: control
   table: claim_run_history
@@ -468,6 +488,10 @@ tables:
     - release_reason
     - verification
     - release_pending_at
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
   writers:
   - role: goobers_controller
     insert:
@@ -486,6 +510,10 @@ tables:
     - release_reason
     - verification
     - release_pending_at
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
     update:
     - workflow
     - owner_token
@@ -497,6 +525,10 @@ tables:
     - release_reason
     - verification
     - release_pending_at
+    - shared_owner
+    - shared_deadline
+    - shared_admission_pending
+    - shared_revoked
     delete: true
 - schema: control
   table: scheduler_state
