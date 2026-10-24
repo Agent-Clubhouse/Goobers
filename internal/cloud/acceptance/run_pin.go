@@ -104,14 +104,15 @@ type RunClosed func(ctx context.Context, runID string) (bool, error)
 // following pass; it is empty once a lap over the candidates completes.
 // Checked lists the runs whose status was confirmed this pass. Unconfirmed
 // holds the runs whose status could not be confirmed, and Halted why the pass
-// stopped early; their pins are kept, and both are the caller's to report, not
-// to fail on.
+// stopped early, at run HaltedAt; their pins are kept, and both are the
+// caller's to report, not to fail on.
 type RunPinSweep struct {
 	Marked, Deleted int64
 	Next            string
 	Checked         []string
 	Unconfirmed     map[string]error
 	Halted          error
+	HaltedAt        string
 }
 
 // SweepRunPins applies run_pin's terminal-keyed retention: pins of runs that
@@ -153,6 +154,7 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 		done, err := closed(statusCtx, runID)
 		if err != nil && (errors.Is(err, ErrRunStatusUnavailable) || statusCtx.Err() != nil) {
 			sweep.Halted = fmt.Errorf("run pin sweep: halted at run %s: %w", runID, err)
+			sweep.HaltedAt = runID
 			sweep.Next = after
 			if i > 0 {
 				sweep.Next = candidates[i-1]
@@ -184,7 +186,7 @@ func (s *Store) SweepRunPins(ctx context.Context, closed RunClosed, after string
 		return err
 	})
 	if err != nil {
-		return RunPinSweep{Next: after, Unconfirmed: sweep.Unconfirmed, Halted: sweep.Halted}, err
+		return RunPinSweep{Next: after, Unconfirmed: sweep.Unconfirmed, Halted: sweep.Halted, HaltedAt: sweep.HaltedAt}, err
 	}
 	return sweep, nil
 }

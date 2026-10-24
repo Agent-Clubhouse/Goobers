@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -119,8 +120,7 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		// Only the store's own errors (a lost fence among them) are returned, as
 		// for Prune above.
 		sweep, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pins.after, runPinSweepBudget)
-		pins.after = sweep.Next
-		pins.report(sweep, r.report)
+		pins.observe(sweep, r.report)
 		return err
 	}
 	return services, nil
@@ -188,13 +188,39 @@ func (r Runtime) report(err error) {
 // runPinSweepBudget bounds one L2 pass's Temporal calls for the run-pin sweep.
 var runPinSweepBudget = 5 * time.Second
 
+// runPinHaltSkip is how many consecutive passes may halt at the same run
+// before the cursor steps past it. A run whose Describe always outlasts the
+// budget would otherwise stall retention for every run behind it.
+const runPinHaltSkip = 3
+
 // runPinReports carries the sweep cursor across L2 passes and reports each
 // unconfirmed run, and a Temporal outage, once when it starts rather than on
-// every pass while it lasts.
+// every pass while it lasts. A run the sweep keeps halting at is skipped
+// (reported, its pins kept) and retried on the next lap.
 type runPinReports struct {
 	after       string
 	unconfirmed map[string]bool
 	halted      bool
+	haltedAt    string
+	halts       int
+}
+
+func (p *runPinReports) observe(sweep acceptance.RunPinSweep, report func(error)) {
+	p.after = sweep.Next
+	switch sweep.HaltedAt {
+	case "":
+		p.haltedAt, p.halts = "", 0
+	case p.haltedAt:
+		p.halts++
+	default:
+		p.haltedAt, p.halts = sweep.HaltedAt, 1
+	}
+	if p.halts >= runPinHaltSkip {
+		report(fmt.Errorf("run pin sweep: skipping run %s after %d passes halted at it; its pins are kept: %w", p.haltedAt, p.halts, sweep.Halted))
+		p.after = p.haltedAt
+		p.haltedAt, p.halts = "", 0
+	}
+	p.report(sweep, report)
 }
 
 func (p *runPinReports) report(sweep acceptance.RunPinSweep, report func(error)) {
