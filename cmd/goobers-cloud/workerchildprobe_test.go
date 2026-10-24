@@ -155,8 +155,10 @@ func TestBuildStageDispatchProbesBeforeLendingChildAuthority(t *testing.T) {
 	if _, err := probed.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{}); !errors.Is(err, childresult.ErrBlobPlaneUnverified) {
 		t.Fatalf("acquire with the canary only in the worker's own store = %v, want withheld: the pods' plane does not serve it", err)
 	}
-	if len(bearers) == 0 || !strings.HasPrefix(bearers[0], "Bearer ") {
-		t.Fatalf("the probe did not reach the pods' plane with a worker bearer: %q", bearers)
+	// The bearer is the worker-blob credential (podauth's worker-blob token
+	// prefix), the one the blob plane admits from a worker, not any bearer.
+	if len(bearers) == 0 || !strings.HasPrefix(bearers[0], "Bearer goobers-worker-blob.") {
+		t.Fatalf("the probe did not reach the pods' plane with a worker-blob bearer: %q", bearers)
 	}
 	if err := putBlobPlaneCanary(t.Context(), podStore, instanceID); err != nil {
 		t.Fatal(err)
