@@ -5,6 +5,7 @@ package journal_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -398,13 +399,28 @@ type writerClock struct{ at time.Time }
 
 func (c *writerClock) now() time.Time { return c.at }
 
-func stallEvents(backend *journalpg.Backend) func(context.Context, string) ([]journal.Event, error) {
-	return func(ctx context.Context, runID string) ([]journal.Event, error) {
-		reader, err := backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
-		if err != nil {
-			return nil, err
-		}
-		return reader.Events()
+func stallEvents(backend *journalpg.Backend) func(context.Context, string) ([]journal.EventRecord, error) {
+	return func(ctx context.Context, runID string) ([]journal.EventRecord, error) {
+		return backend.ReadEvents(ctx, journal.RunRef{ID: runID, ReadOnly: true}, 0, 0)
+	}
+}
+
+// setRecordedClock lays a fixture's history out on the journal's commit
+// clock. Fixtures append every event now and stamp history through the writer
+// clock, so by default recorded_at would read "now" for all of them. offset is
+// how far the writer clock ran ahead of the database (zero for an honest
+// writer); legacy NULLs the column, as for events stored before migration
+// 0025, which sends the sweep to its writer-clock fallback.
+func setRecordedClock(t *testing.T, config journalpg.Config, runID string, offset time.Duration, legacy bool) {
+	t.Helper()
+	statement := `UPDATE journal.run_event SET recorded_at=at-$3::interval WHERE instance_id=$1 AND run_id=$2`
+	args := []any{config.InstanceID, runID, offset.String()}
+	if legacy {
+		statement = `UPDATE journal.run_event SET recorded_at=NULL WHERE instance_id=$1 AND run_id=$2`
+		args = args[:2]
+	}
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), statement, args...); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -514,7 +530,11 @@ func appendChildWait(
 
 func requireEvents(t *testing.T, backend *journalpg.Backend, runID string, check func([]journal.Event) bool, what string) {
 	t.Helper()
-	events, err := stallEvents(backend)(t.Context(), runID)
+	records, err := stallEvents(backend)(t.Context(), runID)
+	events := make([]journal.Event, len(records))
+	for i, record := range records {
+		events[i] = record.Event
+	}
 	if err != nil || !check(events) {
 		t.Fatalf("test precondition: %s (events=%d err=%v)", what, len(events), err)
 	}
@@ -588,6 +608,7 @@ func TestCloudMaxRunDurationExcludesChildWaits(t *testing.T) {
 			handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-2*time.Hour), now.Add(-2*time.Hour), clock)
 			appendChildWait(t, backend, handle, owner, clock, runID, now.Add(-test.waitStart), now.Add(-test.waitEnd))
 			ageRun(t, config, runID, 2*time.Hour, 10*time.Minute)
+			setRecordedClock(t, config, runID, 0, false)
 			requireEvents(t, backend, runID, func(e []journal.Event) bool { return !journal.ParkedOnChild(e) }, "the wait is closed")
 			engine := &stallEngine{}
 			sweeper := cloudSweeper(t, config, backend, engine, time.Hour, time.Hour)
@@ -601,7 +622,8 @@ func TestCloudMaxRunDurationExcludesChildWaits(t *testing.T) {
 
 // A child-wait return stamped a year ahead by a skewed writer must not buy the
 // run extra time: the wait gets no credit and the raw database-clock age
-// (2h against a 1h budget) cancels it.
+// (2h against a 1h budget) cancels it. This is the writer-clock fallback for
+// history stored before the journal recorded its commit clock.
 func TestCloudMaxRunDurationIgnoresFutureStampedChildWait(t *testing.T) {
 	config := postgresJournalConfig(t)
 	backend := postgresBackend(t, config)
@@ -611,6 +633,7 @@ func TestCloudMaxRunDurationIgnoresFutureStampedChildWait(t *testing.T) {
 	handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-2*time.Hour), now.Add(-2*time.Hour), clock)
 	appendChildWait(t, backend, handle, owner, clock, runID, now.Add(-110*time.Minute), now.Add(365*24*time.Hour))
 	ageRun(t, config, runID, 2*time.Hour, 10*time.Minute)
+	setRecordedClock(t, config, runID, 0, true)
 	engine := &stallEngine{}
 	var reported []error
 	sweeper := cloudSweeper(t, config, backend, engine, time.Hour, time.Hour, func(err error) { reported = append(reported, err) })
@@ -628,4 +651,40 @@ func firstReport(reports []func(error)) func(error) {
 		return nil
 	}
 	return reports[0]
+}
+
+// TestCloudMaxRunDurationIsImmuneToWriterClockSkew (#8107): with the
+// journal's commit clock recorded, a writer whose clock runs hours ahead or
+// behind gets exactly the child-wait credit an honest writer gets, with no
+// skew finding: the sweep never reads the writer's clock.
+func TestCloudMaxRunDurationIsImmuneToWriterClockSkew(t *testing.T) {
+	for _, skew := range []time.Duration{6 * time.Hour, -6 * time.Hour} {
+		for _, test := range []struct {
+			name               string
+			waitStart, waitEnd time.Duration // before now, on the database clock
+			wantDue            bool
+		}{
+			{"long child wait keeps the run inside its budget", 110 * time.Minute, 20 * time.Minute, false},
+			{"short child wait still exceeds the budget", 60 * time.Minute, 30 * time.Minute, true},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", skew, test.name), func(t *testing.T) {
+				config := postgresJournalConfig(t)
+				backend := postgresBackend(t, config)
+				now := databaseClock(t, config)
+				runID := "00000000000000000000000000087816"
+				clock := &writerClock{}
+				handle, owner := createEngineRunHandle(t, backend, runID, now.Add(-2*time.Hour+skew), now.Add(-2*time.Hour+skew), clock)
+				appendChildWait(t, backend, handle, owner, clock, runID, now.Add(-test.waitStart+skew), now.Add(-test.waitEnd+skew))
+				ageRun(t, config, runID, 2*time.Hour, 10*time.Minute)
+				setRecordedClock(t, config, runID, skew, false)
+				engine := &stallEngine{}
+				var reported []error
+				sweeper := cloudSweeper(t, config, backend, engine, time.Hour, time.Hour, func(err error) { reported = append(reported, err) })
+				result, err := sweeper.Sweep(t.Context())
+				if err != nil || (result.Cancelled == 1) != test.wantDue || len(reported) != 0 {
+					t.Fatalf("sweep = %+v %v reported=%v, want due=%v with no skew finding", result, err, reported, test.wantDue)
+				}
+			})
+		}
+	}
 }
