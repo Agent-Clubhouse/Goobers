@@ -481,3 +481,6 @@ github.com/goobers/goobers/internal/cloud/schedstart.Config.StarterFor # HA-P3 L
 github.com/goobers/goobers/internal/cloud/schedstart.starter.RegisterDispatch # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/schedstart.Tracker.register # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/schedstart.starter.Start # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Config.WatchReconciled # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Backoff.next # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/schedstart.Config.awaitTerminal # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22

@@ -44,7 +44,71 @@ type Config struct {
 	Terminal Terminal
 	// StartTimeout bounds resolving and starting (not the terminal wait).
 	StartTimeout time.Duration
-	Report       func(error)
+	// TerminalBackoff paces retries of a failing Terminal (zero: 1s, capped 30s).
+	TerminalBackoff Backoff
+	Report          func(error)
+}
+
+// Backoff is a capped exponential retry delay.
+type Backoff struct{ Initial, Max time.Duration }
+
+func (b Backoff) next(current time.Duration) time.Duration {
+	initial, limit := b.Initial, b.Max
+	if initial <= 0 {
+		initial = time.Second
+	}
+	if limit <= 0 {
+		limit = 30 * time.Second
+	}
+	if current <= 0 {
+		return min(initial, limit)
+	}
+	return min(current*2, limit)
+}
+
+// awaitTerminal returns only with a real outcome or the context's error. A
+// Terminal failure is a failure to OBSERVE, not evidence the run ended, so it
+// is reported and retried with capped backoff: returning it would make the
+// scheduler release the slot of a live run and journal a false run.finished.
+func (c Config) awaitTerminal(ctx context.Context, runID string) (Outcome, error) {
+	var delay time.Duration
+	for {
+		outcome, err := c.Terminal(ctx, runID)
+		if err == nil {
+			return outcome, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Outcome{}, ctxErr
+		}
+		if c.Report != nil {
+			c.Report(fmt.Errorf("schedstart: observing run %s: %w", runID, err))
+		}
+		delay = c.TerminalBackoff.next(delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Outcome{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// WatchReconciled releases the scheduler slots a successor seeded from the
+// predecessor's open runs (Scheduler.Reconcile) as each run closes. Without it
+// those slots are held until the next takeover. Each goroutine ends with ctx
+// (the epoch) and is counted by tracker; release is Scheduler.ReleaseReconciled.
+func (c Config) WatchReconciled(ctx context.Context, open []OpenRun, release func(runID, workflow string), tracker *Tracker) {
+	for _, run := range open {
+		done := tracker.register()
+		go func() {
+			defer done()
+			if _, err := c.awaitTerminal(ctx, run.RunID); err != nil {
+				return // epoch ended: the next leader reconciles again
+			}
+			release(run.RunID, run.Identity.Workflow)
+		}()
+	}
 }
 
 // Tracker counts live starter calls so epoch shutdown can wait for them.
@@ -110,7 +174,11 @@ func (s *starter) Start(ctx context.Context, req localscheduler.StartRequest) (l
 	}
 	// AlreadyRunning without NotMine is this acceptance's own earlier start
 	// (a predecessor's): adopt it and hold the slot until it closes.
-	outcome, err := s.config.Terminal(ctx, started.RunID)
+	// Blocks until a real outcome or the epoch ends. On epoch end the scheduler
+	// sees the context error and the cloud instance log (bound to the same epoch
+	// context, and explicitly refusing appends once it is done) records no
+	// run.finished for the still-live run.
+	outcome, err := s.config.awaitTerminal(ctx, started.RunID)
 	if err != nil {
 		return localscheduler.StartResult{}, err
 	}
