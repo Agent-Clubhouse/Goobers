@@ -642,7 +642,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if derr != nil {
 				return RunResult{}, derr
 			}
-			pointers = gatePointers
+			// Reviewer diff is private input to this gate, not a downstream
+			// producer artifact. Preserve the old propagation only on replay.
+			if workflow.GetVersion(ctx, reviewerEvidenceScopeChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				pointers = gatePointers
+			}
 			// #3843, BEFORE the outcome is resolved: both finding
 			// transitions can turn a needs-changes verdict into a pass, so
 			// reconciling afterwards would route the run on a decision the
