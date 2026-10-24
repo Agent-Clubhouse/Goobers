@@ -65,7 +65,8 @@ func newFreezeFixture(t *testing.T) freezeFixture {
 		AcceptedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)}
 	request := journal.ChildHandoffRequest{Gaggle: "web", ParentRunID: "parent-run", RequestID: journal.Digest([]byte("request")), Action: "wait", ChildRunID: child.RunID,
 		AcceptanceID: child.AcceptanceID, InvocationKey: "call-1", SourceDigest: proposal.SourceDigest, Origin: apiv1.ChildWorkflowOrigin{StageOccurrence: occurrence, AttemptID: occurrence}}
-	pinned := EngineFreezeContext{Admission: admission, Execution: execution}
+	pinned := EngineFreezeContext{Admission: admission, Execution: execution, ConfigGeneration: authority.ConfigGeneration,
+		ParentWorkflowDigest: authority.ParentWorkflowDigest, ParentGooberDigest: authority.ParentGooberDigest}
 	return freezeFixture{pinned: pinned, payload: payload, source: source, child: child, request: request}
 }
 
@@ -151,10 +152,22 @@ func TestFrozenBytesMatchTheAdmittedDigestThroughTheEngine(t *testing.T) {
 
 func TestEngineFreezeRefusesDrift(t *testing.T) {
 	cases := map[string]func(*freezeFixture){
+		// Policy is strict until accepted policy bytes are retained (#8079):
+		// a narrowing refuses as well as a broadening.
 		"narrowed policy": func(f *freezeFixture) {
 			f.pinned.Admission.ParentTask.ChildWorkflows.AllowedCapabilities = []string{"agent:model"}
 		},
-		"other config digest": func(f *freezeFixture) { f.pinned.Admission.ConfigDigest = journal.Digest([]byte("other config")) },
+		// A valid capability the parent stage declares, so the request passes
+		// validation and only the PolicyDigest check can refuse it.
+		"broadened policy": func(f *freezeFixture) {
+			f.pinned.Admission.ParentTask.Capabilities = append(f.pinned.Admission.ParentTask.Capabilities, "repo:push")
+			f.pinned.Admission.GrantedCapabilities = append(f.pinned.Admission.GrantedCapabilities, "repo:push")
+		},
+		"broadened publication": func(f *freezeFixture) { f.pinned.Admission.AllowPRPublication = !f.pinned.Admission.AllowPRPublication },
+		// The child runs only against the generation its parent was accepted under.
+		"other generation":             func(f *freezeFixture) { f.pinned.ConfigGeneration = journal.Digest([]byte("reloaded generation")) },
+		"other parent workflow digest": func(f *freezeFixture) { f.pinned.ParentWorkflowDigest = journal.Digest([]byte("edited parent")) },
+		"other parent goober digest":   func(f *freezeFixture) { f.pinned.ParentGooberDigest = journal.Digest([]byte("edited goober")) },
 		// The bindings decide where the child acts; a resolver cannot move them.
 		"other repository":        func(f *freezeFixture) { f.pinned.Execution.RepoRef.Owner = "evil" },
 		"other repository branch": func(f *freezeFixture) { f.pinned.Execution.RepoRef.Branch = "release" },
@@ -237,5 +250,58 @@ func TestStartEnvelopePinsExecutionOnlyForEngineChildren(t *testing.T) {
 	}
 	if _, err := childStartEnvelope(Authority{Admission: admission}, proposal, "call-1"); err == nil {
 		t.Fatal("engine child accepted without its parent's execution binding")
+	}
+}
+
+// A control-plane configuration reload between acceptance and freeze changes
+// the running instance inputs folded into Admission.ConfigDigest (harnesses,
+// runner policy) but not the pinned generation or the child policy. The child
+// still freezes, byte-identically, against its pinned generation.
+func TestEngineFreezeSurvivesAControlConfigReloadOnItsPinnedGeneration(t *testing.T) {
+	want, _ := newFreezeFixture(t).freeze(t)
+	fixture := newFreezeFixture(t)
+	fixture.pinned.Admission.ConfigDigest = journal.Digest([]byte("reloaded instance config"))
+	fixture.pinned.Admission.KnownHarnesses = append(fixture.pinned.Admission.KnownHarnesses, "reloaded-harness")
+	got, manifest := fixture.freeze(t)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("reload changed the frozen manifest:\n got %s\nwant %s", got, want)
+	}
+	envelope, err := DecodeStartEnvelope(fixture.payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Input.ConfigGeneration != envelope.ConfigGeneration || manifest.Input.GooberDigest != envelope.ParentGooberDigest {
+		t.Fatalf("child does not run on its pinned generation: %+v", manifest.Input)
+	}
+}
+
+// Envelopes accepted before the generation rule (N-1) still freeze to the
+// same manifest bytes.
+func TestEngineFreezeReplaysAnN1EnvelopeToTheGolden(t *testing.T) {
+	payload, err := os.ReadFile("testdata/engine-freeze-envelope-n1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, payload); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newFreezeFixture(t)
+	if !bytes.Equal(compact.Bytes(), fixture.payload) {
+		t.Fatal("start envelope encoding changed from the N-1 fixture")
+	}
+	fixture.payload = compact.Bytes()
+	data, _ := fixture.freeze(t)
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, data, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	indented.WriteByte('\n')
+	golden, err := os.ReadFile(engineFreezeGolden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(golden, indented.Bytes()) {
+		t.Fatal("N-1 envelope froze to different manifest bytes")
 	}
 }

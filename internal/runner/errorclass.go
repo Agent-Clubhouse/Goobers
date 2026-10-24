@@ -4,8 +4,6 @@ import (
 	"errors"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/invoke"
-	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
@@ -79,17 +77,7 @@ func declaredArtifactRetryError(dispatchErr error, result apiv1.ResultEnvelope, 
 // itself wins, then the invoke seam's own timeout marker, then the residual
 // executor bug. Nothing here matches on message text.
 func classifyDispatchFailure(err error) (string, telemetry.ErrorClass) {
-	code := errCodeExecutor
-	var coded stageCodedError
-	switch {
-	case errors.Is(err, planehttp.ErrBudgetExhausted):
-		code = telemetry.ErrCodeInfraFailure
-	case errors.As(err, &coded) && coded.StageErrorCode() != "":
-		code = coded.StageErrorCode()
-	case invoke.IsTimeout(err):
-		code = telemetry.ErrCodeTimeout
-	}
-	return code, telemetry.ClassifyError(code)
+	return runsemantics.ClassifyDispatchError(err)
 }
 
 // provisionFailureCode names why a stage's workspace could not be provisioned,
@@ -108,4 +96,13 @@ func provisionFailureCode(err error) string {
 	default:
 		return errCodeInfraWorkspace
 	}
+}
+
+// Successful diagnostic recording must not add a unary join layer to the
+// dispatch error's domain causes. Real secondary failures remain joined.
+func joinDispatchDiagnostic(dispatchErr, diagnosticErr error) error {
+	if diagnosticErr == nil {
+		return dispatchErr
+	}
+	return errors.Join(dispatchErr, diagnosticErr)
 }

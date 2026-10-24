@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -30,5 +29,5 @@ func declaredArtifactRetryError(ctx workflow.Context, taskType apiv1.TaskType, r
 	if workflow.GetVersion(ctx, declaredArtifactRetryChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 		return nil
 	}
-	return temporal.NewApplicationError(retryErr.Error(), FailureTypeStage)
+	return classifySeamError(retryErr)
 }

@@ -30,13 +30,13 @@ type packageResult struct {
 	buildFailed bool
 	output      map[string]*strings.Builder
 	failedTests []string
-	// outcomes maps each top-level test to its final action.
+	// outcomes includes descendants so a passing parent cannot hide skipped fixtures.
 	outcomes map[string]string
 }
 
 // cloudPGRoots are the trees the cloud-pg job tests; every package in them
 // with PostgreSQL-tagged tests (cloudintegration or cloudpg) must run.
-var cloudPGRoots = []string{"internal/cloud", "test/ha/invariants"}
+var cloudPGRoots = []string{"internal/cloud", "internal/livejournal", "test/ha/invariants", "test/journalequivalence"}
 
 // runCloudPGReport reads the cloud-pg job's `go test -json` stream, prints
 // failing tests' output, and fails when any package with PostgreSQL-tagged
@@ -103,8 +103,8 @@ func (r *packageResult) record(event testEvent) {
 	switch {
 	case event.Test == "" && event.Action == "fail":
 		r.buildFailed = true
-	case event.Test == "" || strings.Contains(event.Test, "/"):
-		// Package summaries and subtests do not count as top-level tests.
+	case event.Test == "":
+		// Package summaries do not count as tests.
 	default:
 		r.outcomes[event.Test] = event.Action
 	}
@@ -210,6 +210,8 @@ func cloudPGProblems(results map[string]*packageResult, required map[string][]st
 				missing = append(missing, test)
 			}
 		}
+		skipped = append(skipped, skippedPGDescendants(result, required[pkg])...)
+		sort.Strings(skipped)
 		switch {
 		case len(skipped) > 0:
 			problems = append(problems, fmt.Sprintf("%s: PostgreSQL-tagged tests skipped (%s); is a tag, GOOBERS_TEST_POSTGRES_URL or a service env var missing?",
@@ -221,6 +223,24 @@ func cloudPGProblems(results map[string]*packageResult, required map[string][]st
 		}
 	}
 	return problems
+}
+
+// Only descendants of required tagged roots count; unrelated unit-test skips
+// in the same package do not prove a missing PG fixture.
+func skippedPGDescendants(result *packageResult, required []string) []string {
+	var skipped []string
+	for name, outcome := range result.outcomes {
+		if outcome != "skip" {
+			continue
+		}
+		for _, root := range required {
+			if strings.HasPrefix(name, root+"/") {
+				skipped = append(skipped, name)
+				break
+			}
+		}
+	}
+	return skipped
 }
 
 func printFailures(results map[string]*packageResult, w io.Writer) {

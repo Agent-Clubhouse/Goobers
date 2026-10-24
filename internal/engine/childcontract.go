@@ -22,6 +22,9 @@ import (
 
 const (
 	childCleanupTimeout = 5 * time.Minute
+	// ChildActivityStartToClose bounds one child custody activity attempt. A
+	// custody client's per-call credential must outlive it.
+	ChildActivityStartToClose = time.Minute
 	// childCustodyRetryCeiling caps backoff so retries keep probing through a
 	// control-plane failover (lease TTL plus self-fence plus readiness) inside
 	// childCleanupTimeout. Unclassified failures still stop after
@@ -231,6 +234,6 @@ func (a *Activities) CancelEngineChild(ctx context.Context, in ChildRunBinding) 
 }
 
 func childActivityContext(ctx workflow.Context) workflow.Context {
-	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute, ScheduleToCloseTimeout: childCleanupTimeout, WaitForCancellation: true,
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ChildActivityStartToClose, ScheduleToCloseTimeout: childCleanupTimeout, WaitForCancellation: true,
 		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, MaximumInterval: childCustodyRetryCeiling}})
 }

@@ -339,6 +339,7 @@ type liveRun struct {
 	childAppendUncertain bool
 	mu                   sync.Mutex
 	gaggle               string
+	runID                string
 	dir                  string
 	handle               journal.RunHandle
 	jr                   *journal.Run
@@ -651,7 +652,7 @@ func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), e
 		return nil, fmt.Errorf("livejournal: adopt run %s: read applied keys: %w", runID, err)
 	}
 	fresh := &liveRun{
-		gaggle: gaggle, dir: dir, jr: jr, adopted: true,
+		gaggle: gaggle, runID: runID, dir: dir, jr: jr, adopted: true,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 		lastEmit:     w.now(),
@@ -733,15 +734,17 @@ func (w *Writer) forgetLoan(runID string, run *liveRun) {
 // A failed read is not an error here: it leaves the cached view exactly as it
 // was, and the caller's own miss then produces the ordinary refusal.
 func (w *Writer) refreshAdopted(run *liveRun) {
-	reader, err := journal.OpenReadOnly(run.dir)
-	if err != nil {
-		return
+	if run.adopted {
+		reader, err := journal.OpenReadOnly(run.dir)
+		if err != nil {
+			return
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return
+		}
+		deriveDedupState(run, events)
 	}
-	events, err := reader.Events()
-	if err != nil {
-		return
-	}
-	deriveDedupState(run, events)
 }
 
 // deriveDedupState reads a journal's own events back into a run's dedup view:
@@ -798,7 +801,7 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 			return EmitResponse{}, fmt.Errorf("livejournal: op %d carries no idempotency key", i)
 		}
 	}
-	run, err := w.acquire(req)
+	run, err := w.acquire(ctx, req)
 	if err != nil {
 		return EmitResponse{}, err
 	}
@@ -809,14 +812,14 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		// same reason. It was forgotten from the map, so another acquire
 		// rehydrates a fresh handle rather than returning this stale one.
 		run.mu.Unlock()
-		run, err = w.acquire(req)
+		run, err = w.acquire(ctx, req)
 		if err != nil {
 			return EmitResponse{}, err
 		}
 		run.mu.Lock()
 	}
 	defer run.mu.Unlock()
-	if err := run.validateReservationIdentity(req); err != nil {
+	if err := w.validateReservationIdentity(ctx, run, req); err != nil {
 		// Rehydrating a terminal journal populates the dedup map. Refusals
 		// must release that entry just as applyOp errors do.
 		w.finishRun(req.RunID, run, &EmitResponse{})
@@ -928,7 +931,7 @@ const terminalMarker = "\x00terminal"
 // from the batch's Open header. A run under an external Reserve is waited
 // out first: rehydrating mid-repair would open (and then lose) the very
 // directory the repairer is about to replace.
-func (w *Writer) acquire(req EmitRequest) (*liveRun, error) {
+func (w *Writer) acquire(ctx context.Context, req EmitRequest) (*liveRun, error) {
 	w.mu.Lock()
 	for {
 		if run, ok := w.open[req.RunID]; ok {
@@ -950,8 +953,11 @@ func (w *Writer) acquire(req EmitRequest) (*liveRun, error) {
 	}
 	dir := filepath.Join(runsDir, req.RunID)
 	var run *liveRun
-	var err error
-	if journal.Recorded(dir) {
+	recorded, err := w.backend.RunRecorded(ctx, journal.RunKey{Gaggle: req.Gaggle, RunID: req.RunID})
+	if err != nil {
+		return nil, fmt.Errorf("livejournal: look up run %s: %w", req.RunID, err)
+	}
+	if recorded {
 		run, err = w.rehydrate(req, dir)
 	} else {
 		run, err = w.create(req, runsDir, dir)
@@ -1078,7 +1084,7 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 		return nil, fmt.Errorf("livejournal: create run journal for %s: %w", req.RunID, err)
 	}
 	return &liveRun{
-		gaggle: req.Gaggle, dir: dir, handle: handle, owner: owner, clock: clock,
+		gaggle: req.Gaggle, runID: req.RunID, dir: dir, handle: handle, owner: owner, clock: clock,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 	}, nil
@@ -1125,6 +1131,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	}
 	run := &liveRun{
 		gaggle:       req.Gaggle,
+		runID:        req.RunID,
 		dir:          dir,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},

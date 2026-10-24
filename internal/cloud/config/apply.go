@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -10,15 +11,21 @@ import (
 // Candidate is a loaded configuration generation awaiting activation.
 type Candidate struct {
 	Digest string
-	Config *instance.Config
-	Set    *instance.ConfigSet
+	// Archive is the content-addressed execution generation retained on apply.
+	Archive []byte
+	Config  *instance.Config
+	Set     *instance.ConfigSet
+	// Pins are the admission digests of the candidate's workflows, keyed
+	// "gaggle/workflow". Optional: without them the applied generation pins no
+	// start (PinFor fails closed).
+	Pins map[string]Pins
 }
 
 // Activator switches the running generation. The concrete implementation is
 // backed by the object-store generation pointer (HA-P3-13); admission only
 // needs the switch.
 type Activator interface {
-	Activate(ctx context.Context, digest string) error
+	Activate(ctx context.Context, candidate Candidate) error
 }
 
 // Status is what `config status` reports.
@@ -62,9 +69,10 @@ func (a *Applier) Apply(ctx context.Context, c Candidate) error {
 		a.status.RejectedDigest, a.status.Refusal = c.Digest, refusal
 		return refusal
 	}
-	if err := a.activator.Activate(ctx, c.Digest); err != nil {
+	if err := a.activator.Activate(ctx, c); err != nil {
 		return err
 	}
+	gen.pins = maps.Clone(c.Pins)
 	a.guard.Replace(gen)
 	a.status = Status{Applied: c.Digest}
 	return nil

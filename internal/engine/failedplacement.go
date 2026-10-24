@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 // A failed activity's result is not transported by Temporal. Its observed
@@ -16,10 +17,12 @@ import (
 // instant; slot one is an explicitly versioned extension. Older consumers can
 // still read slot zero.
 type dispatchFailureEvidence struct {
-	SchemaVersion    int             `json:"schemaVersion"`
-	Placement        *StagePlacement `json:"placement,omitempty"`
-	Usage            *AttemptUsage   `json:"usage,omitempty"`
-	UsageUnavailable bool            `json:"usageUnavailable,omitempty"`
+	Domain            *domainFailure           `json:"domain,omitempty"`
+	RecordedArtifacts []invoke.ArtifactReceipt `json:"recordedArtifacts,omitempty"`
+	SchemaVersion     int                      `json:"schemaVersion"`
+	Placement         *StagePlacement          `json:"placement,omitempty"`
+	Usage             *AttemptUsage            `json:"usage,omitempty"`
+	UsageUnavailable  bool                     `json:"usageUnavailable,omitempty"`
 }
 
 func withDispatchFailurePlacement(classified error, report dispatcher.Report) error {

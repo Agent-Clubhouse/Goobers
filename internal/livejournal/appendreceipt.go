@@ -50,7 +50,7 @@ func (w *Writer) appendReceipt(run *liveRun, op Op) (AppendReceipt, error) {
 			return AppendReceipt{}, err
 		}
 	}
-	reader, err := journal.OpenReadOnly(run.dir)
+	reader, err := w.runReader(context.Background(), run)
 	if err != nil {
 		return AppendReceipt{}, err
 	}

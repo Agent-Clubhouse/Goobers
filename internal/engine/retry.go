@@ -139,6 +139,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	var usageBudget runsemantics.StageUsageBudget
 	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
+	var infraCommittedWork bool
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
 		// The first attempt carries no class (normative); a retry carries the
@@ -193,8 +194,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			// attempt's outcome decides (#3875). Journaled for a failed
 			// dispatch too when the dispatch reported one, so the record of
 			// where an attempt ran does not depend on whether it succeeded.
-			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
-			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+			if receiptErr := rec.recordDispatchEvidence(ctx, t.Name, int(attempt), class, activityResult, err); receiptErr != nil {
+				return apiv1.ResultEnvelope{}, receiptErr
+			}
 
 			if t.Type == apiv1.TaskAgentic && t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) && workflow.GetVersion(ctx, "cumulative-agentic-usage", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				usage := dispatchFailureUsage(err)
@@ -240,15 +242,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 					// thrown away with its pod, and building the next stage on
 					// it would resurrect abandoned work.
 					if deltaOut != nil {
-						*deltaOut = deltaPublication{
-							Attempt:   int(attempt),
-							Digest:    activityResult.WorkspaceDelta,
-							Base:      activityResult.WorkspaceDeltaBase,
-							Tip:       activityResult.WorkspaceDeltaTip,
-							Unchanged: activityResult.WorkspaceDeltaUnchanged,
-
-							PushedBranches: pushedBranches(activityResult.Mutations),
-						}
+						*deltaOut = winningAttemptDelta(int(attempt), activityResult)
 					}
 					return res, nil
 				}
@@ -292,7 +286,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if identity == nil {
 			identity = attemptIdentityFromError(err)
 		}
-		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity)
+		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity, &infraCommittedWork)
 		if isWorkerLoss(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
@@ -322,6 +316,14 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 }
 
+func winningAttemptDelta(attempt int, result stageActivityResult) deltaPublication {
+	return deltaPublication{
+		Attempt: attempt, Digest: result.WorkspaceDelta, Base: result.WorkspaceDeltaBase,
+		Tip: result.WorkspaceDeltaTip, Unchanged: result.WorkspaceDeltaUnchanged,
+		PushedBranches: pushedBranches(result.Mutations),
+	}
+}
+
 func usageRequired(usage AttemptUsage, err error) bool {
 	return usage.Reported || usage.Unavailable || isWorkerLoss(err)
 }
@@ -333,11 +335,11 @@ func attemptIdentityFromError(err error) *attemptidentity.Identity {
 			continue
 		}
 		var identity attemptidentity.Identity
-		if appErr.Details(&identity) == nil && identity.WorkerIdentity != "" {
+		if readDispatchFailureDetails(appErr, &identity) == nil && identity.WorkerIdentity != "" {
 			return &identity
 		}
 		var retryAt time.Time
-		if appErr.Details(&retryAt, &identity) == nil && identity.WorkerIdentity != "" {
+		if readDispatchFailureDetails(appErr, &retryAt, &identity) == nil && identity.WorkerIdentity != "" {
 			return &identity
 		}
 	}
@@ -353,7 +355,7 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 		var retryAt time.Time
 		if appErr.Details(&retryAt) != nil {
 			var identity attemptidentity.Identity
-			if appErr.Details(&retryAt, &identity) != nil {
+			if readDispatchFailureDetails(appErr, &retryAt, &identity) != nil {
 				continue
 			}
 		}

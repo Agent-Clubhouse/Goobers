@@ -158,11 +158,15 @@ func TestClientTreatsAnUnreachablePlaneAsFailover(t *testing.T) {
 	}
 }
 
-func TestStatusClassLeavesCredentialAndServerFaultsUnclassified(t *testing.T) {
+func TestStatusClassRefusesOnlyTheExplicitConflict(t *testing.T) {
 	for status, want := range map[int]error{
 		http.StatusServiceUnavailable: engine.ErrChildCustodyUnavailable, http.StatusTooManyRequests: engine.ErrChildCustodyUnavailable,
 		http.StatusBadGateway: engine.ErrChildCustodyUnavailable, http.StatusGatewayTimeout: engine.ErrChildCustodyUnavailable,
-		http.StatusConflict: engine.ErrChildCustodyRefused, http.StatusBadRequest: engine.ErrChildCustodyRefused,
+		// A route missing mid-rollout is retryable; only the plane's explicit
+		// refusal is permanent.
+		http.StatusNotFound: engine.ErrChildCustodyUnavailable, http.StatusMethodNotAllowed: engine.ErrChildCustodyUnavailable,
+		http.StatusConflict:   engine.ErrChildCustodyRefused,
+		http.StatusBadRequest: nil, http.StatusUnprocessableEntity: nil,
 		http.StatusUnauthorized: nil, http.StatusForbidden: nil, http.StatusInternalServerError: nil,
 	} {
 		if got := statusClass(status); !errors.Is(got, want) || (want == nil) != (got == nil) {
@@ -199,5 +203,26 @@ func TestForWorkerMintsOnlyTheChildAdmissionBearer(t *testing.T) {
 	principal, err := auth.Authenticate(request)
 	if err != nil || principal.Issuer != httpapi.WorkerChildAdmissionPrincipalIssuer {
 		t.Fatalf("minted bearer authenticated as %+v (%v), want the child-admission issuer", principal, err)
+	}
+}
+
+func TestClientRetriesAnAPIThatDoesNotServeThePlaneYet(t *testing.T) {
+	// An older API replica mid-rollout has no such route.
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	client := &Client{BaseURL: server.URL, TokenSource: func() (string, error) { return "token", nil }}
+	if _, err := client.Admit(t.Context(), engine.ChildAdmissionInput{}); !errors.Is(err, engine.ErrChildCustodyUnavailable) || errors.Is(err, engine.ErrChildCustodyRefused) {
+		t.Fatalf("missing route error = %v, want retryable", err)
+	}
+}
+
+func TestWorkerBearerOutlivesOneChildActivityAttempt(t *testing.T) {
+	// The bearer is minted once per call and must stay valid for the whole
+	// activity attempt that carries it.
+	if workerTokenTTL < engine.ChildActivityStartToClose {
+		t.Fatalf("worker bearer TTL %s is shorter than the child activity StartToClose %s", workerTokenTTL, engine.ChildActivityStartToClose)
+	}
+	if workerTokenTTL > podauth.MaxWorkerTokenTTL {
+		t.Fatalf("worker bearer TTL %s exceeds the verifier maximum %s", workerTokenTTL, podauth.MaxWorkerTokenTTL)
 	}
 }

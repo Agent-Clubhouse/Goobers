@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"sigs.k8s.io/yaml"
 )
 
 func TestTemporalLadderAdvancesOneMinorToWorkerDeploymentGA(t *testing.T) {
@@ -145,10 +147,44 @@ func TestKindDatabaseFollowsRoleContract(t *testing.T) {
 	if len(passwords) != len(databaseCredentials) {
 		t.Fatalf("got %d passwords, want %d", len(passwords), len(databaseCredentials))
 	}
-	for _, want := range []string{"owner: temporal_app", "enableSuperuserAccess: true", "goobers_owner", "goobers_api", "goobers_controller"} {
+	// CNPG runs postInitSQL on the postgres database BEFORE it creates the
+	// bootstrap database, so a statement naming that database must be in
+	// postInitApplicationSQL or initdb fails on every retry and no primary
+	// ever starts. temporal_visibility is created inside postInitSQL itself.
+	var spec struct {
+		Spec struct {
+			Bootstrap struct {
+				Initdb struct {
+					Database               string   `json:"database"`
+					PostInitSQL            []string `json:"postInitSQL"`
+					PostInitApplicationSQL []string `json:"postInitApplicationSQL"`
+				} `json:"initdb"`
+			} `json:"bootstrap"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal(cluster, &spec); err != nil {
+		t.Fatal(err)
+	}
+	initdb := spec.Spec.Bootstrap.Initdb
+	contains := func(list []string, want string) bool { return slices.Contains(list, want) }
+	if !contains(initdb.PostInitApplicationSQL, "REVOKE ALL ON DATABASE temporal FROM PUBLIC") {
+		t.Fatalf("revoke on the bootstrap database must be in postInitApplicationSQL, got %v", initdb.PostInitApplicationSQL)
+	}
+	if contains(initdb.PostInitSQL, "REVOKE ALL ON DATABASE temporal FROM PUBLIC") {
+		t.Fatal("postInitSQL runs before the bootstrap database exists; the temporal revoke would fail every initdb attempt")
+	}
+	create := slices.Index(initdb.PostInitSQL, "CREATE DATABASE temporal_visibility OWNER temporal_app")
+	revoke := slices.Index(initdb.PostInitSQL, "REVOKE ALL ON DATABASE temporal_visibility FROM PUBLIC")
+	if create < 0 || revoke < create {
+		t.Fatalf("temporal_visibility must be created before it is revoked in postInitSQL, got %v", initdb.PostInitSQL)
+	}
+	for _, want := range []string{"log_min_error_statement: panic", "owner: temporal_app", "enableSuperuserAccess: true", "goobers_owner", "goobers_api", "goobers_controller"} {
 		if !strings.Contains(string(cluster), want) {
 			t.Fatalf("cnpg-cluster.yaml missing %q", want)
 		}
+	}
+	if strings.Contains(string(cluster), "ON DATABASE postgres") {
+		t.Fatal("do not revoke from the postgres database: CNPG pg_rewind connects to it as streaming_replica")
 	}
 	for _, path := range []string{"../../temporal-values.yaml", "../../temporal-values-legacy.yaml"} {
 		data, err := os.ReadFile(path)

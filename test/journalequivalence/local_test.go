@@ -28,12 +28,12 @@ import (
 )
 
 var localBaselineDigests = map[string]string{
-	"retry-artifact-inputs-and-gates": "sha256:f2d85fc2231a0f9610f855c62258898d07cea1877ae6d2777d2585b1d5b90019",
+	"retry-artifact-inputs-and-gates": "sha256:65afb97a5cc6ea3e3c49d5e5226db8f26c1db206976648adcb92819fd0361976",
 	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
 	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
-	"gate-fail-rerun":                 "sha256:fc5e7bfff6eefcdf64bca32e0ac76b97e68776a6b2f5c0036a470a6375cb0dc5",
+	"gate-fail-rerun":                 "sha256:89140da2e0691dd07925ffca793a6d561dc2c1c8454de2e7958e0a8ae4185dbc",
 	"terminal-resume":                 "sha256:bcfc16278dbce9969be24de7dfd240c87e3960109399e9b6c79c923396ac1066",
-	"infrastructure-retry":            "sha256:53c21e89ac10d619a2ad13c70548dc9f4e7f3744687d01b0d7a1fec57796919d",
+	"infrastructure-retry":            "sha256:4020c3810b2d63ea427856a7952211490e4f134d71f87bfc2cccbccd4d612dbc",
 }
 
 func TestLocalJournalEquivalenceBaseline(t *testing.T) {
@@ -42,6 +42,9 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 			var baseline canonicalRun
 			for repetition := 0; repetition < 3; repetition++ {
 				got := runScenario(t, scenario)
+				if scenario.name == "infrastructure-retry" {
+					assertDomainInfrastructureError(t, got)
+				}
 				if repetition == 0 {
 					baseline = got
 					if digest := canonicalDigest(t, got); digest != localBaselineDigests[scenario.name] {
@@ -56,34 +59,6 @@ func TestLocalJournalEquivalenceBaseline(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCanonicalizerMasksOnlyAllowedVolatility(t *testing.T) {
-	const runID = "11111111111111111111111111111111"
-	value := map[string]any{
-		"time": "volatile", "runId": runID, "host": "runner-a", "durationMs": 42,
-		"name": "artifact-" + runID, "status": "completed", "format": "json",
-		"finishedAt": nil, "latestErrorAt": "", "startedAt": "0001-01-01T00:00:00Z",
-	}
-	maskVolatile(value, runID)
-	for _, key := range []string{"time", "runId", "host", "durationMs"} {
-		if value[key] != "<masked>" {
-			t.Fatalf("%s = %v, want masked", key, value[key])
-		}
-	}
-	if value["name"] != "artifact-<run-id>" || value["status"] != "completed" || value["format"] != "json" {
-		t.Fatalf("semantic fields changed: %+v", value)
-	}
-	if value["finishedAt"] != nil || value["latestErrorAt"] != "" ||
-		value["startedAt"] != "0001-01-01T00:00:00Z" {
-		t.Fatalf("unset timestamp presence changed: %+v", value)
-	}
-	unset := canonicalJSON(t, map[string]any{"finishedAt": nil}, runID)
-	zero := canonicalJSON(t, map[string]any{"finishedAt": "0001-01-01T00:00:00Z"}, runID)
-	set := canonicalJSON(t, map[string]any{"finishedAt": "2026-10-23T00:00:00Z"}, runID)
-	if bytes.Equal(unset, set) || bytes.Equal(zero, set) {
-		t.Fatalf("unset timestamp canonicalized like set: null=%s zero=%s set=%s", unset, zero, set)
 	}
 }
 
@@ -179,6 +154,11 @@ func runScenario(t *testing.T, scenario corpusScenario) canonicalRun {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return canonicalReader(t, scenario, reader)
+}
+
+func canonicalReader(t *testing.T, scenario corpusScenario, reader journal.RunReader) canonicalRun {
+	t.Helper()
 	identity, err := reader.Identity()
 	if err != nil {
 		t.Fatal(err)
@@ -253,52 +233,28 @@ func canonicalJSON(t *testing.T, value any, runID string) json.RawMessage {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	maskVolatile(decoded, runID)
+	if _, event := value.(journal.Event); event {
+		if err := excludeDeliveryMetadata(decoded.(map[string]any)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, projection := value.(readmodel.Projection); projection {
+		// The projection embeds the same terminal-cause record. Do not recurse into
+		// arbitrary user outputs with matching field names.
+		if root, ok := decoded.(map[string]any); ok {
+			current := root
+			for _, field := range []string{"Run", "Operator", "Reliability", "TerminalCause"} {
+				current, _ = current[field].(map[string]any)
+			}
+			delete(current, "causalEmitKey")
+		}
+	}
+	maskCanonicalMetadata(decoded, value, runID)
 	data, err = json.Marshal(decoded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func maskVolatile(value any, runID string) {
-	switch typed := value.(type) {
-	case []any:
-		for index, item := range typed {
-			if text, ok := item.(string); ok {
-				typed[index] = strings.ReplaceAll(text, runID, "<run-id>")
-				continue
-			}
-			maskVolatile(item, runID)
-		}
-	case map[string]any:
-		for key, item := range typed {
-			if volatileField(key) {
-				if item != nil && item != "" && item != "0001-01-01T00:00:00Z" {
-					typed[key] = "<masked>"
-				}
-				continue
-			}
-			if text, ok := item.(string); ok {
-				typed[key] = strings.ReplaceAll(text, runID, "<run-id>")
-				continue
-			}
-			maskVolatile(item, runID)
-		}
-	}
-}
-
-func volatileField(key string) bool {
-	switch strings.ToLower(key) {
-	case "time", "startedat", "finishedat", "completedat", "requestedat", "expiresat",
-		"acknowledgedat", "retryat", "lastheartbeatat", "latesterrorat", "reviewat",
-		"queuedat", "podstartedat", "updatedat", "occurredat",
-		"lastactivity", "duration", "durationms",
-		"elapsed", "elapsedms", "runid", "host", "hostname", "hostidentity", "pid", "processid":
-		return true
-	default:
-		return false
-	}
 }
 
 type deterministicScript struct {
@@ -615,4 +571,28 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
+}
+
+// Infrastructure failures retain the invoke marker and underlying cause, not
+// unary errors.Join wrappers from successful cleanup or mutation reporting.
+func assertDomainInfrastructureError(t *testing.T, run canonicalRun) {
+	t.Helper()
+	for _, raw := range run.Events {
+		var event struct {
+			Type   journal.EventType
+			Error  *journal.ErrorDetail
+			Runner map[string]any
+		}
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != journal.EventError {
+			continue
+		}
+		if event.Error == nil || event.Error.Message != "fixture infrastructure retry" || len(event.Error.Causes) != 2 || event.Runner["errorClass"] != "infra" || event.Runner["errorCode"] != "infra.failure" {
+			t.Fatalf("domain error drift: %+v, runner=%v", event.Error, event.Runner)
+		}
+		return
+	}
+	t.Fatal("infrastructure retry recorded no error")
 }

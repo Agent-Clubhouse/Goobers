@@ -20,6 +20,7 @@ import (
 func TestIntegrationDiscardReturnedWorkspaceWithoutParentMutationAuthority(t *testing.T) {
 	testdep.Require(t, "git")
 	service, authority, _ := submissionFixture(t)
+	store := service.Queue.(*triggerqueue.Store)
 	submission, err := service.Submit(t.Context(), authority.current.Origin, SubmissionRequest{InvocationKey: "discard", Source: []byte(validProposal)})
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +37,7 @@ func TestIntegrationDiscardReturnedWorkspaceWithoutParentMutationAuthority(t *te
 	if _, err = manager.WorkingCopy(t.Context(), parent); err != nil {
 		t.Fatal(err)
 	}
-	coordinator := WorkspaceCoordinator{Queue: service.Queue, Worktrees: manager}
+	coordinator := WorkspaceCoordinator{Queue: store, Worktrees: manager}
 	yielded := YieldedWorkspace{Path: parent, RepoURL: parent, RepositoryKey: (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}).CanonicalKey()}
 	if err = coordinator.Capture(t.Context(), submission.Child, yielded); err != nil {
 		t.Fatal(err)
@@ -57,7 +58,7 @@ func TestIntegrationDiscardReturnedWorkspaceWithoutParentMutationAuthority(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = service.Queue.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, finished); err != nil {
+	if err = store.SetChildState(t.Context(), submission.Child.Identity, triggerqueue.ChildStateUpdate{Expected: triggerqueue.ChildQueued, State: triggerqueue.ChildFailed, ResultRef: result.ResultRef, WorkspaceRef: result.WorkspaceRef}, finished); err != nil {
 		t.Fatal(err)
 	}
 	service.Now = func() time.Time { return finished.Add(time.Second) }

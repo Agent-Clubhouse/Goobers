@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -3819,7 +3818,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 			err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
 		}
 		acted := err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0
-		err = errors.Join(err, r.journalWorkspaceBranches(ctx, jr, tf, workspace, boundSHA, acted))
+		err = joinDispatchDiagnostic(err, r.journalWorkspaceBranches(ctx, jr, tf, workspace, boundSHA, acted))
 		cleanup = func(preserve bool) error {
 			return r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.finishDispatch(ctx, preserve))
 		}
@@ -3875,7 +3874,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		// paths, before the deferred workspace teardown removes the sidecar.
 		var issues []string
 		mutations, issues = readMutationSidecar(env.Workspace)
-		err = errors.Join(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
+		err = joinDispatchDiagnostic(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
 		if err == nil {
 			result, err = r.finalizeOutbox(jr, env.Workspace, t, attempt, class, result)
 		}
@@ -4600,23 +4599,13 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex
 // reviewer was handed. Equal digests mean the evidence is verbatim; different
 // digests mean a finding about the redacted region must be checked against the
 // branch before it is treated as a defect.
-const ReviewerDiffRedactionKind = "reviewer-diff-redaction"
+const ReviewerDiffRedactionKind = runsemantics.ReviewerDiffRedactionKind
 
 func appendReviewerDiffRedaction(jr executionJournal, gateName string, source, scrubbed []byte, ref journal.Ref) error {
 	if jr == nil {
 		return nil
 	}
-	return jr.Append(journal.Event{
-		Type: journal.EventRunnerAnnotation, Gate: gateName,
-		Runner: map[string]any{
-			"kind":         ReviewerDiffRedactionKind,
-			"redacted":     !bytes.Equal(source, scrubbed),
-			"sourceDigest": journal.Digest(source),
-			"sourceBytes":  len(source),
-			"digest":       ref.Digest,
-			"bytes":        len(scrubbed),
-		},
-	})
+	return jr.Append(runsemantics.ObserveReviewerDiffRedaction(source, scrubbed).Event(gateName, ref))
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -74,4 +76,26 @@ func DeclaredArtifactRetryFailure(result apiv1.ResultEnvelope) error {
 		message = result.Error.Code
 	}
 	return CodedStageFailure(result.Error.Code, errors.New(message))
+}
+
+// ClassifyDispatchError is the shared journal/telemetry classification of a
+// domain dispatch error. Explicit stage codes win over generic invoke markers;
+// an unclassified failure is an executor defect. Retry accounting is separate.
+func ClassifyDispatchError(err error) (string, telemetry.ErrorClass) {
+	code := telemetry.ErrCodeExecutor
+	var coded interface {
+		error
+		StageErrorCode() string
+	}
+	switch {
+	case errors.Is(err, planehttp.ErrBudgetExhausted):
+		code = telemetry.ErrCodeInfraFailure
+	case errors.As(err, &coded) && coded.StageErrorCode() != "":
+		code = coded.StageErrorCode()
+	case invoke.IsInfrastructureFailure(err):
+		code = telemetry.ErrCodeInfraFailure
+	case invoke.IsTimeout(err):
+		code = telemetry.ErrCodeTimeout
+	}
+	return code, telemetry.ClassifyError(code)
 }

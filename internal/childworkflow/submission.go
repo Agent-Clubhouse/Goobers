@@ -75,7 +75,7 @@ type Submission struct {
 // SubmissionService validates and accepts children; it never runs a workflow.
 // Its queue is the existing durable trigger store, not a second queue/database.
 type SubmissionService struct {
-	Queue     *triggerqueue.Store
+	Queue     ChildQueue
 	Authority AuthorityResolver
 	Now       func() time.Time
 }
