@@ -240,6 +240,13 @@ type queueSaturationRecorder interface {
 	RecordSchedulerQueueSaturation(context.Context, []telemetry.QueueSaturationSample, *telemetry.WorkerAvailabilitySample)
 }
 
+// continuationClaimsRecorder is the optional second half of the periodic
+// snapshot: a recorder that also publishes waiting-continuation claims (#8186).
+// It is a separate interface so recorders written before it need no change.
+type continuationClaimsRecorder interface {
+	RecordContinuationClaims(context.Context, telemetry.ContinuationClaimsSample)
+}
+
 type runAdmission struct {
 	identity WorkflowIdentity
 	// executionWorkflow is a generated child name; identity remains its parent budget bucket.
@@ -1311,6 +1318,12 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 		workers = &telemetry.WorkerAvailabilitySample{OperatingSystem: runtime.GOOS, Available: available}
 	}
 	recorder.RecordSchedulerQueueSaturation(ctx, samples, workers)
+	if claims, ok := recorder.(continuationClaimsRecorder); ok {
+		stats := s.conditions.ContinuationClaims()
+		claims.RecordContinuationClaims(ctx, telemetry.ContinuationClaimsSample{
+			OperatingSystem: runtime.GOOS, Count: stats.Count, OldestSince: stats.Oldest, ObservedAt: now,
+		})
+	}
 }
 
 func queueSample(kind string, aggregate queueMetricAggregate, observedAt time.Time) telemetry.QueueSaturationSample {
