@@ -223,6 +223,12 @@
       "reason": "Cloud control-plane child custody adapter has no Windows deployment target; unit and PostgreSQL integration tests run on Linux."
     },
     {
+      "package": "internal/cloud/claims",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud PostgreSQL claims plane; its tests run in the Linux unit and cloud-pg jobs, and the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/config",
       "coverage": "none",
       "category": "not-selected",
