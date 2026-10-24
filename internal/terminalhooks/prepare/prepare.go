@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/lifecycle"
 	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/terminalreport"
@@ -66,7 +67,7 @@ type PRLabelFunc func(ctx context.Context, req providers.UpdateWorkItemRequest) 
 // provider-issued proof that a later reviewed remediation was published with
 // no unresolved feedback or newer abort (#6407). Anything less still requires
 // a human removing the label after deciding how to take over the orphan.
-const AbortedRunLabel = "goobers:run-aborted"
+const AbortedRunLabel = lifecycle.LabelRunAborted
 
 // PROpenOperation is the runner.operation value the mutation-sidecar replay
 // stamps on the ref.touched event for a PR this run itself OPENED
