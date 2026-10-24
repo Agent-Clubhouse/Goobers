@@ -244,6 +244,40 @@ type WorkerAvailabilitySample struct {
 	Available       int
 }
 
+// ContinuationClaimsSample is a snapshot of the scheduler's waiting-continuation
+// claims (#8186): parked parents whose resume was refused for capacity and who
+// hold the next freed slot. Zero is a valid, observable value. OldestSince is
+// when the oldest live claim was first made; it is ignored when Count is zero.
+type ContinuationClaimsSample struct {
+	OperatingSystem string
+	Count           int
+	OldestSince     time.Time
+	ObservedAt      time.Time
+}
+
+// RecordContinuationClaims publishes the waiting-continuation claim count and
+// the age of the oldest claim. Nil clients and telemetry-disabled clients are
+// no-ops.
+func (c *Client) RecordContinuationClaims(ctx context.Context, sample ContinuationClaimsSample) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	count := max(sample.Count, 0)
+	attrs := c.instruments.attributeSet(queueSaturationAttrs("", sample.OperatingSystem)...)
+	c.instruments.continuationClaims.Record(ctx, int64(count), attrs)
+	ageSeconds := int64(0)
+	if count > 0 && !sample.OldestSince.IsZero() {
+		observedAt := sample.ObservedAt
+		if observedAt.IsZero() {
+			observedAt = time.Now()
+		}
+		if age := observedAt.Sub(sample.OldestSince); age > 0 {
+			ageSeconds = int64(age.Seconds())
+		}
+	}
+	c.instruments.continuationClaimsAge.Record(ctx, ageSeconds, attrs)
+}
+
 // RecordSchedulerQueueSaturation publishes queue depth, oldest queue age, and
 // worker availability gauges. Nil clients and telemetry-disabled clients are
 // no-ops, preserving optional, non-blocking export semantics.

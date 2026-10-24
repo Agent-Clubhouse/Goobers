@@ -89,6 +89,14 @@ const (
 	// MetricWorkersAvailable reports configured scheduler capacity that is not
 	// currently reserved. It is emitted only when capacity is observable.
 	MetricWorkersAvailable = "goobers.workers.available"
+	// MetricContinuationClaims reports parked parent runs holding a
+	// waiting-continuation claim on scheduler capacity (#8186). Claims are in
+	// memory per scheduler epoch, so zero right after a control-plane failover
+	// is expected until the waiting parents retry.
+	MetricContinuationClaims = "goobers.continuation.claims"
+	// MetricContinuationClaimsOldestAge reports how long the oldest live
+	// waiting-continuation claim has waited, in seconds.
+	MetricContinuationClaimsOldestAge = "goobers.continuation.claims.oldest_age"
 )
 
 const (
@@ -194,6 +202,8 @@ type instruments struct {
 	queueDepth               apimetric.Int64Gauge
 	queueOldestAge           apimetric.Int64Gauge
 	workersAvailable         apimetric.Int64Gauge
+	continuationClaims       apimetric.Int64Gauge
+	continuationClaimsAge    apimetric.Int64Gauge
 	limiter                  *cardinalityLimiter
 }
 
@@ -259,6 +269,10 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst.queueOldestAge, err = newInt64Gauge(meter, MetricQueueOldestAge)
 	record(err)
 	inst.workersAvailable, err = newInt64Gauge(meter, MetricWorkersAvailable)
+	record(err)
+	inst.continuationClaims, err = newInt64Gauge(meter, MetricContinuationClaims)
+	record(err)
+	inst.continuationClaimsAge, err = newInt64Gauge(meter, MetricContinuationClaimsOldestAge)
 	record(err)
 
 	if len(errs) != 0 {

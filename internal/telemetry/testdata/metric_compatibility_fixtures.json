@@ -55,6 +55,46 @@
                   },
                   "metrics": [
                     {
+                      "name": "goobers.continuation.claims",
+                      "description": "Parked parent runs holding a waiting-continuation claim on scheduler capacity, by operating system. Zero right after a control-plane failover is expected until the waiting parents retry.",
+                      "unit": "{claim}",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.continuation.claims.oldest_age",
+                      "description": "Age in seconds of the oldest live waiting-continuation claim, by operating system.",
+                      "unit": "s",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              }
+                            ],
+                            "as_int": "120"
+                          }
+                        ]
+                      }
+                    },
+                    {
                       "name": "goobers.escalations",
                       "description": "Stages and gates escalated to a human.",
                       "unit": "{escalation}",

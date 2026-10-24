@@ -940,3 +940,48 @@ func (e *countingMetricExporter) names() metricNames {
 	}
 	return names
 }
+
+func TestContinuationClaimMetricsRecordCountAndOldestAge(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+	observedAt := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	client.RecordContinuationClaims(context.Background(), ContinuationClaimsSample{
+		OperatingSystem: runtime.GOOS, Count: 3, OldestSince: observedAt.Add(-7 * time.Minute), ObservedAt: observedAt,
+	})
+	collected := collectMetrics(t, reader)
+	counts := metricPoints(t, collected, MetricContinuationClaims)
+	if len(counts) != 1 || counts[0].value != 3 {
+		t.Fatalf("%s points = %+v, want one point of 3", MetricContinuationClaims, counts)
+	}
+	assertPointAttr(t, counts[0], MetricAttrOS, runtime.GOOS)
+	ages := metricPoints(t, collected, MetricContinuationClaimsOldestAge)
+	if len(ages) != 1 || ages[0].value != 420 {
+		t.Fatalf("%s points = %+v, want one point of 420s", MetricContinuationClaimsOldestAge, ages)
+	}
+}
+
+// Zero is observable: no waiting parents is a real value, so both gauges are
+// published as 0 rather than omitted, and an ignored OldestSince cannot invent
+// an age.
+func TestContinuationClaimMetricsPublishZeroWhenNothingIsWaiting(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+	observedAt := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	client.RecordContinuationClaims(context.Background(), ContinuationClaimsSample{
+		OperatingSystem: runtime.GOOS, Count: 0, OldestSince: observedAt.Add(-time.Hour), ObservedAt: observedAt,
+	})
+	collected := collectMetrics(t, reader)
+	for _, name := range []string{MetricContinuationClaims, MetricContinuationClaimsOldestAge} {
+		points := metricPoints(t, collected, name)
+		if len(points) != 1 || points[0].value != 0 {
+			t.Fatalf("%s points = %+v, want a zero point", name, points)
+		}
+	}
+}
+
+func TestContinuationClaimMetricsAreNoOpsWithoutAClient(t *testing.T) {
+	var client *Client
+	client.RecordContinuationClaims(context.Background(), ContinuationClaimsSample{Count: 1})
+}
