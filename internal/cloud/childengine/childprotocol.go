@@ -24,6 +24,10 @@ var (
 	// permit while parked would deadlock a single-slot tenant on its own child.
 	ErrCapacityPlaneNotComposed = errors.New("childengine: capacity plane not composed: a parked parent's concurrency permit cannot be released")
 	errResultDiffers            = errors.New("childengine: completion does not match the sealed child result")
+	// errChildAlreadyFinished refuses parking on a child whose result is
+	// sealed: the parent has resumed or is resuming, and a late Park (from a
+	// timed-out attempt) must not lend the running parent's slot again.
+	errChildAlreadyFinished = errors.New("childengine: the child has finished; its parent cannot park on it")
 )
 
 // maxContinuationBytes is the engine's bound on a continuation artifact.
@@ -68,8 +72,14 @@ func (s *Service) Park(ctx context.Context, in engine.ChildParkInput) (err error
 	if err := s.configured(); err != nil {
 		return err
 	}
-	if _, err := s.boundChild(ctx, in.Binding); err != nil {
+	child, err := s.boundChild(ctx, in.Binding)
+	if err != nil {
 		return err
+	}
+	// Finalize marks the child terminal with its sealed result before
+	// Complete can run, so a Park arriving after Complete always sees it.
+	if child.State.Terminal() {
+		return errChildAlreadyFinished
 	}
 	if s.Capacity == nil {
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, ErrCapacityPlaneNotComposed)

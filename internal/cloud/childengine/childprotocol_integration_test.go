@@ -3,6 +3,7 @@
 package childengine
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -119,27 +120,29 @@ func TestFinalizeSealsACancelledChild(t *testing.T) {
 
 // Parking and resuming need the capacity plane; without it both are a named
 // unavailability, never a silent no-op that would keep a parked parent's
-// permit.
+// permit. Once the child's result is sealed, a late Park (a timed-out
+// attempt's, arriving after Complete) is refused rather than lending the
+// running parent's slot again.
 func TestParkAndCompleteNeedTheCapacityPlane(t *testing.T) {
 	f := newProtocolFamily(t)
 	wait := livejournal.AppendReceipt{Key: "wait-1", Seq: 7, Type: journal.EventStageFinished}
-	if err := f.service.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
+	park := engine.ChildParkInput{Binding: f.binding, Wait: wait}
+	if err := f.service.Park(t.Context(), park); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
 		t.Fatalf("park without a capacity plane = %v", err)
+	}
+	capacity := &recordedCapacity{}
+	f.service.Capacity = capacity
+	if err := f.service.Park(t.Context(), park); err != nil || capacity.released != 1 {
+		t.Fatalf("park = %v (released %d)", err, capacity.released)
 	}
 	sealed, err := f.service.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := f.service.Park(t.Context(), park); !errors.Is(err, engine.ErrChildCustodyRefused) || capacity.released != 1 {
+		t.Fatalf("park after the result is sealed = %v (released %d), want refused", err, capacity.released)
+	}
 	completion := engine.ChildCompletionInput{Binding: f.binding, Wait: wait, Result: sealed}
-	if _, err := f.service.Complete(t.Context(), completion); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
-		t.Fatalf("complete without a capacity plane = %v", err)
-	}
-
-	capacity := &recordedCapacity{}
-	f.service.Capacity = capacity
-	if err := f.service.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); err != nil || capacity.released != 1 {
-		t.Fatalf("park = %v (released %d)", err, capacity.released)
-	}
 	forged := completion
 	forged.Result.Input.Summary = "a result the child never sealed"
 	if _, err := f.service.Complete(t.Context(), forged); !errors.Is(err, engine.ErrChildCustodyRefused) || capacity.reacquired != 0 {
@@ -147,6 +150,63 @@ func TestParkAndCompleteNeedTheCapacityPlane(t *testing.T) {
 	}
 	if _, err := f.service.Complete(t.Context(), completion); err != nil || capacity.reacquired != 1 {
 		t.Fatalf("complete = %v (reacquired %d)", err, capacity.reacquired)
+	}
+	if err := f.service.Park(t.Context(), park); !errors.Is(err, engine.ErrChildCustodyRefused) || capacity.released != 1 {
+		t.Fatalf("a zombie park after complete = %v (released %d), want refused", err, capacity.released)
+	}
+	f.service.Capacity = nil
+	if _, err := f.service.Complete(t.Context(), completion); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
+		t.Fatalf("complete without a capacity plane = %v", err)
+	}
+}
+
+// receiptOnReread serves the real result once (the sealed-result read) and a
+// different one after, as a receipt changed or lost between the two reads.
+type receiptOnReread struct {
+	Custody
+	reads   int
+	reread  triggerqueue.ChildResult
+	failure error
+}
+
+func (r *receiptOnReread) ChildResult(ctx context.Context, identity triggerqueue.ChildIdentity) (triggerqueue.ChildResult, error) {
+	r.reads++
+	if r.reads == 1 {
+		return r.Custody.ChildResult(ctx, identity)
+	}
+	return r.reread, r.failure
+}
+
+// Complete points the parent only at exactly the receipt it verified: one
+// whose digest differs, that is empty, or that exceeds the engine's 64 KiB
+// continuation bound is refused, never handed to the parent.
+func TestCompleteRefusesAReceiptThatIsNotTheSealedOne(t *testing.T) {
+	f := newProtocolFamily(t)
+	f.service.Capacity = &recordedCapacity{}
+	sealed, err := f.service.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedReceipt, err := f.controller.ChildResult(t.Context(), f.binding.Child.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := bytes.Repeat([]byte("x"), maxContinuationBytes+1)
+	completion := engine.ChildCompletionInput{Binding: f.binding, Wait: livejournal.AppendReceipt{Key: "wait-1", Seq: 7, Type: journal.EventStageFinished}, Result: sealed}
+	for name, reread := range map[string]triggerqueue.ChildResult{
+		"other digest": {Receipt: []byte("another receipt"), ReceiptDigest: journal.Digest([]byte("another receipt"))},
+		"empty":        {ReceiptDigest: sealedReceipt.ReceiptDigest},
+		"oversized":    {Receipt: oversized, ReceiptDigest: sealedReceipt.ReceiptDigest},
+	} {
+		custody := &receiptOnReread{Custody: f.service.Custody, reread: reread}
+		service := *f.service
+		service.Custody = custody
+		if _, err := service.Complete(t.Context(), completion); err == nil || custody.reads < 2 {
+			t.Fatalf("%s: complete = %v after %d reads, want refused at the receipt guard", name, err, custody.reads)
+		}
+	}
+	if _, err := f.service.Complete(t.Context(), completion); err != nil {
+		t.Fatalf("complete with the sealed receipt = %v", err)
 	}
 }
 
@@ -273,13 +333,6 @@ func TestFencedProtocolServesTheChildProtocolUnderTheLiveLease(t *testing.T) {
 	if err := protocol.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := protocol.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: f.binding.Child.AcceptedAt.Add(time.Second)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sealed.Validate(f.binding.Child); err != nil {
-		t.Fatalf("sealed result does not validate as the engine checks it: %v", err)
-	}
 	wait := livejournal.AppendReceipt{Key: "wait-1", Seq: 7, Type: journal.EventRunnerAnnotation}
 	if err := protocol.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); !errors.Is(err, engine.ErrChildCustodyUnavailable) || !errors.Is(err, ErrCapacityPlaneNotComposed) {
 		t.Fatalf("park without the capacity plane = %v", err)
@@ -288,6 +341,13 @@ func TestFencedProtocolServesTheChildProtocolUnderTheLiveLease(t *testing.T) {
 	protocol.Capacity = capacity
 	if err := protocol.Park(t.Context(), engine.ChildParkInput{Binding: f.binding, Wait: wait}); err != nil || capacity.released != 1 {
 		t.Fatalf("park = %v (released %d)", err, capacity.released)
+	}
+	sealed, err := protocol.Finalize(t.Context(), engine.ChildFinalizeInput{Binding: f.binding, State: triggerqueue.ChildCompleted, FinishedAt: f.binding.Child.AcceptedAt.Add(time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sealed.Validate(f.binding.Child); err != nil {
+		t.Fatalf("sealed result does not validate as the engine checks it: %v", err)
 	}
 	pointer, err := protocol.Complete(t.Context(), engine.ChildCompletionInput{Binding: f.binding, Wait: wait, Result: sealed})
 	if err != nil || capacity.reacquired != 1 || pointer.Artifact == nil || pointer.Artifact.Digest != sealed.ResultRef {

@@ -33,7 +33,7 @@ func classify(err error) error {
 		errors.Is(err, acceptance.ErrStaleChildEpoch), errors.Is(err, objstore.ErrGenerationUnavailable),
 		pgconn.SafeToRetry(err):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, err)
-	case errors.Is(err, errNotLiveChild), errors.Is(err, errBindingDiffers), errors.Is(err, errResultDiffers), errors.Is(err, sql.ErrNoRows),
+	case errors.Is(err, errNotLiveChild), errors.Is(err, errBindingDiffers), errors.Is(err, errResultDiffers), errors.Is(err, errChildAlreadyFinished), errors.Is(err, sql.ErrNoRows),
 		errors.Is(err, triggerqueue.ErrParentCancelled), errors.Is(err, triggerqueue.ErrParentSettled),
 		errors.Is(err, triggerqueue.ErrChildAuthorityChanged), errors.Is(err, triggerqueue.ErrChildProposalUnavailable),
 		// A sealed result never changes, and one that does not verify is not
