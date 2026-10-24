@@ -167,7 +167,10 @@ func newControlProvider(db databaseServices, p *controlPlanes) (*controlProvider
 	if err != nil {
 		return nil, fmt.Errorf("control provider credentials: %w", err)
 	}
-	runs := terminalwriter.JournalRuns{Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Journal: backend, Generations: p.generations}
+	runs := terminalwriter.JournalRuns{
+		Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Children: terminalwriter.AcceptanceChildren(store.ChildForExecutionRun),
+		Journal: backend, Generations: p.generations,
+	}
 	writer, err := terminalwriter.New(runs, backends, registrar)
 	if err != nil {
 		return nil, fmt.Errorf("control provider writer: %w", err)
