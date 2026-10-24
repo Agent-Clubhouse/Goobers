@@ -71,6 +71,10 @@ type world struct {
 	maxLive  int            // peak of live
 	released map[string]chan struct{}
 	closed   map[string]bool
+	// goneUntilStarted makes the engine answer NotFound (Outcome.Gone) for a run
+	// no controller has started yet, as Temporal does for a start that never
+	// reached it.
+	goneUntilStarted bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -132,6 +136,7 @@ type controller struct {
 	epoch     context.Context
 	cancel    context.CancelFunc
 	admission *schedulerAdmission
+	deps      control.AdmissionDeps
 }
 
 func (w *world) controller(holder string, handle func(*lease.Manager) *lease.Handle, entry localscheduler.WorkflowEntry, withSources bool) *controller {
@@ -159,25 +164,7 @@ func (w *world) skewedController(holder string, skew time.Duration, handle func(
 	w.t.Cleanup(cancel)
 
 	eng := engineStarter(func(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
-		w.mu.Lock()
-		w.starts[in.RunID]++
-		first := w.starts[in.RunID] == 1
-		if first {
-			w.live++
-			w.maxLive = max(w.maxLive, w.live)
-			if _, ok := w.released[in.RunID]; !ok {
-				w.released[in.RunID] = make(chan struct{})
-			}
-		}
-		w.mu.Unlock()
-		pins, err := acceptance.RunPinsFor(in)
-		if err != nil {
-			return engine.StartResult{}, err
-		}
-		if err := store.ConfirmStart(ctx, in.AcceptanceID, in.RunID, pins); err != nil {
-			return engine.StartResult{}, err
-		}
-		return engine.StartResult{RunID: in.RunID}, nil
+		return w.engineStart(ctx, store, in, 0)
 	})
 	comp := schedulerComposition{
 		Applied: func() (cloudconfig.Candidate, bool) { return cloudconfig.Candidate{Digest: "gen-1"}, true },
@@ -205,6 +192,10 @@ func (w *world) skewedController(holder string, skew time.Duration, handle func(
 		},
 		Terminal: func(ctx context.Context, runID string) (schedstart.Outcome, error) {
 			w.mu.Lock()
+			if w.goneUntilStarted && w.starts[runID] == 0 {
+				w.mu.Unlock()
+				return schedstart.Outcome{Phase: journal.PhaseFailed, Gone: true}, nil
+			}
 			ch, ok := w.released[runID]
 			if !ok {
 				ch = make(chan struct{})
@@ -247,6 +238,7 @@ func (w *world) skewedController(holder string, skew time.Duration, handle func(
 			}, nil
 		},
 	}
+	c.deps = deps
 	admission, err := comp.admission(epochCtx, deps)
 	if err != nil {
 		w.t.Fatal(err)
@@ -502,4 +494,105 @@ func TestSuccessorWithAClockBehindDoesNotStallOrDoubleFire(t *testing.T) {
 	}
 	second.stop()
 	first.stop()
+}
+
+// recoverStart plays the L2 reconcile that re-drives a 'dispatching' row: it
+// starts the run through the engine outside the scheduler's admission.
+func (c *controller) recoverStart(record triggerqueue.Record, predecessorEpoch int64) {
+	c.w.t.Helper()
+	in, err := c.deps.Resolve(c.w.t.Context(), record)
+	if err != nil {
+		c.w.t.Fatal(err)
+	}
+	if _, err := c.w.engineStart(c.w.t.Context(), c.store, in, predecessorEpoch); err != nil {
+		c.w.t.Fatal(err)
+	}
+}
+
+// TestUncertainStartHoldsItsSlotUntilRecoveredNotUntilNotFound: a predecessor
+// marks a start 'dispatching' and dies before the engine sees it. The engine
+// answers NotFound for it (not started YET), which must not free its slot: the
+// recovery starts it about a minute later, and a run admitted into the freed slot
+// would then run alongside it, over MaxConcurrentRuns.
+func TestUncertainStartHoldsItsSlotUntilRecoveredNotUntilNotFound(t *testing.T) {
+	w := newWorld(t)
+	w.goneUntilStarted = true
+	first := w.controller("replica-1", func(m *lease.Manager) *lease.Handle { return pgtest.Acquire(t, m) }, testEntry(1), false)
+	first.accept(2, "k") // D then X (accepted in this order)
+	rows, err := first.store.RetainedPage(t.Context(), "", 10)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("accepted rows = %v, %v", rows, err)
+	}
+	dispatching := rows[0]
+	if err := first.store.BeginDispatch(t.Context(), dispatching.ID); err != nil { // predecessor dies right here
+		t.Fatal(err)
+	}
+
+	second := w.controller("replica-2", func(m *lease.Manager) *lease.Handle { return pgtest.Takeover(t, w.admin, m) }, testEntry(1), false)
+	if err := second.admission.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	second.tickConcurrently(4, 6)
+	if w.startCount() != 0 {
+		t.Fatalf("the other accepted run started (%d) although the unresolved start holds the only slot", w.startCount())
+	}
+
+	// The recovery re-drives the dispatching row: it starts D. The slot is still held.
+	second.recoverStart(dispatching, first.handle.Epoch)
+	second.tickConcurrently(4, 6)
+	w.settle(1, "only the recovered start runs")
+	if w.maxLive > 1 {
+		t.Fatalf("peak live runs = %d, want at most MaxConcurrentRuns=1", w.maxLive)
+	}
+
+	// D closes: now exactly one slot frees for the other accepted run.
+	var recovered string
+	w.mu.Lock()
+	for run := range w.starts {
+		recovered = run
+	}
+	w.mu.Unlock()
+	w.releaseRun(recovered)
+	deadline := time.Now().Add(10 * time.Second)
+	for w.startCount() < 2 && time.Now().Before(deadline) {
+		second.tickConcurrently(2, 2)
+	}
+	w.settle(2, "the other run is admitted once the recovered one closes")
+	if w.maxLive > 1 {
+		t.Fatalf("peak live runs = %d, want at most 1", w.maxLive)
+	}
+	if dup := w.duplicates(); len(dup) != 0 {
+		t.Fatalf("runs reached the engine more than once: %v", dup)
+	}
+	second.stop()
+	first.stop()
+}
+
+// engineStart is the fake engine: it counts the start and confirms it the way the
+// start fence does (adopting a predecessor's start when adoptFrom is its epoch),
+// so run pins are real.
+func (w *world) engineStart(ctx context.Context, store *acceptance.Store, in engine.RunInput, adoptFrom int64) (engine.StartResult, error) {
+	w.mu.Lock()
+	w.starts[in.RunID]++
+	if w.starts[in.RunID] == 1 {
+		w.live++
+		w.maxLive = max(w.maxLive, w.live)
+		if _, ok := w.released[in.RunID]; !ok {
+			w.released[in.RunID] = make(chan struct{})
+		}
+	}
+	w.mu.Unlock()
+	pins, err := acceptance.RunPinsFor(in)
+	if err != nil {
+		return engine.StartResult{}, err
+	}
+	if adoptFrom > 0 {
+		err = store.AdoptStart(ctx, in.AcceptanceID, in.RunID, adoptFrom, pins)
+	} else {
+		err = store.ConfirmStart(ctx, in.AcceptanceID, in.RunID, pins)
+	}
+	if err != nil {
+		return engine.StartResult{}, err
+	}
+	return engine.StartResult{RunID: in.RunID}, nil
 }

@@ -524,3 +524,60 @@ func TestReadinessReportsDisabledSchedulerGates(t *testing.T) {
 		t.Fatal("a controller without a scheduler gate record must report no checks")
 	}
 }
+
+type flakyLog struct {
+	journal.InstanceStore
+	fail *atomic.Bool
+}
+
+func (l flakyLog) Append(e journal.Event) error {
+	if l.fail.Load() {
+		return errors.New("journal unavailable")
+	}
+	return l.InstanceStore.Append(e)
+}
+
+// Readiness describes the generation the scheduler adopted: when Reload fails
+// (its change is journaled first), the gate status is left as it was.
+func TestGateStatusIsOnlyChangedAfterAReloadSucceeds(t *testing.T) {
+	f := newAdmissionFixture(t, apiv1.ReadinessConditions{MaxConcurrentRuns: 1}, false)
+	var fail, composed atomic.Bool
+	f.comp.Counters = func(_ cloudconfig.Candidate, _ *localscheduler.ProviderQuotaState) (generationCounters, error) {
+		if !composed.Load() {
+			return nil, ErrCountersDisabled
+		}
+		return &fakeCounters{runCtx: make(chan context.Context, 1)}, nil
+	}
+	f.comp.OpenLog = func(context.Context, func(error)) (journal.InstanceStore, error) {
+		return flakyLog{InstanceStore: f.log, fail: &fail}, nil
+	}
+	epoch, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := f.build(epoch)
+	if err := a.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.gates.Checks()) == 0 {
+		t.Fatal("premise: the gates start disabled")
+	}
+	// The next generation HAS counters (which would clear the gates), but the
+	// scheduler cannot journal the reload.
+	composed.Store(true)
+	fail.Store(true)
+	f.setApplied("gen-2")
+	if err := a.Tick(t.Context()); err == nil {
+		t.Fatal("a failed reload must fail the tick")
+	}
+	if len(f.gates.Checks()) == 0 {
+		t.Fatal("the gates were cleared for a generation the scheduler did not adopt")
+	}
+	fail.Store(false)
+	if err := a.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if checks := f.gates.Checks(); len(checks) != 0 {
+		t.Fatalf("after the reload succeeded the gates should clear: %v", checks)
+	}
+	cancel()
+	stopAdmission(t, a)
+}

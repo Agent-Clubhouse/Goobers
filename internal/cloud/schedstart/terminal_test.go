@@ -43,7 +43,7 @@ func TestTemporalTerminalSeparatesDefinitiveFromTransient(t *testing.T) {
 		{"failed result keeps the cause", fakeRun{result: engine.RunResult{Status: "failed", FailureCode: "boom", FailureMessage: "stage broke"}}, journal.PhaseFailed, false},
 		{"workflow failed (execution error)", fakeRun{err: fmt.Errorf("closed: %w", &temporal.WorkflowExecutionError{})}, journal.PhaseFailed, false},
 		{"workflow canceled (execution error)", fakeRun{err: &temporal.WorkflowExecutionError{}}, journal.PhaseFailed, false},
-		{"permanently gone (NotFound)", fakeRun{err: serviceerror.NewNotFound("no such workflow")}, journal.PhaseFailed, false},
+		{"unknown to the engine (NotFound)", fakeRun{err: serviceerror.NewNotFound("no such workflow")}, journal.PhaseFailed, false},
 		// A transient failure to OBSERVE must never be taken for a terminal.
 		{"server unavailable", fakeRun{err: serviceerror.NewUnavailable("temporal down")}, "", true},
 		{"plain network error", fakeRun{err: errors.New("connection reset")}, "", true},
@@ -71,5 +71,16 @@ func TestTemporalTerminalReturnsTheContextErrorAtEpochEnd(t *testing.T) {
 	_, err := TemporalTerminal(fakeWorkflows{run: fakeRun{err: serviceerror.NewUnavailable("x")}})(ctx, "run-1")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the context error, not a terminal", err)
+	}
+}
+
+func TestTemporalTerminalMarksNotFoundAsGoneButNotExecutionErrors(t *testing.T) {
+	gone, err := TemporalTerminal(fakeWorkflows{run: fakeRun{err: serviceerror.NewNotFound("x")}})(t.Context(), "r")
+	if err != nil || !gone.Gone {
+		t.Fatalf("NotFound outcome = %+v, %v; want Gone", gone, err)
+	}
+	closed, err := TemporalTerminal(fakeWorkflows{run: fakeRun{err: fmt.Errorf("c: %w", &temporal.WorkflowExecutionError{})}})(t.Context(), "r")
+	if err != nil || closed.Gone {
+		t.Fatalf("execution error outcome = %+v, %v; want a closed run that is not Gone", closed, err)
 	}
 }

@@ -47,7 +47,10 @@ func TemporalTerminal(workflows Workflows) Terminal {
 		}
 		var execution *temporal.WorkflowExecutionError
 		var notFound *serviceerror.NotFound
-		if errors.As(err, &execution) || errors.As(err, &notFound) {
+		if errors.As(err, &notFound) {
+			return Outcome{Phase: journal.PhaseFailed, Gone: true}, nil
+		}
+		if errors.As(err, &execution) {
 			return Outcome{Phase: journal.PhaseFailed}, nil
 		}
 		return Outcome{}, err

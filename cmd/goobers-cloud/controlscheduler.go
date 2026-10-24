@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -126,6 +127,9 @@ type schedulerComposition struct {
 	Quota *localscheduler.ProviderQuotaState
 	// Acquire pins a retained generation for as long as a prepared start needs it.
 	Acquire func(ctx context.Context, generation string) (release func(), err error)
+	// Settled reports whether an uncertain start's acceptance ended without a run
+	// (see schedstart.Config.Settled). nil reads the epoch's acceptance store.
+	Settled func(ctx context.Context, deps control.AdmissionDeps, acceptanceID string) (bool, error)
 	// Queue is the acceptance custody the drain pages and dispatches through; nil
 	// uses the epoch's acceptance store.
 	Queue func(control.AdmissionDeps) acceptanceQueue
@@ -200,6 +204,9 @@ func (a *schedulerAdmission) starterConfig() schedstart.Config {
 	return schedstart.Config{
 		Engine: a.deps.Starter, Resolve: a.deps.Resolve, Terminal: a.c.Terminal,
 		StartTimeout: 10 * time.Second, Report: a.c.report,
+		Settled: func(ctx context.Context, acceptanceID string) (bool, error) {
+			return a.c.settled(ctx, a.deps, acceptanceID)
+		},
 	}
 }
 
@@ -226,7 +233,7 @@ func (a *schedulerAdmission) Prepare(ctx context.Context) error {
 		return err
 	}
 	state = skewTolerantState{SchedulerState: state}
-	counters, err := a.buildCounters(applied)
+	counters, cause, err := a.buildCounters(applied)
 	if err != nil {
 		return err
 	}
@@ -268,29 +275,39 @@ func (a *schedulerAdmission) Prepare(ctx context.Context) error {
 	if err := a.scheduler.Reconcile("", a.c.now()); err != nil {
 		return err
 	}
+	a.commitGates(counters, cause)
 	a.starterConfig().WatchReconciled(a.epoch, open, a.scheduler.ReleaseReconciled, &a.tracker)
 	a.startCounters(counters)
 	a.prepared = true
 	return nil
 }
 
-// buildCounters builds the generation's counters over the shared quota, or
-// records every provider-backed gate as not enforced and returns nil.
-func (a *schedulerAdmission) buildCounters(applied cloudconfig.Candidate) (generationCounters, error) {
+// buildCounters builds the generation's counters over the shared quota. When
+// they are not composed it returns nil counters and the cause: the caller
+// records the gates (commitGates) only once the generation is actually adopted,
+// so readiness never describes a generation the scheduler did not take.
+func (a *schedulerAdmission) buildCounters(applied cloudconfig.Candidate) (generationCounters, error, error) {
 	if a.c.Counters == nil {
-		a.markDisabled(ErrCountersDisabled)
-		return nil, nil
+		return nil, ErrCountersDisabled, nil
 	}
 	counters, err := a.c.Counters(applied, a.c.Quota)
 	switch {
 	case errors.Is(err, ErrCountersDisabled):
-		a.markDisabled(err)
-		return nil, nil
+		return nil, err, nil
 	case err != nil:
-		return nil, err
+		return nil, nil, err
+	}
+	return counters, nil, nil
+}
+
+// commitGates makes the gate status describe the adopted generation: disabled
+// gates (with one journaled warning per epoch) or none.
+func (a *schedulerAdmission) commitGates(counters generationCounters, cause error) {
+	if counters == nil && cause != nil {
+		a.markDisabled(cause)
+		return
 	}
 	a.clearDisabled()
-	return counters, nil
 }
 
 const providerGatesReason = "provider-backed counters are not composed (no provider opener); backlog, demand and refill workflows stay disabled and MaxOpenPRs fails open"
@@ -376,7 +393,7 @@ func (a *schedulerAdmission) follow(context.Context) error {
 	if !ok || applied.Digest == a.generation {
 		return nil
 	}
-	counters, err := a.buildCounters(applied)
+	counters, cause, err := a.buildCounters(applied)
 	if err != nil {
 		return err
 	}
@@ -392,6 +409,7 @@ func (a *schedulerAdmission) follow(context.Context) error {
 	if err := a.scheduler.Reload(entries, prs, a.c.now(), old, applied.Digest, applied.Digest); err != nil {
 		return err
 	}
+	a.commitGates(counters, cause)
 	a.stopCounters()
 	a.setEntries(applied.Digest, entries)
 	a.startCounters(counters)
@@ -484,8 +502,9 @@ func holderFromRecord(record triggerqueue.Record) (schedstart.OpenRun, bool) {
 		return schedstart.OpenRun{}, false
 	}
 	return schedstart.OpenRun{
-		Identity: localscheduler.WorkflowIdentity{Gaggle: envelope.Target.Gaggle, Workflow: envelope.Target.Workflow},
-		RunID:    strings.TrimPrefix(record.ID, "trigger-"),
+		Identity:     localscheduler.WorkflowIdentity{Gaggle: envelope.Target.Gaggle, Workflow: envelope.Target.Workflow},
+		RunID:        strings.TrimPrefix(record.ID, "trigger-"),
+		AcceptanceID: record.ID, // an uncertain start: NotFound from the engine is not "gone"
 	}, true
 }
 
@@ -515,4 +534,27 @@ func (s skewTolerantState) WriteTriggerEvaluations(dir string, evaluations map[l
 		clamped[identity] = at
 	}
 	return s.SchedulerState.WriteTriggerEvaluations(dir, clamped)
+}
+
+// settled reads the acceptance of an uncertain start: it ended without a run
+// (release the slot) when the row is gone, rejected, or requeued as accepted; it
+// is still live ('dispatching', or 'dispatched' with a run the engine will know)
+// otherwise, and the slot is held.
+func (c schedulerComposition) settled(ctx context.Context, deps control.AdmissionDeps, acceptanceID string) (bool, error) {
+	if c.Settled != nil {
+		return c.Settled(ctx, deps, acceptanceID)
+	}
+	record, err := deps.Store.RecordByID(ctx, acceptanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	switch record.State {
+	case triggerqueue.Accepted, triggerqueue.Rejected:
+		return true, nil
+	default: // Dispatching, Dispatched
+		return false, nil
+	}
 }
