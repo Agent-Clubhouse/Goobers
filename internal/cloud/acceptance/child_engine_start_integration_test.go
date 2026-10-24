@@ -124,3 +124,25 @@ func TestByRunResolvesTheAcceptanceThatOwnsARun(t *testing.T) {
 		t.Fatalf("ByRun on an unknown run = %v, want sql.ErrNoRows", err)
 	}
 }
+
+// TestRejectAcceptedNeverTouchesAChildsCustody: the ordinary start loop rejects
+// a permanently refused ordinary start, but a generated child's acceptance row
+// is owned by its lineage and survives.
+func TestRejectAcceptedNeverTouchesAChildsCustody(t *testing.T) {
+	store, pool := childTestStore(t)
+	child, _, err := store.AcceptChild(t.Context(), childRequest("parent", "stage", "call"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := pool.QueryRow(t.Context(), `SELECT acceptance_id FROM control.child_lineage WHERE parent_run_id=$1`, child.Identity.ParentRunID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RejectAccepted(t.Context(), id, "sweep", time.Now()); err == nil {
+		t.Fatal("a child's acceptance was rejected by the ordinary start loop")
+	}
+	var state string
+	if err := pool.QueryRow(t.Context(), `SELECT state FROM control.acceptance WHERE id=$1`, id).Scan(&state); err != nil || state != "accepted" {
+		t.Fatalf("child acceptance state = %q, %v; want it untouched", state, err)
+	}
+}
