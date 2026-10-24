@@ -30,7 +30,7 @@ import (
 // rollup: see TestMergedReadMatchesLocalRollup for that.
 func TestDefectAggregatesWireShapeAndReplay(t *testing.T) {
 	store, _ := telemetryTestStore(t, "controller")
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond) // PG stores microseconds; Linux clocks carry nanoseconds
 	findings := []struct {
 		aggregate telemetryclient.Aggregate
 		finding   telemetryclient.Finding
@@ -140,7 +140,7 @@ func TestDefectAggregatesWireShapeAndReplay(t *testing.T) {
 
 func TestTelemetryCursorMonotonicAndFenced(t *testing.T) {
 	old, pool := telemetryTestStore(t, "old")
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond) // PG stores microseconds; Linux clocks carry nanoseconds
 	first := Batch{
 		Consumer:   "rollup",
 		Current:    journal.StreamCursor{Stream: journal.StreamScheduler},
@@ -487,7 +487,7 @@ func TestGateNoiseFindingsCannotBeMaterialized(t *testing.T) {
 // and report churn for a gate that never escalates.
 func TestGatePartialThresholdsKeepDefaults(t *testing.T) {
 	s, _ := telemetryTestStore(t, "gate-defaults")
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond) // PG stores microseconds; Linux clocks carry nanoseconds
 	if err := s.Apply(t.Context(), Batch{Consumer: "rollup", Current: journal.StreamCursor{Stream: "run:a"}, NextSeq: 1,
 		Gates: []GateRow{{Gaggle: "g", Workflow: "w", Gate: "review", Total: 10, ObservedAt: now}}}); err != nil {
 		t.Fatal(err)
