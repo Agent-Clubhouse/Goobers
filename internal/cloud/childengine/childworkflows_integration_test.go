@@ -5,6 +5,7 @@ package childengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -56,9 +58,9 @@ type childWorkflowFamily struct {
 	pins  *recordedPins
 	grant engine.ChildAuthorityGrant
 	// Faults injected into the per-request reads.
-	pinsErr, journalErr, boundErr error
-	execution                     func(n int) (startfence.StartedExecution, error)
-	executions                    int
+	pinsErr, journalErr, boundErr, generationErr error
+	execution                                    func(n int) (startfence.StartedExecution, error)
+	executions                                   int
 }
 
 // faultyCustody fails the bound-grant reads with err when set.
@@ -107,6 +109,7 @@ func (f *childWorkflowFamily) service() *childworkflow.HTTPService {
 		}
 		return open(ctx, runID)
 	}
+	parents.Generations = generationOutage{source: parents.Generations, err: &f.generationErr}
 	if f.execution != nil {
 		parents.Execution = func(context.Context, string) (startfence.StartedExecution, error) {
 			f.executions++
@@ -293,6 +296,11 @@ func TestChildWorkflowCheckOutagesAreRetryableOnEveryRoute(t *testing.T) {
 		"bound grant row": func(f *childWorkflowFamily) {
 			f.boundErr = outage
 		},
+		// What objstore.Source.Acquire returns for a pointer read, blob GET or
+		// reader pin that could not be made.
+		"retained generation": func(f *childWorkflowFamily) {
+			f.generationErr = fmt.Errorf("%w: %w", objstore.ErrGenerationUnavailable, outage)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newChildWorkflowFamily(t)
@@ -380,4 +388,17 @@ func TestDuplicateStartAfterBindLeavesNoPin(t *testing.T) {
 	if len(f.pins.pinned) != pinsBefore {
 		t.Fatalf("a duplicate start after the bind pinned again: %v", f.pins.pinned)
 	}
+}
+
+// generationOutage fails Acquire with err when set.
+type generationOutage struct {
+	source childworkflow.GenerationSource
+	err    *error
+}
+
+func (g generationOutage) Acquire(ctx context.Context, generation string) (childworkflow.Generation, error) {
+	if *g.err != nil {
+		return childworkflow.Generation{}, *g.err
+	}
+	return g.source.Acquire(ctx, generation)
 }
