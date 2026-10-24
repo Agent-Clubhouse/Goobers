@@ -108,6 +108,9 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 	if err != nil {
 		return services, err
 	}
+	if admission == nil {
+		return services, errors.New("cloud control admission factory returned nil")
+	}
 	originalAttach, originalStop := services.ReattachAwaiters, services.Stop
 	services.ReattachAwaiters = func(ctx context.Context) error {
 		if err := originalAttach(ctx); err != nil {
