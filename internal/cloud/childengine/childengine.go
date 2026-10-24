@@ -34,6 +34,9 @@ type Custody interface {
 	BindChildEngineStart(context.Context, triggerqueue.ChildIdentity, acceptance.ChildEngineStart) (acceptance.ChildEngineStart, error)
 	ChildEngineStart(context.Context, triggerqueue.ChildIdentity) (acceptance.ChildEngineStart, error)
 	FenceChildParent(context.Context, triggerqueue.ChildParent, string, time.Time) error
+	ChildResult(context.Context, triggerqueue.ChildIdentity) (triggerqueue.ChildResult, error)
+	KeepChildResult(context.Context, triggerqueue.ChildRecord, triggerqueue.ChildResult) error
+	SetChildState(context.Context, triggerqueue.ChildIdentity, triggerqueue.ChildStateUpdate, time.Time) error
 }
 
 // Accepted is the immutable input a freezer may read: the verified handoff,
@@ -62,6 +65,13 @@ type Service struct {
 	// Generations, when set, releases the config generation pin each child's
 	// acceptance took, once the engine has bound the child (#8085 c).
 	Generations GenerationUnpins
+	// Journal opens a run's journal read-only from the control journal, for
+	// the finalizer to read a child's result evidence.
+	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
+	// Capacity and Continuations are the parent capacity plane and the
+	// continuation path; nil refuses Park and Complete as unavailable.
+	Capacity      ParentCapacity
+	Continuations ContinuationWriter
 }
 
 // GenerationUnpins releases a child's pinned config generation.
