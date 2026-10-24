@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +20,16 @@ type recordingAdmission struct {
 	prepareErr error
 	stopErr    error
 	deps       AdmissionDeps
+}
+
+type inertAdmission struct{}
+
+func (inertAdmission) Prepare(context.Context) error { return nil }
+func (inertAdmission) Tick(context.Context) error    { return nil }
+func (inertAdmission) Stop(context.Context) error    { return nil }
+
+func inertAdmissionFactory(context.Context, AdmissionDeps) (Admission, error) {
+	return inertAdmission{}, nil
 }
 
 func (a *recordingAdmission) Prepare(context.Context) error {
@@ -101,23 +112,12 @@ func TestAdmissionPrepareFailureBlocksTheEpoch(t *testing.T) {
 	}
 }
 
-// Without an Admission the legacy path is untouched.
-func TestNoAdmissionKeepsTheLegacyServices(t *testing.T) {
+func TestBuildRefusesWithoutAdmission(t *testing.T) {
 	var calls []string
 	runtime := admissionRuntime(&calls, &recordingAdmission{calls: &calls}, nil)
 	runtime.Admission = nil
-	services, err := runtime.Build(t.Context(), &lease.Handle{InstanceID: "instance", Epoch: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := services.ReattachAwaiters(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := services.Stop(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"attach", "stop"}; !slices.Equal(calls, want) {
-		t.Fatalf("calls = %v, want %v", calls, want)
+	if _, err := runtime.Build(t.Context(), &lease.Handle{InstanceID: "instance", Epoch: 1}); err == nil || !strings.Contains(err.Error(), "requires scheduler admission") {
+		t.Fatalf("Build = %v, want scheduler admission refusal", err)
 	}
 }
 
@@ -126,5 +126,14 @@ func TestAdmissionBuildFailureFailsTheEpochBuild(t *testing.T) {
 	failure := errors.New("no scheduler")
 	if _, err := admissionRuntime(&calls, &recordingAdmission{calls: &calls}, failure).Build(t.Context(), &lease.Handle{InstanceID: "instance", Epoch: 1}); !errors.Is(err, failure) {
 		t.Fatalf("Build = %v, want the admission failure", err)
+	}
+}
+
+func TestAdmissionBuildRefusesNilAdmission(t *testing.T) {
+	var calls []string
+	runtime := admissionRuntime(&calls, &recordingAdmission{calls: &calls}, nil)
+	runtime.Admission = func(context.Context, AdmissionDeps) (Admission, error) { return nil, nil }
+	if _, err := runtime.Build(t.Context(), &lease.Handle{InstanceID: "instance", Epoch: 1}); err == nil || !strings.Contains(err.Error(), "factory returned nil") {
+		t.Fatalf("Build = %v, want nil admission refusal", err)
 	}
 }

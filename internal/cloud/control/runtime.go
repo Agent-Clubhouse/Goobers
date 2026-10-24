@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,9 +29,7 @@ type Runtime struct {
 	TaskQueue     string
 	Resolve       acceptance.StartInputResolver
 	Services      func(context.Context, *lease.Handle) (EpochServices, error)
-	// Admission, when set, replaces the legacy direct-start drain: accepted
-	// rows are admitted through the scheduler's run conditions instead of
-	// starting straight at the start fence. Nil keeps the legacy drain.
+	// Admission admits accepted rows through the scheduler's run conditions.
 	Admission func(context.Context, AdmissionDeps) (Admission, error)
 	Report    func(error)
 }
@@ -63,6 +60,9 @@ type Admission interface {
 func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices, error) {
 	if r.Configuration == nil || r.Pool == nil || r.Lease == nil || r.Temporal == nil || r.Resolve == nil || r.Services == nil || r.TaskQueue == "" {
 		return EpochServices{}, errors.New("cloud control requires pinned input, lifecycle services and Temporal wiring")
+	}
+	if r.Admission == nil {
+		return EpochServices{}, errors.New("cloud control requires scheduler admission")
 	}
 	services, err := r.Services(ctx, handle)
 	if err != nil {
@@ -104,24 +104,23 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		}
 		return reconcile(ctx)
 	}
-	var admission Admission
-	if r.Admission != nil {
-		admission, err = r.Admission(ctx, AdmissionDeps{Handle: handle, Store: store, Starter: starter, Resolve: r.resolve})
-		if err != nil {
-			return services, err
-		}
-		originalAttach, originalStop := services.ReattachAwaiters, services.Stop
-		services.ReattachAwaiters = func(ctx context.Context) error {
-			if err := originalAttach(ctx); err != nil {
-				return err
-			}
-			return admission.Prepare(ctx)
-		}
-		services.Stop = func(ctx context.Context) error {
-			return errors.Join(originalStop(ctx), admission.Stop(ctx))
-		}
+	admission, err := r.Admission(ctx, AdmissionDeps{Handle: handle, Store: store, Starter: starter, Resolve: r.resolve})
+	if err != nil {
+		return services, err
 	}
-	var after string
+	if admission == nil {
+		return services, errors.New("cloud control admission factory returned nil")
+	}
+	originalAttach, originalStop := services.ReattachAwaiters, services.Stop
+	services.ReattachAwaiters = func(ctx context.Context) error {
+		if err := originalAttach(ctx); err != nil {
+			return err
+		}
+		return admission.Prepare(ctx)
+	}
+	services.Stop = func(ctx context.Context) error {
+		return errors.Join(originalStop(ctx), admission.Stop(ctx))
+	}
 	services.L1 = func(ctx context.Context) error {
 		if err := r.Configuration.Reload(ctx); err != nil {
 			return err
@@ -136,12 +135,7 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		if err := observations.Replace(ctx, snapshot); err != nil {
 			return err
 		}
-		if admission != nil {
-			return admission.Tick(ctx)
-		}
-		next, err := r.drain(ctx, store, starter, after)
-		after = next
-		return err
+		return admission.Tick(ctx)
 	}
 	pins := runPinReports{}
 	services.L2 = func(ctx context.Context) error {
@@ -182,60 +176,6 @@ func (r Runtime) resolve(ctx context.Context, record triggerqueue.Record) (engin
 	}
 	in.AcceptanceID = record.ID
 	return in, nil
-}
-
-func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter engine.Starter, after string) (string, error) {
-	// Page across retained custody so an invalid or uncertain item cannot starve
-	// the next accepted workflow. Temporal identity is always supplied by Store.
-	rows, err := store.RetainedPage(ctx, after, 100)
-	if err != nil {
-		return after, err
-	}
-	var workers sync.WaitGroup
-	slots := make(chan struct{}, 4)
-	for _, record := range rows {
-		after = record.ID
-		if record.State != triggerqueue.Accepted {
-			continue
-		}
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			workers.Wait()
-			return after, ctx.Err()
-		}
-		workers.Go(func() {
-			defer func() { <-slots }()
-			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			in, err := r.resolve(attempt, record)
-			if errors.Is(err, acceptance.ErrNotOrdinaryStart) {
-				// A generated child's custody is owned by its own lifecycle. A
-				// payload that is not even a readable kind is corrupt and nothing
-				// else will ever look at it, so it is reported (still never rejected).
-				if errors.Is(err, acceptance.ErrCorruptStart) && r.Report != nil {
-					r.Report(fmt.Errorf("accepted row %s: %w", record.ID, err))
-				}
-				return
-			}
-			if errors.Is(err, acceptance.ErrPermanentStart) {
-				// Retrying can never succeed and would re-pin the generation on
-				// every sweep: finish the row as rejected with the reason.
-				err = errors.Join(err, store.RejectAccepted(attempt, record.ID, err.Error(), time.Now()))
-			} else if err == nil {
-				_, err = starter.Start(attempt, in)
-			}
-			if err != nil && r.Report != nil {
-				r.Report(err)
-			}
-		})
-	}
-	workers.Wait()
-
-	if len(rows) < 100 {
-		after = ""
-	}
-	return after, nil
 }
 
 func (r Runtime) report(err error) {

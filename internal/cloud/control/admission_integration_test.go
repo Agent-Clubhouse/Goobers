@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,12 +28,11 @@ func (c *countingStartClient) ExecuteWorkflow(context.Context, client.StartWorkf
 	return nil, errors.New("refused: this test never starts a workflow")
 }
 
-// The L1 tick with an Admission set admits through it and never reaches the
-// legacy start-fence drain: an Accepted row stays untouched by the Temporal
-// client. The same fixture without an Admission does reach it (the premise).
-func TestAdmissionReplacesTheLegacyDrainOnTheL1Tick(t *testing.T) {
+// The L1 tick delegates accepted starts to Admission, never directly to the
+// Temporal client. Without Admission, the runtime must refuse to build.
+func TestL1RequiresSchedulerAdmission(t *testing.T) {
 	for _, withAdmission := range []bool{true, false} {
-		t.Run(map[bool]string{true: "admission", false: "legacy"}[withAdmission], func(t *testing.T) {
+		t.Run(map[bool]string{true: "admission", false: "missing-admission"}[withAdmission], func(t *testing.T) {
 			pool := controlTestPool(t)
 			manager, err := lease.New(lease.Config{Pool: pool, InstanceID: "admission-test", Name: lease.ControllerName, Holder: "only"})
 			if err != nil {
@@ -64,6 +64,15 @@ func TestAdmissionReplacesTheLegacyDrainOnTheL1Tick(t *testing.T) {
 				runtime.Admission = nil
 			}
 			services, err := runtime.Build(t.Context(), handle)
+			if !withAdmission {
+				if err == nil || !strings.Contains(err.Error(), "requires scheduler admission") {
+					t.Fatalf("Build = %v, want mandatory admission refusal", err)
+				}
+				if temporal.starts.Load() != 0 {
+					t.Fatal("missing admission reached the Temporal client")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,11 +85,8 @@ func TestAdmissionReplacesTheLegacyDrainOnTheL1Tick(t *testing.T) {
 					ticks++
 				}
 			}
-			switch {
-			case withAdmission && (ticks != 1 || temporal.starts.Load() != 0):
-				t.Fatalf("admission ticks = %d, legacy starts = %d; want 1 and 0", ticks, temporal.starts.Load())
-			case !withAdmission && (ticks != 0 || temporal.starts.Load() == 0):
-				t.Fatalf("premise: legacy drain ticks = %d, starts = %d; want 0 and >0", ticks, temporal.starts.Load())
+			if ticks != 1 || temporal.starts.Load() != 0 {
+				t.Fatalf("admission ticks = %d, direct starts = %d; want 1 and 0", ticks, temporal.starts.Load())
 			}
 		})
 	}

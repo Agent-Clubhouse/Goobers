@@ -445,7 +445,7 @@ func (a *schedulerAdmission) queue() acceptanceQueue {
 func (a *schedulerAdmission) drain() schedstart.Drain {
 	queue := a.queue()
 	return schedstart.Drain{
-		Pager: queue,
+		Pager: queue, RejectAccepted: a.deps.Store.RejectAccepted,
 		Service: startintent.Service{
 			Queue: queue, Now: a.c.now,
 			Build:        a.build,
