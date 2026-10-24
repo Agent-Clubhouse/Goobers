@@ -46,7 +46,7 @@ func TestShutdownReporterPreservesFailuresUnrelatedToShutdown(t *testing.T) {
 			var reported []error
 			shutdownReporter(ctx, func(err error) { reported = append(reported, err) })(tt.err)
 			if tt.want {
-				if len(reported) != 1 || reported[0] != tt.err {
+				if len(reported) != 1 || !errors.Is(reported[0], tt.err) {
 					t.Fatalf("reported %v, want original error %v", reported, tt.err)
 				}
 			} else if len(reported) != 0 {
