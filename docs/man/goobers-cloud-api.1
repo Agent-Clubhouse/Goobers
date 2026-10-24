@@ -1,0 +1,34 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLOUD API" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers-cloud api \- Serve the cloud control-plane API.
+.SH SYNOPSIS
+\fBgoobers-cloud api\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers-cloud api [DATABASE OPTIONS]
+
+Serve the cloud control-plane API.
+
+Database options:
+  --instance-id ID                 Required instance (or GOOBERS_INSTANCE_ID)
+  --database-url URL               PgBouncer URL (prefer env/file for credentials)
+  --database-url-file PATH         Read PgBouncer URL from a mounted Secret
+  --database-direct-url URL        Direct URL (prefer env/file for credentials)
+  --database-direct-url-file PATH  Read direct URL from a mounted Secret
+  --database-max-conns N           Total connection budget (default 16)
+  --database-direct-max-conns N    Direct-pool reservation (default 2)
+  --database-auth MODE             password or entra (default password)
+  --object-store-url URL           Azure Blob service URL
+  --object-store-container NAME    Blob container (default goobers)
+  --blob-gc-pitr-retention DURATION  Minimum restore retention (default 840h)
+  --experimental-physical-blob-gc  Enable storage-leased physical deletion (#7843)
+
+Environment:
+  GOOBERS_INSTANCE_ID          Required non-placeholder instance identity
+  GOOBERS_DATABASE_URL         PgBouncer transaction-pool URL
+  GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+  GOOBERS_OBJECT_STORE_URL     Azure Blob service URL
+.fi
+.SH SEE ALSO
+\fBgoobers-cloud\fR(1)

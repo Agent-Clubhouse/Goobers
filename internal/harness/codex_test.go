@@ -259,7 +259,7 @@ func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 }
 
 func TestCodexGoobersIOOverrideUsesBareServerName(t *testing.T) {
-	overrides := appendCodexStdioOverrides(nil, goobersIOServerName, "goobers", nil, nil, nil)
+	overrides := appendCodexStdioOverrides(nil, goobersIOServerName, "goobers", nil, nil, nil, true)
 	commandOverride := `mcp_servers.goobers-io.command="goobers"`
 	if !slices.Contains(overrides, commandOverride) {
 		t.Fatalf("overrides = %v, want %q", overrides, commandOverride)
@@ -338,8 +338,8 @@ func TestCodexAdapterRejectsDeclaredGoobersIOCollision(t *testing.T) {
 func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	workspace := t.TempDir()
 	runner := &codexSequenceRunner{results: []ProcessResult{
-		{ExitCode: 0, Transcript: []byte(`{"type":"thread.started","thread_id":"thread-recovery"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":90,"output_tokens":5}}` + "\n")},
-		{ExitCode: 0, Transcript: []byte(`{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":7}}` + "\n")},
+		{ExitCode: 0, Transcript: readTestData(t, "codex-usage-initial.jsonl")},
+		{ExitCode: 0, Transcript: readTestData(t, "codex-usage-resumed.jsonl")},
 	}}
 	adapter := &CodexAdapter{
 		Command: []string{"codex"},
@@ -366,6 +366,34 @@ func TestCodexAdapterIncludesRecoveryUsage(t *testing.T) {
 	if got := runner.requests[1].Command; !slices.Contains(got, "resume") ||
 		!slices.Contains(got, "thread-recovery") {
 		t.Fatalf("recovery command = %v, want resumed original thread", got)
+	}
+}
+
+func TestCodexUsageCountsCumulativeSnapshotsOnce(t *testing.T) {
+	initial := readTestData(t, "codex-usage-initial.jsonl")
+	resumed := readTestData(t, "codex-usage-resumed.jsonl")
+	combined := append(append(append([]byte(nil), initial...), resumed...), resumed...)
+	parsed, err := parseCodexJSONL(combined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.metrics[telemetry.AttrGenAIUsageInputTokens] != 120 ||
+		parsed.metrics[telemetry.AttrGenAIUsageOutputTokens] != 12 {
+		t.Fatalf("repeated snapshots double counted: %v", parsed.metrics)
+	}
+	for _, repair := range []string{
+		`{"type":"turn.failed","error":{"message":"failed"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}`,
+	} {
+		after, err := parseCodexJSONL([]byte(repair))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mergeCodexMetrics(parsed.metrics, after.metrics)
+		if parsed.metrics[telemetry.AttrGenAIUsageInputTokens] != 120 ||
+			parsed.metrics[telemetry.AttrGenAIUsageOutputTokens] != 12 {
+			t.Fatalf("failed repair lost prior usage: %v", parsed.metrics)
+		}
 	}
 }
 
@@ -457,6 +485,7 @@ func TestCodexJSONLCaptureBoundsOneEventWithoutBoundingTheStream(t *testing.T) {
 		if _, err := capture.Write([]byte(`{"type":"turn.started"}` + "\n")); err != nil {
 			t.Fatal(err)
 		}
+
 	}
 	if _, err := capture.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}` + "\n")); err != nil {
 		t.Fatal(err)
@@ -473,6 +502,21 @@ func TestCodexJSONLCaptureBoundsOneEventWithoutBoundingTheStream(t *testing.T) {
 	_, _ = oversized.Write([]byte(`{"type":"item.completed","item":{"text":"this event is deliberately too large"}}`))
 	if _, err := oversized.result(); err == nil || !strings.Contains(err.Error(), "exceeded 32 bytes") {
 		t.Fatalf("oversized result error = %v", err)
+	}
+}
+
+func TestCodexJSONLCaptureReportsIncrementalUsage(t *testing.T) {
+	capture := newCodexJSONLCapture(DefaultMaxTranscriptBytes)
+	var observed map[string]float64
+	capture.usageSink = func(metrics map[string]float64) { observed = metrics }
+	if _, err := capture.Write([]byte(
+		`{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":3}}` + "\n",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 8 ||
+		observed[telemetry.AttrGenAIUsageOutputTokens] != 3 {
+		t.Fatalf("observed usage = %v", observed)
 	}
 }
 
@@ -741,4 +785,13 @@ func TestCodexAdapterPreflightPrefersConfiguredCredential(t *testing.T) {
 	if _, err := adapter.Preflight(context.Background()); !errors.Is(err, configuredErr) {
 		t.Fatalf("Preflight error = %v, want configured credential error", err)
 	}
+}
+
+// Parse fixture buffers through the production streaming path too.
+func parseCodexJSONL(data []byte) (codexParseResult, error) {
+	capture := newCodexJSONLCapture(DefaultMaxTranscriptBytes)
+	if _, err := capture.Write(data); err != nil {
+		return codexParseResult{}, err
+	}
+	return capture.result()
 }

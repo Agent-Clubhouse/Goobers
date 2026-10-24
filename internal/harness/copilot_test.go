@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 const (
@@ -1152,7 +1153,7 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			var creds *credentials.Set
 			if tc.externalMCP {
 				envelope = testEnvelope(workspace, append([]string{"agent:model"}, tc.capabilities...)...)
-				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
+				mcpServers = []apiv1.MCPServer{{Name: "context", Required: mcpRequiredFlag(false), Command: "context-server"}}
 				creds = mcpTestCredentials(t, "agent:model", "model-token")
 			}
 
@@ -1728,6 +1729,7 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		time.Now(),
 		fmt.Errorf("%w: invalid payload", ErrInvalidCompletion),
 		&adapterAgentEmitter{},
+		nil,
 	)
 	if runErr != nil || completionErr != nil || result.ExitCode != 0 {
 		t.Fatalf("repair result=(%+v, payload %q, runErr %v, completionErr %v), want success", result, repaired, runErr, completionErr)
@@ -1759,6 +1761,7 @@ func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
 		"",
 		time.Now().Add(-time.Second),
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 0 {
@@ -1799,6 +1802,7 @@ func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *test
 		"",
 		started,
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 1 {
@@ -1859,8 +1863,9 @@ func TestCopilotAdapterToolAllowlistRejectsConflictingConfiguredArgs(t *testing.
 }
 
 func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("COPILOT_HOME", "")
+	for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+		t.Setenv(name, "")
+	}
 	workspace := t.TempDir()
 	var calls []ProcessRequest
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
@@ -1943,8 +1948,9 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", "")
-			t.Setenv("COPILOT_HOME", "")
+			for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+				t.Setenv(name, "")
+			}
 			workspace := t.TempDir()
 			var calls []ProcessRequest
 			runner := &fakeProcessRunner{
@@ -2872,6 +2878,7 @@ func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var usageProbe bool
 	adapter := &CopilotAdapter{
 		Command:            []string{program, "forwarding-launcher"},
@@ -2892,6 +2899,23 @@ func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
 	}
 	if adapter.usageOutputDisabled() {
 		t.Fatal("verified launcher usage output remained disabled")
+	}
+}
+
+func TestApplyCopilotUsageDocumentReportsSink(t *testing.T) {
+	out := Outcome{Metrics: map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens: 9,
+	}}
+	var observed map[string]float64
+	applyCopilotUsageDocument(&out, filepath.Join(t.TempDir(), "missing.json"), func(metrics map[string]float64) {
+		observed = metrics
+	})
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 9 {
+		t.Fatalf("Copilot usage sink = %v", observed)
+	}
+	out.Metrics[telemetry.AttrGenAIUsageInputTokens] = 99
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 9 {
+		t.Fatal("Copilot usage sink retained a mutable metrics map")
 	}
 }
 
@@ -2932,6 +2956,7 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	}
 	adapter := &CopilotAdapter{
 		Command:                     []string{program, "forwarding-launcher"},
+		ModelCredential:             func(context.Context) (string, error) { return "fixture-model-token", nil },
 		AuthCheckArgs:               []string{"auth", "status"},
 		ExtraEnvAllowlist:           []string{"COPILOT_HOME"},
 		VerifyAdapterManagedSession: true,

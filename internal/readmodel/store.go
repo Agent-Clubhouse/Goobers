@@ -92,7 +92,7 @@ type Store struct {
 	// feed is the store's single change feed (#2458), built on first use by
 	// Feed(). Two feeds over one store lose wakeups between them, so this is
 	// the only instance production ever has.
-	feed     *Feed
+	feed     *ChangeFeed
 	feedOnce sync.Once
 
 	// clock stamps the one change row that cannot be derived from a journal:
@@ -150,6 +150,11 @@ func Open(path string) (*Store, error) {
 		_ = writer.Close()
 		return nil, err
 	}
+	// This optional performance index does not change the schema version:
+	// older binaries reject newer versions, but can safely ignore extra indexes.
+	// Best-effort creation keeps queries correct if DDL fails, and recreates the
+	// index after an older binary rebuilds the projection during rollback.
+	_, _ = writer.ExecContext(context.Background(), continuationIndexDDL)
 	// The reader pool opens only after migrations: a read-only handle cannot
 	// create the database, switch it to WAL, or run a migration.
 	store.reader = resolveReadHandle(writer, openReaderPool(path))
@@ -483,7 +488,11 @@ func readerPoolSize() int {
 // between them, and a shared instance that must be threaded through is an
 // invariant one refactor away from breaking again. Asking the store removes the
 // opportunity.
-func (s *Store) Feed() *Feed {
+func (s *Store) Feed() *ChangeFeed {
 	s.feedOnce.Do(func() { s.feed = NewFeed(s) })
 	return s.feed
 }
+
+// ChangeFeed exposes the store's singleton through the backend read seam.
+// Feed retains its concrete notifier API for local projector composition.
+func (s *Store) ChangeFeed() Feed { return s.Feed() }

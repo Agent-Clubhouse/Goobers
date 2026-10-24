@@ -42,7 +42,7 @@ func TestDSL3TerminalRunsHaveClosedDispositionAccounting(t *testing.T) {
 		if terminal == nil || terminal.Disposition != tc.disposition {
 			t.Fatalf("%s terminal event disposition = %+v, want %q", tc.name, terminal, tc.disposition)
 		}
-		if _, err := ProjectRun(runsDir, projection); err != nil {
+		if _, err := writeTestJournal(t, runsDir, projection); err != nil {
 			t.Fatalf("project %s engine journal: %v", tc.name, err)
 		}
 	}

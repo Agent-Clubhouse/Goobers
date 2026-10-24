@@ -317,6 +317,7 @@ func TestBuildClaudeArgvResolvesAutomaticModel(t *testing.T) {
 				"Bash(/usr/bin/pkill:*)", "Bash(/usr/bin/killall:*)",
 				"Bash(/bin/pkill:*)", "Bash(/bin/killall:*)",
 				"Bash(/usr/bin/env pkill:*)", "Bash(/usr/bin/env killall:*)",
+				"--setting-sources", "user",
 			}
 			if model == "claude-sonnet-5" {
 				want = append(want, "--model", model)
@@ -345,6 +346,47 @@ func TestBuildClaudeArgvShiftUnderSandboxWrapping(t *testing.T) {
 	sessionSelectorArg += shift
 	if wrapped[sessionSelectorArg] != "--session-id" {
 		t.Fatalf("shifted sessionSelectorArg = %d does not carry --session-id: %v", sessionSelectorArg, wrapped)
+	}
+}
+
+func TestBuildClaudeArgvPinsUnattendedPermissionMode(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		base, extra []string
+		want        string
+	}{
+		{name: "default unrestricted", extra: claudeExtraArgs(nil), want: "bypassPermissions"},
+		{name: "tool allowlist", extra: claudeExtraArgs([]string{"Read"}), want: "dontAsk"},
+		{name: "empty override", extra: []string{}, want: "dontAsk"},
+		{name: "custom arguments", extra: []string{"--tools", "Read", "--allowedTools", "Read"}, want: "dontAsk"},
+		{name: "explicit extra mode", extra: []string{"--permission-mode", "default"}, want: "default"},
+		{name: "explicit command mode", base: []string{"claude", "--permission-mode", "plan"}, want: "plan"},
+		{name: "equals mode", extra: []string{"--permission-mode=acceptEdits"}, want: "acceptEdits"},
+		{name: "legacy skip", base: []string{"claude", "--dangerously-skip-permissions"}, want: "bypassPermissions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := tc.base
+			if base == nil {
+				base = []string{"claude"}
+			}
+			argv, selector := buildClaudeArgv(base, tc.extra, "", "", "session-1")
+			for _, resume := range []bool{false, true} {
+				if resume {
+					argv[selector] = "--resume"
+				}
+				var modes []string
+				for i, arg := range argv {
+					if arg == "--permission-mode" && i+1 < len(argv) {
+						modes = append(modes, argv[i+1])
+					} else if value, ok := strings.CutPrefix(arg, "--permission-mode="); ok {
+						modes = append(modes, value)
+					}
+				}
+				if !slices.Equal(modes, []string{tc.want}) {
+					t.Fatalf("resume=%v: modes=%v, want %q; argv=%v", resume, modes, tc.want, argv)
+				}
+			}
+		})
 	}
 }
 
@@ -619,8 +661,8 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if len(out.Payload) == 0 {
 				t.Fatal("completion payload is empty after recovery")
 			}
-			if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 240 {
-				t.Fatalf("combined input token metric = %v, want 240", got)
+			if got := out.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 120 {
+				t.Fatalf("repeated cumulative input token metric = %v, want 120", got)
 			}
 		})
 	}
@@ -1178,6 +1220,7 @@ func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
+		HarnessVersion: "2.1.302 (Claude Code)",
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1194,10 +1237,14 @@ func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
 	if configDir == ambientDir {
 		t.Fatalf("CLAUDE_CONFIG_DIR points at the ambient config directory: %s", configDir)
 	}
-	for _, name := range []string{"settings.json", "plugins", ".mcp.json"} {
+	for _, name := range []string{"plugins", ".mcp.json"} {
 		if _, err := os.Stat(filepath.Join(configDir, name)); !os.IsNotExist(err) {
 			t.Fatalf("ambient %s is visible in the isolated config dir: %v", name, err)
 		}
+	}
+	settings, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	if err != nil || strings.Contains(string(settings), "ambient-hook-fired") || !strings.Contains(string(settings), "__claude-host-safety") {
+		t.Fatalf("isolated settings must contain only the managed safety hook: %v", err)
 	}
 	copied, err := os.ReadFile(filepath.Join(configDir, ".credentials.json"))
 	if err != nil {
@@ -1361,5 +1408,29 @@ func TestClaudeAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "must not contain a comma") {
 		t.Fatalf("Run error = %v, want comma rejection", err)
+	}
+}
+
+func TestClaudeAdapterRepairAccountsForResumedSessionTotals(t *testing.T) {
+	stubClaudeCredentialsHome(t)
+	workspace := t.TempDir()
+	runner := &claudeSequenceRunner{
+		rawOutputs: [][]byte{readTestData(t, "claude-usage-initial.jsonl"), readTestData(t, "claude-usage-resumed.jsonl")},
+		acts: []func(ProcessRequest) error{nil, func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		}},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner, KeychainReader: absentClaudeKeychain}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.reqs) != 2 || commandOptionValue(runner.reqs[1].Command, "--resume") == "" {
+		t.Fatal("expected same-session repair")
+	}
+	if out.Metrics[telemetry.AttrGenAIUsageInputTokens] != 150 || out.Metrics[telemetry.AttrUsageCostUSD] != 0.75 {
+		t.Fatalf("resumed totals double counted: %v", out.Metrics)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -348,9 +349,17 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 }
 
 func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
-	if _, err := c.launcherSessionContract(ctx); err != nil {
+	if err := refuseChildConfigProbe(ctx); err != nil {
 		return ConfigResolution{}, err
 	}
+	// Offline admission must not launch a configured wrapper, even when model
+	// discovery itself is deferred. The actual invocation verifies its contract.
+	if !c.DeferDiscovery {
+		if _, err := c.launcherSessionContract(ctx); err != nil {
+			return ConfigResolution{}, err
+		}
+	}
+
 	effectiveOptions, fallback, err := copilotFallbackOption(options)
 	if err != nil {
 		return ConfigResolution{}, err
@@ -441,6 +450,9 @@ func isDirectCopilotCommand(command []string) bool {
 }
 
 func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilotModelCapabilities, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, err
+	}
 	c.modelsMu.Lock()
 	defer c.modelsMu.Unlock()
 	if c.availableModels != nil {
@@ -599,9 +611,12 @@ func normalizeResolvedCopilotConfig(model string, options map[string]apiextensio
 	return normalized, nil
 }
 
-// Preflight verifies the Copilot CLI binary is on PATH and responds to a
-// version check, returning its reported version on success.
+// Preflight verifies executable/version and public CLI options, followed by
+// the configured authentication probe when present.
 func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -618,34 +633,16 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q not found on PATH — install the GitHub Copilot CLI "+
 			"and sign in before running agentic stages", bin)
 	}
-	args := c.VersionArgs
-	if len(args) == 0 {
-		args = []string{"--version"}
-	}
-	// Explicit baseEnv(), not the ProcessRequest zero value — since #122,
-	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
-	// default-deny), so the version-check subprocess needs this passed
-	// explicitly the same way Run's credentialEnv does.
-	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
-	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
-	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
-	res, err := c.runner().Run(ctx, ProcessRequest{
-		Command:            versionCommand,
-		Env:                baseEnv(c.ExtraEnvAllowlist, c.EnvUnset),
-		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
-		StdoutCapture:      versionStdout,
-	})
-	if err != nil || res.ExitCode != 0 {
-		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
-	}
-	if versionStdout.Truncated() {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
-	}
-	version := firstOutputLine(versionStdout.Bytes())
-	if version == "" {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
+	version, args, err := c.probeVersion(ctx)
+	if err != nil {
+		return PreflightInfo{}, err
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
+	capabilities, err := c.preflightPublicCapabilities(ctx)
+	if err != nil {
+		return PreflightInfo{}, err
+	}
+	c.warnUnprobedStoredAuth(authCheckArgs)
 	// A signed-out CLI passes --version but can't do agentic work, so probe
 	// authentication too when configured (GBO-011, #238) — catching it here at
 	// startup rather than as a burned mid-run agentic attempt.
@@ -677,7 +674,8 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			// The fallback probe is a real prompt session, so it gets the same
 			// export opt-out as a stage. A v2 launcher's declared probe starts no
 			// agent session and receives its arguments exactly as declared.
-			authCommand = withCopilotNoRemoteExport(authCommand)
+			authCommand = withCopilotNoRemoteExport(authCommand, version)
+			authCommand = withCopilotHostSafety(authCommand)
 		}
 		sessionTranscript := ""
 		sessionCleanup := func() {}
@@ -720,7 +718,11 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			c.cacheLauncherContract(launcherContract{Version: 1, SessionMode: "adapter-managed"})
 		}
 	}
-	return PreflightInfo{Version: version}, nil
+	authentication := readinessCheck("authentication", "harness_authentication_unobservable", "unobservable", "no authentication probe configured; version and public option checks do not validate credentials")
+	if len(authCheckArgs) > 0 {
+		authentication = readinessCheck("authentication", "harness_authentication_probe_passed", "supported", "configured authentication probe passed; model entitlement is not established by public CLI help")
+	}
+	return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities, authentication}}, nil
 }
 
 func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, req ProcessRequest, version string, launcherProbe bool, successLine string) error {
@@ -802,7 +804,11 @@ func (c *CopilotAdapter) AuthStatus(ctx context.Context) (AuthInfo, error) {
 	}
 	preflight, err := c.Preflight(ctx)
 	if err == nil {
-		info.Status = AuthStatusAuthenticated
+		for _, check := range preflight.Checks {
+			if check.Category == "authentication" && check.Outcome == "supported" {
+				info.Status = AuthStatusAuthenticated
+			}
+		}
 		info.Version = preflight.Version
 		info.Remediation = ""
 		return info, nil
@@ -826,6 +832,9 @@ func (c *CopilotAdapter) authRunnerLabel() string {
 // native command; contract-aware launchers must declare equivalent operations
 // explicitly so Goobers never guesses a different executable or profile.
 func (c *CopilotAdapter) AuthCommand(ctx context.Context, operation string) ([]string, []string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return nil, nil, err
+	}
 	if len(c.Command) == 0 {
 		return nil, nil, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -911,6 +920,9 @@ func verifyCopilotSessionTranscript(path string) error {
 // (bad path, unreadable file, empty secret) must fail loudly rather than
 // degrade into whatever login the CLI happens to have cached.
 func (c *CopilotAdapter) copilotModelToken(ctx context.Context) (string, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return "", err
+	}
 	if c.ModelCredential != nil {
 		return c.ModelCredential(ctx)
 	}
@@ -1139,7 +1151,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// bounded by CreateProcess (32,767), cmd.exe (8,191) or ARG_MAX. The
 	// command resolves as a stdio client because npm's PowerShell shim
 	// buffers and re-encodes stdin through $input.
-	baseCommand := resolveStdioHarnessCommand(c.Command)
+	baseCommand := withoutCopilotSessionExportControls(resolveStdioHarnessCommand(c.Command))
 	if completionInResponse {
 		configuredArgs := append(append([]string(nil), baseCommand[1:]...), extra...)
 		if conflict := copilotConstraintConflict(configuredArgs); conflict != "" {
@@ -1159,7 +1171,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		argv = append(argv, "--reasoning-effort", value)
 	}
 	argv = append(argv, extra...)
-	argv = withCopilotNoRemoteExport(argv)
+	argv = withCopilotNoRemoteExport(argv, req.HarnessVersion)
+	argv = withCopilotHostSafety(argv)
 	if completionInResponse {
 		if copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, copilotGitHubMCPRegistrationArg(req.Envelope.Capabilities))
@@ -1188,21 +1201,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err != nil {
 		return Outcome{}, err
 	}
-	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
-	// into the workspace, with the exception of raw debug logs, which get an
-	// invocation-private external directory and a narrow writable grant below.
-	// The remaining runtime state follows ADR-0001. The overrides
-	// happen before the session-id block below so the native transcript path
-	// derives from the confined COPILOT_HOME.
-	var confinement *copilotConfinement
-	if req.Sandbox != nil {
-		confinement, err = prepareCopilotConfinement(req.Workspace)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
-		}
-		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
-		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
+	env, confinement, cleanupRuntime, err := c.prepareStageRuntime(ctx, req, env)
+	if err != nil {
+		return Outcome{}, err
 	}
+	defer cleanupRuntime()
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)
 		if err != nil {
@@ -1218,7 +1221,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	defer captures.cleanup()
 	argv, env = captures.argv, captures.env
-	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
+	nativeTranscriptPath := captures.transcriptPath
+	repairUsage := &copilotRepairUsage{transcriptPath: nativeTranscriptPath, usagePath: captures.usagePath}
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
@@ -1255,6 +1259,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err != nil {
 		return Outcome{}, err
 	}
+	repairUsage.checkpoints = &nativeCheckpoints
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
@@ -1301,7 +1306,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
 			ctx, runner, req, result, payload, argv, env, c.refreshCredentialEnv,
-			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry, repairUsage,
 		)
 	}
 	out = Outcome{
@@ -1326,9 +1331,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
-	runErr = errors.Join(runErr, applyCopilotNativeTelemetry(&out, req, nativeTranscriptPath, agentTelemetry))
-	applyControlledCopilotUsage(&out, runner)
-	applyCopilotUsageDocument(&out, usageOutputPath)
+	runErr = errors.Join(runErr, repairUsage.applyTelemetry(&out, req, runner, agentTelemetry))
 	if runErr != nil {
 		return out, runErr
 	}
@@ -1351,6 +1354,7 @@ func runCopilotCompletionRepair(
 	started time.Time,
 	completionErr error,
 	agentTelemetry *adapterAgentEmitter,
+	usage *copilotRepairUsage,
 ) (ProcessResult, []byte, error, error) {
 	if !repairableCompletionError(completionErr) {
 		return result, payload, nil, completionErr
@@ -1397,6 +1401,14 @@ func runCopilotCompletionRepair(
 		TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
 		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		Activity:                     agentTelemetry.activityObserver(),
+	}
+	if usage != nil {
+		var err error
+		recoveryReq.Command, recoveryReq.Env, err = usage.prepare(ctx, runner, req, recoveryReq.Command, recoveryReq.Env)
+		if err != nil {
+			return result, payload, err, completionErr
+		}
+		nativeTranscriptPath = usage.transcriptPath
 	}
 	if restarter, ok := runner.(copilotRepairRestarter); ok {
 		if err := restarter.RestartCopilotForRepair(ctx, recoveryReq); err != nil {
@@ -1472,10 +1484,13 @@ func envHasName(env []string, target string) bool {
 	return false
 }
 
-func applyCopilotUsageDocument(out *Outcome, path string) {
+func applyCopilotUsageDocument(out *Outcome, path string, usageSink func(map[string]float64)) {
 	if metrics, models, ok := readCopilotUsageDocument(path); ok {
 		out.Metrics = metrics
 		out.ModelUsage = models
+	}
+	if usageSink != nil {
+		usageSink(maps.Clone(out.Metrics))
 	}
 }
 
@@ -1905,11 +1920,17 @@ func (c *CopilotAdapter) requireMCPModelCredential(ctx context.Context, req RunR
 	return nil
 }
 
-func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter) (runErr error) {
+func applyCopilotNativeTelemetry(out *Outcome, req RunRequest, nativeTranscriptPath string, agentTelemetry *adapterAgentEmitter, previousPaths ...string) (runErr error) {
 	if nativeTranscriptPath != "" {
-		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+		native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes)
+		if ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+		}
+		if len(previousPaths) > 0 && previousPaths[0] != "" {
+			native, ok = readCopilotSessionTranscripts(append(previousPaths, nativeTranscriptPath), req.MaxTranscriptBytes)
+		}
+		if ok {
 			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
 				runErr = fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err)
 			}

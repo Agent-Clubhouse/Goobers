@@ -22,6 +22,7 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	if !ok {
 		t.Fatal("convertClaudeStreams returned false")
 	}
+
 	if got := capture.metrics[telemetry.AttrGenAIUsageInputTokens]; got != 100 {
 		t.Fatalf("input tokens = %v, want 100", got)
 	}
@@ -71,6 +72,22 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	}
 	if !sawPrompt || !sawToolStart || !sawToolResult || !sawFinal {
 		t.Fatalf("canonical transcript missing expected events:\n%s", capture.data)
+	}
+}
+
+func TestClaudeTerminalCaptureReportsIncrementalUsage(t *testing.T) {
+	var observed map[string]float64
+	capture := &claudeTerminalCapture{
+		usageSink: func(metrics map[string]float64) { observed = metrics },
+	}
+	line := `{"type":"result","total_cost_usd":0.25,"usage":{"input_tokens":8,"output_tokens":3}}` + "\n"
+	if _, err := capture.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 8 ||
+		observed[telemetry.AttrGenAIUsageOutputTokens] != 3 ||
+		observed[telemetry.AttrUsageCostUSD] != 0.25 {
+		t.Fatalf("observed usage = %v", observed)
 	}
 }
 
@@ -176,5 +193,66 @@ func TestConvertClaudeStreamCapturesFailedResultErrors(t *testing.T) {
 func TestConvertClaudeStreamRejectsNonNativeOutput(t *testing.T) {
 	if _, ok := convertClaudeStreams([]io.Reader{strings.NewReader("ordinary stdout\nnot json\n")}, nil, 1024, 0); ok {
 		t.Fatal("non-native output was accepted as a Claude stream")
+	}
+}
+
+func TestClaudeResumedUsageDeltas(t *testing.T) {
+	initial := readTestData(t, "claude-usage-initial.jsonl")
+	resumed := readTestData(t, "claude-usage-resumed.jsonl")
+	capture, ok := convertClaudeStreams([]io.Reader{bytes.NewReader(initial), bytes.NewReader(resumed)}, nil, 1<<20, 0)
+	if !ok {
+		t.Fatal("conversion failed")
+	}
+	want := map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  150,
+		telemetry.AttrGenAIUsageOutputTokens: 35,
+		telemetry.AttrUsageCacheReadTokens:   35,
+		telemetry.AttrUsageCacheWriteTokens:  12,
+		telemetry.AttrUsageCostUSD:           0.75,
+		telemetry.AttrUsageNanoAIU:           75_000_000_000,
+	}
+	if !mapsEqual(capture.metrics, want) {
+		t.Fatalf("metrics = %v, want %v", capture.metrics, want)
+	}
+	if len(capture.modelUsage) != 2 || *capture.modelUsage[1].InputTokens != 140 ||
+		*capture.modelUsage[1].CostUSD != 0.5 || *capture.modelUsage[1].NanoAIU != 50_000_000_000 {
+		t.Fatalf("model usage = %+v", capture.modelUsage)
+	}
+	var sonnet []transcriptUsage
+	for _, line := range bytes.Split(bytes.TrimSpace(capture.data), []byte("\n")) {
+		var event transcriptEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Model == "claude-sonnet-4-6" && event.Usage != nil {
+			sonnet = append(sonnet, *event.Usage)
+		}
+	}
+	if len(sonnet) != 2 || *sonnet[1].InputTokens != 40 || *sonnet[1].OutputTokens != 10 ||
+		*sonnet[1].CacheReadTokens != 5 || *sonnet[1].CacheWriteTokens != 2 || *sonnet[1].Cost != 0.25 {
+		t.Fatalf("canonical usage must contain turn deltas: %+v", sonnet)
+	}
+}
+
+func TestClaudeUsageSnapshotsHandleMissingRepeatedAndResetTotals(t *testing.T) {
+	initial := string(readTestData(t, "claude-usage-initial.jsonl"))
+	for _, tc := range []struct {
+		name, next  string
+		input, cost float64
+	}{
+		{name: "duplicate", next: initial, input: 100, cost: 0.25},
+		{name: "no result", next: `{"type":"assistant","message":{"content":"stopped"}}`, input: 100, cost: 0.25},
+		{name: "omitted usage", next: `{"type":"result","result":"done"}`, input: 100, cost: 0.25},
+		{name: "startup failure", next: `{"type":"result","subtype":"error_during_execution","total_cost_usd":0,"modelUsage":{}}`, input: 100, cost: 0.25},
+		{name: "reset", next: `{"type":"result","total_cost_usd":0.125,"modelUsage":{"claude-sonnet-4-6":{"inputTokens":7,"costUSD":0.125}}}`, input: 107, cost: 0.375},
+		{name: "per-turn fallback", next: `{"type":"result","total_cost_usd":0.5,"usage":{"input_tokens":40}}`, input: 140, cost: 0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(initial), strings.NewReader(tc.next)}, nil, 1<<20, 0)
+			if !ok || capture.metrics[telemetry.AttrGenAIUsageInputTokens] != tc.input ||
+				capture.metrics[telemetry.AttrUsageCostUSD] != tc.cost {
+				t.Fatalf("metrics=%v, want input=%v cost=%v", capture.metrics, tc.input, tc.cost)
+			}
+		})
 	}
 }

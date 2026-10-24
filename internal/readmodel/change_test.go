@@ -152,7 +152,8 @@ func TestCursorConditionsAreNamedAndOrdered(t *testing.T) {
 	}{
 		{"resumable", Cursor{SchemaVersion: 2, Epoch: "epoch-a", Seq: 150}, CursorOK},
 		{"at the floor is resumable", Cursor{SchemaVersion: 2, Epoch: "epoch-a", Seq: 100}, CursorOK},
-		{"below the floor", Cursor{SchemaVersion: 2, Epoch: "epoch-a", Seq: 99}, CursorFeedTruncated},
+		{"immediately before the floor is resumable", Cursor{SchemaVersion: 2, Epoch: "epoch-a", Seq: 99}, CursorOK},
+		{"below the preceding position", Cursor{SchemaVersion: 2, Epoch: "epoch-a", Seq: 98}, CursorFeedTruncated},
 		{"rebuilt store", Cursor{SchemaVersion: 2, Epoch: "epoch-b", Seq: 150}, CursorEpochChanged},
 		{"older schema", Cursor{SchemaVersion: 1, Epoch: "epoch-a", Seq: 150}, CursorSchemaChanged},
 		// The ordering cases: a foreign epoch must be reported as such even when
@@ -231,8 +232,13 @@ func TestPruneAdvancesTheFloorInTheSameTransaction(t *testing.T) {
 		t.Errorf("min_change_seq = %d after pruning below %d; the floor and the table disagree, "+
 			"so feed_truncated is no longer an exact condition", state.MinChangeSeq, keepFrom)
 	}
-	// And a cursor below the new floor must now be reported as truncated.
-	cursor := Cursor{SchemaVersion: state.SchemaVersion, Epoch: state.Epoch, Seq: keepFrom - 1}
+	// The position immediately before the first retained change is resumable;
+	// anything lower must be reported as truncated.
+	preFloor := Cursor{SchemaVersion: state.SchemaVersion, Epoch: state.Epoch, Seq: keepFrom - 1}
+	if got := EvaluateCursor(preFloor, state); got != CursorOK {
+		t.Errorf("cursor immediately before floor evaluated to %q, want resumable", got)
+	}
+	cursor := Cursor{SchemaVersion: state.SchemaVersion, Epoch: state.Epoch, Seq: keepFrom - 2}
 	if got := EvaluateCursor(cursor, state); got != CursorFeedTruncated {
 		t.Errorf("cursor below the floor evaluated to %q, want feed_truncated", got)
 	}

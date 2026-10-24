@@ -18,6 +18,9 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/testsuite"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	temporalworker "go.temporal.io/sdk/worker"
 	"sigs.k8s.io/yaml"
 
@@ -116,9 +119,9 @@ func qualifyContainedParentJourney(t *testing.T, action string, provider ...stri
 	recoveryCLIGit(t, sourceRepo, "add", ".")
 	recoveryCLIGit(t, sourceRepo, "commit", "-m", "qualification base")
 	publication := newParentPublicationQualification(t, action, sourceRepo, provider...)
-	originalClone := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return sourceRepo, nil }
-	t.Cleanup(func() { repoCloneURL = originalClone })
+	originalClone := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return sourceRepo, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = originalClone })
 	instanceLog, _, err := journal.OpenInstanceLog(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +168,7 @@ func qualifyContainedParentJourney(t *testing.T, action string, provider ...stri
 		return httpapi.ClaimListResponse{ClaimVisibility: "local", ObservedAt: time.Now()}, nil
 	})
 	opts := s.installChildPodPlane(transport, plane, journals, observe, nil)
-	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.key)), httpapi.WithChildWorkflowService(s.children.HTTPService()))
+	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.Key())), httpapi.WithChildWorkflowService(s.children.HTTPService()))
 	reads, err := readservice.NewLocal(readservice.LocalSources{Layout: f.layout, Config: f.cfg, Definitions: f.applied, ChildHistory: triggers.queue.Children}, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)

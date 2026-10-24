@@ -107,6 +107,10 @@ type RunRequest struct {
 	PublicationSchemas []mcpio.PublicationSchema `json:"-"`
 	// MCPReadinessSink records pre-model readiness without tool responses or secrets.
 	MCPReadinessSink func(MCPReadiness) error
+	// UsageSink receives adapter-observed cumulative usage snapshots while the
+	// harness is running. It is host-injected and never serialized or rendered
+	// to the model. Adapters must not populate it from model-authored result data.
+	UsageSink func(map[string]float64) `json:"-"`
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
@@ -252,7 +256,11 @@ type MCPServerFailure struct {
 // PreflightInfo describes the installed harness verified before agentic work
 // starts. Version is the harness/CLI version used for invocation provenance.
 type PreflightInfo struct {
-	Version string
+	Version  string
+	Warnings []string
+	// Checks separate observed CLI capability evidence from authentication
+	// presence/usability. A successful version probe alone proves neither.
+	Checks []ReadinessCheck
 }
 
 // ConfigWarningKind identifies a non-blocking harness configuration finding.

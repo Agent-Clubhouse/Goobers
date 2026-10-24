@@ -212,6 +212,10 @@
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "description": "Invocation-local, DNS-label-compatible MCP server name."
         },
+        "required": {
+          "type": "boolean",
+          "description": "Whether failure to register or start this server stops the stage before the model turn. Omission defaults to true."
+        },
         "command": { "type": "string", "minLength": 1, "description": "Executable that starts a local stdio MCP server." },
         "args": {
           "type": "array",

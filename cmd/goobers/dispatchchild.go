@@ -70,7 +70,7 @@ func runChildDispatchContext(ctx context.Context, stdout, stderr io.Writer) int 
 		return 1
 	}
 	metrics, reported := usage.snapshot()
-	result := dispatcher.SurrenderedResult{ObservedUsage: metrics, ObservedUsageReported: reported, RecoveryAcknowledged: true, Result: outcome.Result, Verdict: outcome.Verdict, Mutations: mutations, ChildWorkspaceDigest: outputDigest}
+	result := dispatcher.SurrenderedResult{ContractVersion: dispatcher.SurrenderContractV2, ObservedUsage: metrics, ObservedUsageReported: reported, RecoveryAcknowledged: true, Result: outcome.Result, Verdict: outcome.Verdict, Mutations: mutations, ChildWorkspaceDigest: outputDigest}
 	data, err = json.Marshal(result)
 	if err != nil {
 		return 1

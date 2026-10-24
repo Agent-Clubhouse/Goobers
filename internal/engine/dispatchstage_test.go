@@ -25,7 +25,9 @@ import (
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/usageallowance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -115,20 +117,30 @@ func TestDispatchStageMarshalsSurrenderedResult(t *testing.T) {
 		SurrenderConfirmed: true, Disposed: true,
 	}}
 	putSurrendered(t, store, "run-1", "build", 2, dispatcher.SurrenderedResult{
+		ContractVersion:       dispatcher.CurrentSurrenderContract,
+		ObservedUsageReported: true,
+		ObservedUsage:         usageMetrics(12, 0.2),
 		Result: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultSuccess,
 			Summary: "built remotely",
 			Outputs: map[string]interface{}{"artifact": "bin/app.exe"},
+			Metrics: map[string]float64{
+				telemetry.AttrGenAIUsageInputTokens: 999,
+			},
 		},
 		Mutations:      []dispatcher.SurrenderedMutation{{Provider: "github", Kind: "pr", ID: "7", Operation: "open"}},
 		MutationIssues: []string{"line 3: provider, kind, and id are required"},
 	})
 
 	a := &Activities{Dispatcher: fake, Surrenders: store}
-	result, err := a.DispatchStage(context.Background(), dispatchInput("run-1", "build", 2))
+	input := dispatchInput("run-1", "build", 2)
+	remaining := int64(20)
+	input.UsageAllowance = &usageallowance.Allowance{MaxTokens: &remaining}
+	result, err := a.DispatchStage(context.Background(), input)
 	if err != nil {
 		t.Fatalf("DispatchStage error: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess || result.Summary != "built remotely" {
 		t.Fatalf("result envelope = %+v, want the surrendered envelope", result.ResultEnvelope)
 	}
@@ -140,6 +152,10 @@ func TestDispatchStageMarshalsSurrenderedResult(t *testing.T) {
 	}
 	if len(result.MutationIssues) != 1 {
 		t.Fatalf("mutation issues = %v, want carried through", result.MutationIssues)
+	}
+	if result.Usage == nil || !result.Usage.Reported ||
+		result.Usage.Metrics[telemetry.AttrGenAIUsageInputTokens] != 12 {
+		t.Fatalf("trusted usage = %+v, want surrendered supervisor usage", result.Usage)
 	}
 
 	attempts, eligible := fake.recorded()
@@ -159,8 +175,72 @@ func TestDispatchStageMarshalsSurrenderedResult(t *testing.T) {
 		got.Memory != want.Memory || got.Disk != want.Disk || got.Timeout != want.Timeout {
 		t.Fatalf("attempt = %+v, want %+v (built purely from activity input)", got, want)
 	}
+	if got.UsageAllowance == nil || got.UsageAllowance.MaxTokens == nil ||
+		*got.UsageAllowance.MaxTokens != 20 {
+		t.Fatalf("attempt usage allowance = %+v", got.UsageAllowance)
+	}
 	if len(eligible[0]) != 1 || eligible[0][0].Name != "win-ci" {
 		t.Fatalf("eligible = %+v, want the pinned set passed through untouched", eligible[0])
+	}
+}
+
+func TestLegacySurrenderMapsToUnreportedUsage(t *testing.T) {
+	usage := surrenderedAttemptUsage(dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	if usage == nil || usage.Reported || len(usage.Metrics) != 0 {
+		t.Fatalf("legacy surrender usage = %+v, want present unreported marker", usage)
+	}
+}
+
+func TestDispatchStageRejectsInvalidUsageAllowance(t *testing.T) {
+	negative := int64(-1)
+	input := dispatchInput("invalid-allowance", "build", 1)
+	input.UsageAllowance = &usageallowance.Allowance{MaxTokens: &negative}
+	activities := &Activities{
+		Dispatcher: &fakeStageDispatcher{}, Surrenders: surrenderStore(t),
+	}
+	err := activities.validateStageDispatch(&input)
+	if err == nil || !strings.Contains(err.Error(), "invalid usage allowance") {
+		t.Fatalf("validateStageDispatch error = %v", err)
+	}
+	input = dispatchInput("deterministic-allowance", "build", 1)
+	input.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
+	zero := int64(0)
+	input.UsageAllowance = &usageallowance.Allowance{MaxTokens: &zero}
+	if err := activities.validateStageDispatch(&input); err == nil ||
+		!strings.Contains(err.Error(), "agentic task") {
+		t.Fatalf("deterministic allowance error = %v", err)
+	}
+}
+
+func TestDispatchStageCarriesCommittedFanOutIdentity(t *testing.T) {
+	store := surrenderStore(t)
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "win-ci", Pod: "map-item", Phase: corev1.PodSucceeded,
+		SurrenderConfirmed: true, Disposed: true,
+	}}
+	input := dispatchInput("map-run", "mapped", 1)
+	input.PodAttempt, input.FanOutVisit, input.FanOutBranch = 9, 57, 3
+	input.Envelope.Inputs = map[string]any{"item": map[string]any{"number": float64(9007199254740992)}}
+	input.ExactInputs = map[string]json.RawMessage{
+		"item": json.RawMessage(`{"number":9007199254740993}`),
+	}
+	putSurrendered(t, store, "map-run", "mapped", 9, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	acts := &Activities{Dispatcher: fake, Surrenders: store}
+	if _, err := acts.DispatchStage(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	attempts, _ := fake.recorded()
+	if len(attempts) != 1 || attempts[0].PodAttempt != 9 ||
+		attempts[0].FanOutVisit != 57 || attempts[0].FanOutBranch != 3 {
+		t.Fatalf("dispatcher attempts = %+v", attempts)
+	}
+	number, ok := attempts[0].Envelope.Inputs["item"].(map[string]any)["number"].(json.Number)
+	if !ok || number.String() != "9007199254740993" {
+		t.Fatalf("remote exact map input = %#v", attempts[0].Envelope.Inputs["item"])
 	}
 }
 

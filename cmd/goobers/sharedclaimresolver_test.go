@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +36,7 @@ func TestPinnedResolverReconciliationUsesOwnerPolicyAndDistinctIncarnation(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	reservationID := formatBacklogReconcileRunID("shared-run", 42, 1)
 	reservation, err := resolver.Admission(t.Context(), key, reservationID, "backlog-reconcile")
 	if err != nil {
@@ -57,6 +60,37 @@ func TestPinnedResolverReconciliationUsesOwnerPolicyAndDistinctIncarnation(t *te
 	}
 }
 
+func TestPinnedResolverPreservesLegacySharedClaimOwnerAfterUpgrade(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "shared")
+	legacy, err := layout.ReadIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := strings.Repeat("f", 32)
+	if canonical == legacy {
+		canonical = strings.Repeat("e", 32)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Root, "instance-id"), []byte(legacy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.Root, instance.RootIdentityFileName), []byte(canonical+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.EnsureIdentity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
+		return &pinnedClaimTestStore{}, nil
+	}}
+	binding, err := resolver.Admission(t.Context(), claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}, "shared-run", "claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Owner.Instance != legacy {
+		t.Fatalf("shared claim owner rotated from %q to %q", legacy, binding.Owner.Instance)
+	}
+}
+
 func (s *pinnedClaimTestStore) Read(context.Context, string) (sharedclaim.Observation, error) {
 	return sharedclaim.Observation{Record: s.record, Revision: s.revision, Now: time.Now()}, nil
 }
@@ -67,7 +101,7 @@ func TestReconciliationSharedLeaseCannotReleaseOrdinaryClaim(t *testing.T) {
 	resolver := stageClaimResolver{pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
 		return store, nil
 	}}}
-	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	file, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +181,12 @@ func newPinnedClaimResolverRun(t *testing.T, mode string) (instance.Layout, *jou
 	if err != nil {
 		t.Fatal(err)
 	}
+	owner, err := layout.ReadIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-		RunID: "shared-run", Workflow: "claim", WorkflowVersion: 1, Gaggle: "example", WorkflowDigest: machine.Digest(),
+		InstanceID: owner, RunID: "shared-run", Workflow: "claim", WorkflowVersion: 1, Gaggle: "example", WorkflowDigest: machine.Digest(),
 		WorkspaceRepository: &apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "pinned-owner", Name: "pinned-repo", Branch: "main"},
 	}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: data}, journal.WithInputIntegrity(map[string]apiv1.Integrity{journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted}))
 	if err != nil {
@@ -169,7 +207,7 @@ func TestPinnedResolverCoordinatesFileClaimAndTerminalRelease(t *testing.T) {
 		}
 		return store, nil
 	}}
-	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	file, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}

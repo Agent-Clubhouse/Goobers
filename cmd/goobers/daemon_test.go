@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -131,9 +133,9 @@ func initDeterministicDemo(t *testing.T) string {
 	// daemon-starting test so none collides with a co-located `goobers up`.
 
 	fixtureRepo := newDaemonFixtureRepo(t)
-	prev := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
-	t.Cleanup(func() { repoCloneURL = prev })
+	prev := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = prev })
 
 	return root
 }
@@ -960,6 +962,12 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 
 	sched.Tick(ctx, tickAt)
 
+	drain, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := setup.telemetryWork.Wait(drain); err != nil {
+		t.Fatal(err)
+	}
+
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		t.Fatal(err)
@@ -1006,6 +1014,11 @@ func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
 	setup.ProviderQuota.RecordExhausted(tickAt.Add(time.Hour))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, setup.SchedulerOptions()...)
 	sched.Tick(context.Background(), tickAt)
+	drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := setup.telemetryWork.Wait(drain); err != nil {
+		t.Fatal(err)
+	}
 
 	body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
 	if err != nil {

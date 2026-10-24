@@ -431,7 +431,44 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 			return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, diagnostic.Message)
 		}
 	}
-	return interpreter.compile(def, config)
+	machine, err := interpreter.compile(def, config)
+	if err != nil {
+		return nil, err
+	}
+	if config.goobersSet {
+		machine.SetGoobers(materializeGoobersForDefinition(def, config.goobers))
+	}
+	return machine, nil
+}
+
+// MaterializeGooberForDefinition resolves versioned goober defaults without
+// mutating the shared authoring declaration. DSL 3.1 makes omitted MCP
+// requiredness fail closed; older pins preserve nil as the legacy third state.
+func MaterializeGooberForDefinition(def Definition, spec apiv1.GooberSpec) apiv1.GooberSpec {
+	out := *spec.DeepCopy()
+	if !mcpRequiredDefaultApplies(def.DSLVersion) {
+		return out
+	}
+	for i := range out.MCPServers {
+		if out.MCPServers[i].Required == nil {
+			required := true
+			out.MCPServers[i].Required = &required
+		}
+	}
+	return out
+}
+
+func mcpRequiredDefaultApplies(version string) bool {
+	order, ok := supportmatrix.CompareDSLVersions(version, supportmatrix.V31DSLVersion)
+	return ok && order >= 0
+}
+
+func materializeGoobersForDefinition(def Definition, goobers map[string]apiv1.GooberSpec) map[string]apiv1.GooberSpec {
+	out := make(map[string]apiv1.GooberSpec, len(goobers))
+	for name, spec := range goobers {
+		out[name] = MaterializeGooberForDefinition(def, spec)
+	}
+	return out
 }
 
 // refusePreV30Surface fails a pre-3.0 compile that touches the 3.0-only

@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -17,14 +18,7 @@ func TestChildWorkflowExecutionRefusedAtEngineBoundaries(t *testing.T) {
 		Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: "parent",
 		Tasks: []apiv1.Task{{Name: "parent", Type: apiv1.TaskAgentic, Goal: "delegate", Goober: "coder", ChildWorkflows: &apiv1.ChildWorkflowPolicy{AllowedGoobers: []string{"coder"}}}},
 	}}
-	reg := NewRegistryWithPreviewFeatures(true)
-	if _, err := reg.RegisterDefinition(def); err != nil {
-		t.Fatalf("policy registration should remain possible: %v", err)
-	}
-	if _, err := reg.StartInput(def.Name, StartSpec{RunID: "child-guard", Gaggle: "web"}); !errors.Is(err, wf.ErrChildWorkflowExecutionUnsupported) {
-		t.Fatalf("StartInput: %v", err)
-	}
-	if err := RefuseDefinition(def.Name, def.Spec); !errors.Is(err, wf.ErrChildWorkflowExecutionUnsupported) {
+	if err := engineadmission.RefuseDefinition(def.Name, def.Spec); !errors.Is(err, wf.ErrChildWorkflowExecutionUnsupported) {
 		t.Fatalf("daemon preflight: %v", err)
 	}
 	// Direct Temporal invocation cannot bypass registry admission. No activities

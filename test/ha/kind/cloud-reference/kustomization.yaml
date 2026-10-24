@@ -1,0 +1,30 @@
+# Nightly overlay for deploy/reference/goobers-cloud (HA-P3-20). kind has no
+# Entra, so it sets database-auth to password in the shared ConfigMap (both
+# migrate and control read it from there); the Entra egress path is covered by
+# the rendered NetworkPolicy tests, not by this cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../deploy/reference/goobers-cloud
+images:
+  - name: goobers
+    newName: goobers
+    newTag: ha-nightly
+patches:
+  - target: {kind: ConfigMap, name: goobers-cloud}
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: goobers-cloud
+      data:
+        instance-id: nightly
+        database-auth: password
+  - target: {kind: ConfigMap, name: goobers-cloud-migration}
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: goobers-cloud-migration
+      data:
+        backup-ref: kind-nightly

@@ -11,11 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -103,8 +106,8 @@ func TestDaemonDrainServesDelegatedClaimRecovery(t *testing.T) {
 	stageStarted := make(chan struct{})
 	recoverClaims := make(chan struct{})
 	stageCompleted := make(chan error, 1)
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previousAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			close(stageStarted)
 			<-recoverClaims
@@ -120,7 +123,7 @@ func TestDaemonDrainServesDelegatedClaimRecovery(t *testing.T) {
 			return err
 		}}
 	}
-	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previousAdapter })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -137,11 +140,11 @@ func TestDaemonDrainServesDelegatedClaimRecovery(t *testing.T) {
 		t.Fatal("daemon did not start")
 	}
 
-	requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "drain-claim-recovery")
+	requestID, err := writeTriggerRequestContextOptions(context.Background(), l.SchedulerDir(), "", "drain-claim-recovery", false)
 	if err != nil {
 		t.Fatalf("write trigger request: %v", err)
 	}
-	runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
+	runID, err := pollTriggerResponseForTest(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
 	if err != nil {
 		t.Fatalf("trigger run: %v", err)
 	}
@@ -214,8 +217,8 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			proceedClosed = true
 		}
 	}
-	previousAdapter := newAgenticAdapter
-	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+	previousAdapter := runtimewiring.NewAgenticAdapter
+	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
 		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			returned := make(chan struct{})
 			started <- liveAgenticAttempt{workspace: req.Workspace, returned: returned}
@@ -228,7 +231,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			return err
 		}}
 	}
-	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = previousAdapter })
 	t.Cleanup(closeProceed)
 
 	for i := 0; i < 3; i++ {
@@ -260,11 +263,11 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d daemon did not start", i)
 		}
 
-		requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "acceptance")
+		requestID, err := writeTriggerRequestContextOptions(context.Background(), l.SchedulerDir(), "", "acceptance", false)
 		if err != nil {
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}
-		runID, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
+		runID, err := pollTriggerResponseForTest(context.Background(), l.SchedulerDir(), requestID, 30*time.Second)
 		if err != nil {
 			t.Fatalf("cycle %d trigger run: %v", i, err)
 		}
@@ -511,7 +514,7 @@ func TestUpPreservesUncapturedTerminalOrphanAndKeepsMarkedWorktree(t *testing.T)
 
 func commandWorktreeFixture(t *testing.T, l instance.Layout) (*worktree.Manager, string) {
 	t.Helper()
-	repo, err := repoCloneURL(apiv1.RepoRef{})
+	repo, err := runtimewiring.RepoCloneURL(apiv1.RepoRef{})
 	if err != nil {
 		t.Fatalf("repoCloneURL: %v", err)
 	}

@@ -4,6 +4,7 @@ package prqueue
 
 // These codes preserve the PR selector's existing exclusion vocabulary.
 const (
+	Conflicted        = "forge reports a merge conflict"
 	Draft             = "draft"
 	Checks            = "checks not passing"
 	Label             = "excluded by label"
@@ -21,6 +22,8 @@ const (
 // labels or steal a claim. Unknown reasons remain explicitly unclassified.
 func NextStep(reason string) string {
 	switch reason {
+	case Conflicted:
+		return "Resolve the branch conflict through remediation before retrying merge review."
 	case Draft:
 		return "Mark the pull request ready for review when its implementation is ready."
 	case Checks:

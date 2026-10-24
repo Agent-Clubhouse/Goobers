@@ -1,0 +1,50 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLOUD CONTROL" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers-cloud control \- Serve API and the single-active cloud controller.
+.SH SYNOPSIS
+\fBgoobers-cloud control\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers-cloud control [DATABASE OPTIONS] [OPTIONS]
+
+Serve API and the single-active, fenced cloud controller. Never executes stages.
+Database options (separate credentials; no role membership):
+  --instance-id ID                          Required instance (or GOOBERS_INSTANCE_ID)
+  --api-database-url URL                    API transaction-pool URL
+  --api-database-url-file FILE              API URL file
+  --api-database-direct-url URL             API direct URL
+  --api-database-direct-url-file FILE       API direct URL file
+  --controller-database-url URL             Controller transaction-pool URL
+  --controller-database-url-file FILE       Controller URL file
+  --controller-database-direct-url URL      Controller direct URL
+  --controller-database-direct-url-file FILE Controller direct URL file
+  --database-auth MODE                      password or entra (default password)
+  --database-max-conns N                    Combined budget (default 16)
+  --database-direct-max-conns N             Direct reservation per role (default 2)
+
+Environment: GOOBERS_API_DATABASE_URL, GOOBERS_API_DATABASE_DIRECT_URL,
+GOOBERS_CONTROLLER_DATABASE_URL, GOOBERS_CONTROLLER_DATABASE_DIRECT_URL.
+Both roles must target goobers_<instance>, with dashes changed to underscores.
+
+Options:
+  --check-assembly              Print compiled plane wiring and exit (offline)
+  --listen ADDRESS              API/probes address (default 127.0.0.1:8080)
+  --tls-cert FILE                API TLS certificate (required off loopback)
+  --tls-key FILE                 API TLS private key
+  --pod-key-file FILE            Shared signed pod-token key file (required)
+  --self-execution POLICY        Must be deny (default deny)
+  --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
+  --temporal-namespace NAME      Temporal namespace (default default)
+  --task-queue NAME              Remote engine task queue (default goobers)
+  --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
+                                 journal span source and config generations live there
+  --object-store-container NAME  Azure Blob container (default goobers)
+  --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
+                                 optional goobers/ (or GOOBERS_CONFIG_DIR); required
+
+Readiness requires schema compatibility, complete plane/recovery wiring, and a
+live controller lease. SIGTERM stops controller loops and releases authority.
+.fi
+.SH SEE ALSO
+\fBgoobers-cloud\fR(1)

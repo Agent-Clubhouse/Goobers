@@ -39,6 +39,7 @@ spec:
         - github:issues:write   # the label-issue contract; rebinds to the Gitea cred seam
         - github:pr:write       # Azure DevOps: PR labels, thread reads and the auto-complete cancel
       policyActions:
+        - comment-on-issue      # durable routing budget and visible escalation
         - label-issue           # prescribed by commandPolicyActions once the registry entries land
         - disarm-landing        # prescribed by blockUnansweredFeedback: "true"
       # no `next` — single-stage workflow, terminal on success

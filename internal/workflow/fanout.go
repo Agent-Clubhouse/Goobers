@@ -41,6 +41,10 @@ const (
 // that cannot freeze its selection. It never runs as a plain parallel.
 var ErrSelectiveParallelUnsupported = errors.New("spec.parallels selection (selective parallel) execution is not implemented; remove selection and optional to run this workflow")
 
+// ErrParallelsUnsupported refuses every parallel until the production engine
+// assembles the shared fan-out controller.
+var ErrParallelsUnsupported = errors.New("spec.parallels (fan-out/fan-in branches) execution is not implemented on the engine walk")
+
 // ErrMapUnsupported refuses a map state on a runtime that cannot execute it.
 var ErrMapUnsupported = errors.New("spec.maps (data-driven fan-out) execution is not implemented; remove the map to run this workflow")
 
@@ -63,33 +67,13 @@ func (e *UnsupportedFanOutError) Error() string {
 // Unwrap exposes the sentinel to errors.Is.
 func (e *UnsupportedFanOutError) Unwrap() error { return e.Err }
 
-// RefuseUnsupportedFanOut rejects a definition using any DSL 3.1 fan-out
-// construct: selective parallels and maps. The engine walk executes neither
-// and calls it before any execution effects (design §13). The local runner
-// executes both: selective parallels since FAN-2 (#7383) and maps since FAN-4
-// (#7385), so it does not call this.
+// RefuseUnsupportedFanOut rejects fan-out constructs the production engine
+// walk cannot execute. The local runner does not call this.
 func RefuseUnsupportedFanOut(spec apiv1.WorkflowSpec) error {
-	for _, parallel := range spec.Parallels {
-		if parallelIsSelective(parallel) {
-			return &UnsupportedFanOutError{State: parallel.Name, Feature: "spec.parallels.selection", Err: ErrSelectiveParallelUnsupported}
-		}
-	}
-	if len(spec.Maps) > 0 {
-		return &UnsupportedFanOutError{State: spec.Maps[0].Name, Feature: "spec.maps", Err: ErrMapUnsupported}
+	if len(spec.Parallels) > 0 {
+		return &UnsupportedFanOutError{State: spec.Parallels[0].Name, Feature: "spec.parallels", Err: ErrParallelsUnsupported}
 	}
 	return nil
-}
-
-func parallelIsSelective(parallel apiv1.Parallel) bool {
-	if parallel.Selection != nil {
-		return true
-	}
-	for _, branch := range parallel.Branches {
-		if branch.Optional {
-			return true
-		}
-	}
-	return false
 }
 
 // preV31FanOutSurfaceProblems refuses the fan-out fields on a definition

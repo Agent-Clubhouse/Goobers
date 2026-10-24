@@ -10,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -22,6 +26,22 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+func readFileContent(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
+}
+
+func writeFileContent(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 type childKitFixture struct {
 	driver      *runner.Runner
@@ -44,7 +64,7 @@ type childKitFixtureOptions struct {
 	queued             bool
 	parent             string
 	source             string
-	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *runner.ChildWorkspaceAdmission
+	workspace          func(*daemonCredentialService, triggerqueue.ChildRecord, *worktree.Manager) *workspaceauthority.ChildWorkspaceAdmission
 }
 
 func newChildKitFixture(t *testing.T, isolated ...bool) childKitFixture {
@@ -159,15 +179,15 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	}
 	set, report, err := loadConfigDirectory(f.retainedPath)
 	if err != nil {
-		t.Fatalf("load config: %v (%s)", err, validationIssueSummary(report))
+		t.Fatalf("load config: %v (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	set.Workflows = []apiv1.Workflow{*proposal.Workflow.DeepCopy()}
-	instructions, skills, err := loadSnapshotGooberInputs(f.retainedPath, set)
+	instructions, skills, err := runtimewiring.LoadSnapshotGooberInputs(f.retainedPath, set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := &workerConfigSnapshot{digests: newGooberDigestIndex(f.cfg, set, instructions, skills)}
-	gooberDigest, err := snapshot.gooberDigestFor(parentEnv.Gaggle, proposal.Workflow.Name)
+	snapshot := &workerConfigSnapshot{Digests: runtimewiring.NewGooberDigestIndex(f.cfg, set, instructions, skills)}
+	gooberDigest, err := snapshot.GooberDigestFor(parentEnv.Gaggle, proposal.Workflow.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,11 +195,11 @@ func newChildKitFixtureConfigured(t *testing.T, options childKitFixtureOptions) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var workspace *runner.ChildWorkspaceAdmission
+	var workspace *workspaceauthority.ChildWorkspaceAdmission
 	if options.workspace != nil {
 		workspace = options.workspace(service, ref.Child, manager)
 	}
-	driver, err := runner.New(runner.Config{RepoCloneURL: repoCloneURL, Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
+	driver, err := runner.New(runner.Config{RepoCloneURL: runtimewiring.RepoCloneURL, Worktrees: manager, RunsDir: f.layout.ForGaggle(parentEnv.Gaggle).RunsDir(), ScratchDir: t.TempDir(), ConfigGeneration: ref.Envelope.ConfigGeneration, InstanceID: f.parent.InstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,7 +12,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // Failure types stamped onto activity errors so an attempt's class survives
@@ -56,18 +57,18 @@ const reservedHeadMovedCode = "workspace_head_moved_unattested"
 // result file, or an in-process executor's — and is renamed so it fails like
 // any other stage failure instead of skipping gate routing and every streak.
 func admitWorkspaceHeadMoved(result *apiv1.ResultEnvelope, attested bool) {
-	if attested || result.Error == nil || result.Error.Code != runner.WorkspaceHeadMovedErrorCode {
+	if attested || result.Error == nil || result.Error.Code != runsemantics.WorkspaceHeadMovedErrorCode {
 		return
 	}
 	result.Error.Code = reservedHeadMovedCode
-	result.Error.Message = "stage reported the runtime-reserved code " + runner.WorkspaceHeadMovedErrorCode + ": " + result.Error.Message
+	result.Error.Message = "stage reported the runtime-reserved code " + runsemantics.WorkspaceHeadMovedErrorCode + ": " + result.Error.Message
 }
 
 // workspaceHeadMovedResult reports whether a stage's surrendered failure is a
 // pull request head that moved under the run (#6019). Only an attested code
 // survives admitWorkspaceHeadMoved to reach here.
 func workspaceHeadMovedResult(result apiv1.ResultEnvelope) bool {
-	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == runner.WorkspaceHeadMovedErrorCode
+	return result.Status == apiv1.ResultFailure && result.Error != nil && result.Error.Code == runsemantics.WorkspaceHeadMovedErrorCode
 }
 
 // gateEvaluationFailed is the walk's answer to a gate evaluation that
@@ -122,7 +123,7 @@ func supersededRunResult(state string, upstream map[string]apiv1.ResultEnvelope,
 // envelope because it is a fact about the attempt loop, not the stage's
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
-func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -133,11 +134,12 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	}
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
-	maxAttempts := policyMaxAttempts + runner.DefaultMaxInfrastructureAttempts - 1
+	maxAttempts := policyMaxAttempts + runsemantics.DefaultMaxInfrastructureAttempts - 1
 
-	var usageBudget runner.StageUsageBudget
+	var usageBudget runsemantics.StageUsageBudget
 	var policyAttempts, infrastructureFailures, priorAttemptDeferrals int32
 	var lastErr error
+	var infraCommittedWork bool
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := int32(1); attempt <= maxAttempts; attempt++ {
 		// The first attempt carries no class (normative); a retry carries the
@@ -148,6 +150,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if attempt > 1 {
 			class = nextRetryClass
 		}
+		policyBefore := policyAttempts
 		if class != journal.AttemptInfra {
 			policyAttempts++
 		}
@@ -161,7 +164,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
 		rec.stageStarted(startedAt, t, int(attempt), class)
-		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
+		rec.bindChildStart(ctx, t, int(attempt), class)
+		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, rec.childContextPointers(t.Name, pointers)); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
 		var res apiv1.ResultEnvelope
@@ -170,11 +174,18 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
-			activityResult, err = dispatch(ctx, int(attempt), class)
+			dispatchCtx := withDispatchAttemptStarted(ctx, startedAt)
+			step := childStep{Attempt: int(attempt), Class: class, PolicyAttempts: policyBefore, InfrastructureFailures: infrastructureFailures, Pointers: pointers}
+			activityResult, err = rec.dispatchChargedAttempt(dispatchCtx, in, t, step, &usageBudget, dispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
-			if temporal.IsCanceledError(err) || ctx.Err() != nil {
+			if stopsAttemptLoop(ctx, err) {
 				return apiv1.ResultEnvelope{}, err
+			}
+			if errors.Is(err, errChildContinued) {
+				// A yield continues this policy attempt: no retry allowance is consumed.
+				maxAttempts, policyAttempts, nextRetryClass = maxAttempts+1, policyBefore, class
+				continue
 			}
 			if err != nil && activityResult.Placement == nil {
 				activityResult.Placement = DispatchFailurePlacement(err)
@@ -183,8 +194,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			// attempt's outcome decides (#3875). Journaled for a failed
 			// dispatch too when the dispatch reported one, so the record of
 			// where an attempt ran does not depend on whether it succeeded.
-			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
-			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+			if receiptErr := rec.recordDispatchEvidence(ctx, t.Name, int(attempt), class, activityResult, err); receiptErr != nil {
+				return apiv1.ResultEnvelope{}, receiptErr
+			}
 
 			if t.Type == apiv1.TaskAgentic && t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) && workflow.GetVersion(ctx, "cumulative-agentic-usage", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				usage := dispatchFailureUsage(err)
@@ -198,7 +210,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				// Worker-loss timeouts may hide an attempt that already spent
 				// budget. Require usage in that case even though the activity
 				// could not report it; pre-execution failures remain retryable.
-				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLoss(err), &res, &err)
+				usageBudget.Apply(limits, usage.Metrics, usageRequired(usage, err), &res, &err)
 			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
@@ -230,15 +242,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 					// thrown away with its pod, and building the next stage on
 					// it would resurrect abandoned work.
 					if deltaOut != nil {
-						*deltaOut = deltaPublication{
-							Attempt:   int(attempt),
-							Digest:    activityResult.WorkspaceDelta,
-							Base:      activityResult.WorkspaceDeltaBase,
-							Tip:       activityResult.WorkspaceDeltaTip,
-							Unchanged: activityResult.WorkspaceDeltaUnchanged,
-
-							PushedBranches: pushedBranches(activityResult.Mutations),
-						}
+						*deltaOut = winningAttemptDelta(int(attempt), activityResult)
 					}
 					return res, nil
 				}
@@ -257,11 +261,11 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			lastErr = emitErr
 			infrastructureFailures++
 			nextRetryClass = journal.AttemptInfra
-			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
-				rec.exhaustedTerminalRetry(t.Name, journal.AttemptInfra, int(infrastructureFailures), int(runner.DefaultMaxInfrastructureAttempts))
+			if infrastructureFailures >= runsemantics.DefaultMaxInfrastructureAttempts {
+				rec.exhaustedTerminalRetry(t.Name, journal.AttemptInfra, int(infrastructureFailures), int(runsemantics.DefaultMaxInfrastructureAttempts))
 				return apiv1.ResultEnvelope{}, fmt.Errorf(
 					"engine: journal stage %q: %w (attempt %d/%d)",
-					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
+					t.Name, lastErr, infrastructureFailures, runsemantics.DefaultMaxInfrastructureAttempts)
 			}
 			if retryDelay := infrastructureRetryDelay(emitErr, backoff, workflow.Now(ctx)); retryDelay > 0 {
 				if serr := sleepBeforeRetry(ctx, rec, t.Name, int(attempt), nextRetryClass, retryDelay); serr != nil {
@@ -282,7 +286,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if identity == nil {
 			identity = attemptIdentityFromError(err)
 		}
-		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity)
+		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity, &infraCommittedWork)
 		if isWorkerLoss(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
@@ -292,8 +296,8 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		nextRetryClass = journal.AttemptPolicy
 		if failureClass == journal.AttemptInfra {
 			chargeInfraFailure(err, &infrastructureFailures, &priorAttemptDeferrals, &maxAttempts)
-			retryLimit, retryCount = runner.DefaultMaxInfrastructureAttempts, infrastructureFailures
-			shouldRetry = infrastructureFailures < runner.DefaultMaxInfrastructureAttempts
+			retryLimit, retryCount = runsemantics.DefaultMaxInfrastructureAttempts, infrastructureFailures
+			shouldRetry = infrastructureFailures < runsemantics.DefaultMaxInfrastructureAttempts
 			nextRetryClass = journal.AttemptInfra
 		}
 		if !shouldRetry {
@@ -312,6 +316,18 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 }
 
+func winningAttemptDelta(attempt int, result stageActivityResult) deltaPublication {
+	return deltaPublication{
+		Attempt: attempt, Digest: result.WorkspaceDelta, Base: result.WorkspaceDeltaBase,
+		Tip: result.WorkspaceDeltaTip, Unchanged: result.WorkspaceDeltaUnchanged,
+		PushedBranches: pushedBranches(result.Mutations),
+	}
+}
+
+func usageRequired(usage AttemptUsage, err error) bool {
+	return usage.Reported || usage.Unavailable || isWorkerLoss(err)
+}
+
 func attemptIdentityFromError(err error) *attemptidentity.Identity {
 	for current := err; current != nil; current = errors.Unwrap(current) {
 		var appErr *temporal.ApplicationError
@@ -319,11 +335,11 @@ func attemptIdentityFromError(err error) *attemptidentity.Identity {
 			continue
 		}
 		var identity attemptidentity.Identity
-		if appErr.Details(&identity) == nil && identity.WorkerIdentity != "" {
+		if readDispatchFailureDetails(appErr, &identity) == nil && identity.WorkerIdentity != "" {
 			return &identity
 		}
 		var retryAt time.Time
-		if appErr.Details(&retryAt, &identity) == nil && identity.WorkerIdentity != "" {
+		if readDispatchFailureDetails(appErr, &retryAt, &identity) == nil && identity.WorkerIdentity != "" {
 			return &identity
 		}
 	}
@@ -339,7 +355,7 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 		var retryAt time.Time
 		if appErr.Details(&retryAt) != nil {
 			var identity attemptidentity.Identity
-			if appErr.Details(&retryAt, &identity) != nil {
+			if readDispatchFailureDetails(appErr, &retryAt, &identity) != nil {
 				continue
 			}
 		}
@@ -350,6 +366,18 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 		return backoff
 	}
 	return backoff
+}
+
+func nextAttemptUsageAllowance(
+	task apiv1.Task,
+	budget *runsemantics.StageUsageBudget,
+) *usageallowance.Allowance {
+	if task.Type != apiv1.TaskAgentic || task.Limits == nil ||
+		(task.Limits.MaxTokens <= 0 && task.Limits.MaxCostUSD <= 0) {
+		return nil
+	}
+	allowance := budget.Allowance(*task.Limits)
+	return &allowance
 }
 
 // ClassifyDispatchFailure maps one failed dispatch to the journal attempt
@@ -383,6 +411,9 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
+	if errors.Is(err, errHandoffWorkerLost) {
+		return journal.AttemptInfra, nil
+	}
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		switch timeoutErr.TimeoutType() {
@@ -430,5 +461,37 @@ func recordAttemptArtifacts(
 	if err := rec.recordUnpushedDiff(ctx, in, stage, attempt, class, result.UnpushedDiff); err != nil {
 		return fmt.Errorf("engine: journal unpushed diff for stage %q: %w", stage, err)
 	}
-	return nil
+	return rec.outbox(ctx, stage, attempt, class, result.Outbox)
+}
+
+// dispatchChargedAttempt dispatches one attempt under its usage allowance
+// and routes a trusted child handoff through admission.
+func (r *runJournal) dispatchChargedAttempt(ctx workflow.Context, in RunInput, t apiv1.Task, step childStep, budget *runsemantics.StageUsageBudget,
+	dispatch func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error)) (stageActivityResult, error) {
+	allowance := nextAttemptUsageAllowance(t, budget)
+	step.Charge = childHandoffCharge(t, budget)
+	return r.dispatchWithChildAdmission(ctx, in, t, step, func(c workflow.Context, a int, cl journal.AttemptClass) (stageActivityResult, error) {
+		return dispatch(c, a, cl, allowance)
+	})
+}
+
+// childHandoffCharge applies the stage's cumulative usage cap to a yielding
+// attempt before its child runs, as the runner charges before it waits.
+func childHandoffCharge(t apiv1.Task, budget *runsemantics.StageUsageBudget) func(stageActivityResult) error {
+	return func(result stageActivityResult) error {
+		if t.Type != apiv1.TaskAgentic || t.Limits == nil || (t.Limits.MaxTokens <= 0 && t.Limits.MaxCostUSD <= 0) {
+			return nil
+		}
+		usage := AttemptUsage{}
+		if result.Usage != nil {
+			usage = *result.Usage
+		}
+		envelope := result.ResultEnvelope
+		var err error
+		budget.Apply(*t.Limits, usage.Metrics, usage.Reported, &envelope, &err)
+		if err == nil && envelope.Error != nil && envelope.Error.Code == runsemantics.BudgetExceededErrorCode {
+			err = errors.New("engine: cumulative parent usage exhausted while handing off child")
+		}
+		return err
+	}
 }

@@ -257,6 +257,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
 	}
+	if context.Cause(ctx) != nil {
+		return ProcessResult{ExitCode: -1}, fmt.Errorf("%w: %s", ErrCanceled, req.Command[0])
+	}
 	timeout := effectiveProcessTimeout(ctx, req.Timeout, time.Now())
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -295,7 +298,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 
 	// proc.Start puts the command in its own session (Setsid) so the tree can
 	// be killed as a unit on timeout/cancel below — see internal/platform/proc.
-	tree, err := proc.Start(cmd)
+	tree, err := proc.Start(cmd, proc.StartOptions{RequireQuiescence: invoke.RequiresWorkspaceQuiescence(runCtx)})
 	if err != nil {
 		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
 	}

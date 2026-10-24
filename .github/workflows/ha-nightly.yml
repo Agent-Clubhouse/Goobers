@@ -1,0 +1,429 @@
+name: HA nightly kind
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      inject_failure:
+        description: Exercise scheduled-failure alarm handling after a successful smoke
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-nightly-kind
+  cancel-in-progress: false
+
+env:
+  HA_NIGHTLY_OWNER_ROTATION: control-plane-ha-maintainers
+  KIND_VERSION: v0.30.0
+  KIND_SHA256: 517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889
+  HELM_VERSION: v3.18.4
+  HELM_SHA256: f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1
+  CALICO_VERSION: v3.30.3
+  CALICO_SHA256: 9382d2b27a76f40c170454b408653e6d71e2205ef0aef069e942bb690e7381d0
+  CNPG_VERSION: v1.27.0
+  CNPG_SHA256: 7be449085a4c5941ff05d2c4aca47d4f1c4c87698181fe2c19c47a9f6a43b268
+  TEMPORAL_CHART_VERSION: 0.62.0
+  TEMPORAL_CHART_SHA256: c2f01baeef60ed96335948640a8ac30fb49a10b906e20c259b92f81f2cba5c04
+  TEMPORAL_128_CHART_SHA256: 3eab4146399c541962a7d6ad70c6f8117c21776a96432b9571e3fe43c0e86dde
+  TEMPORAL_129_CHART_SHA256: e501c958abb73c0b5038b00bebe234c101b6777580dbc69600dbab01f30be66e
+  TEMPORAL_130_CHART_SHA256: 14a8efe1cc92c91befac151db91f20f9a13962788e9d710c86655add6d966d37
+  TEMPORAL_131_CHART_SHA256: 4ea557365bca72e635ae82fc4a93d586df238946e5d5a19eb32a8a24748449f9
+  TEMPORAL_CLI_SHA256: 2c01b78e980d932bf609fbd44f6998a9eda2281952d4c8d7216905c845aaa071
+  TOXIPROXY_VERSION: v2.13.0
+  TOXIPROXY_SHA256: bf529e8bb9a05cd293f45a3f1d0aa66ff9469680dcdca7e0ebeae21f1b83de89
+  TOXIPROXY_API_URL: http://127.0.0.1:8474/version
+  TEMPORAL_UPGRADE_ADDRESS: 127.0.0.1:17233
+
+jobs:
+  smoke:
+    name: kind reference smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Acquire pinned nightly tools and manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ha-nightly/bin" "$RUNNER_TEMP/ha-nightly/assets"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64" \
+            --output "$RUNNER_TEMP/ha-nightly/bin/kind"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/helm.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/calico.yaml"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/${CNPG_VERSION}/releases/cnpg-${CNPG_VERSION#v}.yaml" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/cnpg.yaml"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-${TEMPORAL_CHART_VERSION}/temporal-${TEMPORAL_CHART_VERSION}.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.67.0/temporal-0.67.0.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.67.0.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.73.2/temporal-0.73.2.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.73.2.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-0.74.0/temporal-0.74.0.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-0.74.0.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/helm-charts/releases/download/temporal-1.6.0/temporal-1.6.0.tgz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-1.6.0.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/temporalio/cli/releases/download/v1.9.0/temporal_cli_1.9.0_linux_amd64.tar.gz" \
+            --output "$RUNNER_TEMP/ha-nightly/assets/temporal-cli.tgz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://github.com/Shopify/toxiproxy/releases/download/${TOXIPROXY_VERSION}/toxiproxy-server-linux-amd64" \
+            --output "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server"
+          printf '%s  %s\n' \
+            "$KIND_SHA256" "$RUNNER_TEMP/ha-nightly/bin/kind" \
+            "$HELM_SHA256" "$RUNNER_TEMP/ha-nightly/assets/helm.tgz" \
+            "$CALICO_SHA256" "$RUNNER_TEMP/ha-nightly/assets/calico.yaml" \
+            "$CNPG_SHA256" "$RUNNER_TEMP/ha-nightly/assets/cnpg.yaml" \
+            "$TEMPORAL_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal.tgz" \
+            "$TEMPORAL_128_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.67.0.tgz" \
+            "$TEMPORAL_129_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.73.2.tgz" \
+            "$TEMPORAL_130_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-0.74.0.tgz" \
+            "$TEMPORAL_131_CHART_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-1.6.0.tgz" \
+            "$TEMPORAL_CLI_SHA256" "$RUNNER_TEMP/ha-nightly/assets/temporal-cli.tgz" \
+            "$TOXIPROXY_SHA256" "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/ha-nightly/assets/helm.tgz" -C "$RUNNER_TEMP/ha-nightly/assets"
+          tar -xzf "$RUNNER_TEMP/ha-nightly/assets/temporal-cli.tgz" -C "$RUNNER_TEMP/ha-nightly/bin" temporal
+          install -m 0755 "$RUNNER_TEMP/ha-nightly/assets/linux-amd64/helm" "$RUNNER_TEMP/ha-nightly/bin/helm"
+          chmod 0755 "$RUNNER_TEMP/ha-nightly/bin/kind" "$RUNNER_TEMP/ha-nightly/bin/temporal" "$RUNNER_TEMP/ha-nightly/bin/toxiproxy-server"
+          echo "$RUNNER_TEMP/ha-nightly/bin" >> "$GITHUB_PATH"
+
+      # The chart is the ladder's end state, already downloaded and sha-verified
+      # by the acquisition step above.
+      - name: Render Temporal HA values
+        run: GOOBERS_TEMPORAL_HA_CHART="$RUNNER_TEMP/ha-nightly/assets/temporal-1.6.0.tgz" go test ./cmd/goobers -run 'TestDeployReferenceTemporalHAValues' -count=1
+
+      - name: Build reference image
+        run: make image IMAGE=goobers:ha-nightly
+
+      - name: Run kind environment smoke
+        env:
+          HA_ASSET_DIR: ${{ runner.temp }}/ha-nightly/assets
+          HA_BIN_DIR: ${{ runner.temp }}/ha-nightly/bin
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: go run ./test/ha/kind/cmd/nightly run
+
+      - name: Freeze smoke (CgroupFreeze on kind)
+        shell: bash
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          set -euo pipefail
+          go run ./test/ha/chaos/cmd/chaos freeze-smoke | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s "$HA_EVIDENCE_DIR/freeze-smoke.txt"
+
+      - name: Verify worker HA scenario contracts
+        run: go test ./test/ha/workerscenarios
+
+      - name: Check worker chaos registrations
+        id: worker-chaos-registration
+        shell: bash
+        env:
+          WORKER_CHAOS_DEFERRAL_EXPIRES: "2026-11-06"
+        run: |
+          set -euo pipefail
+          defer_registration() {
+            local reason="$1"
+            local today
+            today="$(date -u +%F)"
+            if [[ "$today" == "$WORKER_CHAOS_DEFERRAL_EXPIRES" ||
+                  "$today" > "$WORKER_CHAOS_DEFERRAL_EXPIRES" ]]; then
+              echo "::error title=worker chaos deferral expired::$reason; expired $WORKER_CHAOS_DEFERRAL_EXPIRES"
+              exit 1
+            fi
+            echo "::notice title=worker chaos registration deferred::$reason; expires $WORKER_CHAOS_DEFERRAL_EXPIRES"
+            echo "ready=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          }
+          cat >"$RUNNER_TEMP/require-worker-scenarios.go" <<'EOF'
+          package main
+
+          import (
+            "fmt"
+            "os"
+
+            "github.com/goobers/goobers/test/ha/chaos"
+          )
+
+          func main() {
+            found := map[string]chaos.Scenario{}
+            for _, scenario := range chaos.Scenarios() {
+              if scenario.ID == "CHAOS-13" || scenario.ID == "UPGRADE-11" {
+                found[scenario.ID] = scenario
+              }
+            }
+            missing := ""
+            for _, id := range []string{"CHAOS-13", "UPGRADE-11"} {
+              if _, exists := found[id]; !exists {
+                if missing != "" {
+                  missing += ","
+                }
+                missing += id
+              }
+            }
+            if missing != "" {
+              fmt.Printf("DEFER:pending #7748: missing %s\n", missing)
+              return
+            }
+            for _, id := range []string{"CHAOS-13", "UPGRADE-11"} {
+              scenario := found[id]
+              if scenario.Pending != "" {
+                fmt.Printf("DEFER:%s %s\n", id, scenario.Pending)
+                return
+              }
+              if scenario.Run == nil {
+                fmt.Fprintf(os.Stderr, "%s has no Run function\n", id)
+                os.Exit(1)
+              }
+            }
+            fmt.Println("READY")
+          }
+          EOF
+          registry_state="$(go run "$RUNNER_TEMP/require-worker-scenarios.go")"
+          if [[ "$registry_state" == DEFER:* ]]; then
+            defer_registration "${registry_state#DEFER:}"
+          fi
+          if [[ "$registry_state" != "READY" ]]; then
+            echo "::error title=worker chaos registry check::unexpected state: $registry_state"
+            exit 1
+          fi
+          echo "ready=true" >>"$GITHUB_OUTPUT"
+
+      - name: Verify chaos pending references are still open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./test/ha/chaos/cmd/chaos verify-pending
+
+      - name: Run chaos harness
+        shell: bash
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          set -euo pipefail
+          go test -race ./test/ha/invariants/... ./test/ha/chaos/...
+          go run ./test/ha/chaos/cmd/chaos run | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Require passed worker chaos evidence
+        if: ${{ steps.worker-chaos-registration.outputs.ready == 'true' }}
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: |
+          go run ./test/ha/workerscenarios/cmd/verify-evidence \
+            "$HA_EVIDENCE_DIR/chaos-summary.json" CHAOS-13 UPGRADE-11
+
+      # HA-P3-20: apply the goobers-cloud reference to the same kind cluster.
+      # Gated on the built CLI reporting a complete control-plane assembly:
+      # `control --check-assembly` exits 0 only when the role exists and its
+      # composition (HA-P3-18) is complete. A role without it would crash-loop
+      # goobers-control, so any non-zero exit (including an older CLI that does
+      # not know the flag) skips with an explicit notice.
+      - name: Detect goobers-cloud control assembly
+        id: cloud
+        run: |
+          if go run ./cmd/goobers-cloud control --check-assembly >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=cloud reference skipped::goobers-cloud control --check-assembly did not report a complete assembly"
+          fi
+
+      - name: Apply goobers-cloud reference and check rollout
+        if: ${{ steps.cloud.outputs.ready == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          instance=nightly # must match instance-id in test/ha/kind/cloud-reference
+          database="goobers_${instance}"
+          secrets="$(mktemp -d)"
+          trap 'rm -rf "$secrets"' EXIT
+          chmod 700 "$secrets"
+          # The roles (goobers_owner/api/controller, temporal_app) already exist
+          # with random passwords: the kind CNPG cluster declares the production
+          # role contract and the runner created the credential Secrets before
+          # applying it (test/ha/kind/cnpg-cluster.yaml). What is left is the
+          # instance database, created as the CNPG superuser over the local
+          # socket (no password anywhere). THIS IS THE SINGLE FLIP POINT for
+          # `goobers-cloud bootstrap` (--admin-url from temporal-postgres-superuser,
+          # --database-direct-url-file from the owner URL below) once #7813,
+          # #7818 and #7763 ship and it stops refusing. Idempotent on reuse.
+          # The chaos steps may have failed the primary over: wait for the cluster
+          # to settle, then ask it who the primary is.
+          kubectl -n goobers-temporal wait --for=condition=Ready cluster/temporal-postgres --timeout=5m
+          primary="$(kubectl -n goobers-temporal get cluster temporal-postgres -o jsonpath='{.status.currentPrimary}')"
+          {
+            printf "SELECT 'CREATE DATABASE %s OWNER goobers_owner' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '%s') \\gexec\n" "$database" "$database"
+            printf 'REVOKE ALL ON DATABASE %s FROM PUBLIC;\nGRANT CONNECT ON DATABASE %s TO goobers_api, goobers_controller;\n' "$database" "$database"
+          } | kubectl -n goobers-temporal exec -i "$primary" -c postgres -- psql -q -v ON_ERROR_STOP=1 >/dev/null
+          for role in owner api controller; do
+            password="$(kubectl -n goobers-temporal get secret "goobers-${role}-credentials" -o jsonpath='{.data.password}' | base64 -d)"
+            printf 'postgres://goobers_%s:%s@temporal-postgres-rw.goobers-temporal.svc:5432/%s?sslmode=require' "$role" "$password" "$database" > "$secrets/$role-url"
+          done
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=goobers-control" \
+            -addext "subjectAltName=DNS:goobers-control,DNS:goobers-control.goobers-cloud.svc" \
+            -keyout "$secrets/tls.key" -out "$secrets/tls.crt"
+          printf '{"current":{"id":"nightly","key":"%s"}}' "$(openssl rand -base64 48 | tr -d '\n')" > "$secrets/keyring.json"
+          kubectl apply -k deploy/reference/goobers-cloud/prereqs
+          secret() { kubectl -n goobers-cloud create secret "$@" --dry-run=client -o yaml | kubectl apply -f -; }
+          secret generic goobers-cloud-db-owner --from-file=direct-url="$secrets/owner-url"
+          for role in api controller; do
+            secret generic "goobers-cloud-db-$role" \
+              --from-file=url="$secrets/$role-url" --from-file=direct-url="$secrets/$role-url"
+          done
+          secret tls goobers-cloud-control-tls --cert="$secrets/tls.crt" --key="$secrets/tls.key"
+          secret generic goobers-cloud-pod-key --from-file=keyring.json="$secrets/keyring.json"
+          # kind has no Entra: the overlay sets database-auth=password in the
+          # shared ConfigMap. Outside Argo the PreSync hook is just a Job: apply
+          # everything, then require it to complete before the rollout check.
+          kubectl apply -k test/ha/kind/cloud-reference
+          kubectl -n goobers-cloud wait --for=condition=complete job/goobers-cloud-migrate --timeout=10m
+          kubectl -n goobers-cloud rollout status deployment/goobers-control --timeout=5m
+          kubectl -n goobers-cloud wait --for=condition=Ready pod -l app.kubernetes.io/name=goobers-control --timeout=2m
+          kubectl -n goobers-cloud get pdb goobers-control
+
+      - name: Inject alarm-drill failure
+        if: ${{ inputs.inject_failure }}
+        run: |
+          echo "::error title=HA nightly alarm drill::intentional failure after successful smoke"
+          exit 1
+
+      - name: Collect evidence
+        if: ${{ always() }}
+        env:
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: go run ./test/ha/kind/cmd/nightly collect
+
+      - name: Upload evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ha-nightly-kind-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ha-nightly/evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  control-restart:
+    name: control in-process voluntary handoff (PG16 and Temporal)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-interval 2s
+          --health-timeout 5s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Measure controller takeover
+        shell: bash
+        env:
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+          GOOBERS_CONTROL_RTO_PRODUCTION: "1"
+        run: |
+          set -euo pipefail
+          go test -tags=cloudintegration -run '^TestTwoReplicaPG16Failover$' -count=20 -v -timeout=10m ./internal/cloud/control | tee "$RUNNER_TEMP/control-restart.log"
+      - name: Report lifecycle p95
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import math, os, pathlib, re
+          log = pathlib.Path(os.environ['RUNNER_TEMP'], 'control-restart.log').read_text()
+          scale = {'ns': 1e-9, 'µs': 1e-6, 'ms': 1e-3, 's': 1}
+          samples = sorted(float(value) * scale[unit] for value, unit in re.findall(r'IN-PROCESS-HANDOFF: ([0-9.]+)(ns|µs|ms|s)', log))
+          if len(samples) != 20:
+              raise SystemExit(f'Expected 20 restart samples, got {len(samples)}')
+          p95 = samples[math.ceil(len(samples) * .95) - 1]
+          message = f'In-process voluntary handoff p95: {p95:.3f}s ({len(samples)} samples; production lease timings; limit 60s)'
+          print(message)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(message + '\n\nIn-process voluntary handoff only; kind rollout RESTART-RTO and full provider/claim rebuild remain pending.\n')
+          if p95 > 60:
+              raise SystemExit('In-process handoff p95 exceeds 60 seconds')
+          PY
+      - name: Upload restart evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: control-restart-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/control-restart.log
+          if-no-files-found: error
+          retention-days: 30
+
+  journal-throughput:
+    name: PostgreSQL journal throughput report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-interval 5s --health-timeout 5s --health-start-period 60s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Report PostgreSQL journal throughput
+        shell: bash
+        env:
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -tags=cloudintegration -timeout 5m -run '^$' -bench '^BenchmarkPostgresJournalAppend$' -benchtime=5s -count=3 ./internal/journal | tee "$RUNNER_TEMP/journal-throughput.txt"
+          cat "$RUNNER_TEMP/journal-throughput.txt" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload journal throughput
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pg-journal-throughput-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/journal-throughput.txt
+          if-no-files-found: error
+          retention-days: 30

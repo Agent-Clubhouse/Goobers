@@ -33,12 +33,23 @@ func configureTemporalCodec(cfg *instance.Config, secret string) error {
 // Projected Secret files are symlinks and group-readable. Copy only into a
 // private memory volume as the workload UID; file-key deliberately refuses
 // projected symlinks. Only daemon/worker processes receive this volume.
-func mountTemporalCodecKey(p *corev1.PodSpec, secret string) {
+func mountTemporalCodecKey(p *corev1.PodSpec, secret, image string) {
 	mode := int32(0440)
 	p.Volumes = append(p.Volumes,
 		corev1.Volume{Name: "temporal-key-source", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: secret, DefaultMode: &mode}}},
 		corev1.Volume{Name: "temporal-keys", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}},
 	)
+	if len(p.InitContainers) == 0 {
+		no, yes := false, true
+		p.InitContainers = append(p.InitContainers, corev1.Container{
+			Name: "prepare-temporal-codec", Image: image, Command: []string{"sh", "-c"}, Args: []string{":"},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: &no,
+				ReadOnlyRootFilesystem:   &yes,
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+		})
+	}
 	init := &p.InitContainers[0]
 	init.VolumeMounts = append(init.VolumeMounts,
 		corev1.VolumeMount{Name: "temporal-key-source", MountPath: "/temporal-key-source", ReadOnly: true},

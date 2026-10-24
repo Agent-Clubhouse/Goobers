@@ -292,8 +292,8 @@ export class HttpDaemonClient implements DaemonClient {
     );
   }
 
-  getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
-    return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
+  getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail> {
+    return this.getJSON(clientRoutes.runDetail, { continuationsAfter: options?.continuationsAfter }, options, { run: runId });
   }
 
   getRunAttribution(runId: string, gaggle: string, options?: RequestOptions): Promise<RunAttributionResult> {

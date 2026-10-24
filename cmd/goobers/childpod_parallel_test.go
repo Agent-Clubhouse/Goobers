@@ -214,7 +214,7 @@ func testProductionChildParallel(t *testing.T, lost bool) {
 		if err = blobs.Put(ctx, digest, carrier); err != nil {
 			return out, err
 		}
-		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"inspection": a.Stage}}}
+		surrendered := dispatcher.SurrenderedResult{ContractVersion: dispatcher.CurrentSurrenderContract, RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"inspection": a.Stage}}}
 		data, _ = json.Marshal(surrendered)
 		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: token, RetryDeadline: planeDeadline}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			return out, err

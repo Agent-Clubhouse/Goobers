@@ -234,6 +234,10 @@ func advisoryPRCLICommands() []cliCommand {
 	}
 }
 
+func runCompletionCandidatesCLI(args []string, stdout, _ io.Writer) int {
+	return runCompletionCandidates(args, stdout)
+}
+
 func init() {
 	cliCommands = append([]cliCommand{
 		groupCommand("roots", runRoots,
@@ -385,7 +389,7 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --target cloud", "goobers validate --target cloud --format json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
@@ -505,22 +509,6 @@ func init() {
 				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
 			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
-		command("engine-start", apicontract.ActionDaemonLifecycle, runEngineStart).
-			withSynopsis(synopsisByID["engine-start"]).
-			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
-			withExamples("goobers engine-start default-implement"),
-		command("engine-queues", apicontract.ActionReadOnlyNavigation, runEngineQueues).
-			withSynopsis(synopsisByID["engine-queues"]).
-			withHelp("report which workers poll this instance's engine and dispatch task queues (experimental)", engineQueuesHelp).
-			withExamples("goobers engine-queues", "goobers engine-queues --json"),
-		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
-			withSynopsis(synopsisByID["engine-project"]).
-			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).
-			withExamples("goobers engine-project --gaggle example <run-id>"),
-		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
-			withSynopsis(synopsisByID["worker"]).
-			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
-			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
 		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
 			withSynopsis(synopsisByID["config-seed"]).
 			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).
@@ -738,10 +726,9 @@ func init() {
 			withSynopsis(synopsisByID["completion"]).
 			withHelp("generate a shell completion script", completionHelp).
 			withExamples("goobers completion bash", "goobers completion zsh", "goobers completion powershell"),
-		command("__complete", apicontract.ActionConfigTime, func(args []string, stdout, _ io.Writer) int {
-			return runCompletionCandidates(args, stdout)
-		}),
+		command("__complete", apicontract.ActionConfigTime, runCompletionCandidatesCLI),
 		command("__generate-docs", apicontract.ActionConfigTime, runGenerateDocs),
+		command("__claude-host-safety", apicontract.ActionReadOnlyNavigation, runClaudeHostSafety),
 		telemetryCLICommand(),
 		groupCommand(
 			"journal",

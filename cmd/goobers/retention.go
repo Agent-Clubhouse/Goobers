@@ -17,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -285,7 +287,7 @@ func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Ma
 func retentionBranchReferences(runsByRoot map[string]string, setup *schedulerSetup, includeSettled bool) (map[string]map[string][]string, error) {
 	namespaces := map[string]string{}
 	if setup.Definitions != nil {
-		namespaces = branchNamespacesByGaggle(setup.Definitions)
+		namespaces = runtimewiring.BranchNamespacesByGaggle(setup.Definitions)
 	}
 	protected := make(map[string]map[string][]string, len(runsByRoot))
 	roots := make([]string, 0, len(runsByRoot))
@@ -355,7 +357,7 @@ func protectJournaledWorkspaceBranches(protected map[string]struct{}, events []j
 		if event.Type != journal.EventStageFinished {
 			continue
 		}
-		value, ok := event.Outputs[runner.WorkspaceBranchOutput]
+		value, ok := event.Outputs[runsemantics.WorkspaceBranchOutput]
 		if !ok {
 			continue
 		}

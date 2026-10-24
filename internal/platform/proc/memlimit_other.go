@@ -12,6 +12,6 @@ import "os/exec"
 //
 // The stage runs exactly as before, and Describe() says plainly that nothing
 // is enforced rather than leaving a caller to assume otherwise.
-func startBounded(cmd *exec.Cmd, _ uint64, _ bool) (*Tree, *MemoryBound, error) {
-	return startUnbounded(cmd, "no per-child memory mechanism on this platform")
+func startBounded(cmd *exec.Cmd, _ uint64, _ bool, options ...StartOptions) (*Tree, *MemoryBound, error) {
+	return startUnbounded(cmd, "no per-child memory mechanism on this platform", options...)
 }

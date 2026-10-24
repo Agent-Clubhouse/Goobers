@@ -1,0 +1,96 @@
+{
+  "agentMetrics": {
+    "main": {
+      "modelMetrics": {
+        "fixture-model": {
+          "requests": {
+            "cost": 1,
+            "count": 1
+          },
+          "tokenDetails": {
+            "cache_read": {
+              "tokenCount": 0
+            },
+            "cache_write": {
+              "tokenCount": 3898
+            },
+            "input": {
+              "tokenCount": 3
+            },
+            "output": {
+              "tokenCount": 5
+            }
+          },
+          "totalNanoAiu": 49005000,
+          "usage": {
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 3898,
+            "inputTokens": 3901,
+            "outputTokens": 5,
+            "reasoningTokens": 0
+          }
+        }
+      },
+      "totalApiDurationMs": 1230,
+      "totalNanoAiu": 49005000
+    }
+  },
+  "codeChanges": {
+    "filesModified": [],
+    "filesModifiedCount": 0,
+    "linesAdded": 0,
+    "linesRemoved": 0
+  },
+  "currentModel": "fixture-model",
+  "lastCallInputTokens": 3901,
+  "lastCallOutputTokens": 5,
+  "modelMetrics": {
+    "fixture-model": {
+      "requests": {
+        "cost": 1,
+        "count": 1
+      },
+      "tokenDetails": {
+        "cache_read": {
+          "tokenCount": 0
+        },
+        "cache_write": {
+          "tokenCount": 3898
+        },
+        "input": {
+          "tokenCount": 3
+        },
+        "output": {
+          "tokenCount": 5
+        }
+      },
+      "totalNanoAiu": 49005000,
+      "usage": {
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 3898,
+        "inputTokens": 3901,
+        "outputTokens": 5,
+        "reasoningTokens": 0
+      }
+    }
+  },
+  "sessionStartTime": "2026-01-01T00:00:00Z",
+  "tokenDetails": {
+    "cache_read": {
+      "tokenCount": 0
+    },
+    "cache_write": {
+      "tokenCount": 3898
+    },
+    "input": {
+      "tokenCount": 3
+    },
+    "output": {
+      "tokenCount": 5
+    }
+  },
+  "totalApiDurationMs": 1230,
+  "totalNanoAiu": 49005000,
+  "totalPremiumRequestCost": 1,
+  "totalUserRequests": 1
+}

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
@@ -86,10 +88,10 @@ func (l *queuedChildLauncher) Start(ctx context.Context, start childExecutionSta
 	if l.build == nil || l.dispatch == nil || l.queue == nil {
 		return &childStartDeferred{Reason: "child execution runtime unavailable"}
 	}
-	if l.dispatch.schedulerReady != nil && !l.dispatch.schedulerReady() {
+	if !l.dispatch.SchedulerReady() {
 		return &childStartDeferred{Reason: "scheduler recovery incomplete"}
 	}
-	sched := l.dispatch.sched.Load()
+	sched := l.dispatch.Scheduler()
 	if sched == nil {
 		return &childStartDeferred{Reason: "child scheduler unavailable"}
 	}
@@ -136,7 +138,7 @@ func (l *queuedChildLauncher) Start(ctx context.Context, start childExecutionSta
 	return l.handoff(ctx, start, runtime, workspace, releaseCapacity, releaseRuntime)
 }
 
-func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime) (*runner.ChildWorkspaceAdmission, error) {
+func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime) (*workspaceauthority.ChildWorkspaceAdmission, error) {
 	required := false
 	for _, task := range runtime.machine.Def.Spec.Tasks {
 		required = required || task.EffectiveWorkspace() != apiv1.WorkspaceScratch
@@ -168,11 +170,11 @@ func (l *queuedChildLauncher) prepareWorkspace(ctx context.Context, start childE
 	return workspace, err
 }
 
-func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime, workspace *runner.ChildWorkspaceAdmission, releaseCapacity, releaseRuntime func()) error {
+func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionStart, runtime preparedChildRuntime, workspace *workspaceauthority.ChildWorkspaceAdmission, releaseCapacity, releaseRuntime func()) error {
 	published := make(chan struct{})
 	permission := make(chan error, 1)
 	done := make(chan error, 1)
-	launchCtx, cancel := context.WithCancel(l.dispatch.lifecycleContext(ctx))
+	launchCtx, cancel := context.WithCancel(l.dispatch.LifecycleContext(ctx))
 	barrierCtx, barrierCancel := context.WithTimeout(ctx, childJournalHandoffTimeout)
 	defer barrierCancel()
 	untrack := l.runners.Track(start.Child.RunID, start.Envelope.Workflow, runtime.runner)

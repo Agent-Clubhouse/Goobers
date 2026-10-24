@@ -3,51 +3,14 @@ package runner
 import (
 	"context"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
-
-func TestBarrenUpstream(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		upstream []StageProduction
-		want     []string
-	}{
-		{name: "no upstream at all is a genuine empty tick"},
-		{
-			name:     "one producing upstream substantiates the claim",
-			upstream: []StageProduction{{Stage: "lens-a"}, {Stage: "lens-b", Delivered: true}},
-		},
-		{
-			name:     "upstream that all journaled nothing is barren",
-			upstream: []StageProduction{{Stage: "lens-a"}, {Stage: "lens-b"}},
-			want:     []string{"lens-a", "lens-b"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := BarrenUpstream(tc.upstream); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("BarrenUpstream = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDeliveredEvidence(t *testing.T) {
-	if DeliveredEvidence(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}) {
-		t.Fatal("an empty result envelope delivered evidence")
-	}
-	if !DeliveredEvidence(apiv1.ResultEnvelope{Outputs: map[string]any{"count": 3}}) {
-		t.Fatal("an output-carrying result delivered no evidence")
-	}
-	if !DeliveredEvidence(apiv1.ResultEnvelope{Artifacts: []apiv1.ArtifactPointer{{Path: "a.json"}}}) {
-		t.Fatal("an artifact-carrying result delivered no evidence")
-	}
-}
 
 // declaredUpstreamMachine is an analyze -> verdict chain where verdict NAMES
 // analyze with contextFrom: the workflow author's declaration that analyze's
@@ -109,8 +72,8 @@ func TestRunnerRefusesNoWorkWhenDeclaredUpstreamDeliveredNothing(t *testing.T) {
 	if res.Phase != journal.PhaseFailed {
 		t.Fatalf("phase = %q, want failed — a no-work claim whose evidence never arrived must not read as a healthy empty tick", res.Phase)
 	}
-	if res.FailureStage != "verdict" || res.FailureCode != NoWorkUnsubstantiatedCode {
-		t.Fatalf("failure = %q/%q, want verdict/%s", res.FailureStage, res.FailureCode, NoWorkUnsubstantiatedCode)
+	if res.FailureStage != "verdict" || res.FailureCode != runsemantics.NoWorkUnsubstantiatedCode {
+		t.Fatalf("failure = %q/%q, want verdict/%s", res.FailureStage, res.FailureCode, runsemantics.NoWorkUnsubstantiatedCode)
 	}
 	if res.NoWork {
 		t.Fatal("refused no-work claim was still exposed to the scheduler as an idle poll")
@@ -204,8 +167,8 @@ func TestRunnerRefusesFanInNoWorkWhenNoBranchDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Phase != journal.PhaseFailed || res.FailureCode != NoWorkUnsubstantiatedCode {
-		t.Fatalf("phase/code = %q/%q, want failed/%s", res.Phase, res.FailureCode, NoWorkUnsubstantiatedCode)
+	if res.Phase != journal.PhaseFailed || res.FailureCode != runsemantics.NoWorkUnsubstantiatedCode {
+		t.Fatalf("phase/code = %q/%q, want failed/%s", res.Phase, res.FailureCode, runsemantics.NoWorkUnsubstantiatedCode)
 	}
 }
 

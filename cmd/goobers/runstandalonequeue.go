@@ -20,7 +20,7 @@ func installOneShotStartQueue(layout instance.Layout, setup *schedulerSetup) (*d
 	if err != nil {
 		return nil, err
 	}
-	service.auditLog = setup.InstanceLog
+	service.SetAuditLog(setup.InstanceLog)
 	if err = setup.installOrdinaryStarts(layout, service); err != nil {
 		_ = service.queue.Close()
 		return nil, err
@@ -53,7 +53,7 @@ func dispatchStandaloneStart(ctx context.Context, layout instance.Layout, setup 
 		return "", fmt.Errorf("start request %q: %w; retry with the same --request-id and options", key, err)
 	}
 	if record.State == triggerqueue.Dispatching {
-		if err = service.reconcileAcceptedRecord(ctx, record); err != nil {
+		if err = service.ReconcileAcceptedRecord(ctx, record); err != nil {
 			return "", standaloneReceiptError(output, record, key, err)
 		}
 		record, err = service.queue.Get(ctx, record.ID, "standalone-cli")

@@ -432,3 +432,19 @@ func TestPinStagePlacementsLocalModeIgnoresPlacedGate(t *testing.T) {
 		t.Fatalf("placements = %+v, want nil on a local-mode inventory", placements)
 	}
 }
+
+func TestChildPlacementPinsImplicitAndExplicitSelf(t *testing.T) {
+	def := placementSpec(apiv1.Task{Name: "check", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}})
+	for _, cfg := range []*instance.Config{{}, {Runners: []instance.RunnerEntry{{Name: "local", Host: "self"}}}} {
+		pins, err := PinChildStagePlacements(cfg, placementConfigSet(), "web", def)
+		if err != nil || len(pins) != 1 || !pins[0].Self || pins[0].Stage != "check" || pins[0].Queue != "" || len(pins[0].Eligible) != 0 {
+			t.Fatalf("local child pins=%+v err=%v", pins, err)
+		}
+		impossible := def
+		impossible.Spec = *def.Spec.DeepCopy()
+		impossible.Spec.Tasks[0].RequiredCapabilities = []string{"missing-toolchain"}
+		if _, err := PinChildStagePlacements(cfg, placementConfigSet(), "web", impossible); err == nil {
+			t.Fatal("local child ignored capability ceiling")
+		}
+	}
+}

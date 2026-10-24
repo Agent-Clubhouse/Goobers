@@ -16,12 +16,18 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+
 	kubetesting "k8s.io/client-go/testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -94,9 +100,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previous })
+	previous := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previous })
 	// Seed the same-keyed managed mirror directly with plain git, matching
 	// what a live run's own workspace provisioning already establishes by
 	// the time any run exists (WorkingCopy populates this mirror, and the
@@ -230,6 +236,7 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 	var deleted bool
 	api.PrependReactor("create", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
 		pod = action.(kubetesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.UID = types.UID("uid-" + pod.Name)
 		pod.Status.Phase = corev1.PodPending
 		observations = 0
 		deleted = false
@@ -316,15 +323,9 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
 	}
-	hooks := &engineTerminalHooks{
-		finalize: func(id string, _ journal.RunPhase) error {
-			return releaseClaimsForRun(layout, nil, id)
-		},
+	if err := releaseClaimsForRun(layout, nil, runID); err != nil {
+		t.Fatal(err)
 	}
-	hooks.run(context.Background(), engineTerminalOutcome{
-		RunID: runID, Gaggle: "goobers", Workflow: "implementation",
-		Phase: journal.PhaseFailed, Err: env.GetWorkflowError(),
-	})
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		t.Fatal(err)

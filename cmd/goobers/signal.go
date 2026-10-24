@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -51,7 +53,7 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -81,8 +83,7 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	// run's stale-looking lease, so renewal must run before any
 	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
 	// recover-at-setup behavior.
-	claimRecovery := newOneShotClaimRecovery(l)
-	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -101,10 +102,6 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 			}
 		}
 	}()
-	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 
 	service, err := installOneShotSignalQueue(l, setup)
 	if err != nil {

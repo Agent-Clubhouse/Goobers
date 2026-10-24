@@ -16,7 +16,7 @@ func TestPendingSweepDaemonReopenReachesEligibleStartAfterHeldHundred(t *testing
 	path := filepath.Join(t.TempDir(), "queue.db")
 	dispatch := newDaemonTriggerService()
 	now := time.Now().UTC()
-	dispatch.now = func() time.Time { return now }
+	dispatch.SetClock(func() time.Time { return now })
 	service := acceptedService(t, path, dispatch)
 	var held []httpapi.TriggerResponse
 	for i := range 100 {
@@ -80,7 +80,7 @@ func TestPendingSweepDaemonReopenReachesEligibleStartAfterHeldHundred(t *testing
 func TestPendingSweepDaemonContinuesAfterMalformedRecord(t *testing.T) {
 	dispatch := newDaemonTriggerService()
 	now := time.Now().UTC()
-	dispatch.now = func() time.Time { return now }
+	dispatch.SetClock(func() time.Time { return now })
 	service := acceptedService(t, filepath.Join(t.TempDir(), "queue.db"), dispatch)
 	bad, _, err := service.queue.Accept(t.Context(), "malformed", "operator", []byte("{"), now.Add(-time.Second))
 	if err != nil {

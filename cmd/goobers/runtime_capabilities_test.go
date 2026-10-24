@@ -102,6 +102,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "credentialRefresh": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
+		// The engine child-admission plane (#7879): a resident engine worker
+		// advancing a run's generated-child custody. POSTs carrying receipts.
+		"engineChildAdmit": true, "engineChildLoad": true, "engineChildCancel": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.
 		"runRecoveryPublish": true,

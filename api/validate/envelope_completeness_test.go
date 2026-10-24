@@ -110,7 +110,9 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 }
 
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
+	prepared := completeArtifactPointer("artifacts/reviewer-diff.patch")
 	return apiv1.InvocationEnvelope{
+		PreparedReviewerDiff:                &apiv1.PreparedReviewerDiff{Observed: true, Artifact: &prepared},
 		ChildWorkflowOrigin:                 &apiv1.ChildWorkflowOrigin{StageOccurrence: journal.StageAttemptID("run-123", 0, "implement", 2), AttemptID: journal.StageAttemptID("run-123", 0, "implement", 4)},
 		TaskID:                              "implement",
 		ArtifactPublication:                 &apiv1.ArtifactPublication{Stage: "implement", Visit: 1, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.json", MaxSize: 100}}},
@@ -273,6 +275,7 @@ func completeVerdict() apiv1.Verdict {
 		Rationale:  "One substantive finding remains.",
 		Evidence:   []apiv1.ArtifactPointer{completeArtifactPointer("artifacts/review/evidence.json")},
 		Findings: []apiv1.Finding{{
+			LedgerGeneration:       1,
 			ID:                     "finding-1703",
 			LearningSignature:      "merge-review|code-defect|cross-pr-blocked",
 			LearningClassification: apiv1.LearningCodeDefect,
@@ -283,13 +286,33 @@ func completeVerdict() apiv1.Verdict {
 			Class:                  apiv1.FindingCrossPRBlocked,
 			BlockingPRs:            []int{1703},
 		}},
-		Summary:        "Changes are required.",
-		HeadSHA:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		BaseSHA:        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		Digest:         "sha256:review-inputs",
-		SourceRunID:    "review-run",
-		OverlapCluster: true,
-		Elected:        true,
+		Summary:          "Changes are required.",
+		HeadSHA:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		BaseSHA:          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Digest:           "sha256:review-inputs",
+		SourceRunID:      "review-run",
+		OverlapCluster:   true,
+		Elected:          true,
+		LedgerGeneration: 2,
+		Dispositions: []apiv1.FindingDisposition{{
+			FindingGeneration: 1,
+			FindingID:         "finding-1690",
+			Outcome:           apiv1.FindingRejected,
+			Evidence:          "api/v1alpha1/envelope.go:300",
+			Reason:            "The earlier finding misread the bounded scan.",
+		}},
+		StandingFindings: []apiv1.Finding{{
+			LedgerGeneration:       1,
+			ID:                     "finding-1688",
+			LearningSignature:      "merge-review|code-defect|substantive",
+			LearningClassification: apiv1.LearningCodeDefect,
+			EvidenceDigest:         "sha256:standing-evidence",
+			Severity:               apiv1.SeverityError,
+			Message:                "An earlier review's finding still stands.",
+			Location:               "api/v1alpha1/envelope.go:320",
+			Class:                  apiv1.FindingCrossPRBlocked,
+			BlockingPRs:            []int{1688},
+		}},
 	}
 }
 
@@ -691,6 +714,7 @@ func completeJournalEvent() journal.Event {
 				Integrity: apiv1.IntegrityDerived, Path: "artifacts/roster", Size: 64, MediaType: "application/json",
 			},
 			FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 60, MaxConcurrent: 2,
+			RosterDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			Items: []journal.MapItem{{
 				Identity: "east",
 				Digest:   "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",

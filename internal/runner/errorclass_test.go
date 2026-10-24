@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -26,6 +29,7 @@ func TestClassifyDispatchFailureTypesEveryKnownCause(t *testing.T) {
 		wantCode  string
 		wantClass telemetry.ErrorClass
 	}{
+		{name: "untyped infrastructure marker", err: invoke.InfrastructureFailure(errors.New("unavailable")), wantCode: telemetry.ErrCodeInfraFailure, wantClass: telemetry.ErrorClassInfra},
 		{
 			// The seam across package boundaries: internal/executor's own
 			// typed failure, wrapped for infrastructure retry exactly as the
@@ -49,19 +53,19 @@ func TestClassifyDispatchFailureTypesEveryKnownCause(t *testing.T) {
 		},
 		{
 			name:      "git provisioning",
-			err:       codedStageFailure(errCodeInfraGit, errors.New("prepare stage \"implement\": create worktree: 403")),
+			err:       runsemantics.CodedStageFailure(errCodeInfraGit, errors.New("prepare stage \"implement\": create worktree: 403")),
 			wantCode:  errCodeInfraGit,
 			wantClass: telemetry.ErrorClassInfraGit,
 		},
 		{
 			name:      "network provisioning",
-			err:       invoke.InfrastructureFailure(codedStageFailure(errCodeInfraNet, errors.New("could not resolve host"))),
+			err:       invoke.InfrastructureFailure(runsemantics.CodedStageFailure(errCodeInfraNet, errors.New("could not resolve host"))),
 			wantCode:  errCodeInfraNet,
 			wantClass: telemetry.ErrorClassInfraNet,
 		},
 		{
 			name:      "host workspace",
-			err:       codedStageFailure(errCodeInfraWorkspace, errors.New("create scratch workspace root: permission denied")),
+			err:       runsemantics.CodedStageFailure(errCodeInfraWorkspace, errors.New("create scratch workspace root: permission denied")),
 			wantCode:  errCodeInfraWorkspace,
 			wantClass: telemetry.ErrorClassInfra,
 		},
@@ -86,6 +90,14 @@ func TestClassifyDispatchFailureTypesEveryKnownCause(t *testing.T) {
 				t.Fatalf("classifyDispatchFailure = (%q, %q), want (%q, %q)", code, class, tt.wantCode, tt.wantClass)
 			}
 		})
+	}
+}
+
+func TestPlaneExhaustionIsInfraEvenAtStageDeadline(t *testing.T) {
+	err := invoke.Timeout(fmt.Errorf("stage deadline: %w: %w", context.DeadlineExceeded, planehttp.ErrBudgetExhausted))
+	code, class := classifyDispatchFailure(err)
+	if code != telemetry.ErrCodeInfraFailure || class != telemetry.ErrorClassInfra {
+		t.Fatalf("classifyDispatchFailure = (%q, %q), want plane exhaustion infra", code, class)
 	}
 }
 
@@ -114,7 +126,7 @@ func TestProvisionFailureCodeSplitsOwners(t *testing.T) {
 
 func TestGatePreparationFailureIsInfraClassified(t *testing.T) {
 	prepErr := errors.New("create read-only workspace: a rebound branch requires a writable repo workspace")
-	err := fmt.Errorf("runner: prepare gate %q: %w", "reviewer", codedStageFailure(provisionFailureCode(prepErr), prepErr))
+	err := fmt.Errorf("runner: prepare gate %q: %w", "reviewer", runsemantics.CodedStageFailure(provisionFailureCode(prepErr), prepErr))
 	code, class := classifyDispatchFailure(err)
 	if code != errCodeInfraWorkspace {
 		t.Fatalf("classifyDispatchFailure(gate prep) code = %q, want %q", code, errCodeInfraWorkspace)

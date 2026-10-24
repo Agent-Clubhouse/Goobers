@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/contention"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/planehttp"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -265,16 +267,28 @@ func stubConflictPlaneTransport(t *testing.T, status int, code string, github *f
 
 func TestRecentImplementationConflictsDegradesWhenPlaneRefusesForCapacity(t *testing.T) {
 	root := initDemo(t)
-	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusBadGateway} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				requests := stubConflictPlaneTransport(t, status, "request_budget_exceeded", nil)
+				stubConflictPlaneTransport(t, status, "request_budget_exceeded", nil)
 				touches, reason, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour))
 				if err != nil || len(touches) != 0 || !strings.Contains(reason, "request_budget_exceeded") {
-					t.Fatalf("status %d: touches=%v reason=%q err=%v, want empty + reason + nil error", status, touches, reason, err)
+					t.Fatalf("touches=%v reason=%q err=%v, want empty + reason + nil error", touches, reason, err)
 				}
-				if status == http.StatusServiceUnavailable && requests[apicontract.JournalConflictTouchesPath] < 2 {
-					t.Fatalf("persistent 503 made %d conflict-history requests, want the retry path exercised", requests[apicontract.JournalConflictTouchesPath])
+			})
+		})
+	}
+}
+
+func TestRecentImplementationConflictsSurfacesPlaneRetryExhaustion(t *testing.T) {
+	root := initDemo(t)
+	for _, status := range []int{http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				stubConflictPlaneTransport(t, status, "request_budget_exceeded", nil)
+				_, _, err := recentImplementationConflicts(root, "acme-web", time.Now().Add(-time.Hour))
+				if !errors.Is(err, planehttp.ErrBudgetExhausted) {
+					t.Fatalf("status %d: err=%v, want retry exhaustion", status, err)
 				}
 			})
 		})
@@ -302,7 +316,7 @@ func TestGatherImplementContextEmitsWarningWhenConflictHistoryRefused(t *testing
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 	synctest.Test(t, func(t *testing.T) {
-		requests := stubConflictPlaneTransport(t, http.StatusServiceUnavailable, "request_budget_exceeded", server)
+		requests := stubConflictPlaneTransport(t, http.StatusTooManyRequests, "request_budget_exceeded", server)
 		code, _, stderr := runArgs(t, "gather-implement-context", root)
 		if code != 0 {
 			t.Fatalf("code = %d, stderr = %q, want success", code, stderr)
@@ -323,8 +337,8 @@ func TestGatherImplementContextEmitsWarningWhenConflictHistoryRefused(t *testing
 			t.Fatalf("context = %+v", got)
 		}
 		for _, path := range []string{apicontract.JournalConflictTouchesPath, apicontract.JournalUnpushedWorkPath} {
-			if requests[path] < 2 {
-				t.Fatalf("persistent 503 made %d requests to %s, want the retry path exercised", requests[path], path)
+			if requests[path] != 1 {
+				t.Fatalf("capacity refusal made %d requests to %s, want one", requests[path], path)
 			}
 		}
 	})

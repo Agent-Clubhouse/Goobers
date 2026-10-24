@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 // The runner caches a goober across tasks and gates. Route each call using the
@@ -36,7 +37,7 @@ func routeContainedParent(root, goober string, rec runner.ArtifactRecorder, ordi
 	if id.Child != nil || id.WorkflowDigest == "" {
 		return routed, nil
 	}
-	machine, err := runner.PinnedWorkflowMachine(reader, id)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, id)
 	if err != nil {
 		return nil, err
 	}
@@ -77,8 +78,19 @@ func (g *parentRoutedGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 		return ordinary.Invoke(ctx, env)
 	}
 	service, ok := stageGrantMinterFor(g.root).(*daemonCredentialService)
-	if !ok || service.parentExecutors == nil {
+	if !ok || (service.parentExecutors == nil && service.localParentExecutors == nil) {
 		return apiv1.ResultEnvelope{}, childworkflow.ErrAuthorityUnavailable
+	}
+	if service.localParentExecutors != nil {
+		ordinary, err := g.ordinaryExecutor()
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		parent, err := service.localParentExecutors(g.goober, g.rec, ordinary)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		return parent.Invoke(ctx, env)
 	}
 	parent, err := service.parentExecutors(g.goober, g.rec, nil)
 	if err != nil {
@@ -115,10 +127,10 @@ func (g *parentRoutedGoober) HasAssetBundle() bool {
 }
 
 // Local construction stays eager for ordinary workflows. A pinned parent task
-// does not construct a host harness or resolve its model credentials. Shared
-// profiles still construct the guarded local executor when an ordinary task or
-// gate actually uses it; a failed parent route never falls back to that path.
-func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory func() (invoke.Goober, error), hasAssets bool, fence executionFenceStart) (invoke.Goober, error) {
+// constructs a host harness only after selecting the trusted-local backend.
+// Shared profiles still construct it when an ordinary task or gate uses it.
+// A failed remote parent route never falls back to that path.
+func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory func() (invoke.Goober, error), hasAssets bool) (invoke.Goober, error) {
 	routed, err := routeContainedParent(root, goober, rec, nil)
 	if err != nil {
 		return nil, err
@@ -133,5 +145,5 @@ func bindParentRouting(root, goober string, rec runner.ArtifactRecorder, factory
 		parent.ordinaryFactory = sync.OnceValues(factory)
 		parent.hasAssets = hasAssets
 	}
-	return claimFencedGoober{Goober: routed, start: fence}, nil
+	return routed, nil
 }

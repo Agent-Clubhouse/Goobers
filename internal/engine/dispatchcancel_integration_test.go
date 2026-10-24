@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
@@ -53,6 +54,7 @@ func cancellationPods(t *testing.T) (*fake.Clientset, <-chan string, <-chan stru
 	deleted := make(chan struct{}, 1)
 	api.PrependReactor("create", "pods", func(action kubetesting.Action) (bool, runtime.Object, error) {
 		pod := action.(kubetesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.UID = types.UID("uid-" + pod.Name)
 		pod.Status.Phase = corev1.PodRunning
 		created <- pod.Name
 		return false, nil, nil

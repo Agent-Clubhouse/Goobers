@@ -19,8 +19,9 @@
 //
 // The baseline is keyed by file path plus symbol, so moving a function to
 // another file does not hand it fresh headroom: the moved copy is an unknown
-// key and trips the hard cap. Refresh the file with `make complexity-update`
-// after a deliberate decomposition.
+// key and trips the hard cap. `make complexity-move-update` can relocate rows
+// only when HEAD contains the same symbol with a byte-identical declaration.
+// All other changes use `make complexity-update` and its ordinary ratchets.
 //
 // Escape hatch: a function may carry an inline
 //
@@ -40,6 +41,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -88,6 +90,7 @@ type function struct {
 	Complexity int
 	BodyLines  int
 	Line       int
+	SourceHash string
 	Allowed    bool
 	AllowBlank bool
 }
@@ -124,6 +127,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root to scan")
 	baselinePath := flags.String("baseline", defaultBaselinePath, "baseline file, relative to -root")
 	update := flags.Bool("update", false, "rewrite the baseline from the current tree")
+	updateMoves := flags.Bool("update-moves", false, "move baseline rows only for byte-identical function declarations moved since HEAD")
 	hardCap := flags.Int("hard", defaultHardCap, "complexity at or above which a function must be baselined")
 	ratchet := flags.Int("ratchet", defaultRatchet, "complexity counted against the baseline's budget")
 	report := flags.Int("report", defaultReport, "complexity counted for the report-only tier")
@@ -148,29 +152,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		resolved = filepath.Join(*root, resolved)
 	}
 
-	if *update {
-		var candidate *baseline
-		parsed, err := readBaseline(resolved)
-		switch {
-		case err == nil:
-			candidate = &parsed
-		case !errors.Is(err, os.ErrNotExist):
-			_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for update: %v\n", err)
-			return 1
-		}
-		previous, err := readCommittedBaseline(*root, resolved)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for update: %v\n", err)
-			return 1
-		}
-		if err := writeBaseline(resolved, functions, limits, previous, candidate); err != nil {
-			_, _ = fmt.Fprintf(stderr, "complexitygate: write baseline: %v\n", err)
-			return 1
-		}
-		_, _ = fmt.Fprintf(stdout, "complexitygate: wrote %s\n", *baselinePath)
-		return 0
+	if *update && *updateMoves {
+		_, _ = fmt.Fprintln(stderr, "complexitygate: -update and -update-moves are mutually exclusive")
+		return 2
 	}
+	if *updateMoves {
+		return runMoveUpdate(*root, resolved, *baselinePath, functions, limits, stdout, stderr)
+	}
+	if *update {
+		return runUpdate(*root, resolved, *baselinePath, functions, limits, stdout, stderr)
+	}
+	return runEnforce(*root, resolved, functions, limits, stdout, stderr)
+}
 
+func runEnforce(root, resolved string, functions []function, limits thresholds, stdout, stderr io.Writer) int {
 	base, err := readBaseline(resolved)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline: %v\n", err)
@@ -180,7 +175,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline: missing %s directive\n", bodyLengthCapDirective)
 		return 1
 	}
-	committed, err := readCommittedBaseline(*root, resolved)
+	committed, err := readCommittedBaseline(root, resolved)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline: %v\n", err)
 		return 1
@@ -213,6 +208,70 @@ func run(args []string, stdout, stderr io.Writer) int {
 		countAtLeast(functions, limits.hardCap), limits.hardCap,
 		countBodyLengthAtLeast(functions, limits.body), limits.body, len(base.BodyLengths),
 	)
+	return 0
+}
+
+func runMoveUpdate(root, resolved, displayPath string, functions []function, limits thresholds, stdout, stderr io.Writer) int {
+	current, err := readBaseline(resolved)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for move update: %v\n", err)
+		return 1
+	}
+	committed, err := readCommittedBaseline(root, resolved)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for move update: %v\n", err)
+		return 1
+	}
+	if committed == nil {
+		_, _ = fmt.Fprintln(stderr, "complexitygate: move update requires a committed baseline at HEAD")
+		return 1
+	}
+	moves, err := relocatePureMoves(root, functions, committed, &current)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: update moves: %v\n", err)
+		return 1
+	}
+	seed := mapsClone(bodyLengthSeedCeilings)
+	for oldKey, newKey := range moves {
+		if ceiling, ok := seed[oldKey]; ok {
+			delete(seed, oldKey)
+			seed[newKey] = ceiling
+		}
+	}
+	if problems, _ := evaluateWithBodySeed(functions, current, limits, seed); len(problems) > 0 {
+		for _, problem := range problems {
+			_, _ = fmt.Fprintln(stderr, problem)
+		}
+		return 1
+	}
+	if err := writeResolvedBaseline(resolved, functions, limits, current, "make complexity-update"); err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: write moved baseline: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "complexitygate: moved byte-identical baseline rows in %s\n", displayPath)
+	return 0
+}
+
+func runUpdate(root, resolved, displayPath string, functions []function, limits thresholds, stdout, stderr io.Writer) int {
+	var candidate *baseline
+	parsed, err := readBaseline(resolved)
+	switch {
+	case err == nil:
+		candidate = &parsed
+	case !errors.Is(err, os.ErrNotExist):
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for update: %v\n", err)
+		return 1
+	}
+	previous, err := readCommittedBaseline(root, resolved)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for update: %v\n", err)
+		return 1
+	}
+	if err := writeBaseline(resolved, functions, limits, previous, candidate); err != nil {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: write baseline: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "complexitygate: wrote %s\n", displayPath)
 	return 0
 }
 
@@ -251,6 +310,149 @@ func readCommittedBaseline(root, path string) (*baseline, error) {
 		return nil, fmt.Errorf("parse %s: %w", object, err)
 	}
 	return &parsed, nil
+}
+
+func relocatePureMoves(root string, functions []function, committed, current *baseline) (map[string]string, error) {
+	if !baselinesEqual(*committed, *current) {
+		return nil, errors.New("baseline must match HEAD before a move update; revert hand edits and retry")
+	}
+	currentByKey := make(map[string]function, len(functions))
+	for _, measured := range functions {
+		currentByKey[key(measured.Path, measured.Symbol)] = measured
+	}
+	stale := make(map[string]bool)
+	for entryKey := range current.Entries {
+		if _, present := currentByKey[entryKey]; !present {
+			stale[entryKey] = true
+		}
+	}
+	for entryKey := range current.BodyLengths {
+		if _, present := currentByKey[entryKey]; !present {
+			stale[entryKey] = true
+		}
+	}
+	if len(stale) == 0 {
+		return nil, errors.New("no stale complexity or body-length rows to move")
+	}
+
+	oldKeys := make([]string, 0, len(stale))
+	for entryKey := range stale {
+		oldKeys = append(oldKeys, entryKey)
+	}
+	sort.Strings(oldKeys)
+	destinations := make(map[string]string, len(oldKeys))
+	for _, oldKey := range oldKeys {
+		oldFunction, err := committedFunction(root, oldKey)
+		if err != nil {
+			return nil, err
+		}
+		_, symbol, _ := strings.Cut(oldKey, "\t")
+		var matches []string
+		for newKey, candidate := range currentByKey {
+			if candidate.Symbol == symbol && candidate.SourceHash == oldFunction.SourceHash {
+				matches = append(matches, newKey)
+			}
+		}
+		sort.Strings(matches)
+		if len(matches) != 1 {
+			return nil, fmt.Errorf("%s is not one unambiguous byte-identical move (found %d candidates)", displayKey(oldKey), len(matches))
+		}
+		newKey := matches[0]
+		if previous, used := destinations[newKey]; used {
+			return nil, fmt.Errorf("%s and %s both resolve to %s", displayKey(previous), displayKey(oldKey), displayKey(newKey))
+		}
+		if _, occupied := current.Entries[newKey]; occupied {
+			return nil, fmt.Errorf("move destination %s already has a complexity row", displayKey(newKey))
+		}
+		if _, occupied := current.BodyLengths[newKey]; occupied {
+			return nil, fmt.Errorf("move destination %s already has a body-length row", displayKey(newKey))
+		}
+		destinations[newKey] = oldKey
+		if value, ok := current.Entries[oldKey]; ok {
+			delete(current.Entries, oldKey)
+			current.Entries[newKey] = value
+		}
+		if reason, ok := current.EntryJustifications[oldKey]; ok {
+			delete(current.EntryJustifications, oldKey)
+			current.EntryJustifications[newKey] = reason
+		}
+		if value, ok := current.BodyLengths[oldKey]; ok {
+			delete(current.BodyLengths, oldKey)
+			current.BodyLengths[newKey] = value
+		}
+		if reason, ok := current.BodyJustifications[oldKey]; ok {
+			delete(current.BodyJustifications, oldKey)
+			current.BodyJustifications[newKey] = reason
+		}
+	}
+	moves := make(map[string]string, len(destinations))
+	for newKey, oldKey := range destinations {
+		moves[oldKey] = newKey
+	}
+	return moves, nil
+}
+
+func committedFunction(root, entryKey string) (function, error) {
+	path, symbol, ok := strings.Cut(entryKey, "\t")
+	if !ok {
+		return function{}, fmt.Errorf("invalid baseline key %q", entryKey)
+	}
+	source, err := exec.Command("git", "-C", root, "show", "HEAD:"+filepath.ToSlash(path)).Output()
+	if err != nil {
+		return function{}, fmt.Errorf("read committed source for %s: %w", displayKey(entryKey), err)
+	}
+	functions, err := scanFile(path, source)
+	if err != nil {
+		return function{}, err
+	}
+	for _, candidate := range functions {
+		if candidate.Symbol == symbol {
+			return candidate, nil
+		}
+	}
+	return function{}, fmt.Errorf("committed source does not contain %s", displayKey(entryKey))
+}
+
+func baselinesEqual(a, b baseline) bool {
+	return mapsEqual(a.Entries, b.Entries) &&
+		mapsEqual(a.EntryJustifications, b.EntryJustifications) &&
+		a.RatchetBudget == b.RatchetBudget &&
+		justificationPointersEqual(a.RatchetJustification, b.RatchetJustification) &&
+		mapsEqual(a.BodyLengths, b.BodyLengths) &&
+		mapsEqual(a.BodyJustifications, b.BodyJustifications) &&
+		a.BodyLengthCap == b.BodyLengthCap
+}
+
+func mapsEqual[K comparable, V comparable](a, b map[K]V) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if other, ok := b[key]; !ok || other != value {
+			return false
+		}
+	}
+	return true
+}
+
+func mapsClone[K comparable, V any](source map[K]V) map[K]V {
+	clone := make(map[K]V, len(source))
+	for key, value := range source {
+		clone[key] = value
+	}
+	return clone
+}
+
+func justificationPointersEqual(a, b *justification) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func displayKey(entryKey string) string {
+	path, symbol, _ := strings.Cut(entryKey, "\t")
+	return path + " " + symbol
 }
 
 func scanTree(root string) ([]function, error) {
@@ -308,12 +510,16 @@ func scanFile(path string, source []byte) ([]function, error) {
 		allowed, blank := allowance(file, declared)
 		start := fileSet.PositionFor(declared.Pos(), false)
 		end := fileSet.PositionFor(declared.End(), false)
+		tokenFile := fileSet.File(declared.Pos())
+		startOffset := tokenFile.Offset(declared.Pos())
+		endOffset := tokenFile.Offset(declared.End())
 		functions = append(functions, function{
 			Path:       path,
 			Symbol:     symbolName(declared),
 			Complexity: complexity(declared),
 			BodyLines:  end.Line - start.Line + 1,
 			Line:       start.Line,
+			SourceHash: fmt.Sprintf("%x", sha256.Sum256(source[startOffset:endOffset])),
 			Allowed:    allowed,
 			AllowBlank: blank,
 		})
@@ -598,6 +804,10 @@ func parseJustificationLine(line string, lineNumber int, result *baseline) (bool
 }
 
 func evaluate(functions []function, base baseline, limits thresholds) (problems, notes []string) {
+	return evaluateWithBodySeed(functions, base, limits, bodyLengthSeedCeilings)
+}
+
+func evaluateWithBodySeed(functions []function, base baseline, limits thresholds, bodySeed map[string]int) (problems, notes []string) {
 	seen := make(map[string]bool)
 	for _, current := range functions {
 		if current.AllowBlank {
@@ -639,7 +849,7 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 			path, symbol,
 		))
 	}
-	bodyProblems, bodyNotes := evaluateBodyLengths(functions, base, limits.body)
+	bodyProblems, bodyNotes := evaluateBodyLengths(functions, base, limits.body, bodySeed)
 	problems = append(problems, bodyProblems...)
 	notes = append(notes, bodyNotes...)
 
@@ -660,7 +870,7 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 	return problems, notes
 }
 
-func evaluateBodyLengths(functions []function, base baseline, limit int) (problems, notes []string) {
+func evaluateBodyLengths(functions []function, base baseline, limit int, bodySeed map[string]int) (problems, notes []string) {
 	if base.BodyLengthCap < 0 {
 		return nil, nil
 	}
@@ -669,7 +879,7 @@ func evaluateBodyLengths(functions []function, base baseline, limit int) (proble
 	}
 	invalidEntries := make(map[string]bool)
 	for entryKey, recorded := range base.BodyLengths {
-		ceiling, seeded := bodyLengthSeedCeilings[entryKey]
+		ceiling, seeded := bodySeed[entryKey]
 		if seeded && recorded == ceiling {
 			continue
 		}
@@ -722,9 +932,13 @@ func writeBaseline(path string, functions []function, limits thresholds, previou
 	if err := validateBaselineUpdate(previous, next); err != nil {
 		return err
 	}
+	return writeResolvedBaseline(path, functions, limits, next, "make complexity-update")
+}
+
+func writeResolvedBaseline(path string, functions []function, limits thresholds, next baseline, generator string) error {
 	var builder strings.Builder
 	builder.WriteString("# Complexity and body-length baseline for test/complexitygate (#4231, #4847).\n")
-	builder.WriteString("# Generated by `make complexity-update`; do not hand-edit the scores.\n")
+	fmt.Fprintf(&builder, "# Generated by `%s`; do not hand-edit the scores.\n", generator)
 	builder.WriteString("#\n")
 	fmt.Fprintf(&builder, "# Entries are every function at or above the hard cap of %d, keyed by\n", limits.hardCap)
 	builder.WriteString("# <path>\\t<symbol>\\t<complexity>. The key is path+symbol, so moving a\n")

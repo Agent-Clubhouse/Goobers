@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -21,29 +22,8 @@ import (
 // the journal and the per-occurrence result store, never from goroutine
 // completion order.
 
-const (
-	// MapCompletenessInput is the map join invocation input holding one
-	// terminal outcome per roster item, in identity order.
-	MapCompletenessInput = "mapCompleteness"
-	// MapResultsInput is the map join invocation input holding the mapped
-	// task's outputs and pointers per roster item, in identity order.
-	MapResultsInput = "mapResults"
-)
-
-// MapItemResult is one entry of the mapResults join input: the item's
-// identity, digest, branch and terminal status, and the newest result the
-// mapped task recorded for it in this visit. Outputs and Pointers are empty
-// for an item that never produced a result (cancelled before it started, or
-// a tolerated failure, which is forgotten as stageOutputs forgets it).
-type MapItemResult struct {
-	Identity  string                 `json:"identity"`
-	Digest    string                 `json:"digest"`
-	Branch    int                    `json:"branch"`
-	Status    journal.BranchStatus   `json:"status"`
-	Outputs   map[string]any         `json:"outputs,omitempty"`
-	Integrity apiv1.Integrity        `json:"integrity,omitempty"`
-	Pointers  []apiv1.ContextPointer `json:"pointers,omitempty"`
-}
+// MapItemResult remains the runner-facing name of the shared join contract.
+type MapItemResult = runsemantics.MapItemResult
 
 // mapVisit is the frozen roster one map execution expands.
 type mapVisit struct {
@@ -170,8 +150,8 @@ func taskInputGrades(tf taskFrame) map[string]apiv1.Integrity {
 		if grades == nil {
 			grades = make(map[string]apiv1.Integrity, 2)
 		}
-		grades[MapCompletenessInput] = join.rosterIntegrity
-		grades[MapResultsInput] = join.resultsIntegrity
+		grades[runsemantics.MapCompletenessInput] = join.rosterIntegrity
+		grades[runsemantics.MapResultsInput] = join.resultsIntegrity
 	}
 	return grades
 }
@@ -196,11 +176,11 @@ func joinInputs(fanIn *parallelExec, state string, inputs map[string]any) {
 		if join == nil {
 			join = &mapJoin{completeness: fanIn.completeness(), results: []MapItemResult{}}
 		}
-		inputs[MapCompletenessInput] = join.completeness
-		inputs[MapResultsInput] = join.results
+		inputs[runsemantics.MapCompletenessInput] = join.completeness
+		inputs[runsemantics.MapResultsInput] = join.results
 		return
 	}
-	inputs[BranchCompletenessInput] = fanIn.completeness()
+	inputs[runsemantics.BranchCompletenessInput] = fanIn.completeness()
 }
 
 // assembleMapJoin rebuilds the per-occurrence result store from the journal

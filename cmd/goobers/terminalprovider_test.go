@@ -96,7 +96,7 @@ func TestTerminalRunAbortLabelProviderRoutesByRepoKind(t *testing.T) {
 	t.Cleanup(func() { newGiteaRunAbortLabelProvider = previousGitea })
 
 	cfg := giteaTerminalConfig("https://gitea.example.test")
-	provider, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("gitea-pat"))
+	provider, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("gitea-pat"), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestTerminalRunAbortLabelProviderKeepsGitHubArm(t *testing.T) {
 	t.Cleanup(func() { newRunAbortLabelProvider = previousGitHub })
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "app"}}}
-	if _, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("ghp-token")); err != nil {
+	if _, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("ghp-token"), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !constructed {
@@ -151,15 +151,15 @@ func TestTerminalRunAbortLabelProviderKeepsGitHubArm(t *testing.T) {
 }
 
 func TestTerminalRunAbortLabelProviderRejectsUnsupportedKind(t *testing.T) {
-	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "ado", Owner: "acme", Name: "app"}}}
-	if _, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("t")); err == nil {
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "unsupported", Owner: "acme", Name: "app"}}}
+	if _, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("t"), nil, ""); err == nil {
 		t.Fatal("expected an unsupported-provider error rather than a GitHub fallthrough")
 	}
 }
 
 func TestTerminalRunAbortLabelProviderRequiresGiteaBaseURL(t *testing.T) {
 	cfg := giteaTerminalConfig("")
-	if _, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("t")); err == nil {
+	if _, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("t"), nil, ""); err == nil {
 		t.Fatal("expected a missing-baseUrl error rather than a default-host call")
 	}
 }
@@ -208,7 +208,7 @@ func TestTerminalRunAbortLabelReachesGiteaEndpoint(t *testing.T) {
 	t.Cleanup(func() { newRunAbortLabelProvider = previousGitHub })
 
 	cfg := giteaTerminalConfig(srv.URL)
-	provider, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("gitea-secret-pat"))
+	provider, err := newTerminalRunAbortLabelProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("gitea-secret-pat"), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

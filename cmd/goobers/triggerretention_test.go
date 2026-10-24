@@ -22,7 +22,7 @@ func TestTelemetryPruneAcknowledgesTriggerBeforeDeletingItsJournal(t *testing.T)
 			}
 			now := time.Now().UTC()
 			dispatch := newDaemonTriggerService()
-			dispatch.now = func() time.Time { return now.Add(-48 * time.Hour) }
+			dispatch.SetClock(func() time.Time { return now.Add(-48 * time.Hour) })
 			s := acceptedService(t, filepath.Join(layout.SchedulerDir(), "accepted-triggers.db"), dispatch)
 			workflow := "default-implement"
 			if mode == "mismatched" {

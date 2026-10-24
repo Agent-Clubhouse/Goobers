@@ -2,24 +2,37 @@ package engine
 
 import (
 	"errors"
+	"maps"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 // A failed activity's result is not transported by Temporal. Its observed
-// placement therefore travels with the classified error. Details slot zero
-// remains the established infrastructure retry-at instant; slot one is an
-// explicitly versioned extension. Older consumers can still read slot zero.
+// placement and trusted usage evidence therefore travel with the classified
+// error. Details slot zero remains the established infrastructure retry-at
+// instant; slot one is an explicitly versioned extension. Older consumers can
+// still read slot zero.
 type dispatchFailureEvidence struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	Placement     *StagePlacement `json:"placement"`
+	Domain            *domainFailure           `json:"domain,omitempty"`
+	RecordedArtifacts []invoke.ArtifactReceipt `json:"recordedArtifacts,omitempty"`
+	SchemaVersion     int                      `json:"schemaVersion"`
+	Placement         *StagePlacement          `json:"placement,omitempty"`
+	Usage             *AttemptUsage            `json:"usage,omitempty"`
+	UsageUnavailable  bool                     `json:"usageUnavailable,omitempty"`
 }
 
 func withDispatchFailurePlacement(classified error, report dispatcher.Report) error {
-	if classified == nil || report.Local || report.Runner == "" {
+	return withDispatchFailureEvidence(classified, report, nil, false)
+}
+
+const dispatchFailureEvidenceVersion = 1
+
+func withDispatchFailureEvidence(classified error, report dispatcher.Report, usage *AttemptUsage, usageUnavailable bool) error {
+	if classified == nil {
 		return classified
 	}
 	var appErr *temporal.ApplicationError
@@ -32,24 +45,44 @@ func withDispatchFailurePlacement(classified error, report dispatcher.Report) er
 		// as placement. The original failure and retry behavior take priority.
 		return classified
 	}
-	var extra interface{}
-	if appErr.HasDetails() && readDispatchFailureDetails(appErr, &retryAt, &extra) == nil {
-		return classified // Never replace another extension's detail slots.
+	evidence := dispatchFailureEvidence{SchemaVersion: dispatchFailureEvidenceVersion}
+	if appErr.HasDetails() {
+		var extra interface{}
+		if readDispatchFailureDetails(appErr, &retryAt, &extra) == nil {
+			if readDispatchFailureDetails(appErr, &retryAt, &evidence) != nil ||
+				evidence.SchemaVersion != dispatchFailureEvidenceVersion {
+				return classified // Never replace another extension's detail slots.
+			}
+		}
+	}
+	if !report.Local && report.Runner != "" {
+		evidence.Placement = placementProvenance(report)
+	}
+	if usage != nil {
+		copy := *usage
+		copy.Metrics = maps.Clone(usage.Metrics)
+		copy.Unavailable = copy.Unavailable || usageUnavailable
+		evidence.Usage = &copy
+	}
+	evidence.UsageUnavailable = evidence.UsageUnavailable || usageUnavailable
+	if evidence.Placement == nil && evidence.Usage == nil && !evidence.UsageUnavailable {
+		return classified
 	}
 	return temporal.NewApplicationErrorWithOptions(appErr.Message(), appErr.Type(), temporal.ApplicationErrorOptions{
 		NonRetryable:   appErr.NonRetryable(),
 		Cause:          appErr.Unwrap(),
 		NextRetryDelay: appErr.NextRetryDelay(),
 		Category:       appErr.Category(),
-		Details: []interface{}{retryAt, dispatchFailureEvidence{
-			SchemaVersion: 1,
-			Placement:     placementProvenance(report),
-		}},
+		Details:        []interface{}{retryAt, evidence},
 	})
 }
 
 func dispatchFailureResult(err error, report dispatcher.Report) (stageActivityResult, error) {
 	return stageActivityResult{}, withDispatchFailurePlacement(err, report)
+}
+
+func dispatchFailureResultWithUsage(err error, report dispatcher.Report, usage *AttemptUsage, unavailable bool) (stageActivityResult, error) {
+	return stageActivityResult{}, withDispatchFailureEvidence(err, report, usage, unavailable)
 }
 
 // DispatchFailurePlacement recovers substrate observations from a failed
@@ -68,7 +101,8 @@ func DispatchFailurePlacement(err error) *StagePlacement {
 		var retryAt time.Time
 		var evidence dispatchFailureEvidence
 		if readDispatchFailureDetails(appErr, &retryAt, &evidence) == nil &&
-			evidence.SchemaVersion == 1 && evidence.Placement != nil && evidence.Placement.Runner != "" {
+			evidence.SchemaVersion == dispatchFailureEvidenceVersion &&
+			evidence.Placement != nil && evidence.Placement.Runner != "" {
 			return evidence.Placement
 		}
 	}

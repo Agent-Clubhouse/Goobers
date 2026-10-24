@@ -2,7 +2,6 @@ package podauth
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -24,12 +23,12 @@ const CredentialGrantPrefix = "goobers-grant."
 // base64url payload.
 const credentialGrantMACDomain = "goobers/credential-grant/v1\x00"
 
-// MaxCredentialGrantTTL bounds a grant's life. A grant cannot be revoked
-// before it expires except by restarting the daemon that holds its key, so
-// the ceiling is the containment a leaked grant has. It sits above the
-// longest shipped stage timeout (the large-repo preset's 4h) with room for a
-// slow operator-set default; a stage that outlives it falls back to the
-// pre-grant behavior (its last delivered value) for the remainder.
+// MaxCredentialGrantTTL bounds a grant's life. Local revocation is process-local
+// and is lost on restart; cloud admission additionally checks durable revocation.
+// Rotation must retain the previous verifier for this maximum lifetime.
+// It sits above the longest shipped stage timeout (the large-repo preset's
+// 4h) with room for a slow operator-set default; a stage that outlives it
+// falls back to the pre-grant behavior (its last delivered value).
 const MaxCredentialGrantTTL = 24 * time.Hour
 
 // maxCredentialGrantBytes bounds a presented grant before any decoding.
@@ -39,7 +38,7 @@ const maxCredentialGrantBytes = 4096
 const maxCredentialGrantCapabilities = 32
 
 // ErrInvalidCredentialGrant reports a grant that is malformed, forged, or
-// signed by another key (a restarted daemon's grants all read this way).
+// signed by an untrusted or retired key.
 var ErrInvalidCredentialGrant = errors.New("podauth: invalid credential grant")
 
 // ErrExpiredCredentialGrant reports a well-signed grant past its expiry.
@@ -100,21 +99,17 @@ func (s *SignedKey) MintCredentialGrant(grant CredentialGrant, ttl time.Duration
 		return "", CredentialGrant{}, fmt.Errorf("podauth: encode credential grant: %w", err)
 	}
 	payload := base64.RawURLEncoding.EncodeToString(raw)
-	return CredentialGrantPrefix + payload + "." + s.sign(credentialGrantMACDomain+payload), grant, nil
+	return s.encodeToken(CredentialGrantPrefix, credentialGrantMACDomain, payload), grant, nil
 }
 
 // VerifyCredentialGrant checks token's signature and expiry and returns its
 // claims.
 func (s *SignedKey) VerifyCredentialGrant(token string) (CredentialGrant, error) {
-	rest, ok := strings.CutPrefix(token, CredentialGrantPrefix)
-	if !ok || len(token) > maxCredentialGrantBytes {
+	if len(token) > maxCredentialGrantBytes {
 		return CredentialGrant{}, ErrInvalidCredentialGrant
 	}
-	payload, mac, ok := strings.Cut(rest, ".")
-	if !ok || payload == "" || mac == "" || strings.Contains(mac, ".") {
-		return CredentialGrant{}, ErrInvalidCredentialGrant
-	}
-	if subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(credentialGrantMACDomain+payload))) != 1 {
+	payload, err := s.verifyMAC(token, CredentialGrantPrefix, credentialGrantMACDomain)
+	if err != nil {
 		return CredentialGrant{}, ErrInvalidCredentialGrant
 	}
 	grant, err := decodeGrantPayload(payload)

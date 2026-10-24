@@ -70,7 +70,8 @@ type recordedArtifact struct {
 
 type metricsFakeAdapter struct {
 	FakeAdapter
-	metrics map[string]float64
+	metrics      map[string]float64
+	sawUsageSink bool
 }
 
 type receiptFakeAdapter struct {
@@ -354,6 +355,11 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 		rec,
 		journal.NewPatternScrubber(),
 		"",
+		WithMCPServers([]apiv1.MCPServer{{
+			Name:     "acme-tools",
+			Required: mcpRequiredFlag(false),
+			Command:  "acme-tools",
+		}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +384,9 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 	if annotation.Stage != "implement" {
 		t.Fatalf("annotation stage = %q, want %q", annotation.Stage, "implement")
 	}
+	if annotation.Runner["severity"] != "warning" {
+		t.Fatalf("annotation severity = %#v, want warning", annotation.Runner["severity"])
+	}
 	servers, ok := annotation.Runner["servers"].([]map[string]string)
 	if !ok || len(servers) != 1 || servers[0]["server"] != "acme-tools" || servers[0]["status"] != "failed" {
 		t.Fatalf("annotation servers = %#v", annotation.Runner["servers"])
@@ -389,6 +398,10 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 }
 
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	f.sawUsageSink = req.UsageSink != nil
+	if req.UsageSink != nil {
+		req.UsageSink(f.metrics)
+	}
 	out, err := f.FakeAdapter.Run(ctx, req)
 	out.Metrics = f.metrics
 	return out, err
@@ -793,6 +806,9 @@ func TestExecutorUsesOnlyAdapterCanonicalUsage(t *testing.T) {
 			}
 			if reported[telemetry.AttrGenAIUsageInputTokens] != 42 {
 				t.Fatalf("reported usage = %v, want adapter input tokens 42", reported)
+			}
+			if adapter.sawUsageSink {
+				t.Fatal("local/final-only usage reporter enabled streaming UsageSink")
 			}
 			if !tc.wantErr && result.Metrics["custom"] != 7 {
 				t.Fatalf("result metrics = %v, want agent custom metric retained", result.Metrics)

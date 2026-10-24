@@ -30,7 +30,7 @@ themselves, so no cell can drift from the YAML.
 | Workflow | Enabled triggers | Status | Blocked on |
 | --- | --- | --- | --- |
 | `ado-live-conformance.yml` | schedule, workflow_dispatch | active | — |
-| `ado-live-write.yml` | pull_request, schedule, workflow_dispatch | dormant | #5727 (scratch repository, `ADO_WRITE_REPOSITORY` variable, first green run) |
+| `ado-live-write.yml` | pull_request, schedule, workflow_dispatch | active | — |
 | `ci-retarget.yml` | pull_request | active | — |
 | `ci.yml` | merge_group, pull_request, push, workflow_dispatch | active | — |
 | `config-validate-gate-selftest.yml` | pull_request, push, workflow_dispatch | active | — |
@@ -39,6 +39,7 @@ themselves, so no cell can drift from the YAML.
 | `evals-gate.yml` | workflow_dispatch | dormant | #2681 (direction superseded; #2667/#2668 closed as redirected — retire or re-scope after ratification) |
 | `evals-tests.yml` | pull_request, push, workflow_dispatch | active | — |
 | `flake-watch.yml` | schedule, workflow_dispatch | active | — |
+| `ha-nightly.yml` | schedule, workflow_dispatch | active | — |
 | `large-repo-scale.yml` | schedule, workflow_dispatch | active | — |
 | `macos-nightly.yml` | schedule, workflow_dispatch | active | — |
 | `portal-package.yml` | pull_request, workflow_dispatch | active | — |

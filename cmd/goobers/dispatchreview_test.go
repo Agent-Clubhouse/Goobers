@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/apicontract"
@@ -22,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/localscheduler"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -35,11 +38,11 @@ import (
 // else — including a plain agentic task — stamps invoke, and an attempt with
 // no mode at all decodes as invoke on the pod.
 func TestKitModeFollowsTheAttempt(t *testing.T) {
-	if got := kitModeFor(dispatcher.Attempt{Agentic: true, Review: true}); got != agentickit.ModeReview {
-		t.Fatalf("kitModeFor(review attempt) = %q, want %q", got, agentickit.ModeReview)
+	if got := runtimewiring.KitModeFor(dispatcher.Attempt{Agentic: true, Review: true}); got != agentickit.ModeReview {
+		t.Fatalf("runtimewiring.KitModeFor(review attempt) = %q, want %q", got, agentickit.ModeReview)
 	}
-	if got := kitModeFor(dispatcher.Attempt{Agentic: true}); got != agentickit.ModeInvoke {
-		t.Fatalf("kitModeFor(task attempt) = %q, want %q", got, agentickit.ModeInvoke)
+	if got := runtimewiring.KitModeFor(dispatcher.Attempt{Agentic: true}); got != agentickit.ModeInvoke {
+		t.Fatalf("runtimewiring.KitModeFor(task attempt) = %q, want %q", got, agentickit.ModeInvoke)
 	}
 	var legacy agentickit.Kit
 	if err := json.Unmarshal([]byte(`{"envelope":{}}`), &legacy); err != nil {
@@ -61,6 +64,7 @@ type podPlanes struct {
 	surrenderPath   string
 	credentialReqs  []string
 	recoveryUploads int
+	journalEmits    [][]byte
 }
 
 func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
@@ -102,6 +106,9 @@ func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
 				creds = append(creds, dispatcher.MintedCredential{Capability: c, Value: p.checkoutToken})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": creds})
+		case strings.HasSuffix(r.URL.Path, "/journal/emit"):
+			p.journalEmits = append(p.journalEmits, body)
+			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/surrender"):
 			p.surrendered = body
 			p.surrenderPath = r.URL.Path
@@ -143,11 +150,11 @@ func installFakeHarness(t *testing.T, act func(context.Context, harness.RunReque
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{Act: act}); err != nil {
 		t.Fatal(err)
 	}
-	previous := podHarnessRegistry
-	podHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
+	previous := runtimewiring.PodHarnessRegistry
+	runtimewiring.PodHarnessRegistry = func(map[string]string, harness.EnvironmentConfig, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
 		return registry, nil
 	}
-	t.Cleanup(func() { podHarnessRegistry = previous })
+	t.Cleanup(func() { runtimewiring.PodHarnessRegistry = previous })
 }
 
 // A review-mode kit drives exec.Review — the harness sees ModeReview and a

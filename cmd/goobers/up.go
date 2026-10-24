@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -20,10 +19,11 @@ import (
 	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configauthoring"
+	"github.com/goobers/goobers/internal/configmirror"
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/daemonheartbeat"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -38,17 +38,25 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/sweepreport"
 	"github.com/goobers/goobers/internal/telemetry"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/version"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+// Local runs may execute long agentic stages inside this process, so their
+// historical default remains unbounded. Remote-dispatch deployments opt into
+// a finite --drain-timeout in their manifests.
+const localDaemonDrainTimeoutDefault time.Duration = 0
 
 // drainProgressInterval controls shutdown progress reporting. It is a variable
 // so tests can exercise cadence without waiting for the production interval.
@@ -140,7 +148,7 @@ func daemonReadHandlerOptions(root string, setup *schedulerSetup) []httpapi.Hand
 		httpapi.WithTelemetryReadAvailability(setup.RollupDB != nil),
 	}
 	if setup.ReadModel != nil {
-		options = append(options, httpapi.WithChangeFeedStream(setup.ReadModel))
+		options = append(options, httpapi.WithChangeFeedStream(setup.ReadModel, setup.ReadModel.Feed()))
 	}
 	return options
 }
@@ -290,7 +298,7 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--recover-config-generation digest] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
@@ -309,7 +317,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
-	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
+	"--recover-config-generation selects and restores a retained applied catalog\n" +
+	"by digest after strict verification. The live candidate stays rejected;\n" +
+	"this does not overwrite source files or bypass retained permission checks.\n" +
+	"--skip-preflight does not skip the harness admission preflight: a workflow whose agentic\n" +
 	"stage needs a harness that fails its startup check is still refused, while\n" +
 	"other workflows keep running. A check that failed only because the model\n" +
 	"provider was rate limiting or unreachable is re-run with backoff, and the\n" +
@@ -400,15 +411,16 @@ type upSession struct {
 }
 
 type upOptions struct {
-	cleanupSpansOnlyRuns  *bool
-	diagnostics           *bool
-	disableReadModelReads *bool
-	drainTimeout          *time.Duration
-	notifications         notifyFlag
-	quiet                 *bool
-	root                  string
-	skipPreflight         *bool
-	watchConfig           *bool
+	cleanupSpansOnlyRuns    *bool
+	diagnostics             *bool
+	disableReadModelReads   *bool
+	drainTimeout            *time.Duration
+	notifications           notifyFlag
+	quiet                   *bool
+	root                    string
+	skipPreflight           *bool
+	recoverConfigGeneration *string
+	watchConfig             *bool
 }
 
 // upReadiness exposes named startup milestones on /readyz (#3806). The phases
@@ -467,10 +479,9 @@ type upServices struct {
 	blobStore                  *blobstore.Dir
 	cancelPlane                *daemonCancelService
 	configDigests              *configDigestPublisher
+	configSnapshots            *configmirror.Plane
 	credentialPlane            *daemonCredentialService
 	durableTriggers            *durableTriggerService
-	engineClient               *daemonEngineClient
-	engineGuards               *engineRunGuards
 	interventions              *intervention.Service
 	liveJournals               *livejournal.Writer
 	reads                      *readservice.Local
@@ -538,6 +549,7 @@ type upWorkers struct {
 	templateChecksDone                 <-chan struct{}
 	templateNotices                    <-chan updateCheckResult
 	terminalCleanupRetryDone           <-chan struct{}
+	terminalReportRetryDone            <-chan struct{}
 	updateCheckDone                    <-chan struct{}
 	updateNotices                      <-chan updateCheckResult
 	worktreeRetentionTickerDone        chan struct{}
@@ -592,10 +604,11 @@ func (u *upSession) configure() int {
 	u.quiet = fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	u.diagnostics = fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	u.watchConfig = fs.Bool("watch-config", true, "hot-reload materialized config-directory edits (default true; instance.yaml changes require restart)")
-	u.drainTimeout = fs.Duration("drain-timeout", 0, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
+	u.drainTimeout = fs.Duration("drain-timeout", localDaemonDrainTimeoutDefault, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
 
 	fs.Var(&u.notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	u.skipPreflight = fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
+	u.recoverConfigGeneration = fs.String("recover-config-generation", "", "restore a verified retained applied catalog by digest; leave live candidate rejected")
 	u.cleanupSpansOnlyRuns = fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	u.disableReadModelReads = fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force authoritative journal scans for this run")
 	if err := fs.Parse(u.args); err != nil {
@@ -756,6 +769,10 @@ func (u *upSession) prepare() int {
 	u.claimRecoveryGate = localscheduler.NewRecoveryGate()
 	var setupOptions []schedulerSetupOption
 	setupOptions, u.startTelemetryReplay = daemonStartupSetupOptions(u.notifications, u.stdout, u.stderr, u.claimRecoveryGate, u.tracker)
+	setupOptions = append(setupOptions, func(options *schedulerSetupOptions) {
+		options.recoverGenerationCapacity = true
+		options.recoverConfigGeneration = *u.recoverConfigGeneration
+	})
 	buildSetup := buildSchedulerSetup
 	if *u.skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
@@ -771,6 +788,9 @@ func (u *upSession) prepare() int {
 		})
 	}
 	pf(u.stdout, "startup: scheduler initialized\n")
+	if u.setup.CapacityRejection != "" {
+		pf(u.stderr, "warning: %s; serving verified retained generation %s\n", u.setup.CapacityRejection, u.setup.ExecutionGeneration)
+	}
 	// #4070: say, every start, whether one stage's memory is bounded. Stage
 	// subprocesses share this daemon's memory cgroup, so an unbounded stage
 	// can OOM-kill the control plane and take every in-flight run with it —
@@ -789,8 +809,8 @@ func (u *upSession) prepare() int {
 	// the gaggle inventory the daemon itself is about to provision from. Read
 	// off instance.yaml alone, the advisory would have reported an
 	// affirmative all-clear over directories it never enumerated.
-	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
-		if line := hostAVExclusionAdvisory(u.ctx, "daemon",
+	if avDeps := runtimewiring.RealAVExclusionDeps(); avDeps.HostOS == "windows" {
+		if line := runtimewiring.HostAVExclusionAdvisory(u.ctx, "daemon",
 			daemonAVExclusionDirectories(u.l, u.setup.Config, u.setup.Definitions, avDeps), avDeps); line != "" {
 			pln(u.stdout, line)
 		}
@@ -866,65 +886,23 @@ func (u *upSession) prepare() int {
 	return u.startServices()
 }
 
+func engineMovedWarning(cfg *instance.Config) string {
+	if cfg == nil || !cfg.EngineProjectionEnabled() {
+		return ""
+	}
+	return "warning: engine: is no longer executed by goobers; run the control plane with goobers-cloud"
+}
+
 func (u *upSession) startServices() int {
 	var err error
-	// One Temporal client per daemon (decision 003 step 1(e)): the projection
-	// reconciler, the DS6 claim-liveness probe and the engine-driven run
-	// guards each used to dial the frontend themselves. nil on an instance
-	// with no `engine:` configuration, which leaves every consumer below on
-	// its pre-existing no-engine path.
-	u.engineClient, err = newDaemonEngineClient(u.setup.Config)
-	if err != nil {
-		pf(u.stderr, "error: dial engine for daemon Temporal client: %v\n", err)
-		return 1
-	}
-	defer u.engineClient.Close()
-	u.engineGuards = u.engineClient.Guards()
-	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
-	// verifies a live-authored journal against a re-projection, so a source
-	// given to one and not the other turns every adopted span into a false
-	// divergence.
-	stopEngineProjection, err := startEngineProjection(u.ctx, u.l, u.setup.Config, u.setup.Definitions, u.engineClient, u.setup.Watermarks, u.setup.InstanceLog, u.setup.Telemetry, u.liveJournals, u.blobStore)
-	if err != nil {
-		return daemonStartupFailure(u.ctx, err, func() {
-			pf(u.stderr, "error: start engine projection reconciler: %v\n", err)
-		})
-	}
-	defer stopEngineProjection()
-	// #3876 (decision 005 D1, piece 6): teach the guards the run-id ->
-	// workflow-id mapping BEFORE anything reattaches, or a scheduled engine
-	// run's describe returns NotFound and the resume scan releases its
-	// concurrency slot underneath a live workflow. A failed scan is a
-	// warning, not a boot failure: it degrades to the pre-#3876 behaviour, in
-	// which direct runs still reattach correctly.
-	var openEngineRuns map[string]engine.OpenRun
-	var engineScanErr error
-	u.engineGuards, openEngineRuns, engineScanErr = attachEngineOpenRunResolver(u.ctx, u.engineClient, u.engineGuards, ownedGaggleSet(u.setup.Machines))
-	if daemonStartupWarning(u.ctx, engineScanErr, func() {
-		pf(u.stderr, "warning: %v\n", engineScanErr)
-	}) {
-		return 0
-	}
-	for _, runID := range reportOrphanedEngineRuns(u.l, u.setup.InstanceLog, openEngineRuns) {
-		pf(u.stderr, "warning: engine run %s is open on the engine with no local run directory\n", runID)
-	}
-	// #3876 (decision 005 D1): the engine starters the scheduler entries carry
-	// were built before this client and this writer existed. Attach them now,
-	// once, so a lane the selection predicate placed on the engine can
-	// actually dispatch. An unattached runtime refuses the dispatch rather
-	// than silently running remotely-pinned stages on this host.
-	if u.engineClient != nil {
-		u.setup.EngineRuntime.Attach(
-			engine.NewTemporalStarter(u.engineClient.Temporal(), u.setup.Config.EffectiveEngineConfig().TaskQueue),
-			u.engineGuards,
-			u.liveJournals,
-			time.Now,
-		)
+	if warning := engineMovedWarning(u.setup.Config); warning != "" {
+		pln(u.stderr, warning)
 	}
 	printValidationWarnings(u.stdout, u.setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(u.setup.Definitions, u.setup.Config); warning != "" {
 		pln(u.stdout, warning)
 	}
+
 	if err := handleSpansOnlyRunCleanup(u.l, *u.cleanupSpansOnlyRuns, u.stdout); err != nil {
 		pf(u.stderr, "error: clean up spans-only run directories: %v\n", err)
 		return 1
@@ -998,7 +976,7 @@ func (u *upSession) startServices() int {
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", u.stderr)
 	stopSchedulerProjector := u.reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", u.stderr)
-	u.stopDaemonHealth = startDaemonHealth(u.ctx, u.root, u.currentDaemon, u.setup, u.recoveryInventory.Stats, u.reads, u.ready.Load, u.engineClient)
+	u.stopDaemonHealth = startDaemonHealth(u.ctx, u.root, u.currentDaemon, u.setup, u.recoveryInventory.Stats, u.reads, u.ready.Load)
 	defer u.stopDaemonHealth()
 	return u.configureAPI()
 }
@@ -1030,24 +1008,14 @@ func (u *upSession) configureAPI() int {
 	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithConfigAuthoringReader(configReader))
 	u.interventions = newRunInterventionService(u.l, u.setup, &u.wg, u.apiLog)
-	// #3883 (decision 005 R8): give the intervention surface a second
-	// destination. Runner-driven runs keep the in-process path untouched;
-	// engine-driven ones, which every verb refused outright since #3847, are
-	// now answered by the workflow that owns them over the versioned HITL
-	// protocol. Attached after the open-run scan so a SCHEDULED engine run —
-	// whose workflow id is not its run id — is addressable; a daemon with no
-	// engine client attaches nothing and keeps the refusal verbatim.
-	if deliverer := u.engineClient.HITLDeliverer(u.engineGuards); deliverer != nil {
-		u.interventions.AttachHITLDeliverer(deliverer)
-	}
 	// The write planes (#3509, distributed-state-and-coordination.md §7):
 	// claims over the same ledger + flock the CLI claimants use, triggers
 	// through the same scheduler path the pending-triggers sweep dispatches,
 	// HITL resolution over the intervention machinery. The file seams remain
 	// for local/mode-1 callers.
-	u.triggerPlane = newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
+	u.triggerPlane = newDaemonTriggerService().WithGaggleContainment(func(gaggle, runID string) bool {
 		return runBelongsToGaggle(u.l, gaggle, runID)
-	}).withSchedulerReadyGate(u.ready.Load).withStartupCatalog(u.setup.Entries)
+	}).WithSchedulerReadyGate(u.ready.Load).WithStartupCatalog(u.setup.Entries)
 	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
 	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
 	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
@@ -1120,18 +1088,20 @@ func (u *upSession) configureAPI() int {
 	u.recoverExpiredClaims = func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		return recoverClaims(u.l, u.setup.InstanceLog, now, u.interventions.Active, u.claimRecoveryGate)
 	}
-	// The run-control plane routes local runs through the pending-cancels
-	// sweep's live Runner path and retained engine runs through CancelWorkflow.
-	// Only the local path uses the slot release attached below; the engine
-	// releases its slot when its existing settlement path observes completion.
-	u.cancelPlane.engine = newDaemonEngineCancelService(u.l, u.setup.Interventions, u.engineClient, u.engineGuards, u.setup.InstanceLog)
 	claimPlane := newDaemonClaimService(u.l, u.setup.InstanceLog, u.recoverExpiredClaims)
+	if err := claimPlane.initializeMergeLock(); err != nil {
+		claimPlane.close()
+		return reportDaemonStartupError(u.stderr, "restore merge exclusion", err)
+	}
+	u.recoverExpiredClaims = claimPlane.recover
 	claimPlane.shared = daemonSharedClaimResolver(u.l, u.setup.Config, u.setup.SharedRegistry, u.setup.SecretStores)
-	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(u.engineClient.Temporal(), surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
+	claimPlane.markerRelease = u.releaseProviderClaimMarker
+	u.apiHandlerOpts = append(u.apiHandlerOpts, u.credentialPlane.installChildPodPlane(nil, surrenderStore, u.liveJournals, claimPlane, u.blobStore)...)
+	// Local parent admission requires the existing explicit workflow preview opt-in.
+	u.credentialPlane.installTrustedLocalChildren(u.liveJournals)
 	journalService := newDaemonRunJournalService(u.l, u.setup.InstanceLog)
-	journalService.reads = u.reads
+	journalService.AttachReads(u.reads)
 	journalService.definitions = u.setup.Interventions
-	withEngineOperatorMessageServices(journalService, u.liveJournals, u.engineClient, u.engineGuards)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	u.apiHandlerOpts = append(u.apiHandlerOpts,
 		httpapi.WithInterventions(u.interventions),
@@ -1185,10 +1155,8 @@ func (u *upSession) configureAPI() int {
 	// refused, so this is what OPENS the plane, and a daemon that serves stage
 	// pods at all can always answer which gaggle one of its own runs is in.
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(u.l)))
-	// #4153: publish which config tree is in force, so a worker can detect that
-	// its own has diverged instead of finding out when an agentic gate refuses.
-	u.configDigests = newConfigDigestPublisher(u.setup.ConfigDigest)
-	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithConfigDigest(u.configDigests.Get))
+	// Publish the applied config tree and sanitized worker snapshot.
+	u.configureWorkerConfigPlane()
 	if u.apiHandlerOpts, err = appendWorkerDivergenceHandlerOption(u.apiHandlerOpts, u.setup); err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize worker config-divergence reporting", err)
 	}
@@ -1306,7 +1274,7 @@ func (u *upSession) recoverClaims() int {
 	// leaves it closed and refuses startup: an expired lease is claimable
 	// even with reaping gated, so crash resume must not execute without it.
 	var closeClaimLiveness func()
-	u.claimLiveness, closeClaimLiveness, err = buildClaimLivenessProbe(u.setup.Config, u.engineClient, u.setup.RunnerRegistry.RunIDs)
+	u.claimLiveness, closeClaimLiveness, err = buildClaimLivenessProbe(u.setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(u.stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
@@ -1553,7 +1521,7 @@ func (u *upSession) startScheduler() int {
 	}
 	u.stalledSweepErrors = newSweepErrorReporter(u.setup.InstanceLog, "stalled_run_sweep_failed")
 	drainedDowntime, hostSuspensions := readSweepDowntime(u.setup.InstanceLog, u.stderr)
-	sweepDeps := stalledSweepDependencies(u.setup, drainedDowntime, hostSuspensions, u.liveJournals)
+	sweepDeps := stalledSweepDependencies(u.setup, drainedDowntime, hostSuspensions)
 	u.sweepStalled = func(now time.Time, recoveryRunDirs ...[]string) error {
 		// Observe first, so a suspension that just ended is credited by the
 		// sweep that would otherwise read it as run time or silence.
@@ -1563,7 +1531,6 @@ func (u *upSession) startScheduler() int {
 			u.l,
 			u.setup.RunnerRegistry,
 			u.setup.LegacyRunner,
-			u.engineGuards,
 			u.setup.InstanceLog,
 			sweepDeps,
 			u.setup.TerminalNotifier,
@@ -1612,19 +1579,28 @@ func (u *upSession) startScheduler() int {
 	// flag only decides whether its own ticker loop (wired further below)
 	// runs automatically.
 	u.reloader = &configReloader{
-		watching:       *u.watchConfig,
-		layout:         u.l,
-		setup:          u.setup,
-		scheduler:      u.sched,
-		openPRs:        u.openPRs,
-		reads:          u.reads,
-		cleanupRetries: u.cleanupRetries,
-		readModel:      u.setup.ReadModel,
-		wg:             &u.wg,
-		appliedDigest:  u.setup.ConfigDigest,
-		observedDigest: u.setup.ConfigDigest,
-		digests:        u.configDigests,
-		gaggleHealth:   u.gaggleHealth,
+		watching:        *u.watchConfig,
+		layout:          u.l,
+		setup:           u.setup,
+		scheduler:       u.sched,
+		openPRs:         u.openPRs,
+		reads:           u.reads,
+		cleanupRetries:  u.cleanupRetries,
+		readModel:       u.setup.ReadModel,
+		wg:              &u.wg,
+		appliedDigest:   u.setup.ConfigDigest,
+		observedDigest:  u.setup.ConfigDigest,
+		digests:         u.configDigests,
+		configSnapshots: u.configSnapshots,
+		gaggleHealth:    u.gaggleHealth,
+	}
+	if u.setup.CapacityRejection != "" {
+		u.reloader.retentionRejected = true
+		u.reloader.observedDigest = u.setup.CandidateConfigDigest
+		if err := u.reloader.reject(u.setup.CandidateConfigDigest, errors.New(u.setup.CapacityRejection)); err != nil {
+			pf(u.stderr, "error: record rejected startup candidate: %v\n", err)
+			return 1
+		}
 	}
 	// The workflow mutation service was built above so the HTTP handler could
 	// register the surface before the reloader existed. Now that it does,
@@ -1659,7 +1635,7 @@ func (u *upSession) recoverRuns() int {
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	u.resumeResult, err = resumeStartupRuns(u.ctx, u.l, u.setup, u.engineGuards, u.sched, &u.wg, u.recoveryRunDirs, u.tracker, u.stdout)
+	u.resumeResult, err = resumeStartupRuns(u.ctx, u.l, u.setup, u.sched, &u.wg, u.recoveryRunDirs, u.tracker, u.stdout)
 	if err != nil {
 		return daemonStartupFailure(u.ctx, err, func() {
 			pf(u.stderr, "error: %v\n", err)
@@ -1749,7 +1725,7 @@ func (u *upSession) configureSource() int {
 	// loop below, so both draw on one near-expiry-refreshing token cache.
 	var workflowSourceAppTokens instance.GitTokenSource
 	if source := u.setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
-		minted, mintErr := newWorkflowSourceAppTokenSource(*source, u.setup.SharedRegistry, u.setup.SecretStores)
+		minted, mintErr := runtimewiring.NewWorkflowSourceAppTokenSource(*source, u.setup.SharedRegistry, u.setup.SecretStores)
 		if mintErr != nil {
 			pf(u.stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
 			return 1
@@ -1758,9 +1734,7 @@ func (u *upSession) configureSource() int {
 	}
 
 	if source := u.setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-		u.sourceApplier = &workflowSourceApplier{
-			root: u.root, source: *source, appTokens: workflowSourceAppTokens, setup: u.setup, reloader: u.reloader,
-		}
+		u.sourceApplier = newWorkflowSourceApplier(u.root, *source, workflowSourceAppTokens, u.setup, u.reloader)
 	}
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
 		if u.sourceApplier != nil {
@@ -2004,7 +1978,7 @@ func (u *upSession) startRequestLoops() int {
 	if u.sourceApplier != nil {
 		u.configLoopEnabled = true
 		sourceLoop := &configSourceReconciler{
-			source:    u.sourceApplier.source,
+			source:    u.sourceApplier.Source,
 			errors:    newSweepErrorReporter(u.setup.InstanceLog, "config_reconcile_failed"),
 			wake:      u.sourceReconcileWake,
 			reconcile: u.sourceApplier.Reconcile,
@@ -2059,6 +2033,7 @@ func (u *upSession) readyForWork() int {
 	terminalCleanupRetryCtx, u.stopTerminalCleanupRetry = context.WithCancel(context.Background())
 	defer u.stopTerminalCleanupRetry()
 	u.terminalCleanupRetryDone = startTerminalCleanupRetry(terminalCleanupRetryCtx, u.cleanupRetries, u.terminalCleanupRetryErrors, u.readyNow)
+	u.terminalReportRetryDone = startTerminalReportRetry(u.ctx, u.l, u.setup.SharedRegistry, u.setup.SecretStores, u.setup.InstanceLog, u.readyNow)
 	u.startupTerminalFinalize = startStartupTerminalFinalize(u.ctx, u.setup, u.resumeResult.Terminal)
 	u.startupMergedPRCostSweepDone = u.mergedPRCostSweeps.startDeferred(u.ctx, u.readyNow)
 	pf(u.stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", u.root, len(u.setup.Entries), u.apiServer.Scheme(), u.apiServer.Address(), httpapi.Prefix)
@@ -2225,6 +2200,9 @@ func (u *upSession) finish() int {
 	u.stopTerminalCleanupRetry()
 	u.startupTerminalFinalize.finishAfterDrain()
 	<-u.terminalCleanupRetryDone
+	if u.terminalReportRetryDone != nil {
+		<-u.terminalReportRetryDone
+	}
 	runTerminalCleanupRetryFinal(u.cleanupRetries, u.terminalCleanupRetryErrors, u.readyNow)
 	if !drainResult.forced {
 		pln(u.stdout, "shutdown complete: all runs drained")
@@ -2383,7 +2361,7 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 // journaled its own start, so the newest drain interval ends at this
 // lifetime's beginning. A read failure credits nothing, which is the
 // pre-#5601 behavior, and says so.
-func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDowntime, *hostsuspend.Ledger) {
+func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) (scheduling.DowntimeWindows, *hostsuspend.Ledger) {
 	if log == nil {
 		return nil, hostsuspend.NewLedger(nil, nil)
 	}
@@ -2395,7 +2373,7 @@ func readSweepDowntime(log *journal.InstanceLog, stderr io.Writer) ([]daemonDown
 	return cleanDaemonDowntime(events), hostsuspend.NewLedger(log, hostsuspend.FromEvents(events))
 }
 
-func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime, hostSuspensions *hostsuspend.Ledger, live *livejournal.Writer) *stalledSweepDeps {
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime scheduling.DowntimeWindows, hostSuspensions *hostsuspend.Ledger) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2418,7 +2396,6 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
 		DrainedDowntime:        drainedDowntime,
 		HostSuspensions:        hostSuspensions,
-		CloseEngineRun:         closeTerminatedEngineRun(live),
 	}
 }
 
@@ -2506,12 +2483,16 @@ func daemonMemoryGate(rc instance.RunConditions) localscheduler.MemoryGate {
 	return localscheduler.NewCgroupMemoryGate(highWater)
 }
 
-// newDaemonStorageGate builds tiered low-disk protection's gate for the
+// newDaemonStorageGate is a construction seam so daemon tests can disable
+// disk admission without changing production configuration or defaults.
+var newDaemonStorageGate = buildDaemonStorageGate
+
+// buildDaemonStorageGate builds tiered low-disk protection's gate for the
 // filesystem containing root (#4873), resolving thresholds the same way
 // `goobers status` and the Instance API report them — see
 // instance.RunConditions.ResolveStorageThresholds — so every consumer agrees
 // on the effective floors without re-deriving the defaulting rule.
-func newDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
+func buildDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
 	thresholds := cfg.RunConditions.ResolveStorageThresholds(cfg.Retention.RecoveryEffective())
 	gate := localscheduler.NewStorageGate(root,
 		thresholds.WarningFloorBytes, thresholds.WarningFloorPercent,
@@ -2638,9 +2619,5 @@ func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
 	if path == "" {
 		return podauth.NewRegistry(), nil
 	}
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
-	}
-	return podauth.NewSignedKey(bytes.TrimSpace(key))
+	return podauth.LoadSignedKeyFile(path)
 }

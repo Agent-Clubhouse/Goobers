@@ -117,13 +117,15 @@ type SpanSource interface {
 // ArtifactOp is one content-addressed artifact record: bytes the workflow
 // reconstructs deterministically (context manifests, gate verdicts).
 type ArtifactOp struct {
-	Stage     string               `json:"stage,omitempty"`
-	Attempt   int                  `json:"attempt,omitempty"`
-	Class     journal.AttemptClass `json:"class,omitempty"`
-	Name      string               `json:"name"`
-	Data      []byte               `json:"data"`
-	Ref       *journal.Ref         `json:"ref,omitempty"`
-	Integrity apiv1.Integrity      `json:"integrity,omitempty"`
+	Stage            string               `json:"stage,omitempty"`
+	Attempt          int                  `json:"attempt,omitempty"`
+	Class            journal.AttemptClass `json:"class,omitempty"`
+	Name             string               `json:"name"`
+	Data             []byte               `json:"data"`
+	Ref              *journal.Ref         `json:"ref,omitempty"`
+	OutboxRelPath    string               `json:"outboxRelPath,omitempty"`
+	OutboxOccurrence uint64               `json:"outboxOccurrence,omitempty"`
+	Integrity        apiv1.Integrity      `json:"integrity,omitempty"`
 }
 
 // SpanOp adopts one executor-recorded span (a harness transcript) by digest —
@@ -158,6 +160,17 @@ type SpanOp struct {
 // (Adopt): Time is not replayed there at all, because the loaned handle stamps
 // every event from its owner's single clock.
 type Op struct {
+	// Receipt requests the committed identity of this append.
+	Receipt bool `json:"receipt,omitempty"`
+
+	// Branch is explicit host attribution for an engine operation. Workload
+	// principals cannot set it; an existing verified context remains authority.
+	Branch int `json:"branch,omitempty"`
+
+	// ChildStageStart is opt-in committed-origin binding for a trusted host.
+	// Existing engine walks leave it nil until child execution is qualified.
+	ChildStageStart *ChildStageStart `json:"childStageStart,omitempty"`
+
 	Kind       string                  `json:"kind"`
 	Key        string                  `json:"key"`
 	Event      *journal.Event          `json:"event,omitempty"`
@@ -196,6 +209,13 @@ type EmitRequest struct {
 
 // EmitResponse reports what the writer did with a batch.
 type EmitResponse struct {
+	// AppendReceipts contains requested per-event identities in request order.
+	AppendReceipts []AppendReceipt `json:"appendReceipts,omitempty"`
+
+	// ChildOrigins contains receipts only for explicitly requested child starts,
+	// in request order. Absence on legacy responses confers no child authority.
+	ChildOrigins []ChildOriginReceipt `json:"childOrigins,omitempty"`
+
 	// Applied counts ops appended by this call.
 	Applied int `json:"applied"`
 	// Deduplicated counts ops whose idempotency key was already applied — a
@@ -209,6 +229,15 @@ type EmitResponse struct {
 
 // Option configures a Writer.
 type Option func(*Writer)
+
+// WithBackend installs the journal storage backend used by owned run handles.
+func WithBackend(backend journal.Backend) Option {
+	return func(w *Writer) {
+		if backend != nil {
+			w.backend = backend
+		}
+	}
+}
 
 // WithSpanSource lets the writer adopt span ops by digest. A source that can
 // also Put — the daemon's blob store — additionally becomes the sink every
@@ -226,32 +255,6 @@ func WithSpanSource(src SpanSource) Option {
 // owned run handles. Closing a handle drains its final watermark.
 func WithContextObserver(observer func(context.Context, string, uint64)) Option {
 	return func(w *Writer) { w.contextObserver = observer }
-}
-
-// WithEventObserver reports each durable APPEND op with the event body the
-// writer just committed, in the same order it committed them.
-//
-// It exists because a sequence-only watermark observer
-// delivers only (runID, seq). That is everything the read-model intake needs
-// (it re-reads the journal at seq anyway) and nothing a mid-run policy
-// consumer needs: decision 005 D1's RateLimited observer has to see the
-// stage's own error code and its rateLimitReset output as they land, without
-// re-parsing the whole journal on every append. Re-reading the run journal at
-// seq inside the existing observer was the alternative and was rejected: it
-// costs an O(N) parse per append on a path that already holds the run's lock.
-//
-// Contract, and the reason this is deliberately narrow:
-//
-//   - Called with the event EXACTLY as appended (the emit key is already in
-//     ev.Runner), while the run's lock is held. An observer must therefore be
-//     cheap and non-blocking, must never call back into the writer, and must
-//     never retain the event's maps beyond the call.
-//   - APPEND ops only. Artifact and span ops record content, not decisions;
-//     the error event an unavailable span degrades to IS an append and is
-//     delivered.
-//   - Best-effort side channel: it never affects whether the op was applied.
-func WithEventObserver(observer func(runID string, ev journal.Event)) Option {
-	return func(w *Writer) { w.eventObserver = observer }
 }
 
 // WithScrubber sets the boundary scrubber handed to the journal writer.
@@ -276,6 +279,14 @@ type InstanceAppender interface {
 // about, only moved from the pod to the daemon.
 func WithInstanceLog(log InstanceAppender) Option {
 	return func(w *Writer) { w.instanceLog = log }
+}
+
+// WithInstanceHandle installs an instance handle already owned by backend.
+func WithInstanceHandle(handle journal.InstanceHandle, owner journal.OwnerToken) Option {
+	return func(w *Writer) {
+		w.instanceHandle = handle
+		w.instanceOwner = owner
+	}
 }
 
 // WithClock overrides the wall clock used for idle accounting (tests).
@@ -303,10 +314,13 @@ type Writer struct {
 	eventObserver   func(runID string, ev journal.Event)
 	scrubber        journal.Scrubber
 	now             func() time.Time
+	backend         journal.Backend
 	// instanceLog is the daemon's instance log, the destination of
 	// OpInstanceAnnotation. Nil in every non-daemon assembly of this writer,
 	// which makes that op kind refuse rather than silently no-op.
-	instanceLog InstanceAppender
+	instanceLog    InstanceAppender
+	instanceHandle journal.InstanceHandle
+	instanceOwner  journal.OwnerToken
 
 	mu sync.Mutex
 	// open holds the journals the writer currently has open for appending,
@@ -321,10 +335,15 @@ type Writer struct {
 }
 
 type liveRun struct {
-	mu     sync.Mutex
-	gaggle string
-	dir    string
-	jr     *journal.Run
+	childStarts          map[string]journal.Event
+	childAppendUncertain bool
+	mu                   sync.Mutex
+	gaggle               string
+	runID                string
+	dir                  string
+	handle               journal.RunHandle
+	jr                   *journal.Run
+	owner                journal.OwnerToken
 	// clock is nil for an adopted run: the handle belongs to another driver
 	// and was constructed with that driver's clock, which this writer cannot
 	// (and must not) reach into. See Adopt.
@@ -373,7 +392,7 @@ type liveRun struct {
 // journal.Run's own mutex, one append at a time. That is orders of magnitude
 // narrower than a snapshot frozen at Adopt, and it is the same window every
 // check-then-append on a shared handle has.
-func (run *liveRun) terminal() bool {
+func (w *Writer) terminal(run *liveRun) bool {
 	if run.keys[terminalMarker] > 0 {
 		return true
 	}
@@ -443,8 +462,16 @@ func NewWriter(runsDir func(gaggle string) (string, bool), opts ...Option) (*Wri
 		return nil, errors.New("livejournal: runs-directory resolver is required")
 	}
 	w := &Writer{runsDir: runsDir, now: time.Now, open: make(map[string]*liveRun), reserved: make(map[string]chan struct{})}
+	WithBackend(journal.NewFileBackend(journal.FileBackendConfig{ResolveRunsDir: runsDir}))(w)
 	for _, opt := range opts {
 		opt(w)
+	}
+	if w.instanceHandle == "" && w.instanceLog != nil {
+		handle, owner, err := w.backend.BindInstance(w.instanceLog)
+		if err != nil {
+			return nil, err
+		}
+		WithInstanceHandle(handle, owner)(w)
 	}
 	return w, nil
 }
@@ -596,6 +623,12 @@ func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), e
 	if !apiv1.ValidRunID(runID) {
 		return nil, fmt.Errorf("livejournal: invalid run id %q", runID)
 	}
+	w.mu.Lock()
+	existing := w.open[runID]
+	w.mu.Unlock()
+	if existing != nil && !existing.adopted {
+		return nil, fmt.Errorf("%w: run %s is owned by the live writer", ErrAdoptConflict, runID)
+	}
 	if jr == nil {
 		return nil, fmt.Errorf("livejournal: adopt run %s: no open journal handle", runID)
 	}
@@ -619,7 +652,7 @@ func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), e
 		return nil, fmt.Errorf("livejournal: adopt run %s: read applied keys: %w", runID, err)
 	}
 	fresh := &liveRun{
-		gaggle: gaggle, dir: dir, jr: jr, adopted: true,
+		gaggle: gaggle, runID: runID, dir: dir, jr: jr, adopted: true,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 		lastEmit:     w.now(),
@@ -701,15 +734,17 @@ func (w *Writer) forgetLoan(runID string, run *liveRun) {
 // A failed read is not an error here: it leaves the cached view exactly as it
 // was, and the caller's own miss then produces the ordinary refusal.
 func (w *Writer) refreshAdopted(run *liveRun) {
-	reader, err := journal.OpenReadOnly(run.dir)
-	if err != nil {
-		return
+	if run.adopted {
+		reader, err := journal.OpenReadOnly(run.dir)
+		if err != nil {
+			return
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return
+		}
+		deriveDedupState(run, events)
 	}
-	events, err := reader.Events()
-	if err != nil {
-		return
-	}
-	deriveDedupState(run, events)
 }
 
 // deriveDedupState reads a journal's own events back into a run's dedup view:
@@ -720,9 +755,10 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 	for _, ev := range events {
 		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
 			run.keys[key] = ev.Seq
+			run.rememberChildStart(key, ev)
 		}
 		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
-			run.artifactRefs[ev.Name] = *ev.Ref
+			run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)] = *ev.Ref
 			if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok {
 				run.rememberArtifactKey(key, *ev.Ref)
 			}
@@ -750,43 +786,80 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 	if len(req.Ops) == 0 {
 		return EmitResponse{}, errors.New("livejournal: emit carries no ops")
 	}
+	receiptBatch, err := requestedAppendReceipts(req.Ops)
+	if err != nil {
+		return EmitResponse{}, err
+	}
 	for i, op := range req.Ops {
+		if _, err := opBranchContext(ctx, op); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
+		}
+		if err := validateChildStart(op); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: op %d: %w", i, err)
+		}
 		if op.Key == "" {
 			return EmitResponse{}, fmt.Errorf("livejournal: op %d carries no idempotency key", i)
 		}
 	}
-	run, err := w.acquire(req)
+	run, err := w.acquire(ctx, req)
 	if err != nil {
 		return EmitResponse{}, err
 	}
 	run.mu.Lock()
-	for run.jr == nil && !run.terminal() {
+	for !w.hasRun(run) && !w.terminal(run) {
 		// A concurrent CloseIdle released this journal between our acquire and
 		// lock — or an adoption's release ended the loan, which nils jr for the
 		// same reason. It was forgotten from the map, so another acquire
 		// rehydrates a fresh handle rather than returning this stale one.
 		run.mu.Unlock()
-		run, err = w.acquire(req)
+		run, err = w.acquire(ctx, req)
 		if err != nil {
 			return EmitResponse{}, err
 		}
 		run.mu.Lock()
 	}
 	defer run.mu.Unlock()
-	if err := run.validateReservationIdentity(req); err != nil {
+	if err := w.validateReservationIdentity(ctx, run, req); err != nil {
 		// Rehydrating a terminal journal populates the dedup map. Refusals
 		// must release that entry just as applyOp errors do.
 		w.finishRun(req.RunID, run, &EmitResponse{})
 		return EmitResponse{}, err
 	}
 	run.lastEmit = w.now()
+	if run.childAppendUncertain {
+		if err := w.reconcileChildAppend(run); err != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: recover uncertain child append: %w", err)
+		}
+	}
 
 	var resp EmitResponse
 	for i := range req.Ops {
 		applied, err := w.applyOp(ctx, req.RunID, run, req.Ops[i])
 		if err != nil {
+			if req.Ops[i].ChildStageStart != nil || receiptBatch {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, fmt.Errorf("livejournal: apply identity op %d for run %s: %w", i, req.RunID, err)
+			}
 			w.finishRun(req.RunID, run, &resp)
+			resp.ChildOrigins = nil
+			resp.AppendReceipts = nil
 			return resp, fmt.Errorf("livejournal: apply op %d for run %s: %w", i, req.RunID, err)
+		}
+		if req.Ops[i].ChildStageStart != nil {
+			receipt, err := w.childOriginReceipt(run, req.RunID, req.Ops[i])
+			if err != nil {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, err
+			}
+			resp.ChildOrigins = append(resp.ChildOrigins, receipt)
+		}
+		if req.Ops[i].Receipt {
+			receipt, err := w.appendReceipt(run, req.Ops[i])
+			if err != nil {
+				w.invalidateChildAppend(req.RunID, run)
+				return EmitResponse{}, err
+			}
+			resp.AppendReceipts = append(resp.AppendReceipts, receipt)
 		}
 		if applied {
 			resp.Applied++
@@ -819,21 +892,21 @@ func (w *Writer) finishRun(runID string, run *liveRun, resp *EmitResponse) {
 	if run.adopted {
 		if run.jr != nil {
 			resp.Seq = run.jr.Seq()
-			resp.Terminal = run.terminal()
+			resp.Terminal = w.terminal(run)
 			if run.jr.Closed() {
 				run.jr = nil
 				w.forgetLoan(runID, run)
 			}
 			return
 		}
-		resp.Terminal = run.terminal()
+		resp.Terminal = w.terminal(run)
 		return
 	}
-	if run.jr != nil {
-		resp.Seq = run.jr.Seq()
-		if run.terminal() {
-			_ = run.jr.Close()
-			run.jr = nil
+	if w.hasRun(run) {
+		resp.Seq = w.seq(run)
+		if w.terminal(run) {
+			_ = w.retire(run)
+			w.clearRun(run)
 			w.forget(runID)
 			resp.Terminal = true
 		}
@@ -858,7 +931,7 @@ const terminalMarker = "\x00terminal"
 // from the batch's Open header. A run under an external Reserve is waited
 // out first: rehydrating mid-repair would open (and then lose) the very
 // directory the repairer is about to replace.
-func (w *Writer) acquire(req EmitRequest) (*liveRun, error) {
+func (w *Writer) acquire(ctx context.Context, req EmitRequest) (*liveRun, error) {
 	w.mu.Lock()
 	for {
 		if run, ok := w.open[req.RunID]; ok {
@@ -880,8 +953,11 @@ func (w *Writer) acquire(req EmitRequest) (*liveRun, error) {
 	}
 	dir := filepath.Join(runsDir, req.RunID)
 	var run *liveRun
-	var err error
-	if journal.Recorded(dir) {
+	recorded, err := w.backend.RunRecorded(ctx, journal.RunKey{Gaggle: req.Gaggle, RunID: req.RunID})
+	if err != nil {
+		return nil, fmt.Errorf("livejournal: look up run %s: %w", req.RunID, err)
+	}
+	if recorded {
 		run, err = w.rehydrate(req, dir)
 	} else {
 		run, err = w.create(req, runsDir, dir)
@@ -897,6 +973,49 @@ func (w *Writer) forget(runID string) {
 	w.mu.Lock()
 	delete(w.open, runID)
 	w.mu.Unlock()
+}
+
+func (w *Writer) retire(run *liveRun) error {
+	if run == nil || !w.hasRun(run) {
+		return nil
+	}
+	if run.adopted {
+		return nil
+	}
+	return w.backend.Retire(context.Background(), run.handle, run.owner)
+}
+
+func (w *Writer) appendRun(run *liveRun, event journal.Event) error {
+	if run.adopted {
+		return run.jr.Append(event)
+	}
+	_, err := w.backend.AppendBatch(context.Background(), run.handle, run.owner, []journal.Event{event})
+	return err
+}
+
+func (w *Writer) appendInstance(event journal.Event) error {
+	return w.backend.InstanceAppend(context.Background(), w.instanceHandle, w.instanceOwner, event)
+}
+
+func (w *Writer) hasRun(run *liveRun) bool {
+	return run != nil && (run.jr != nil || run.handle != "")
+}
+
+func (w *Writer) clearRun(run *liveRun) {
+	run.jr = nil
+	run.handle = ""
+	run.owner = ""
+}
+
+func (w *Writer) seq(run *liveRun) uint64 {
+	if run.adopted && run.jr != nil {
+		return run.jr.Seq()
+	}
+	status, err := w.backend.RunStatus(context.Background(), run.handle)
+	if err != nil {
+		return 0
+	}
+	return status.Seq
 }
 
 // create scaffolds the run journal at first emit. The batch's first op must
@@ -956,21 +1075,16 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 
 	clock := &replayClock{}
 	clock.set(first.Time)
-	opts := []journal.Option{journal.WithClock(clock.nowFunc()), journal.WithInputIntegrity(inputIntegrity)}
-	if w.contextObserver != nil {
-		opts = append(opts, journal.WithAsyncAppendObserver(context.Background(), w.contextObserver))
-	} else if w.observer != nil {
-		opts = append(opts, journal.WithAppendObserver(w.observer))
-	}
-	if w.scrubber != nil {
-		opts = append(opts, journal.WithScrubber(w.scrubber))
-	}
-	jr, err := journal.Create(runsDir, id, inputs, opts...)
+	handle, owner, err := w.backend.CreateRun(context.Background(), journal.CreateRunRequest{
+		Identity: id,
+		Inputs:   inputs,
+		Options:  w.runWriterOptions(clock.nowFunc(), inputIntegrity),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("livejournal: create run journal for %s: %w", req.RunID, err)
 	}
 	return &liveRun{
-		gaggle: req.Gaggle, dir: dir, jr: jr, clock: clock,
+		gaggle: req.Gaggle, runID: req.RunID, dir: dir, handle: handle, owner: owner, clock: clock,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 	}, nil
@@ -1009,21 +1123,15 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	// this cannot be the "last known-good value" replayClock.set's contract
 	// promises. It is upgraded below once that history is in hand.
 	clock.set(req.Ops[0].Time)
-	opts := []journal.Option{journal.WithClock(clock.nowFunc())}
-	if w.contextObserver != nil {
-		opts = append(opts, journal.WithAsyncAppendObserver(context.Background(), w.contextObserver))
-	} else if w.observer != nil {
-		opts = append(opts, journal.WithAppendObserver(w.observer))
-	}
-	if w.scrubber != nil {
-		opts = append(opts, journal.WithScrubber(w.scrubber))
-	}
-	jr, report, err := journal.Recover(dir, opts...)
+	handle, owner, report, err := w.backend.RecoverRun(context.Background(), journal.RunKey{
+		Gaggle: req.Gaggle, RunID: req.RunID,
+	}, w.runWriterOptions(clock.nowFunc(), nil))
 	if err != nil {
 		return nil, fmt.Errorf("livejournal: reopen journal for %s: %w", req.RunID, err)
 	}
 	run := &liveRun{
 		gaggle:       req.Gaggle,
+		runID:        req.RunID,
 		dir:          dir,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
@@ -1034,7 +1142,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		// written nothing. jr stays nil on the returned run — duplicates
 		// dedupe against keys; a genuinely new op is refused with ErrTerminal
 		// in applyOp.
-		if err := jr.Close(); err != nil {
+		if err := w.backend.Retire(context.Background(), handle, owner); err != nil {
 			return nil, fmt.Errorf("livejournal: release terminal journal for %s: %w", req.RunID, err)
 		}
 		return run, nil
@@ -1052,9 +1160,18 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	// clock.set(op.Time) once the op is actually applied, after rehydrate
 	// returns.
 	clock.set(newestTimestamped(report.Events))
-	run.jr = jr
+	run.handle = handle
+	run.owner = owner
 	run.clock = clock
 	return run, nil
+}
+
+func (w *Writer) runWriterOptions(clock func() time.Time, integrity map[string]apiv1.Integrity) journal.RunWriterOptions {
+	return journal.RunWriterOptions{
+		Clock: clock, Scrubber: w.scrubber, InputIntegrity: integrity,
+		AppendObserver: w.observer, ContextObserver: w.contextObserver,
+		ObserverContext: context.Background(),
+	}
 }
 
 // applyOp applies one op under the run's lock. Returns whether the op was
@@ -1063,16 +1180,21 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 // an instance annotation is stamped with, never one the op carries. It is
 // also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
+	ctx, err := opBranchContext(ctx, op)
+	if err != nil {
+		return false, err
+	}
+
 	if _, applied := run.keys[op.Key]; applied {
 		return false, w.republishArtifact(ctx, run, op)
 	}
-	if op.Kind == OpAppend && op.Event != nil && op.Event.Type == journal.EventRunStarted && run.jr != nil && run.jr.Seq() >= 1 {
+	if op.Kind == OpAppend && op.Event != nil && op.Event.Type == journal.EventRunStarted && w.hasRun(run) && w.seq(run) >= 1 {
 		// journal.Create appended run.started as part of creation; the op is
 		// already durable. Applies equally to a redelivered open batch.
 		run.keys[op.Key] = 1
 		return false, nil
 	}
-	if run.jr == nil || run.terminal() {
+	if !w.hasRun(run) || w.terminal(run) {
 		return false, fmt.Errorf("%w (op key %s)", ErrTerminal, op.Key)
 	}
 	if run.clock != nil {
@@ -1093,7 +1215,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.Branch = branch
 		}
 		if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
-			ref, ok := run.artifactRefs[ev.Name]
+			ref, ok := run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)]
 			if !ok && run.adopted {
 				// The refs an adopted run starts with are a snapshot, and the
 				// handle's OWNER keeps recording artifacts through it without
@@ -1104,7 +1226,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 				// re-derive from the journal before refusing. Only on a miss:
 				// the ordinary path stays a map lookup.
 				w.refreshAdopted(run)
-				ref, ok = run.artifactRefs[ev.Name]
+				ref, ok = run.artifactRefs[artifactBranchKey(ev.Branch, ev.Name)]
 			}
 			if !ok {
 				return false, fmt.Errorf("gate.evaluated references unrecorded artifact %q", ev.Name)
@@ -1121,56 +1243,23 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.TerminalCause = &cause
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
-		if err := run.jr.Append(ev); err != nil {
+		if err := w.appendEventWithChildOrigin(run, op, &ev); err != nil {
 			return false, err
 		}
-		run.keys[op.Key] = run.jr.Seq()
 		if ev.Type == journal.EventRunFinished {
-			run.keys[terminalMarker] = run.jr.Seq()
+			run.keys[terminalMarker] = w.seq(run)
 		}
 		w.notifyEvent(runID, ev)
 		return true, nil
 	case OpArtifact:
 		return w.applyArtifact(ctx, run, op)
 	case OpSpan:
-		if handled, err := run.adoptCompletedTranscript(runID, requestBranch(ctx), op); handled {
-			return err == nil, err
-		}
-		s := op.Span
-		if s == nil {
-			return false, errors.New("span op carries no payload")
-		}
-		data, err := w.fetchSpan(ctx, s.Ref.Digest)
-		if err != nil {
-			// Availability is a property of this adoption attempt, not of the
-			// run — degrade to a visible error event rather than failing the
-			// emit or dropping the span silently (the projection's own rule,
-			// internal/engine/projection.go adoptSpan).
-			spanErr := fmt.Errorf("span %q (%s): %w", s.Name, s.Ref.Digest, err)
-			appendErr := run.jr.Append(journal.Event{
-				Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
-				Error:  journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
-				Runner: map[string]any{EmitKeyRunnerField: op.Key},
-			})
-			if appendErr != nil {
-				return false, appendErr
-			}
-			run.keys[op.Key] = run.jr.Seq()
-			w.notifyEvent(runID, journal.Event{
-				Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
-				Error: journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
-			})
-			return true, nil
-		}
-		if _, err := run.jr.RecordBranchSpanAnnotated(requestBranch(ctx), s.Stage, s.Name, s.DataSchema, data, map[string]any{EmitKeyRunnerField: op.Key}); err != nil {
-			return false, err
-		}
-		run.keys[op.Key] = run.jr.Seq()
-		return true, nil
+		return w.applySpan(ctx, runID, run, op)
 	case OpInstanceAnnotation:
 		if op.Event == nil {
 			return false, errors.New("instance annotation op carries no event")
 		}
+
 		if w.instanceLog == nil {
 			return false, ErrNoInstanceLog
 		}
@@ -1195,7 +1284,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.Time = w.now()
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
-		if err := w.instanceLog.Append(ev); err != nil {
+		if err := w.appendInstance(ev); err != nil {
 			return false, err
 		}
 		// Marked applied at the run journal's CURRENT sequence: nothing was
@@ -1205,11 +1294,52 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 		// not, so a rehydrated run re-applies a replayed annotation. Accepted:
 		// the instance log is an append-only narration, and a duplicated
 		// scheduler annotation is noise, not a correctness failure.
-		run.keys[op.Key] = run.jr.Seq()
+		run.keys[op.Key] = w.seq(run)
 		return true, nil
 	default:
 		return false, fmt.Errorf("unknown op kind %q", op.Kind)
 	}
+}
+
+func (w *Writer) applySpan(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
+	if handled, err := w.adoptCompletedTranscript(run, runID, requestBranch(ctx), op); handled {
+		return err == nil, err
+	}
+	s := op.Span
+	if s == nil {
+		return false, errors.New("span op carries no payload")
+	}
+	data, err := w.fetchSpan(ctx, s.Ref.Digest)
+	if err != nil {
+		spanErr := fmt.Errorf("span %q (%s): %w", s.Name, s.Ref.Digest, err)
+		event := journal.Event{
+			Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
+			Error: journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr), Runner: map[string]any{EmitKeyRunnerField: op.Key},
+		}
+		if err := w.appendRun(run, event); err != nil {
+			return false, err
+		}
+		run.keys[op.Key] = w.seq(run)
+		w.notifyEvent(runID, journal.Event{
+			Type: journal.EventError, Branch: requestBranch(ctx), Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
+			Error: journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
+		})
+		return true, nil
+	}
+	var spanErr error
+	if run.adopted {
+		_, spanErr = run.jr.RecordBranchSpanAnnotated(requestBranch(ctx), s.Stage, s.Name, s.DataSchema, data, map[string]any{EmitKeyRunnerField: op.Key})
+	} else {
+		_, spanErr = w.backend.RecordSpan(ctx, run.handle, run.owner, journal.SpanRecord{
+			Branch: requestBranch(ctx), Stage: s.Stage, Name: s.Name, DataSchema: s.DataSchema, Data: data,
+			Annotations: map[string]any{EmitKeyRunnerField: op.Key},
+		})
+	}
+	if spanErr != nil {
+		return false, spanErr
+	}
+	run.keys[op.Key] = w.seq(run)
+	return true, nil
 }
 
 // notifyEvent hands one committed append to the event observer (DS4's
@@ -1278,9 +1408,9 @@ func (w *Writer) CloseIdle(olderThan time.Duration) []string {
 	var closed []string
 	for id, run := range candidates {
 		run.mu.Lock()
-		if run.lastEmit.Before(cutoff) && run.jr != nil {
-			_ = run.jr.Close()
-			run.jr = nil
+		if run.lastEmit.Before(cutoff) && w.hasRun(run) {
+			_ = w.retire(run)
+			w.clearRun(run)
 			w.forget(id)
 			closed = append(closed, id)
 		}
@@ -1308,23 +1438,10 @@ func (w *Writer) Close() {
 	w.mu.Unlock()
 	for _, run := range owned {
 		run.mu.Lock()
-		if run.jr != nil {
-			_ = run.jr.Close()
-			run.jr = nil
+		if w.hasRun(run) {
+			_ = w.retire(run)
+			w.clearRun(run)
 		}
 		run.mu.Unlock()
 	}
-}
-
-// Authored reports whether events belong to a live-authored journal: any
-// event carrying an emit key under Runner. A projection-written journal never
-// carries one, which is what lets the demoted reconciler distinguish "verify
-// this live record against history" from "project as before" (DS5).
-func Authored(events []journal.Event) bool {
-	for _, ev := range events {
-		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
-			return true
-		}
-	}
-	return false
 }

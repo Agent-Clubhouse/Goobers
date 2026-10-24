@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -31,9 +30,16 @@ func TestOperatorMessageUpdateHistoryReplaysWithoutCredentials(t *testing.T) {
 		RunID: runID, Reference: OperatorMessageReference(runID, bearer+content),
 		State: apiv1.OperatorMessageState(apiv1.OperatorMessageRejected), Code: "live_delivery_unsupported",
 	}
-	deliverer := NewOperatorMessageDeliverer(c)
+
 	for range 2 {
-		got, err := deliverer.Deliver(ctx, receipt)
+		handle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			UpdateID: receipt.Reference, WorkflowID: runID, UpdateName: OperatorMessageUpdateName,
+			Args: []interface{}{receipt}, WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		var got OperatorMessageReceipt
+		if err == nil {
+			err = handle.Get(ctx, &got)
+		}
 		if err != nil || got != receipt {
 			t.Fatalf("Deliver = %+v, %v", got, err)
 		}
@@ -93,40 +99,5 @@ func TestOperatorMessageReceiptRejectsFreeTextAndWrongRun(t *testing.T) {
 	receipt.State = apiv1.OperatorMessageAccepted
 	if err := receipt.validate("run-1"); err == nil {
 		t.Fatal("claimed queued delivery without consumer")
-	}
-}
-
-type operatorReceiptUpdateClient struct{ addressed []string }
-
-func (c *operatorReceiptUpdateClient) UpdateWorkflow(_ context.Context, opts client.UpdateWorkflowOptions) (client.WorkflowUpdateHandle, error) {
-	c.addressed = append(c.addressed, opts.WorkflowID)
-	if opts.WorkflowID != "scheduled-workflow" {
-		return nil, serviceerror.NewNotFound("not found")
-	}
-	return &operatorReceiptHandle{hitlFakeHandle: hitlFakeHandle{workflowID: opts.WorkflowID}, receipt: opts.Args[0].(OperatorMessageReceipt)}, nil
-}
-
-type operatorReceiptHandle struct {
-	hitlFakeHandle
-	receipt OperatorMessageReceipt
-}
-
-func (h operatorReceiptHandle) Get(_ context.Context, out interface{}) error {
-	*out.(*OperatorMessageReceipt) = h.receipt
-	return nil
-}
-func TestOperatorMessageDelivererResolvesScheduledRun(t *testing.T) {
-	fake := &operatorReceiptUpdateClient{}
-	deliverer := (&OperatorMessageDeliverer{client: fake}).WithWorkflowIDResolver(func(context.Context, string) (string, error) {
-		return "scheduled-workflow", nil
-	})
-	receipt := OperatorMessageReceipt{RunID: "run-1", Reference: OperatorMessageReference("run-1", "key"),
-		State: apiv1.OperatorMessageState(apiv1.OperatorMessageRejected), Code: "live_delivery_unsupported"}
-	got, err := deliverer.Deliver(context.Background(), receipt)
-	if err != nil || got != receipt {
-		t.Fatalf("Deliver = %+v, %v", got, err)
-	}
-	if len(fake.addressed) != 2 || fake.addressed[0] != "run-1" || fake.addressed[1] != "scheduled-workflow" {
-		t.Fatalf("addressed = %v", fake.addressed)
 	}
 }

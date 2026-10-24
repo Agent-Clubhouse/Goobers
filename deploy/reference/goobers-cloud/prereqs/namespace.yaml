@@ -1,0 +1,13 @@
+# P3 single install namespace. P5 splits it per role (design §14.2).
+# Pod Security Standard `restricted` is enforced: the control plane, migrate Job
+# and workers all run non-root with a read-only root filesystem. Stage pods live
+# in gaggle namespaces, not here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goobers-cloud
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

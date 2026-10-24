@@ -8,23 +8,32 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-// telemetryInstanceIdentities bridges the existing journal-attribution ID and
-// root-lifecycle ID without rotating either. Older service-health instanceId
-// fields refer to the latter, whereas run journals use the former. Both signal
-// pipelines must publish the same resource keys so a tenant can join them.
-// Observation never adopts a legacy root or repairs an unreadable identity.
+// telemetryInstanceIdentities keeps the historical journal-attribution ID
+// visible for migrated roots while root lifecycle and new journals use the
+// canonical ID. Observation never adopts or repairs a root.
 func telemetryInstanceIdentities(root string) (string, []attribute.KeyValue) {
 	if strings.TrimSpace(root) == "" {
 		return "", nil
 	}
 	var journalID string
 	var attrs []attribute.KeyValue
+	var canonicalID string
 	if id, err := instance.NewLayout(root).ReadIdentity(); err == nil {
+		canonicalID = id
 		journalID = id
-		attrs = append(attrs, attribute.String("goobers.instance.id", id))
 	}
-	if id, err := instance.ReadRootIdentity(root); err == nil {
-		attrs = append(attrs, attribute.String("goobers.root.id", id))
+	if id, err := instance.ReadLegacyIdentity(root); err == nil {
+		if canonicalID == "" {
+			journalID = id
+		} else if matches, matchErr := instance.RootIdentityMatches(root, id); matchErr == nil && matches {
+			journalID = id
+		}
+	}
+	if journalID != "" {
+		attrs = append(attrs, attribute.String("goobers.instance.id", journalID))
+	}
+	if canonicalID != "" {
+		attrs = append(attrs, attribute.String("goobers.root.id", canonicalID))
 	}
 	return journalID, attrs
 }

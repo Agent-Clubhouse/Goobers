@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/speechnotify"
 )
 
@@ -77,6 +78,9 @@ func (m notificationMode) includes(phase journal.RunPhase) bool {
 }
 
 type schedulerSetupOptions struct {
+	recoverGenerationCapacity bool
+	recoverConfigGeneration   string
+
 	desktopNotifications bool
 	notifyOverride       notifyFlag
 	notificationWarnings io.Writer
@@ -229,7 +233,7 @@ func terminalNotificationCause(events []journal.Event, phase journal.RunPhase, f
 			if event.Error.Code == "run_failed" && phase == journal.PhaseFailed {
 				return event.Error.Message
 			}
-			if (event.Error.Code == "blocked_by_agent" || event.Error.Code == runner.RunStalledErrorCode) &&
+			if (event.Error.Code == "blocked_by_agent" || event.Error.Code == runsemantics.RunStalledErrorCode) &&
 				phase == journal.PhaseEscalated {
 				return event.Error.Message
 			}

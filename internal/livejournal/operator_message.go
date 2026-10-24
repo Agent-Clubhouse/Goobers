@@ -3,7 +3,6 @@ package livejournal
 import (
 	"context"
 	"errors"
-	"path/filepath"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -23,12 +22,12 @@ func (w *Writer) OperatorMessages(gaggle, runID string) *OperatorMessageJournal 
 	return &OperatorMessageJournal{writer: w, gaggle: gaggle, runID: runID}
 }
 
-func (b *OperatorMessageJournal) withRun(apply func(*journal.Run) error) error {
+func (b *OperatorMessageJournal) withRun(apply func(*liveRun) error) error {
 	w := b.writer
 	if w == nil || !apiv1.ValidRunID(b.runID) {
 		return errors.New("livejournal: invalid operator-message journal")
 	}
-	runsDir, ok := w.runsDir(b.gaggle)
+	_, ok := w.runsDir(b.gaggle)
 	if !ok {
 		return errors.New("livejournal: unknown operator-message gaggle")
 	}
@@ -42,12 +41,12 @@ func (b *OperatorMessageJournal) withRun(apply func(*journal.Run) error) error {
 				run.mu.Unlock()
 				return errors.New("livejournal: operator-message gaggle mismatch")
 			}
-			if run.jr != nil {
+			if w.hasRun(run) {
 				run.lastEmit = w.now()
 				if run.clock != nil {
 					run.clock.set(run.lastEmit)
 				}
-				err := apply(run.jr)
+				err := apply(run)
 				run.mu.Unlock()
 				return err
 			}
@@ -65,36 +64,34 @@ func (b *OperatorMessageJournal) withRun(apply func(*journal.Run) error) error {
 			}
 			continue
 		}
-		err := b.recoverAndApply(filepath.Join(runsDir, b.runID), apply)
+		err := b.recoverAndApply(apply)
 		release()
 		return err
 	}
 }
 
-func (b *OperatorMessageJournal) recoverAndApply(dir string, apply func(*journal.Run) error) error {
-	opts := []journal.Option{journal.WithClock(b.writer.now)}
-	if b.writer.scrubber != nil {
-		opts = append(opts, journal.WithScrubber(b.writer.scrubber))
-	}
-	if b.writer.observer != nil {
-		opts = append(opts, journal.WithAppendObserver(b.writer.observer))
-	}
-	if b.writer.contextObserver != nil {
-		opts = append(opts, journal.WithAsyncAppendObserver(context.Background(), b.writer.contextObserver))
-	}
-	run, _, err := journal.Recover(dir, opts...)
+func (b *OperatorMessageJournal) recoverAndApply(apply func(*liveRun) error) error {
+	w := b.writer
+	handle, owner, _, err := w.backend.RecoverRun(context.Background(), journal.RunKey{
+		Gaggle: b.gaggle, RunID: b.runID,
+	}, w.runWriterOptions(w.now, nil))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = run.Close() }()
+	run := &liveRun{gaggle: b.gaggle, handle: handle, owner: owner}
+	defer func() { _ = w.retire(run) }()
 	return apply(run)
 }
 
 // AcceptOperatorMessage durably deduplicates one request through the shared writer.
 func (b *OperatorMessageJournal) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (record apiv1.OperatorMessageRecord, accepted bool, err error) {
-	err = b.withRun(func(run *journal.Run) error {
+	err = b.withRun(func(run *liveRun) error {
 		var applyErr error
-		record, accepted, applyErr = run.AcceptOperatorMessage(request)
+		if run.adopted {
+			record, accepted, applyErr = run.jr.AcceptOperatorMessage(request)
+		} else {
+			record, accepted, applyErr = b.writer.backend.AcceptOperatorMessage(context.Background(), run.handle, run.owner, request)
+		}
 		return applyErr
 	})
 	return
@@ -102,9 +99,13 @@ func (b *OperatorMessageJournal) AcceptOperatorMessage(request apiv1.OperatorMes
 
 // RejectOperatorMessage records an authorization denial through the shared writer.
 func (b *OperatorMessageJournal) RejectOperatorMessage(request apiv1.OperatorMessageRequest, code, detail string) (record apiv1.OperatorMessageRecord, accepted bool, err error) {
-	err = b.withRun(func(run *journal.Run) error {
+	err = b.withRun(func(run *liveRun) error {
 		var applyErr error
-		record, accepted, applyErr = run.RejectOperatorMessage(request, code, detail)
+		if run.adopted {
+			record, accepted, applyErr = run.jr.RejectOperatorMessage(request, code, detail)
+		} else {
+			record, accepted, applyErr = b.writer.backend.RejectOperatorMessage(context.Background(), run.handle, run.owner, request, code, detail)
+		}
 		return applyErr
 	})
 	return
@@ -112,9 +113,13 @@ func (b *OperatorMessageJournal) RejectOperatorMessage(request apiv1.OperatorMes
 
 // AcknowledgeOperatorMessage records adapter acknowledgement through the shared writer.
 func (b *OperatorMessageJournal) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgement) (record apiv1.OperatorMessageRecord, err error) {
-	err = b.withRun(func(run *journal.Run) error {
+	err = b.withRun(func(run *liveRun) error {
 		var applyErr error
-		record, applyErr = run.AcknowledgeOperatorMessage(ack)
+		if run.adopted {
+			record, applyErr = run.jr.AcknowledgeOperatorMessage(ack)
+		} else {
+			record, applyErr = b.writer.backend.AcknowledgeOperatorMessage(context.Background(), run.handle, run.owner, ack)
+		}
 		return applyErr
 	})
 	return
@@ -122,9 +127,13 @@ func (b *OperatorMessageJournal) AcknowledgeOperatorMessage(ack apiv1.OperatorMe
 
 // CompleteOperatorMessage records the typed delivery outcome through the shared writer.
 func (b *OperatorMessageJournal) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (record apiv1.OperatorMessageRecord, err error) {
-	err = b.withRun(func(run *journal.Run) error {
+	err = b.withRun(func(run *liveRun) error {
 		var applyErr error
-		record, applyErr = run.CompleteOperatorMessage(outcome)
+		if run.adopted {
+			record, applyErr = run.jr.CompleteOperatorMessage(outcome)
+		} else {
+			record, applyErr = b.writer.backend.CompleteOperatorMessage(context.Background(), run.handle, run.owner, outcome)
+		}
 		return applyErr
 	})
 	return

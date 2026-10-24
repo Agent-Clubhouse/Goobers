@@ -14,7 +14,7 @@ name: CI
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
-# dedicated jobs: scope, cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
+# dedicated jobs: scope, cloud-pg, cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
 #   windows-smoke
 #
@@ -72,7 +72,8 @@ on:
     # Set together, and only, by ci-retarget.yml when a pull request is
     # retargeted onto main (#6360, #7017): every job then checks out GitHub's
     # merge of the PR head onto its new base (merge_sha), base-aware checks
-    # read base_sha/head_sha, and the run shares the PR's concurrency group.
+    # read base_sha/head_sha, and validation jobs share the PR's cancellation
+    # groups.
     # scope verifies the four values before anything relies on them. Left
     # empty, a manual dispatch validates the dispatched commit as before.
     inputs:
@@ -118,16 +119,16 @@ permissions:
   contents: read
   pull-requests: read
 
-# One in-flight run per ref; newer pushes cancel stale runs. A retarget
-# dispatch joins its pull request's group, so it replaces the old-base run and
-# a later push replaces it.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}
-  cancel-in-progress: true
+# Cancellation is scoped to validation jobs, not the whole workflow. The
+# required aggregate must keep always() and reject cancelled dependencies:
+# skipping that required check can count as passing. Its queued/running job
+# must not hold a workflow-wide concurrency slot and block replacement CI.
+# Retarget dispatches share each PR's job groups; matrix legs remain distinct.
 
 env:
   # Pin lint to the version the Makefile/ADO pipeline targeted (schema v2 config).
   GOLANGCI_LINT_VERSION: v2.12.2
+  TEMPORAL_CLI_VERSION: v1.9.0
 
   # The declared dependency set the integration tier provisions (#3322). It is
   # declared and fixed, so its .deb payloads are cached and the mirrors are only
@@ -139,11 +140,15 @@ env:
 
 jobs:
   scope:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-scope
+      cancel-in-progress: true
     name: CI scope (portal-only or full)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       profile: ${{ steps.classify.outputs.profile }}
+      cloud: ${{ steps.classify.outputs.cloud }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -198,8 +203,8 @@ jobs:
         id: classify
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.event.merge_group.base_sha || inputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha || github.event.merge_group.head_sha || inputs.head_sha }}
         run: go run ./test/cipolicy classify >> "$GITHUB_OUTPUT"
 
   # DELETED in #3152's wake — e2e, envtest, and coverage were three separate
@@ -238,6 +243,9 @@ jobs:
   # so preflight's full module and build cache is what gets saved. Un-gating a
   # short Linux job would let it win and pin a near-empty cache.
   preflight:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-preflight
+      cancel-in-progress: true
     name: preflight (lint · format · policy · vet · build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -274,6 +282,22 @@ jobs:
       - name: Run fast lint
         run: make lint-fast
 
+      # The reference Bicep compiles offline in test/ci (no Azure login, no
+      # deployment). Provision the pinned CLI so those tests run instead of
+      # skipping, and require it so a missing CLI fails the job.
+      - name: Provision pinned Bicep CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bicep"
+          cd "$RUNNER_TEMP/bicep"
+          curl --fail --location --retry 3 --max-time 120 \
+            https://github.com/Azure/bicep/releases/download/v0.40.2/bicep-linux-x64 -o bicep
+          echo '69a5bd9730f72b7dcd6053f6b6900ede432bd1577e8e4e92b732accdac14900f  bicep' | sha256sum --check
+          chmod +x bicep
+          echo "$PWD" >> "$GITHUB_PATH"
+          echo "GOOBERS_REQUIRE_BICEP=1" >> "$GITHUB_ENV"
+
       - name: Run preflight
         run: go run ./test/ci group preflight
 
@@ -295,7 +319,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -303,6 +327,9 @@ jobs:
 
   # Compare each PR head with its merge-base; concurrent main growth is unrelated.
   cmdgoobers-growth:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-cmdgoobers-growth
+      cancel-in-progress: true
     name: cmd/goobers growth ratchet
     needs: [preflight, scope]
     if: ${{ needs.scope.outputs.profile == 'full' }}
@@ -338,7 +365,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -353,6 +380,9 @@ jobs:
   # platform-qualified exemptions — no actual windows-latest/macos-latest
   # runner is needed.
   deadcode:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-deadcode
+      cancel-in-progress: true
     name: dead-code analysis
     needs: [preflight, scope]
     if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
@@ -398,7 +428,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -408,6 +438,9 @@ jobs:
   # Preflight already owns the Node-free format, policy, vet, build, and config
   # slice, so this job does not repeat it.
   checks:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-checks
+      cancel-in-progress: true
     name: checks (portal UX · contracts · package)
     needs: [preflight]
     runs-on: ubuntu-latest
@@ -438,7 +471,7 @@ jobs:
         run: go run ./test/actionpins
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -549,13 +582,16 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
 
   deploy-reference:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-deploy-reference
+      cancel-in-progress: true
     name: deploy reference manifests
     needs: [preflight, scope]
     if: ${{ needs.scope.outputs.profile == 'full' }}
@@ -587,7 +623,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -604,6 +640,9 @@ jobs:
   # gap the repo has already been bitten by once (SA4032 via build-tag-dead
   # branches).
   lint:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-lint-${{ matrix.goos }}
+      cancel-in-progress: true
     name: lint (${{ matrix.goos }})
     needs: [preflight, scope]
     if: ${{ needs.scope.outputs.profile == 'full' }}
@@ -667,7 +706,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -684,6 +723,9 @@ jobs:
   # behavioural runtime (unit suite, shipped-workflow contracts, native
   # Seatbelt) runs nightly in macos-nightly.yml, off the PR critical path.
   darwin-build:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-darwin-build
+      cancel-in-progress: true
     name: darwin gate (build · vet)
     needs: [preflight, scope]
     if: ${{ needs.scope.outputs.profile == 'full' }}
@@ -754,7 +796,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -775,9 +817,197 @@ jobs:
   # (the largest single tests and per-job setup become the floor).
   # Full git history is required — the DSL SemVer-compatibility tests read the
   # latest reachable tag.
-  unit:
-    name: unit race shard ${{ matrix.shard }} (linux)
+  temporal-cli:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-temporal-cli
+      cancel-in-progress: true
+    name: acquire Temporal CLI
     needs: [scope]
+    if: ${{ needs.scope.outputs.profile == 'full' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Cache Temporal CLI
+        id: temporal-cli-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+
+      - name: Download Temporal CLI
+        if: ${{ steps.temporal-cli-cache.outputs.cache-hit != 'true' }}
+        run: go run ./internal/temporalcli/cmd/download -output "${RUNNER_TEMP}/temporal-cli/temporal"
+
+  cloud-pg:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-cloud-pg
+      cancel-in-progress: true
+    name: cloud PostgreSQL and Azurite integration
+    needs: [scope, temporal-cli]
+    if: ${{ needs.scope.outputs.cloud == 'true' }}
+    runs-on: ubuntu-latest
+    # Hang guard only; the 15-minute design budget is reported, never asserted.
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_DB: goobers
+          POSTGRES_USER: goobers
+          POSTGRES_PASSWORD: goobers-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goobers -d goobers"
+          --health-start-period 10s
+          --health-interval 2s
+          --health-timeout 5s
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+        env:
+          AZURITE_ACCOUNTS: devstoreaccount1:Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
+        ports:
+          - 10000:10000
+    steps:
+      - name: Restart Azurite with telemetry disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          service_id="$(docker ps --quiet --filter publish=10000)"
+          if [ -z "$service_id" ]; then
+            echo "::error::Azurite service container was not started"
+            exit 1
+          fi
+          docker rm --force "$service_id"
+          docker run --detach --rm --name goobers-cloud-azurite-ci --network host \
+            --env AZURITE_ACCOUNTS='devstoreaccount1:Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh' \
+            mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5 \
+            azurite --blobHost 127.0.0.1 --disableTelemetry --skipApiVersionCheck
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.merge_sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Restore Temporal CLI
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+          fail-on-cache-miss: true
+
+      - name: Export Temporal CLI path
+        run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
+
+      - name: Verify journal equivalence pending issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./test/journalequivalence/cmd/equivalence verify-pending
+
+      - name: Run cloud integration smoke
+        env:
+          TESTDEP_STRICT: "1"
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+          GOOBERS_TEST_AZURITE_ACCOUNT: devstoreaccount1
+          GOOBERS_TEST_AZURITE_KEY: Z29vYmVycy1henVyaXRlLWNpLWtleS0zMi1ieXRlcyEh
+          GOOBERS_TEST_AZURITE_URL: http://127.0.0.1:10000/devstoreaccount1
+        # -p 1: cloud packages share cluster-wide roles (pgtest.EnsureRoles), so
+        # no two packages may converge them concurrently. The -json stream is
+        # kept as an artifact, and cloud-pg-report fails the job when any
+        # cloudintegration package ran no passing test (a missing tag or env var
+        # would otherwise skip the PostgreSQL suites and pass).
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... \
+            | tee "$RUNNER_TEMP/cloud-pg-test.json" > /dev/null || status=$?
+          go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1
+          exit "$status"
+
+      - name: Upload cloud integration test events
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloud-pg-test-events
+          path: ${{ runner.temp }}/cloud-pg-test.json
+          if-no-files-found: warn
+
+      - name: Run PostgreSQL journal conformance
+        env:
+          TESTDEP_STRICT: "1"
+          GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
+        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey)|HealthStreamAndConsumerCursor)'
+
+      - name: Stop Azurite
+        if: always()
+        continue-on-error: true
+        run: docker rm --force goobers-cloud-azurite-ci
+
+      - name: Report cloud job timing budget
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          started_at="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.name == "cloud PostgreSQL and Azurite integration") | .started_at')"
+          go run ./test/testtiming wall -job cloud-pg -started-at "$started_at" \
+            -out test-timings/cloud-pg.json -budget .github/test-timing-budgets.json
+
+      - name: Upload cloud job timing
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-timings-cloud-pg
+          path: test-timings/cloud-pg.json
+          if-no-files-found: warn
+
+      - name: Record CI diagnostics
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOBERS_CI_JOB_STATUS: ${{ job.status }}
+        run: go run ./test/ci diagnose
+
+      - name: Upload CI diagnostics
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/goobers-ci-diagnostics
+          if-no-files-found: warn
+
+
+  unit:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-unit-${{ matrix.shard }}
+      cancel-in-progress: true
+    name: unit race shard ${{ matrix.shard }} (linux)
+    needs: [scope, temporal-cli]
     if: ${{ needs.scope.outputs.profile == 'full' }}
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
@@ -805,6 +1035,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Restore Temporal CLI
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+          fail-on-cache-miss: true
+
+      - name: Export Temporal CLI path
+        run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
 
       - name: Download modules
         timeout-minutes: 12
@@ -917,7 +1157,7 @@ jobs:
       - name: Upload race shard timing
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-timings-race-linux-${{ strategy.job-index }}
           path: test-timings/unit-race.part*.json
@@ -930,7 +1170,7 @@ jobs:
       - name: Upload race shard test results
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-race-linux-${{ strategy.job-index }}
           path: test-timings/unit-race.part*.junit.xml
@@ -947,7 +1187,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -956,8 +1196,11 @@ jobs:
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-unit-linux-coverage
+      cancel-in-progress: true
     name: unit coverage gate (linux)
-    needs: [preflight, scope]
+    needs: [preflight, scope, temporal-cli]
     if: ${{ needs.scope.outputs.profile == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -973,6 +1216,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Restore Temporal CLI
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/temporal-cli
+          key: temporal-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.TEMPORAL_CLI_VERSION }}
+          fail-on-cache-miss: true
+
+      - name: Export Temporal CLI path
+        run: echo "GOOBERS_TEMPORAL_CLI=$RUNNER_TEMP/temporal-cli/temporal" >> "$GITHUB_ENV"
 
       - name: Download modules
         timeout-minutes: 12
@@ -1021,7 +1274,7 @@ jobs:
       - name: Find previous main timing run
         id: previous-timing
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const {data} = await github.rest.actions.listWorkflowRuns({
@@ -1041,7 +1294,7 @@ jobs:
       - name: Download previous timing artifact
         if: ${{ steps.previous-timing.outputs.result != '' }}
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: test-timings-${{ runner.os }}
           path: previous-test-timings
@@ -1076,7 +1329,7 @@ jobs:
       - name: Upload test timing
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-timings-${{ runner.os }}
           path: test-timings/unit-${{ runner.os }}.json
@@ -1086,7 +1339,7 @@ jobs:
       - name: Upload test results
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ runner.os }}
           path: test-timings/unit-${{ runner.os }}.junit.xml
@@ -1103,7 +1356,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -1112,6 +1365,9 @@ jobs:
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
   # it without -race. The macOS leg runs nightly in macos-nightly.yml.
   shipped:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-shipped-${{ matrix.os }}
+      cancel-in-progress: true
     name: shipped workflow contracts (${{ matrix.os }})
     needs: [preflight, scope]
     if: ${{ needs.scope.outputs.profile == 'full' }}
@@ -1171,13 +1427,16 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
 
   integration:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-integration
+      cancel-in-progress: true
     name: declared-dependency integration
     needs: [preflight, scope]
     if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
@@ -1441,8 +1700,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/cancellation-regression"
           cd "$RUNNER_TEMP/cancellation-regression"
           curl --fail --location --retry 3 --max-time 120 \
-            https://github.com/temporalio/cli/releases/download/v1.8.2/temporal_cli_1.8.2_linux_amd64.tar.gz -o temporal.tar.gz
-          echo 'd8421bda989e6514b4bdb4d63a9012a8a05a806892e881a5aad8510496349a94  temporal.tar.gz' | sha256sum --check
+            https://github.com/temporalio/cli/releases/download/v1.9.0/temporal_cli_1.9.0_linux_amd64.tar.gz -o temporal.tar.gz
+          echo '2c01b78e980d932bf609fbd44f6998a9eda2281952d4c8d7216905c845aaa071  temporal.tar.gz' | sha256sum --check
           tar -xzf temporal.tar.gz temporal
           echo "GOOBERS_TEMPORAL_CLI=$PWD/temporal" >> "$GITHUB_ENV"
 
@@ -1507,7 +1766,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -1528,6 +1787,9 @@ jobs:
   # main, it is absent from required-ci and from the main-failure escalation,
   # and every consumer falls back to the mirrors on a miss.
   dependency-cache-warm:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-dependency-cache-warm
+      cancel-in-progress: true
     name: warm declared-dependency apt cache
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
@@ -1723,6 +1985,9 @@ jobs:
   # absent from required-ci and escalate-main-failure, and a shard that misses
   # simply compiles as it did before.
   race-build-cache-warm:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-race-build-cache-warm
+      cancel-in-progress: true
     name: warm race build cache
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
@@ -1828,6 +2093,9 @@ jobs:
   # Separate from the warm job so the token that can delete caches never sits
   # in a job that compiles repository code.
   race-build-cache-prune:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-race-build-cache-prune
+      cancel-in-progress: true
     name: prune superseded race build caches
     needs: [race-build-cache-warm]
     if: ${{ needs.race-build-cache-warm.outputs.saved-key != '' }}
@@ -1913,6 +2181,9 @@ jobs:
   # still does not run, so the gap stays a reviewed artifact instead of an
   # accident — is tracked separately in #2791.
   windows-smoke:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-windows-smoke
+      cancel-in-progress: true
     name: windows gate (build · vet · runtime smoke)
     needs: [preflight, scope]
     if: ${{ needs.scope.outputs.profile == 'full' }}
@@ -2000,7 +2271,7 @@ jobs:
         # GOOBERS_REQUIRE_WSL_GUEST=1 on hosts that must run it.
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock ./internal/platform/activetime ./internal/hostsuspend
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock ./internal/platform/activetime ./internal/hostsuspend ./internal/terminalreport
 
       - name: Windows service transitions
         run: go test ./internal/winsvc
@@ -2039,10 +2310,10 @@ jobs:
         run: go test ./internal/testshard -count=1
 
       - name: Windows child proposal validation
-        run: go test ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/enginestartintent ./internal/webhook -count=1
+        run: go test ./internal/childresult ./internal/childworkflow ./internal/childpod ./internal/childpublication ./internal/startintent ./internal/webhook -count=1
 
       - name: Windows child admission authority
-        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestDirectEngine|TestSource' -count=1
+        run: go test ./internal/triggerqueue ./internal/podauth ./internal/mcpio ./internal/httpapi ./cmd/goobers -run 'TestChild|TestPinnedChild|TestOrdinaryRecovery|TestSource' -count=1
 
       - name: Windows child custody and waits
         run: go test ./internal/localscheduler ./internal/runner ./cmd/goobers -run 'TestChild|TestTriggerChild|TestDaemonChild|TestQueuedChild|TestRunExecutionElapsed|TestExpireRunUsesChild' -count=1
@@ -2077,7 +2348,7 @@ jobs:
       # which neither embed.FS nor NTFS can express, so the embedded and
       # from-disk toolkit builders diverged. Both are cheap, so they run whole.
       - name: Windows harness and toolkit
-        run: go test ./internal/harness ./internal/agentkit
+        run: go test ./internal/harness ./internal/agentkit ./internal/cloudreadiness ./internal/usageallowance ./internal/hostprocess
 
       - name: Windows durable state services
         run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
@@ -2178,6 +2449,15 @@ jobs:
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestWorkflowValidateChild|TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
+      - name: Windows cloud CLI
+        run: go test ./internal/cliregistry ./internal/cloud/operatorcli ./cmd/goobers-cloud
+
+      - name: Windows shared runtime wiring
+        run: go test ./internal/runtimewiring
+
+      - name: Windows rainbow worker contracts
+        run: go test ./internal/workerrollout ./deploy/reference/workers
+
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
 
@@ -2186,7 +2466,7 @@ jobs:
 
       - name: Upload Windows validation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-validation-evidence
           path: bin/windows-validation-evidence/
@@ -2203,13 +2483,16 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
 
   vulnerability-scan:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-vulnerability-scan
+      cancel-in-progress: true
     name: Go vulnerability scan
     needs: [preflight, scope]
     if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
@@ -2241,15 +2524,33 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
           if-no-files-found: warn
 
+  cancel-on-cloud-pg-failure:
+    name: cancel run on failure (cloud-pg)
+    needs: [cloud-pg]
+    if: ${{ !cancelled() && needs.cloud-pg.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
+    # Keep this job eligible on cancellation, including same-SHA retargets and
+    # manual cancellation. It reports failure on its own run's commit rather
+    # than leaving a skipped required check that could satisfy auto-merge.
     # unit-gate — the pre-parallelization `make ci` monolith — was retired once
     # every check it ran had a dedicated job; it duplicated the
     # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
@@ -2270,7 +2571,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [scope, cloud-pg, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -2287,6 +2588,7 @@ jobs:
           cache: false
 
       - name: Verify required gates
+        if: always()
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_NEEDS: ${{ toJSON(needs) }}
@@ -2294,7 +2596,18 @@ jobs:
         # backend jobs may be skipped. Missing profiles and cancellation fail.
         run: go run ./test/cipolicy gate
 
+      # Status functions are supported in if, not env. Keep a final veto even
+      # when dependencies had already succeeded before manual cancellation.
+      - name: Reject cancelled validation
+        if: cancelled()
+        env:
+          CI_CANCELLED: "true"
+        run: go run ./test/cipolicy gate
+
   sandbox:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-sandbox
+      cancel-in-progress: true
     name: sandbox confinement (ubuntu-latest)
     needs: [preflight, scope]
     if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
@@ -2360,7 +2673,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -2373,6 +2686,9 @@ jobs:
   # actually makes it a required gate — this comment previously claimed that
   # while the job was still excluded from required-ci's needs list.
   linux-validation:
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}-linux-validation
+      cancel-in-progress: true
     name: linux node validation (#636/#639)
     needs: [preflight, scope]
     if: ${{ github.event_name != 'push' && needs.scope.outputs.profile == 'full' }}
@@ -2396,7 +2712,7 @@ jobs:
 
       - name: Upload Linux validation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
@@ -2413,7 +2729,7 @@ jobs:
       - name: Upload CI diagnostics
         if: ${{ failure() || cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/goobers-ci-diagnostics
@@ -2728,7 +3044,8 @@ jobs:
   # Escalating on anything-but-success would file an issue on almost every
   # merge, burying the real reds this job exists to surface.
   #
-  # The job itself runs on every push and decides per step: the failure
+  # The job itself runs on every push and decides per step for current main:
+  # the failure
   # predicate files or updates the issue, and the all-green predicate closes it
   # again. Without that second step the issue is filed once and never resolved,
   # so `goobers:critical` accumulates every main break ever instead of
@@ -2736,29 +3053,47 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [scope, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [scope, cloud-pg, preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, temporal-cli, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       issues: write
     steps:
+      # An older run can finish after the latest run now that reporters do not
+      # serialize validation. It must neither file nor close the latest incident.
+      - name: Check latest main commit
+        id: latest-main
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          result-encoding: string
+          script: |
+            const {data: branch} = await github.rest.repos.getBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: "main",
+            });
+            return String(branch.commit.sha === context.sha);
+
       - name: File or update critical main failure
         if: >-
           ${{
+            steps.latest-main.outputs.result == 'true' && (
             needs.scope.result == 'failure' ||
+            needs.cloud-pg.result == 'failure' ||
             needs.cmdgoobers-growth.result == 'failure' ||
             needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
             needs.deploy-reference.result == 'failure' ||
             needs.lint.result == 'failure' ||
+            needs.temporal-cli.result == 'failure' ||
             needs.unit.result == 'failure' ||
             needs.unit-linux-coverage.result == 'failure' ||
             needs.darwin-build.result == 'failure' ||
             needs.shipped.result == 'failure' ||
-            needs.windows-smoke.result == 'failure'
+            needs.windows-smoke.result == 'failure')
           }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = "CI: main branch validation failed";
@@ -2808,19 +3143,23 @@ jobs:
       - name: Close resolved main failure
         if: >-
           ${{
+            steps.latest-main.outputs.result == 'true' &&
             needs.scope.result == 'success' &&
+            ((needs.scope.outputs.cloud == 'true' && needs.cloud-pg.result == 'success') ||
+             (needs.scope.outputs.cloud == 'false' && needs.cloud-pg.result == 'skipped')) &&
             needs.cmdgoobers-growth.result == 'success' &&
             needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&
             needs.deploy-reference.result == 'success' &&
             needs.lint.result == 'success' &&
+            needs.temporal-cli.result == 'success' &&
             needs.unit.result == 'success' &&
             needs.unit-linux-coverage.result == 'success' &&
             needs.darwin-build.result == 'success' &&
             needs.shipped.result == 'success' &&
             needs.windows-smoke.result == 'success'
           }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = "CI: main branch validation failed";

@@ -38,27 +38,31 @@ func (t *Tree) StopAndWait(ctx context.Context) error {
 	if err := t.kill(); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
+	return waitForQuiescence(ctx, func() (bool, error) {
 		waiting := false
 		for _, process := range identities {
-			if !Alive(process.pid) {
-				continue
+			present, err := processIdentityPresent(process, Alive, StartTime)
+			if err != nil {
+				return false, err
 			}
-			started, ok := StartTime(process.pid)
-			if !ok {
-				return fmt.Errorf("workspace writer termination could not be verified: %w", ErrQuiescenceUnobservable)
-			}
-			waiting = waiting || started.Equal(process.startTime)
+			waiting = waiting || present
 		}
-		if !waiting {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("workspace writers did not stop: %w", ctx.Err())
-		case <-ticker.C:
-		}
+		return !waiting, nil
+	})
+}
+
+func processIdentityPresent(process processIdentity, alive func(int) bool, startTime func(int) (time.Time, bool)) (bool, error) {
+	if !alive(process.pid) {
+		return false, nil
 	}
+	started, ok := startTime(process.pid)
+	if !ok {
+		// The child may have exited and been reaped since the liveness probe.
+		// Only positive death evidence permits releasing its custody.
+		if !alive(process.pid) {
+			return false, nil
+		}
+		return false, fmt.Errorf("workspace writer termination could not be verified: %w", ErrQuiescenceUnobservable)
+	}
+	return started.Equal(process.startTime), nil
 }

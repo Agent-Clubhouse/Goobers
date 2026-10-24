@@ -113,6 +113,9 @@ const SupportTriage = "support-triage-v1.schema.json"
 // Features is the workflow-DSL feature discovery envelope.
 const Features = "features.schema.json"
 
+// CloudReadiness is the engine-only cloud cutover readiness report.
+const CloudReadiness = "cloud-readiness.schema.json"
+
 // OnboardingAction is the shared versioned onboarding result envelope.
 const OnboardingAction = "config-source-action.schema.json"
 

@@ -32,6 +32,9 @@ type Authority struct {
 	ParentWorkflow              string
 	ParentWorkflowDigest        string
 	ParentGooberDigest          string
+	// Execution is the parent run's binding an engine child inherits. It is
+	// pinned into the start envelope at acceptance; nil for runner children.
+	Execution *ExecutionBinding
 }
 
 // AuthorityResolver must verify current grant ownership, active attempt,
@@ -72,7 +75,7 @@ type Submission struct {
 // SubmissionService validates and accepts children; it never runs a workflow.
 // Its queue is the existing durable trigger store, not a second queue/database.
 type SubmissionService struct {
-	Queue     *triggerqueue.Store
+	Queue     ChildQueue
 	Authority AuthorityResolver
 	Now       func() time.Time
 }

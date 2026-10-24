@@ -255,7 +255,8 @@ func TestDefaultLoopbackPostureUnchanged(t *testing.T) {
 func TestEventStreamServesUnderAuthenticator(t *testing.T) {
 	// The change feed is the only SSE source now (#1929); this test is about
 	// the AUTH seam in front of it, which is unchanged by the source swap.
-	stream := newFeedStream(feedTestStoreAt(t, t.TempDir()))
+	store := feedTestStoreAt(t, t.TempDir())
+	stream := newFeedStream(store, store.Feed())
 	t.Cleanup(stream.Close)
 	authenticator := &tokenAuthenticator{
 		token:     "stream-token",

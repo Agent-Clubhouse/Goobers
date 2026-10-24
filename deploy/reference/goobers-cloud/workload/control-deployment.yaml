@@ -1,0 +1,186 @@
+# `control` role (design §14.1, P3): combined api + controller, one pod,
+# single-active through the Postgres lease. Never executes stages, so it has no
+# harness, workspace, or PVC. State lives in Postgres and object storage.
+#
+# Recreate, not RollingUpdate: readiness requires holding the lease, so a
+# maxUnavailable:0 rollout would deadlock (the new pod cannot become Ready until
+# the old one releases it). Recreate plus voluntary lease release on SIGTERM
+# gives the 30-60s deploy pause. The P5 hot standby removes it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-control
+  labels:
+    app.kubernetes.io/name: goobers-control
+    app.kubernetes.io/component: control
+    goobers.dev/role: control
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-control
+        app.kubernetes.io/component: control
+        goobers.dev/role: control
+    spec:
+      serviceAccountName: goobers-control
+      automountServiceAccountToken: false
+      priorityClassName: goobers-control-plane
+      # SIGTERM lease release (<=5s) + HTTP shutdown (<=5s), with margin.
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/os: linux
+      # Fail over off a lost node after 30s instead of the 300s default.
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: goobers-control
+      containers:
+        - name: control
+          image: goobers # rewritten by your overlay's images: transformer
+          command: ["/usr/local/bin/goobers-cloud"]
+          args:
+            - control
+            - --listen=0.0.0.0:8080
+            - --tls-cert=/var/run/secrets/goobers/tls/tls.crt
+            - --tls-key=/var/run/secrets/goobers/tls/tls.key
+            - --pod-key-file=/var/run/secrets/goobers/pod-key/keyring.json
+            # CHANGE-ME: your Temporal frontend and namespace.
+            - --temporal-hostport=temporal-frontend.goobers-temporal.svc:7233
+            - --temporal-namespace=default
+            # Two pools, two roles: the API pool connects as goobers_api (DML,
+            # no leader-only writes) and the controller pool as goobers_controller.
+            # The owner credential (DDL) is mounted only into the migrate Job.
+            - --api-database-url-file=/var/run/secrets/goobers/db-api/url
+            - --api-database-direct-url-file=/var/run/secrets/goobers/db-api/direct-url
+            - --controller-database-url-file=/var/run/secrets/goobers/db-controller/url
+            - --controller-database-direct-url-file=/var/run/secrets/goobers/db-controller/direct-url
+            # Expanded by Kubernetes from the env below; the role has no env fallback.
+            - --database-auth=$(GOOBERS_DATABASE_AUTH)
+          env:
+            - name: GOOBERS_INSTANCE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: instance-id
+            - name: GOOBERS_DATABASE_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: database-auth
+            # The lease holder identity: unique per pod incarnation.
+            - name: GOOBERS_REPLICA_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          ports:
+            - name: http
+              containerPort: 8080
+          # No preStop: SIGTERM makes the role stop its loops and release the
+          # lease (<=5s), and the Recreate rollout has no traffic to drain. The
+          # 30s grace covers that release plus the 5s HTTP shutdown.
+          # The role serves probes on --listen, over TLS. Ready only while this
+          # pod holds the lease and the schema is compatible.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+              scheme: HTTPS
+            periodSeconds: 5
+            failureThreshold: 2
+          # Liveness never checks dependencies (DB, Temporal): a DB blip must
+          # not restart the pod. Probe-level grace so a liveness kill does not
+          # inherit the 30s pod grace (KEP-2238).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            periodSeconds: 15
+            failureThreshold: 4
+            terminationGracePeriodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Credentials are mounted files, never argv or inline env values.
+            - name: db-api
+              mountPath: /var/run/secrets/goobers/db-api
+              readOnly: true
+            - name: db-controller
+              mountPath: /var/run/secrets/goobers/db-controller
+              readOnly: true
+            - name: tls
+              mountPath: /var/run/secrets/goobers/tls
+              readOnly: true
+            - name: pod-key
+              mountPath: /var/run/secrets/goobers/pod-key
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: db-api
+          secret:
+            secretName: goobers-cloud-db-api
+            defaultMode: 0440
+            items:
+              - key: url
+                path: url
+              - key: direct-url
+                path: direct-url
+        - name: db-controller
+          secret:
+            secretName: goobers-cloud-db-controller
+            defaultMode: 0440
+            items:
+              - key: url
+                path: url
+              - key: direct-url
+                path: direct-url
+        # kubernetes.io/tls Secret (cert-manager or your PKI). Workers and
+        # stage pods must trust its issuer.
+        - name: tls
+          secret:
+            secretName: goobers-cloud-control-tls
+            defaultMode: 0440
+        # JSON key ring {"current":{"id":"...","key":"<base64 >=32 bytes>"}}
+        # under key `keyring.json`; shared with workers for pod-token auth.
+        - name: pod-key
+          secret:
+            secretName: goobers-cloud-pod-key
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

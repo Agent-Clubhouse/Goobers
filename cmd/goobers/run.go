@@ -6,6 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	iofs "io/fs"
 	"net/url"
 	"os"
@@ -24,7 +27,9 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -178,7 +183,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -293,8 +298,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	// run's stale-looking lease, so renewal must run before any
 	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
 	// recover-at-setup behavior.
-	claimRecovery := newOneShotClaimRecovery(l)
-	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -326,10 +330,6 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			}
 		}
 	}()
-	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 
 	matches := 0
 	gaggle := target.Gaggle
@@ -491,7 +491,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 	if cfg == nil {
 		return fmt.Errorf("validate pull request #%d: instance configuration is unavailable", number)
 	}
-	configured, ok := configuredRepoForProject(cfg, entry.RepoRef)
+	configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, entry.RepoRef)
 	if !ok {
 		return fmt.Errorf("validate pull request #%d: repository %s is not configured in this instance", number, targetedRepoDisplay(entry.RepoRef))
 	}
@@ -520,7 +520,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 		if repo.Provider == providers.ProviderGitea {
 			credentialCapability = capability.ProviderPRWrite
 		}
-		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
+		resolver, grants, buildErr := runtimewiring.BuildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
 		if buildErr != nil {
 			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
 		}
@@ -857,7 +857,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -881,26 +881,12 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	// `run abort` appends a terminal event straight into the run's own
-	// journal. On an engine-driven run that is a forgery: the workflow keeps
-	// executing on the engine and keeps emitting into the journal this
-	// command just declared finished. So it does not abort one — it asks the
-	// ENGINE to cancel the workflow (#3877), and the engine writes the run's
-	// terminal itself. Nothing in this process touches that journal.
-	//
-	// An already-terminal engine run is NOT routed here — it falls through to
-	// the terminal guard below, which answers "run %s is already terminal".
-	// There is no workflow left to cancel, and pointing the operator at one
-	// that has finished is the same class of misleading answer.
-	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
-		return runEngineDrivenCancel(l, identity, "run abort", stdout, stderr)
-	}
 	runLayout := l
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
 	cfg := &instance.Config{}
-	stopTelemetry := startCommandJournalTelemetry(l, stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(l, stderr)
 	defer stopTelemetry()
 	if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
 		cfg = loaded
@@ -924,7 +910,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 				runLayout = configured
 				workcopiesRoot = runLayout.WorkcopiesDir()
 				if gaggle != nil {
-					if repo, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
+					if repo, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
 						workcopiesRoot = runLayout.WorkcopiesBaseDir()
 					}
 				}
@@ -933,7 +919,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	wtMgr, err := worktree.NewManager(workcopiesRoot, mutationCleanupGuard(runLayout.RunsDir()))
+	wtMgr, err := worktree.NewManager(workcopiesRoot, runtimewiring.MutationCleanupGuard(runLayout.RunsDir()))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -1124,7 +1110,7 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -1156,17 +1142,6 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
-	}
-	// `run cancel` asks the daemon to stop a run it is executing in-process.
-	// It never is for an engine-driven run — so the cancellation goes to the
-	// ENGINE instead (#3877), where the run actually executes. This is
-	// deliberately NOT gated on a live daemon: the daemon is not the thing
-	// driving the run, and requiring one would leave an engine run
-	// unstoppable during exactly the outage an operator most wants to stop it
-	// in. As with abort, an already-terminal run gets the accurate "already
-	// terminal" answer from the guard below instead.
-	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
-		return runEngineDrivenCancel(l, identity, "run cancel", stdout, stderr)
 	}
 	// Event-log-first terminal guard (#242), matching `run abort`: a run that
 	// already finished has nothing live to cancel.

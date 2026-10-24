@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/goobers/goobers/internal/gaggletemplate"
@@ -136,7 +138,7 @@ func executeTemplateMutation(action, root string, opts templateOptions, stdout, 
 	if err != nil {
 		return err
 	}
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(layout.SchedulerDir(), 0755); err != nil {
@@ -190,7 +192,7 @@ func writableTemplateConfig(root string, cfg *instance.Config, explicit string) 
 		return "", err
 	}
 	if _, report, err := instance.LoadConfigDir(source); err != nil {
-		return "", fmt.Errorf("user config source %s is invalid: %w; %s", source, err, validationIssueSummary(report))
+		return "", fmt.Errorf("user config source %s is invalid: %w; %s", source, err, runtimewiring.ValidationIssueSummary(report))
 	}
 	return source, nil
 }

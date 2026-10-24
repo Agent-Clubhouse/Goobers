@@ -69,6 +69,17 @@
       "recoverySafe": false
     },
     {
+      "id": "configSnapshot",
+      "method": "GET",
+      "path": "/api/v1/config/snapshot",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "blob",
+      "budgetMs": 60000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workerConfigDivergence",
       "method": "POST",
       "path": "/api/v1/worker/config-divergence",
@@ -438,7 +449,7 @@
       "capability": "approve",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -450,7 +461,7 @@
       "capability": "override",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -462,7 +473,7 @@
       "capability": "rerun",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -594,7 +605,7 @@
       "actionClass": "maintenance",
       "remoteInvocable": false,
       "cost": "mutation",
-      "budgetMs": 8000,
+      "budgetMs": 65000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -671,6 +682,39 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "engineChildAdmit",
+      "method": "POST",
+      "path": "/api/v1/engine/children/admit",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "engineChildLoad",
+      "method": "POST",
+      "path": "/api/v1/engine/children/load",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "engineChildCancel",
+      "method": "POST",
+      "path": "/api/v1/engine/children/cancel",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
       "budgetMs": 8000,
       "streaming": false,
       "recoverySafe": false

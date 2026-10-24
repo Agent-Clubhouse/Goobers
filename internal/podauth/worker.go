@@ -16,6 +16,7 @@ const (
 	workerTokenPrefix          = "goobers-worker."
 	workerBlobTokenPrefix      = "goobers-worker-blob."
 	workerSurrenderTokenPrefix = "goobers-worker-surrender-read."
+	workerChildTokenPrefix     = "goobers-worker-child-admission."
 )
 
 // workerTokenKind parameterises one worker credential. The MAC domain is
@@ -32,10 +33,11 @@ var (
 	workerConfigDigestKind = workerTokenKind{workerTokenPrefix, "goobers/worker-config-digest/v1\x00", httpapi.WorkerPrincipalIssuer}
 	workerBlobKind         = workerTokenKind{workerBlobTokenPrefix, "goobers/worker-blob/v1\x00", httpapi.WorkerBlobPrincipalIssuer}
 	workerSurrenderKind    = workerTokenKind{workerSurrenderTokenPrefix, "goobers/worker-surrender-read/v1\x00", httpapi.WorkerSurrenderPrincipalIssuer}
+	workerChildKind        = workerTokenKind{workerChildTokenPrefix, "goobers/worker-child-admission/v1\x00", httpapi.WorkerChildAdmissionPrincipalIssuer}
 )
 
 // workerTokenKinds lists longer prefixes before the config-digest prefix they extend.
-var workerTokenKinds = []workerTokenKind{workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
+var workerTokenKinds = []workerTokenKind{workerChildKind, workerSurrenderKind, workerBlobKind, workerConfigDigestKind}
 
 const maxWorkerTokenBodyBytes = 512
 
@@ -64,6 +66,15 @@ func (s *SignedKey) MintWorkerSurrender(workerID string, ttl time.Duration) (str
 	return s.mintWorkerToken(workerSurrenderKind, workerID, ttl)
 }
 
+// MintWorkerChildAdmission grants a resident engine worker access only to the
+// engine child-admission plane. Its wire prefix and MAC domain are separate
+// from every pod and other worker credential. The grant is instance-wide: it
+// names the worker, not a run or child, so it reaches every generated child of
+// the instance (see docs/design/worker-blob-transport.md).
+func (s *SignedKey) MintWorkerChildAdmission(workerID string, ttl time.Duration) (string, error) {
+	return s.mintWorkerToken(workerChildKind, workerID, ttl)
+}
+
 func (s *SignedKey) mintWorkerToken(kind workerTokenKind, workerID string, ttl time.Duration) (string, error) {
 	if !validWorkerID(workerID) {
 		return "", fmt.Errorf("podauth: a nonempty worker identity of at most 256 bytes without control characters is required")
@@ -72,7 +83,7 @@ func (s *SignedKey) mintWorkerToken(kind workerTokenKind, workerID string, ttl t
 		return "", fmt.Errorf("podauth: worker token TTL must be positive and at most %s", MaxWorkerTokenTTL)
 	}
 	payload := base64.RawURLEncoding.EncodeToString([]byte(workerID)) + "." + strconv.FormatInt(s.now().Add(ttl).Unix(), 10)
-	return kind.prefix + payload + "." + s.sign(kind.macDomain+payload), nil
+	return s.encodeToken(kind.prefix, kind.macDomain, payload), nil
 }
 
 func validWorkerID(id string) bool {

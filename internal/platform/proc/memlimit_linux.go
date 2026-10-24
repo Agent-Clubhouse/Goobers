@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func startBounded(cmd *exec.Cmd, maxBytes uint64, allowRlimitFallback bool) (*Tree, *MemoryBound, error) {
+func startBounded(cmd *exec.Cmd, maxBytes uint64, allowRlimitFallback bool, options ...StartOptions) (*Tree, *MemoryBound, error) {
 	// The cgroup is prepared BEFORE the child exists, because placement
 	// happens at clone time. There is deliberately no window in which the
 	// child runs outside its bound.
@@ -26,7 +26,7 @@ func startBounded(cmd *exec.Cmd, maxBytes uint64, allowRlimitFallback bool) (*Tr
 			return nil, nil, err
 		}
 		trackChild(cmd.Process.Pid)
-		tree, err := newTree(cmd)
+		tree, err := newTree(cmd, options...)
 		if err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
@@ -40,10 +40,10 @@ func startBounded(cmd *exec.Cmd, maxBytes uint64, allowRlimitFallback bool) (*Tr
 		// Deliberate: an RLIMIT_AS bound is only ever applied to a number an
 		// operator chose, never to one derived on their behalf. See the
 		// mechanism note in memlimit.go.
-		return startUnbounded(cmd, "no delegated cgroup ("+cgErr.Error()+") and the address-space fallback is not enabled")
+		return startUnbounded(cmd, "no delegated cgroup ("+cgErr.Error()+") and the address-space fallback is not enabled", options...)
 	}
 
-	tree, err := Start(cmd)
+	tree, err := Start(cmd, options...)
 	if err != nil {
 		return nil, nil, err
 	}

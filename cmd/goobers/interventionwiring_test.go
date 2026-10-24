@@ -2,7 +2,7 @@ package main
 
 // interventionwiring_test.go drives internal/intervention through the
 // daemon's real collaborators: the claim ledger and its history, the run-owner
-// registry, the owned-run locator and the engine-driven refusal. The service's
+// registry and the owned-run locator. The service's
 // own behaviour is tested in internal/intervention.
 
 import (
@@ -10,12 +10,12 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimrelease"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -33,14 +34,27 @@ func interventionTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workf
 	return interventionTestMachineNamed(t, "intervention", evaluator, nil)
 }
 
+func TestInterventionConfigurationRefusesLeftoverEngineRuns(t *testing.T) {
+	cfg := interventionServiceConfig(
+		instance.Layout{},
+		newInterventionDefinitionRegistry(interventionDefinitionSet{}),
+		newDaemonRunnerRegistry(),
+		nil,
+		nil,
+		nil,
+	)
+	if cfg.EngineDrivenRefusal == nil {
+		t.Fatal("engine-driven refusal is not configured")
+	}
+	err := cfg.EngineDrivenRefusal("legacy-run", "approve")
+	if err == nil || !strings.Contains(err.Error(), "goobers-cloud") {
+		t.Fatalf("engine-driven refusal = %v", err)
+	}
+}
+
 func interventionTestMachineNamed(t *testing.T, name string, evaluator apiv1.EvaluatorKind, approvers []string) *workflow.Machine {
 	t.Helper()
 	return interventionTestMachineWithPassTarget(t, name, evaluator, approvers, "finish")
-}
-
-func interventionTerminalTestMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workflow.Machine {
-	t.Helper()
-	return interventionTestMachineWithPassTarget(t, "terminal-intervention", evaluator, nil, workflow.TerminalComplete)
 }
 
 func interventionTestMachineWithPassTarget(
@@ -151,17 +165,6 @@ type interventionWiringFixture struct {
 	definitions    *interventionDefinitionRegistry
 }
 
-func newInterventionServiceTestRun(
-	t *testing.T,
-	machine *workflow.Machine,
-	runID string,
-	events []journal.Event,
-) (*intervention.Service, string) {
-	t.Helper()
-	fixture := newInterventionWiringFixture(t, machine, runID, events, interventionDeterministic{}, nil)
-	return fixture.service, fixture.runDir
-}
-
 // newInterventionWiringFixture builds the service the way up.go does, over a
 // retained run of machine. configure, when set, adjusts the daemon-bound
 // config before the service is constructed.
@@ -245,6 +248,95 @@ func newInterventionWiringFixture(
 		service: service, runDir: filepath.Join(scoped.RunsDir(), runID),
 		layout: layout, instanceLog: instanceLog, scheduler: scheduler,
 		runnerRegistry: runnerRegistry, definitions: definitions,
+	}
+}
+
+func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		run   func(context.Context, *intervention.Service, httpapi.InterventionRequest) (httpapi.InterventionResult, error)
+		input httpapi.InterventionRequest
+	}{
+		{
+			name: "approve",
+			run: func(ctx context.Context, service *intervention.Service, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+				return service.AcceptApprove(ctx, context.Background(), input)
+			},
+			input: httpapi.InterventionRequest{Stage: "review", Actor: "operator", Decision: "pass"},
+		},
+		{
+			name: "rerun-stage",
+			run: func(ctx context.Context, service *intervention.Service, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+				return service.AcceptRerunStage(ctx, context.Background(), input)
+			},
+			input: httpapi.InterventionRequest{Stage: "review", Actor: "operator", InstructionAddendum: "preserve the commit"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runID := "run-lock-budget-" + tc.name
+			// Keep the request valid through custody preflight so this test
+			// isolates the claim-lock budget rather than missing workspace.
+			definition := interventionTestMachine(t, apiv1.EvaluatorAgentic).Def
+			definition.Spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+			machine, err := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture := newInterventionWiringFixture(t, machine, runID, []journal.Event{
+				{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+				{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+				{Type: journal.EventGateStarted, Gate: "review"},
+				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+				{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+			}, interventionDeterministic{}, nil)
+
+			lockPath := filepath.Join(fixture.layout.SchedulerDir(), claimLockFileName)
+			holder, err := lock.TryAcquire(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = holder.Release() }()
+			if err := holder.Announce(claimLockOperationRecovery); err != nil {
+				t.Fatal(err)
+			}
+
+			input := tc.input
+			input.RunID = runID
+			input.IdempotencyKey = "same-request"
+			admission, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			_, err = tc.run(admission, fixture.service, input)
+			elapsed := time.Since(started)
+
+			var interventionErr *httpapi.InterventionError
+			if !errors.As(err, &interventionErr) {
+				t.Fatalf("error = %v, want InterventionError", err)
+			}
+			if interventionErr.Status != http.StatusServiceUnavailable || interventionErr.Code != claimsLockTimeoutCode {
+				t.Fatalf("error = %+v, want 503 %s", interventionErr, claimsLockTimeoutCode)
+			}
+			if admission.Err() != nil {
+				t.Fatalf("admission expired before typed response after %s: %v", elapsed, admission.Err())
+			}
+			if elapsed >= 500*time.Millisecond {
+				t.Fatalf("typed response took %s, want before request budget", elapsed)
+			}
+
+			reader, err := journal.OpenRead(fixture.runDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == "intervention.idempotency" {
+					t.Fatalf("intervention marker recorded despite failed admission: %+v", event)
+				}
+			}
+		})
 	}
 }
 
@@ -394,8 +486,8 @@ type afterReclaimClaims struct {
 	probe func()
 }
 
-func (c afterReclaimClaims) Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (bool, string, error) {
-	acquired, holder, err := c.ClaimStore.Reclaim(claims, gaggle, runID, workflowName)
+func (c afterReclaimClaims) Reclaim(ctx context.Context, claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (bool, string, error) {
+	acquired, holder, err := c.ClaimStore.Reclaim(ctx, claims, gaggle, runID, workflowName)
 	if err == nil && acquired {
 		c.probe()
 	}
@@ -616,51 +708,6 @@ func TestRunInterventionUsesDurableClaimHistoryWhenInstanceJournalMissesAcquisit
 	var interventionErr *httpapi.InterventionError
 	if !errors.As(err, &interventionErr) || interventionErr.Code != "claim_unavailable" {
 		t.Fatalf("Override error = %#v, want claim_unavailable", err)
-	}
-}
-
-// lastIntentDeliverer stands in for the Temporal update client and keeps the
-// last operator intent the service delivered.
-type lastIntentDeliverer struct {
-	intents []engine.HITLIntent
-}
-
-func (d *lastIntentDeliverer) Deliver(_ context.Context, intent engine.HITLIntent) (engine.HITLAck, error) {
-	d.intents = append(d.intents, intent)
-	return engine.HITLAck{Resumed: true, ResumeState: "implement"}, nil
-}
-
-// TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection proves the
-// intervention service uses the shared owned-run resolver (#4858). The
-// authoritative scoped journal is escalated and carries generation one; the
-// independent legacy projection is deliberately left running, making the
-// selected generation a direct assertion that resolution preferred scoped.
-func TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection(t *testing.T) {
-	deliverer := &lastIntentDeliverer{}
-	const runID = "engine-hitl-dual-projection"
-	machine := interventionTerminalTestMachine(t, apiv1.EvaluatorAgentic)
-	fixture := newInterventionWiringFixture(t, machine, runID, []journal.Event{
-		{Type: journal.EventGateStarted, Gate: "review"},
-		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: "escalate"},
-		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
-	}, interventionDeterministic{}, nil)
-	markRunYAMLEngineDriven(t, fixture.runDir)
-	fixture.service.AttachHITLDeliverer(deliverer)
-	definitions := fixture.definitions.Snapshot()
-	definitions.legacyRunner = definitions.runners["example"]
-	fixture.definitions.Replace(definitions)
-	createDriverRun(t, fixture.layout.RunsDir(), runID, "terminal-intervention", "example", journal.DriverEngine, time.Now(), nil)
-
-	if _, err := fixture.service.Approve(context.Background(), httpapi.InterventionRequest{
-		RunID: runID, Stage: "review", Actor: "ops", Decision: "pass", IdempotencyKey: "dual-projection-key",
-	}); err != nil {
-		t.Fatalf("approve dual-projected engine run: %v", err)
-	}
-	if len(deliverer.intents) == 0 {
-		t.Fatal("no operator intent was delivered to the engine")
-	}
-	if intent := deliverer.intents[len(deliverer.intents)-1]; intent.ExpectedTerminalGeneration != 1 {
-		t.Fatalf("terminal generation = %d, want scoped journal generation 1", intent.ExpectedTerminalGeneration)
 	}
 }
 

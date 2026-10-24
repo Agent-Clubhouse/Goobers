@@ -16,6 +16,11 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// MaxFrozenItemBytes keeps the activity result plus the next dispatch input's
+// second copy of one canonical item below Temporal's 2 MiB payload limit with
+// roughly 512 KiB left for envelopes and activity metadata.
+const MaxFrozenItemBytes = 768 << 10
+
 // Host bounds on a roster source (design §6.1). Raising them is a host
 // capacity change; the wire shape and validation semantics stay the same.
 const (
@@ -127,6 +132,12 @@ func freezeEntry(entry rosterEntry, seen map[string]bool) (journal.MapItem, erro
 	canonical, err := jcs.Canonicalize(entry.Item)
 	if err != nil || !isJSONObject(canonical) {
 		return journal.MapItem{}, &SourceError{Reason: ReasonItem, Identity: entry.Identity, Detail: "item must be a canonicalizable JSON object"}
+	}
+	if len(canonical) > MaxFrozenItemBytes {
+		return journal.MapItem{}, &SourceError{
+			Reason: ReasonTooLarge, Identity: entry.Identity,
+			Detail: fmt.Sprintf("canonical item is %d bytes, bound is %d", len(canonical), MaxFrozenItemBytes),
+		}
 	}
 	digest, err := ItemDigest(entry.Identity, canonical)
 	if err != nil {

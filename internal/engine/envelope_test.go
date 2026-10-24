@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -49,7 +50,7 @@ func (d *workspaceBranchDeterministic) Run(_ context.Context, env apiv1.Invocati
 	}
 	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
 	if stage == "select" {
-		result.Outputs = map[string]interface{}{runner.WorkspaceBranchOutput: d.branch}
+		result.Outputs = map[string]interface{}{runsemantics.WorkspaceBranchOutput: d.branch}
 	}
 	return result, nil
 }
@@ -290,10 +291,10 @@ func TestSelectedWorkspaceBranchRejectsInvalidOutput(t *testing.T) {
 		wantErr string
 	}{
 		{name: "absent", outputs: nil},
-		{name: "blank", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "  "}},
-		{name: "selected", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: " goobers/implementation/pr-head "}, want: "goobers/implementation/pr-head"},
-		{name: "non-string", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: 42}, wantErr: "must be a string"},
-		{name: "outside namespace", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"}, wantErr: "outside namespace"},
+		{name: "blank", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: "  "}},
+		{name: "selected", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: " goobers/implementation/pr-head "}, want: "goobers/implementation/pr-head"},
+		{name: "non-string", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: 42}, wantErr: "must be a string"},
+		{name: "outside namespace", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: "main"}, wantErr: "outside namespace"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -326,7 +327,7 @@ func TestInvalidWorkspaceBranchFailsWorkflow(t *testing.T) {
 	}
 	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"},
+		Outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: "main"},
 	}}
 	workspaces := testWorkspaces(t)
 	var ts testsuite.WorkflowTestSuite
@@ -541,8 +542,8 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	if len(captured.ContextPointers) != 1 || captured.ContextPointers[0].Name != "implement.artifact[0]" {
 		t.Errorf("gate context pointers = %+v, want the subject stage's artifact", captured.ContextPointers)
 	}
-	if got := len(workspaces.provisioned()); got != 2 {
-		t.Errorf("workspaces provisioned = %d, want 2 (implement + the reviewer gate)", got)
+	if got := len(workspaces.provisioned()); got != 3 {
+		t.Errorf("workspaces provisioned = %d, want 3 (implement + diff preparation + reviewer)", got)
 	}
 }
 
@@ -594,8 +595,8 @@ func TestRunDeterministicBaseSyncConflictIsBusinessFailure(t *testing.T) {
 	if res.Status != apiv1.ResultFailure || res.Error == nil {
 		t.Fatalf("result = %+v, want a failure envelope with error detail", res)
 	}
-	if res.Error.Code != runner.BaseSyncConflictErrorCode || !res.Error.Retryable {
-		t.Fatalf("error = %+v, want retryable %q (the local runner's #813 code)", res.Error, runner.BaseSyncConflictErrorCode)
+	if res.Error.Code != runsemantics.BaseSyncConflictErrorCode || !res.Error.Retryable {
+		t.Fatalf("error = %+v, want retryable %q (the local runner's #813 code)", res.Error, runsemantics.BaseSyncConflictErrorCode)
 	}
 	if got := det.captured(); len(got) != 0 {
 		t.Fatalf("executor dispatched %d times against a conflicted workspace, want 0", len(got))

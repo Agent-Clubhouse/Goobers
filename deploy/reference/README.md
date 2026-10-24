@@ -43,7 +43,9 @@ Local installs retain the compatible `allow` default.
 | [`examples/netpol-drift/`](examples/netpol-drift/README.md) | offline CI fixture: committed per-class manifests, provenance snapshot and address-count baseline checked by `make deploy-validate`; not for deployment | §5, decision 016 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
-| `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
+| `goobers-cloud/` | cloud (P3) base: `control` Deployment, migrate Job, policies, worker/stage hooks (see its README) | HA design §14 |
+| `temporal/` | values (and `values-ha.yaml`, standalone HA values for chart 1.6.0) for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
+| `goobers-cloud/cnpg/` | CloudNativePG reference for `goobers-cloud`: 3-instance quorum-synchronous `Cluster` (`dataDurability: required`), managed roles and databases matching `internal/cloud/pgroles`, and Barman Cloud plugin backups. For self-managed three-zone clusters (the nightly kind job uses `test/ha/kind/cnpg-cluster.yaml`); Azure uses `infra/bicep/modules/postgres.bicep`. See [its README](goobers-cloud/cnpg/README.md) | D-6 |
 
 ## Migrating an existing `goobers-system` overlay (#3287)
 
@@ -200,26 +202,21 @@ A configured deployment needs all of these inputs before enabling stage dispatch
   `api.tls.keyFile`, and `api.podTokenKeyFile` in its instance configuration.
   A pod-only listener can use signed pod authentication without a human OIDC
   provider; enabling human access requires its own supported authentication.
-- Give the worker `--daemon-api` (or `GOOBERS_DAEMON_API`) and
-  `GOOBERS_BLOB_ENDPOINT`, normally both
+- Give the worker `--config-endpoint`, `--daemon-api`, and `--blob-endpoint`,
+  normally all
   `https://goobers-api.goobers-system.svc:8080`, and the same signing key through
-  its own `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
+  `--config-key-file`. The fetched sanitized instance document must name that
+  same mount in `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
   user information, query parameters, or fragments. Startup validates syntax
   and key material, not endpoint reachability or remote key agreement. Use TLS
   for the in-cluster listener. The certificate must cover the Service name;
   workers and **all stage images** must trust its CA. Successful kubelet HTTPS
   probes alone do not establish client trust.
-- Share the RWX blob volume: the daemon's `<instance>/blobstore` and the worker's
-  `--blob-store` must refer to the same backing tree, including its `surrender/`
-  directory. Stage pods use the authenticated network planes, never the PVC.
-- Give the worker its **own writable instance root** and private `--work-root`,
-  with matching config supplied through a whole mounted config tree or a
-  maintained sync source. `--work-root` alone does not relocate all writes:
-  workspace setup constructs per-gaggle worktree managers under the instance,
-  and local execution stages artifacts there. A read-only mount of the daemon's
-  whole instance is therefore insufficient. RWO same-node affinity does not
-  solve state ownership. See the reload section below for propagation and pin
-  retention requirements; copying config once does not provide live sync.
+- Keep the blob PVC API-only. Workers and stage pods use the authenticated HTTP
+  blob plane and never mount the PVC.
+- Give every worker a private emptyDir `--work-root`. The config plane stores
+  current plus three superseded sanitized snapshots beneath it; no worker
+  mounts the daemon's instance or journal volume.
 - Add explicit deny-first network grants for worker-to-daemon, worker-to-Kubernetes
   API, worker-to-Temporal, and stage-to-daemon traffic, with DNS available.
   Retain namespace **and** pod selectors on cross-namespace blob/API grants.
@@ -262,11 +259,38 @@ Run the same render and schema gate locally with:
 ```sh
 make deploy-validate
 
-# Temporal values render (pinned chart version — see temporal/values.yaml header):
+# Temporal values render (pinned GA-target chart — see temporal/values.yaml header):
 helm repo add temporal https://go.temporal.io/helm-charts
-helm template temporal temporal/temporal --version 0.62.0 \
+helm template temporal temporal/temporal --version 1.6.0 \
   --namespace goobers-temporal -f deploy/reference/temporal/values.yaml >/dev/null
 ```
+
+### Temporal server upgrade ladder
+
+Worker Deployment APIs first became GA in Temporal Server 1.31.0. The ladder
+ends on the latest patch in that GA minor, 1.31.4:
+
+| Step | Chart | Server | Before changing server pods | Validation | Rollback |
+|---|---:|---:|---|---|---|
+| baseline | 0.62.0 | 1.27.2 | Record a database backup and current Helm values | cluster health; start a held workflow | restore the backup and chart 0.62.0 |
+| patch | 0.62.0 | 1.27.4 | Run and await the schema-only Job before changing server pods | continue and replay the 1.27.2 history; start the next held workflow | restore the baseline backup and chart 0.62.0 |
+| 1 | 0.67.0 | 1.28.4 | Delete any Worker Deployments created on 1.27; run and await the schema-only Job | continue and replay the 1.27.4 history; start the next held workflow | restore the pre-step backup and 1.27.4 values |
+| 2 | 0.73.2 | 1.29.7 | Run and await the schema-only Job | continue and replay the 1.28.4 history; start the next held workflow | restore the pre-step backup and chart 0.67.0 |
+| 3 | 0.74.0 | 1.30.8 | Run and await the schema-only Job; select the chart's `sprig` config because 1.30 removes `dockerize` | continue and replay the 1.29.7 history; start the next held workflow | restore the pre-step backup and chart 0.73.2 |
+| 4 | 1.6.0 | 1.31.4 | Migrate to chart 1.x datastore values; its pre-upgrade hook must finish | continue and replay the 1.30.8 history, then execute and replay a 1.31 workflow; Worker Deployment APIs are GA | restore the pre-step backup and chart 0.74.0 with legacy values |
+
+Database schema migrations are not downgraded in place. A rollback restores the
+backup taken immediately before that step, then installs the preceding chart
+and its values. Never skip a minor or roll only the server image backward over
+a newer schema. Both shipped values files explicitly enable
+`frontend.workerVersioningWorkflowAPIs` and `system.enableDeploymentVersions`.
+Quiesce Temporal writers before taking or restoring a production backup, and
+record the backup identity with the step evidence. The nightly kind lane runs
+this full ladder on disposable CNPG state and retains per-step real-workflow
+continuation and replay evidence. After each new server is Ready, all four
+disposable History shard rows must acquire a range ID greater than the prior
+step and hold that new minimum unchanged for at least 30 seconds before the
+ladder advances.
 
 For consumer overlay pins and actual image contents, add `--overlay-dir` and
 the image requirements described in [overlay/image preflight](../../docs/guides/overlay-image-preflight.md).
@@ -603,7 +627,7 @@ changed. The manifest that broke reload here read exactly like a working one.
 
 ### The worker reloads its own config tree
 
-`goobers worker --instance <root>` re-reads `<root>/config` every
+`goobers-cloud worker --instance <root>` re-reads `<root>/config` every
 `--config-reload-interval` (default 10s, `0` disables) and atomically replaces
 the gaggle, credential, and agentic-kit seams whose config changed, so a
 definitions edit reaches the **next** stage that worker serves without a pod
@@ -637,10 +661,12 @@ that writes into the mounted directory), then verify by execution: edit the
 tree, wait past the interval, and confirm the worker logged
 `worker config reload: applied config tree sha256:…`.
 
-For credential-free cross-node **boot seeding**, use the
-[rendered-config mirror overlay](config-mirror/README.md) instead of a worker
-ConfigMap bridge. It copies a complete validated snapshot without the ConfigMap
-size ceiling. It is deliberately not a live updater: drain and recreate workers
+Workers fetch complete sanitized snapshots by content digest from the daemon
+configuration plane, without a ConfigMap or shared volume. The
+[rendered-config mirror overlay](config-mirror/README.md) remains a compatibility
+alias. The live updater retains three superseded trees, so configuration changes
+reach subsequent stages without recreating workers while pinned runs keep their
+admitted kit.
 to consume a newer seed, accounting for configuration pins of in-flight runs.
 
 ### The worker refuses a kit its run was not admitted against
@@ -736,10 +762,11 @@ it.
 ### Multi-worker runs need the artifact store
 
 A stage consumes prior work through ContextPointers, which resolve as a path on
-the **local** filesystem. One worker: correct and free. Two workers: stage 2 is
-polled by a node whose staging area is empty and fails closed on an integrity
-fault. `--blob-store` on a ReadWriteMany volume is what makes a run spannable;
-omit it (and the volume) if you run exactly one worker.
+the **local** filesystem. With multiple workers, a later stage can be polled by
+a pod whose staging area is empty. The authenticated blob plane makes those
+artifacts available without mounting the daemon's storage volume into workers.
+Its backing store must be durable and shared at the daemon; each worker keeps
+only a pod-private cache.
 
 Code state is a separate channel and is **not** shared: every stage attempt gets
 a fresh worktree on the run branch, so what survives between stages is the branch
@@ -747,13 +774,14 @@ in that worker's own git mirror. A stage that hands work to another platform mus
 push first (#2861).
 
 The `goobers-system` namespace enforces Pod Security Standards `restricted`.
-PSS evaluates **initContainers** too, so an adopter's per-worker instance-root
-seed must set the same non-root, no-escalation, dropped-capabilities, read-only
-root filesystem, and `RuntimeDefault` seccomp controls as the application
-container. The reference worker includes that restricted-compatible seed.
-These controls are Linux-only: Kubernetes rejects them on Windows pods. Keep
-Linux and Windows workers as separate Deployments, set `spec.os.name: windows`
-for Windows workers, and do not copy the Linux security context into them.
+PSS evaluates **initContainers** too, so any adopter-added worker initializer
+must set the same non-root, no-escalation, dropped-capabilities, read-only root
+filesystem, and `RuntimeDefault` seccomp controls as the application container.
+The reference worker needs no instance-root seed because config arrives through
+the worker plane. These controls are Linux-only: Kubernetes rejects them on
+Windows pods. Keep Linux and Windows workers as separate Deployments, set
+`spec.os.name: windows` for Windows workers, and do not copy the Linux security
+context into them.
 
 ### Cluster rebuilds
 
@@ -764,31 +792,98 @@ explicitly as a step rather than trusting the flag.
 
 ### Worker replacement and shutdown
 
-The Linux reference worker uses `Recreate` because its instance root holds locks
-on an RWO volume: the old pod must exit before its replacement starts. This
-introduces a brief polling interruption during upgrades; Temporal retains queued
-work. Keep this worker at one replica until instance storage is separated for
-additional workers. Both worker templates allow 90 seconds for shutdown, covering
-the default 30-second Temporal drain, up to 30 seconds of stage-pod cleanup, and
-process exit. Increase the pod grace period when increasing `--drain-timeout`.
+The worker is stateless across pods: its writable instance root and workspaces
+are pod-private `emptyDir` volumes, config arrives by digest, and blobs use the
+authenticated blob plane. The reference therefore runs two worker replicas
+without mounting the daemon's RWO volumes.
+
+The base manifest still uses `Recreate` as a compatibility path. The
+[`workers`](workers/) overlay replaces it with Temporal Worker Controller
+v1.13.0 (Helm chart 0.32.0), which creates one Deployment per build ID. Install
+its CRDs and controller before applying the overlay:
+
+```sh
+helm upgrade --install temporal-worker-controller-crds \
+  oci://docker.io/temporalio/temporal-worker-controller-crds \
+  --version 0.32.0 --namespace temporal-worker-system --create-namespace
+helm upgrade --install temporal-worker-controller \
+  oci://docker.io/temporalio/temporal-worker-controller \
+  --version 0.32.0 --namespace temporal-worker-system \
+  -f deploy/reference/workers/controller-values.yaml
+kubectl apply -k deploy/reference/workers
+```
+
+Before applying, replace the documentation-only API-server CIDR in
+`workers/networkpolicy-apiserver.yaml`. Workers need only `get` access to their
+`WorkerDeployment` status; the default-deny namespace otherwise blocks the
+in-cluster Kubernetes client on managed control planes.
+
+The controller waits for the new build's pollers before making it current. An
+older build stays at two replicas while Temporal has workflows pinned to it,
+then scales to zero as soon as it is drained. The controller is configured to
+block a target that would exceed three live versions. While blocked, workers
+leave the target blocked by default. `AUTO_UPGRADE` replays each pinned
+workflow's complete history on the current build, so enable automatic retention
+only after captured histories from every retained build replay successfully
+against the release candidate. Set `GOOBERS_AUTO_UPGRADE_RETENTION` on the
+worker pod template to that release's exact `TEMPORAL_WORKER_BUILD_ID` to attest
+to the evidence. A stale build ID or the legacy value `true` logs an error and
+leaves retention disabled. The worker then changes
+workflows pinned to the oldest draining build to `AUTO_UPGRADE`. Their next
+workflow task replays on the current build, including a HITL run that resumes
+after the old Deployment has scaled down. At the cap, budget for at least six
+worker pods and keep all three images pullable until their versions drain.
+
+Release tooling must replace `workerOptions.unsafeCustomBuildID` with a
+distinct, immutable identifier containing the binary version for **every**
+image or workflow-code release, whether replay qualification passes or not.
+Use the version itself or `<version>-<workflow-source-hash>` and inject it from
+the release pipeline. Reusing that ID makes Worker Controller roll changed
+code in place under pinned workflows, so the worker rejects both the shipped
+`CHANGE-ME` placeholder and a release ID that does not contain its binary
+version at token boundaries. For example, binary `0.9.1` accepts
+`release-0.9.1-workflow-abcd` but rejects `release-0.9.10`. Plain `dev` builds
+are exempt for local development.
+
+The reference omits `GOOBERS_AUTO_UPGRADE_RETENTION`. After replay qualification
+for that release, add it to the worker environment with a value exactly equal
+to the already-selected `unsafeCustomBuildID`. This same-release template
+update may roll in place because the workflow code and build ID are unchanged;
+it only enables retention. Placeholder values are rejected at startup.
+
+Terminating one replica does not consume a stage attempt. The replacement
+worker adopts the exact live stage pod by UID, preserving the attempt number
+and its original `timeoutSeconds` deadline. Worker pods retain the staged
+360-second grace so the 30-second drain, five-minute child settlement, and
+process-exit margin fit. Lowering this to 90 seconds is a separate transition:
+first lower `workerhost.ChildSettlementTimeout`, then qualify rainbow
+re-attachment under CHAOS-13. Each rainbow build receives its own PDB
+(`maxUnavailable: 1`, unhealthy pods always evictable), workers use the
+control-plane PriorityClass owned by the cloud-reference prerequisites, and
+zone spread is preferred. Rainbow PDBs select the controller-owned
+`temporal.io/build-id`; the rainbow overlay deletes the legacy broad PDB so no
+worker pod is selected by two disruption budgets.
+
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
 
-### Temporal worker versioning is opt-in
+<a id="temporal-worker-versioning-is-opt-in"></a>
+### Temporal worker versioning
 
-By default the worker polls **unversioned**, which is what this reference's
-Temporal values expect (they enable none of the worker-versioning dynamic
-config). `engine.workerVersioning: true` in `instance.yaml` makes the worker
-register as worker deployment `goobers`, version `goobers.<build>`, and pin each
-new workflow to that build (#5950). Nothing in Goobers sets the deployment's
-current version (#5407), so an opted-in instance must, after every rollout that
-changes the build, run
-`temporal worker deployment set-current-version --deployment-name goobers --build-id <build>`.
-Until it does, the new worker's polls succeed and receive nothing, and runs
-pinned to the previous build wait for a worker of that build.
+Versioning remains opt-in outside the rainbow overlay.
+`engine.workerVersioning: true` makes a manually managed worker register as
+deployment `goobers`, version `goobers.<build>`, and pin each new workflow to
+that build. Such an operator must still change current/ramping routing
+explicitly.
+
+The rainbow overlay enables versioning in `instance.yaml`. Temporal Worker
+Controller injects `TEMPORAL_DEPLOYMENT_NAME` and
+`TEMPORAL_WORKER_BUILD_ID`; the worker validates both and uses that build ID
+instead of the binary version. Missing, partial, or foreign controller identity
+fails startup. Routing changes belong exclusively to the controller.
 
 The worker checks the deployment's routing 30 seconds after start and every 5
-minutes after that. It logs `goobers worker: error: worker deployment "goobers" current version is ...`
+minutes after that. It logs `goobers-cloud worker: error: worker deployment "goobers" current version is ...`
 while the current version does not route to it, in either mode. It never exits
 over it.
 
@@ -807,9 +902,9 @@ gets the ramp percentage. The check works in both directions:
   Status shows it as `draining`, raises no warning, and never suggests
   reverting to it while the current version has live workers.
 
-The worker's own log check applies the same rule.
-
-Neither tool changes the routing (#4084).
+The worker's own log check applies the same rule. Goobers changes only pinned
+workflow overrides when the controller reports a target blocked at the
+three-version cap; it never changes current or ramping routing.
 
 - **`goobers status`.** On an instance with an `engine:` block, status prints
   one of these lines:
@@ -919,7 +1014,7 @@ The worker needs the whole config tree (workflows, goobers, gaggles, assets),
 not just `instance.yaml`. A worker seeded with only `instance.yaml` starts,
 passes its probes and reports healthy, then fails the first stage that needs a
 definition it does not have. The symptom is fail-late, not fail-fast; seed the
-complete tree, as the `config-mirror` overlay does (#3314, #3290).
+complete tree through the worker config plane (#3314, #3290).
 
 ### Grace-period inputs, and the AKS drain floor
 
@@ -967,8 +1062,7 @@ need both halves.
 
 A config tree delivered through a ConfigMap is bounded by the Kubernetes object
 size limit of roughly 1 MiB. This is a hard limit of the transport, not a tuning
-knob: a tree that outgrows it needs a different delivery (the `config-mirror`
-overlay), so check its size before relying on ConfigMap delivery (#3290).
+knob: use the content-addressed worker config plane instead (#3290).
 
 ### Scheduled check reporting
 

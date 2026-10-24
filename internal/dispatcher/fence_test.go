@@ -124,6 +124,7 @@ func TestRetryFenceReadsCustodyUnderPhysicalAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := pods.CreatePod(t.Context(), pod); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +158,30 @@ func TestRetryFenceReadsCustodyUnderPhysicalAttempt(t *testing.T) {
 	acknowledge(visit.PodAttempt)
 	if err := d.fencePriorAttempts(t.Context(), retry); err != nil || len(pods.deleted) != 1 || pods.deleted[0] != pod.Name {
 		t.Fatalf("fence = %v, deleted %v: the pod's own acknowledgment must release it", err, pods.deleted)
+	}
+}
+
+func TestRetryFenceIgnoresLiveSiblingMapBranch(t *testing.T) {
+	current := testAttempt()
+	current.PodAttempt, current.FanOutVisit, current.FanOutBranch = 2, 73, 2
+	sibling := current
+	sibling.PodAttempt, sibling.FanOutBranch = 1, 1
+	pod, err := RenderPod(testConfig(), sibling, linuxRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior, ok := priorAttempt(pod, current, current.IdentityAttempt()); ok {
+		t.Fatalf("sibling map branch classified as prior retry: %+v", prior)
+	}
+	retry := current
+	retry.PodAttempt = 3
+	pod, err = RenderPod(testConfig(), current, linuxRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior, ok := priorAttempt(pod, retry, retry.IdentityAttempt()); !ok ||
+		prior.IdentityAttempt() != current.IdentityAttempt() {
+		t.Fatalf("same map branch retry predecessor = %+v, %t", prior, ok)
 	}
 }
 

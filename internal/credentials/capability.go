@@ -191,6 +191,9 @@ func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error)
 		if !ok {
 			continue
 		}
+		if err := checkTrustedLocalCredential(ctx, key, ref); err != nil {
+			return nil, err
+		}
 		var token string
 		var expiresAt time.Time
 		var err error

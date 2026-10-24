@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providerconfig"
@@ -157,35 +155,5 @@ func TestStageGaggleBacklogOnlyGatesNamedADOStages(t *testing.T) {
 	}
 	if got := backlogRepoRefForStage(root, github); got != github {
 		t.Fatalf("backlogRepoRefForStage(github) = %+v, want unchanged", got)
-	}
-}
-
-// TestStageGaggleBacklogStampsCoverEveryGaggle pins the worker side's
-// encoding: every gaggle gets an entry, a gaggle with no settings included,
-// and the entry decodes back into the settings the stage applies.
-func TestStageGaggleBacklogStampsCoverEveryGaggle(t *testing.T) {
-	strict := &apiv1.BacklogDoneStates{Categories: []apiv1.BacklogStateCategory{"Completed"}}
-	gaggles := []apiv1.Gaggle{
-		{Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "example-backlog", Labels: []string{"team-a"}, DoneStates: strict, FieldPredicate: "not delivered"}}},
-		{},
-	}
-	gaggles[0].Name, gaggles[1].Name = "ado", "plain"
-	stamps, err := stageGaggleBacklogStamps(gaggles)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stamps["plain"] != "{}" {
-		t.Fatalf("stamp for a gaggle without settings = %q, want %q", stamps["plain"], "{}")
-	}
-	var decoded stageBacklogSettings
-	if err := json.Unmarshal([]byte(stamps["ado"]), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	want := stageBacklogSettings{Provider: apiv1.ProviderADO, Project: "example-backlog", Labels: []string{"team-a"}, DoneStates: strict}
-	if !reflect.DeepEqual(decoded, want) {
-		t.Fatalf("decoded stamp = %+v, want %+v", decoded, want)
-	}
-	if strings.Contains(stamps["ado"], "not delivered") {
-		t.Fatalf("stamp %q carries backlog configuration a stage does not apply", stamps["ado"])
 	}
 }

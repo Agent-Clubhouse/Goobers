@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -87,9 +90,9 @@ func runTerminalBranchCaptureFixture(t *testing.T, commit, preRetained bool) (st
 		t.Fatal(err)
 	}
 	source, workcopies := t.TempDir(), t.TempDir()
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 
@@ -102,7 +105,7 @@ func runTerminalBranchCaptureFixture(t *testing.T, commit, preRetained bool) (st
 	if err != nil {
 		t.Fatal(err)
 	}
-	option, err := recoveryCleanupOption(layout, cfg, workcopies, repoCloneURL, journal.NewRegistryScrubber(), nil)
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, runtimewiring.RepoCloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,9 +330,9 @@ func runTerminalReboundBranchCaptureFixture(t *testing.T, opts terminalReboundOp
 		t.Fatal(err)
 	}
 	source, workcopies := t.TempDir(), t.TempDir()
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	seedTerminalReboundPullRequestBranch(t, source, opts.aheadBeforeRun)
@@ -342,7 +345,7 @@ func runTerminalReboundBranchCaptureFixture(t *testing.T, opts terminalReboundOp
 	if err != nil {
 		t.Fatal(err)
 	}
-	option, err := recoveryCleanupOption(layout, cfg, workcopies, repoCloneURL, journal.NewRegistryScrubber(), nil)
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, runtimewiring.RepoCloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,10 +455,10 @@ func appendTerminalReboundAnnotation(t *testing.T, run *journal.Run, boundSHA st
 	if err := run.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		Runner: map[string]any{
-			"annotation":                    runner.ReboundWorkspaceBranchAnnotation,
-			runner.WorkspaceBranchOutput:    terminalReboundBranch,
-			runner.ReboundBranchBoundSHAKey: boundSHA,
-			"repository":                    "github/example/example",
+			"annotation":                       runner.ReboundWorkspaceBranchAnnotation,
+			runsemantics.WorkspaceBranchOutput: terminalReboundBranch,
+			runner.ReboundBranchBoundSHAKey:    boundSHA,
+			"repository":                       "github/example/example",
 		},
 	}); err != nil {
 		t.Fatal(err)

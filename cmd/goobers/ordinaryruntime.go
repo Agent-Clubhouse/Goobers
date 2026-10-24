@@ -11,10 +11,10 @@ import (
 	"github.com/goobers/goobers/internal/startintent"
 )
 
-type ordinaryRuntimeBuilder func(context.Context, startintent.Target, *engineRuntime) (startintent.Prepared, error)
+type ordinaryRuntimeBuilder func(context.Context, startintent.Target) (startintent.Prepared, error)
 
 func ordinaryRuntimeBuilderFor(layout instance.Layout, retainer *configgeneration.Retainer, build generationDefinitionBuilder) ordinaryRuntimeBuilder {
-	return func(ctx context.Context, target startintent.Target, engine *engineRuntime) (startintent.Prepared, error) {
+	return func(ctx context.Context, target startintent.Target) (startintent.Prepared, error) {
 		if retainer == nil || build == nil {
 			return startintent.Prepared{}, errors.New("ordinary runtime unavailable")
 		}
@@ -23,9 +23,6 @@ func ordinaryRuntimeBuilderFor(layout instance.Layout, retainer *configgeneratio
 			return startintent.Prepared{}, err
 		}
 		definitions, err := loadPinnedStartDefinitions(instance.NewLayout(layout.Root).WithConfigDir(directory), target.ConfigGeneration, build)
-		if err == nil {
-			definitions.EngineRuntime.adoptFrom(engine)
-		}
 		var entry localscheduler.WorkflowEntry
 		if err == nil {
 			entry, _, err = pinnedStartDefinition(definitions, target)

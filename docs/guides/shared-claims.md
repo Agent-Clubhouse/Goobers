@@ -53,10 +53,21 @@ remote cleanup, even when provider credentials are unavailable.
 Released administrative revocations are retained beyond ordinary claim-history
 expiry so a long-paused run cannot regain authority merely through retention.
 
-Execution snapshots have a one-second read watchdog, including before the first
-claim is observed. A stalled read cancels shared execution rather than leaving
-it unbounded. Daemon execution snapshots read the atomically replaced ledger
-without taking the claim-write lock, so remote renewal does not block them.
+Execution snapshots have a ten-second read watchdog: the claims route's
+eight-second server budget plus two seconds for transport. This allows a healthy
+but loaded daemon to finish within its route budget rather than falsely fencing
+execution after one second. Internal callers can override the per-observation
+budget; the default applies to local and remote fences, including before the
+first claim is observed.
+
+A stalled observation still cancels execution. Before any lease is known (or
+after early release), the watchdog bounds the time execution can remain blind
+to newly acquired authority or revocation; increasing it trades slower detection
+of a stalled observation for tolerance of route latency. Known leases retain
+independent timers at their conservative provider-acknowledged deadlines: a
+longer read budget never extends ownership or resurrects expired authority.
+Daemon execution snapshots read the atomically replaced ledger without taking
+the claim-write lock, so remote renewal does not block them.
 
 ## Crash recovery and retry bounds
 

@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -21,7 +25,8 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -85,12 +90,17 @@ type DispatchStageInput struct {
 	// Zero retains the legacy Envelope.Attempt identity. Journal lineage stays
 	// in Envelope.Attempt/Class and is independent of this surrender/pod key.
 	PodAttempt int `json:"podAttempt,omitempty"`
+	// FanOutVisit and FanOutBranch identify a branch occurrence by its
+	// committed parallel.started or map.started receipt.
+	FanOutVisit  uint64 `json:"fanOutVisit,omitempty"`
+	FanOutBranch int    `json:"fanOutBranch,omitempty"`
 	// Class is supplied by the retry driver, independently of the pod ordinal.
 	// Omitted in legacy histories, which retain the initial-attempt default.
-	Class     journal.AttemptClass     `json:"class,omitempty"`
-	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
-	Placement PinnedPlacement          `json:"placement"`
-	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
+	Class       journal.AttemptClass       `json:"class,omitempty"`
+	Envelope    apiv1.InvocationEnvelope   `json:"envelope"`
+	ExactInputs map[string]json.RawMessage `json:"exactInputs,omitempty"`
+	Placement   PinnedPlacement            `json:"placement"`
+	Run         *apiv1.DeterministicRun    `json:"run,omitempty"`
 	// Workspace is the TASK-level declaration, which is the only place an
 	// agentic stage can express one — it carries no DeterministicRun.
 	Workspace apiv1.WorkspaceMode `json:"workspace,omitempty"`
@@ -165,6 +175,14 @@ type DispatchStageInput struct {
 	// ActivityTaskScheduled payload Temporal already wrote decodes with it
 	// zero, which is exactly that unstamped case.
 	OwningWorkflowID string `json:"owningWorkflowID,omitempty"`
+	// UsageAllowance is the trusted remaining token/cost budget for this
+	// physical attempt. Additive and version-gated for replay compatibility.
+	UsageAllowance *usageallowance.Allowance `json:"usageAllowance,omitempty"`
+	// Custody asks a replacement worker to adopt this exact live pod instead
+	// of creating another one. Additive for recorded histories.
+	Custody *dispatcher.PodCustody `json:"custody,omitempty"`
+	// Outbox is the pinned workspace-relative export declaration.
+	Outbox []string `json:"outbox,omitempty"`
 }
 
 // gatePodAttempt names the pod attempt number for one dispatch of a reviewer
@@ -223,12 +241,11 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	if number, ok := reviewerNumber(ctx); ok && physicalAttempt > 0 {
 		attemptEnv.Attempt = int32(number)
 	}
-	var result stageActivityResult
 	// OwningWorkflowID is read here, inside the workflow, for the same reason
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
-	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+	result, err := executeDispatchActivity(ctx, DispatchStageInput{
 		PodAttempt:       physicalAttempt,
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
@@ -239,7 +256,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		Review:           true,
 		RequireDiff:      requireDiff,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-	}).Get(ctx, &result)
+	})
 	placementAttempt := podAttempt
 	if number, ok := reviewerNumber(ctx); ok {
 		placementAttempt = number
@@ -292,7 +309,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 //   - a command that reads the instance config directory;
 //   - a command or built-in kind that needs the daemon's instance root
 //     (decision 003 ruling 3), as a journaled stage outcome.
-func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, exactInputs map[string]json.RawMessage, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
 	// Topology (b) (a GitHub or Gitea backlog for Azure DevOps code,
 	// docs/design/ado-parity-dsl-2-0.md §7.2): every task of such a run, of
 	// either type, is refused a stage pod. A stage routes backlog work and
@@ -354,28 +371,44 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			return dispatchInstanceRootRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
 		}
 	}
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
-		var result stageActivityResult
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass, allowance *usageallowance.Allowance) (stageActivityResult, error) {
 		taskDispatches[t.Name]++
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		result, err := executeDispatchActivity(ctx, DispatchStageInput{
 			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
+			FanOutVisit:      rec.fanOutVisit(),
+			FanOutBranch:     rec.branch,
 			Class:            dispatchAttemptClass(ctx, class),
 			Envelope:         attemptEnv,
+			ExactInputs:      exactInputs,
 			Placement:        placement,
 			Run:              t.Run,
 			Workspace:        t.Workspace,
 			WorkspaceDelta:   workspaceDelta,
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-		}).Get(ctx, &result)
-		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
+			Outbox:           append([]string(nil), t.Outbox...),
+			UsageAllowance:   versionedRemoteUsageAllowance(ctx, allowance),
+		})
+		result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
+}
+
+func versionedRemoteUsageAllowance(
+	ctx workflow.Context,
+	allowance *usageallowance.Allowance,
+) *usageallowance.Allowance {
+	if allowance == nil ||
+		workflow.GetVersion(ctx, "remote-agent-usage-v1", workflow.DefaultVersion, 1) ==
+			workflow.DefaultVersion {
+		return nil
+	}
+	return usageallowance.Clone(allowance)
 }
 
 // resolvedKindInput reads the stage's resolved executor.InputKind ("kind")
@@ -432,7 +465,7 @@ func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task
 // stage refused before dispatch; see dispatchInstanceRootRefusal for why the
 // refusal is a normal, journaled stage outcome.
 func dispatchRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, code, summary, reason string) (apiv1.ResultEnvelope, error) {
-	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: summary,
@@ -506,17 +539,30 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 	return run != nil && (executor.StageInvokesGoobersCLI(run.Command) || run.InjectRunContext)
 }
 
-func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
+func (a *Activities) validateStageDispatch(input *DispatchStageInput) error {
+	if err := applyExactInputs(&input.Envelope, input.ExactInputs); err != nil {
+		return classifySeamError(err)
+	}
 	if err := refuseSelectedRevisionDispatch(input.Envelope); err != nil {
 		return err
 	}
 	if err := validatePodAttempt(input.PodAttempt); err != nil {
 		return err
 	}
+	if (input.FanOutVisit == 0) != (input.FanOutBranch == 0) || input.FanOutBranch < 0 {
+		return temporal.NewNonRetryableApplicationError(
+			"engine: fan-out dispatch identity requires both a committed visit and positive branch",
+			FailureTypeStage,
+			nil,
+		)
+	}
 	if a.Dispatcher == nil || a.Surrenders == nil {
 		return classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
 	}
 	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
+		return err
+	}
+	if err := validateRemoteUsageAllowance(*input); err != nil {
 		return err
 	}
 	if input.Placement.Self {
@@ -530,6 +576,30 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 	return nil
 }
 
+func newDispatchAttempt(input DispatchStageInput) dispatcher.Attempt {
+	return dispatcher.Attempt{
+		InstanceID:     input.Envelope.InstanceID,
+		RunID:          input.Envelope.RunID,
+		Gaggle:         input.Envelope.Gaggle,
+		Workflow:       input.Envelope.WorkflowID,
+		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
+		Number:         int(input.Envelope.Attempt),
+		PodAttempt:     input.PodAttempt,
+		FanOutVisit:    input.FanOutVisit,
+		FanOutBranch:   input.FanOutBranch,
+		Class:          input.Class,
+		LedgerTouching: input.Placement.LedgerTouching,
+		CPU:            input.Placement.CPU,
+		Memory:         input.Placement.Memory,
+		Disk:           input.Placement.Disk,
+		Restrictions:   input.Placement.Restrictions,
+		// The workflow stamps the actual driver id; activity identity is not
+		// the run workflow and cannot safely replace it.
+		OwningWorkflowID:   input.OwningWorkflowID,
+		RunsOnCapabilities: input.Placement.Capabilities,
+	}
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -541,18 +611,16 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
-	if err := a.validateStageDispatch(input); err != nil {
+	if err := a.validateStageDispatch(&input); err != nil {
 		return stageActivityResult{}, err
 	}
-	stopHeartbeat := heartbeatDispatch(ctx)
+	ctx, custody, stopHeartbeat := dispatchCustodyContext(ctx, input)
 	defer stopHeartbeat()
-	// input.Run is set exactly for a deterministic dispatch (agentic stages
-	// carry a nil Run and are unaffected below). Re-assert
+	// input.Run is set only for deterministic dispatch. Re-assert
 	// dispatchRemoteTask's v1-scope guards here too — the same "trust the
 	// workflow-side refusal happened, but re-check anyway" idiom the self-
 	// placement check above already applies, and the activity boundary is
 	// where a version-skewed or hand-built input would actually surface.
-	// NOT re-asserted at this boundary, deliberately, unlike the guards below.
 	// DispatchStageInput carries no task type, so the activity cannot tell an
 	// agentic stage from a deterministic one whose Run it simply was not given
 	// — the pod reads its command from the spec the dispatcher already stamped.
@@ -576,35 +644,15 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q reads the instance config directory, which a stage pod does not have (fail closed)", input.Envelope.TaskID))
 		}
 	}
-	attempt := dispatcher.Attempt{
-		InstanceID:     input.Envelope.InstanceID,
-		RunID:          input.Envelope.RunID,
-		Gaggle:         input.Envelope.Gaggle,
-		Workflow:       input.Envelope.WorkflowID,
-		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
-		Number:         int(input.Envelope.Attempt),
-		PodAttempt:     input.PodAttempt,
-		Class:          input.Class,
-		LedgerTouching: input.Placement.LedgerTouching,
-		CPU:            input.Placement.CPU,
-		Memory:         input.Placement.Memory,
-		Disk:           input.Placement.Disk,
-		Restrictions:   input.Placement.Restrictions,
-		// The driver the orphan sweep must describe. Taken from the input the
-		// WORKFLOW stamped, never from activity.GetInfo: this activity is also
-		// invoked directly in tests, and a stamp the workflow owns is the same
-		// value on the first attempt and on every activity retry.
-		OwningWorkflowID: input.OwningWorkflowID,
-		// The runner-capability requirement, for the Windows identity stamp
-		// (#3619) — distinct from the credential Capabilities set below.
-		RunsOnCapabilities: input.Placement.Capabilities,
-	}
+	attempt := newDispatchAttempt(input)
 	stampDeterministicRun(&attempt, input.Run)
 	attempt.ArtifactPublication = input.Envelope.ArtifactPublication
 	// Declared credential capabilities travel as NAMES; the pod resolves them
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
 	attempt.Capabilities = input.Envelope.Capabilities
+	attempt.Outbox = append([]string(nil), input.Outbox...)
+	attempt.UsageAllowance = usageallowance.Clone(input.UsageAllowance)
 
 	// An agentic stage executes by invoking a goober rather than running a
 	// command, so the pod needs the whole invocation. It travels as a verified
@@ -749,7 +797,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		attempt.Timeout = time.Duration(input.Envelope.Limits.MaxDurationSeconds) * time.Second
 	}
 
-	report, err := a.Dispatcher.Dispatch(ctx, attempt, input.Placement.Eligible)
+	report, err := a.dispatchOrAdopt(ctx, attempt, input)
 	a.logDispatchCleanup(ctx, attempt, report)
 	// Defense-in-depth for the settled-outcome invariant (#3588): once the
 	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
@@ -762,7 +810,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
 	// kind alone closes the whole class of post-surrender dispatcher errors.
 	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
-		return unconfirmedDispatchFailure(ctx, err, report)
+		return unconfirmedExecutionFailure(ctx, err, report, custody)
 	}
 	if err == nil && report.Local {
 		return stageActivityResult{}, a.refuseLocalDispatch(input.Envelope.TaskID)
@@ -776,23 +824,14 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// than an error.
 	surrendered, rerr := a.readDispatchSurrender(ctx, attempt, report.SurrenderConfirmed)
 	if rerr != nil {
-		if rejection := workspaceRevisionRejection(rerr); rejection != nil {
-			return dispatchFailureResult(classifySeamError(rejection), report)
-		}
-		// The gate confirmed surrender yet the result is unreadable: the
-		// substrate lost or garbled the outputs after the stage did its work.
-		// Infra-classed — the attempt retries on a fresh pod (D1), never
-		// burning the policy budget on a data-plane fault.
-		if errors.Is(rerr, dispatcher.ErrNoSurrender) {
-			return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr))), report)
-		}
-		return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(rerr)), report)
+		return unreadableSurrenderFailure(input, attempt, report, rerr)
 	}
-	if surrendered.Result.Status == "" {
-		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
+	usage := surrenderedAttemptUsage(surrendered)
+	if err := validateSurrenderedTaskResult(input, attempt.Number, surrendered); err != nil {
+		return dispatchFailureResultWithUsage(classifySeamError(err), report, usage, !usage.Reported)
 	}
 	if rejection := admitDistributedRevision(&surrendered.Result, input.Run != nil); rejection != nil {
-		return dispatchFailureResult(classifySeamError(rejection), report)
+		return dispatchFailureResultWithUsage(classifySeamError(rejection), report, usage, !usage.Reported)
 	}
 	if input.Review {
 		result, reviewErr := a.reviewActivityResult(ctx, input, attempt.Number, surrendered, report)
@@ -803,9 +842,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// under a review kit it was not dispatched with. Refused rather than
 		// dropped: a silently ignored verdict is exactly the shape a
 		// substituted surrender document would take to look harmless.
-		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
+		return dispatchFailureResultWithUsage(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report, usage, !usage.Reported)
 	}
 	result, resultErr := a.scrubStageActivityResult(ctx, stageActivityResult{
+		Outbox:             append([]dispatcher.SurrenderedOutboxFile(nil), surrendered.Outbox...),
+		Usage:              usage,
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues:     surrendered.MutationIssues,
@@ -821,7 +862,106 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
 		Placement:               placementProvenance(report), WorkspaceHeadMoved: surrendered.WorkspaceHeadMoved,
 	})
-	return result, withDispatchFailurePlacement(resultErr, report)
+	return completedDispatchStageResult(result, resultErr, report)
+}
+
+func unconfirmedExecutionFailure(ctx context.Context, err error, report dispatcher.Report, custody *atomic.Pointer[dispatcher.PodCustody]) (stageActivityResult, error) {
+	result, dispatchErr := unconfirmedReattachFailure(ctx, err, report, custody)
+	if errors.Is(err, dispatcher.ErrWorkerHandoff) {
+		return result, dispatchErr
+	}
+	return result, withDispatchFailureEvidence(dispatchErr, report, nil, dispatchExecutionObserved(report))
+}
+
+func unreadableSurrenderFailure(input DispatchStageInput, attempt dispatcher.Attempt, report dispatcher.Report, err error) (stageActivityResult, error) {
+	if rejection := workspaceRevisionRejection(err); rejection != nil {
+		return dispatchFailureResultWithUsage(classifySeamError(rejection), report, nil, true)
+	}
+	// The pod executed, but the confirmed result cannot establish usage.
+	if errors.Is(err, dispatcher.ErrNoSurrender) {
+		err = fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, err)
+	}
+	return dispatchFailureResultWithUsage(classifySeamError(invoke.InfrastructureFailure(err)), report, nil, true)
+}
+
+func completedDispatchStageResult(result stageActivityResult, err error, report dispatcher.Report) (stageActivityResult, error) {
+	if err == nil {
+		return result, nil
+	}
+	return dispatchFailureResultWithUsage(err, report, result.Usage, result.Usage == nil || !result.Usage.Reported)
+}
+
+func dispatchExecutionObserved(report dispatcher.Report) bool {
+	return report.SurrenderConfirmed || report.PodCreateAttempted || report.Pod != ""
+}
+
+func validateRemoteUsageAllowance(input DispatchStageInput) error {
+	if input.UsageAllowance == nil {
+		return nil
+	}
+	if input.Run != nil || input.Review {
+		return fmt.Errorf("engine: usage allowance is valid only for an agentic task attempt")
+	}
+	if err := input.UsageAllowance.Validate(); err != nil {
+		return fmt.Errorf("engine: invalid usage allowance: %w", err)
+	}
+	return nil
+}
+
+func surrenderedAttemptUsage(surrendered dispatcher.SurrenderedResult) *AttemptUsage {
+	return &AttemptUsage{
+		Metrics: maps.Clone(surrendered.ObservedUsage), Reported: surrendered.ObservedUsageReported,
+	}
+}
+
+func validateSurrenderedTaskResult(input DispatchStageInput, attempt int, surrendered dispatcher.SurrenderedResult) error {
+	if err := validateSurrenderedOutbox(input, surrendered); err != nil {
+		return err
+	}
+	if surrendered.Result.Status == "" {
+		return fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt)
+	}
+	return nil
+}
+
+func validateSurrenderedOutbox(input DispatchStageInput, surrendered dispatcher.SurrenderedResult) error {
+	files := surrendered.Outbox
+	if input.Review && (len(files) > 0 || surrendered.OutboxExported) {
+		return errors.New("engine: reviewer surrender carries task outbox files")
+	}
+	if len(input.Outbox) == 0 {
+		if surrendered.OutboxExported {
+			return errors.New("engine: surrender acknowledges an undeclared task outbox")
+		}
+		return nil
+	}
+	if surrendered.ContractVersion < dispatcher.SurrenderContractV3 {
+		return fmt.Errorf("engine: task %q declares outbox paths but the surrender writer does not support contract v%d", input.Envelope.TaskID, dispatcher.SurrenderContractV3)
+	}
+	requiresExport := surrendered.OutboxExecutionStarted || surrendered.Result.Status == apiv1.ResultSuccess
+	if requiresExport && !surrendered.OutboxExported && !runsemantics.IsOutboxExportFailure(surrendered.Result) {
+		return fmt.Errorf("engine: task %q declares outbox paths but the surrender does not acknowledge export", input.Envelope.TaskID)
+	}
+	declared := make([]string, 0, len(input.Outbox))
+	for _, entry := range input.Outbox {
+		clean := path.Clean(filepath.ToSlash(entry))
+		if clean != ".." && !strings.HasPrefix(clean, "../") && !path.IsAbs(clean) {
+			declared = append(declared, clean)
+		}
+	}
+	for _, file := range files {
+		matched := false
+		for _, entry := range declared {
+			if entry == "." || file.RelPath == entry || strings.HasPrefix(file.RelPath, entry+"/") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("engine: surrendered outbox file %q was not declared by task %q", file.RelPath, input.Envelope.TaskID)
+		}
+	}
+	return nil
 }
 
 // reviewActivityResult projects a REVIEW attempt's surrender (decision 001
@@ -858,7 +998,7 @@ func (a *Activities) reviewActivityResult(ctx context.Context, input DispatchSta
 			code = "agentic_review_failed"
 		}
 		err := fmt.Errorf("engine: reviewer gate %q attempt %d failed in its pod: %s: %s", stage, number, code, message)
-		if code == runner.WorkspaceHeadMovedErrorCode {
+		if code == runsemantics.WorkspaceHeadMovedErrorCode {
 			// #6019: typed so the walk can end the run superseded. Never
 			// retried: a fresh pod clones the same moved head (#5948).
 			return stageActivityResult{}, temporal.NewNonRetryableApplicationError(err.Error(), FailureTypeWorkspaceHeadMoved, nil)

@@ -8,11 +8,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/fanout"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
-
-// BranchCompletenessInput is the join invocation input containing one terminal
-// outcome for every declared branch, in declaration order.
-const BranchCompletenessInput = "branchCompleteness"
 
 // branchState is one branch's live execution state inside a parallel.
 type branchState struct {
@@ -247,16 +244,7 @@ func branchStatus(branch *branchState) journal.BranchStatus {
 	if branch.settled && branch.status != "" {
 		return branch.status
 	}
-	if branch.timedOut {
-		return journal.BranchTimedOut
-	}
-	if branch.failed {
-		return journal.BranchFailed
-	}
-	if branch.noOutput || !branch.produced {
-		return journal.BranchNoOutput
-	}
-	return journal.BranchSucceeded
+	return runsemantics.SettledBranchStatus(branch.timedOut, branch.failed, branch.noOutput, branch.produced)
 }
 
 func (p *parallelExec) branchSnapshot(index int) branchState {

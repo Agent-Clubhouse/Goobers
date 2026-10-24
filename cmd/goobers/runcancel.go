@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/cancelreceipt"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -188,12 +189,10 @@ func executeCancelRequest(
 	}
 }
 
-// daemonCancelService preserves the local Runner/file-drop cancellation path
-// and routes retained engine runs through the engine's own cancellation guard.
+// daemonCancelService preserves the local Runner/file-drop cancellation path.
 type daemonCancelService struct {
 	fenceChildren func(context.Context, httpapi.CancelRunRequest) error
 	runners       *daemonRunnerRegistry
-	engine        *daemonEngineCancelService
 	auditLog      *journal.InstanceLog
 	receipts      *cancelreceipt.Store
 
@@ -216,7 +215,7 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 
 func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
 	if s.receipts != nil {
-		return s.cancelWithReceipt(ctx, input)
+		return planes.NewCancelReceiptService(s.receipts, s.cancelOnce).Cancel(ctx, input)
 	}
 	return s.cancelOnce(ctx, input)
 }
@@ -233,12 +232,6 @@ func (s *daemonCancelService) cancelOnce(ctx context.Context, input httpapi.Canc
 	s.mu.RLock()
 	release := s.release
 	s.mu.RUnlock()
-
-	if _, local := s.runners.Resolve(input.RunID, input.Gaggle, nil); !local && s.engine != nil {
-		if result, handled, err := s.engine.cancel(ctx, input); handled {
-			return result, err
-		}
-	}
 
 	workflow := strings.TrimSpace(input.Workflow)
 	if workflow == "" {
@@ -364,8 +357,8 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 // cancelReceiptUnavailableCode means the daemon could not record the outcome
 // it reached and asks for a replay under the same key.
 const (
-	cancelOutcomeUnknownCode     = "cancel_outcome_unknown"
-	cancelReceiptUnavailableCode = "cancel_receipt_unavailable"
+	cancelOutcomeUnknownCode     = planes.CancelOutcomeUnknownCode
+	cancelReceiptUnavailableCode = planes.CancelReceiptUnavailableCode
 )
 
 // cancelReconcileWindow bounds how long `run cancel` keeps re-asking the daemon

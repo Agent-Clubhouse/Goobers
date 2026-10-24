@@ -19,7 +19,7 @@ func installOneShotSignalQueue(layout instance.Layout, setup *schedulerSetup) (*
 	if err != nil {
 		return nil, err
 	}
-	service.auditLog = setup.InstanceLog
+	service.SetAuditLog(setup.InstanceLog)
 	if err = setup.installOrdinaryStarts(layout, service); err != nil {
 		_ = service.queue.Close()
 		return nil, err
@@ -45,7 +45,7 @@ func dispatchQueuedSignal(ctx context.Context, service *durableTriggerService, s
 			return runs, pending, fmt.Errorf("accepted signal receipt %s unavailable: %w", id, err)
 		}
 		if record.State == triggerqueue.Dispatching {
-			if err = service.reconcileAcceptedRecord(ctx, record); err != nil {
+			if err = service.ReconcileAcceptedRecord(ctx, record); err != nil {
 				return runs, pending, err
 			}
 			record, err = service.queue.Get(ctx, id, "local-signal")

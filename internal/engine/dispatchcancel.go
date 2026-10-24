@@ -18,10 +18,13 @@ const (
 	dispatchCancellationChange      = "dispatch-cancellation-v1"
 	dispatchHeartbeatContractChange = "dispatch-heartbeat-contract-v2"
 	dispatchHeartbeatTimeout        = 10 * time.Second
-	dispatchHeartbeatTimeoutV2      = time.Minute
 	dispatchHeartbeatInterval       = time.Second
 	dispatchSurrenderReadTimeout    = 30 * time.Second
 )
+
+// dispatchHeartbeatTimeoutV2 is a variable only so real-server recovery tests
+// can shorten worker-loss detection; production never assigns it.
+var dispatchHeartbeatTimeoutV2 = time.Minute
 
 // DispatchHeartbeatThrottleInterval keeps cancellation delivery at the prior
 // eight-second cadence even when the server heartbeat timeout is longer. The
@@ -47,6 +50,29 @@ func dispatchActivityContext(ctx workflow.Context, limits apiv1.Limits, queue st
 type dispatchHeartbeatDetails struct {
 	Sequence    uint64    `json:"sequence"`
 	GeneratedAt time.Time `json:"generatedAt"`
+	Namespace   string    `json:"namespace,omitempty"`
+	Pod         string    `json:"pod,omitempty"`
+	UID         string    `json:"uid,omitempty"`
+	Attempt     int       `json:"attempt,omitempty"`
+	Custody     bool      `json:"custody,omitempty"`
+}
+
+func heartbeatDispatchCustody(ctx context.Context, current func() *dispatcher.PodCustody) func() {
+	var sequence uint64
+	return heartbeatDispatchDetails(ctx, func() any {
+		sequence++
+		details := dispatchHeartbeatDetails{Sequence: sequence, GeneratedAt: time.Now().UTC()}
+		if current != nil {
+			if custody := current(); custody != nil {
+				details.Namespace = custody.Namespace
+				details.Pod = custody.Pod
+				details.UID = custody.UID
+				details.Attempt = custody.Attempt
+				details.Custody = custody.Custody
+			}
+		}
+		return details
+	})
 }
 
 // Temporal delivers activity cancellation through heartbeat replies. Keep
@@ -129,6 +155,17 @@ func unconfirmedDispatchFailure(ctx context.Context, err error, report dispatche
 // failureTypeWorkerLost marks an attempt whose activity lost its worker or
 // heartbeat path. Like a heartbeat timeout, the pod may have run to effect.
 const failureTypeWorkerLost = "GoobersWorkerLost"
+const failureTypeWorkerHandoff = "GoobersWorkerHandoff"
+
+var errHandoffWorkerLost = errors.New("engine: dispatch handoff lost worker custody")
+
+type handoffWorkerLossError struct{ cause error }
+
+func (e *handoffWorkerLossError) Error() string {
+	return fmt.Sprintf("%s: %v", errHandoffWorkerLost, e.cause)
+}
+
+func (e *handoffWorkerLossError) Unwrap() error { return errHandoffWorkerLost }
 
 // Only a server-delivered cancellation carries a Temporal CanceledError cause.
 // Direct non-Temporal callers own their context, so any cancel is requested.
@@ -138,6 +175,23 @@ func cancellationRequested(ctx context.Context) bool {
 
 func dispatchControlPathLost(cause, err error) error {
 	message := fmt.Sprintf("engine: dispatch control path lost (%v): %v", cause, err)
+	return temporal.NewApplicationErrorWithOptions(message, FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
+		Cause: temporal.NewApplicationError(message, failureTypeWorkerLost),
+	})
+}
+
+func dispatchWorkerHandoff(custody dispatcher.PodCustody) error {
+	return temporal.NewApplicationErrorWithOptions("worker-handoff", failureTypeWorkerHandoff, temporal.ApplicationErrorOptions{
+		Details: []interface{}{custody},
+	})
+}
+
+func dispatchHandoffWorkerLoss(err error) error {
+	return &handoffWorkerLossError{cause: err}
+}
+
+func dispatchHandoffWorkerLossApplication(err error) error {
+	message := err.Error()
 	return temporal.NewApplicationErrorWithOptions(message, FailureTypeInfrastructure, temporal.ApplicationErrorOptions{
 		Cause: temporal.NewApplicationError(message, failureTypeWorkerLost),
 	})

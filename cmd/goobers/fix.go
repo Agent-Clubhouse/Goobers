@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/goobers/goobers/internal/dslmigrate"
@@ -101,7 +103,7 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if *write {
-		if err := prepareManualRoot(layout, stderr); err != nil {
+		if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
@@ -109,8 +111,18 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 
 	ok := true
 	migrated := 0
+	var gaggleFixes []gaggleFix
+	blockedGaggles := map[string]bool{}
+	failedGaggles := map[string]bool{}
+	if target == "3.0" {
+		gaggleFixes, blockedGaggles = prepareGaggleFixes(configDir, set, stdout)
+		ok = len(blockedGaggles) == 0
+	}
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
+		if blockedGaggles[wf.Spec.Gaggle] {
+			continue
+		}
 		relSource, found := set.WorkflowSource(wf.Spec.Gaggle, wf.Name)
 		if !found {
 			continue
@@ -122,6 +134,7 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			pf(stdout, "FIX %s: %v\n", label, err)
 			ok = false
+			failedGaggles[wf.Spec.Gaggle] = true
 			continue
 		}
 		result, err := dslmigrate.Migrate(source, target)
@@ -131,38 +144,26 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 			}
 			pf(stdout, "FIX %s: %v\n", label, err)
 			ok = false
+			failedGaggles[wf.Spec.Gaggle] = true
 			continue
 		}
 		if !result.Changed {
 			continue
 		}
 		migrated++
-		if *write {
-			mode := os.FileMode(0o644)
-			if fi, serr := os.Stat(path); serr == nil {
-				mode = fi.Mode().Perm()
-			}
-			if err := journal.WriteFileAtomic(path, []byte(result.After), mode); err != nil {
-				pf(stdout, "FIX %s: write: %v\n", label, err)
-				ok = false
-				continue
-			}
-			pf(stdout, "FIX %s: migrated to dslVersion %s (written)\n", label, target)
-		} else {
-			pf(stdout, "FIX %s: migrated to dslVersion %s (dry run — pass --write to apply)\n", label, target)
+		if !applyFixResult(path, relSource, label, target, result, *write, stdout) {
+			ok = false
+			failedGaggles[wf.Spec.Gaggle] = true
 		}
-		for _, note := range result.Notes {
-			pf(stdout, "  %s\n", note)
+	}
+	for _, fix := range gaggleFixes {
+		if failedGaggles[fix.name] {
+			pf(stdout, "FIX Gaggle/%s: shared requirements left unchanged because a workflow could not migrate\n", fix.name)
+			continue
 		}
-		diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
-			A:        difflib.SplitLines(result.Before),
-			B:        difflib.SplitLines(result.After),
-			FromFile: "a/" + relSource,
-			ToFile:   "b/" + relSource,
-			Context:  3,
-		})
-		if err == nil {
-			pf(stdout, "%s", diff)
+		migrated++
+		if !applyFixResult(filepath.Join(configDir, fix.source), fix.source, "Gaggle/"+fix.name, target, fix.result, *write, stdout) {
+			ok = false
 		}
 	}
 	if !ok {
@@ -172,4 +173,39 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "FIX: every workflow is already at the target dslVersion; nothing to migrate")
 	}
 	return 0
+}
+
+// applyFixResult keeps workflow and shared-gaggle writes and diffs identical.
+func applyFixResult(path, relSource, label, target string, result *dslmigrate.Result, write bool, stdout io.Writer) bool {
+	operation := "migrated to dslVersion " + target
+	if strings.HasPrefix(label, "Gaggle/") {
+		operation = "migrated shared placement requirements for DSL " + target
+	}
+	if write {
+		mode := os.FileMode(0o644)
+		if fi, serr := os.Stat(path); serr == nil {
+			mode = fi.Mode().Perm()
+		}
+		if err := journal.WriteFileAtomic(path, []byte(result.After), mode); err != nil {
+			pf(stdout, "FIX %s: write: %v\n", label, err)
+			return false
+		}
+		pf(stdout, "FIX %s: %s (written)\n", label, operation)
+	} else {
+		pf(stdout, "FIX %s: %s (dry run — pass --write to apply)\n", label, operation)
+	}
+	for _, note := range result.Notes {
+		pf(stdout, "  %s\n", note)
+	}
+	diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(result.Before),
+		B:        difflib.SplitLines(result.After),
+		FromFile: "a/" + relSource,
+		ToFile:   "b/" + relSource,
+		Context:  3,
+	})
+	if err == nil {
+		pf(stdout, "%s", diff)
+	}
+	return true
 }

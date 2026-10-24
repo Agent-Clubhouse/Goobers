@@ -18,7 +18,7 @@ func (l *queuedChildLauncher) resumeOwnedChild(ctx context.Context, ref childExe
 	if l.build == nil || l.dispatch == nil || l.runners == nil {
 		return childworkflow.ErrAuthorityUnavailable
 	}
-	scheduler := l.dispatch.sched.Load()
+	scheduler := l.dispatch.Scheduler()
 	if scheduler == nil {
 		return childworkflow.ErrAuthorityUnavailable
 	}
@@ -59,7 +59,7 @@ func (l *queuedChildLauncher) resumeOwnedChild(ctx context.Context, ref childExe
 	}()
 	ready, permission := make(chan struct{}), make(chan error, 1)
 	done := make(chan error, 1)
-	launchCtx, cancel := context.WithCancel(l.dispatch.lifecycleContext(context.WithoutCancel(ctx)))
+	launchCtx, cancel := context.WithCancel(l.dispatch.LifecycleContext(context.WithoutCancel(ctx)))
 	barrierCtx, barrierCancel := context.WithTimeout(ctx, childJournalHandoffTimeout)
 	defer barrierCancel()
 	err = l.queue.WithChildResume(barrierCtx, ref.Child.Identity, ref.Child.RunID, func() error {

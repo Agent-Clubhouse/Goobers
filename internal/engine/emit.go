@@ -104,6 +104,10 @@ func (r *runJournal) rollbackUnemitted(m journalMark) {
 	if r.emitted > floor {
 		floor = r.emitted
 	}
+	if r.owner != nil {
+		floor = r.owner.rollbackFloor(r, floor)
+		r.owner.rollback(r, floor)
+	}
 	if len(r.proj.Ops) > floor {
 		r.proj.Ops = r.proj.Ops[:floor]
 		r.branchRecorded = m.branchRecorded
@@ -117,7 +121,7 @@ func (r *runJournal) rollbackUnemitted(m journalMark) {
 func (r *runJournal) emitFailure(ctx workflow.Context, stage string, attempt int, err error) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: journal.AttemptInfra,
-		Error:  journal.ErrorDetailFor(JournalEmitFailedErrorCode, err),
+		Error:  domainErrorDetailFor(JournalEmitFailedErrorCode, err),
 		Runner: map[string]any{"retryFailureClass": string(journal.AttemptInfra)},
 	})
 }
@@ -131,6 +135,10 @@ func (r *runJournal) emitFailure(ctx workflow.Context, stage string, attempt int
 // to deliver re-emits the SAME keys — and ordinal gaps left by rolled-back
 // ops are harmless because keys only need determinism and uniqueness.
 func (r *runJournal) assignEmitKeys() {
+	if r.owner != nil {
+		r.owner.assignEmitKeys(len(r.owner.entries))
+		return
+	}
 	if r.ordinals == nil {
 		r.ordinals = map[string]int{}
 	}
@@ -139,17 +147,17 @@ func (r *runJournal) assignEmitKeys() {
 			continue
 		}
 		scope, attempt := opEmitScope(r.proj.Ops[i])
-		group := fmt.Sprintf("%d|%s|%d", 0, scope, attempt)
+		branch := opEmitBranch(r.proj.Ops[i])
+		group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
 		ordinal := r.ordinals[group]
 		r.ordinals[group] = ordinal + 1
-		r.proj.Ops[i].EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", r.proj.Identity.RunID, 0, scope, attempt, ordinal)
+		r.proj.Ops[i].EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", r.proj.Identity.RunID, branch, scope, attempt, ordinal)
 	}
 }
 
 // opEmitScope resolves the (scope, attempt) an op's idempotency key is
 // grouped under: stage ops key by their stage and attempt, gate ops by the
-// gate name, and run-level ops by the empty scope. The engine walk is
-// sequential, so branch is always the root branch.
+// gate name, and run-level ops by the empty scope.
 func opEmitScope(op JournalOp) (string, int) {
 	switch op.Kind {
 	case opArtifact:
@@ -182,6 +190,9 @@ func opEmitScope(op JournalOp) (string, int) {
 // dispatch), the run (open/gate), or is deferred to the repair projection
 // (terminal).
 func (r *runJournal) emitPending(ctx workflow.Context) error {
+	if r.owner != nil {
+		return r.owner.emitPending(ctx)
+	}
 	if !r.live {
 		return nil
 	}
@@ -212,6 +223,12 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 	if err := workflow.ExecuteActivity(emitActivityContext(ctx), ActEmitJournal, req).Get(ctx, &resp); err != nil {
 		return fmt.Errorf("engine: emit journal ops for run %s: %w", r.proj.Identity.RunID, err)
 	}
+	if err := r.preserveChildOrigins(ops, resp.ChildOrigins); err != nil {
+		return err
+	}
+	if err := r.preserveSerialReceipts(ops, resp.AppendReceipts, resp.Seq); err != nil {
+		return err
+	}
 	r.emitted = pending
 	return nil
 }
@@ -232,7 +249,7 @@ func (r *runJournal) emitTerminal(ctx workflow.Context) {
 // liveOpFrom converts one accumulated JournalOp to the wire op the journal
 // plane accepts.
 func liveOpFrom(op JournalOp) livejournal.Op {
-	out := livejournal.Op{Kind: op.Kind, Key: op.EmitKey, Time: op.Time}
+	out := livejournal.Op{Branch: opEmitBranch(op), Kind: op.Kind, Key: op.EmitKey, Time: op.Time, ChildStageStart: op.ChildStageStart, Receipt: op.Receipt}
 	switch op.Kind {
 	case opAppend:
 		if op.Event != nil {
@@ -243,7 +260,9 @@ func liveOpFrom(op JournalOp) livejournal.Op {
 		if op.Artifact != nil {
 			out.Artifact = &livejournal.ArtifactOp{
 				Stage: op.Artifact.Stage, Attempt: op.Artifact.Attempt, Class: op.Artifact.Class,
-				Name: op.Artifact.Name, Data: op.Artifact.Data, Integrity: op.Artifact.Integrity,
+				Name: op.Artifact.Name, Data: op.Artifact.Data, Ref: op.Artifact.Ref,
+				OutboxRelPath: op.Artifact.OutboxRelPath, OutboxOccurrence: op.Artifact.OutboxOccurrence,
+				Integrity: op.Artifact.Integrity,
 			}
 		}
 	case opSpan:
@@ -255,4 +274,24 @@ func liveOpFrom(op JournalOp) livejournal.Op {
 		}
 	}
 	return out
+}
+
+// opEmitBranch preserves explicit branch attribution through emission and
+// retry-key allocation. Existing serial histories omit it and remain branch 0.
+func opEmitBranch(op JournalOp) int {
+	switch op.Kind {
+	case opAppend:
+		if op.Event != nil {
+			return op.Event.Branch
+		}
+	case opArtifact:
+		if op.Artifact != nil {
+			return op.Artifact.Branch
+		}
+	case opSpan:
+		if op.Span != nil {
+			return op.Span.Branch
+		}
+	}
+	return 0
 }

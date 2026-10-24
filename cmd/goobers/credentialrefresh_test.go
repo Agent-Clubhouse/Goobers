@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,10 +19,12 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/providers"
@@ -66,7 +69,7 @@ func newRefreshFixture(t *testing.T, endpoint string) (*daemonCredentialService,
 		)
 		return resolver, []credentials.Grant{{Capability: "repo:push", Ref: "repo-ref"}, {Capability: "github:issues:write", Ref: "issues-ref"}}, err
 	}
-	issuer, err := newStageGrantIssuer(endpoint)
+	issuer, err := newTestStageGrantIssuer(endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +86,121 @@ func pushBranchEnvelope(runID string, attempt int32) apiv1.InvocationEnvelope {
 
 func mintTestGrant(t *testing.T, service *daemonCredentialService, grant podauth.CredentialGrant, ttl time.Duration) string {
 	t.Helper()
-	token, _, err := service.grants.key.MintCredentialGrant(grant, ttl)
+	token, _, err := service.grants.Key().MintCredentialGrant(grant, ttl)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return token
+}
+
+func newTestStageGrantIssuer(endpoint string) (*planes.StageGrantIssuer, error) {
+	key, err := podauth.CredentialGrantSigningKey("")
+	if err != nil {
+		return nil, err
+	}
+	return planes.NewStageGrantIssuer(key, endpoint)
+}
+
+func TestCredentialGrantKeyIsSharedAndDomainSeparated(t *testing.T) {
+	keyA := filepath.Join(t.TempDir(), "pod-a.key")
+	keyB := filepath.Join(t.TempDir(), "pod-b.key")
+	rawA := []byte(strings.Repeat("a", 32))
+	if err := os.WriteFile(keyA, rawA, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(keyB, []byte(strings.Repeat("b", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	firstKey, err := podauth.CredentialGrantSigningKey(keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := podauth.CredentialGrantSigningKey(keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	differentKey, err := podauth.CredentialGrantSigningKey(keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := planes.NewStageGrantIssuer(firstKey, "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := planes.NewStageGrantIssuer(secondKey, "http://127.0.0.1:8081")
+	if err != nil {
+		t.Fatal(err)
+	}
+	different, err := planes.NewStageGrantIssuer(differentKey, "http://127.0.0.1:8082")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := first.Key().MintCredentialGrant(podauth.CredentialGrant{
+		RunID: "run-shared", Stage: "build", Attempt: 1, Capabilities: []string{"repo:push"},
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Admit(token, "repo:push"); err != nil {
+		t.Fatalf("grant minted by first daemon did not validate in second daemon: %v", err)
+	}
+	if _, err := different.Admit(token, "repo:push"); err == nil {
+		t.Fatal("grant validated with a different pod-token key file")
+	}
+	rawPodTokenKey, err := podauth.NewSignedKey(rawA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawIssuer, err := planes.NewStageGrantIssuer(rawPodTokenKey, "http://127.0.0.1:8083")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawIssuer.Admit(token, "repo:push"); err == nil {
+		t.Fatal("raw pod-token key validated a domain-separated credential grant")
+	}
+}
+
+func TestCredentialGrantSurvivesRestart(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "pod.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("s", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := &instance.Config{API: instance.APIConfig{PodTokenKeyFile: keyPath}}
+	firstRoot, secondRoot := t.TempDir(), t.TempDir()
+	first := (&daemonCredentialService{
+		config: config,
+		shared: journal.NewRegistryScrubber(),
+	}).withStageGrants(firstRoot, "127.0.0.1:8080", false)
+	second := (&daemonCredentialService{
+		config: config,
+		shared: journal.NewRegistryScrubber(),
+	}).withStageGrants(secondRoot, "127.0.0.1:8080", false)
+	t.Cleanup(func() {
+		unregisterDaemonStageGrants(firstRoot, first)
+		unregisterDaemonStageGrants(secondRoot, second)
+	})
+	grant, err := first.MintStageGrant(
+		runnerStageEnvelope("run-restart", "build", 1),
+		[]string{"repo:push"},
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted, err := second.grants.Admit(grant.Token, "repo:push"); err != nil || admitted.RunID != "run-restart" {
+		t.Fatalf("fresh daemon rejected pre-restart grant: %+v, %v", admitted, err)
+	}
+}
+
+func instanceLogEvents(t *testing.T, layout instance.Layout) []journal.Event {
+	t.Helper()
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
 }
 
 func TestCredentialRefreshReResolvesTheGrantedCapabilityAndJournalsIt(t *testing.T) {
@@ -158,11 +271,11 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 		{
 			name: "another daemon's grant",
 			grant: func(t *testing.T, _ *daemonCredentialService, runID string) string {
-				other, err := newStageGrantIssuer("http://127.0.0.1:2")
+				other, err := newTestStageGrantIssuer("http://127.0.0.1:2")
 				if err != nil {
 					t.Fatal(err)
 				}
-				token, _, err := other.key.MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: "push-branch", Capabilities: []string{"repo:push"}}, time.Hour)
+				token, _, err := other.Key().MintCredentialGrant(podauth.CredentialGrant{RunID: runID, Stage: "push-branch", Capabilities: []string{"repo:push"}}, time.Hour)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -214,7 +327,7 @@ func TestCredentialRefreshNegativeCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service, minted, runID := newRefreshFixture(t, "http://127.0.0.1:1")
 			clock := now
-			service.grants.key.WithClock(func() time.Time { return clock })
+			service.grants.Key().WithClock(func() time.Time { return clock })
 			token := tc.grant(t, service, runID)
 			clock = clock.Add(tc.advance)
 			_, err := service.Refresh(context.Background(), token, httpapi.CredentialRefreshRequest{Capability: tc.ask})
@@ -269,7 +382,7 @@ func TestCredentialPlaneMintsAPodGrantOnlyForDeterministicExpiringStages(t *test
 	if response.Grant == nil {
 		t.Fatal("deterministic pod stage got no grant")
 	}
-	claims, err := service.grants.key.VerifyCredentialGrant(response.Grant.Token)
+	claims, err := service.grants.Key().VerifyCredentialGrant(response.Grant.Token)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -151,6 +151,10 @@ const (
 	// kept to booleans and timestamps so its unauthenticated fail-open
 	// exception cannot become an information-disclosure surface.
 	ConfigDigestPath = V1Prefix + "/config/digest"
+	// ConfigSnapshotPath is the worker-only configuration plane. Without a
+	// digest query it returns the current sanitized snapshot digest; with
+	// ?digest=sha256:... it streams that exact retained snapshot.
+	ConfigSnapshotPath = V1Prefix + "/config/snapshot"
 	// WorkerConfigDivergencePath accepts the worker's transition reports into
 	// the daemon-owned instance journal; it is the write half of the same
 	// narrow config-observability capability.
@@ -197,6 +201,15 @@ const (
 	// as their own run like the credential and journal planes.
 	RunStageSurrenderPath     = V1Prefix + "/runs/{run}/stages/{stage}/attempts/{attempt}/surrender"
 	RunStageSurrenderSeenPath = RunStageSurrenderPath + "/seen"
+
+	// EngineChildAdmitPath, EngineChildLoadPath and EngineChildCancelPath are
+	// the engine child-admission plane (HA-P4-10, #7879): a Temporal worker,
+	// which holds no database credentials, reaches the control plane's
+	// generated-child custody. Only the dedicated worker child-admission
+	// credential may call them; stage pods never can.
+	EngineChildAdmitPath  = V1Prefix + "/engine/children/admit"
+	EngineChildLoadPath   = V1Prefix + "/engine/children/load"
+	EngineChildCancelPath = V1Prefix + "/engine/children/cancel"
 
 	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
 	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
@@ -286,12 +299,20 @@ const DigestHeader = "X-Goobers-Digest"
 // RouteID is the stable cross-adapter identity of a versioned route.
 type RouteID string
 
+// ConfigSnapshotCurrent identifies the sanitized worker snapshot currently in
+// force and the durable instance identity every worker replica must share.
+type ConfigSnapshotCurrent struct {
+	Digest     string `json:"digest"`
+	InstanceID string `json:"instanceID"`
+}
+
 // Stable V1 route IDs.
 const (
 	RouteDiscovery                RouteID = "discovery"
 	RouteOpenAPI                  RouteID = "openapi"
 	RouteCapabilities             RouteID = "capabilities"
 	RouteConfigDigest             RouteID = "configDigest"
+	RouteConfigSnapshot           RouteID = "configSnapshot"
 	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
 	RouteInstanceReadiness        RouteID = "readiness"
@@ -363,6 +384,9 @@ const (
 	RouteStageSurrender     RouteID = "stageSurrender"
 	RouteStageSurrenderGet  RouteID = "stageSurrenderGet"
 	RouteStageSurrenderSeen RouteID = "stageSurrenderSeen"
+	RouteEngineChildAdmit   RouteID = "engineChildAdmit"
+	RouteEngineChildLoad    RouteID = "engineChildLoad"
+	RouteEngineChildCancel  RouteID = "engineChildCancel"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
 	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
@@ -469,9 +493,14 @@ const (
 	// transfer rather than query. A large artifact over a slow link legitimately
 	// takes longer than any query should.
 	BlobBudget = 60 * time.Second
-	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
-	// a mutation that cannot be accepted in 8s is not going to be accepted.
+	// MutationBudget covers ordinary bounded mutations: work that cannot be
+	// accepted in 8s is not going to be accepted.
 	MutationBudget = 8 * time.Second
+	// InterventionBudget contains one engine HITL update (60s) plus response
+	// margin. Engine-driven approve/override/rerun/resolve wait for the
+	// workflow's durable decision, rather than reporting success after only
+	// enqueueing it.
+	InterventionBudget = 65 * time.Second
 	// CredentialResolveBudget covers the credential plane's resolve route. Its
 	// time is an outbound token mint, not a query: a GitHub App installation
 	// token exchange is bounded at 30s (internal/githubapp mintTimeout), and
@@ -540,6 +569,7 @@ var v1Routes = []Route{
 	// recovery completes) the way every other read route here does.
 	{ID: RouteInstanceReadiness, Method: http.MethodGet, Path: InstanceReadinessPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteConfigSnapshot, Method: http.MethodGet, Path: ConfigSnapshotPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	// A worker's divergence report is a machine-to-daemon journal seam, not an
 	// operator mutation that every product surface must expose. Class it with
 	// the journal emit plane and pool its append with mutations.
@@ -579,9 +609,9 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
-	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
-	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: InterventionBudget},
 
 	// RouteWorkflowEnabled edits a workflow definition source atomically to
 	// toggle the scheduler's honor bit for its non-manual triggers. It is
@@ -614,7 +644,7 @@ var v1Routes = []Route{
 	{ID: RouteClaimsActive, Method: http.MethodGet, Path: ClaimsActivePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: InterventionBudget},
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity
 	// contract.
@@ -641,6 +671,14 @@ var v1Routes = []Route{
 	{ID: RouteStageSurrender, Method: http.MethodPost, Path: RunStageSurrenderPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteStageSurrenderGet, Method: http.MethodGet, Path: RunStageSurrenderPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteStageSurrenderSeen, Method: http.MethodGet, Path: RunStageSurrenderSeenPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+
+	// The engine child-admission plane (#7879) is a machine seam advancing a
+	// run's own generated-child custody, so it shares the workflow-execution
+	// class and the standard mutation budget. Load is a POST because it
+	// carries the bounded admission receipt it is fenced by.
+	{ID: RouteEngineChildAdmit, Method: http.MethodPost, Path: EngineChildAdmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildLoad, Method: http.MethodPost, Path: EngineChildLoadPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildCancel, Method: http.MethodPost, Path: EngineChildCancelPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The blob plane (decision 010/012, §2a) is the network transport for the
 	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET

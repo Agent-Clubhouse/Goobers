@@ -10,20 +10,25 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -90,7 +95,7 @@ type credentialPlaneDefinitions struct {
 func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneDefinitions {
 	defs := credentialPlaneDefinitions{
 		Scopes:  make(map[string]credentialGaggleScope, len(set.Gaggles)),
-		Goobers: goobersByName(set),
+		Goobers: runtimewiring.GoobersByName(set),
 	}
 	for i := range set.Gaggles {
 		g := &set.Gaggles[i]
@@ -108,15 +113,16 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 type daemonCredentialService struct {
 	childPublisher func(childpublication.Target, string, httpapi.MintedCredential, string) (childpublication.Publisher, error)
 	// Installed before serving. Current child authority lease spans materialization.
-	childCredentials    func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
-	childExecutors      childExecutorProvider
-	parentRecovery      func(context.Context, journal.RunIdentity) error
-	parentExecutors     runner.NewAgenticFunc
-	parentBorrowJournal func(string, string, *journal.Run) (func(), error)
-	childPodRecovery    func(context.Context, *journal.Reader, string, childPodScope) error
-	layout              instance.Layout
-	config              *instance.Config
-	stores              credentials.StoreResolver
+	childCredentials     func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
+	childExecutors       childExecutorProvider
+	parentRecovery       func(context.Context, journal.RunIdentity) error
+	parentExecutors      runner.NewAgenticFunc
+	localParentExecutors func(string, runner.ArtifactRecorder, invoke.Goober) (invoke.Goober, error)
+	parentBorrowJournal  func(string, string, *journal.Run) (func(), error)
+	childPodRecovery     func(context.Context, *journal.Reader, string, childPodScope) error
+	layout               instance.Layout
+	config               *instance.Config
+	stores               credentials.StoreResolver
 	// shared is the instance-global exact-value scrubber registry. Every
 	// value the plane materializes is registered here (the Injector registers
 	// each value before returning it), which is what makes later journal/log
@@ -127,7 +133,7 @@ type daemonCredentialService struct {
 	// grants signs and admits stage credential-refresh grants (Goobers#6120,
 	// credentialrefresh.go). Nil disables mid-stage refresh: no grant is
 	// minted and the refresh route answers 503.
-	grants        *stageGrantIssuer
+	grants        *planes.StageGrantIssuer
 	children      *childworkflow.Runtime
 	childQueue    *triggerqueue.Store
 	childDispatch *daemonTriggerService
@@ -136,7 +142,7 @@ type daemonCredentialService struct {
 	// nil uses buildCredentials — the same composition the runner wiring uses.
 	buildSources func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error)
 	// pinnedMachine overrides pinned-definition reconstruction in tests; nil
-	// uses runner.PinnedWorkflowMachine (full WF-016 digest verification).
+	// uses runsemantics.PinnedWorkflowMachine (full WF-016 digest verification).
 	pinnedMachine func(reader *journal.Reader, identity journal.RunIdentity) (*workflow.Machine, error)
 	// pinnedGateCapabilities overrides pinned gate-goober capability loading
 	// in tests; nil uses runner.PinnedGateGooberCapabilities.
@@ -277,7 +283,7 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 	if err != nil {
 		return stageResolution{}, err
 	}
-	if err := requireCurrentMergeAuthority(s.layout, apiv1.InvocationEnvelope{
+	if err := runtimewiring.RequireCurrentMergeAuthority(s.layout, apiv1.InvocationEnvelope{
 		ConfigGeneration: pinned.identity.ConfigGeneration, Gaggle: pinned.identity.Gaggle,
 		WorkflowID: pinned.identity.Workflow, TaskID: request.Stage, Capabilities: requested,
 	}); err != nil {
@@ -363,7 +369,7 @@ func openRunIdentity(runDir string) (*journal.Reader, journal.RunIdentity, error
 func (s *daemonCredentialService) pinnedStageProfile(reader *journal.Reader, pinned pinnedStage, stage string) (stageProfile, error) {
 	pinnedMachine := s.pinnedMachine
 	if pinnedMachine == nil {
-		pinnedMachine = runner.PinnedWorkflowMachine
+		pinnedMachine = runsemantics.PinnedWorkflowMachine
 	}
 	machine, err := pinnedMachine(reader, pinned.identity)
 	if err != nil {
@@ -546,7 +552,7 @@ func (s *daemonCredentialService) repoAuthScheme(scope credentialGaggleScope, mi
 	if minted == 0 {
 		return ""
 	}
-	repo, ok := adoRepoForGaggle(s.config, scope.Project)
+	repo, ok := runtimewiring.AdoRepoForGaggle(s.config, scope.Project)
 	if !ok {
 		return ""
 	}
@@ -781,16 +787,16 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	build := s.buildSources
 	if build == nil {
 		build = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
-			return buildGaggleCredentials(s.config, s.stores, scope.Project, scope.Backlog, scope.AdditionalRepos, s.shared)
+			return runtimewiring.BuildGaggleCredentials(s.config, s.stores, scope.Project, scope.Backlog, scope.AdditionalRepos, s.shared)
 		}
 	}
 	resolver, grants, err := build(scope)
 	if err != nil {
 		return nil, nil, err
 	}
-	schemes := adoCredentialSchemes(s.config, scope.Project, grants)
+	schemes := runtimewiring.AdoCredentialSchemes(s.config, scope.Project, grants)
 	if profile.goober == "" {
-		injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(grants), s.shared)
+		injector, err := credentials.NewInjector(resolver, runtimewiring.DeterministicCredentialGrants(grants), s.shared)
 		return injector, schemes, err
 	}
 	credentialKeys := append([]string(nil), profile.capabilities...)
@@ -799,9 +805,9 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	if harnessName == "" {
 		harnessName = string(apiv1.HarnessCopilot)
 	}
-	gooberGrants := buildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
+	gooberGrants := runtimewiring.BuildGooberCredentialGrants(profile.goober, harnessName, credentialKeys, grants)
 	injector, err := credentials.NewGooberInjectorWithCredentialKeys(resolver, profile.goober, gooberGrants, profile.implicitKeys, s.shared)
 	// A goober's grants are keyed by the plain capability but may resolve to
 	// a harness-scoped source, so its schemes follow its own grants.
-	return injector, adoCredentialSchemes(s.config, scope.Project, gooberGrants), err
+	return injector, runtimewiring.AdoCredentialSchemes(s.config, scope.Project, gooberGrants), err
 }

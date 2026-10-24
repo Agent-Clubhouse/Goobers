@@ -263,6 +263,19 @@ func TestNilStorageGateAdmits(t *testing.T) {
 	}
 }
 
+func TestDisabledStorageFloorsAdmitEvenWithNoFreeBytes(t *testing.T) {
+	gate := gateWith(0, 0, 0, 0, footprintAt(0, 100<<30))
+	gate.Sample()
+	c := NewConditions()
+	c.SetDiskGate(gate)
+	if ok, reason := c.Admit("wf", apiv1.ReadinessConditions{}, time.Now()); !ok {
+		t.Fatalf("disabled storage floors rejected admission: %s", reason)
+	}
+	if stats := gate.Stats(); stats.Tier != StorageHealthy {
+		t.Fatalf("disabled gate tier = %v, want healthy", stats.Tier)
+	}
+}
+
 func TestAdmitRefusesNewRunsWhenStorageIsCritical(t *testing.T) {
 	c := NewConditions()
 	gate := gateWith(0, 0, 5<<30, 0, footprintAt(1<<30, 100<<30))

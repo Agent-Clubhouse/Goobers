@@ -120,6 +120,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "diagnose" {
 		return runDiagnose(args[1:], stdout, stderr, os.Getenv, time.Now)
 	}
+	if len(args) == 2 && args[0] == "cloud-pg-report" {
+		return runCloudPGReport(args[1], ".", stdout, stderr)
+	}
+	if len(args) == 2 && args[0] == "portal-audit" {
+		return runPortalAudit(args[1], stdout, stderr, runNPMAudit, time.Sleep)
+	}
 	fast := false
 	group := ""
 	makeCommand := ""
@@ -136,7 +142,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case len(args) == 2 && args[0] == "full" && strings.TrimSpace(args[1]) != "":
 		makeCommand = args[1]
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND | diagnose]")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/ci [fast | group NAME | full MAKE_COMMAND | diagnose | portal-audit NPM | cloud-pg-report FILE]")
 		return 2
 	}
 
@@ -682,6 +688,34 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			windowsBatch: true,
 			group:        groupChecks,
 		},
+	)
+	result = append(result, codegenChecks(tools)...)
+	for i := range result {
+		if isPreflightCheck(result[i].label) {
+			result[i].group = groupPreflight
+		}
+	}
+	return result
+}
+
+func codegenChecks(tools toolchain) []check {
+	return []check{
+		// Match make generate's pinned object generator, then fail on drift.
+		{
+			label:   "deepcopy-generate",
+			command: tools.goCommand,
+			args: []string{
+				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+				"object", "paths=./api/v1alpha1/...",
+			},
+			group: groupChecks,
+		},
+		{
+			label:   "deepcopy-diff",
+			command: tools.gitCommand,
+			args:    []string{"diff", "--exit-code", "--", "api/v1alpha1/zz_generated.deepcopy.go"},
+			group:   groupChecks,
+		},
 		// The CRD manifests are a published contract — a field present in the
 		// Go API types but absent from config/crd/bases is a contract that
 		// silently lies about the DSL, and the manifests have drifted before
@@ -689,7 +723,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// pinned-tool regen (controller-gen@v0.16.5, matching Makefile's
 		// CONTROLLER_GEN_VERSION — keep both in sync) followed by a git diff
 		// that fails the gate on any drift.
-		check{
+		{
 			label:   "manifests-generate",
 			command: tools.goCommand,
 			args: []string{
@@ -698,19 +732,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			},
 			group: groupChecks,
 		},
-		check{
+		{
 			label:   "manifests-diff",
 			command: tools.gitCommand,
 			args:    []string{"diff", "--exit-code", "--", "config/crd/bases"},
 			group:   groupChecks,
 		},
-	)
-	for i := range result {
-		if isPreflightCheck(result[i].label) {
-			result[i].group = groupPreflight
-		}
 	}
-	return result
 }
 
 func shippedWorkflowChecks(tools toolchain, environment []string) []check {
@@ -936,8 +964,8 @@ func portalPreparationChecks(tools toolchain) []check {
 		},
 		{
 			label:        "portal-audit",
-			command:      tools.npmCommand,
-			args:         []string{"--prefix", "portal", "audit", "--audit-level=low"},
+			command:      tools.goCommand,
+			args:         []string{"run", "./test/ci", "portal-audit", tools.npmCommand},
 			windowsBatch: true,
 			group:        groupChecks,
 		},

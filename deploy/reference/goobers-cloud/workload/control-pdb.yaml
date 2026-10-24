@@ -1,0 +1,13 @@
+# maxUnavailable, never minAvailable:1, on a single replica: minAvailable:1
+# would block every node drain (design §14.3). AlwaysAllow lets a drain evict a
+# not-Ready pod, which a standby-less control pod is whenever it lacks the lease.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: goobers-control
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-control

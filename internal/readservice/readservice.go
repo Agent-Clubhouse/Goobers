@@ -159,7 +159,9 @@ type LocalSources struct {
 	// is the whole point of the interface split — reconcileIndex writing to
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
-	ReadModel      readmodel.Reader
+	ReadModel readmodel.Reader
+	// Journal is the authoritative run and instance read backend.
+	Journal        journal.ReaderBackend
 	RetentionStats func() readmodel.RetentionStats
 	// InstanceLogStats is present only in the live daemon. Dropped appends are
 	// process-lifetime state because the failing journal cannot persist its own
@@ -252,6 +254,23 @@ type Local struct {
 	schedulerProjector     atomic.Pointer[schedulerStateProjector]
 }
 
+func (s *Local) journalReader() journal.ReaderBackend {
+	if s.sources.Journal != nil {
+		return s.sources.Journal
+	}
+	return fileJournalReader(s.sources.Layout)
+}
+
+func fileJournalReader(layout instance.Layout) journal.ReaderBackend {
+	return journal.NewFileReaderBackend(journal.FileReaderBackendConfig{
+		ResolveRun: func(_ context.Context, runID string) (string, error) {
+			return layout.FindRunDir(runID)
+		},
+		ResolveRoots: layout.RunDirsContext,
+		SchedulerDir: layout.SchedulerDir(),
+	})
+}
+
 type definitionSnapshot struct {
 	set       *instance.ConfigSet
 	loadedAt  time.Time
@@ -290,6 +309,7 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		// every list while enabled, including closed-set refusals.
 		readModelReads: sources.ReadModel != nil,
 	}
+	local.instanceLog.backend = local.journalReader()
 	local.definitions.Store(snapshot)
 	return local, nil
 }
@@ -306,6 +326,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 // lower-level filesystem operation does not return within five seconds.
 func (s *Local) StartActiveRunSampler(interval time.Duration) func() error {
 	sampler := newActiveRunSampler(s.sources.Layout, interval, s.now)
+	if s.sources.Journal != nil {
+		sampler.walk = s.backendActiveRunCounts
+	}
 	if s.readModelReads && s.sources.ReadModel != nil {
 		sampler.walk = s.projectedActiveRunCounts
 	}
@@ -381,22 +404,11 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	if err := ctx.Err(); err != nil {
 		return Health{}, err
 	}
-	// #2265: resolve through the generation pointer rather than the legacy
-	// bare "events.jsonl" name — that path goes frozen (its mtime stops
-	// advancing) the first time in-daemon compaction rotates the journal to
-	// a new generation, which would make this freshness check falsely go
-	// stale on any instance that has ever compacted.
-	eventsPath, err := journal.InstanceEventsPath(s.sources.Layout.SchedulerDir())
+	journalUpdatedAt, err := s.instanceJournalUpdatedAt(ctx)
 	if err != nil {
-		return Health{}, fmt.Errorf("resolve instance journal path: %w", err)
+		return Health{}, err
 	}
-	info, err := os.Stat(eventsPath)
-	if err != nil {
-		return Health{}, fmt.Errorf("read instance journal freshness: %w", err)
-	}
-
 	observedAt := s.now().UTC()
-	journalUpdatedAt := info.ModTime().UTC()
 	definitions := s.definitions.Load()
 	ref := definitions.set.Manifest.Spec.Instance
 	healthy := true

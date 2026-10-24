@@ -1,0 +1,30 @@
+server:
+  config:
+    persistence:
+      numHistoryShards: 4
+      datastores:
+        default:
+          sql:
+            connectAddr: temporal-postgres-rw.goobers-temporal.svc:5432
+            user: temporal_app
+            existingSecret: temporal-postgres-app
+            tls:
+              enabled: false
+              enableHostVerification: false
+        visibility:
+          sql:
+            connectAddr: temporal-postgres-rw.goobers-temporal.svc:5432
+            user: temporal_app
+            existingSecret: temporal-postgres-app
+            tls:
+              enabled: false
+              enableHostVerification: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+web:
+  enabled: false

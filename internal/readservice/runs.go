@@ -213,13 +213,17 @@ type RunSummary struct {
 // surface. RunSummary counters remain scoped to this run; historical repasses
 // are informational and never consume the continuation's fresh budget.
 type RunLineage struct {
-	Source                *LineageRun        `json:"source,omitempty"`
-	Continuations         []LineageRun       `json:"continuations,omitempty"`
-	ResumeTarget          string             `json:"resumeTarget,omitempty"`
-	WorkspaceBranch       string             `json:"workspaceBranch,omitempty"`
-	WorkspaceBranchSHA    string             `json:"workspaceBranchSha,omitempty"`
-	InjectedInputs        []journal.InputRef `json:"injectedInputs,omitempty"`
-	HistoricalRepassCount int                `json:"historicalRepassCount"`
+	Source                       *LineageRun        `json:"source,omitempty"`
+	Continuations                []LineageRun       `json:"continuations,omitempty"`
+	ResumeTarget                 string             `json:"resumeTarget,omitempty"`
+	WorkspaceBranch              string             `json:"workspaceBranch,omitempty"`
+	WorkspaceBranchSHA           string             `json:"workspaceBranchSha,omitempty"`
+	InjectedInputs               []journal.InputRef `json:"injectedInputs,omitempty"`
+	HistoricalRepassCount        int                `json:"historicalRepassCount"`
+	HistoricalRepassCountPartial bool               `json:"historicalRepassCountPartial,omitempty"`
+	ContinuationsTruncated       bool               `json:"continuationsTruncated,omitempty"`
+	ContinuationsNextCursor      string             `json:"continuationsNextCursor,omitempty"`
+	ContinuationsIncomplete      bool               `json:"continuationsIncomplete,omitempty"`
 }
 
 // LineageRun identifies a directly related run without conflating its outcome
@@ -603,7 +607,7 @@ type runCursor struct {
 }
 
 type runRead struct {
-	reader   *journal.Reader
+	reader   journal.RunReader
 	identity journal.RunIdentity
 	records  []journal.EventRecord
 }
@@ -612,72 +616,12 @@ type runRead struct {
 // tie-breaker.
 func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions) (RunList, error) {
 	if options.LatestPerWorkflow {
-		if options.Stage != "" ||
-			options.Outcome != "" ||
-			options.StagePopulation != "" ||
-			options.Phase != "" ||
-			options.Trigger != "" ||
-			!options.Since.IsZero() ||
-			!options.Until.IsZero() ||
-			options.Limit != 0 ||
-			options.Cursor != "" {
-			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
-		}
-		// The read-model aggregate answers the whole page — outcomes AND activity
-		// — in one indexed query with zero journal opens (#1891). It replaces the
-		// window function, the backwards terminal walk, and the separate activity
-		// call below, so it returns directly rather than falling through to them.
-		if s.readModelReads {
-			return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
-		}
-		var (
-			result RunList
-			err    error
-		)
-		if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
-			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
-		} else {
-			result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
-		}
-		if err != nil {
-			return RunList{}, err
-		}
-		result.WorkflowActivity, err = s.workflowRunActivity(ctx, options)
-		if err != nil {
-			return RunList{}, err
-		}
-		return result, nil
+		return s.listLatestWorkflowOutcomes(ctx, options)
 	}
 
-	limit := options.Limit
-	if limit == 0 {
-		limit = defaultRunLimit
-	}
-	if limit < 1 || limit > maxRunLimit {
-		return RunList{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidArgument, maxRunLimit)
-	}
-	if options.Phase != "" && !canonicalPhase(options.Phase) {
-		return RunList{}, fmt.Errorf("%w: unknown phase %q", ErrInvalidArgument, options.Phase)
-	}
-	if options.Trigger != "" && !canonicalTrigger(options.Trigger) {
-		return RunList{}, fmt.Errorf("%w: unknown trigger %q", ErrInvalidArgument, options.Trigger)
-	}
-	if options.Outcome != "" && !canonicalOutcome(options.Outcome) {
-		return RunList{}, fmt.Errorf("%w: unknown outcome %q", ErrInvalidArgument, options.Outcome)
-	}
-	if options.StagePopulation != "" && !canonicalStagePopulation(options.StagePopulation) {
-		return RunList{}, fmt.Errorf("%w: unknown stage population %q", ErrInvalidArgument, options.StagePopulation)
-	}
-	if options.StagePopulation != "" &&
-		!telemetryStagePopulation(options.StagePopulation) &&
-		options.Stage == "" {
-		return RunList{}, fmt.Errorf("%w: stage population requires a stage", ErrInvalidArgument)
-	}
-	if telemetryStagePopulation(options.StagePopulation) && s.sources.Telemetry == nil {
-		return RunList{}, ErrTelemetryUnavailable
-	}
-	if !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until) {
-		return RunList{}, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
+	limit, err := s.validateRunListOptions(options)
+	if err != nil {
+		return RunList{}, err
 	}
 
 	var cursor *runCursor
@@ -732,6 +676,61 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 	return s.listRunsScanning(ctx, options, cursor, limit)
 }
 
+func (s *Local) listLatestWorkflowOutcomes(ctx context.Context, options RunListOptions) (RunList, error) {
+	if options.Stage != "" || options.Outcome != "" || options.StagePopulation != "" ||
+		options.Phase != "" || options.Trigger != "" || !options.Since.IsZero() ||
+		!options.Until.IsZero() || options.Limit != 0 || options.Cursor != "" {
+		return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
+	}
+	// The read-model aggregate answers the whole page — outcomes AND activity
+	// — in one indexed query with zero journal opens (#1891). It replaces the
+	// window function, backwards terminal walk, and separate activity call, so
+	// return directly rather than falling through to them.
+	if s.readModelReads {
+		return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
+	}
+	var (
+		result RunList
+		err    error
+	)
+	if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
+		result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
+	} else {
+		result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
+	}
+	if err != nil {
+		return RunList{}, err
+	}
+	result.WorkflowActivity, err = s.workflowRunActivity(ctx, options)
+	return result, err
+}
+
+func (s *Local) validateRunListOptions(options RunListOptions) (int, error) {
+	limit := options.Limit
+	if limit == 0 {
+		limit = defaultRunLimit
+	}
+	switch {
+	case limit < 1 || limit > maxRunLimit:
+		return 0, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidArgument, maxRunLimit)
+	case options.Phase != "" && !canonicalPhase(options.Phase):
+		return 0, fmt.Errorf("%w: unknown phase %q", ErrInvalidArgument, options.Phase)
+	case options.Trigger != "" && !canonicalTrigger(options.Trigger):
+		return 0, fmt.Errorf("%w: unknown trigger %q", ErrInvalidArgument, options.Trigger)
+	case options.Outcome != "" && !canonicalOutcome(options.Outcome):
+		return 0, fmt.Errorf("%w: unknown outcome %q", ErrInvalidArgument, options.Outcome)
+	case options.StagePopulation != "" && !canonicalStagePopulation(options.StagePopulation):
+		return 0, fmt.Errorf("%w: unknown stage population %q", ErrInvalidArgument, options.StagePopulation)
+	case options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation) && options.Stage == "":
+		return 0, fmt.Errorf("%w: stage population requires a stage", ErrInvalidArgument)
+	case telemetryStagePopulation(options.StagePopulation) && s.sources.Telemetry == nil:
+		return 0, ErrTelemetryUnavailable
+	case !options.Since.IsZero() && !options.Until.IsZero() && options.Since.After(options.Until):
+		return 0, fmt.Errorf("%w: since must not be after until", ErrInvalidArgument)
+	}
+	return limit, nil
+}
+
 func (s *Local) listLatestWorkflowOutcomesScanning(ctx context.Context, options RunListOptions) (RunList, error) {
 	summaries, err := s.runSummaries(ctx, false)
 	if err != nil {
@@ -776,7 +775,7 @@ func (s *Local) latestTerminalWorkflowOutcome(
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			run, err := s.openRun(ref.RunID)
+			run, err := s.openRun(ctx, ref.RunID)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					continue
@@ -880,15 +879,10 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 	if telemetryStagePopulation(journalPopulation) {
 		journalPopulation = ""
 	}
+	if !runMatchesIdentity(summary, options) {
+		return false
+	}
 	switch {
-	case !options.ShowNoWork && summary.NoWork:
-		return false
-	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
-		return false
-	case options.Workflow != "" && summary.Workflow != options.Workflow:
-		return false
-	case options.Stage != "" && !slices.Contains(summary.Stages, options.Stage):
-		return false
 	case (options.Outcome != "" ||
 		(options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation))) &&
 		!summary.Terminal:
@@ -909,6 +903,13 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		return false
 	}
 	return true
+}
+
+func runMatchesIdentity(summary RunSummary, options RunListOptions) bool {
+	return (options.ShowNoWork || !summary.NoWork) &&
+		(options.Gaggle == "" || summary.Gaggle == options.Gaggle) &&
+		(options.Workflow == "" || summary.Workflow == options.Workflow) &&
+		(options.Stage == "" || slices.Contains(summary.Stages, options.Stage))
 }
 
 // candidateRunStatuses translates options.Phase / options.Outcome into the
@@ -1118,7 +1119,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		}
 		for _, ref := range refs {
 			keyStarted, keyRunID = ref.StartedAt, ref.RunID
-			run, err := s.openRun(ref.RunID)
+			run, err := s.openRun(ctx, ref.RunID)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					continue
@@ -1183,44 +1184,31 @@ func (s *Local) runSummariesForStage(
 	skipUnreadable bool,
 	attemptStage string,
 ) ([]RunSummary, error) {
-	runDirs, err := s.sources.Layout.RunDirs()
-	if err != nil {
-		return nil, err
-	}
-
 	observedAt := s.now().UTC()
 	var summaries []RunSummary
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
+	refs, err := s.journalReader().ListRuns(ctx, journal.RunFilter{})
+	if err != nil {
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		run, err := s.openRun(ctx, ref.ID)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if skipUnreadable || errors.Is(err, ErrNotFound) {
 				continue
 			}
-			return nil, fmt.Errorf("read runs directory: %w", err)
+			return nil, err
 		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if !entry.IsDir() {
+		summary, err := summarizeRunForStage(run, observedAt, attemptStage)
+		if err != nil {
+			if skipUnreadable {
 				continue
 			}
-			run, err := s.openRun(entry.Name())
-			if err != nil {
-				if skipUnreadable || errors.Is(err, ErrNotFound) {
-					continue
-				}
-				return nil, err
-			}
-			summary, err := summarizeRunForStage(run, observedAt, attemptStage)
-			if err != nil {
-				if skipUnreadable {
-					continue
-				}
-				return nil, fmt.Errorf("summarize run %q: %w", entry.Name(), err)
-			}
-			summaries = append(summaries, summary)
+			return nil, fmt.Errorf("summarize run %q: %w", ref.ID, err)
 		}
+		summaries = append(summaries, summary)
 	}
 
 	sort.Slice(summaries, func(i, j int) bool {
@@ -1232,7 +1220,9 @@ func (s *Local) runSummariesForStage(
 	if err := s.decorateOperatorClaims(ctx, summaries, observedAt); err != nil {
 		return nil, err
 	}
-	decorateRunLineageFromSummaries(summaries)
+	if err := decorateRunLineageFromSummaries(ctx, summaries); err != nil {
+		return nil, err
+	}
 	return summaries, nil
 }
 
@@ -1243,27 +1233,13 @@ func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	runDirs, err := s.sources.Layout.RunDirs()
+	refs, err := s.journalReader().ListRuns(ctx, journal.RunFilter{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read runs directory: %w", err)
 	}
-	var ids []string
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("read runs directory: %w", err)
-		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if entry.IsDir() && apiv1.ValidRunID(entry.Name()) {
-				ids = append(ids, entry.Name())
-			}
-		}
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -1274,7 +1250,7 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err := ctx.Err(); err != nil {
 		return RunDetail{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -1334,7 +1310,7 @@ func (s *Local) RunMetadata(ctx context.Context, runID string) (journal.RunIdent
 	if err := ctx.Err(); err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return journal.RunIdentity{}, nil, err
 	}
@@ -1350,7 +1326,7 @@ func (s *Local) runEventsUnannotated(ctx context.Context, runID string) (EventLi
 	if err := ctx.Err(); err != nil {
 		return EventList{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return EventList{}, err
 	}
@@ -1370,7 +1346,7 @@ func (s *Local) stageAttemptsUnannotated(ctx context.Context, runID, stage strin
 	if stage == "" {
 		return AttemptList{}, fmt.Errorf("%w: stage is required", ErrInvalidArgument)
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return AttemptList{}, err
 	}
@@ -1442,7 +1418,7 @@ func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.openRun(runID); err != nil {
+	if _, err := s.openRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	attempts, err := s.telemetryStageAttempts(ctx, runID)
@@ -1460,7 +1436,7 @@ func (s *Local) Artifact(ctx context.Context, runID, digest string) (ArtifactCon
 	if err := ctx.Err(); err != nil {
 		return ArtifactContent{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -1481,7 +1457,7 @@ func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (Trans
 	if err := ctx.Err(); err != nil {
 		return TranscriptContent{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return TranscriptContent{}, err
 	}
@@ -1508,7 +1484,7 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1599,7 +1575,7 @@ func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummar
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := s.openRun(runID); err != nil {
+	if _, err := s.openRun(ctx, runID); err != nil {
 		return nil, err
 	}
 	empty := []rollup.SpanSummary{}
@@ -1621,7 +1597,7 @@ func (s *Local) RunEscalation(ctx context.Context, runID string) (*TraceEscalati
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1660,7 +1636,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return 0, err
 	}
@@ -1689,7 +1665,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 // production.
 var openRunObserver func(runID string)
 
-func (s *Local) openRun(runID string) (runRead, error) {
+func (s *Local) openRun(ctx context.Context, runID string) (runRead, error) {
 	readprobe.RecordJournalOpen()
 	if openRunObserver != nil {
 		openRunObserver(runID)
@@ -1697,24 +1673,7 @@ func (s *Local) openRun(runID string) (runRead, error) {
 	if !apiv1.ValidRunID(runID) {
 		return runRead{}, fmt.Errorf("%w: invalid run id", ErrInvalidArgument)
 	}
-	dir, err := s.sources.Layout.FindRunDir(runID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-		}
-		return runRead{}, err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-		}
-		return runRead{}, fmt.Errorf("inspect run %q: %w", runID, err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
-	}
-	reader, err := journal.OpenRead(dir)
+	reader, err := s.journalReader().OpenRun(ctx, journal.RunRef{ID: runID})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return runRead{}, fmt.Errorf("%w: run %q", ErrNotFound, runID)
@@ -1773,251 +1732,293 @@ func summarizeRunForStage(
 	observedAt time.Time,
 	attemptStage string,
 ) (RunSummary, error) {
-	phase := journal.PhaseRunning
-	var finishedAt *time.Time
-	var observations runOperationalObservations
-	var lastSeq uint64
-	var lastActivityAt time.Time
-	currentStage := ""
-	operator := OperatorRunSummary{
-		Trajectory:        "terminal",
-		Liveness:          "no-heartbeat",
-		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
-		PotentialBlockers: []string{},
+	fold := newRunSummaryFold(run)
+	if err := fold.applyRecords(run); err != nil {
+		return RunSummary{}, err
+	}
+	if err := fold.finalizePhase(run); err != nil {
+		return RunSummary{}, err
+	}
+	fold.finalizeOperator(observedAt)
+	return fold.summary(run, observedAt, attemptStage)
+}
+
+type runSummaryFold struct {
+	phase                 journal.RunPhase
+	finishedAt            *time.Time
+	observations          runOperationalObservations
+	lastSeq               uint64
+	lastActivityAt        time.Time
+	currentStage          string
+	operator              OperatorRunSummary
+	lastHeartbeat         time.Time
+	latestErrorAt         *time.Time
+	reviewAt              *time.Time
+	reviewProblem         string
+	providerClaimRecorded bool
+	claimedIssueFound     bool
+	seenStages            map[string]struct{}
+	lastStageStatus       map[string]string
+	repasses              int
+	retries               int
+	policyRetries         int
+	infraRetries          int
+}
+
+func newRunSummaryFold(run runRead) *runSummaryFold {
+	fold := &runSummaryFold{
+		phase: journal.PhaseRunning,
+		operator: OperatorRunSummary{
+			Trajectory: "terminal", Liveness: "no-heartbeat",
+			Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+			PotentialBlockers: []string{},
+		},
+		seenStages:      make(map[string]struct{}),
+		lastStageStatus: make(map[string]string),
 	}
 	if run.identity.Trigger.Kind == journal.TriggerItem && run.identity.Trigger.Ref != "" {
-		operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
+		fold.operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
 	}
-	var lastHeartbeat time.Time
-	var latestErrorAt, reviewAt *time.Time
-	var reviewProblem string
-	providerClaimRecorded := false
-	claimedIssueFound := false
-	seenStages := make(map[string]struct{})
-	lastStageStatus := make(map[string]string)
-	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
+	fold.repasses, fold.retries, fold.policyRetries, fold.infraRetries = countStageAttempts(run.records)
+	return fold
+}
 
+func (f *runSummaryFold) applyRecords(run runRead) error {
 	for _, record := range run.records {
 		event := record.Event
-		if event.Seq > lastSeq {
-			lastSeq = event.Seq
-			// Seq is structural (journal.MonotonicSeq) and always advances on
-			// the newest event regardless of its Time, but lastActivityAt only
-			// advances when that event actually carries one: an unstamped
-			// event (#3774 — a pod-side writer defect, now fixed at the
-			// source but still possible from an older journal) must not
-			// clobber a real, previously-observed lastActivityAt with the
-			// zero time, which is exactly the value runIsStale treats as
-			// undeterminable rather than as fresh activity. Mirrors
-			// readmodel.ProjectRun's identical guard so GetRun and ListRuns
-			// agree on this field for the same run.
+		if event.Seq > f.lastSeq {
+			f.lastSeq = event.Seq
+			// Seq always advances on the newest event, but lastActivityAt only
+			// advances for a timestamped event. An unstamped event (#3774) must
+			// not clobber real activity with zero time; this mirrors
+			// readmodel.ProjectRun so GetRun and ListRuns agree.
 			if !event.Time.IsZero() {
-				lastActivityAt = event.Time
+				f.lastActivityAt = event.Time
 			}
 		}
 		if !event.KnownSchema() {
 			continue
 		}
-		observations.after(event)
+		f.observations.after(event)
 		if event.Stage != "" {
-			seenStages[event.Stage] = struct{}{}
+			f.seenStages[event.Stage] = struct{}{}
 		}
 		if event.Gate != "" {
-			seenStages[event.Gate] = struct{}{}
+			f.seenStages[event.Gate] = struct{}{}
 		}
 		if event.Error != nil {
 			detail := *event.Error
-			operator.LatestError = &detail
-			latestErrorAt = eventTimePointer(event)
+			f.operator.LatestError = &detail
+			f.latestErrorAt = eventTimePointer(event)
 		}
-		switch event.Type {
-		case journal.EventStageHeartbeat:
-			if event.Time.After(lastHeartbeat) {
-				lastHeartbeat = event.Time
-			}
-		case journal.EventRunnerAnnotation:
-			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
-				currentStage = queue
-			}
-			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
-				currentStage = suggestion
-			}
-		case journal.EventRunResumed, journal.EventGateOverridden:
-			phase = journal.PhaseRunning
-			finishedAt = nil
-			currentStage = event.Target
-		case journal.EventStageStarted:
-			currentStage = event.Stage
-		case journal.EventStageFinished:
-			if currentStage == event.Stage {
-				currentStage = ""
-			}
-			lastStageStatus[event.Stage] = event.Status
-			claimedIssueFound = projectOperatorStageOutputs(&operator, event, claimedIssueFound)
-		case journal.EventGateStarted:
-			currentStage = event.Gate
-		case journal.EventGateEvaluated:
-			if currentStage == event.Gate {
-				currentStage = ""
-			}
-			if event.Gate != "review" {
-				continue
-			}
-			review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
-			reviewAt, reviewProblem = eventTimePointer(event), "" // only the latest review counts (#5404)
-			if event.Ref != nil {
-				data, err := run.reader.ArtifactBytes(*event.Ref)
-				if err != nil {
-					reviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
-				} else {
-					var verdict apiv1.Verdict
-					if err := json.Unmarshal(data, &verdict); err != nil {
-						reviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
-					} else {
-						populateOperatorReview(review, verdict)
-					}
-				}
-			}
-			operator.Review = review
-		case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
-			if !event.IsReferenceTouch() {
-				continue
-			}
-			switch event.ExternalRef.Kind {
-			case "issue":
-				if operator.Issue == nil {
-					operator.Issue = &OperatorIssue{}
-				}
-				if !claimedIssueFound {
-					operator.Issue.Number = event.ExternalRef.ID
-				}
-				operation, _ := event.Runner["operation"].(string)
-				providerClaimRecorded = providerClaimRecorded || operation == "claim"
-			case "pr":
-				ref := *event.ExternalRef
-				operator.PullRequest = &ref
-			}
-		case journal.EventStageRerunRequested:
-			phase = journal.PhaseRunning
-			finishedAt = nil
-			currentStage = event.Stage
-		case journal.EventRunFinished:
-			if !canonicalPhase(journal.RunPhase(event.Status)) || event.Status == string(journal.PhaseRunning) {
-				return RunSummary{}, fmt.Errorf("unsupported terminal phase %q", event.Status)
-			}
-			phase = journal.RunPhase(event.Status)
-			finished := event.Time
-			finishedAt = &finished
-			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
-				currentStage = ""
+		if err := f.applyEvent(run, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *runSummaryFold) applyEvent(run runRead, event journal.Event) error {
+	switch event.Type {
+	case journal.EventStageHeartbeat:
+		if event.Time.After(f.lastHeartbeat) {
+			f.lastHeartbeat = event.Time
+		}
+	case journal.EventRunnerAnnotation:
+		f.applyRunnerAnnotation(event)
+	case journal.EventRunResumed, journal.EventGateOverridden:
+		f.phase, f.finishedAt, f.currentStage = journal.PhaseRunning, nil, event.Target
+	case journal.EventStageStarted:
+		f.currentStage = event.Stage
+	case journal.EventStageFinished:
+		f.applyStageFinished(event)
+	case journal.EventGateStarted:
+		f.currentStage = event.Gate
+	case journal.EventGateEvaluated:
+		return f.applyGateEvaluated(run, event)
+	case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
+		f.applyReferenceTouch(event)
+	case journal.EventStageRerunRequested:
+		f.phase, f.finishedAt, f.currentStage = journal.PhaseRunning, nil, event.Stage
+	case journal.EventRunFinished:
+		return f.applyRunFinished(event)
+	}
+	return nil
+}
+
+func (f *runSummaryFold) applyRunnerAnnotation(event journal.Event) {
+	if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+		f.currentStage = queue
+	}
+	if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+		f.currentStage = suggestion
+	}
+}
+
+func (f *runSummaryFold) applyStageFinished(event journal.Event) {
+	if f.currentStage == event.Stage {
+		f.currentStage = ""
+	}
+	f.lastStageStatus[event.Stage] = event.Status
+	f.claimedIssueFound = projectOperatorStageOutputs(&f.operator, event, f.claimedIssueFound)
+}
+
+func (f *runSummaryFold) applyGateEvaluated(run runRead, event journal.Event) error {
+	if f.currentStage == event.Gate {
+		f.currentStage = ""
+	}
+	if event.Gate != "review" {
+		return nil
+	}
+	review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
+	f.reviewAt, f.reviewProblem = eventTimePointer(event), "" // only the latest review counts (#5404)
+	if event.Ref != nil {
+		data, err := run.reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			f.reviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
+		} else {
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(data, &verdict); err != nil {
+				f.reviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
+			} else {
+				populateOperatorReview(review, verdict)
 			}
 		}
 	}
+	f.operator.Review = review
+	return nil
+}
 
+func (f *runSummaryFold) applyReferenceTouch(event journal.Event) {
+	if !event.IsReferenceTouch() {
+		return
+	}
+	switch event.ExternalRef.Kind {
+	case "issue":
+		if f.operator.Issue == nil {
+			f.operator.Issue = &OperatorIssue{}
+		}
+		if !f.claimedIssueFound {
+			f.operator.Issue.Number = event.ExternalRef.ID
+		}
+		operation, _ := event.Runner["operation"].(string)
+		f.providerClaimRecorded = f.providerClaimRecorded || operation == "claim"
+	case "pr":
+		ref := *event.ExternalRef
+		f.operator.PullRequest = &ref
+	}
+}
+
+func (f *runSummaryFold) applyRunFinished(event journal.Event) error {
+	if !canonicalPhase(journal.RunPhase(event.Status)) || event.Status == string(journal.PhaseRunning) {
+		return fmt.Errorf("unsupported terminal phase %q", event.Status)
+	}
+	f.phase = journal.RunPhase(event.Status)
+	finished := event.Time
+	f.finishedAt = &finished
+	f.clearCurrentStage()
+	return nil
+}
+
+func (f *runSummaryFold) clearCurrentStage() {
+	if !strings.HasPrefix(f.currentStage, "Workspace reset suggested:") {
+		f.currentStage = ""
+	}
+}
+
+func (f *runSummaryFold) finalizePhase(run runRead) error {
 	// PhaseFromEvents is the journal's authoritative reconstruction rule. Keep
 	// the summary fold responsible for presentation fields, but do not duplicate
 	// terminal-state semantics here: older runs may end at an executed terminal
 	// gate when cleanup fails before run.finished is appended.
 	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
-	if phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
-		phase = reconstructed
-		finishedAt = terminalGateTime(run.records, reconstructed)
-		if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
-			currentStage = ""
-		}
+	if f.phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
+		f.phase = reconstructed
+		f.finishedAt = terminalGateTime(run.records, reconstructed)
+		f.clearCurrentStage()
 	}
-
-	if phase == journal.PhaseRunning {
-		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
-			currentStage = state.MachineState
-		}
-		if graph, status, err := pinnedGraph(run); err != nil {
-			return RunSummary{}, err
-		} else if status == "pinned" {
-			for _, node := range graph.Nodes {
-				if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
-					operator.PROpenerStage = node.ID
-					break
-				}
+	if f.phase != journal.PhaseRunning {
+		return nil
+	}
+	if state, err := run.reader.State(); err == nil && state.LastSeq >= f.lastSeq && state.MachineState != "" {
+		f.currentStage = state.MachineState
+	}
+	graph, status, err := pinnedGraph(run)
+	if err != nil {
+		return err
+	}
+	if status == "pinned" {
+		for _, node := range graph.Nodes {
+			if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+				f.operator.PROpenerStage = node.ID
+				break
 			}
 		}
 	}
-	operator.CurrentStage = currentStage
-	operator.Trajectory = operatorTrajectory(currentStage, phase)
-	if !lastHeartbeat.IsZero() {
-		heartbeat := lastHeartbeat
-		operator.LastHeartbeatAt = &heartbeat
+	return nil
+}
+
+func (f *runSummaryFold) finalizeOperator(observedAt time.Time) {
+	f.operator.CurrentStage = f.currentStage
+	f.operator.Trajectory = operatorTrajectory(f.currentStage, f.phase)
+	if !f.lastHeartbeat.IsZero() {
+		heartbeat := f.lastHeartbeat
+		f.operator.LastHeartbeatAt = &heartbeat
 		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
-		operator.HeartbeatAgeMillis = &age
+		f.operator.HeartbeatAgeMillis = &age
 	}
-	if phase != journal.PhaseRunning {
-		operator.Liveness = "terminal"
+	if f.phase != journal.PhaseRunning {
+		f.operator.Liveness = "terminal"
 	}
-	if providerClaimRecorded {
-		operator.Claim.ProviderMarker = "recorded"
+	if f.providerClaimRecorded {
+		f.operator.Claim.ProviderMarker = "recorded"
 	}
-	if operator.PullRequest != nil {
-		operator.PROpenerStage = ""
+	if f.operator.PullRequest != nil {
+		f.operator.PROpenerStage = ""
 	}
-	if phase == journal.PhaseRunning {
-		if currentStage == "" {
-			operator.NextTransition = "start the next workflow stage"
+	if f.phase == journal.PhaseRunning {
+		if f.currentStage == "" {
+			f.operator.NextTransition = "start the next workflow stage"
 		} else {
-			operator.NextTransition = "finish " + currentStage
+			f.operator.NextTransition = "finish " + f.currentStage
 		}
 	}
-	operator.addRecordedBlockers(reviewProblem, reviewAt, latestErrorAt, observedAt)
+	f.operator.addRecordedBlockers(f.reviewProblem, f.reviewAt, f.latestErrorAt, observedAt)
+}
+
+func (f *runSummaryFold) summary(run runRead, observedAt time.Time, attemptStage string) (RunSummary, error) {
 	durationEnd := observedAt
-	if finishedAt != nil {
-		durationEnd = *finishedAt
+	if f.finishedAt != nil {
+		durationEnd = *f.finishedAt
 	}
 	var duration int64
 	if !durationEnd.Before(run.identity.StartedAt) {
 		duration = durationEnd.Sub(run.identity.StartedAt).Milliseconds()
 	}
-	stages := make([]string, 0, len(seenStages))
-	for stage := range seenStages {
+	stages := make([]string, 0, len(f.seenStages))
+	for stage := range f.seenStages {
 		stages = append(stages, stage)
 	}
 	sort.Strings(stages)
-	noWork := isNoWorkTick(phase, lastStageStatus)
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
-	terminalReason, err := terminalReasonFor(phase, run.records)
+	terminalReason, err := terminalReasonFor(f.phase, run.records)
 	if err != nil {
 		return RunSummary{}, err
 	}
-
 	return withRunActivity(withRunIdentity(RunSummary{
-		ID:               run.identity.RunID,
-		Workflow:         run.identity.Workflow,
-		WorkflowVersion:  run.identity.WorkflowVersion,
-		WorkflowDigest:   run.identity.WorkflowDigest,
-		Gaggle:           run.identity.Gaggle,
-		Trigger:          run.identity.Trigger,
-		Phase:            phase,
-		Terminal:         phase != journal.PhaseRunning,
-		CurrentStage:     currentStage,
-		StartedAt:        run.identity.StartedAt,
-		FinishedAt:       finishedAt,
-		DurationMillis:   duration,
-		LastActivityAt:   lastActivityAt,
-		LastSeq:          lastSeq,
-		RepassCount:      repasses,
-		RetryCount:       retries,
-		PolicyRetryCount: policyRetries,
-		InfraRetryCount:  infraRetries,
-		NoWork:           noWork,
-		TerminalReason:   terminalReason,
-		Operator:         operator,
-		EngineFallback:   observations.engineFallback,
-		RequiredMCP:      observations.requiredMCP,
-		RetryBackoff:     observations.retryBackoff,
-		Stages:           stages,
-		stageAttempts:    stageAttempts,
-	}, run), observations), nil
+		ID: run.identity.RunID, Workflow: run.identity.Workflow, WorkflowVersion: run.identity.WorkflowVersion,
+		WorkflowDigest: run.identity.WorkflowDigest, Gaggle: run.identity.Gaggle, Trigger: run.identity.Trigger,
+		Phase: f.phase, Terminal: f.phase != journal.PhaseRunning, CurrentStage: f.currentStage,
+		StartedAt: run.identity.StartedAt, FinishedAt: f.finishedAt, DurationMillis: duration,
+		LastActivityAt: f.lastActivityAt, LastSeq: f.lastSeq, RepassCount: f.repasses, RetryCount: f.retries,
+		PolicyRetryCount: f.policyRetries, InfraRetryCount: f.infraRetries,
+		NoWork: isNoWorkTick(f.phase, f.lastStageStatus), TerminalReason: terminalReason, Operator: f.operator,
+		EngineFallback: f.observations.engineFallback, RequiredMCP: f.observations.requiredMCP,
+		RetryBackoff: f.observations.retryBackoff, Stages: stages, stageAttempts: stageAttempts,
+	}, run), f.observations), nil
 }
 
 func projectOperatorStageOutputs(operator *OperatorRunSummary, event journal.Event, claimedIssueFound bool) bool {
@@ -2548,7 +2549,7 @@ func gateRepassCount(records []journal.EventRecord, gate string) (int, error) {
 	return count, nil
 }
 
-func lastNeedsChangesReason(reader *journal.Reader, records []journal.EventRecord, gate string) (string, error) {
+func lastNeedsChangesReason(reader journal.RunReader, records []journal.EventRecord, gate string) (string, error) {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if !event.KnownSchema() ||
@@ -2974,87 +2975,118 @@ func collectStageAttempts(
 		// permanently "running" — the DASH-20 regression. run.finished carries
 		// no stage, so it must be handled before the per-stage filter.
 		if event.Type == journal.EventRunFinished {
-			finished := event.Time
-			for st := range byStage {
-				for i := range byStage[st] {
-					if byStage[st][i].FinishedSeq != 0 {
-						continue
-					}
-					attempt := &byStage[st][i]
-					attempt.Status = string(apiv1.ResultFailure)
-					attempt.FinishedSeq = event.Seq
-					attempt.FinishedAt = &finished
-					if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
-						attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
-					}
-				}
-			}
+			closeOpenStageAttempts(byStage, event)
 			continue
 		}
 		if event.Stage == "" || (stage != "" && event.Stage != stage) {
 			continue
 		}
 		attempts := byStage[event.Stage]
-		switch event.Type {
-		case journal.EventStageRerunRequested:
-			visit := visits[event.Stage]
-			visit.humanRequested = true
-			visits[event.Stage] = visit
-		case journal.EventStageStarted, journal.EventReviewerStarted:
-			if event.Type == journal.EventReviewerStarted {
-				closeInterruptedReviewerAttempts(attempts, event)
-			}
-			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
-		case journal.EventRunnerPlacement:
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
-				if placement, ok := journal.PlacementFromEvent(event); ok {
-					attempts[i].Placement = &placement
-				}
-			}
-		case journal.EventArtifactRecorded:
-			if event.Ref == nil {
-				continue
-			}
-			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
-				if metadata, ok := artifacts.bySeq[event.Seq]; ok {
-					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
-				}
-			}
-		case journal.EventError:
-			if event.Error == nil || event.Error.Code != "executor_error" {
-				continue
-			}
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
-			if i < 0 {
-				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
-				i = len(attempts) - 1
-			}
-			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
-		case journal.EventStageFinished, journal.EventReviewerFinished:
-			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
-			if i < 0 {
-				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
-				i = len(attempts) - 1
-			}
-			finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
-			for _, ref := range event.Artifacts {
-				if metadata, ok := artifacts.match(
-					ref.Digest,
-					event.Stage,
-					event.Attempt,
-					event.AttemptClass,
-					event.Branch,
-					attempts[i].StartedSeq,
-					event.Seq,
-				); ok &&
-					!containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
-					attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
-				}
-			}
-		}
+		attempts = applyStageAttemptEvent(runID, attempts, visits, artifacts, event)
 		byStage[event.Stage] = attempts
 	}
 	return byStage
+}
+
+func closeOpenStageAttempts(byStage map[string][]StageAttempt, event journal.Event) {
+	finished := event.Time
+	for stage := range byStage {
+		for i := range byStage[stage] {
+			attempt := &byStage[stage][i]
+			if attempt.FinishedSeq != 0 {
+				continue
+			}
+			attempt.Status = string(apiv1.ResultFailure)
+			attempt.FinishedSeq = event.Seq
+			attempt.FinishedAt = &finished
+			if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
+				attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
+			}
+		}
+	}
+}
+
+func applyStageAttemptEvent(
+	runID string,
+	attempts []StageAttempt,
+	visits map[string]stageVisitState,
+	artifacts artifactIndex,
+	event journal.Event,
+) []StageAttempt {
+	switch event.Type {
+	case journal.EventStageRerunRequested:
+		visit := visits[event.Stage]
+		visit.humanRequested = true
+		visits[event.Stage] = visit
+	case journal.EventStageStarted, journal.EventReviewerStarted:
+		if event.Type == journal.EventReviewerStarted {
+			closeInterruptedReviewerAttempts(attempts, event)
+		} else {
+			closeInterruptedStageAttempts(attempts, event)
+		}
+		attempts = append(attempts, newStageAttempt(runID, event, visits, true))
+	case journal.EventRunnerPlacement:
+		applyAttemptPlacement(attempts, event)
+	case journal.EventArtifactRecorded:
+		applyAttemptArtifact(attempts, artifacts, event)
+	case journal.EventError:
+		if event.Error != nil && event.Error.Code == "executor_error" {
+			attempts = finishStageAttempt(runID, attempts, visits, artifacts, event, true)
+		}
+	case journal.EventStageFinished, journal.EventReviewerFinished:
+		attempts = finishStageAttempt(runID, attempts, visits, artifacts, event, false)
+	}
+	return attempts
+}
+
+func applyAttemptPlacement(attempts []StageAttempt, event journal.Event) {
+	i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
+	if i < 0 {
+		return
+	}
+	if placement, ok := journal.PlacementFromEvent(event); ok {
+		attempts[i].Placement = &placement
+	}
+}
+
+func applyAttemptArtifact(attempts []StageAttempt, artifacts artifactIndex, event journal.Event) {
+	if event.Ref == nil {
+		return
+	}
+	i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
+	if metadata, ok := artifacts.bySeq[event.Seq]; i >= 0 && ok {
+		attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
+	}
+}
+
+func finishStageAttempt(
+	runID string,
+	attempts []StageAttempt,
+	visits map[string]stageVisitState,
+	artifacts artifactIndex,
+	event journal.Event,
+	executorError bool,
+) []StageAttempt {
+	i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
+	if i < 0 {
+		attempts = append(attempts, newStageAttempt(runID, event, visits, false))
+		i = len(attempts) - 1
+	}
+	if executorError {
+		finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
+		return attempts
+	}
+	finishAttempt(&attempts[i], event, event.Status, event.Outputs, event.Error)
+	for _, ref := range event.Artifacts {
+		metadata, ok := artifacts.match(
+			ref.Digest, event.Stage, event.Attempt, event.AttemptClass,
+			event.Branch, attempts[i].StartedSeq, event.Seq,
+		)
+		if ok && !containsArtifact(attempts[i].Artifacts, metadata.RecordedSeq, metadata.Digest) {
+			attempts[i].Artifacts = append(attempts[i].Artifacts, metadata)
+		}
+	}
+	return attempts
 }
 
 type stageVisitState struct {
@@ -3277,6 +3309,15 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 // return rather than on whichever ones someone remembered to edit. Several of
 // these methods return successfully from more than one place.
 func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
+	return s.GetRunWithContinuations(ctx, runID, "")
+}
+
+// GetRunWithContinuations returns the detail with a bounded continuation page.
+// after is the exclusive run-ID cursor returned by the preceding page.
+func (s *Local) GetRunWithContinuations(ctx context.Context, runID, after string) (RunDetail, error) {
+	if after != "" && !apiv1.ValidRunID(after) {
+		return RunDetail{}, fmt.Errorf("%w: invalid continuation cursor", ErrInvalidArgument)
+	}
 	out, err := s.getRunUnannotated(ctx, runID)
 	if err != nil {
 		return RunDetail{}, err
@@ -3289,12 +3330,12 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 		out.Stale = runIsStale(out.RunSummary, s.now().UTC(), lastTickAt, s.sources.LivenessTimeout)
 	}
 	summaries := []RunSummary{out.RunSummary}
-	if err := s.decorateRunLineage(ctx, summaries); err != nil {
+	if err := s.decorateRunLineage(ctx, summaries, after); err != nil {
 		return RunDetail{}, err
 	}
 	s.decorateBlockerClears(ctx, summaries)
 	if !s.readModelReads {
-		lineage, err := s.offlineRunLineage(ctx, summaries[0])
+		lineage, err := s.offlineRunLineagePage(ctx, summaries[0], after)
 		if err != nil {
 			return RunDetail{}, err
 		}
@@ -3302,188 +3343,6 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	}
 	out.RunSummary = summaries[0]
 	return annotated[RunDetail](ctx, s, out), nil
-}
-
-func (s *Local) offlineRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
-	if s.sources.Telemetry != nil {
-		return s.telemetryRunLineage(ctx, target)
-	}
-	ids, err := s.RunIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	summaries := make([]RunSummary, 0, len(ids))
-	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		run, err := s.openRun(id)
-		if err != nil {
-			continue
-		}
-		summary, err := summarizeRun(run, s.now().UTC())
-		if err != nil {
-			continue
-		}
-		summaries = append(summaries, summary)
-	}
-	decorateRunLineageFromSummaries(summaries)
-	for _, summary := range summaries {
-		if summary.ID == target.ID {
-			return summary.Lineage, nil
-		}
-	}
-	return nil, nil
-}
-
-func (s *Local) telemetryRunLineage(ctx context.Context, target RunSummary) (*RunLineage, error) {
-	children, err := s.sources.Telemetry.ContinuationRuns(ctx, []string{target.ID})
-	if err != nil {
-		return nil, err
-	}
-	lineage := target.Lineage
-	for _, child := range children[target.ID] {
-		if lineage == nil {
-			lineage = &RunLineage{}
-		}
-		lineage.Continuations = append(lineage.Continuations, LineageRun{
-			ID: child.RunID, Phase: journal.RunPhase(child.Status),
-		})
-	}
-	if lineage == nil || lineage.Source == nil {
-		return lineage, nil
-	}
-
-	sourceID := lineage.Source.ID
-	seen := make(map[string]struct{})
-	for sourceID != "" {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if _, duplicate := seen[sourceID]; duplicate {
-			break
-		}
-		seen[sourceID] = struct{}{}
-		run, err := s.openRun(sourceID)
-		if err != nil {
-			break
-		}
-		summary, err := summarizeRun(run, s.now().UTC())
-		if err != nil {
-			break
-		}
-		if sourceID == lineage.Source.ID {
-			lineage.Source.Phase = summary.Phase
-		}
-		lineage.HistoricalRepassCount += summary.RepassCount
-		if summary.Lineage == nil || summary.Lineage.Source == nil {
-			break
-		}
-		sourceID = summary.Lineage.Source.ID
-	}
-	return lineage, nil
-}
-
-func (s *Local) decorateRunLineage(ctx context.Context, runs []RunSummary) error {
-	if len(runs) == 0 {
-		return nil
-	}
-	type continuationReader interface {
-		GetRun(context.Context, string) (readmodel.RunRow, bool, error)
-		ContinuationRuns(context.Context, []string) (map[string][]readmodel.RunRow, error)
-	}
-	if projected, ok := s.sources.ReadModel.(continuationReader); ok && s.readModelReads {
-		sourceIDs := make([]string, len(runs))
-		for i := range runs {
-			sourceIDs[i] = runs[i].ID
-		}
-		children, err := projected.ContinuationRuns(ctx, sourceIDs)
-		if err != nil {
-			return err
-		}
-		for i := range runs {
-			if rows := children[runs[i].ID]; len(rows) > 0 {
-				if runs[i].Lineage == nil {
-					runs[i].Lineage = &RunLineage{}
-				}
-				for _, row := range rows {
-					runs[i].Lineage.Continuations = append(runs[i].Lineage.Continuations,
-						LineageRun{ID: row.RunID, Phase: row.Phase})
-				}
-			}
-			if runs[i].Lineage == nil || runs[i].Lineage.Source == nil {
-				continue
-			}
-			sourceID := runs[i].Lineage.Source.ID
-			seen := make(map[string]struct{})
-			for sourceID != "" {
-				if _, duplicate := seen[sourceID]; duplicate {
-					break
-				}
-				seen[sourceID] = struct{}{}
-				row, found, err := projected.GetRun(ctx, sourceID)
-				if err != nil {
-					return err
-				}
-				if !found {
-					break
-				}
-				if sourceID == runs[i].Lineage.Source.ID {
-					runs[i].Lineage.Source.Phase = row.Phase
-				}
-				runs[i].Lineage.HistoricalRepassCount += row.RepassCount
-				sourceID = row.Operator.ContinuedFromRunID
-			}
-		}
-		return nil
-	}
-
-	return nil
-}
-
-func decorateRunLineageFromSummaries(runs []RunSummary) {
-	byID := make(map[string]*RunSummary, len(runs))
-	for i := range runs {
-		byID[runs[i].ID] = &runs[i]
-	}
-	for i := range runs {
-		lineage := runs[i].Lineage
-		if lineage == nil || lineage.Source == nil {
-			continue
-		}
-		sourceID := lineage.Source.ID
-		if source := byID[sourceID]; source != nil {
-			lineage.Source.Phase = source.Phase
-			if source.Lineage == nil {
-				source.Lineage = &RunLineage{}
-			}
-			source.Lineage.Continuations = append(source.Lineage.Continuations,
-				LineageRun{ID: runs[i].ID, Phase: runs[i].Phase})
-		}
-		seen := make(map[string]struct{})
-		for sourceID != "" {
-			if _, duplicate := seen[sourceID]; duplicate {
-				break
-			}
-			seen[sourceID] = struct{}{}
-			source := byID[sourceID]
-			if source == nil {
-				break
-			}
-			lineage.HistoricalRepassCount += source.RepassCount
-			if source.Lineage == nil || source.Lineage.Source == nil {
-				break
-			}
-			sourceID = source.Lineage.Source.ID
-		}
-	}
-	for i := range runs {
-		if runs[i].Lineage != nil {
-			sort.Slice(runs[i].Lineage.Continuations, func(a, b int) bool {
-				return runs[i].Lineage.Continuations[a].ID < runs[i].Lineage.Continuations[b].ID
-			})
-		}
-	}
 }
 
 func (s *Local) annotateRunStaleness(runs []RunSummary) error {

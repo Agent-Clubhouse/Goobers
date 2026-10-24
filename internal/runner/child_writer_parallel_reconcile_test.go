@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -15,7 +17,7 @@ import (
 func TestReconcileChildWriterPreservesInterleavedSiblingCustody(t *testing.T) {
 	id := journal.RunIdentity{RunID: "child-proof", Gaggle: "web", Workflow: "generated", ConfigGeneration: journal.Digest([]byte("config")), WorkflowDigest: journal.Digest([]byte("workflow")), GooberDigest: journal.Digest([]byte("goobers")), Child: childWorkspaceStart(nil).Child}
 	id.Child.AcceptanceID = "trigger-" + id.RunID
-	admission, _ := json.Marshal(ChildWorkspaceAdmission{WorkspaceID: "child-owned", ForkSHA: strings.Repeat("1", 40), RepositoryDigest: strings.Repeat("2", 64)})
+	admission, _ := json.Marshal(workspaceauthority.ChildWorkspaceAdmission{WorkspaceID: "child-owned", ForkSHA: strings.Repeat("1", 40), RepositoryDigest: strings.Repeat("2", 64)})
 	jr, err := journal.Create(t.TempDir(), id, map[string][]byte{childWriterPolicyInput: []byte(childWriterPolicy), ChildWorkspaceInputName: admission}, journal.WithInputIntegrity(map[string]apiv1.Integrity{childWriterPolicyInput: apiv1.IntegrityTrusted, ChildWorkspaceInputName: apiv1.IntegrityTrusted}))
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +69,7 @@ func TestReconcileChildWriterPreservesInterleavedSiblingCustody(t *testing.T) {
 	assertCleanup := func(workspace string, allowed bool) {
 		t.Helper()
 		target := worktree.CleanupTarget{WorktreeID: workspace, OwnerRunID: id.RunID, Gaggle: id.Gaggle, RepositoryDigest: strings.Repeat("2", 64)}
-		err := VerifyChildWorkspaceCleanup(rd, id, target)
+		err := workspaceauthority.VerifyChildWorkspaceCleanup(rd, id, target)
 		if (err == nil) != allowed || !allowed && !errors.Is(err, invoke.ErrWorkspaceNotQuiescent) {
 			t.Fatalf("cleanup %s: allowed=%v, error=%v", workspace, allowed, err)
 		}

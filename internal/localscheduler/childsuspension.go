@@ -42,14 +42,14 @@ func (s *Scheduler) SuspendChildParent(ctx context.Context, runID string) (*Chil
 		return lease, nil
 	}
 	if reconciled, ok := s.reconciledRuns[runID]; ok {
-		if reconciled.identity.Workflow != reconciled.workflow {
+		if reconciled.Identity.Workflow != reconciled.Workflow {
 			return nil, errors.New("localscheduler: child cannot suspend parent capacity")
 		}
 		lease.reconciled = true
-		if !reconciled.suspended {
-			reconciled.suspended = true
+		if !reconciled.Suspended {
+			reconciled.Suspended = true
 			s.reconciledRuns[runID] = reconciled
-			s.conditions.ReleaseWorkflow(reconciled.identity)
+			s.conditions.ReleaseWorkflow(reconciled.Identity)
 		}
 		return lease, nil
 	}
@@ -93,13 +93,13 @@ func (p *ChildParentSuspension) resumeReconciled() error {
 	if !ok {
 		return errors.New("localscheduler: parent admission ended")
 	}
-	if !a.suspended {
+	if !a.Suspended {
 		return nil
 	}
-	if err := s.resumeChildParent(a.identity); err != nil {
+	if err := s.resumeChildParent(a.Identity); err != nil {
 		return err
 	}
-	a.suspended = false
+	a.Suspended = false
 	s.reconciledRuns[p.runID] = a
 	return nil
 }

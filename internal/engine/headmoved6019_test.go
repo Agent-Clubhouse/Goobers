@@ -12,7 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -28,7 +28,7 @@ func headMovedSurrender() dispatcher.SurrenderedResult {
 	return dispatcher.SurrenderedResult{WorkspaceHeadMoved: true, Result: apiv1.ResultEnvelope{
 		Status: apiv1.ResultFailure,
 		Error: &apiv1.ErrorInfo{
-			Code:    runner.WorkspaceHeadMovedErrorCode,
+			Code:    runsemantics.WorkspaceHeadMovedErrorCode,
 			Message: "workspace delta sha256:d: ref is at aaaa, delta carries bbbb (the ref carries 1 commit(s) the delta lacks: aaaa person's push)",
 		},
 	}}
@@ -40,7 +40,7 @@ func headMovedMarkers(proj JournalProjection) []string {
 	var stages []string
 	for _, op := range proj.Ops {
 		if op.Kind == opAppend && op.Event != nil && op.Event.Type == journal.EventError &&
-			op.Event.Error != nil && op.Event.Error.Code == runner.WorkspaceHeadMovedErrorCode {
+			op.Event.Error != nil && op.Event.Error.Code == runsemantics.WorkspaceHeadMovedErrorCode {
 			stages = append(stages, op.Event.Stage)
 		}
 	}
@@ -185,7 +185,7 @@ func TestUnattestedHeadMovedCodeIsAnOrdinaryFailure(t *testing.T) {
 		}
 	})
 	t.Run("in-process executor", func(t *testing.T) {
-		result := apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: runner.WorkspaceHeadMovedErrorCode, Message: "claimed"}}
+		result := apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{Code: runsemantics.WorkspaceHeadMovedErrorCode, Message: "claimed"}}
 		admitWorkspaceHeadMoved(&result, false)
 		if workspaceHeadMovedResult(result) {
 			t.Fatalf("result = %+v, want an unattested claim renamed", result.Error)

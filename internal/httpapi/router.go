@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -175,6 +176,10 @@ const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 
 // WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
 const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
+
+// WorkerChildAdmissionPrincipalIssuer can only call the engine child-admission
+// plane. The grant is instance-wide: it is not bound to a run or child.
+const WorkerChildAdmissionPrincipalIssuer = "goobers/worker-child-admission"
 
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
@@ -400,6 +405,32 @@ func telemetryPlanePath(path string) bool {
 	}
 }
 
+// authorizeIssuerBoundRoute decides routes that exactly one issuer may call,
+// before any role or scope rule runs. handled is false for every other route.
+func authorizeIssuerBoundRoute(request *http.Request, principal Principal) (handled bool, err error) {
+	switch {
+	case engineChildPlanePath(request.URL.Path):
+		// Defence in depth: no role, scope or other issuer reaches the engine
+		// child-admission plane, whatever later rules would grant.
+		if principal.Issuer != WorkerChildAdmissionPrincipalIssuer {
+			return true, errors.New("only the engine worker child-admission credential may call the child-admission plane")
+		}
+		return false, nil
+	case request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath:
+		if principal.Issuer == WorkerPrincipalIssuer {
+			return true, nil
+		}
+		return true, errors.New("only an authenticated worker may report config divergence")
+	case request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigSnapshotPath:
+		if principal.Issuer == WorkerPrincipalIssuer {
+			return true, nil
+		}
+		return true, errors.New("only an authenticated worker may fetch configuration")
+	default:
+		return false, nil
+	}
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
@@ -422,7 +453,7 @@ func telemetryPlanePath(path string) bool {
 // convention.
 //
 // Resident worker principals use a separate identity and may only GET the
-// config digest or POST their own divergence report. Dedicated blob-worker
+// config digest/snapshot or POST their own divergence report. Dedicated blob-worker
 // principals may only GET/PUT blobs; surrender-worker principals may only
 // read surrender results and presence. Pod scopes and roles broaden none.
 func RequireRoles() Authorizer {
@@ -431,11 +462,8 @@ func RequireRoles() Authorizer {
 		if !ok {
 			return errors.New("no authenticated principal")
 		}
-		if request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
-			if principal.Issuer == WorkerPrincipalIssuer {
-				return nil
-			}
-			return errors.New("only an authenticated worker may report config divergence")
+		if handled, err := authorizeIssuerBoundRoute(request, principal); handled {
+			return err
 		}
 		if principal.Issuer == WorkflowParentPrincipalIssuer {
 			return authorizeWorkflowParent(request, principal)
@@ -469,17 +497,18 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("a credential-refresh grant may only call the credential refresh route")
 		}
-		if principal.Issuer == WorkerSurrenderPrincipalIssuer {
-			return authorizeWorkerSurrender(request)
+		if authorize, ok := workerPlaneAuthorizers[principal.Issuer]; ok {
+			return authorize(request)
 		}
 		if principal.Issuer == WorkerBlobPrincipalIssuer {
 			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == WorkerPrincipalIssuer {
-			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
+			if request.Method == http.MethodGet &&
+				(request.URL.Path == apicontract.ConfigDigestPath || request.URL.Path == apicontract.ConfigSnapshotPath) {
 				return nil
 			}
-			return errors.New("worker principal may only read config digest or report config divergence")
+			return errors.New("worker principal may only read config state or report config divergence")
 		}
 		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
 			return nil
@@ -664,6 +693,7 @@ type handlerConfig struct {
 	escalations               EscalationService
 	cancels                   CancelService
 	journal                   JournalService
+	engineChildren            EngineChildPlane
 	generatedChildJournal     JournalService
 	runJournal                RunJournalService
 	childWorkflows            ChildWorkflowService
@@ -684,6 +714,7 @@ type handlerConfig struct {
 	telemetryDefects          TelemetryDefectAggregateService
 	podRunGaggle              func(context.Context, string) (string, error)
 	configDigest              func() string
+	configSnapshots           ConfigSnapshotService
 	workerConfigDivergence    func(journal.Event) error
 	instanceReadiness         InstanceReadinessService
 	portalAssets              http.Handler
@@ -730,7 +761,8 @@ func WithTrustedProxies(proxies []string) HandlerOption {
 }
 
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
-// change feed (#1929).
+// change feed (#1929). The feed must be store.ChangeFeed(): a second feed would
+// wait on a different notifier and lose the store's commit wakeups.
 //
 // The only SSE source (#1929). It tails rows the projector wrote in the same
 // transaction as the facts they describe, so it is ordered, durable, and
@@ -738,9 +770,15 @@ func WithTrustedProxies(proxies []string) HandlerOption {
 //
 // A topology with no read model registers no stream at all rather than falling
 // back to a second detector; the freshness surface reports that as degraded.
-func WithChangeFeedStream(store *readmodel.Store) HandlerOption {
+func WithChangeFeedStream(store readmodel.Backend, feed readmodel.Feed) HandlerOption {
 	return func(h *handlerConfig) error {
-		h.events = newFeedStream(store)
+		if store == nil || feed == nil {
+			return errors.New("http API change feed backend and feed are required")
+		}
+		if !reflect.TypeOf(feed).Comparable() || feed != store.ChangeFeed() {
+			return errors.New("http API change feed must be the backend's singleton feed")
+		}
+		h.events = newFeedStream(store, feed)
 		return nil
 	}
 }
@@ -1238,6 +1276,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 
 func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig, discovery *discoveryState) {
 	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog, discovery)
+	registerConfigSnapshotRoute(router, config.configSnapshots)
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -1343,6 +1382,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
+	registerEngineChildPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, config.generatedChildBlobs, config.workflowParentBlobs, errorLog)
 	router.HandleByMethod(map[string]apicontract.RouteID{
@@ -1443,7 +1483,19 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, runs)
 	})
 	router.Handle(apicontract.RouteRunDetail, func(w http.ResponseWriter, request *http.Request) {
-		run, err := reader.GetRun(request.Context(), request.PathValue("run"))
+		var run readservice.RunDetail
+		var err error
+		if after := request.URL.Query().Get("continuationsAfter"); after != "" {
+			if paged, ok := reader.(interface {
+				GetRunWithContinuations(context.Context, string, string) (readservice.RunDetail, error)
+			}); ok {
+				run, err = paged.GetRunWithContinuations(request.Context(), request.PathValue("run"), after)
+			} else {
+				err = fmt.Errorf("%w: continuation pagination unavailable", readservice.ErrInvalidArgument)
+			}
+		} else {
+			run, err = reader.GetRun(request.Context(), request.PathValue("run"))
+		}
 		if err != nil {
 			writeReadError(w, errorLog, "get run", err)
 			return

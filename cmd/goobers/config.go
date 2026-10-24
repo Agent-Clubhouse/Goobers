@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -189,7 +191,7 @@ func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
 	if code := runValidate([]string{"--source-tree", cfg.WorkflowSource.Path}, stdout, stderr); code != 0 {
 		return code
 	}
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

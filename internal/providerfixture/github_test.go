@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -400,11 +401,14 @@ func TestProviderFixtureWorkflowIsInertAndSeparatesOutcomes(t *testing.T) {
 		"Issue provider contract assertions",
 		"Pull request provider contract assertions",
 		"PROVIDER_FIXTURE_PR",
-		"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("provider fixture workflow does not contain %q", want)
 		}
+	}
+	pin := regexp.MustCompile(`(?m)^\s*(?:-\s*)?uses:\s*actions/upload-artifact@[0-9a-fA-F]{40}[ \t]+#[ \t]+v[0-9]+(?:\.[0-9]+){0,2}[ \t]*$`)
+	if !pin.MatchString(workflow) {
+		t.Error("provider fixture workflow must pin actions/upload-artifact to a 40-hex SHA with a version comment")
 	}
 	if got := strings.Count(workflow, "secrets.GH_READONLY_VALIDATION_PAT"); got != 3 {
 		t.Errorf("provider fixture workflow contains %d GH_READONLY_VALIDATION_PAT references, want 3", got)

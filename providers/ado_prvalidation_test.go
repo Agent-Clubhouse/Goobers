@@ -43,6 +43,9 @@ func prDetailHandler(t *testing.T, reviewers []map[string]interface{}) http.Hand
 
 func policyEvaluationsHandler(t *testing.T, evaluations []map[string]interface{}) http.HandlerFunc {
 	t.Helper()
+	if evaluations == nil {
+		evaluations = []map[string]interface{}{}
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
 		if got := r.URL.Query().Get("scopeId"); got != "proj-guid" {
