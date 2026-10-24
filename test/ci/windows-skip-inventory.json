@@ -247,6 +247,12 @@
       "reason": "Cloud PostgreSQL journal tests run in Linux unit and local PG16 cloudintegration jobs; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/schedentries",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud control-plane scheduling library; runs on the Linux unit shards (its PG16 exactly-once suite is cloudintegration-tagged)."
+    },
+    {
       "package": "internal/cloud/epoch",
       "coverage": "none",
       "category": "not-selected",
@@ -1013,6 +1019,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/remediationselect",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure remediation-selection logic extracted from cmd/goobers (#8131); no Windows-specific seam, covered by the cmd/goobers Windows run through its re-exports and by the Linux unit shards."
     },
     {
       "package": "internal/retryutil",
