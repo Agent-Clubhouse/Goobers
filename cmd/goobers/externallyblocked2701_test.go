@@ -88,7 +88,7 @@ func TestExternallyBlockedParkLeavesABaseAdvanceExit(t *testing.T) {
 	if decision.Escalation.Attempted {
 		t.Fatal("no agent ran, so the park must not claim remediation was attempted")
 	}
-	if got := decision.State.AttemptsByCause.forCause(remediationCauseFailingCI); got != 0 {
+	if got := decision.State.AttemptsByCause.ForCause(remediationCauseFailingCI); got != 0 {
 		t.Fatalf("failing-ci attempts = %d, want 0 — an external park consumes no allowance", got)
 	}
 	if !escalationBaseAdvanceUnparks(decision.State) {
@@ -177,7 +177,7 @@ func TestRemediationCheckpointParksBaseRedCIBeforeTheAgenticChain(t *testing.T) 
 			if state.Escalated != tt.wantParked {
 				t.Fatalf("escalated = %t, want %t (comment = %q)", state.Escalated, tt.wantParked, st.comments[0])
 			}
-			if got := state.AttemptsByCause.forCause(remediationCauseFailingCI); tt.wantParked && got != 0 {
+			if got := state.AttemptsByCause.ForCause(remediationCauseFailingCI); tt.wantParked && got != 0 {
 				t.Fatalf("failing-ci attempts = %d, want 0 — an external park consumes no allowance", got)
 			}
 			if !tt.wantParked {
