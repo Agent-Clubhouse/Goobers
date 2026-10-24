@@ -52,6 +52,23 @@ func (p *Plane) Renew(ctx context.Context, request httpapi.ClaimRequest) (httpap
 // without a workflow renew a live same-run lease under its recorded workflow.
 func (p *Plane) claim(ctx context.Context, request httpapi.ClaimRequest, lease time.Duration, renewal bool) (httpapi.ClaimResponse, error) {
 	key := localscheduler.ClaimKey{Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID}
+	if p.shared != nil {
+		if renewal && request.Workflow == "" {
+			entries, err := p.selectEntries(ctx, p.pool, `run_id=$2 AND gaggle=$3 AND provider=$4 AND external_id=$5`,
+				request.RunID, key.Gaggle, key.Provider, key.ExternalID)
+			if err != nil || len(entries) == 0 {
+				return httpapi.ClaimResponse{Ok: false}, err
+			}
+			request.Workflow = entries[0].Workflow
+		}
+		binding, err := p.shared.Admission(ctx, key, request.RunID, request.Workflow)
+		if err != nil {
+			return httpapi.ClaimResponse{}, err
+		}
+		if binding != nil {
+			return p.claimShared(ctx, p.owner(), request, lease, *binding, nil)
+		}
+	}
 	var response httpapi.ClaimResponse
 	err := p.fenced(ctx, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
 		if err := pruneHistory(ctx, tx, p.instanceID, epoch); err != nil {

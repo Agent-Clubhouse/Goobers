@@ -24,7 +24,7 @@ type querier interface {
 // List reads the run's claims or one namespace, with released history on
 // request. A namespace listing includes live legacy claims, which are
 // exclusive against every namespace. The execution listing is the run's own
-// snapshot under local claim visibility, the only visibility the cloud has.
+// snapshot under its immutable start-time visibility policy.
 func (p *Plane) List(ctx context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
 	if request.RunID == "" {
 		return httpapi.ClaimListResponse{}, invalidRequest("runId is required")
@@ -72,18 +72,29 @@ func (p *Plane) listNamespace(ctx context.Context, request httpapi.ClaimListRequ
 }
 
 // executionSnapshot answers the trusted execution fence: the run's leases and
-// history at one database instant. Shared visibility is refused at config
-// admission (RUNTIME004), so every cloud run is local.
+// history at one database instant. Its mode comes from the verified start-time
+// workflow pin, never from a request or the current configuration.
 func (p *Plane) executionSnapshot(ctx context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
 	if !request.IncludeHistory || request.Gaggle != "" || request.Provider != "" {
 		return httpapi.ClaimListResponse{}, invalidRequest("execution requires own-run scope and history")
+	}
+	mode := "local"
+	if p.shared != nil {
+		var err error
+		mode, err = p.shared.Visibility(ctx, request.RunID)
+		if err != nil {
+			return httpapi.ClaimListResponse{}, err
+		}
+		if mode != "local" && mode != "shared" {
+			return httpapi.ClaimListResponse{}, invalidRequest("invalid pinned claim visibility")
+		}
 	}
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return httpapi.ClaimListResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	response := httpapi.ClaimListResponse{ClaimVisibility: "local"}
+	response := httpapi.ClaimListResponse{ClaimVisibility: mode}
 	if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&response.ObservedAt); err != nil {
 		return httpapi.ClaimListResponse{}, err
 	}

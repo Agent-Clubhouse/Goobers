@@ -3,6 +3,7 @@ package claims
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -46,6 +47,21 @@ func (p *Plane) Recover(ctx context.Context, _ httpapi.ClaimRecoverRequest) (htt
 // a failure.
 func (p *Plane) releaseCandidates(ctx context.Context, handle *cloudlease.Handle, candidates []recoveryCandidate) ([]localscheduler.ClaimEntry, error) {
 	var released []localscheduler.ClaimEntry
+	local := make([]recoveryCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.entry.SharedDeadline.IsZero() {
+			local = append(local, candidate)
+			continue
+		}
+		ok, err := p.releaseShared(ctx, handle, candidate.entry, candidate.reason, candidate.expired)
+		if err != nil {
+			return released, err
+		}
+		if ok {
+			released = append(released, candidate.entry)
+		}
+	}
+	candidates = local
 	for start := 0; start < len(candidates); start += recoverBatch {
 		batch := candidates[start:min(start+recoverBatch, len(candidates))]
 		var moved []localscheduler.ClaimEntry
@@ -77,10 +93,11 @@ func (p *Plane) recoveryCandidates(ctx context.Context, terminal bool) ([]recove
 	rows, err := p.pool.Query(ctx, `
 		SELECT c.external_id,c.gaggle,c.provider,c.run_id,c.workflow,
 		       c.claimed_at,c.renewed_at,c.expires_at,c.verification,c.owner_token,
-		       c.expires_at<=clock_timestamp(), coalesce(k.terminal,false)
+		       c.expires_at<=clock_timestamp(), coalesce(k.terminal,false),
+		       c.shared_owner,c.shared_deadline,c.shared_admission_pending,c.shared_revoked,c.release_pending_at IS NOT NULL
 		FROM control.claim AS c
 		LEFT JOIN journal.run_checkpoint AS k ON k.instance_id=c.instance_id AND k.run_id=c.run_id
-		WHERE c.instance_id=$1 AND c.release_pending_at IS NULL
+		WHERE c.instance_id=$1 AND (c.release_pending_at IS NULL OR c.shared_deadline IS NOT NULL)
 		  AND (c.expires_at<=clock_timestamp() OR ($3 AND k.terminal))
 		ORDER BY c.gaggle,c.provider,c.external_id
 		LIMIT $2`,
@@ -93,19 +110,28 @@ func (p *Plane) recoveryCandidates(ctx context.Context, terminal bool) ([]recove
 	terminalRuns := map[string]bool{}
 	for rows.Next() {
 		var candidate recoveryCandidate
-		var verification []byte
+		var verification, sharedOwner []byte
+		var deadline *time.Time
 		var runTerminal bool
 		err := rows.Scan(
 			&candidate.entry.ItemID, &candidate.entry.Gaggle, &candidate.entry.Provider,
 			&candidate.entry.RunID, &candidate.entry.Workflow, &candidate.entry.ClaimedAt,
 			&candidate.entry.RenewedAt, &candidate.entry.ExpiresAt, &verification,
 			&candidate.token, &candidate.expired, &runTerminal,
+			&sharedOwner, &deadline, &candidate.entry.SharedAdmissionPending, &candidate.entry.SharedRevoked, &candidate.entry.ReleasePending,
 		)
 		if err != nil {
 			rows.Close()
 			return nil, err
 		}
 		candidate.entry.ExternalID = candidate.entry.ItemID
+		if deadline != nil {
+			candidate.entry.SharedDeadline = *deadline
+		}
+		if err := json.Unmarshal(sharedOwner, &candidate.entry.SharedOwner); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		if len(verification) > 0 {
 			if err := json.Unmarshal(verification, &candidate.entry.Verification); err != nil {
 				rows.Close()
