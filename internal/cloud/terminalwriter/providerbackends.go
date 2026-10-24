@@ -21,7 +21,7 @@ type restProvider interface {
 
 type restBackend struct{ restProvider }
 
-func githubBackend(p *providers.GitHubProvider) Backend { return restBackend{p} }
+func githubBackend(p *providers.GitHubProvider) Backend { return githubRESTBackend{restBackend{p}, p} }
 func giteaBackend(p *providers.GiteaProvider) Backend   { return giteaRESTBackend{restBackend{p}} }
 
 // giteaRESTBackend refuses branch deletion: Gitea deletes a branch with a git

@@ -95,6 +95,9 @@ func (b *ConfiguredBackends) For(ctx context.Context, bound Binding, repo provid
 	case providers.ProviderGitHub:
 		var opts []func(*providers.GitHubProvider)
 		opts = append(opts, providers.WithTokenSource(source))
+		if repo.URL != "" {
+			opts = append(opts, func(p *providers.GitHubProvider) { p.BaseURL = repo.URL })
+		}
 		if login := cfg.GitHubBotLogin(repo.Owner, repo.Name); login != "" {
 			opts = append(opts, providers.WithConfiguredLogin(login))
 		}
