@@ -9,17 +9,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// GrantExisting grants the runtime roles the inventory's privileges on the
-// objects that exist at this moment, and nothing else. It runs inside each
-// migration's transaction, right after its DDL: the grant reconcile runs only
-// after the last migration, and in between a previous binary still serving
-// would be refused a column a migration just added (a RETURNING * or SELECT *
-// needs SELECT on every column). It only ever grants, never revokes, and skips
-// silently whatever the inventory names that does not exist yet, which is the
-// expected state part-way through the catalog: a missing role, schema, table,
-// column or sequence, a partition (governed by its root) and an object the
-// inventory does not describe. ReconcileGrants after the last migration stays
-// the authority that converges privileges exactly.
+// GrantExisting applies the WHOLE inventory of the binary running the migrate
+// (binary N) to the objects that exist at this moment, granting only. It runs
+// inside each migration's transaction, right after its DDL: the grant
+// reconcile runs only after the last migration, and in between a previous
+// binary still serving would be refused a column a migration just added (a
+// RETURNING * or SELECT * needs SELECT on every column).
+//
+// Because it is N's whole inventory, not just the migration's new objects:
+//   - widenings N makes to existing objects take effect at the first migration
+//     of the run, and persist if the run then fails before the reconcile;
+//   - narrowings (privileges N removes) do not happen here; they wait for the
+//     reconcile, since this pass never revokes.
+//
+// It skips silently whatever the inventory names that does not exist yet,
+// which is the expected state part-way through the catalog: a missing role,
+// schema, table, column or sequence, a partition (governed by its root) and an
+// object the inventory does not describe. ReconcileGrants after the last
+// migration stays the authority that converges privileges exactly.
 func GrantExisting(ctx context.Context, tx pgx.Tx, inventory Inventory) error {
 	roles, err := existingRuntimeRoles(ctx, tx)
 	if err != nil || len(roles) == 0 {

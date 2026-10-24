@@ -338,11 +338,12 @@ var (
 	migrationLockBackoff = 2 * time.Second
 )
 
-// applyInTx applies one migration and records it, then grants the runtime
-// roles the inventory's privileges on what now exists (GrantExisting) in the
-// same transaction, so a column the migration adds is never visible to a
-// still-serving previous binary without its grant. The full reconcile still
-// runs after the last migration.
+// applyInTx applies one migration and records it, then applies this binary's
+// whole inventory to what now exists (GrantExisting, grants only) in the same
+// transaction, so a column the migration adds is never visible to a
+// still-serving previous binary without its grant. Widenings of existing
+// objects therefore take effect at the run's first migration and persist if
+// the run fails; narrowings wait for the full reconcile after the last one.
 func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string, inventory cloudschema.Inventory) error {
 	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)",
 		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
