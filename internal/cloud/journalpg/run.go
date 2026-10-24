@@ -56,7 +56,7 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 	}
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `INSERT INTO journal.run(instance_id,run_id,gaggle,workflow,run_yaml,created_at)
-  SELECT instance_id,$5,$6,$7,$8,$9 FROM control.lease WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`, h.InstanceID, h.Name, h.Holder, h.Epoch, id.RunID, id.Gaggle, id.Workflow, raw, id.StartedAt)
+  SELECT instance_id,$5,$6,$7,$8,clock_timestamp() FROM control.lease WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`, h.InstanceID, h.Name, h.Holder, h.Epoch, id.RunID, id.Gaggle, id.Workflow, raw)
 		if err = requireWrite(tag.RowsAffected(), err); err != nil {
 			return err
 		}

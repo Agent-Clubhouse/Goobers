@@ -44,3 +44,12 @@ func inspectRootIdentity(root string) *RootIdentity {
 	}
 	return result
 }
+
+// rootIdentity inspects the instance root, or says explicitly that a rootless
+// service has none (rather than calling it a legacy root without identity).
+func (s *Local) rootIdentity() *RootIdentity {
+	if s.sources.Rootless {
+		return &RootIdentity{IdentityProblem: "No local instance root: this read service is rootless."}
+	}
+	return inspectRootIdentity(s.sources.Layout.Root)
+}
