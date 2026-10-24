@@ -5,6 +5,7 @@ package readservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -23,6 +24,14 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/version"
 )
+
+// errRootlessFleet reports, explicitly, that a rootless service has no local
+// Fleet association store to read.
+var errRootlessFleet = errors.New("a rootless read service has no local Fleet association")
+
+func rootlessFleetAssociation(string) (fleet.Association, error) {
+	return fleet.Association{}, errRootlessFleet
+}
 
 func defaultFleetAssociation(instanceRoot string) (fleet.Association, error) {
 	storage, err := fleet.NewFileStorage("")
@@ -141,11 +150,21 @@ type cachedUpdateCheck struct {
 
 // LocalSources are the three local projections behind the shared service.
 type LocalSources struct {
-	Layout      instance.Layout
-	Config      *instance.Config
-	Definitions *instance.ConfigSet
-	Validation  *validate.Report
-	Telemetry   *rollup.DB
+	// Rootless serves reads with no local instance directory (the cloud control
+	// plane). Layout is then never consulted: a zero Layout would otherwise
+	// resolve every path against the process working directory. Journal and
+	// ReadModel are required, and each read that only a local directory can
+	// answer either returns ErrUnavailable or is skipped by design.
+	Rootless bool
+	// ClaimSnapshot, when set, is the live claim ledger the active-claims view
+	// and run-list claim decoration read instead of <scheduler>/claims.json.
+	// A rootless service without it reports claims unavailable, never empty.
+	ClaimSnapshot func(context.Context) (ClaimView, error)
+	Layout        instance.Layout
+	Config        *instance.Config
+	Definitions   *instance.ConfigSet
+	Validation    *validate.Report
+	Telemetry     *rollup.DB
 	// ChildHistory is optional live custody access with no write methods.
 	ChildHistory ChildHistorySource
 	// ChildPublications inspects bounded local effect custody without provider IO.
@@ -285,8 +304,24 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	if store, ok := sources.ReadModel.(*readmodel.Store); ok && store == nil {
 		sources.ReadModel = nil
 	}
+	if sources.Rootless {
+		if sources.Journal == nil || sources.ReadModel == nil {
+			return nil, fmt.Errorf("read service: a rootless service requires journal and read-model sources")
+		}
+		if sources.Layout.Root != "" {
+			return nil, fmt.Errorf("read service: a rootless service must not carry an instance layout")
+		}
+		// The telemetry rollup is a local SQLite file: every telemetry read
+		// of a rootless service reports ErrTelemetryUnavailable instead.
+		if sources.Telemetry != nil {
+			return nil, fmt.Errorf("read service: a rootless service has no local telemetry store")
+		}
+	}
 	if sources.FleetAssociation == nil {
 		sources.FleetAssociation = defaultFleetAssociation
+		if sources.Rootless {
+			sources.FleetAssociation = rootlessFleetAssociation
+		}
 	}
 	now := time.Now
 	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())
@@ -474,7 +509,8 @@ func (s *Local) updateAvailability() *UpdateAvailability {
 	// (there is no check running to do so), so a file left by an earlier
 	// enabled run would otherwise assert a pending update forever, with
 	// nothing short of editing the filesystem to silence it.
-	if !s.sources.Config.UpdateCheckSettings().EnabledEffective() {
+	if s.sources.Rootless || !s.sources.Config.UpdateCheckSettings().EnabledEffective() {
+		// A rootless service has no update-check cache: skipped by design.
 		return nil
 	}
 	result, ok := s.cachedUpdateCheck()
