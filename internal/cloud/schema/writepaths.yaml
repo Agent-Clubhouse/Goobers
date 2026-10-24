@@ -532,6 +532,31 @@ tables:
     - shared_revoked
     delete: true
 - schema: control
+  table: shared_claim_repository
+  provisioned: true
+  fence: owner_epoch
+  rationale: Shared-claim repositories are registered before remote CAS under the controller lease and retained for label repair after run retention. Cursor writes are fenced. EXCLUDED upserts require SELECT on the written columns.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - repo_key
+    - repository
+    - cursor
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - repo_key
+    - repository
+    - owner_epoch
+    update:
+    - repository
+    - cursor
+    - owner_epoch
+    - updated_at
+- schema: control
   table: scheduler_state
   provisioned: true
   fence: owner_epoch
