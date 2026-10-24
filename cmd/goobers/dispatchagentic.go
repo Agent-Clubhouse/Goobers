@@ -130,15 +130,24 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 		return fail("context_materialize_failed", err)
 	}
 
+	if kit.IsReview() && kit.Envelope.PreparedReviewerDiff != nil {
+		verdict, err := runsemantics.PreparedReviewerVerdict(kit.Envelope, kit.ReviewRequiresDiff)
+		if err != nil {
+			return fail("reviewer_diff_missing", err)
+		}
+		if verdict != nil {
+			return stageOutcome{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "empty-diff verdict surrendered"}, Verdict: verdict}
+		}
+	}
 	// Generated children receive the host runner's captured reviewer diff through
 	// contract-bound context. Their portable checkout deliberately has no host
 	// ancestry and cannot recompute that diff. Ordinary pod reviews still compute it.
-	if kit.IsReview() && isolatedChildWorkspace(ctx) && kit.ReviewRequiresDiff {
+	if kit.IsReview() && kit.Envelope.PreparedReviewerDiff == nil && isolatedChildWorkspace(ctx) && kit.ReviewRequiresDiff {
 		if err := requireCapturedChildReviewDiff(kit.Envelope, os.Getenv(dispatcher.EnvStage)); err != nil {
 			return fail("reviewer_diff_missing", err)
 		}
 	}
-	if kit.IsReview() && !isolatedChildWorkspace(ctx) {
+	if kit.IsReview() && kit.Envelope.PreparedReviewerDiff == nil && !isolatedChildWorkspace(ctx) {
 		// The reviewer's diff evidence (#301 parity on the pod path; decision
 		// 001 ruling 7): computed HERE, by this binary, from the checkout the
 		// delta was just applied to — never reported by a model — and handed

@@ -25,6 +25,13 @@ type Config struct {
 	InstanceID string
 	Lease      *lease.Manager
 	LiveOwner  func() *lease.Handle
+	// TerminalCleanup performs idempotent forge/claim cleanup after a fenced
+	// watchdog terminal is durable.
+	TerminalCleanup func(context.Context, journal.RunIdentity, string) error
+
+	// InstanceClock timestamps instance-log events before partition routing.
+	// Nil uses time.Now.
+	InstanceClock func() time.Time
 }
 
 // Backend is safe for concurrent use. Each recovered writer gets a new token;
@@ -45,14 +52,18 @@ type runOwner struct {
 }
 
 type instanceOwner struct {
-	token journal.OwnerToken
-	epoch int64
+	token  journal.OwnerToken
+	epoch  int64
+	stream string
 }
 
 // New constructs a writer/reader backend without acquiring journal ownership.
 func New(config Config) (*Backend, error) {
 	if config.Pool == nil || config.InstanceID == "" {
 		return nil, errors.New("journalpg: pool and instance ID are required")
+	}
+	if config.InstanceClock == nil {
+		config.InstanceClock = time.Now
 	}
 	return &Backend{config: config, runs: map[journal.RunHandle]*runOwner{}, instances: map[journal.InstanceHandle]*instanceOwner{}, dirty: make(chan struct{}, 1)}, nil
 }
