@@ -253,11 +253,15 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 		t.Fatal("provider observations were not restored on takeover")
 	}
 	observations := Observations{Pool: pool, InstanceID: "control-test", Lease: firstManager, Handle: old}
-	wantFence := lease.ErrStale
-	if involuntary {
-		wantFence = lease.ErrSelfFenced
-	}
-	if err := observations.Replace(ctx, nil); !errors.Is(err, wantFence) {
+	// The old handle's write must be refused. After an involuntary handoff it
+	// is self-fenced. After a voluntary one the new epoch refuses it
+	// (ErrStale), unless the handle's own renew window has already lapsed (it
+	// stopped renewing at release), in which case WithFence refuses it as
+	// self-fenced before it reaches the database: on a loaded host the test
+	// gets here after the window. Either is a refusal.
+	err = observations.Replace(ctx, nil)
+	refused := errors.Is(err, lease.ErrSelfFenced) || (!involuntary && errors.Is(err, lease.ErrStale))
+	if !refused {
 		t.Fatalf("zombie observation write: %v", err)
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")

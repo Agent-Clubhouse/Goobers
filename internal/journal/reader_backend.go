@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -45,6 +46,20 @@ type ReaderBackend interface {
 	ReadEvents(context.Context, RunRef, uint64, int) ([]EventRecord, error)
 	ListRuns(context.Context, RunFilter) ([]RunRef, error)
 	InstanceRead(context.Context, uint64, int) ([]Event, error)
+}
+
+// StallActivity is one running journal's durable activity-clock observation.
+// Database-backed implementations populate DatabaseNow from the same database
+// statement that reads LastAppendAt.
+type StallActivity struct {
+	Identity     RunIdentity
+	LastAppendAt time.Time
+	DatabaseNow  time.Time
+}
+
+// StallBackend is the bounded activity scan used by shared stall scheduling.
+type StallBackend interface {
+	StallCandidates(context.Context, string, int) ([]StallActivity, error)
 }
 
 // FileReaderBackendConfig locates local journals without exposing paths to callers.
