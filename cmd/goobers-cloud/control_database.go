@@ -116,10 +116,6 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "goobers-cloud control: %v\n", err)
 		return 2
 	}
-	if err := validateControlConfigDir(o); err != nil {
-		writef(stderr, "goobers-cloud control: %v\n", err)
-		return 2
-	}
 	ctx, stop := signalContext()
 	defer stop()
 	api, err := openControlDatabase(ctx, apiConfig, "goobers_api", name)

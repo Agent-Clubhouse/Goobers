@@ -103,14 +103,6 @@ func validateControlOptions(options controlOptions) error {
 	return control.ValidateBoot(options.selfExecution, nil)
 }
 
-func validateControlConfigDir(options controlOptions) error {
-	info, err := os.Stat(strings.TrimSpace(options.configDir))
-	if err != nil || !info.IsDir() {
-		return errors.New("--config-dir must name a readable directory")
-	}
-	return nil
-}
-
 // validateControlObjectStore refuses to boot without the object store. The
 // journal's span source and the retained config generations live there, so a
 // control role without it can never compose its planes; refuse at boot instead
