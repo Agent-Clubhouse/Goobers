@@ -41,13 +41,13 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 		return "", "", journal.ErrRunOwned
 	}
 	defer b.endMint(r.key)
-	minted, err := b.unresolvedOwner(ctx, r.key, h.Epoch)
+	minted, err := b.unresolvedOwner(ctx, r.key, h.Epoch, true)
 	if err != nil {
 		return "", "", err
 	}
 	if minted != nil {
 		r.token = journal.OwnerToken(*minted)
-		if err := b.resolveMinted(ctx, r, nil); err == nil {
+		if err := b.resolveMinted(ctx, r, nil, true); err == nil {
 			handle := b.keepRun(r)
 			b.changed(r, 1)
 			return handle, r.token, nil
@@ -94,7 +94,7 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 		}
 		return b.storeCheckpoint(ctx, tx, r, checkpoint)
 	})
-	err = b.resolveMintError(ctx, r, nil, err)
+	err = b.resolveMintError(ctx, r, nil, true, err)
 	if err != nil {
 		return "", "", err
 	}
@@ -179,7 +179,7 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 		return nil, journal.RecoverReport{}, err
 	}
 	r := &runOwner{key: key, token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, options: normalizedOptions(options)}
-	minted, err := b.unresolvedOwner(ctx, key, h.Epoch)
+	minted, err := b.unresolvedOwner(ctx, key, h.Epoch, false)
 	if err != nil {
 		return nil, journal.RecoverReport{}, err
 	}
@@ -206,7 +206,7 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 		}
 		return b.storeCheckpoint(ctx, tx, r, checkpoint)
 	})
-	err = b.resolveMintError(ctx, r, minted, err)
+	err = b.resolveMintError(ctx, r, minted, false, err)
 	if err == nil {
 		b.forgetUnresolved(key)
 		err = b.removeTranscriptPartials(ctx, r, paths)

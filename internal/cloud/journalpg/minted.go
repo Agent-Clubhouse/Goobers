@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/jackc/pgx/v5"
 
@@ -14,6 +15,7 @@ import (
 var errMintNotCommitted = errors.New("journalpg: ownership mint did not commit; retry")
 
 type mintedOwner struct {
+	create      bool
 	token       journal.OwnerToken
 	epoch       int64
 	predecessor journal.OwnerToken
@@ -51,12 +53,17 @@ func (b *Backend) endMint(key journal.RunKey) {
 
 // A second unknown rotation can leave either incarnation durable. Resolve the
 // pair before minting again, so uncertainty never grows beyond two tokens.
-func (b *Backend) unresolvedOwner(ctx context.Context, key journal.RunKey, epoch int64) (*string, error) {
+func (b *Backend) unresolvedOwner(ctx context.Context, key journal.RunKey, epoch int64, creating bool) (*string, error) {
 	b.mu.Lock()
 	r, ok := b.unresolved[key]
 	b.mu.Unlock()
 	if !ok || r.epoch != epoch {
 		return nil, nil
+	}
+	// A recovery can have history and pending transcript cleanup. Creation
+	// must neither publish that writer as fresh nor consume its retry proof.
+	if creating && !r.create {
+		return nil, os.ErrExist
 	}
 	if r.predecessor != "" {
 		token, storedEpoch, err := b.readMinted(ctx, key)
@@ -82,20 +89,20 @@ func (b *Backend) forgetUnresolved(key journal.RunKey) {
 	b.mu.Unlock()
 }
 
-func (b *Backend) resolveMintError(ctx context.Context, r *runOwner, predecessor *string, err error) error {
+func (b *Backend) resolveMintError(ctx context.Context, r *runOwner, predecessor *string, create bool, err error) error {
 	if !errors.Is(err, lease.ErrCommitUnknown) {
 		return err
 	}
-	return b.resolveMinted(ctx, r, predecessor)
+	return b.resolveMinted(ctx, r, predecessor, create)
 }
 
 // resolveMinted reads through the pool, never through the failed transaction.
 // Only the exact capability minted in this epoch proves that COMMIT succeeded.
 // An unavailable read retains that capability for a later fenced recovery.
-func (b *Backend) resolveMinted(ctx context.Context, r *runOwner, predecessor *string) error {
+func (b *Backend) resolveMinted(ctx context.Context, r *runOwner, predecessor *string, create bool) error {
 	token, epoch, err := b.readMinted(ctx, r.key)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		pending := mintedOwner{token: r.token, epoch: r.epoch}
+		pending := mintedOwner{token: r.token, epoch: r.epoch, create: create}
 		if predecessor != nil {
 			pending.predecessor = journal.OwnerToken(*predecessor)
 		}
