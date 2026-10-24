@@ -1072,11 +1072,81 @@ tables:
     - owner_epoch
     delete: true
 - schema: control
+  table: failure_streak
+  provisioned: true
+  fence: owner_token
+  rationale: The failed and escalated terminal hooks advance an item's consecutive-failure count (work or infrastructure kind) and
+    a completed run resets it by deleting the row, under the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - kind
+    - repo_key
+    - item_id
+    - count
+    - run_id
+    - stage
+    - owner_epoch
+    - recent_runs
+    - updated_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - kind
+    - repo_key
+    - item_id
+    - count
+    - run_id
+    - stage
+    - owner_epoch
+    - recent_runs
+    update:
+    - count
+    - run_id
+    - stage
+    - owner_epoch
+    - recent_runs
+    - updated_at
+    delete: true
+- schema: control
+  table: no_work_streak
+  provisioned: true
+  fence: owner_token
+  rationale: A completed run that ended on a no-work verdict advances the item's repeated-no-work record, and a productive completion
+    deletes it, under the controller-lease fence. The increment is a read-modify-write serialized per item.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - repo_key
+    - item_id
+    - record
+    - owner_epoch
+    - recent_runs
+    - updated_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - repo_key
+    - item_id
+    - record
+    - owner_epoch
+    - recent_runs
+    update:
+    - record
+    - owner_epoch
+    - recent_runs
+    - updated_at
+    delete: true
+- schema: control
   table: blocked_record
   provisioned: true
   fence: owner_token
   rationale: The blocked terminal hook records a learned dependency block and reads every record to detect the cycle it closes,
-    under the controller-lease fence. Records are replaced whole by key.
+    and drops the records of items verified closed (self-heal), under the controller-lease fence. Records are replaced whole by key.
   readers:
   - role: goobers_controller
     columns:
@@ -1096,6 +1166,7 @@ tables:
     - record
     - owner_epoch
     - recorded_at
+    delete: true
 - schema: journal
   table: run
   provisioned: true

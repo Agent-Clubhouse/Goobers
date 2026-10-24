@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/goobers/goobers/internal/lifecycle"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -28,7 +29,7 @@ import (
 // the demotion lifts and the PR is eligible to win its own election again. The
 // demoted PR still goes through pr-remediation on its own merits; demotion is
 // about unblocking its siblings, not abandoning it.
-const MergeDemotedLabel = "goobers:merge-demoted"
+const MergeDemotedLabel = lifecycle.LabelMergeDemoted
 
 // MergeDemotionState is the durable per-PR record the record-merge-refusal
 // stage posts and the election read-sites consult — the merge-side analog of
