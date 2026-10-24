@@ -30,19 +30,10 @@ func (s *Sources) AcceptSignal(ctx context.Context, entries []localscheduler.Wor
 	if !text(key, 256, true) || !text(name, 256, true) || !text(ref, 512, true) || now.IsZero() {
 		return nil, errors.New("startintent: invalid source signal")
 	}
-	actor := "local-signal"
-	if delivery != nil {
-		actor = "github-webhook"
-	}
-	sourceKey := sourceHash(actor, key)
-	fingerprintRaw, err := json.Marshal(struct {
-		Name, Ref string
-		Delivery  *webhookhttp.Delivery
-	}{name, ref, delivery})
+	sourceKey, fingerprint, actor, err := SignalReceiptIdentity(key, name, ref, delivery)
 	if err != nil {
 		return nil, err
 	}
-	fingerprint := sourceHash(string(fingerprintRaw))
 	if prior, err := s.Queue.SourceReceipt(ctx, sourceKey); err == nil {
 		if prior.Actor != actor || prior.Fingerprint != fingerprint {
 			return nil, triggerqueue.ErrConflict
@@ -71,6 +62,24 @@ func (s *Sources) AcceptSignal(ctx context.Context, entries []localscheduler.Wor
 	}
 	receipt, _, err := s.Queue.AcceptSource(ctx, batch, now)
 	return receipt.AcceptanceIDs, err
+}
+
+// SignalReceiptIdentity derives the durable receipt key, fingerprint and actor
+// for a caller-keyed signal or authenticated webhook delivery. Local and cloud
+// intake share it so one delivery has one identity everywhere.
+func SignalReceiptIdentity(key, name, ref string, delivery *webhookhttp.Delivery) (sourceKey, fingerprint, actor string, err error) {
+	actor = "local-signal"
+	if delivery != nil {
+		actor = "github-webhook"
+	}
+	fingerprintRaw, err := json.Marshal(struct {
+		Name, Ref string
+		Delivery  *webhookhttp.Delivery
+	}{name, ref, delivery})
+	if err != nil {
+		return "", "", "", err
+	}
+	return sourceHash(actor, key), sourceHash(string(fingerprintRaw)), actor, nil
 }
 
 func (s *Sources) pin(ctx context.Context, entry localscheduler.WorkflowEntry, source localscheduler.SourceTrigger) ([]byte, func(), error) {

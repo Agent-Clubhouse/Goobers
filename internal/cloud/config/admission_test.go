@@ -65,8 +65,12 @@ func ineligible() map[string]apiv1.Workflow {
 	r003 := eligible()
 	r003.Name = "r003"
 	r003.DSLVersion = supportmatrix.V2DSLVersion
+	r004 := eligible()
+	r004.Name = "r004"
+	r004.Spec.Readiness.ClaimVisibility = "shared"
 	return map[string]apiv1.Workflow{
 		cloudreadiness.CodeFeature: r001, cloudreadiness.CodePlacement: r002, cloudreadiness.CodeDSL: r003,
+		cloudreadiness.CodeControlPlane: r004,
 	}
 }
 
@@ -139,8 +143,8 @@ func TestCloudConfigNamesEveryBlocker(t *testing.T) {
 		set.Workflows = append(set.Workflows, w)
 	}
 	refusal := cloudconfig.Admit(readiness.Assess, "d", denyConfig(), set)
-	if refusal == nil || len(refusal.Workflows) != 3 {
-		t.Fatalf("Admit = %+v, want 3 blocked workflows", refusal)
+	if refusal == nil || len(refusal.Workflows) != len(ineligible()) {
+		t.Fatalf("Admit = %+v, want every ineligible fixture blocked", refusal)
 	}
 }
 
@@ -294,5 +298,23 @@ func TestConfigPackageClosureExcludesRunner(t *testing.T) {
 		if dep == "github.com/goobers/goobers/internal/runner" || dep == "github.com/goobers/goobers/internal/bootstrap" {
 			t.Fatalf("internal/cloud/config depends on %s", dep)
 		}
+	}
+}
+
+func TestAppliedReportsOnlyTheRunningGeneration(t *testing.T) {
+	applier := cloudconfig.NewApplier(readiness.Assess, &recordingActivator{})
+	if _, ok := applier.Applied(); ok {
+		t.Fatal("a generation reported applied before any apply")
+	}
+	good := workflowSet(eligible())
+	if err := apply(applier, "sha256:good", denyConfig(), good); err != nil {
+		t.Fatal(err)
+	}
+	for code, w := range ineligible() {
+		_ = apply(applier, "sha256:bad-"+code, denyConfig(), workflowSet(w))
+	}
+	applied, ok := applier.Applied()
+	if !ok || applied.Digest != "sha256:good" || applied.Set != good {
+		t.Fatalf("applied = %+v %v, want the running generation after refused candidates", applied, ok)
 	}
 }

@@ -97,3 +97,115 @@ func TestNewConfigurationRequiresDependencies(t *testing.T) {
 		t.Fatal("missing dependencies accepted")
 	}
 }
+
+func TestPinForServesOnlyTheAppliedGenerationsDigests(t *testing.T) {
+	pins := map[string]cloudconfig.Pins{"g/ok": {WorkflowDigest: "wf", GooberDigest: "goober"}, "g/half": {WorkflowDigest: "wf"}}
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: denyConfig(), Set: workflowSet(eligible()), Pins: pins}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := cfg.PinFor(ctx, "v1", "g", "ok"); !errors.Is(err, cloudconfig.ErrPinUnavailable) {
+		t.Fatalf("before the first apply = %v, want ErrPinUnavailable", err)
+	}
+	if err := cfg.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if wf, goober, err := cfg.PinFor(ctx, "v1", "g", "ok"); err != nil || wf != "wf" || goober != "goober" {
+		t.Fatalf("PinFor = %q %q %v", wf, goober, err)
+	}
+	for name, args := range map[string][3]string{
+		"stale generation": {"v0", "g", "ok"},
+		"unknown workflow": {"v1", "g", "missing"},
+		"half a pin":       {"v1", "g", "half"},
+	} {
+		if _, _, err := cfg.PinFor(ctx, args[0], args[1], args[2]); !errors.Is(err, cloudconfig.ErrPinUnavailable) {
+			t.Errorf("%s: %v, want ErrPinUnavailable", name, err)
+		}
+	}
+}
+
+func TestAppliedPinsDoNotAliasTheCandidatesMap(t *testing.T) {
+	pins := map[string]cloudconfig.Pins{"g/ok": {WorkflowDigest: "wf", GooberDigest: "goober"}}
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: denyConfig(), Set: workflowSet(eligible()), Pins: pins}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pins["g/ok"] = cloudconfig.Pins{WorkflowDigest: "mutated", GooberDigest: "mutated"}
+	delete(pins, "g/other")
+	if wf, _, err := cfg.PinFor(context.Background(), "v1", "g", "ok"); err != nil || wf != "wf" {
+		t.Fatalf("applied pins changed with the candidate's map: %q, %v", wf, err)
+	}
+}
+
+func TestAdmitAppliedIsTheDefaultDenyGuard(t *testing.T) {
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: denyConfig(), Set: workflowSet(eligible())}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.AdmitApplied("g", "ok"); !errors.Is(err, cloudconfig.ErrIneligible) || !errors.Is(err, cloudconfig.ErrNoAppliedGeneration) {
+		t.Fatalf("before the first apply = %v, want ErrIneligible and ErrNoAppliedGeneration", err)
+	}
+	if err := cfg.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if digest, err := cfg.AdmitApplied("g", "ok"); err != nil || digest != "v1" {
+		t.Fatalf("eligible workflow = %q, %v; want the applied digest", digest, err)
+	}
+	for name, args := range map[string][2]string{"unassessed workflow": {"g", "never-assessed"}, "unknown gaggle": {"other", "ok"}} {
+		digest, err := cfg.AdmitApplied(args[0], args[1])
+		if !errors.Is(err, cloudconfig.ErrIneligible) || errors.Is(err, cloudconfig.ErrNoAppliedGeneration) || digest != "" {
+			t.Errorf("%s = %q, %v; want ErrIneligible only and no digest", name, digest, err)
+		}
+	}
+	// One check behind both entry points: the guard agrees with AdmitApplied.
+	if err := cfg.Admit("v1", "g", "never-assessed"); !errors.Is(err, cloudconfig.ErrIneligible) {
+		t.Fatalf("guard = %v, want ErrIneligible", err)
+	}
+}
+
+func TestWebhookRecipientsAreOnePerWorkflow(t *testing.T) {
+	w := eligible()
+	w.Spec.Triggers = []apiv1.Trigger{
+		{Type: apiv1.TriggerWebhook, Events: []string{"pull_request"}},
+		{Type: apiv1.TriggerWebhook, Events: []string{"pull_request", "issues"}},
+		{Type: apiv1.TriggerWebhook, Events: []string{"issues"}, Enabled: new(false)},
+	}
+	set := workflowSet(w)
+	set.Gaggles[0].Spec.Project = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Acme", Name: "App"}
+	cfg, err := cloudconfig.NewConfiguration(readiness.Assess, &recordingActivator{},
+		func(context.Context) (cloudconfig.Candidate, error) {
+			return cloudconfig.Candidate{Digest: "v1", Config: denyConfig(), Set: set}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cfg.WebhookRecipients("pull_request", "acme", "app"); !errors.Is(err, cloudconfig.ErrNoGeneration) {
+		t.Fatalf("before the first apply = %v, want ErrNoGeneration", err)
+	}
+	if err := cfg.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	digest, subs, err := cfg.WebhookRecipients("pull_request", "acme", "app")
+	if err != nil || digest != "v1" || len(subs) != 1 {
+		t.Fatalf("pull_request recipients = %q %+v %v; want exactly one for the workflow", digest, subs, err)
+	}
+	if _, subs, _ := cfg.WebhookRecipients("issues", "acme", "app"); len(subs) != 1 {
+		t.Fatalf("issues recipients = %d, want 1 (the disabled trigger adds none)", len(subs))
+	}
+	if _, subs, _ := cfg.WebhookRecipients("pull_request", "acme", "other"); len(subs) != 0 {
+		t.Fatalf("other repository recipients = %d, want 0", len(subs))
+	}
+}

@@ -305,7 +305,7 @@ Shipped usage on `main` at the baseline:
   2. `engineadmission.RefusePlacedDefinition` returns nil against the cloud runner inventory: no engine-unsupported feature or human gate;
   3. no stage pins to self, and every agentic gate has a placement row (`runsOn`).
 - **Where it is enforced (defence in depth):**
-  1. **Validate time:** findings `RUNTIME001`–`RUNTIME003` ([§8.3](#runtime-support-column)).
+  1. **Validate time:** findings `RUNTIME001`–`RUNTIME004` ([§8.3](#runtime-support-column)).
   2. **Config apply:** `goobers-cloud` refuses a config generation that contains an ineligible workflow. The running generation stays applied, and `goobers-cloud config status` names every blocker. A config cloud can't fully run is never half-applied.
   3. **Admission:** the scheduler never admits an ineligible workflow (guard for configs applied before a binary downgrade).
   4. **Run start:** the engine's existing start-time refusal (`RefuseFeatures`, `RefuseHumanGate`) stays as the last layer.
@@ -324,6 +324,7 @@ Shipped usage on `main` at the baseline:
 | `RUNTIME001` | lane declares an engine-unsupported feature; names the feature and the P4 issue that unblocks it | info | warning (lane stays on the runner, as today) | **error** |
 | `RUNTIME002` | lane would need self execution: a self-pinned stage, or an agentic gate without `runsOn` | — | warning | **error** |
 | `RUNTIME003` | lane is DSL < 3.0 (local-runner-only); suggests `goobers fix --to 3.0` | — | — | **error** |
+| `RUNTIME004` | lane needs a control-plane capability the cloud does not provide yet: `claimVisibility: shared` until #8094 | — | — | **error** |
 
 Selection-time reasons in `engineselection.go` keep their operator-facing text; the findings move the same facts to validate time. Local validate goldens change deliberately for the new info line.
 
@@ -331,7 +332,7 @@ Selection-time reasons in `engineselection.go` keep their operator-facing text; 
 ### 8.4 Cutover-readiness check [APPROVED] (HA-P4-02, HA-P3-25)
 
 Because a P3 cutover needs every workflow to be cloud-eligible, operators need the full list of blockers before they plan one.
-- **`goobers validate --target cloud`** runs against an existing instance root (local or mode 3) and reports every `RUNTIME001`–`RUNTIME003` error for every workflow in every gaggle, grouped by blocker:
+- **`goobers validate --target cloud`** runs against an existing instance root (local or mode 3) and reports every `RUNTIME001`–`RUNTIME004` error for every workflow in every gaggle, grouped by blocker:
   - per workflow: each blocking feature or placement fact, with the stage and DSL path;
   - per blocker: the unblocking action. A config fix (`goobers fix --to 3.0`, add `runsOn`) or the P4 issue that ports the feature;
   - a summary line: `cloud-ready` or `blocked: N workflows, M blockers (K config fixes, J waiting on P4 items: …)`;
@@ -475,6 +476,7 @@ Cloud implementations live under `internal/cloud/*` and are injected into shared
 | DSL 2.0 workflows | supported (runner) | refused (`RUNTIME003`) | refused (dsl-3.0 D14) |
 | The 8 R9 features | supported (runner) | refused until the feature's P4 item ships (`RUNTIME001`) | supported (engine) |
 | `self` placement, instance-root-only stages (for example `reconcile-branches`) | supported | refused (`RUNTIME002`) unless migrated to a remote stage | same |
+| `claimVisibility: shared` | supported | refused (`RUNTIME004`) until the cloud claims plane ships shared claims (#8094) | same |
 | Pinned-workspace (large-repo) custody | supported | unsupported | unsupported (non-goal) |
 | `telemetry.db` CLI analytics | full | minimal port (D-8) | same |
 | HITL resume/intervene | any time on the runner; engine runs within `engine.hitl.window` | engine; window ≤7d (D-9) | same |
@@ -864,6 +866,7 @@ An importer is only needed for history continuity, which is dropped as a constra
 ### 13.2 Versioning and rollout [APPROVED] (HA-P2-07)
 
 - **Worker Deployments via the Temporal Worker Controller**, rainbow-style, one Deployment per build ID. `Run`, `DispatchOne` and `ChildDispatchOne` are **PINNED** (the registrations already declare it, `internal/engine/register.go:12-25`). An old version keeps its pods until its pinned runs drain, so **a rollout never interrupts an in-flight stage**. A plain rolling update is incompatible with versioning and is not used.
+- **Versioned activity-name rollout:** workflow changes that select new activity names (for example `*CancelSafe` cancellation-heartbeat wrappers) deploy the new worker build before that build becomes current. PINNED/rainbow routing keeps pre-marker runs on their old worker, which continues selecting and serving the old activity names; only runs pinned to the new build record the marker and schedule the new names. Never make the workflow code current while its matching activity registrations have zero pollers.
 - **Fallback** if the Worker Controller is unsuitable: per-build Deployments managed by `goobers-cloud` release tooling, with current/ramping set via the versioning API.
 - **Current-version automation (#4084):** a version with zero pollers is never made current (fixes the #5407/#5993 trap).
 - **Retention cap:** 3 live versions, with AUTO_UPGRADE overrides for older pinned runs ([§10.5](#dsl-semantics)). The cost is counted: ≥6 idle worker pods at the cap, image retention for 3 builds, and one more operator.

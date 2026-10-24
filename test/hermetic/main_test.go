@@ -513,8 +513,9 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 		totals = append(totals, shard.seconds)
 	}
 	sort.Float64s(totals)
-	if ratio := totals[len(totals)-1] / totals[0]; ratio > 2 {
-		t.Fatalf("measured shard ratio = %.2fx (%v), want no more than 2x", ratio, totals)
+	t.Logf("artifact-weighted shard totals: %v", totals)
+	if ratio := totals[len(totals)-1] / totals[0]; ratio > 1.10 {
+		t.Fatalf("artifact-weighted shard ratio = %.2fx (%v), want within 10%%", ratio, totals)
 	}
 }
 

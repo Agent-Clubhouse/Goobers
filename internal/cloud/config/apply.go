@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -14,6 +15,10 @@ type Candidate struct {
 	Archive []byte
 	Config  *instance.Config
 	Set     *instance.ConfigSet
+	// Pins are the admission digests of the candidate's workflows, keyed
+	// "gaggle/workflow". Optional: without them the applied generation pins no
+	// start (PinFor fails closed).
+	Pins map[string]Pins
 }
 
 // Activator switches the running generation. The concrete implementation is
@@ -42,8 +47,10 @@ type Applier struct {
 
 	// mu serialises the whole assess→activate→bind→status transition, so
 	// Status and the guard always describe the generation actually active.
-	mu     sync.Mutex
-	status Status
+	mu      sync.Mutex
+	status  Status
+	applied Candidate
+	ok      bool
 }
 
 // NewApplier returns an Applier that activates through activator.
@@ -67,8 +74,10 @@ func (a *Applier) Apply(ctx context.Context, c Candidate) error {
 	if err := a.activator.Activate(ctx, c); err != nil {
 		return err
 	}
+	gen.pins = maps.Clone(c.Pins)
 	a.guard.Replace(gen)
 	a.status = Status{Applied: c.Digest}
+	a.applied, a.ok = c, true
 	return nil
 }
 
@@ -77,4 +86,12 @@ func (a *Applier) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.status
+}
+
+// Applied returns the running generation, if one has been applied. Its Config
+// and Set are shared, immutable snapshots: callers must not mutate them.
+func (a *Applier) Applied() (Candidate, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.applied, a.ok
 }

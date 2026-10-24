@@ -124,14 +124,7 @@ func supersededRunResult(state string, upstream map[string]apiv1.ResultEnvelope,
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
 func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass, *usageallowance.Allowance) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
-	policyMaxAttempts := int32(1)
-	var backoff time.Duration
-	if t.Retry != nil {
-		if t.Retry.MaxAttempts > 0 {
-			policyMaxAttempts = t.Retry.MaxAttempts
-		}
-		backoff = time.Duration(t.Retry.BackoffSeconds) * time.Second
-	}
+	policyMaxAttempts, backoff := stageRetryPolicy(t)
 	// The infrastructure budget includes its triggering failure, so it can add
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
 	maxAttempts := policyMaxAttempts + runsemantics.DefaultMaxInfrastructureAttempts - 1
@@ -171,6 +164,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		var res apiv1.ResultEnvelope
 		var err error
 		var identity *attemptidentity.Identity
+		completionCommitted := false
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
@@ -179,7 +173,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			activityResult, err = rec.dispatchChargedAttempt(dispatchCtx, in, t, step, &usageBudget, dispatch)
 			res = activityResult.ResultEnvelope
 			identity = activityResult.AttemptIdentity
-			if stopsAttemptLoop(ctx, err) {
+			if stopBeforeStageCompletion(ctx, err) {
 				return apiv1.ResultEnvelope{}, err
 			}
 			if errors.Is(err, errChildContinued) {
@@ -194,8 +188,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			// attempt's outcome decides (#3875). Journaled for a failed
 			// dispatch too when the dispatch reported one, so the record of
 			// where an attempt ran does not depend on whether it succeeded.
-			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
-			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+			if receiptErr := rec.recordDispatchEvidence(ctx, t.Name, int(attempt), class, activityResult, err); receiptErr != nil {
+				return apiv1.ResultEnvelope{}, receiptErr
+			}
 
 			if t.Type == apiv1.TaskAgentic && t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) && workflow.GetVersion(ctx, "cumulative-agentic-usage", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				usage := dispatchFailureUsage(err)
@@ -234,28 +229,26 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
 				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
 				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError, identity)
-				emitErr = rec.emitPending(ctx)
+				emitErr, completionCommitted = emitStageCompletion(ctx, rec)
 				if emitErr == nil {
 					// Only a WINNING attempt's delta is carried forward. A
 					// retried attempt's bundle describes a workspace that was
 					// thrown away with its pod, and building the next stage on
 					// it would resurrect abandoned work.
 					if deltaOut != nil {
-						*deltaOut = deltaPublication{
-							Attempt:   int(attempt),
-							Digest:    activityResult.WorkspaceDelta,
-							Base:      activityResult.WorkspaceDeltaBase,
-							Tip:       activityResult.WorkspaceDeltaTip,
-							Unchanged: activityResult.WorkspaceDeltaUnchanged,
-
-							PushedBranches: pushedBranches(activityResult.Mutations),
-						}
+						*deltaOut = winningAttemptDelta(int(attempt), activityResult)
 					}
 					return res, nil
 				}
 			}
 		}
 		if emitErr != nil {
+			if cancelStopsJournalEmit(ctx, emitErr) {
+				if !completionCommitted {
+					rec.rollbackUnemitted(mark)
+				}
+				return apiv1.ResultEnvelope{}, temporal.NewCanceledError()
+			}
 			// §8 failure policy: a journal emission that exhausted its bounded
 			// budget fails the attempt as attemptClass infra — never the work
 			// budget (#3361). The attempt's un-journaled ops are rolled back
@@ -321,6 +314,72 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func cancelStopsJournalEmit(
+	ctx workflow.Context,
+	err error,
+) bool {
+	return cancelSafeStageJournal(ctx) && stopsAttemptLoop(ctx, err)
+}
+
+func winningAttemptDelta(attempt int, result stageActivityResult) deltaPublication {
+	return deltaPublication{
+		Attempt: attempt, Digest: result.WorkspaceDelta, Base: result.WorkspaceDeltaBase,
+		Tip: result.WorkspaceDeltaTip, Unchanged: result.WorkspaceDeltaUnchanged,
+		PushedBranches: pushedBranches(result.Mutations),
+	}
+}
+
+func stopBeforeStageCompletion(
+	ctx workflow.Context,
+	err error,
+) bool {
+	return stopsAttemptLoop(ctx, err) &&
+		(!cancelSafeStageJournal(ctx) || err != nil)
+}
+
+func stageRetryPolicy(t apiv1.Task) (int32, time.Duration) {
+	if t.Retry == nil {
+		return 1, 0
+	}
+	attempts := t.Retry.MaxAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	return attempts, time.Duration(t.Retry.BackoffSeconds) * time.Second
+}
+
+func cancelSafeStageJournal(ctx workflow.Context) bool {
+	enabled, _ := ctx.Value(cancelSafeStageJournalKey{}).(bool)
+	return enabled
+}
+
+func workflowContextCanceled(ctx workflow.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	var signal struct{}
+	return ctx.Done().ReceiveAsync(&signal)
+}
+
+func emitStageCompletion(
+	ctx workflow.Context,
+	rec *runJournal,
+) (error, bool) {
+	if !cancelSafeStageJournal(ctx) {
+		err := rec.emitPending(ctx)
+		return err, err == nil
+	}
+	disconnected, cancel := workflow.NewDisconnectedContext(ctx)
+	defer cancel()
+	if err := rec.emitPending(disconnected); err != nil {
+		return err, false
+	}
+	if workflowContextCanceled(ctx) {
+		return temporal.NewCanceledError(), true
+	}
+	return nil, true
 }
 
 func usageRequired(usage AttemptUsage, err error) bool {

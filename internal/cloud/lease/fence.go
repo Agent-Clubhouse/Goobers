@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // WithFence executes one bounded transaction while share-locking the acquired
@@ -62,12 +63,27 @@ func (m *Manager) WithFence(ctx context.Context, handle *Handle, write func(cont
 		return ErrSelfFenced
 	}
 	if err := tx.Commit(txCtx); err != nil {
-		if deadlineErr := fencedDeadlineError(txCtx); deadlineErr != nil {
-			return deadlineErr
-		}
-		return fmt.Errorf("commit fenced transaction: %w", err)
+		return commitError(txCtx, err)
 	}
 	return nil
+}
+
+// commitError classifies a failed COMMIT. A server error is a definite
+// rollback. Anything else (a lost connection, or the deadline passing while
+// COMMIT was in flight) leaves the outcome unknown, so it never reports a
+// self-fence or timeout, whose contract is that nothing committed.
+func commitError(ctx context.Context, err error) error {
+	var serverErr *pgconn.PgError
+	if errors.As(err, &serverErr) {
+		return fmt.Errorf("commit fenced transaction: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		// The deadline cause is ErrSelfFenced or ErrFencedTransactionTimeout,
+		// whose contract (nothing committed) this outcome breaks: describe it,
+		// never wrap it.
+		return fmt.Errorf("%w: %w (deadline: %v)", ErrCommitUnknown, err, cause) //nolint:errorlint // see above
+	}
+	return fmt.Errorf("%w: %w", ErrCommitUnknown, err)
 }
 
 // Confirm share-locks the acquired epoch inside a caller-owned transaction
@@ -134,10 +150,8 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 	workErr := work(runCtx, handle)
 	cancel()
 	renewalErr := <-renewalDone
-	// A timed-out callback or failed self-fence must not grant an early handoff.
-	// Stop renewal and let the database TTL expire instead.
-	if errors.Is(workErr, ErrWorkStillRunning) || errors.Is(renewalErr, ErrSelfFenced) {
-		return errors.Join(workErr, renewalErr)
+	if refusal := m.handoffRefusal(handle, workErr, renewalErr); refusal != nil {
+		return refusal
 	}
 
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), FencedTransactionTimeout)
@@ -153,6 +167,23 @@ func (m *Manager) Run(ctx context.Context, work func(context.Context, *Handle) e
 	default:
 		return nil
 	}
+}
+
+// handoffRefusal reports why Run must not release the lease voluntarily, or
+// nil. A timed-out callback or failed self-fence must not grant an early
+// handoff: renewal stops and the database TTL expires instead. The handle's
+// own state decides, not which exit the renewal loop took: when cancellation
+// wins the race against the loop's self-fence check, renewalErr is nil while
+// the handle is already self-fenced.
+func (m *Manager) handoffRefusal(handle *Handle, workErr, renewalErr error) error {
+	if errors.Is(workErr, ErrWorkStillRunning) || errors.Is(renewalErr, ErrSelfFenced) {
+		return errors.Join(workErr, renewalErr)
+	}
+	if m.SelfFenced(handle) {
+		return errors.Join(workErr, renewalErr,
+			fmt.Errorf("%w: last renewal exceeded %s", ErrSelfFenced, m.config.SelfFenceAfter))
+	}
+	return nil
 }
 
 func (m *Manager) maintain(ctx context.Context, cancel context.CancelFunc, handle *Handle) error {

@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 15 |
-| `approved` | 28 |
+| `draft` | 16 |
+| `approved` | 29 |
 | `implemented` | 30 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **83** |
+| **Total** | **85** |
 
 ## `docs/adr/`
 
@@ -52,6 +52,7 @@ word — read the page, not this table, before depending on it.
 | [Design: DSL Version Lifecycle & Multi-Version Runtime](dsl-version-lifecycle.md) | `implemented` | — | — | #860, #861, #862, #863, #864, #865, #866, #867, #868, #869 | — | — | — |
 | [Design: an e2e soak harness for load-dependent failures](e2e-soak-harness.md) | `approved` | — | — | — | #1480, #1481 | — | — |
 | [Design: Child workflows and conditional fan-out on the Temporal engine](engine-child-workflows.md) | `draft` | distributed engine, admission, journal, workspaces, capacity | — | — | — | — | — |
+| [Design: Child-workflow authority for engine parents on the cloud](engine-parent-child-authority.md) | `draft` | cloud control plane, engine worker, child-workflow grants, threat model | — | — | — | — | — |
 | [Design: EvalSuite CI gating, baseline management & alerting](evals-ci-gating.md) | `historical` | — | — | — | — | — | — |
 | [Design: EvalSuite — end-to-end workflow evaluation](evals-suite.md) | `historical` | — | — | — | — | — | — |
 | [External call-out stages](external-call-out-stages.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
@@ -83,6 +84,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — | — | — | — |
 | [Design: Source-owned backlog and objective workbench](source-owned-backlog-workbench.md) | `approved` | providers, source metadata, portal | — | — | — | — | 04198152b63d228a9714ae2f92a7dca079ba5213 (2026-10-03) |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | — | — | #1939 | — | — | — |
+| [Fenced terminal journal interventions](terminal-intervention-journal.md) | `approved` | — | #7899 | — | #7899 | — | — |
 | [Decision: dedicated workflows own repository and test-suite quality](test-suite-quality-workflow.md) | `implemented` | — | — | #1568, #1489 | — | — | — |
 | [Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels](trust-boundary-hardening.md) | `approved` | — | — | — | — | — | — |
 | [Design: trusted-local child execution](trusted-local-child-workflows.md) | `implemented` | — | — | #7663 | — | — | cf1da99bc858edde5284a2233acb4e88ccf03556 (2026-10-20) |

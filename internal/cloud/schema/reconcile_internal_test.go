@@ -160,3 +160,14 @@ func TestReadModelSchemaPatternExpandsToVersionSchemasOnly(t *testing.T) {
 		t.Fatalf("a table in a schema outside the pattern = %v", err)
 	}
 }
+
+func TestOrphanPartitionHintNamesTheRemedy(t *testing.T) {
+	tables := map[string]Table{"journal.instance_event": {}}
+	got := orphanPartitionHint(object{schema: "journal", name: "instance_event_202611"}, tables)
+	if !strings.Contains(got, "DROP TABLE journal.instance_event_202611") {
+		t.Fatalf("hint = %q, want the drop remedy", got)
+	}
+	if hint := orphanPartitionHint(object{schema: "journal", name: "stray"}, tables); hint != "" {
+		t.Fatalf("unrelated table got a hint: %q", hint)
+	}
+}

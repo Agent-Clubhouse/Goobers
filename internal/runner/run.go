@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -4517,23 +4516,13 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex
 // reviewer was handed. Equal digests mean the evidence is verbatim; different
 // digests mean a finding about the redacted region must be checked against the
 // branch before it is treated as a defect.
-const ReviewerDiffRedactionKind = "reviewer-diff-redaction"
+const ReviewerDiffRedactionKind = runsemantics.ReviewerDiffRedactionKind
 
 func appendReviewerDiffRedaction(jr executionJournal, gateName string, source, scrubbed []byte, ref journal.Ref) error {
 	if jr == nil {
 		return nil
 	}
-	return jr.Append(journal.Event{
-		Type: journal.EventRunnerAnnotation, Gate: gateName,
-		Runner: map[string]any{
-			"kind":         ReviewerDiffRedactionKind,
-			"redacted":     !bytes.Equal(source, scrubbed),
-			"sourceDigest": journal.Digest(source),
-			"sourceBytes":  len(source),
-			"digest":       ref.Digest,
-			"bytes":        len(scrubbed),
-		},
-	})
+	return jr.Append(runsemantics.ObserveReviewerDiffRedaction(source, scrubbed).Event(gateName, ref))
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is

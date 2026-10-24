@@ -128,6 +128,19 @@ func (h *Host) Owner() *lease.Handle {
 	return state.handle
 }
 
+// EpochHandle reports the handle of the epoch this replica currently holds, or
+// nil. Unlike Owner it does not wait for recovery: rebuild-before-reap itself
+// publishes the applied configuration, and that publish must be fenced by the
+// epoch that is being rebuilt. It is still nil once the epoch's context ended
+// or the lease self-fenced, so it never hands out authority that is gone.
+func (h *Host) EpochHandle() *lease.Handle {
+	state := h.state.Load()
+	if state == nil || !h.schema.Load() || state.ctx.Err() != nil || h.config.Leadership.SelfFenced(state.handle) {
+		return nil
+	}
+	return state.handle
+}
+
 // Run remains a standby while another replica holds the lease. Every acquired
 // epoch rebuilds before any reap/admission; cancellation releases voluntarily.
 func (h *Host) Run(ctx context.Context) error {

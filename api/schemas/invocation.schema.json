@@ -126,6 +126,15 @@
       "description": "Content digest of the goober kit this run was admitted against (run.yaml's gooberDigest); absent for a run started before the pin existed, which resolves the worker's current config tree unchanged. A SELECTOR, not decoration: the worker serves the config tree whose goober digest equals this value or refuses the attempt by name (gate_pin_missing / run_pin_unverifiable) rather than silently substituting its currently-configured goober (#3884)."
     },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
+    "preparedReviewerDiff": {
+      "type": "object", "additionalProperties": false, "required": ["observed"],
+      "description": "Engine-owned reviewer evidence committed before dispatch; absent for the legacy capture path. Requires a same-build stage image.",
+      "properties": {
+        "observed": { "type": "boolean", "description": "Whether the selected workspace's diff was observed; true without an artifact means an empty diff." },
+        "artifact": { "$ref": "artifact-pointer.schema.json", "description": "The scrubbed, already-recorded same-run reviewer patch, also carried in contextPointers." }
+      },
+      "allOf": [{ "if": { "required": ["artifact"] }, "then": { "properties": { "observed": { "const": true } } } }]
+    },
     "reviewerDeferralAllowed": { "type": "boolean", "description": "Runner-owned capability derived from the reviewer gate's declared deferral branch; enables the expanded reviewer completion vocabulary for this invocation only." },
     "reviewerMechanicalEscalationAllowed": { "type": "boolean", "description": "Runner-owned capability for typed mechanical stops, enabled only when the gate explicitly declares both expanded deferral and escalation routes." },
     "attempt": { "type": "integer", "minimum": 1, "description": "One-based attempt number for this stage execution." },

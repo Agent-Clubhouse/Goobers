@@ -36,6 +36,10 @@ const (
 	StatusFailed = "failed"
 )
 
+const cancelSafeStageJournalChange = "cancel-safe-stage-journal-v1"
+
+type cancelSafeStageJournalKey struct{}
+
 const (
 	// maxSteps bounds the number of state transitions in a single run, a
 	// last-resort guard against a definition that loops (WF-015 within a
@@ -284,6 +288,11 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	ctx = workflow.WithValue(ctx, cancelSafeStageJournalKey{},
+		workflow.GetVersion(
+			ctx, cancelSafeStageJournalChange,
+			workflow.DefaultVersion, 1,
+		) != workflow.DefaultVersion)
 	enableHumanGateDecisionOwner(ctx, rec, in)
 	if err := rec.initializeFanOut(ctx, in); err != nil {
 		return RunResult{}, err
@@ -627,21 +636,16 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if gerr != nil {
 				return gateEvaluationFailed(ctx, rec, g.Name, gerr, upstream, steps)
 			}
-			// #3384: the patch the reviewer judged, committed as an artifact
-			// and surfaced as the "<gate>.diff" pointer. These are the same
-			// bytes the activity already placed in the reviewer's envelope, so
-			// the pointer the reviewer read and the blob the journal holds are
-			// one object rather than two that agree.
-			gatePointers := pointers
-			if len(review.Diff) > 0 {
-				diffPointer, derr := rec.recordReviewerDiff(ctx, in.RunID, g.Name, review.Diff)
-				if derr != nil {
-					return RunResult{}, derr
-				}
-				if diffPointer != nil {
-					pointers = append(pointers, *diffPointer)
-					gatePointers = pointers
-				}
+			// Adopt the pointer committed before review. An N-1 history still
+			// records its returned diff here, in the original command order.
+			gatePointers, derr := rec.reviewerEvidencePointers(ctx, in.RunID, g.Name, review, pointers)
+			if derr != nil {
+				return RunResult{}, derr
+			}
+			// Reviewer diff is private input to this gate, not a downstream
+			// producer artifact. Preserve the old propagation only on replay.
+			if workflow.GetVersion(ctx, reviewerEvidenceScopeChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				pointers = gatePointers
 			}
 			// #3843, BEFORE the outcome is resolved: both finding
 			// transitions can turn a needs-changes verdict into a pass, so
@@ -1013,9 +1017,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			activityName := ActInvokeGoober
+			if cancelSafeStageJournal(ctx) {
+				activityName = actInvokeGooberCancelSafe
+			}
 			args := []any{attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout}
 			if len(bindings.Exact) > 0 {
 				activityName = ActInvokeGooberExact
+				if cancelSafeStageJournal(ctx) {
+					activityName = actInvokeGooberExactCancelSafe
+				}
 				args = append(args, bindings.Exact)
 			}
 			err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
@@ -1046,9 +1056,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		activityName := ActRunDeterministic
+		if cancelSafeStageJournal(ctx) {
+			activityName = actRunDeterministicCancelSafe
+		}
 		args := []any{attemptEnv, run, workspaceBranch, workspaceDelta}
 		if len(bindings.Exact) > 0 {
 			activityName = ActRunDeterministicExact
+			if cancelSafeStageJournal(ctx) {
+				activityName = actRunDeterministicExactCancelSafe
+			}
 			args = append(args, bindings.Exact)
 		}
 		err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
@@ -1108,7 +1124,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		var outcome string
 		if err := evaluateWithInfraRetry(ctx, g, rec, "", func(ctx workflow.Context, _ journal.AttemptClass) error {
-			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
+			activityName := ActEvaluateAutomated
+			if cancelSafeStageJournal(ctx) {
+				activityName = actEvaluateAutomatedCancelSafe
+			}
+			return workflow.ExecuteActivity(
+				ctx, activityName, conf, env).Get(ctx, &outcome)
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
 		}
@@ -1162,6 +1183,10 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		} else {
 			ctx = stageActivityContext(ctx, env.Limits)
 		}
+		preparedPointer, err := rec.prepareReviewerDiff(ctx, &env, workspaceBranch, workspaceDelta, g.EffectiveWorkspace(), ev.RequireDiff)
+		if err != nil {
+			return "", nil, GateReviewResult{}, err
+		}
 		// The pod attempt this marker precedes: gateDispatches[g.Name]+1 is
 		// exactly what the retry closure's gatePodAttempt call below will
 		// claim on its first pass — read here without mutating the counter,
@@ -1212,11 +1237,21 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 				if number, ok := reviewerNumber(ctx); ok {
 					attemptEnv.Attempt = int32(number)
 				}
-				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
+				activityName := ActReviewGoober
+				if cancelSafeStageJournal(ctx) {
+					activityName = actReviewGooberCancelSafe
+				}
+				return workflow.ExecuteActivity(ctx, activityName, attemptEnv, workspaceBranch, workspaceDelta,
 					g.EffectiveWorkspace(), priorDiffDigest, ev.RequireDiff).Get(ctx, &review)
 			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
+		}
+		if env.PreparedReviewerDiff != nil {
+			review.Prepared, review.PreparedDiff, review.Diff = true, preparedPointer, nil
+			if preparedPointer != nil {
+				review.DiffDigest = preparedPointer.Artifact.Digest
+			}
 		}
 		verdict := review.Verdict
 		return string(verdict.Decision), &verdict, review, nil
@@ -1347,7 +1382,12 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, ""))
+	options := stageActivityOptions(limits, "")
+	if cancelSafeStageJournal(ctx) {
+		options.WaitForCancellation = true
+		options.HeartbeatTimeout = dispatchHeartbeatTimeout
+	}
+	return workflow.WithActivityOptions(ctx, options)
 }
 
 // stageActivityOptions builds the options every engine activity dispatches
@@ -1388,7 +1428,13 @@ func stageActivityOptions(limits apiv1.Limits, taskQueue string) workflow.Activi
 // engine.NewTemporalStarter taking a single queue was never the obstacle it
 // looked like. It is the workflow's queue, and that is correct.
 func stageActivityContextOn(ctx workflow.Context, limits apiv1.Limits, capabilities []string) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, stageTaskQueue(ctx, capabilities)))
+	options := stageActivityOptions(
+		limits, stageTaskQueue(ctx, capabilities))
+	if cancelSafeStageJournal(ctx) {
+		options.WaitForCancellation = true
+		options.HeartbeatTimeout = dispatchHeartbeatTimeout
+	}
+	return workflow.WithActivityOptions(ctx, options)
 }
 
 // stageTaskQueue derives a stage's task queue from its declared platform
