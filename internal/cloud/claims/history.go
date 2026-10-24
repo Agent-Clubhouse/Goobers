@@ -72,7 +72,8 @@ func releaseToHistory(
 			  AND run_id=$5 AND owner_epoch<=$6 AND ($8='' OR owner_token=$8)
 			  AND (NOT $9 OR expires_at<=clock_timestamp())
 			  AND (release_pending_at IS NOT NULL) = $10
-			RETURNING *, clock_timestamp() AS released
+			RETURNING instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,
+			          claimed_at,renewed_at,expires_at,verification,clock_timestamp() AS released
 		), incarnation AS (
 			INSERT INTO control.claim_history
 				(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
