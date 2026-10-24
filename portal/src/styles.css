@@ -2,6 +2,48 @@
   box-sizing: border-box;
 }
 
+.backprop-insights .backprop-cohort {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+  padding: 16px;
+}
+
+.backprop-path {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.backprop-path-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding-left: 24px;
+}
+
+.backprop-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+}
+
+.backprop-metrics dt {
+  color: var(--muted-strong);
+  font-size: var(--font-meta);
+}
+
+.backprop-metrics dd {
+  font-variant-numeric: tabular-nums;
+  margin: 4px 0 0;
+}
+
+.backprop-insights summary {
+  cursor: pointer;
+}
+
 .instance-warning-link {
   background: transparent;
   border: 0;

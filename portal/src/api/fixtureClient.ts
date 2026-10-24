@@ -358,6 +358,8 @@ export class FixtureDaemonClient implements DaemonClient {
       curation: stats.curation,
       readyPool: stats.readyPool,
       attributionEval: stats.attributionEval,
+      attributionCohorts: stats.attributionCohorts,
+      faultAudit: stats.faultAudit,
       trend: request?.trendBuckets
         ? Array.from({ length: request.trendBuckets }, (_, index) => {
             const start = new Date(request.trendSince ?? 0).getTime();

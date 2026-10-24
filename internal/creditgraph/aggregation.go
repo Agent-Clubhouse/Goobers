@@ -36,6 +36,7 @@ type AttributionEvidenceLink struct {
 type ContributingPath struct {
 	Nodes      []string                  `json:"nodes,omitempty"`
 	Share      float64                   `json:"share"`
+	Score      *float64                  `json:"score,omitempty"`
 	Confidence float64                   `json:"confidence"`
 	Evidence   []AttributionEvidenceLink `json:"evidence,omitempty"`
 	samples    int
@@ -119,13 +120,14 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				key := strings.Join(pathNodes, "/")
 				path := byPath[key]
 				if path == nil {
-					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...)}
+					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...), Score: new(float64)}
 					byPath[key] = path
 				}
 				weight := groundTruthWeight(observation.GroundTruth)
 				path.samples++
 				path.weight += weight
 				path.Share += weight * contribution.Share
+				*path.Score += weight * contribution.Score
 				path.Confidence += weight * groundTruthConfidence(contribution.Confidence, observation.GroundTruth)
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
@@ -158,6 +160,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				continue
 			}
 			path.Share /= path.weight
+			*path.Score /= path.weight
 			path.Confidence /= path.weight
 			paths = append(paths, *path)
 		}

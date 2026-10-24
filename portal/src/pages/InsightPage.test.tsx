@@ -6,7 +6,8 @@ import { FixtureDaemonClient } from "../api/fixtureClient";
 import { DaemonApiError } from "../api/errors";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 import { CostTrend } from "./InsightPage";
-import type { TelemetryUsageStats } from "../api/types";
+import type { TelemetryStatsResult, TelemetryUsageStats } from "../api/types";
+import { BackpropInsights } from "../components/BackpropInsights";
 import { insightScopeFromKey, insightScopeOption } from "../insightScope";
 
 async function selectScope(user: ReturnType<typeof userEvent.setup>, key: string) {
@@ -15,6 +16,124 @@ async function selectScope(user: ReturnType<typeof userEvent.setup>, key: string
   await user.type(screen.getByLabelText("Find scope"), option.label);
   await user.click(screen.getByRole("button", { name: option.label }));
 }
+
+function backpropStats(): TelemetryStatsResult {
+  return {
+    ...emptyDaemonFixtures().telemetryStats,
+    attributionCohorts: [{
+      workload: "build", effectiveVersion: "v1", runCount: 3,
+      groundTruth: { labeledRunCount: 2, correctRunCount: 1, incorrectRunCount: 1 },
+      topContributingPaths: [
+        { nodes: ["stage", "model-a"], share: 0.6, score: -0.25, confidence: 0.9,
+          evidence: [{ runId: "run-a", journalSequence: 7, detail: "Assertion failed", artifactDigest: "recorded-digest" }] },
+        { nodes: ["stage", "model-b"], share: 0.3, score: 0.2, confidence: 0.7 },
+        { nodes: ["zero"], share: 0, score: 0, confidence: 0.8 },
+        { nodes: ["legacy"], share: 0.1, confidence: 0.2 },
+      ],
+    }, {
+      workload: "review", effectiveVersion: "v2", runCount: 1,
+      topContributingPaths: [{ nodes: ["model-c"], share: 1, score: 0.4, confidence: 0.9 }],
+    }],
+    faultAudit: {
+      schema: "goobers.dev/backprop/fault-audit/v1", mode: "report-only",
+      since: "2026-07-17T20:00:00Z", until: "2026-07-18T20:00:00Z",
+      observationsScanned: 4, suppressed: 1,
+      workflowFindings: [{
+        id: "finding-a", domain: "workflow-definition", signature: "assertion failure",
+        confidence: 0.85, runIds: ["run-a"], workflows: ["implementation"],
+        effectiveVersions: ["v1"], rationale: "Recorded assertion evidence",
+        alternativeDomains: ["mixed-or-unknown"], recommendedOwner: "workflow owner",
+        recommendedAction: "Review assertions", verification: "verification-pending",
+        fileable: true, counterEvidence: ["One successful observation"],
+      }],
+    },
+  };
+}
+
+describe("native Backprop Insights", () => {
+  it("supports keyboard navigation, signed and missing scores, and recorded evidence", async () => {
+    const fixtures = emptyDaemonFixtures();
+    fixtures.telemetryStats = backpropStats();
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+    const operations = await screen.findByRole("tab", { name: "Operations" });
+    operations.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(await screen.findByRole("tab", { name: "Backprop" })).toHaveAttribute("aria-selected", "true");
+    expect(window.location.hash).toContain("section=backprop");
+    expect(screen.getByText("-0.250")).toBeInTheDocument();
+    expect(screen.getByText("+0.200")).toBeInTheDocument();
+    expect(screen.getByText("0.000")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable (older attribution payload)")).toBeInTheDocument();
+    expect(screen.getByText("60.0%")).toBeInTheDocument();
+    await user.click(screen.getByText("Supporting evidence (1 recorded references)"));
+    expect(screen.getByRole("link", { name: "Run run-a, journal 7" }))
+      .toHaveAttribute("href", "#/run/run-a?tab=journal&seq=7");
+    expect(screen.getByText("recorded-digest")).toBeInTheDocument();
+    expect(screen.getByText(/verification: verification-pending/)).toBeInTheDocument();
+    expect(screen.getByText(/Unavailable: this endpoint supplies no governed rotation/)).toBeInTheDocument();
+    screen.getByRole("tab", { name: "Backprop" }).focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(await screen.findByRole("tab", { name: "Operations" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("filters returned paths without recomputing or silently filtering fault findings", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<BackpropInsights stats={backpropStats()} stageScoped={false} />);
+    await user.selectOptions(screen.getByLabelText("Minimum confidence"), "0.8");
+    expect(screen.queryByText("+0.200")).not.toBeInTheDocument();
+    expect(screen.getByText("-0.250")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Workload"), "review");
+    expect(screen.getByRole("heading", { name: "review / v2" })).toBeInTheDocument();
+    expect(screen.queryByText("-0.250")).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Effective version"), "v1");
+    expect(screen.getByText(/No returned attribution paths match/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "workflow-definition: assertion failure" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Effective version"), "");
+    await user.type(screen.getByLabelText("Recorded node or model"), "missing-model");
+    expect(screen.getByText(/No returned attribution paths match/)).toBeInTheDocument();
+    rerender(<BackpropInsights stats={{ ...backpropStats(), attributionCohorts: [] }} stageScoped={false} />);
+    expect(screen.getByLabelText("Workload")).toHaveValue("review");
+  });
+
+  it("requests workflow-scoped cohorts and preserves Backprop when the window changes", async () => {
+    window.location.hash = "#/insight?gaggle=core&workflow=implementation&window=7d&section=backprop";
+    const fixtures = populatedDaemonFixtures();
+    fixtures.telemetryStats = backpropStats();
+    const client = new FixtureDaemonClient(fixtures);
+    const getStats = vi.spyOn(client, "getTelemetryStats");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    await screen.findByRole("heading", { name: "Backprop attribution" });
+    expect(getStats).toHaveBeenCalledWith(
+      expect.objectContaining({ gaggle: "core", workflow: "implementation" }),
+      expect.anything(),
+    );
+    await user.selectOptions(screen.getByLabelText("Time window"), "30d");
+    await screen.findByRole("heading", { name: "Backprop attribution" });
+    expect(window.location.hash).toContain("section=backprop");
+    expect(window.location.hash).toContain("window=30d");
+    await selectScope(user, '["instance"]');
+    await screen.findByRole("heading", { name: "Backprop attribution" });
+    expect(window.location.hash).toContain("section=backprop");
+    expect(window.location.hash).not.toContain("workflow=");
+    expect(window.location.hash).not.toContain("gaggle=");
+  });
+
+  it("distinguishes unavailable, empty, partial, and unsupported stage data", () => {
+    const stats = backpropStats();
+    const { rerender } = render(<BackpropInsights stats={emptyDaemonFixtures().telemetryStats} stageScoped={false} />);
+    expect(screen.getByText(/attribution is unavailable from this telemetry snapshot/)).toBeInTheDocument();
+    rerender(<BackpropInsights stats={{ ...stats, attributionCohorts: [], faultAudit: { ...stats.faultAudit!, observationsScanned: 0 } }} stageScoped={false} />);
+    expect(screen.getByText("No attribution observations in this scope and window.")).toBeInTheDocument();
+    rerender(<BackpropInsights stats={{ ...stats, attributionCohorts: [], faultAudit: { ...stats.faultAudit!, truncated: true } }} stageScoped={false} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Partial data");
+    expect(screen.getByText(/does not mean no observations were recorded/)).toBeInTheDocument();
+    rerender(<BackpropInsights stats={stats} stageScoped />);
+    expect(screen.getByText(/Stage-scoped Backprop is unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText("-0.250")).not.toBeInTheDocument();
+  });
+});
 
 describe("daily cost chart", () => {
   function usage(costAIC: number, p95CostAIC: number): TelemetryUsageStats {

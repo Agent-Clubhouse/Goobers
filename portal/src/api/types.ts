@@ -1734,6 +1734,74 @@ export interface TelemetryStatsResult {
   trendPrevious?: TelemetryTrendBucket;
   /** The instance's published Backprop attribution accuracy eval, when one exists. */
   attributionEval?: AttributionEvalSummary;
+  attributionCohorts?: AttributionCohort[];
+  faultAudit?: AttributionFaultAudit;
+}
+
+export interface AttributionEvidenceLink {
+  runId?: string;
+  nodeId?: string;
+  stage?: string;
+  detail?: string;
+  source?: string;
+  journalSequence?: number;
+  journalPath?: string;
+  artifactPath?: string;
+  artifactDigest?: string;
+  artifactMediaType?: string;
+}
+
+export interface AttributionCohort {
+  effectiveVersion?: string;
+  workload?: string;
+  runCount: number;
+  topContributingPaths?: {
+    nodes?: string[];
+    share: number;
+    score?: number;
+    confidence: number;
+    evidence?: AttributionEvidenceLink[];
+  }[];
+  counterEvidence?: AttributionEvidenceLink[];
+  groundTruth?: {
+    labeledRunCount: number;
+    correctRunCount: number;
+    incorrectRunCount: number;
+  };
+}
+
+export interface AttributionFaultFinding {
+  id: string;
+  signature: string;
+  domain: string;
+  confidence: number;
+  runIds: string[];
+  workflows: string[];
+  effectiveVersions: string[];
+  environments?: string[];
+  nodePaths?: string[][];
+  evidence?: AttributionEvidenceLink[];
+  counterEvidence?: string[];
+  rationale: string;
+  alternativeDomains: string[];
+  recommendedOwner: string;
+  recommendedAction: string;
+  verification: string;
+  fileable: boolean;
+}
+
+export interface AttributionFaultAudit {
+  schema: string;
+  mode: string;
+  since: string;
+  until: string;
+  observationsScanned: number;
+  productReliabilityFindings?: AttributionFaultFinding[];
+  externalFindings?: AttributionFaultFinding[];
+  workflowFindings?: AttributionFaultFinding[];
+  mixedOrUnknownFindings?: AttributionFaultFinding[];
+  suppressed: number;
+  truncated?: boolean;
 }
 
 export interface AttributionEvalSummary {

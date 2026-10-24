@@ -43,7 +43,7 @@ export interface RunRouteFilters extends ScopeFilters {
   showNoWork?: boolean;
 }
 
-export type InsightSection = "contributors" | "usage" | "failures" | "latency";
+export type InsightSection = "contributors" | "usage" | "failures" | "latency" | "backprop";
 
 export interface InsightRouteFilters extends ScopeFilters {
   section?: InsightSection;
@@ -308,6 +308,7 @@ function insightSectionQuery(search: URLSearchParams): InsightSection | undefine
   return value === "contributors" ||
     value === "usage" ||
     value === "failures" ||
+    value === "backprop" ||
     value === "latency"
     ? value
     : undefined;

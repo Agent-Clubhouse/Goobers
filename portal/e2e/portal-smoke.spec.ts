@@ -3,6 +3,70 @@ import type { Route } from "../src/routing";
 
 const smokeRunId = "01JZE2ESMOKERUN";
 
+test("shows native Backprop signed cohorts, scoped requests, filters and evidence", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  const requests: URL[] = [];
+  await page.route("**/api/v1/telemetry/stats*", async (route) => {
+    requests.push(new URL(route.request().url()));
+    const response = await route.fetch();
+    await route.fulfill({
+      json: {
+        ...await response.json(),
+        attributionCohorts: [{
+          workload: "build", effectiveVersion: "v1", runCount: 3,
+          topContributingPaths: [
+            { nodes: ["stage", "model-a"], share: 0.6, score: -0.25, confidence: 0.9,
+              evidence: [{ runId: smokeRunId, journalSequence: 2, detail: "Recorded assertion" }] },
+            { nodes: ["stage", "model-b"], share: 0.3, score: 0.2, confidence: 0.7 },
+            { nodes: ["zero"], share: 0, score: 0, confidence: 0.8 },
+            { nodes: ["legacy"], share: 0.1, confidence: 0.2 },
+          ],
+        }, {
+          workload: "review", effectiveVersion: "v2", runCount: 1,
+          topContributingPaths: [{ nodes: ["model-c"], share: 1, score: 0.4, confidence: 0.9 }],
+        }],
+        faultAudit: {
+          schema: "goobers.dev/backprop/fault-audit/v1", mode: "report-only",
+          observationsScanned: 4, suppressed: 0, truncated: true,
+          since: "2026-08-16T00:00:00Z", until: "2026-08-17T00:00:00Z",
+        },
+      },
+    });
+  });
+  await page.goto("/#/insight");
+  await page.getByRole("tab", { name: "Operations" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Backprop" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("-0.250", { exact: true })).toBeVisible();
+  await expect(page.getByText("+0.200", { exact: true })).toBeVisible();
+  await expect(page.getByText("0.000", { exact: true })).toBeVisible();
+  await expect(page.getByText("Unavailable (older attribution payload)")).toBeVisible();
+  await expect(page.getByText("60.0%", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tabpanel").getByRole("status")).toContainText("Partial data");
+  await page.getByText("Supporting evidence (1 recorded references)").click();
+  await expect(page.getByRole("link", { name: `Run ${smokeRunId}, journal 2` }))
+    .toHaveAttribute("href", `#/run/${smokeRunId}?tab=journal&seq=2`);
+  await page.getByLabel("Minimum confidence").selectOption("0.8");
+  await expect(page.getByText("+0.200", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Workload", { exact: true }).selectOption("review");
+  await expect(page.getByRole("heading", { name: "review / v2" })).toBeVisible();
+  await page.getByLabel("Effective version", { exact: true }).selectOption("v1");
+  await expect(page.getByText("No returned attribution paths match these filters.")).toBeVisible();
+  await page.getByLabel("Time window").selectOption("30d");
+  await expect(page).toHaveURL(/section=backprop/);
+  await expect(page).toHaveURL(/window=30d/);
+  await page.getByLabel("Scope", { exact: true }).click();
+  await page.getByLabel("Find scope").fill("Workflow");
+  await page.getByRole("button", { name: "Workflow · core / implementation", exact: true }).click();
+  await expect.poll(() => requests.some((request) =>
+    request.searchParams.get("gaggle") === "core" &&
+    request.searchParams.get("workflow") === "implementation")).toBe(true);
+  await expect(page.getByRole("heading", { name: "Backprop attribution", exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 interface RouteCase {
   path: string;
   heading: string;
