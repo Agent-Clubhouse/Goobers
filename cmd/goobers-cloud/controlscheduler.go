@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/cloud/childengine"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/control"
-	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/schedentries"
 	"github.com/goobers/goobers/internal/cloud/schedstart"
 	"github.com/goobers/goobers/internal/journal"
@@ -105,7 +105,9 @@ type schedulerComposition struct {
 	// Applied reports the running configuration generation.
 	Applied func() (cloudconfig.Candidate, bool)
 	// OpenLog opens the epoch's scheduler journal on the epoch context.
-	OpenLog func(ctx context.Context, report func(error)) (journal.InstanceStore, error)
+	// The log is shared with the terminal hooks (one open per epoch): it is NOT
+	// closed here, its opener retires it when the epoch ends.
+	OpenLog func(ctx context.Context, deps control.AdmissionDeps, report func(error)) (journal.InstanceStore, error)
 	// State binds the scheduler state to the epoch's lease.
 	State func(deps control.AdmissionDeps) (localscheduler.SchedulerState, error)
 	// OpenRuns lists the runs holding a scheduler slot (open runs and
@@ -122,6 +124,12 @@ type schedulerComposition struct {
 	// Sources is the schedule/occurrence intake over cloud acceptance, built for
 	// the epoch's store; nil leaves scheduled sources off.
 	Sources func(deps control.AdmissionDeps, build func(context.Context, startintent.Target) (startintent.Prepared, error)) (localscheduler.SourceQueue, error)
+	// Capacity receives each epoch's parent capacity (the scheduler's slots for
+	// parked child workflow parents); nil publishes nothing.
+	Capacity *parentCapacity
+	// SlotsFor wraps the epoch's scheduler as the capacity's ParentSlots (tests
+	// observe which scheduler a Park reaches); nil uses the scheduler itself.
+	SlotsFor func(*localscheduler.Scheduler) childengine.ParentSlots
 	// Quota is the ONE provider quota state of the process. The scheduler gates
 	// on it, the counters feed it, and the observations ledger persists it.
 	Quota *localscheduler.ProviderQuotaState
@@ -198,6 +206,7 @@ type schedulerAdmission struct {
 	after      string
 	prepared   bool
 	disabled   bool
+	capacity   *childengine.SchedulerCapacity
 }
 
 func (a *schedulerAdmission) starterConfig() schedstart.Config {
@@ -223,7 +232,7 @@ func (a *schedulerAdmission) Prepare(ctx context.Context) error {
 	if !ok {
 		return errors.New("cloud scheduler admission requires an applied configuration generation")
 	}
-	log, err := a.c.OpenLog(a.epoch, a.c.report)
+	log, err := a.c.OpenLog(a.epoch, a.deps, a.c.report)
 	if err != nil {
 		return err
 	}
@@ -276,6 +285,7 @@ func (a *schedulerAdmission) Prepare(ctx context.Context) error {
 		return err
 	}
 	a.commitGates(counters, cause)
+	a.publishCapacity()
 	a.starterConfig().WatchReconciled(a.epoch, open, a.scheduler.ReleaseReconciled, &a.tracker)
 	a.startCounters(counters)
 	a.prepared = true
@@ -467,6 +477,7 @@ func (a *schedulerAdmission) Stop(ctx context.Context) error {
 	a.cancel()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.retireCapacity()
 	a.stopCounters()
 	var errs []error
 	if a.scheduler != nil {
@@ -481,15 +492,10 @@ func (a *schedulerAdmission) Stop(ctx context.Context) error {
 	if err := a.tracker.Wait(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	if a.log != nil {
-		// A deposed leader's retire is refused by the fence (stale epoch): its
-		// successor takes the stream over by epoch, so that is the expected
-		// outcome of losing the lease, not a failure to stop.
-		if err := a.log.Close(); err != nil && !errors.Is(err, lease.ErrStale) {
-			errs = append(errs, err)
-		}
-		a.log = nil
-	}
+	// The scheduler log is shared per epoch (epochSchedulerLogs) and retired by its
+	// opener when the epoch context ends; closing it here would break the terminal
+	// hooks' later appends.
+	a.log = nil
 	return errors.Join(errs...)
 }
 
@@ -557,4 +563,29 @@ func (c schedulerComposition) settled(ctx context.Context, deps control.Admissio
 	default: // Dispatching, Dispatched
 		return false, nil
 	}
+}
+
+// publishCapacity makes this epoch's scheduler the parent capacity plane. The
+// capacity is built per epoch with the scheduler: a SchedulerCapacity caches the
+// suspension of each parked parent, bound to the scheduler that made it, so a
+// shared capacity would carry the deposed epoch's suspensions into its successor.
+func (a *schedulerAdmission) publishCapacity() {
+	if a.c.Capacity == nil {
+		return
+	}
+	var slots childengine.ParentSlots = a.scheduler
+	if a.c.SlotsFor != nil {
+		slots = a.c.SlotsFor(a.scheduler)
+	}
+	a.capacity = &childengine.SchedulerCapacity{Slots: slots}
+	a.c.Capacity.publish(a.capacity)
+}
+
+// retireCapacity withdraws this epoch's capacity, but only if it is still the
+// published one: a deposed epoch's late Stop must not clear its successor's.
+func (a *schedulerAdmission) retireCapacity() {
+	if a.c.Capacity != nil && a.capacity != nil {
+		a.c.Capacity.retire(a.capacity)
+	}
+	a.capacity = nil
 }

@@ -60,10 +60,15 @@ func constructScheduler(_ context.Context, db databaseServices, _ controlAuth, m
 		}
 	})
 	confirmClosed := epoch.TemporalConfirmClosed(db.Temporal)
+	// The terminal heal's provider reads are metered in the SAME state.
+	epochWiring.Quota = func() *localscheduler.ProviderQuotaState { return quota }
 	composition := schedulerComposition{
-		Applied: applied.Applied,
-		OpenLog: func(ctx context.Context, report func(error)) (journal.InstanceStore, error) {
-			return p.journalBackend.OpenSchedulerLog(ctx, report)
+		Capacity: &epochParentCapacity,
+		Applied:  applied.Applied,
+		// One scheduler log per epoch, shared with the terminal hooks; its opener
+		// retires it when the epoch ends.
+		OpenLog: func(ctx context.Context, deps control.AdmissionDeps, report func(error)) (journal.InstanceStore, error) {
+			return epochSchedulerLogs.For(ctx, p.journalBackend, deps.Handle, report)
 		},
 		State: func(deps control.AdmissionDeps) (localscheduler.SchedulerState, error) {
 			services, err := db.NewClaims(manager, deps.Handle)
