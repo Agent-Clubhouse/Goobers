@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -98,5 +99,57 @@ func TestUnverifiedNotesNameEveryUnconfirmedMember(t *testing.T) {
 	}
 	if len(unverifiedNotes(nil, nil)) != 0 {
 		t.Fatal("a fully verified cycle carries notes")
+	}
+}
+
+func TestAMixedCycleKeepsItsPermanentNoteThroughTheRetryPass(t *testing.T) {
+	a, b := node(providers.ProviderGitHub, "1"), node(providers.ProviderGitHub, "2")
+	reads := map[string]int{}
+	store := Store{RetryDelays: []time.Duration{time.Millisecond, time.Millisecond}, Closed: func(_ context.Context, _ string, _ providers.RepositoryRef, id string) (bool, error) {
+		reads[id]++
+		if id == "1" {
+			return false, &VerifyError{Class: "not found", Permanent: true, Message: "gone"}
+		}
+		return false, errors.New("GET failed: status 503: unavailable")
+	}}
+	_, _, unverifiable := store.verifyCycle(t.Context(), nil, []blockedcycle.Node{a, b}, "run")
+	if reads["1"] != 1 || reads["2"] != 3 {
+		t.Fatalf("reads = %v; want the permanent member read once and the retryable one 1+2 times", reads)
+	}
+	notes := unverifiedNotes(nil, unverifiable)
+	if len(notes) != 2 || !slices.Contains(notes, "#1: unverifiable: not found") || !slices.Contains(notes, "#2: unverifiable: provider unavailable") {
+		t.Fatalf("notes = %q; want BOTH members named after the retry passes", notes)
+	}
+}
+
+func TestAMemberSkippedDuringARetryPassIsNotedOnceAndNotAsAFailure(t *testing.T) {
+	a := node(providers.ProviderGitHub, "1")
+	calls := 0
+	budget := 1 // the first read is allowed, the retry is not
+	store := Store{
+		RetryDelays: []time.Duration{time.Millisecond},
+		Reserve:     func(providers.ProviderKind) bool { budget--; return budget >= 0 },
+		Closed: func(context.Context, string, providers.RepositoryRef, string) (bool, error) {
+			calls++
+			return false, errors.New("GET failed: status 503: unavailable")
+		},
+	}
+	closed, skipped, unverifiable := store.verifyCycle(t.Context(), nil, []blockedcycle.Node{a}, "run")
+	if calls != 1 || len(closed) != 0 || len(skipped) != 1 || len(unverifiable) != 0 {
+		t.Fatalf("calls %d closed %v skipped %v unverifiable %v; want one read, then the member skipped by the retry pass and not also reported failed", calls, closed, skipped, unverifiable)
+	}
+	if notes := unverifiedNotes(skipped, unverifiable); len(notes) != 1 {
+		t.Fatalf("notes = %q, want the member named exactly once", notes)
+	}
+}
+
+func TestNotCheckedLabelsEveryMember(t *testing.T) {
+	cycle := blockedcycle.Result{Affected: []blockedcycle.Node{node(providers.ProviderGitHub, "1"), node(providers.ProviderGitHub, "2")}}
+	got := notChecked(cycle)
+	if len(got.Unverified) != 2 || got.Unverified[0] != "#1: unverifiable: not checked" || got.Unverified[1] != "#2: unverifiable: not checked" || len(got.Affected) != 2 {
+		t.Fatalf("notChecked = %+v", got)
+	}
+	if len(cycle.Unverified) != 0 {
+		t.Fatal("notChecked modified its input")
 	}
 }

@@ -4,15 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/blockedcycle"
+	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/terminalreport"
+	"github.com/goobers/goobers/providers"
 )
 
 type fakeLoop struct {
+	sweeps       int
+	sweepErr     error
+	sweepResult  blockedrecordspg.SweepResult
+	sweepOpt     blockedrecordspg.SweepOptions
+	deferred     int
 	budgets      []int
 	heals        int
 	healLimits   []int
@@ -32,6 +42,14 @@ func (f *fakeLoop) Heal(_ context.Context, _ *lease.Handle, limit int) (int, err
 	f.healLimits = append(f.healLimits, limit)
 	return 0, f.healErr
 }
+
+func (f *fakeLoop) Sweep(_ context.Context, _ *lease.Handle, opt blockedrecordspg.SweepOptions) (blockedrecordspg.SweepResult, error) {
+	f.sweeps++
+	f.sweepOpt = opt
+	return f.sweepResult, f.sweepErr
+}
+
+func (f *fakeLoop) Deferrals(context.Context, *lease.Handle) (int, error) { return f.deferred, nil }
 
 func (f *fakeLoop) Backlog(context.Context) (terminalreportpg.Backlog, error) {
 	return f.backlog, f.backlogErr
@@ -148,4 +166,132 @@ func TestHealthIsFalseOnLagAndOnAnUnreadableBacklog(t *testing.T) {
 	if !d.Status().Healthy {
 		t.Fatal("a loop that has not run reported unhealthy")
 	}
+}
+
+// The sweep drives every deferred cycle, so it runs with the heal (its slow
+// cadence) and only when there is something to escalate with.
+func TestTheSweepRunsWithTheHealAndOnlyWithAnEscalator(t *testing.T) {
+	f, c := &fakeLoop{deferred: 2}, &clock{now: time.Unix(1000, 0)}
+	d, _ := newLoop(f, c, Tuning{DeferralBound: 20 * time.Minute, SweepCycles: 3, SweepMembers: 4})
+	d.deps.Escalator = poster{}
+	d.escalate = func(context.Context, blockedcycle.Result, blockedrecordspg.Deferral) error { return nil }
+	if err := d.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if f.sweeps != 1 || f.sweepOpt.Bound != 20*time.Minute || f.sweepOpt.MaxCycles != 3 || f.sweepOpt.MaxMembers != 4 || f.sweepOpt.Escalate == nil {
+		t.Fatalf("sweeps %d options %+v; want one pass with the configured bounds and an escalator", f.sweeps, f.sweepOpt)
+	}
+	if got := d.Status().DeferredCycles; got != 2 {
+		t.Fatalf("status deferred cycles = %d, want 2", got)
+	}
+	c.now = c.now.Add(2 * time.Second) // delivery is due again, the heal is not
+	if err := d.Tick(t.Context()); err != nil || f.sweeps != 1 {
+		t.Fatalf("sweeps = %d after a delivery-only pass (err %v); the sweep follows the heal cadence", f.sweeps, err)
+	}
+	// Without an escalator there is no driver: the sweep does not run, and the
+	// store (Defer unset) escalates unverifiable cycles itself.
+	f2 := &fakeLoop{}
+	d2, _ := newLoop(f2, &clock{now: time.Unix(1000, 0)}, Tuning{})
+	if err := d2.Tick(t.Context()); err != nil || f2.sweeps != 0 {
+		t.Fatalf("sweeps without an escalator = %d, err %v", f2.sweeps, err)
+	}
+	// A lost lease in the sweep ends the epoch; other failures are reported.
+	f3 := &fakeLoop{sweepErr: lease.ErrStale}
+	d3, _ := newLoop(f3, &clock{now: time.Unix(1000, 0)}, Tuning{})
+	d3.deps.Escalator = poster{}
+	if err := d3.Tick(t.Context()); err == nil {
+		t.Fatal("a stale fence in the sweep did not end the epoch")
+	}
+	f4 := &fakeLoop{sweepErr: errors.New("provider down")}
+	d4, reported := newLoop(f4, &clock{now: time.Unix(1000, 0)}, Tuning{})
+	d4.deps.Escalator = poster{}
+	if err := d4.Tick(t.Context()); err != nil || len(*reported) == 0 {
+		t.Fatalf("sweep failure: err %v reported %v; want reported, epoch kept", err, *reported)
+	}
+}
+
+type poster struct{}
+
+func (poster) UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+
+type memLog struct{ events []journal.Event }
+
+func (l *memLog) AppendBestEffort(ev journal.Event) { l.events = append(l.events, ev) }
+
+// A cycle whose escalation the provider permanently refused is no longer retried by
+// the sweep, so it must be loud: a journaled error per cycle and a standing status.
+func TestAPermanentlyRefusedEscalationIsJournaledAndStaysVisible(t *testing.T) {
+	f, c := &fakeLoop{sweepResult: blockedrecordspg.SweepResult{Refused: []string{"2", "7"}}, sweepErr: blockedrecordspg.ErrEscalationRefused}, &clock{now: time.Unix(1000, 0)}
+	d, reported := newLoop(f, c, Tuning{})
+	d.deps.Escalator = poster{}
+	log := &memLog{}
+	d.deps.Log = log
+	if err := d.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status := d.Status()
+	if len(status.RefusedCycles) != 2 || status.RefusedCycles[0] != "2" {
+		t.Fatalf("refused cycles = %v, want both named", status.RefusedCycles)
+	}
+	var journaled int
+	for _, ev := range log.events {
+		if ev.Runner["kind"] == "blocked_cycle_escalation_refused" {
+			journaled++
+		}
+	}
+	if journaled != 2 || len(*reported) == 0 {
+		t.Fatalf("journaled %d refusals, reported %v; want one journaled error per cycle and the failure reported", journaled, *reported)
+	}
+	// It stays visible on later passes, and the list is bounded.
+	for i := 0; i < 3*maxRefusedShown; i++ {
+		d.surfaceRefusals([]string{"k"})
+	}
+	if got := len(d.Status().RefusedCycles); got != maxRefusedShown {
+		t.Fatalf("refused list = %d, want it bounded at %d", got, maxRefusedShown)
+	}
+}
+
+// Comments are keyed by cycle, item and position, not text: a retry whose notes
+// changed still lands on the same key.
+func TestCycleCommentsAreKeyedByPositionNotByText(t *testing.T) {
+	var keys []string
+	inner := keyRecorder{keys: &keys}
+	post := func(comments ...string) []string {
+		keys = nil
+		p := newKeyedPoster(inner, "cycle-abc")
+		for _, item := range []string{"1", "2"} {
+			for _, comment := range comments {
+				if _, err := p.UpdateWorkItem(t.Context(), providers.UpdateWorkItemRequest{ID: item, Comment: comment}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return slices.Clone(keys)
+	}
+	first := post("report", "note: #2 rate limited")
+	retry := post("report", "note: #2 provider unavailable")
+	if !slices.Equal(first, retry) {
+		t.Fatalf("keys changed with the comment text: %v vs %v", first, retry)
+	}
+	want := []string{"cycle-abc/1/0", "cycle-abc/1/1", "cycle-abc/2/0", "cycle-abc/2/1"}
+	if !slices.Equal(first, want) {
+		t.Fatalf("keys = %v, want %v", first, want)
+	}
+	// A caller's own key is respected; a comment-less request is untouched.
+	keys = nil
+	p := newKeyedPoster(inner, "cycle-abc")
+	_, _ = p.UpdateWorkItem(t.Context(), providers.UpdateWorkItemRequest{ID: "1", Comment: "c", IdempotencyKey: "mine"})
+	_, _ = p.UpdateWorkItem(t.Context(), providers.UpdateWorkItemRequest{ID: "1", AddLabels: []string{"x"}})
+	if !slices.Equal(keys, []string{"mine", ""}) {
+		t.Fatalf("keys = %v, want the caller's key kept and no key invented for a label-only request", keys)
+	}
+}
+
+type keyRecorder struct{ keys *[]string }
+
+func (k keyRecorder) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	*k.keys = append(*k.keys, req.IdempotencyKey)
+	return providers.WorkItem{}, nil
 }

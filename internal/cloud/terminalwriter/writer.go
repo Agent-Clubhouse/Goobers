@@ -275,10 +275,14 @@ func (e *writeError) Unwrap() []error { return e.kinds }
 
 // fail scrubs err for op. A kept branch passes through untouched: it is a
 // decision carrying no provider text, and the caller must see its type.
-func (w *Writer) fail(op string, err error) error {
+func (w *Writer) fail(op string, err error) error { return failWith(w.scrubber, op, err) }
+
+// failWith is fail over any scrubber, shared with the instance-level writer.
+func failWith(scrubber journal.Scrubber, op string, err error) error {
 	if err == nil {
 		return nil
 	}
+	scrub := func(s string) string { return string(scrubber.Scrub([]byte(s))) }
 	var inUse *providers.BranchInUseError
 	if errors.As(err, &inUse) {
 		return err
@@ -292,13 +296,11 @@ func (w *Writer) fail(op string, err error) error {
 	}
 	if limit, ok := providers.AsRateLimitError(err); ok {
 		safe := *limit
-		safe.Endpoint = w.scrub(safe.Endpoint)
-		safe.RetryAfterRaw = w.scrub(safe.RetryAfterRaw)
-		safe.RemainingRaw = w.scrub(safe.RemainingRaw)
-		safe.ResetRaw = w.scrub(safe.ResetRaw)
+		safe.Endpoint = scrub(safe.Endpoint)
+		safe.RetryAfterRaw = scrub(safe.RetryAfterRaw)
+		safe.RemainingRaw = scrub(safe.RemainingRaw)
+		safe.ResetRaw = scrub(safe.ResetRaw)
 		kinds = append(kinds, &safe)
 	}
-	return &writeError{message: op + ": " + w.scrub(err.Error()), kinds: kinds}
+	return &writeError{message: op + ": " + scrub(err.Error()), kinds: kinds}
 }
-
-func (w *Writer) scrub(s string) string { return string(w.scrubber.Scrub([]byte(s))) }

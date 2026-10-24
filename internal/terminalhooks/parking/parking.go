@@ -148,26 +148,37 @@ func Blocked(ctx context.Context, poster Poster, state State, o terminalhooks.Bl
 				errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
 			}
 			if len(cycle.Affected) > 0 {
-				comments := blockedcycle.Comments(cycle)
-				for _, cycleItem := range cycle.Affected {
-					for _, comment := range comments {
-						cycleReq := providers.UpdateWorkItemRequest{
-							Repository:   cycleItem.Repository,
-							ID:           cycleItem.ItemID,
-							Comment:      comment,
-							AddLabels:    []string{providers.LabelNeedsHuman},
-							RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
-						}
-						if _, err := poster.UpdateWorkItem(ctx, cycleReq); err != nil {
-							errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
-						}
-					}
-				}
+				errs = append(errs, EscalateCycle(ctx, poster, cycle))
 				continue
 			}
 		}
 		if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
 			errs = append(errs, fmt.Errorf("park blocked item %s#%s: %w", repoRef.Name, itemID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// EscalateCycle parks every member of a real dependency cycle goobers:needs-human
+// and posts the cycle report on each (a human has to break a cycle). Used by the
+// blocked handler when a new block closes a cycle, and by the controller's sweep
+// when it resolves a cycle it had deferred. Idempotent: the labels converge and
+// the comments are keyed by the caller's poster.
+func EscalateCycle(ctx context.Context, poster Poster, cycle blockedcycle.Result) error {
+	var errs []error
+	comments := blockedcycle.Comments(cycle)
+	for _, cycleItem := range cycle.Affected {
+		for _, comment := range comments {
+			req := providers.UpdateWorkItemRequest{
+				Repository:   cycleItem.Repository,
+				ID:           cycleItem.ItemID,
+				Comment:      comment,
+				AddLabels:    []string{providers.LabelNeedsHuman},
+				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+			}
+			if _, err := poster.UpdateWorkItem(ctx, req); err != nil {
+				errs = append(errs, fmt.Errorf("escalate circular dependency on %s#%s: %w", cycleItem.Repository.Name, cycleItem.ItemID, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
