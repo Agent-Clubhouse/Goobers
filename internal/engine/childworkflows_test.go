@@ -38,7 +38,9 @@ func TestChildWorkflowExecutionRefusedAtEngineBoundaries(t *testing.T) {
 func TestChildWorkflowsSwitchLiftsOnlyThePinnedOptIn(t *testing.T) {
 	spec := apiv1.WorkflowSpec{Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: "parent",
 		Tasks: []apiv1.Task{{Name: "parent", Type: apiv1.TaskAgentic, Goal: "delegate", Goober: "coder", ChildWorkflows: &apiv1.ChildWorkflowPolicy{AllowedGoobers: []string{"coder"}}}}}
-	refused := func(err error) bool { return err != nil && strings.Contains(err.Error(), wf.ErrChildWorkflowExecutionUnsupported.Error()) }
+	refused := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), wf.ErrChildWorkflowExecutionUnsupported.Error())
+	}
 	run := func(t *testing.T, enabled bool, prior bool) error {
 		t.Helper()
 		var ts testsuite.WorkflowTestSuite
