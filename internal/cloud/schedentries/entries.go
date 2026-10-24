@@ -21,6 +21,7 @@ import (
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
@@ -325,10 +326,35 @@ func disabledReason(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflo
 // update-behind-pr remediation, with configured repositories. Azure DevOps has
 // no counter locally either (each due tick fires unsized there too).
 func needsScheduleDemand(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, t parsedTriggers) bool {
-	if len(cfg.Repos) == 0 || len(t.schedules) == 0 || gaggle.Spec.Project.Provider == apiv1.ProviderADO {
+	if len(cfg.Repos) == 0 || len(t.schedules) == 0 || counterProvider(cfg, gaggle.Spec.Project) == apiv1.ProviderADO {
 		return false
 	}
 	return startsWithGoobersCommand(wf, "update-behind-pr", func(n int) bool { return n == 2 })
+}
+
+// counterProvider resolves the provider a demand counter would talk to exactly
+// as the local daemon's backlogCounterRepoRef does: the configured repository
+// bound to the gaggle's project wins over the gaggle's own (possibly omitted)
+// provider, an older gaggle that omits it is matched by repository identity, and
+// the default is GitHub.
+func counterProvider(cfg *instance.Config, project apiv1.RepoRef) apiv1.Provider {
+	provider := project.Provider
+	if configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, project); ok && configured.Provider != "" {
+		provider = apiv1.Provider(configured.Provider)
+	} else if cfg != nil {
+		for _, configured := range cfg.Repos {
+			if configured.Owner == project.Owner && configured.Project == project.Project && configured.Name == project.Name {
+				if configured.Provider != "" {
+					provider = apiv1.Provider(configured.Provider)
+				}
+				break
+			}
+		}
+	}
+	if provider == "" {
+		provider = apiv1.ProviderGitHub
+	}
+	return provider
 }
 
 // needsRefill mirrors when the local daemon builds a refill demand counter: a

@@ -231,8 +231,9 @@ func TestBuildRefusesWorkflowsWhoseDemandCountersDoNotExistYet(t *testing.T) {
 		"no configured repos":   func(c *instance.Config, _ *instance.ConfigSet) { c.Repos = nil },
 		"no schedule":           func(_ *instance.Config, s *instance.ConfigSet) { s.Workflows[0].Spec.Triggers = nil },
 		"different first stage": func(_ *instance.Config, s *instance.ConfigSet) { startingWith(s, "goobers", "other") },
-		"azure devops (unsized)": func(_ *instance.Config, s *instance.ConfigSet) {
+		"azure devops (unsized)": func(c *instance.Config, s *instance.ConfigSet) {
 			s.Gaggles[0].Spec.Project.Provider = apiv1.ProviderADO
+			c.Repos = []instance.RepoRef{{Provider: "ado", Owner: "o", Name: "r"}}
 		},
 		"disabled schedule": func(_ *instance.Config, s *instance.ConfigSet) { s.Workflows[0].Spec.Triggers[0].Enabled = off() },
 	} {
@@ -364,5 +365,31 @@ func TestMissingStartersYieldAnEntryThatRefusesToStart(t *testing.T) {
 		if _, err := entries[0].Starter.Start(t.Context(), localscheduler.StartRequest{}); !errors.Is(err, ErrNoStarter) {
 			t.Fatalf("%s: start = %v, want ErrNoStarter", name, err)
 		}
+	}
+}
+
+// TestScheduleDemandExemptionUsesTheConfiguredRepositoryProvider: a gaggle that
+// omits its provider is bound to azure devops by the configured repository, so
+// the local daemon builds no schedule counter there and neither may the cloud
+// refuse it; conversely a configured GitHub repository overrides a stale ado ref.
+func TestScheduleDemandExemptionUsesTheConfiguredRepositoryProvider(t *testing.T) {
+	t.Parallel()
+	schedule := apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"}
+	reason := func(project apiv1.RepoRef, configured instance.RepoRef) string {
+		cfg, set := fixture(schedule)
+		cfg.Repos = []instance.RepoRef{configured}
+		set.Gaggles[0].Spec.Project = project
+		startingWith(set, "goobers", "update-behind-pr")
+		return build(t, cfg, set)[0].DisabledReason
+	}
+	omitted := apiv1.RepoRef{Owner: "org", Project: "proj", Name: "repo"}
+	if got := reason(omitted, instance.RepoRef{Provider: "ado", Owner: "org", Project: "proj", Name: "repo"}); got != "" {
+		t.Fatalf("omitted provider bound to ado by cfg.Repos was refused: %q", got)
+	}
+	if got := reason(omitted, instance.RepoRef{Provider: "github", Owner: "org", Project: "proj", Name: "repo"}); got != ScheduleDemandPendingReason {
+		t.Fatalf("omitted provider bound to github by cfg.Repos: %q", got)
+	}
+	if got := reason(apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "o", Name: "r"}, instance.RepoRef{Provider: "ado", Owner: "o", Project: "p", Name: "other"}); got != ScheduleDemandPendingReason {
+		t.Fatalf("an unrelated configured repo changed the provider: %q", got)
 	}
 }
