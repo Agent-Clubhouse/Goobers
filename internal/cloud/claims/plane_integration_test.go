@@ -1077,3 +1077,48 @@ func TestPlaneListNamespaceReturnsQueryErrorsInsteadOfAnEmptyNamespace(t *testin
 		t.Fatalf("a failed read returned partial data: %+v", listing)
 	}
 }
+
+// A failure of EITHER of the two reads fails ListNamespace: failing only the
+// entries query, then only the history query, each yields an error and no
+// listing. (A cancelled context fails both at once, so it cannot tell a read
+// that swallows one error from one that propagates it.) The failures are column
+// privileges revoked from the controller on exactly one table's column, which
+// only that table's query selects.
+func TestPlaneListNamespaceFailsWhenEitherReadFails(t *testing.T) {
+	f := newPlaneFixture(t)
+	plane := f.leader(t, "a").plane
+	ctx := t.Context()
+	for _, item := range []string{"pr/41", "pr/42"} {
+		if got, err := plane.Acquire(ctx, request(item, "run-"+item)); err != nil || !got.Ok {
+			t.Fatalf("acquire %s = %+v, %v", item, got, err)
+		}
+	}
+	settle := request("pr/41", "run-pr/41")
+	settle.Outcome = "completed"
+	if got, err := plane.Settle(ctx, settle); err != nil || !got.Ok {
+		t.Fatalf("settle = %+v, %v", got, err)
+	}
+	if listing, err := plane.ListNamespace(ctx, "g", "github"); err != nil || len(listing.Entries) == 0 || len(listing.History) == 0 {
+		t.Fatalf("baseline listing = %+v, %v; both reads need rows for this test to mean anything", listing, err)
+	}
+
+	role := pgx.Identifier{pgroles.Controller}.Sanitize()
+	for name, table := range map[string]string{"entries": "control.claim", "history": "control.claim_history"} {
+		if _, err := f.owner.Exec(ctx, "REVOKE SELECT (verification) ON "+table+" FROM "+role); err != nil {
+			t.Fatal(err)
+		}
+		listing, err := plane.ListNamespace(ctx, "g", "github")
+		if err == nil {
+			t.Fatalf("with the %s read failing ListNamespace returned %+v and no error", name, listing)
+		}
+		if len(listing.Entries) != 0 || len(listing.History) != 0 {
+			t.Fatalf("with the %s read failing ListNamespace returned partial data: %+v", name, listing)
+		}
+		if _, err := f.owner.Exec(ctx, "GRANT SELECT (verification) ON "+table+" TO "+role); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := plane.ListNamespace(ctx, "g", "github"); err != nil {
+			t.Fatalf("restoring the %s read did not restore ListNamespace: %v", name, err)
+		}
+	}
+}

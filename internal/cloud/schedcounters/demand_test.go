@@ -131,7 +131,7 @@ func fixtureForge(t *testing.T, heads ...map[int]string) *httptest.Server {
 	return server
 }
 
-func demandCounters(t *testing.T, forge *httptest.Server, claims *fakeClaims, journal *fakeJournal, quota *localscheduler.ProviderQuotaState) (*Counters, *[]error) {
+func demandCounters(t *testing.T, forge *httptest.Server, claims *fakeClaims, journal *fakeJournal, quota *localscheduler.ProviderQuotaState, now ...func() time.Time) (*Counters, *[]error) {
 	t.Helper()
 	cfg, set := demandGeneration()
 	source := GitHubSource{
@@ -140,6 +140,9 @@ func demandCounters(t *testing.T, forge *httptest.Server, claims *fakeClaims, jo
 	}
 	reported := &[]error{}
 	deps := Deps{Config: cfg, Set: set, Open: source.Open, Quota: quota, Report: func(err error) { *reported = append(*reported, err) }}
+	if len(now) > 0 {
+		deps.Now = now[0]
+	}
 	if claims != nil {
 		deps.Claims = claims
 	}
@@ -307,5 +310,44 @@ func TestPackageClosureExcludesTheRunner(t *testing.T) {
 		if dep == "github.com/goobers/goobers/internal/runner" || strings.HasPrefix(dep, "github.com/goobers/goobers/cmd/") {
 			t.Fatalf("internal/cloud/schedcounters depends on %s", dep)
 		}
+	}
+}
+
+// Claim expiry is judged against Deps.Now, never the wall clock: the same claim
+// is live at one injected instant and expired at another, whatever the host
+// clock says.
+func TestClaimExpiryFollowsTheInjectedClockNotTheWallClock(t *testing.T) {
+	t.Parallel()
+	expires := time.Now().Add(time.Hour) // live on the wall clock
+	for name, tc := range map[string]struct {
+		now  time.Time
+		want int
+	}{
+		"before the claim expires, by the injected clock": {now: expires.Add(-30 * time.Minute), want: 1},
+		"after the claim expires, by the injected clock":  {now: expires.Add(time.Hour), want: 2},
+	} {
+		now := tc.now
+		claims := &fakeClaims{listing: claimsclient.Listing{Entries: []claimsclient.Entry{activeClaim(41, expires)}}}
+		c, _ := demandCounters(t, fixtureForge(t), claims, &fakeJournal{}, nil, func() time.Time { return now })
+		if n, err := c.For(demandIdentity).ScheduleDemand.EligibleCount(t.Context()); err != nil || n != tc.want {
+			t.Errorf("%s: eligible = %d (%v), want %d", name, n, err, tc.want)
+		}
+	}
+}
+
+// With no configured repository there is nothing to count against, so no counter
+// is built and nothing is indexed out of range. The workflow-level guard in For
+// makes this unreachable through it, so the check is pinned directly.
+func TestScheduleDemandNeedsAConfiguredRepository(t *testing.T) {
+	t.Parallel()
+	cfg, set := demandGeneration()
+	cfg.Repos = nil
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: GitHubSource{}.Open, Claims: &fakeClaims{}, Journal: &fakeJournal{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	demand, err := c.scheduleDemand(set.Gaggles[0], &set.Workflows[0])
+	if demand != nil || err != nil {
+		t.Fatalf("scheduleDemand without repositories = %v, %v; want no counter and no error", demand, err)
 	}
 }
