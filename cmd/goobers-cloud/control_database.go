@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -135,7 +136,7 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 	defer controller.Close()
 	databases, err := newControlDatabases(ctx, api, controller, db.instanceID)
 	if err == nil {
-		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer)
+		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer, o.objectStoreAccountName, o.objectStoreAccountKeyFile)
 	}
 	if err == nil {
 		err = bindControlConfiguration(&databases.Controller, o.configDir)
@@ -208,15 +209,25 @@ func newControlDatabases(ctx context.Context, api, controller *cloudpg.Pools, in
 // journal's span source, generated-child custody and retained config
 // generations live in. It is required: a control role without it cannot compose
 // its planes, so a missing URL is a boot error rather than a later lease-time one.
-func bindControlObjectStore(controller *databaseServices, url, container string) error {
+func bindControlObjectStore(controller *databaseServices, url, container, accountName, accountKeyFile string) error {
 	if strings.TrimSpace(url) == "" || strings.TrimSpace(container) == "" {
 		return errors.New("object store is required: set --object-store-url and --object-store-container")
 	}
-	credential, err := newDefaultAzureCredential()
-	if err != nil {
-		return errors.New("object-store credential initialization failed")
+	var blobs *objstore.Azure
+	var err error
+	if strings.TrimSpace(accountName) != "" || strings.TrimSpace(accountKeyFile) != "" {
+		key, readErr := os.ReadFile(accountKeyFile)
+		if readErr != nil || strings.TrimSpace(accountName) == "" {
+			return errors.New("object-store shared-key credential initialization failed")
+		}
+		blobs, err = newAzureSharedKeyObjectStore(url, container, accountName, strings.TrimSpace(string(key)))
+	} else {
+		credential, credentialErr := newDefaultAzureCredential()
+		if credentialErr != nil {
+			return errors.New("object-store credential initialization failed")
+		}
+		blobs, err = newAzureObjectStore(url, container, credential)
 	}
-	blobs, err := newAzureObjectStore(url, container, credential)
 	if err != nil {
 		return errors.New("object-store initialization failed")
 	}
