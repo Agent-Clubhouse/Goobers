@@ -55,6 +55,9 @@ func (p *Plane) claimShared(ctx context.Context, handle *cloudlease.Handle, requ
 	var observedAt time.Time
 	var admitted bool
 	err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		if err := pruneHistory(ctx, tx, p.instanceID, epoch); err != nil {
+			return err
+		}
 		var err error
 		reserved, admitted, response.Holder, err = p.beginSharedAdmission(ctx, tx, epoch, key, request, binding.Owner, expected)
 		if err != nil || !admitted {
