@@ -202,9 +202,11 @@ func (w *Writer) PullLabels(ctx context.Context, runID, pullID string) ([]string
 	return labels, w.fail("list pull labels", err)
 }
 
-// DeleteBranch deletes branch from the run's workspace repository. An absent
-// branch is success; one an open pull request uses is kept and reported as
-// *providers.BranchInUseError, unscrubbed, for the caller to record.
+// DeleteBranch deletes branch from the run's workspace repository. Neither
+// outcome below is a failure; both reach the caller unscrubbed, for it to
+// record: a branch an open pull request uses is kept and reported as
+// *providers.BranchInUseError, and an absent branch is reported as
+// providers.ErrBranchNotFound (journaled as "branch-not-found").
 func (w *Writer) DeleteBranch(ctx context.Context, runID, branch string) error {
 	bound, err := w.runs.Bind(ctx, runID)
 	if err != nil {
@@ -214,7 +216,10 @@ func (w *Writer) DeleteBranch(ctx context.Context, runID, branch string) error {
 	if err != nil {
 		return w.fail("delete branch", err)
 	}
-	_, err = backend.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: bound.Workspace, Name: branch})
+	result, err := backend.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: bound.Workspace, Name: branch})
+	if err == nil && !result.Deleted {
+		return fmt.Errorf("delete branch %q: %w", branch, providers.ErrBranchNotFound)
+	}
 	return w.fail("delete branch", err)
 }
 

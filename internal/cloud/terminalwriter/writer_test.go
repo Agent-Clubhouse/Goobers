@@ -46,6 +46,7 @@ type fakeBackend struct {
 	calls    *[]call
 	cap      string
 	labels   map[string][]string
+	deleted  bool
 	err      error
 	released *providers.ClaimWorkItemRequest
 }
@@ -85,7 +86,7 @@ func (b *fakeBackend) LabelPull(_ context.Context, repo providers.RepositoryRef,
 }
 func (b *fakeBackend) DeleteBranch(_ context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 	b.record("delete-branch:"+req.Name, req.Repository)
-	return providers.DeleteBranchResult{}, b.err
+	return providers.DeleteBranchResult{Deleted: b.deleted}, b.err
 }
 func (b *fakeBackend) ReleaseWorkItemClaim(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
 	b.record("release", req.Repository)
@@ -133,6 +134,19 @@ func TestDeleteBranchKeepsABranchAnOpenPullRequestUses(t *testing.T) {
 	}
 	if got := *backend.calls; len(got) != 1 || got[0].op != "delete-branch:goobers/run-1" || got[0].repo != workspaceRepo || got[0].capability != string(capability.GitHubBranchDelete) {
 		t.Fatalf("delete targeted %+v, want the run's workspace with branch-delete only", got)
+	}
+}
+
+func TestDeleteBranchReportsAnAbsentBranchAsNotFound(t *testing.T) {
+	backend := &fakeBackend{}
+	w, _ := newTestWriter(t, backend, fakeRuns{"run-1": binding("run-1")})
+	err := w.DeleteBranch(t.Context(), "run-1", "goobers/run-1")
+	if !errors.Is(err, providers.ErrBranchNotFound) || providerwriter.Permanent(err) {
+		t.Fatalf("absent branch: %v, want ErrBranchNotFound (not permanent)", err)
+	}
+	backend.deleted = true
+	if err := w.DeleteBranch(t.Context(), "run-1", "goobers/run-1"); err != nil {
+		t.Fatalf("deleted branch: %v", err)
 	}
 }
 

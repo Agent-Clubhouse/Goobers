@@ -77,7 +77,9 @@ func (r JournalRuns) Bind(ctx context.Context, runID string) (Binding, error) {
 	if err != nil {
 		return Binding{}, fmt.Errorf("pin run %s generation: %w", runID, err)
 	}
-	defer generation.Release()
+	// Only the declared repositories are copied out; an unpin failure cannot
+	// change them.
+	defer func() { _ = generation.Release() }()
 	project := runtimewiring.GaggleProjectRef(generation.Set, identity.Gaggle)
 	if project.Owner == "" || project.Name == "" {
 		return Binding{}, fmt.Errorf("run %s gaggle %q has no pinned project: %w", runID, identity.Gaggle, providerwriter.ErrRepositoryNotPinned)

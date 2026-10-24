@@ -283,6 +283,12 @@
       "reason": "Cloud terminal-awaiter tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
     },
     {
+      "package": "internal/cloud/terminalwriter",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud provider-writer tests run in the Linux unit job and its PostgreSQL binding test in cloud-pg; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/blockedrecords",
       "coverage": "none",
       "category": "not-selected",
