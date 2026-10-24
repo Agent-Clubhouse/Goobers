@@ -65,13 +65,10 @@ func currentTerminalOutboxLag() *terminalOutboxLag {
 	return &terminalOutboxLag{Pending: s.Pending, OldestSeconds: s.OldestAge.Seconds(), Healthy: s.Healthy}
 }
 
-// errTerminalInputs names what the control role is missing to compose the
-// terminal hooks; the Epoch seam then refuses by name instead of serving without
-// them.
-var errTerminalInputs = errors.New("terminal hooks need the claims plane, configuration owner, journal backend, acceptance store, retained generations and Temporal")
-
 // terminalPart returns the Terminal part composed from the control planes, or nil
-// when an input is absent (the seam then reports the part missing).
+// when an input is absent (the Epoch seam then refuses, naming "terminal hooks":
+// it needs the claims plane, configuration owner, journal backend, acceptance
+// store, retained generations and Temporal).
 func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Context, fence *lease.Manager, handle *lease.Handle) (terminalEpoch, error) {
 	plane, okPlane := p.Claims.(*cloudclaims.Plane)
 	backend, okBackend := p.journalReader.(terminalJournal)
