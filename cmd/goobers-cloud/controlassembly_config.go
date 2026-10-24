@@ -35,7 +35,7 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	if err != nil {
 		return err
 	}
-	configuration, err := newControlConfiguration(leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, db.ConfigDir, db.InstanceID)
+	configuration, err := newControlConfiguration(leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, controlDirSource(db.ConfigDir, db.InstanceID))
 	if err != nil {
 		return err
 	}
@@ -51,8 +51,8 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 // newControlConfiguration is the one place the control role's configuration is
 // assembled: the composed assessor and the admission pins are what make a
 // generation startable, so a test builds through these rather than around them.
-func newControlConfiguration(activator cloudconfig.Activator, root, instanceID string) (*cloudconfig.DirConfiguration, error) {
-	return cloudconfig.NewDirConfiguration(configurationAssessor, activator, controlDirSource(root, instanceID))
+func newControlConfiguration(activator cloudconfig.Activator, source cloudconfig.DirSource) (*cloudconfig.DirConfiguration, error) {
+	return cloudconfig.NewDirConfiguration(configurationAssessor, activator, source)
 }
 
 // controlDirSource is the control role's candidate source: the mounted instance

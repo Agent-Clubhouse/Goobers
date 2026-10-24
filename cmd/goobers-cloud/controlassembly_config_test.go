@@ -201,7 +201,7 @@ func TestControlSourceProducesCandidatesThatCarryAdmissionPins(t *testing.T) {
 // publish it.
 func TestControlConfigurationRefusesAGenerationTheCloudCannotRun(t *testing.T) {
 	activator := &recordingActivator{}
-	configuration, err := newControlConfiguration(activator, referenceInstance(t), "instance-a")
+	configuration, err := newControlConfiguration(activator, controlDirSource(referenceInstance(t), "instance-a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,5 +212,51 @@ func TestControlConfigurationRefusesAGenerationTheCloudCannotRun(t *testing.T) {
 	}
 	if len(activator.candidates) != 0 || len(reported) != 1 || !strings.Contains(reported[0].Error(), "not eligible") {
 		t.Fatalf("activated %d candidates, reported %v; want a refusal and no publication", len(activator.candidates), reported)
+	}
+}
+
+// The control role's configuration must refuse a generation whose triggers the
+// cloud scheduler cannot tick, through the SAME constructor production uses. A
+// seam that wired readiness.Assess alone would still pass the direct assessor
+// test above, so this one pushes an unparseable cron through
+// newControlConfiguration and looks for TRIGGER001 in the refusal it publishes.
+// The loader validates triggers too, so a bad cron cannot be written to disk
+// (the scheduler's own parse is the second line); the source hook plants it in
+// the loaded set instead, after the pins are computed, exactly where a validator
+// drift would let one through.
+func TestControlConfigurationNamesAnUnparseableTriggerInItsRefusal(t *testing.T) {
+	source := controlDirSource(referenceInstance(t), "instance-a")
+	pins := source.Pins
+	source.Pins = func(configDir string, cfg *instance.Config, set *instance.ConfigSet) (map[string]cloudconfig.Pins, error) {
+		computed, err := pins(configDir, cfg, set)
+		set.Workflows[0].Spec.Triggers = append(set.Workflows[0].Spec.Triggers,
+			apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "61 4 * * *"})
+		return computed, err
+	}
+	activator := &recordingActivator{}
+	configuration, err := newControlConfiguration(activator, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported []error
+	configuration.SetReporter(func(err error) { reported = append(reported, err) })
+	if err := configuration.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(activator.candidates) != 0 || len(reported) != 1 {
+		t.Fatalf("activated %d candidates, reported %v; want one refusal and no publication", len(activator.candidates), reported)
+	}
+	var refusal *cloudconfig.Refusal
+	if !errors.As(reported[0], &refusal) {
+		t.Fatalf("reported %v, want a refusal", reported[0])
+	}
+	found := false
+	for _, findings := range refusal.Workflows {
+		for _, finding := range findings {
+			found = found || finding.Code == schedentries.CodeTrigger
+		}
+	}
+	if !found {
+		t.Fatalf("refusal = %+v, want TRIGGER001: the schedule assessor is not wired into the control configuration", refusal.Workflows)
 	}
 }
