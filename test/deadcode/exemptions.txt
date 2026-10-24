@@ -566,3 +566,9 @@ github.com/goobers/goobers/internal/cloud/schedstart.starter.Start # HA-P3 L1c c
 github.com/goobers/goobers/internal/cloud/schedstart.Config.WatchReconciled # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/schedstart.Backoff.next # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
 github.com/goobers/goobers/internal/cloud/schedstart.Config.awaitTerminal # HA-P3 L1c cloud admission path; cmd/goobers-cloud composes it into the control role in L1e. Remove when L1e lands. expires=2026-11-22
+
+# Engine child parent capacity plane (#8085 d), composed when L1e hands the control scheduler to childengine as ParentSlots.
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.suspension # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.forget # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.Release # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
+github.com/goobers/goobers/internal/cloud/childengine.SchedulerCapacity.Reacquire # Parent capacity over the control scheduler (#8085 d); L1e composes the scheduler that backs it. Exercised by internal/cloud/childengine capacity tests. expires=2026-12-15
