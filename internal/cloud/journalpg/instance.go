@@ -199,3 +199,14 @@ func (b *Backend) InstanceRead(ctx context.Context, after uint64, limit int) ([]
 	}
 	return events, rows.Err()
 }
+
+// InstanceLastSeq returns the stream's committed sequence watermark (0 when the
+// stream has never been written).
+func (b *Backend) InstanceLastSeq(ctx context.Context) (uint64, error) {
+	var seq int64
+	err := b.config.Pool.QueryRow(ctx, `SELECT last_seq FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2`, b.config.InstanceID, instanceStream).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return uint64(seq), err
+}
