@@ -157,3 +157,45 @@ func TestL2RunPinSweepReportsUnconfirmedRunsAndStillSweepsClosedOnes(t *testing.
 		t.Fatalf("pins terminal = %v, want the closed run marked and the unconfirmed run kept live", terminal)
 	}
 }
+
+// A run whose Describe always outlasts the budget halts every pass at the same
+// place; after runPinHaltSkip passes the sweep steps past it, so the closed run
+// behind it is still retired, while the slow run keeps its pins.
+func TestL2RunPinSweepSkipsARunThatAlwaysOutlastsTheBudget(t *testing.T) {
+	pool := controlTestPool(t)
+	const instance = "run-pins-slow"
+	insertAgedRunPins(t, pool, instance, "a-slow", "b-closed")
+	previous := runPinSweepBudget
+	runPinSweepBudget = 100 * time.Millisecond
+	t.Cleanup(func() { runPinSweepBudget = previous })
+	temporal := describingTemporal{describeCtx: func(ctx context.Context, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+		if runID == "a-slow" {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enums.WORKFLOW_EXECUTION_STATUS_COMPLETED}}, nil
+	}}
+	services := runPinTestServices(t, pool, instance, temporal, func(error) {})
+	terminal := func(runID string) bool {
+		t.Helper()
+		var done bool
+		if err := pool.QueryRow(t.Context(), `SELECT terminal_at IS NOT NULL FROM control.run_pin WHERE instance_id=$1 AND run_id=$2`, instance, runID).Scan(&done); err != nil {
+			t.Fatal(err)
+		}
+		return done
+	}
+	for pass := range runPinHaltSkip {
+		if err := services.L2(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if terminal("b-closed") {
+			t.Fatalf("pass %d reached b-closed before the skip", pass)
+		}
+	}
+	if err := services.L2(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !terminal("b-closed") || terminal("a-slow") {
+		t.Fatalf("after the skip: b-closed terminal=%v, a-slow terminal=%v; want b retired, a kept", terminal("b-closed"), terminal("a-slow"))
+	}
+}

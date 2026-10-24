@@ -82,11 +82,36 @@ func TestRunPinReportsOncePerUnconfirmedRunAndOutage(t *testing.T) {
 		{Checked: []string{"a"}},
 		{Unconfirmed: map[string]error{"a": stuck}, Halted: outage},
 	} {
-		reports.report(sweep, report)
+		reports.observe(sweep, report)
 	}
 	// "a" and the outage are each reported when they start, not while they
 	// persist, and again only after they cleared in between.
 	if got, want := fmt.Sprint(reported), "[stuck outage stuck outage]"; got != want {
 		t.Fatalf("reported %s, want %s", got, want)
+	}
+}
+
+func TestRunPinReportsSkipARunThatKeepsHaltingThePass(t *testing.T) {
+	var reported []error
+	reports := runPinReports{}
+	slow := errors.New("describe outlasted the budget")
+	halt := acceptance.RunPinSweep{Next: "a", Halted: slow, HaltedAt: "b"}
+	for pass := 1; pass < runPinHaltSkip; pass++ {
+		reports.observe(halt, func(err error) { reported = append(reported, err) })
+		if reports.after != "a" {
+			t.Fatalf("pass %d: cursor = %q, want it kept before the halted run", pass, reports.after)
+		}
+	}
+	reports.observe(halt, func(err error) { reported = append(reported, err) })
+	if reports.after != "b" {
+		t.Fatalf("after %d halts at b the cursor = %q, want it past b", runPinHaltSkip, reports.after)
+	}
+	if len(reported) != 2 || !errors.Is(reported[1], slow) {
+		t.Fatalf("reported %v, want the outage once and then the skip", reported)
+	}
+	// A halt at a different run starts its own count.
+	reports.observe(acceptance.RunPinSweep{Next: "b", Halted: slow, HaltedAt: "c"}, func(error) {})
+	if reports.after != "b" || reports.halts != 1 {
+		t.Fatalf("cursor %q after %d halts at c, want b after 1", reports.after, reports.halts)
 	}
 }
