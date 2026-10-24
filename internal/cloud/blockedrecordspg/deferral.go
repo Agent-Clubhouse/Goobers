@@ -204,6 +204,23 @@ func (s Store) Refused(ctx context.Context, handle *lease.Handle) ([]string, err
 	return keys, err
 }
 
+// releaseRefused drops the refusal latch on every member of a cycle that is being
+// escalated afresh (through another seed, or by the sweep): the latch described an
+// earlier attempt that this one supersedes. A failed attempt latches again.
+func (s Store) releaseRefused(ctx context.Context, handle *lease.Handle, members []blockedcycle.Node) error {
+	keys := make([]string, 0, len(members))
+	for _, node := range members {
+		keys = append(keys, blockedrecords.Key(node.Repository, node.ItemID))
+	}
+	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE control.blocked_record SET defer_reason = '', owner_epoch = $4
+			WHERE instance_id=$1 AND record_key = ANY($2) AND starts_with(defer_reason, $3)`,
+			handle.InstanceID, keys, refusedPrefix, handle.Epoch)
+		return err
+	})
+}
+
 // reconcileRefused releases the refusals whose cycle no longer exists (a member
 // closed or the dependency was removed without the seed being re-recorded). The
 // refusals whose cycle stands are returned.
@@ -392,6 +409,10 @@ func (s Store) escalateDeferred(ctx context.Context, handle *lease.Handle, d Def
 			// journaled by the caller, not retried quietly.
 			return errors.Join(fmt.Errorf("%w: %w", ErrEscalationRefused, err), s.markRefused(ctx, handle, d.Key, refusedClass(err)))
 		}
+		return err
+	}
+	// A refusal latched on another seed of this cycle is superseded by this success.
+	if err := s.releaseRefused(ctx, handle, cycle.Affected); err != nil {
 		return err
 	}
 	return s.clearDeferral(ctx, handle, d.Key)

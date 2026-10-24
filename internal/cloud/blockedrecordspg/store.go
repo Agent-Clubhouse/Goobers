@@ -392,6 +392,18 @@ func (s State) RecordBlock(b parking.Block) (blockedcycle.Result, error) {
 	return s.Store.RecordBlock(ctx, s.Handle, b)
 }
 
+// CycleEscalated is called once the caller has escalated a cycle RecordBlock
+// returned (parking.Blocked, on success only): a refusal latched on another seed
+// of that cycle described an earlier attempt that this one supersedes. Releasing
+// it any earlier would turn readiness green on a cycle nobody has been told about.
+func (s State) CycleEscalated(cycle blockedcycle.Result) error {
+	ctx, cancel := context.WithTimeout(context.Background(), recordTimeout)
+	defer cancel()
+	return s.Store.releaseRefused(ctx, s.Handle, cycle.Affected)
+}
+
+var _ parking.CycleEscalationObserver = State{}
+
 // recordTimeout bounds one record write (the parking.State seam carries no
 // context).
 const recordTimeout = 30 * time.Second

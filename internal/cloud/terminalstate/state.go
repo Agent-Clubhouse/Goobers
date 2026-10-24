@@ -27,8 +27,13 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/nowork"
 	"github.com/goobers/goobers/internal/nowork/settle"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
 	"github.com/goobers/goobers/providers"
 )
+
+// The composed State must keep the embedded store's escalation observer: it is how a
+// refusal latch is released only after a cycle was really escalated.
+var _ parking.CycleEscalationObserver = State{}
 
 // writeTimeout bounds one streak write (the State seam carries no context).
 const writeTimeout = 30 * time.Second

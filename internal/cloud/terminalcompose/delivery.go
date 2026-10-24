@@ -83,6 +83,10 @@ type Status struct {
 	// pass, so it survives a failover and empties when the cycle resolves. Non-empty
 	// is loud: it is a readiness check and each one is journaled as an error.
 	RefusedCycles []string
+	// RefusedUnknown is true while the last read of the refused cycles failed: the
+	// list above is then the last known one, and readiness must not treat it as
+	// "none refused".
+	RefusedUnknown bool
 	// Healthy is false when the oldest report has waited longer than the bound, or
 	// the backlog could not be read: an unreadable outbox is not a healthy one.
 	Healthy bool
@@ -160,6 +164,12 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	if err := note(d.reconcile.Reconcile(ctx, d.budget, d.apply)); err != nil {
 		return err
 	}
+	// Refusals change only when a sweep or a re-recorded block changes them, so they
+	// are re-read on the heal cadence, not every pass; a failed read keeps the last
+	// answer rather than reporting none.
+	d.mu.Lock()
+	refused, refusedUnknown := d.snapshot.RefusedCycles, d.snapshot.RefusedUnknown
+	d.mu.Unlock()
 	if healDue {
 		if _, err := d.heal.Heal(ctx, d.deps.Handle, d.healLimit); err != nil {
 			if err := note(fmt.Errorf("heal blocked records: %w", err)); err != nil {
@@ -179,12 +189,18 @@ func (d *Delivery) Tick(ctx context.Context) error {
 			}
 		}
 	}
+	if healDue {
+		read, err := d.heal.Refused(ctx, d.deps.Handle)
+		if err := note(err); err != nil {
+			return err
+		}
+		refusedUnknown = err != nil
+		if err == nil {
+			refused = read
+		}
+	}
 	deferred, deferErr := d.heal.Deferrals(ctx, d.deps.Handle)
 	if err := note(deferErr); err != nil {
-		return err
-	}
-	refused, refusedErr := d.heal.Refused(ctx, d.deps.Handle)
-	if err := note(refusedErr); err != nil {
 		return err
 	}
 	backlog, readErr := d.backlog.Backlog(ctx)
@@ -194,8 +210,8 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	d.mu.Lock()
 	d.snapshot = Status{
 		Pending: backlog.Pending, OldestAge: backlog.Oldest, LastPass: d.deps.Now(), LastError: failure, DeferredCycles: deferred,
-		RefusedCycles: refused,
-		Healthy:       readErr == nil && backlog.Oldest <= d.maxLag,
+		RefusedCycles: refused, RefusedUnknown: refusedUnknown,
+		Healthy: readErr == nil && backlog.Oldest <= d.maxLag,
 	}
 	d.mu.Unlock()
 	return nil

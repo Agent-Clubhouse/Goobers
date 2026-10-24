@@ -235,6 +235,19 @@ func TestQuotaReserverAccountsReadsWithoutConsumingTheSchedulersReset(t *testing
 	}
 }
 
+// While the refused-cycle read is failing the answer is unknown, and unknown is not
+// healthy; the last list still shows on the status page.
+func TestAnUnreadableRefusedListFailsTheReadinessCheckClosed(t *testing.T) {
+	t.Cleanup(func() { terminalStatus.Store(nil) })
+	status := func() terminalcompose.Status {
+		return terminalcompose.Status{Healthy: true, RefusedUnknown: true}
+	}
+	terminalStatus.Store(&status)
+	if checks := terminalOutboxChecks(); checks["blockedCycleEscalation"] {
+		t.Fatalf("checks = %v; want blockedCycleEscalation failing while the refused list is unreadable", checks)
+	}
+}
+
 // A permanently refused escalation is a standing readiness failure and appears on
 // the status page.
 func TestARefusedCycleEscalationFailsItsReadinessCheck(t *testing.T) {

@@ -86,6 +86,41 @@ func TestACycleEscalatesEveryMemberInsteadOfParkingOnSibling(t *testing.T) {
 	}
 }
 
+// observingState is a state that also hears when a cycle was escalated.
+type observingState struct {
+	state
+	escalated []blockedcycle.Result
+}
+
+func (s *observingState) CycleEscalated(c blockedcycle.Result) error {
+	s.escalated = append(s.escalated, c)
+	return nil
+}
+
+// A state keeping per-cycle markers retires them only after the escalation's
+// writes all succeeded: a failed escalation must leave them standing.
+func TestTheEscalationObserverHearsOnlyOfSuccessfulEscalations(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	cycle := blockedcycle.Result{Affected: []blockedcycle.Node{{Repository: repo, ItemID: "1"}, {Repository: repo, ItemID: "2"}}, Paths: [][]string{{"1", "2", "1"}}}
+	outcome := terminalhooks.BlockedOutcome{RunID: "r", RepoRef: code, ItemID: "1", Blockers: []string{"2"}}
+
+	failing, s := &poster{err: errors.New("provider down")}, &observingState{state: state{cycle: cycle}}
+	if err := Blocked(t.Context(), failing, s, outcome); err == nil {
+		t.Fatal("a failed escalation was not reported")
+	}
+	if len(s.escalated) != 0 {
+		t.Fatalf("observer heard of %d escalations after a failed one, want none", len(s.escalated))
+	}
+
+	s = &observingState{state: state{cycle: cycle}}
+	if err := Blocked(t.Context(), &poster{}, s, outcome); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.escalated) != 1 || len(s.escalated[0].Affected) != 2 {
+		t.Fatalf("observer heard %+v, want the escalated cycle once", s.escalated)
+	}
+}
+
 func TestARunWithNoDrivingItemDoesNothingAndClaimsResolveItems(t *testing.T) {
 	p, s := &poster{}, &state{}
 	if err := Blocked(t.Context(), p, s, terminalhooks.BlockedOutcome{RunID: "r", RepoRef: code}); err != nil || len(p.reqs) != 0 {

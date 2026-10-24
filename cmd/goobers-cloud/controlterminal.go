@@ -45,7 +45,7 @@ func terminalOutboxChecks() map[string]bool {
 		return nil
 	}
 	current := (*status)()
-	return map[string]bool{"terminalOutbox": current.Healthy, "blockedCycleEscalation": len(current.RefusedCycles) == 0}
+	return map[string]bool{"terminalOutbox": current.Healthy, "blockedCycleEscalation": len(current.RefusedCycles) == 0 && !current.RefusedUnknown}
 }
 
 // terminalOutboxLag is the control status page's view of the outbox backlog.
