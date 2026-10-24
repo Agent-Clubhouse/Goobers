@@ -3,7 +3,6 @@ kind: Kustomization
 resources:
   - connection.yaml
   - worker-deployment.yaml
-  - pod-token-key.yaml
 images:
   - name: goobers
     newName: goobers

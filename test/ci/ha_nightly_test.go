@@ -152,6 +152,8 @@ func TestHANightlyWiresCloudStackAndWorkerController(t *testing.T) {
 		"allow-bootstrap-to-azurite",
 		"allow-azurite-ingress",
 		`openssl rand -base64 32`,
+		"goobers-pod-token-key",
+		`openssl rand -base64 48`,
 		"--object-store-url=$(GOOBERS_OBJECT_STORE_URL)",
 		"--object-store-container=$(GOOBERS_OBJECT_STORE_CONTAINER)",
 		"--config-dir=/etc/goobers/config",

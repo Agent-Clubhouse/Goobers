@@ -150,6 +150,13 @@ jobs:
             --wait --timeout 5m
           kubectl -n temporal-worker-system wait --for=condition=Ready pod \
             -l app.kubernetes.io/instance=temporal-worker-controller --timeout=5m
+          worker_secret="$(mktemp -d)"
+          trap 'rm -rf "$worker_secret"' EXIT
+          chmod 700 "$worker_secret"
+          openssl rand -base64 48 | tr -d '\n' > "$worker_secret/key"
+          kubectl -n goobers-system create secret generic goobers-pod-token-key \
+            --from-file=key="$worker_secret/key" --dry-run=client -o yaml |
+            kubectl apply -f -
           kubectl apply -k test/ha/kind/workers
           kubectl -n goobers-system get workerdeployment.temporal.io/goobers
 
