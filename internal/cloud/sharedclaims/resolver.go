@@ -26,7 +26,7 @@ import (
 type Resolver struct {
 	InstanceID string
 	Journal    terminalwriter.RunOpener
-	// Verify checks workflow identity against control-held start/child pins.
+	// Verify checks workflow identity against the run's own control-held start pin.
 	Verify   func(context.Context, journal.RunIdentity) error
 	Runs     terminalwriter.Runs
 	Writer   providerwriter.SharedClaims
