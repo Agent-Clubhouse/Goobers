@@ -71,7 +71,7 @@ func newProviderCounters(credentialsFor counterCredentials, claims remediationse
 		source := schedcounters.GitHubSource{Resolve: resolver.Resolve, Register: registrar.Register}
 		deps := schedcounters.Deps{
 			Config: cfg, Set: set, Open: source.Open, Quota: quota,
-			SelfIdentity: instance.EffectiveSelfIdentity(cfg, nil), Now: time.Now, Report: report,
+			Now: time.Now, Report: report,
 		}
 		disabled := map[string]string{}
 		if claims != nil && journalReader != nil {
