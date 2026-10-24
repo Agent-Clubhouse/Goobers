@@ -120,6 +120,7 @@ func TestControlManifestAndRuntimeUseSameConstructors(t *testing.T) {
 func populatedControlPlanes() controlPlanes {
 	return controlPlanes{
 		EngineChildAdmissions: httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
+		EngineChildAuthority:  httpapi.WithAuthenticator(httpapi.DenyAllAuthenticator{}),
 		Configuration:         struct{ control.Configuration }{},
 		Reader:                struct{ readservice.Reader }{}, Claims: struct{ httpapi.ClaimService }{},
 		Triggers: struct{ httpapi.TriggerService }{}, Journal: struct{ httpapi.JournalService }{},

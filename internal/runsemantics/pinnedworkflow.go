@@ -20,6 +20,12 @@ import (
 // missing, untrusted, corrupt, or mismatched still fails closed here and the
 // WF-016 refusal stands.
 func PinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
+	return PinnedWorkflowMachineFrom(rd, id)
+}
+
+// PinnedWorkflowMachineFrom is PinnedWorkflowMachine over any journal backend's
+// run reader (the cloud's PostgreSQL journal among them).
+func PinnedWorkflowMachineFrom(rd journal.RunReader, id journal.RunIdentity) (*workflow.Machine, error) {
 	var definitionRef *journal.InputRef
 	for i := range id.Inputs {
 		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {

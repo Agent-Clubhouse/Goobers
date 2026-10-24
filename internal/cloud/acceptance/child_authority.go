@@ -240,7 +240,10 @@ func (s *Store) RevokeChildAuthority(
 			return err
 		}
 		if parentEpoch != epoch {
-			return triggerqueue.ErrChildAuthorityChanged
+			// Not "already replaced": an earlier epoch's custody that adoption
+			// has not reached yet. Revocation must be retried, never treated as
+			// done.
+			return ErrStaleChildEpoch
 		}
 		tag, err := tx.Exec(txCtx, `
 			UPDATE control.child_authority SET revoked=true,owner_epoch=$7

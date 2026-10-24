@@ -410,6 +410,11 @@ type Attempt struct {
 	// PodToken is the per-run bearer (internal/podauth) minted at dispatch,
 	// delivered to the pod as GOOBERS_POD_TOKEN.
 	PodToken string
+	// ChildWorkflowAccess is an engine parent stage's child-workflow grant as
+	// JSON, delivered as GOOBERS_CHILD_WORKFLOW_ACCESS; empty for every other
+	// stage. Like PodToken it is a bearer: it never enters the kit, the
+	// envelope or the journal.
+	ChildWorkflowAccess string
 	// PlaneTokens are the per-run, per-plane least-privilege bearers minted
 	// at dispatch for a goobers-CLI stage (Goobers#3897). Never the pod token:
 	// each is confined by podauth scope to ONE plane and by that plane's

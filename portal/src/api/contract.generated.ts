@@ -66,6 +66,8 @@ export const apiRoutes = {
   "engineChildAdmit": { method: "POST", path: "/api/v1/engine/children/admit", actionClass: "workflow-execution" },
   "engineChildLoad": { method: "POST", path: "/api/v1/engine/children/load", actionClass: "workflow-execution" },
   "engineChildCancel": { method: "POST", path: "/api/v1/engine/children/cancel", actionClass: "workflow-execution" },
+  "engineChildAuthority": { method: "POST", path: "/api/v1/engine/children/authority", actionClass: "workflow-execution" },
+  "engineChildAuthorityRelease": { method: "POST", path: "/api/v1/engine/children/authority/release", actionClass: "workflow-execution" },
   "blobGet": { method: "GET", path: "/api/v1/blobs/{digest}", actionClass: "read-only-navigation" },
   "blobPut": { method: "PUT", path: "/api/v1/blobs/{digest}", actionClass: "workflow-execution" },
   "gaggleStateGet": { method: "GET", path: "/api/v1/gaggles/{gaggle}/state/{key}", actionClass: "read-only-navigation" },
