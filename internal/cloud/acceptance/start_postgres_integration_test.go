@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -386,6 +387,25 @@ func TestPGRunPinsOutliveTheirAcceptanceWhileTheRunIsLive(t *testing.T) {
 	}
 	if present, _ := pinState(); !present {
 		t.Fatal("pruning the acceptance removed the live run's pins")
+	}
+	started := in
+	started.RunID = result.RunID
+	want, err := RunPinsFor(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.RunPinsOf(t.Context(), result.RunID)
+	if err != nil || got.InputDigest == "" {
+		t.Fatalf("RunPinsOf = %+v, %v", got, err)
+	}
+	// The start fence digests the input it actually started (the starter fills
+	// in more than this test input); everything else is the input as pinned.
+	want.InputDigest = got.InputDigest
+	if got != want {
+		t.Fatalf("RunPinsOf = %+v; want %+v", got, want)
+	}
+	if _, err := store.RunPinsOf(t.Context(), "never-started"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("RunPinsOf(unknown run) = %v, want sql.ErrNoRows", err)
 	}
 
 	if err := store.manager.Release(t.Context(), store.handle); err != nil {
