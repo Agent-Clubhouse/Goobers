@@ -132,6 +132,24 @@ func TestPGStartRecordsTheStartedRunsPinsOnce(t *testing.T) {
 	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, "other-run", pins); err == nil {
 		t.Fatal("confirmed pins for a different run")
 	}
+	// A confirmation that can never succeed still settles a dispatching
+	// acceptance, so recovery does not retry it forever; the first pins stand.
+	if _, err := pool.Exec(t.Context(), `UPDATE control.acceptance SET state='dispatching', finished_at=NULL WHERE instance_id=$1 AND id=$2`,
+		store.instanceID, identity.AcceptanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfirmStart(t.Context(), identity.AcceptanceID, identity.RunID, moved); !errors.Is(err, ErrRunPinsDiffer) {
+		t.Fatalf("confirmation of a dispatching start with different pins = %v, want ErrRunPinsDiffer", err)
+	}
+	var state, generationAfter string
+	if err := pool.QueryRow(t.Context(), `SELECT a.state, p.config_generation FROM control.acceptance a JOIN control.run_pin p
+		ON p.instance_id=a.instance_id AND p.run_id=a.run_id WHERE a.instance_id=$1 AND a.id=$2`,
+		store.instanceID, identity.AcceptanceID).Scan(&state, &generationAfter); err != nil {
+		t.Fatal(err)
+	}
+	if state != "dispatched" || generationAfter != pins.ConfigGeneration {
+		t.Fatalf("after a differing confirmation: acceptance %s, pinned generation %s; want dispatched with the first pins", state, generationAfter)
+	}
 }
 
 func TestPGStartUsesDurableIdentityAndRejectsInventedPair(t *testing.T) {

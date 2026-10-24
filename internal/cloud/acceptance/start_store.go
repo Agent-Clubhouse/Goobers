@@ -48,7 +48,8 @@ func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string, pi
 	if pins.AcceptanceID != acceptanceID || pins.RunID != runID {
 		return triggerqueue.ErrTransition
 	}
-	return s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
+	var differs bool
+	err := s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
 		tag, err := tx.Exec(txCtx, `
    UPDATE control.acceptance SET state='dispatched', start_retry_at=NULL,
      finished_at=COALESCE(finished_at,GREATEST(accepted_at,clock_timestamp()))
@@ -58,8 +59,22 @@ func (s *Store) ConfirmStart(ctx context.Context, acceptanceID, runID string, pi
 		if err := changed(tag.RowsAffected(), err); err != nil {
 			return err
 		}
-		return s.recordRunPins(txCtx, tx, pins, epoch)
+		err = s.recordRunPins(txCtx, tx, pins, epoch)
+		if errors.Is(err, ErrRunPinsDiffer) {
+			// Permanent: the run is started and its first recorded pins
+			// stand. Settle the acceptance as dispatched anyway, so recovery
+			// does not retry a confirmation that can never succeed. Control
+			// checks the run against the recorded pins and refuses on any
+			// mismatch.
+			differs = true
+			return nil
+		}
+		return err
 	})
+	if err == nil && differs {
+		return ErrRunPinsDiffer
+	}
+	return err
 }
 
 // AdoptStart moves a proven predecessor start to the current owner epoch.
