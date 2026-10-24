@@ -40,7 +40,7 @@
           "message": "engine does not support task.childWorkflows",
           "action": {
             "kind": "p4",
-            "description": "wait for engine parity in #7758: the parent capacity plane is not composed (L1e), stage pods cannot read control-written child results until the cloud blob plane serves the object store (#8188), and enablement awaits a product decision (#8085)",
+            "description": "wait for engine parity in #7758: enablement awaits a product decision (#8085)",
             "issue": 7758,
             "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7758"
           }
@@ -134,7 +134,7 @@
       "feature": "task.childWorkflows",
       "action": {
         "kind": "p4",
-        "description": "wait for engine parity in #7758: the parent capacity plane is not composed (L1e), stage pods cannot read control-written child results until the cloud blob plane serves the object store (#8188), and enablement awaits a product decision (#8085)",
+        "description": "wait for engine parity in #7758: enablement awaits a product decision (#8085)",
         "issue": 7758,
         "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7758"
       },
