@@ -62,7 +62,7 @@ func (p *Plane) releaseOne(ctx context.Context, request httpapi.ClaimRequest, re
 		return httpapi.ClaimResponse{}, err
 	}
 	if shared != nil {
-		if p.shared == nil {
+		if p.shared == nil && reason.Disposition != claimrelease.ForceReleased {
 			return httpapi.ClaimResponse{}, errReleasePending()
 		}
 		_, err := p.releaseShared(ctx, p.owner(), *shared, reason, false)

@@ -53,20 +53,24 @@ func (p *Plane) Renew(ctx context.Context, request httpapi.ClaimRequest) (httpap
 func (p *Plane) claim(ctx context.Context, request httpapi.ClaimRequest, lease time.Duration, renewal bool) (httpapi.ClaimResponse, error) {
 	key := localscheduler.ClaimKey{Gaggle: request.Gaggle, Provider: request.Provider, ExternalID: request.ItemID}
 	if p.shared != nil {
-		if renewal && request.Workflow == "" {
+		var expected *localscheduler.ClaimEntry
+		if renewal {
 			entries, err := p.selectEntries(ctx, p.pool, `run_id=$2 AND gaggle=$3 AND provider=$4 AND external_id=$5`,
 				request.RunID, key.Gaggle, key.Provider, key.ExternalID)
 			if err != nil || len(entries) == 0 {
 				return httpapi.ClaimResponse{Ok: false}, err
 			}
-			request.Workflow = entries[0].Workflow
+			expected = &entries[0]
+			if request.Workflow == "" {
+				request.Workflow = expected.Workflow
+			}
 		}
 		binding, err := p.shared.Admission(ctx, key, request.RunID, request.Workflow)
 		if err != nil {
 			return httpapi.ClaimResponse{}, err
 		}
 		if binding != nil {
-			return p.claimShared(ctx, p.owner(), request, lease, *binding, nil)
+			return p.claimShared(ctx, p.owner(), request, lease, *binding, expected)
 		}
 	}
 	var response httpapi.ClaimResponse

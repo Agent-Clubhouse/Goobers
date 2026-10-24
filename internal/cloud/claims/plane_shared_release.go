@@ -30,9 +30,6 @@ func (p *Plane) releaseShared(ctx context.Context, handle *cloudlease.Handle, ex
 ) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if p.shared == nil {
-		return false, errors.New("shared release requires its pinned provider resolver")
-	}
 	// Revocation must win over an in-flight CAS without waiting for provider
 	// I/O. Cleanup custody is retained even when provider credentials fail.
 	if reason.Disposition == claimrelease.ForceReleased {
@@ -40,49 +37,61 @@ func (p *Plane) releaseShared(ctx context.Context, handle *cloudlease.Handle, ex
 			return false, err
 		}
 	}
+	if p.shared == nil {
+		return false, cleanupError(errors.New("shared release requires its pinned provider resolver"))
+	}
 	key := storedKey(expected)
+	binding, err := p.shared.Release(ctx, expected)
+	if err != nil {
+		return false, err
+	}
+	if binding.Store == nil || binding.Owner != expected.SharedOwner || binding.RemoteKey != key.ExternalID {
+		return false, errors.New("shared release differs from persisted ownership")
+	}
+	if binding.BeforeTransition != nil {
+		if err := binding.BeforeTransition(ctx); err != nil {
+			return false, err
+		}
+	}
+	var held lockedRow
+	var reserved bool
+	err = p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		var err error
+		held, reserved, err = p.beginSharedRelease(ctx, tx, epoch, expected, expired)
+		return err
+	})
+	if err != nil || !reserved {
+		return false, err
+	}
+	if binding.AfterTransition != nil {
+		defer binding.AfterTransition(ctx)
+	}
+	store := sharedIntentStore{Store: binding.Store, plane: p, handle: handle, key: key, reserved: held, release: true}
+	if err := releaseSharedRemote(ctx, store, binding.RemoteKey, binding.Owner); err != nil {
+		return false, err
+	}
 	var released bool
-	err := p.withCleanupLock(ctx, key, func(ctx context.Context) error {
-		binding, err := p.shared.Release(ctx, expected)
-		if err != nil {
-			return err
-		}
-		if binding.Store == nil || binding.Owner != expected.SharedOwner || binding.RemoteKey != key.ExternalID {
-			return errors.New("shared release differs from persisted ownership")
-		}
-		if binding.BeforeTransition != nil {
-			if err := binding.BeforeTransition(ctx); err != nil {
-				return err
-			}
-		}
-		var held lockedRow
-		var reserved bool
-		err = p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-			var err error
-			held, reserved, err = p.beginSharedRelease(ctx, tx, epoch, expected, expired)
-			return err
-		})
-		if err != nil || !reserved {
-			return err
-		}
-		if binding.AfterTransition != nil {
-			defer binding.AfterTransition(ctx)
-		}
-		err = sharedclaim.Release(ctx, binding.Store, binding.RemoteKey, binding.Owner)
-		if errors.Is(err, sharedclaim.ErrNotOwner) {
-			err = sharedclaim.ConfirmOwnerGone(ctx, binding.Store, binding.RemoteKey, binding.Owner)
-		}
-		if err != nil {
-			return err
-		}
-		return p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-			var err error
-			released, err = releaseToHistory(ctx, tx, p.instanceID, epoch, key, expected.RunID,
-				held.token, false, true, reason.Normalize())
-			return err
-		})
+	err = p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		var err error
+		released, err = releaseToHistory(ctx, tx, p.instanceID, epoch, key, expected.RunID,
+			held.token, false, true, reason.Normalize())
+		return err
 	})
 	return released, err
+}
+
+// releaseSharedRemote advances the revision even when the owner is already
+// empty. An absent/empty observation is not enough to fence a delayed admission:
+// the explicit tombstone makes its earlier observed revision unusable.
+func releaseSharedRemote(ctx context.Context, store sharedclaim.Store, key string, owner sharedclaim.Owner) error {
+	observed, err := sharedclaim.Inspect(ctx, store, key)
+	if err != nil {
+		return err
+	}
+	if observed.Record.Owner != (sharedclaim.Owner{}) && observed.Record.Owner != owner {
+		return sharedclaim.ConfirmOwnerGone(ctx, store, key, owner)
+	}
+	return store.CompareAndSwap(ctx, key, observed.Revision, sharedclaim.Record{Version: 1})
 }
 
 func (p *Plane) beginSharedRelease(ctx context.Context, tx pgx.Tx, epoch int64,
@@ -100,12 +109,18 @@ func (p *Plane) beginSharedRelease(ctx context.Context, tx pgx.Tx, epoch int64,
 		!row.entry.ClaimedAt.Equal(expected.ClaimedAt) || (expired && row.live) {
 		return lockedRow{}, false, nil
 	}
-	tag, err := tx.Exec(ctx, `UPDATE control.claim SET release_pending_at=coalesce(release_pending_at,clock_timestamp()),owner_epoch=$6
+	token, err := randomToken()
+	if err != nil {
+		return lockedRow{}, false, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE control.claim SET release_pending_at=coalesce(release_pending_at,clock_timestamp()),owner_epoch=$6,owner_token=$7
 		WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4 AND owner_token=$5 AND owner_epoch<=$6`,
-		p.instanceID, key.Gaggle, key.Provider, key.ExternalID, row.token, epoch)
+		p.instanceID, key.Gaggle, key.Provider, key.ExternalID, row.token, epoch, token)
 	if err := changed(tag.RowsAffected(), err); err != nil {
 		return lockedRow{}, false, err
 	}
+	row.token = token
+	row.entry.ReleasePending = true
 	return row, true, recordGrant(ctx, tx, p.instanceID, key, epoch)
 }
 

@@ -26,9 +26,9 @@ type SharedResolver interface {
 
 func sharedRevoked() error { return errors.New("shared execution was administratively revoked") }
 
-// claimShared serializes the whole two-phase transition across replicas, but
-// holds the controller fence only for reservation and finalization. A lost
-// provider ACK leaves durable pending custody, never execution authority.
+// claimShared records and finalizes intent in separate short fenced transactions.
+// Provider I/O never holds a database transaction. The rotating operation token
+// serializes competing intents; a lost ACK retains pending custody for retry.
 func (p *Plane) claimShared(ctx context.Context, handle *cloudlease.Handle, request httpapi.ClaimRequest, ttl time.Duration,
 	binding claimsclient.SharedClaimBinding, expected *localscheduler.ClaimEntry,
 ) (httpapi.ClaimResponse, error) {
@@ -43,48 +43,48 @@ func (p *Plane) claimShared(ctx context.Context, handle *cloudlease.Handle, requ
 	if localscheduler.IsPublicationClaimKey(key.ExternalID) {
 		return httpapi.ClaimResponse{}, invalidRequest("publication custody cannot use shared admission")
 	}
-	var response httpapi.ClaimResponse
-	err := p.withCleanupLock(ctx, key, func(ctx context.Context) error {
-		if binding.BeforeTransition != nil {
-			if err := binding.BeforeTransition(ctx); err != nil {
-				return err
-			}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if binding.BeforeTransition != nil {
+		if err := binding.BeforeTransition(ctx); err != nil {
+			return httpapi.ClaimResponse{}, err
 		}
-		var reserved lockedRow
-		var observedAt time.Time
-		var admitted bool
-		err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-			var err error
-			reserved, admitted, response.Holder, err = p.beginSharedAdmission(ctx, tx, epoch, key, request, binding.Owner, expected)
-			if err != nil || !admitted {
-				return err
-			}
-			return tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&observedAt)
-		})
+	}
+	var response httpapi.ClaimResponse
+	var reserved lockedRow
+	var observedAt time.Time
+	var admitted bool
+	err := p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		var err error
+		reserved, admitted, response.Holder, err = p.beginSharedAdmission(ctx, tx, epoch, key, request, binding.Owner, expected)
 		if err != nil || !admitted {
 			return err
 		}
-		// Translate the conservative process-clock deadline into the database
-		// clock used by execution snapshots. The sample predates this local
-		// instant, so response latency can only shorten execution authority.
-		observedLocally := time.Now()
-		if binding.AfterTransition != nil {
-			defer binding.AfterTransition(ctx)
-		}
-		deadline, err := sharedclaim.AcquireUntil(ctx, binding.Store, binding.RemoteKey, binding.Owner, ttl)
-		if errors.Is(err, sharedclaim.ErrHeld) {
-			response.Holder = ""
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		deadline = observedAt.Add(deadline.Sub(observedLocally))
-		return p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
-			var err error
-			response, err = p.finishSharedAdmission(ctx, tx, epoch, key, reserved, deadline)
-			return err
-		})
+		return tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&observedAt)
+	})
+	if err != nil || !admitted {
+		return response, err
+	}
+	// Translate the conservative process deadline to the database clock. This
+	// sample predates the local instant, so latency only shortens authority.
+	observedLocally := time.Now()
+	if binding.AfterTransition != nil {
+		defer binding.AfterTransition(ctx)
+	}
+	store := sharedIntentStore{Store: binding.Store, plane: p, handle: handle, key: key, reserved: reserved}
+	deadline, err := sharedclaim.AcquireUntil(ctx, store, binding.RemoteKey, binding.Owner, ttl)
+	if errors.Is(err, sharedclaim.ErrHeld) {
+		response.Holder = ""
+		return response, nil
+	}
+	if err != nil {
+		return response, err
+	}
+	deadline = observedAt.Add(deadline.Sub(observedLocally))
+	err = p.fencedWith(ctx, handle, func(ctx context.Context, tx pgx.Tx, epoch int64) error {
+		var err error
+		response, err = p.finishSharedAdmission(ctx, tx, epoch, key, reserved, deadline)
+		return err
 	})
 	return response, err
 }
@@ -125,9 +125,13 @@ func (p *Plane) beginSharedAdmission(ctx context.Context, tx pgx.Tx, epoch int64
 		if row.entry.Workflow != request.Workflow {
 			return lockedRow{}, false, "", ErrConflict
 		}
-		tag, updateErr := tx.Exec(ctx, `UPDATE control.claim SET shared_admission_pending=true,owner_epoch=$6
+		token, tokenErr := randomToken()
+		if tokenErr != nil {
+			return lockedRow{}, false, "", tokenErr
+		}
+		tag, updateErr := tx.Exec(ctx, `UPDATE control.claim SET shared_admission_pending=true,owner_epoch=$6,owner_token=$7
 			WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4 AND owner_token=$5 AND owner_epoch<=$6`,
-			p.instanceID, key.Gaggle, key.Provider, key.ExternalID, row.token, epoch)
+			p.instanceID, key.Gaggle, key.Provider, key.ExternalID, row.token, epoch, token)
 		err = changed(tag.RowsAffected(), updateErr)
 	} else {
 		if held {

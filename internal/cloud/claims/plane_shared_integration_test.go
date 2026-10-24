@@ -19,15 +19,19 @@ import (
 )
 
 type sharedRemote struct {
-	mu        sync.Mutex
-	record    sharedclaim.Record
-	revision  int
-	lost      bool
-	fail      error
-	beforeCAS func()
+	mu         sync.Mutex
+	record     sharedclaim.Record
+	revision   int
+	lost       bool
+	fail       error
+	beforeRead func()
+	beforeCAS  func()
 }
 
 func (s *sharedRemote) Read(context.Context, string) (sharedclaim.Observation, error) {
+	if s.beforeRead != nil {
+		s.beforeRead()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	revision := ""
