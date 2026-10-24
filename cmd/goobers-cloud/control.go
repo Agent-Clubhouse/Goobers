@@ -143,6 +143,7 @@ type controlPlanes struct {
 	BlobPlane     httpapi.HandlerOption
 	Configuration control.Configuration
 	Reader        readservice.Reader
+	provider      *controlProvider
 	Claims        httpapi.ClaimService
 	Triggers      httpapi.TriggerService
 	Journal       httpapi.JournalService

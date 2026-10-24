@@ -41,7 +41,13 @@ func (g pinnedGenerations) Acquire(_ context.Context, generation string) (childw
 
 // controllerJournal returns a journal backend whose every session is
 // goobers_controller, the role the control plane's writer reads runs as.
-func controllerJournal(t *testing.T) (backend *journalpg.Backend, owner, controller *pgxpool.Pool) {
+func controllerJournal(t *testing.T) (*journalpg.Backend, *pgxpool.Pool, *pgxpool.Pool) {
+	t.Helper()
+	backend, owner, controller, _, _ := controllerJournalLease(t)
+	return backend, owner, controller
+}
+
+func controllerJournalLease(t *testing.T) (backend *journalpg.Backend, owner, controller *pgxpool.Pool, manager *lease.Manager, handle *lease.Handle) {
 	t.Helper()
 	url := os.Getenv("GOOBERS_TEST_POSTGRES_URL")
 	if url == "" {
@@ -81,11 +87,11 @@ func controllerJournal(t *testing.T) (backend *journalpg.Backend, owner, control
 	if err := controller.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != "goobers_controller" {
 		t.Fatalf("fixture must read as goobers_controller, got %q (%v)", role, err)
 	}
-	manager, err := lease.New(lease.Config{Pool: controller, InstanceID: "test-instance", Name: lease.ControllerName, Holder: "writer"})
+	manager, err = lease.New(lease.Config{Pool: controller, InstanceID: "test-instance", Name: lease.ControllerName, Holder: "writer"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	handle, err := manager.Acquire(t.Context())
+	handle, err = manager.Acquire(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +100,7 @@ func controllerJournal(t *testing.T) (backend *journalpg.Backend, owner, control
 	if err != nil {
 		t.Fatal(err)
 	}
-	return backend, owner, controller
+	return backend, owner, controller, manager, handle
 }
 
 // TestJournalRunsBindsFromPinsAsTheControllerRole: the binding comes from the

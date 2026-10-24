@@ -80,25 +80,11 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 	if !okPlane || !okBackend || !okConfig || !okStore || p.generations == nil || db.Temporal == nil || db.Pools == nil {
 		return nil
 	}
-	registrar := journal.NewRegistryScrubber()
-	backends, err := terminalwriter.NewConfiguredBackends(func() (*instance.Config, string, bool) {
-		candidate, ok := owner.Applied()
-		cfg := owner.InstanceConfig()
-		return cfg, candidate.Digest, ok && cfg != nil
-	}, registrar, func(cfg *instance.Config) (credentials.StoreResolver, error) {
-		return secretstore.NewRegistry(cfg.SecretStores)
-	})
-	if err != nil {
-		return failedTerminalPart(fmt.Errorf("terminal hooks: provider credentials: %w", err))
+	provider := p.provider
+	if provider == nil {
+		return failedTerminalPart(errors.New("terminal hooks require the control provider writer"))
 	}
-	runs := terminalwriter.JournalRuns{
-		Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Children: terminalwriter.AcceptanceChildren(store.ChildForExecutionRun),
-		Journal: backend, Generations: p.generations,
-	}
-	writer, err := terminalwriter.New(runs, backends, registrar)
-	if err != nil {
-		return failedTerminalPart(fmt.Errorf("terminal hooks: provider writer: %w", err))
-	}
+	runs, backends, writer, registrar := provider.runs, provider.backends, provider.writer, provider.scrubber
 	return func(ctx context.Context, fence *lease.Manager, handle *lease.Handle) (terminalEpoch, error) {
 		report := func(err error) {
 			if epochWiring.Report != nil {
@@ -147,6 +133,44 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		terminalStatus.Store(&status)
 		return terminalEpoch{Awaiters: &clearingAwaiters{Awaiters: comp.Awaiters, published: &status}, Delivery: comp.Delivery.Tick}, nil
 	}
+}
+
+// controlProvider is built once at assembly, shared by claim cleanup and terminal
+// hooks. Credentials remain in control and follow the applied configuration.
+type controlProvider struct {
+	runs     terminalwriter.JournalRuns
+	backends *terminalwriter.ConfiguredBackends
+	writer   *terminalwriter.Writer
+	scrubber *journal.RegistryScrubber
+}
+
+func newControlProvider(db databaseServices, p *controlPlanes) (*controlProvider, error) {
+	backend, okBackend := p.journalReader.(terminalwriter.RunOpener)
+	owner, okConfig := p.Configuration.(terminalConfiguration)
+	store, okStore := db.Acceptances.(*acceptance.Store)
+	if !okBackend || !okConfig || !okStore || p.generations == nil {
+		return nil, errors.New("control provider requires run pins, configuration, journal and retained generations")
+	}
+	registrar := journal.NewRegistryScrubber()
+	backends, err := terminalwriter.NewConfiguredBackends(func() (*instance.Config, string, bool) {
+		candidate, ok := owner.Applied()
+		cfg := owner.InstanceConfig()
+		return cfg, candidate.Digest, ok && cfg != nil
+	}, registrar, func(cfg *instance.Config) (credentials.StoreResolver, error) {
+		return secretstore.NewRegistry(cfg.SecretStores)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("control provider credentials: %w", err)
+	}
+	runs := terminalwriter.JournalRuns{
+		Pins: terminalwriter.AcceptancePins(store.RunPinsOf), Children: terminalwriter.AcceptanceChildren(store.ChildForExecutionRun),
+		Journal: backend, Generations: p.generations,
+	}
+	writer, err := terminalwriter.New(runs, backends, registrar)
+	if err != nil {
+		return nil, fmt.Errorf("control provider writer: %w", err)
+	}
+	return &controlProvider{runs: runs, backends: backends, writer: writer, scrubber: registrar}, nil
 }
 
 // terminalJournal is the journal backend as the terminal hooks use it: the
