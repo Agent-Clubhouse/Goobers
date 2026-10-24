@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -68,7 +69,21 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.validateEgress,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },
 		c.validateSandbox,
+		c.validateEngineChildWorkflows,
 	)
+}
+
+// ErrEngineChildWorkflowsIncomplete refuses opting an instance into generated
+// child workflows before the control plane serves the whole child protocol
+// (#8085 d): a parent could start children it can never park on, finalize or
+// resume from. Lifted when Park, Finalize and Complete are served.
+var ErrEngineChildWorkflowsIncomplete = errors.New("engine.childWorkflows.enabled: child protocol incomplete: Park/Finalize/Complete not served (#8085)")
+
+func (c *Config) validateEngineChildWorkflows() error {
+	if c.EngineChildWorkflowsEnabled() {
+		return ErrEngineChildWorkflowsIncomplete
+	}
+	return nil
 }
 
 func (c *WorkcopiesConfig) validate() error {
