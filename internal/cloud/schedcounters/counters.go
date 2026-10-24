@@ -10,7 +10,7 @@
 // resolves (and scrubs) the token on every poll so rotation takes effect.
 // GitHubSource is the GitHub opener; it also applies the poll's quota Access.
 //
-// Quota: when Deps.Quota is set every poll spends and feeds that ledger exactly
+// Quota: every poll spends and feeds that ledger exactly
 // as the local daemon's counters do (observer, request gate, prepaid
 // reservation, no in-tick rate-limit sleeping), and the open-PR refresher
 // reserves its polls from it. L1e must hand the SAME state to the scheduler and
@@ -86,8 +86,8 @@ type Deps struct {
 	// the scheduler (localscheduler.WithProviderQuota) and builds the observations
 	// ledger from (observationsFor(state)): the scheduler budgets polls against it
 	// and the counters feed it the rate-limit headers they see, so a private copy
-	// here would let polling spend quota the scheduler believes it still has. nil
-	// disables accounting (tests, or an instance with no quota tracking).
+	// here would let polling spend quota the scheduler believes it still has. It
+	// is required: New returns ErrNoQuota without it.
 	Quota *localscheduler.ProviderQuotaState
 	// SelfIdentity is the login a respectAssignee backlog-query matches.
 	SelfIdentity string
@@ -110,10 +110,25 @@ type Counters struct {
 	built map[localscheduler.WorkflowIdentity]schedentries.Counters
 }
 
+// ErrNoOpener is what New returns when no provider opener is configured. The
+// caller reports that the provider-backed counters and MaxOpenPRs are disabled
+// rather than constructing a Counters that could poll nothing.
+var ErrNoOpener = errors.New("schedcounters: no provider opener is configured")
+
+// ErrNoQuota is what New returns without a quota ledger. The ledger is required:
+// polling must spend the one the scheduler budgets against, and a private copy
+// (or none) would let the counters bypass it.
+var ErrNoQuota = errors.New("schedcounters: a provider quota ledger is required")
+
 // New validates the deps and builds the generation's open-PR refreshers.
 func New(deps Deps) (*Counters, error) {
-	if deps.Config == nil || deps.Set == nil || deps.Open == nil {
-		return nil, errors.New("schedcounters: config, definitions and a provider opener are required")
+	switch {
+	case deps.Config == nil || deps.Set == nil:
+		return nil, errors.New("schedcounters: config and definitions are required")
+	case deps.Open == nil:
+		return nil, ErrNoOpener
+	case deps.Quota == nil:
+		return nil, ErrNoQuota
 	}
 	if deps.Report == nil {
 		deps.Report = func(error) {}
@@ -329,7 +344,11 @@ func newLister(deps Deps) *lister {
 	if maxStale <= 0 {
 		maxStale = maxStaleIntervals * interval
 	}
-	return &lister{open: deps.Open, quota: deps.Quota, maxStale: maxStale, now: time.Now}
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &lister{open: deps.Open, quota: deps.Quota, maxStale: maxStale, now: now}
 }
 
 func (l *lister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {

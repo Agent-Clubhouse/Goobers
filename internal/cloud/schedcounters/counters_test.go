@@ -100,7 +100,7 @@ var identity = localscheduler.WorkflowIdentity{Gaggle: "g", Workflow: "wf"}
 
 func newCounters(t *testing.T, cfg *instance.Config, set *instance.ConfigSet, f *fakeProvider) *Counters {
 	t.Helper()
-	c, err := New(Deps{Config: cfg, Set: set, Open: opener(f), SelfIdentity: "bot", Report: func(err error) { t.Errorf("unexpected report: %v", err) }})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(f), SelfIdentity: "bot", Report: func(err error) { t.Errorf("unexpected report: %v", err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestSuppliedCountersClearOnlyTheirOwnPendingReason(t *testing.T) {
 	cfg, set = generation(apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"})
 	startingWith(set, "goobers", "update-behind-pr")
 	var reported []error
-	bare, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
+	bare, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestSuppliedCountersClearOnlyTheirOwnPendingReason(t *testing.T) {
 		apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"})
 	startingWith(set, "goobers", "update-behind-pr")
 	reported = nil
-	mixed, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
+	mixed, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestAnUncompilableSelectionIsReportedAndLeavesTheWorkflowDisabled(t *testin
 	startingWith(set, "goobers", "backlog-query")
 	set.Workflows[0].Spec.Tasks[0].Inputs = map[string]string{"filterParkLabels": "maybe"}
 	var reported []error
-	c, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{}), Report: func(err error) { reported = append(reported, err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestAProviderThatCannotBeOpenedFailsThePollNotTheController(t *testing.T) {
 	t.Parallel()
 	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}})
 	boom := errors.New("no credential")
-	c, err := New(Deps{Config: cfg, Set: set, Open: func(context.Context, providers.RepositoryRef, Access) (Provider, error) { return nil, boom }})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: func(context.Context, providers.RepositoryRef, Access) (Provider, error) { return nil, boom }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestOpenPRCountIsSafeUnderConcurrentReadersAndRefresh(t *testing.T) {
 	t.Parallel()
 	cfg, set := cappedGeneration()
 	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
-	c, err := New(Deps{Config: cfg, Set: set, Open: opener(f), OpenPRInterval: time.Millisecond})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(f), OpenPRInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestTakeoverStopsTheOldEpochsPollingAndTheNewLeaderStartsUnknown(t *testing
 	cfg, set := cappedGeneration()
 	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
 	deps := Deps{Config: cfg, Set: set, Open: opener(f), OpenPRInterval: time.Millisecond}
-	first, err := New(deps)
+	first, err := newWithQuota(deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestTakeoverStopsTheOldEpochsPollingAndTheNewLeaderStartsUnknown(t *testing
 		t.Fatal("the deposed epoch kept polling")
 	}
 
-	second, err := New(deps)
+	second, err := newWithQuota(deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestAnUnsupportedCappedRepositoryRefusesTheGeneration(t *testing.T) {
 	cfg, set := cappedGeneration()
 	cfg.Repos = []instance.RepoRef{{Provider: "gitea", Owner: "o", Name: "r"}}
 	set.Gaggles[0].Spec.Project.Provider = "gitea"
-	if _, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{})}); err == nil || !strings.Contains(err.Error(), "not supported") {
+	if _, err := newWithQuota(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{})}); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("New = %v, want the unsupported provider named", err)
 	}
 }
@@ -452,7 +452,7 @@ func (f *forge) source() GitHubSource {
 func backlogCounterOver(t *testing.T, quota *localscheduler.ProviderQuotaState, source GitHubSource) localscheduler.BacklogCounter {
 	t.Helper()
 	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}})
-	c, err := New(Deps{Config: cfg, Set: set, Open: source.Open, Quota: quota})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: source.Open, Quota: quota})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,14 +530,12 @@ func TestAnUnspentPrepaidReservationIsRefunded(t *testing.T) {
 	}
 }
 
-func TestCountersAdvertiseQuotaGuardingOnlyWithALedger(t *testing.T) {
+func TestCountersAdvertiseQuotaGuarding(t *testing.T) {
 	t.Parallel()
-	for name, quota := range map[string]*localscheduler.ProviderQuotaState{"with a ledger": localscheduler.NewProviderQuotaState(), "without": nil} {
-		counter := backlogCounterOver(t, quota, GitHubSource{})
-		guarded, ok := counter.(localscheduler.ProviderQuotaGuardedBacklogCounter)
-		if !ok || guarded.ProviderQuotaGuarded() != (quota != nil) {
-			t.Errorf("%s: guarded = %v (implements %v)", name, ok && guarded.ProviderQuotaGuarded(), ok)
-		}
+	counter := backlogCounterOver(t, localscheduler.NewProviderQuotaState(), GitHubSource{})
+	guarded, ok := counter.(localscheduler.ProviderQuotaGuardedBacklogCounter)
+	if !ok || !guarded.ProviderQuotaGuarded() {
+		t.Errorf("guarded = %v (implements %v)", ok && guarded.ProviderQuotaGuarded(), ok)
 	}
 }
 
@@ -565,7 +563,7 @@ func TestTheRefresherSpendsQuotaAndKeepsItsLastCountWhenShed(t *testing.T) {
 	quota := localscheduler.NewProviderQuotaState()
 	quota.Record(apiv1.ProviderGitHub, 1, time.Now().Add(time.Hour))
 	var opens atomic.Int32
-	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond, OpenPRMaxStale: time.Hour})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond, OpenPRMaxStale: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +589,7 @@ func TestEveryPollOpensExactlyOneProvider(t *testing.T) {
 	t.Parallel()
 	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": ""}})
 	var opens atomic.Int32
-	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(&fakeProvider{}, &opens), Quota: localscheduler.NewProviderQuotaState()})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: consuming(&fakeProvider{}, &opens), Quota: localscheduler.NewProviderQuotaState()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +604,7 @@ func TestEveryPollOpensExactlyOneProvider(t *testing.T) {
 	ccfg, cset := cappedGeneration()
 	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
 	opens.Store(0)
-	r, err := New(Deps{Config: ccfg, Set: cset, Open: consuming(f, &opens), OpenPRInterval: time.Millisecond})
+	r, err := newWithQuota(Deps{Config: ccfg, Set: cset, Open: consuming(f, &opens), OpenPRInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +627,7 @@ func TestRunResetsTheOpenPRCountForANewEpoch(t *testing.T) {
 	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
 	gate := make(chan struct{})
 	var blocked atomic.Bool
-	c, err := New(Deps{Config: cfg, Set: set, OpenPRInterval: time.Millisecond, Open: func(ctx context.Context, _ providers.RepositoryRef, _ Access) (Provider, error) {
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, OpenPRInterval: time.Millisecond, Open: func(ctx context.Context, _ providers.RepositoryRef, _ Access) (Provider, error) {
 		if blocked.Load() {
 			select {
 			case <-gate:
@@ -741,7 +739,7 @@ func TestTheRefresherRefreshesAfterTheSchedulerRetiresTheWindow(t *testing.T) {
 	quota := localscheduler.NewProviderQuotaState()
 	quota.Record(apiv1.ProviderGitHub, 1, reset)
 	var opens atomic.Int32
-	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond, OpenPRMaxStale: time.Hour})
+	c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond, OpenPRMaxStale: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,4 +764,24 @@ func TestTheRefresherRefreshesAfterTheSchedulerRetiresTheWindow(t *testing.T) {
 	waitFor(t, func() bool { n, _ := c.OpenPRs().OpenPRCount("g", "wf"); return n == 3 })
 	cancel()
 	<-done
+}
+
+// newWithQuota is New with the required ledger defaulted, for tests that are
+// not about accounting.
+func newWithQuota(d Deps) (*Counters, error) {
+	if d.Quota == nil {
+		d.Quota = localscheduler.NewProviderQuotaState()
+	}
+	return New(d)
+}
+
+func TestNewRefusesWithoutAnOpenerOrALedger(t *testing.T) {
+	t.Parallel()
+	cfg, set := generation(apiv1.Trigger{Type: apiv1.TriggerManual})
+	if _, err := New(Deps{Config: cfg, Set: set, Quota: localscheduler.NewProviderQuotaState()}); !errors.Is(err, ErrNoOpener) {
+		t.Fatalf("New without an opener = %v, want ErrNoOpener", err)
+	}
+	if _, err := New(Deps{Config: cfg, Set: set, Open: opener(&fakeProvider{})}); !errors.Is(err, ErrNoQuota) {
+		t.Fatalf("New without a ledger = %v, want ErrNoQuota", err)
+	}
 }

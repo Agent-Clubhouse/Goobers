@@ -146,7 +146,7 @@ func demandCounters(t *testing.T, forge *httptest.Server, claims *fakeClaims, jo
 	if journal != nil {
 		deps.Journal = journal
 	}
-	c, err := New(deps)
+	c, err := newWithQuota(deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestNoScheduleDemandCounterForAzureDevOpsOrAnUnscheduledWorkflow(t *testing
 	} {
 		cfg, set := demandGeneration()
 		mutate(cfg, set)
-		c, err := New(Deps{Config: cfg, Set: set, Open: GitHubSource{}.Open, Claims: &fakeClaims{}, Journal: &fakeJournal{}, Report: func(err error) { t.Errorf("%s: unexpected report: %v", name, err) }})
+		c, err := newWithQuota(Deps{Config: cfg, Set: set, Open: GitHubSource{}.Open, Claims: &fakeClaims{}, Journal: &fakeJournal{}, Report: func(err error) { t.Errorf("%s: unexpected report: %v", name, err) }})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
