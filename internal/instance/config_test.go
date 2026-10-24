@@ -2,6 +2,7 @@ package instance
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -4713,6 +4714,23 @@ func TestTerminalBranchRetentionDuration(t *testing.T) {
 		}
 		if err := (&Config{Retention: cfg}).Validate(); (err != nil) != tc.bad {
 			t.Fatalf("validate %q: %v", tc.value, err)
+		}
+	}
+}
+
+// Until the control plane serves the whole child protocol, an instance
+// cannot opt into generated child workflows by accident: loading refuses the
+// switch by name (#8085 d). An explicit off, or no block, loads.
+func TestLoadConfigRefusesEngineChildWorkflowsUntilTheProtocolIsComplete(t *testing.T) {
+	base := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n"
+	if _, err := LoadConfig(writeInstanceYAML(t, base+"  childWorkflows:\n    enabled: true\n")); !errors.Is(err, ErrEngineChildWorkflowsIncomplete) ||
+		!strings.Contains(err.Error(), "Park/Finalize/Complete not served") {
+		t.Fatalf("LoadConfig with child workflows enabled = %v, want the named refusal", err)
+	}
+	for name, yaml := range map[string]string{"explicitly off": base + "  childWorkflows:\n    enabled: false\n", "absent": base} {
+		cfg, err := LoadConfig(writeInstanceYAML(t, yaml))
+		if err != nil || cfg.EngineChildWorkflowsEnabled() {
+			t.Fatalf("%s: LoadConfig = %v (enabled %v)", name, err, cfg != nil && cfg.EngineChildWorkflowsEnabled())
 		}
 	}
 }
