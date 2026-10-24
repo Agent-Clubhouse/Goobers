@@ -68,7 +68,10 @@ func TestCloudPGReportRequiresTaggedTestsToPassUnskipped(t *testing.T) {
 		code   int
 		want   string
 	}{
-		"all tagged tests pass": {healthy + event("pass", "alpha", "TestAlphaUnit"), 0, "3 PostgreSQL test packages"},
+		"passed parent hides skipped child": {healthy + event("skip", "alpha", "TestAlphaPG/fixture/1"), 1, "TestAlphaPG/fixture/1"},
+		"passing descendant is coverage":    {healthy + event("pass", "alpha", "TestAlphaPG/fixture/1"), 0, "3 PostgreSQL test packages"},
+		"unrelated unit descendant skip":    {healthy + event("skip", "alpha", "TestAlphaUnit/optional"), 0, "3 PostgreSQL test packages"},
+		"all tagged tests pass":             {healthy + event("pass", "alpha", "TestAlphaUnit"), 0, "3 PostgreSQL test packages"},
 		"untagged pass only": {event("pass", "alpha", "TestAlphaUnit") + objstoreRun(13, 0) + event("pass", "test/ha/invariants", "TestSchema"),
 			1, "alpha: no PostgreSQL-tagged test passed"},
 		"tagged 1 pass + 12 skips": {event("pass", "alpha", "TestAlphaPG") + objstoreRun(1, 12) + event("pass", "objstore", "TestObjUnit") + event("pass", "test/ha/invariants", "TestSchema"),
@@ -107,5 +110,28 @@ func TestCloudPGReportCollectsOnlyTaggedTopLevelTests(t *testing.T) {
 	}
 	if got := len(tagged["github.com/goobers/goobers/internal/cloud/objstore"]); got != 13 {
 		t.Fatalf("objstore tagged tests = %d, want 13", got)
+	}
+}
+
+func TestCloudPGReportRequiresJournalEquivalence(t *testing.T) {
+	root := pgReportTree(t)
+	writeTestFile(t, root, "test/journalequivalence/cloud_test.go", "//go:build cloudintegration\n\npackage journalequivalence\n\nimport \"testing\"\n\nfunc TestCloudJournalEquivalentToLocal(t *testing.T) {}\n")
+	required, err := cloudIntegrationPackages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := modulePath + "/test/journalequivalence"
+	if len(required[pkg]) != 1 || required[pkg][0] != "TestCloudJournalEquivalentToLocal" {
+		t.Fatalf("equivalence not required: %v", required)
+	}
+	for _, action := range []string{"", "skip", "pass"} {
+		results := map[string]*packageResult{}
+		if action != "" {
+			results[pkg] = &packageResult{outcomes: map[string]string{"TestCloudJournalEquivalentToLocal": action}}
+		}
+		problems := cloudPGProblems(results, map[string][]string{pkg: required[pkg]})
+		if (len(problems) > 0) != (action != "pass") {
+			t.Fatalf("action=%q problems=%v", action, problems)
+		}
 	}
 }

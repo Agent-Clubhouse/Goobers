@@ -5,23 +5,31 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/journal"
 )
 
-const instanceStream = "scheduler"
+const instanceStream = journal.StreamScheduler
 
 // OpenInstance acquires the durable scheduler stream without resetting its
 // counter. Later health streams can use the same (instance,stream,seq) schema.
 func (b *Backend) OpenInstance(ctx context.Context) (journal.InstanceHandle, journal.OwnerToken, journal.RecoverReport, error) {
+	return b.openInstanceStream(ctx, instanceStream)
+}
+
+func (b *Backend) openInstanceStream(ctx context.Context, stream string) (journal.InstanceHandle, journal.OwnerToken, journal.RecoverReport, error) {
 	h, err := b.liveOwner()
 	if err != nil {
 		return "", "", journal.RecoverReport{}, err
 	}
-	owner := &instanceOwner{token: journal.OwnerToken(rand.Text()), epoch: h.Epoch}
+	owner := &instanceOwner{
+		token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, stream: stream,
+	}
 	var seq int64
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `INSERT INTO journal.instance_seq(instance_id,stream,owner_epoch,owner_token)
@@ -29,7 +37,7 @@ func (b *Backend) OpenInstance(ctx context.Context) (journal.InstanceHandle, jou
   ON CONFLICT(instance_id,stream) DO UPDATE SET owner_epoch=EXCLUDED.owner_epoch,owner_token=EXCLUDED.owner_token
   WHERE (journal.instance_seq.owner_token IS NULL OR journal.instance_seq.owner_epoch<$4) AND journal.instance_seq.owner_epoch<=$4
   AND EXISTS(SELECT 1 FROM control.lease WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4)
-  RETURNING last_seq`, h.InstanceID, h.Name, h.Holder, h.Epoch, instanceStream, owner.token).Scan(&seq)
+  RETURNING last_seq`, h.InstanceID, h.Name, h.Holder, h.Epoch, stream, owner.token).Scan(&seq)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return journal.ErrRunOwned
 		}
@@ -67,9 +75,27 @@ func (b *Backend) withInstance(ctx context.Context, owner *instanceOwner, write 
 	if h.Epoch != owner.epoch {
 		return lease.ErrStale
 	}
+	// The only moment a write can lose a partition-routing race is the ATTACH
+	// of the current month over a live DEFAULT partition (migrate.PartitionMaintainer);
+	// the whole transaction is safe to run again.
+	for range 3 {
+		if err = b.withInstanceOnce(ctx, h, owner, write); !isPartitionRace(err) {
+			return err
+		}
+	}
+	return err
+}
+
+func isPartitionRace(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" &&
+		strings.Contains(pgErr.Message, "violates partition constraint")
+}
+
+func (b *Backend) withInstanceOnce(ctx context.Context, h *lease.Handle, owner *instanceOwner, write func(context.Context, pgx.Tx, int64) error) error {
 	return b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
 		var seq int64
-		err := tx.QueryRow(ctx, `SELECT last_seq FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4 FOR UPDATE`, b.config.InstanceID, instanceStream, owner.token, h.Epoch).Scan(&seq)
+		err := tx.QueryRow(ctx, `SELECT last_seq FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4 FOR UPDATE`, b.config.InstanceID, owner.stream, owner.token, h.Epoch).Scan(&seq)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return lease.ErrStale
 		}
@@ -86,19 +112,25 @@ func (b *Backend) InstanceAppend(ctx context.Context, handle journal.InstanceHan
 	if err != nil {
 		return err
 	}
-	clean, err := prepareEvent(&runOwner{options: normalizedOptions(journal.RunWriterOptions{})}, event)
+	clean, err := prepareEvent(&runOwner{options: normalizedOptions(
+		journal.RunWriterOptions{Clock: b.config.InstanceClock})}, event)
 	if err != nil {
 		return err
 	}
 	return b.withInstance(ctx, owner, func(ctx context.Context, tx pgx.Tx, seq int64) error {
 		if key := emitKey(clean); key != nil {
-			var exists bool
-			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM journal.instance_event WHERE instance_id=$1 AND stream=$2 AND emit_key=$3)`, b.config.InstanceID, instanceStream, key).Scan(&exists)
-			if err != nil || exists {
+			// Cross-month idempotency: the unpartitioned key table does not
+			// depend on which month the append-time clock (or a successor
+			// replica's skewed clock) falls in. seq is the next sequence we are
+			// about to allocate under the instance_seq row lock, so a duplicate
+			// leaves the stream gap-free.
+			tag, err := tx.Exec(ctx, `INSERT INTO journal.instance_emit_key(instance_id,stream,emit_key,seq)
+				VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, b.config.InstanceID, owner.stream, key, seq+1)
+			if err != nil || tag.RowsAffected() == 0 {
 				return err
 			}
 		}
-		if err := tx.QueryRow(ctx, `UPDATE journal.instance_seq SET last_seq=last_seq+1 WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4 RETURNING last_seq`, b.config.InstanceID, instanceStream, owner.token, owner.epoch).Scan(&seq); err != nil {
+		if err := tx.QueryRow(ctx, `UPDATE journal.instance_seq SET last_seq=last_seq+1 WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4 RETURNING last_seq`, b.config.InstanceID, owner.stream, owner.token, owner.epoch).Scan(&seq); err != nil {
 			return err
 		}
 		clean.Seq = uint64(seq)
@@ -110,7 +142,7 @@ func (b *Backend) InstanceAppend(ctx context.Context, handle journal.InstanceHan
 			return err
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO journal.instance_event(instance_id,stream,seq,at,type,emit_key,epoch,body,run_id)
-  SELECT instance_id,stream,$5,$6,$7,$8,owner_epoch,$9,$10 FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, instanceStream, owner.token, owner.epoch, seq, clean.Time, string(clean.Type), emitKey(clean), raw, clean.RunID)
+  SELECT instance_id,stream,$5,$6,$7,$8,owner_epoch,$9,$10 FROM journal.instance_seq WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, owner.stream, owner.token, owner.epoch, seq, clean.Time, string(clean.Type), emitKey(clean), raw, clean.RunID)
 		if err = requireWrite(tag.RowsAffected(), err); err != nil {
 			return err
 		}
@@ -125,7 +157,7 @@ func (b *Backend) RetireInstance(ctx context.Context, handle journal.InstanceHan
 		return err
 	}
 	err = b.withInstance(ctx, owner, func(ctx context.Context, tx pgx.Tx, _ int64) error {
-		tag, err := tx.Exec(ctx, `UPDATE journal.instance_seq SET owner_token=NULL WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, instanceStream, owner.token, owner.epoch)
+		tag, err := tx.Exec(ctx, `UPDATE journal.instance_seq SET owner_token=NULL WHERE instance_id=$1 AND stream=$2 AND owner_token=$3 AND owner_epoch=$4`, b.config.InstanceID, owner.stream, owner.token, owner.epoch)
 		return requireWrite(tag.RowsAffected(), err)
 	})
 	if err == nil {

@@ -96,6 +96,7 @@ type Generation struct {
 	digest   string
 	eligible map[string]struct{}
 	refusal  *Refusal
+	pins     map[string]Pins
 }
 
 // Digest identifies the generation the assessment was computed for.
