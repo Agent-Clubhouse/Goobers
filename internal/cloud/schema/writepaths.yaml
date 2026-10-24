@@ -871,6 +871,26 @@ tables:
     - delivered_at
     delete: true
 - schema: control
+  table: terminal_framed
+  provisioned: true
+  fence: owner_token
+  rationale: The terminal awaiter records each run whose terminal frame completed, under the controller-lease fence, so a successor
+    does not re-fire it; rows older than the discovery window are pruned under the same fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - owner_epoch
+    - framed_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - owner_epoch
+    delete: true
+- schema: control
   table: terminal_watermark
   provisioned: true
   fence: owner_token

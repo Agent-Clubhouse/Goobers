@@ -64,22 +64,35 @@ var _ Writer = Pending{}
 
 func pending(op string) error { return fmt.Errorf("%s: %w", op, ErrPending) }
 
+// WorkItem reports ErrPending.
 func (Pending) WorkItem(context.Context, ItemRef) (providers.WorkItem, error) {
 	return providers.WorkItem{}, pending("get work item")
 }
+
+// Comments reports ErrPending.
 func (Pending) Comments(context.Context, ItemRef) ([]providers.Comment, error) {
 	return nil, pending("list comments")
 }
+
+// Update reports ErrPending.
 func (Pending) Update(context.Context, ItemRef, providers.UpdateWorkItemRequest) error {
 	return pending("update work item")
 }
+
+// UpdateComment reports ErrPending.
 func (Pending) UpdateComment(context.Context, ItemRef, string, string) error {
 	return pending("update comment")
 }
+
+// PullLabels reports ErrPending.
 func (Pending) PullLabels(context.Context, string, string) ([]string, error) {
 	return nil, pending("list pull labels")
 }
+
+// DeleteBranch reports ErrPending.
 func (Pending) DeleteBranch(context.Context, string, string) error { return pending("delete branch") }
+
+// ReleaseClaimMarker reports ErrPending.
 func (Pending) ReleaseClaimMarker(context.Context, ItemRef, claimrelease.Reason) error {
 	return pending("release claim marker")
 }

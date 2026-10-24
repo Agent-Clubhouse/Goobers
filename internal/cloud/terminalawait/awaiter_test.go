@@ -757,3 +757,92 @@ func TestAClosedRunWhoseVisibilityLagsPastTheMarginIsStillFramed(t *testing.T) {
 		t.Fatalf("frames per run = %v, want each exactly once", counts)
 	}
 }
+
+type memFramed struct {
+	mu     sync.Mutex
+	runs   map[string]bool
+	pruned []time.Time
+}
+
+func (f *memFramed) Framed(_ context.Context, _, runID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runs[runID], nil
+}
+
+func (f *memFramed) MarkFramed(_ context.Context, _ *lease.Handle, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs[runID] = true
+	return nil
+}
+
+func (f *memFramed) Prune(_ context.Context, _ *lease.Handle, cutoff time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pruned = append(f.pruned, cutoff)
+	return 0, nil
+}
+
+func TestASuccessorEpochSkipsRunsAnEarlierLeaderFramed(t *testing.T) {
+	r := newRig()
+	r.temporal.runs["run-1"] = &fakeRun{id: "run-1", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.claims.held["run-1"] = []string{"1"}
+	r.open["run-1"] = true
+	receipts := &memFramed{runs: map[string]bool{}}
+	epoch := func(n int64) *Awaiters {
+		handle := &lease.Handle{InstanceID: "i", Epoch: n}
+		a, err := New(handle, Config{
+			Temporal: r.temporal, Framed: receipts,
+			Identify: func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+			Open:     func(context.Context) (map[string]bool, error) { return r.open, nil },
+			Hooks:    func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(a)
+		_ = a.Stop(t.Context())
+		return a
+	}
+	epoch(2)
+	if !receipts.runs["run-1"] {
+		t.Fatal("a completed frame left no receipt")
+	}
+	// Epoch 3 sees the same run (still listed open by lagging visibility).
+	epoch(3)
+	epoch(4)
+	if got := len(r.claims.calls); got != 1 {
+		t.Fatalf("the frame fired %d times across 3 epochs, want once", got)
+	}
+}
+
+func TestAFrameThatNeverCompletedLeavesNoReceipt(t *testing.T) {
+	r := newRig()
+	handle := &lease.Handle{InstanceID: "i", Epoch: 2}
+	r.temporal.runs["run-1"] = &fakeRun{id: "run-1", result: engine.RunResult{Status: engine.StatusCompleted}}
+	r.claims.err = errors.New("claims plane unavailable") // Finalize fails
+	r.open["run-1"] = true
+	receipts := &memFramed{runs: map[string]bool{}}
+	a, err := New(handle, Config{
+		Temporal: r.temporal, Framed: receipts,
+		Identify: func(_ context.Context, id string) (Identity, error) { return r.identify(id) },
+		Open:     func(context.Context) (map[string]bool, error) { return r.open, nil },
+		Hooks:    func(h *lease.Handle, id Identity) *frame.Hooks { return Hooks(r.claims, h, id, r.rec, nil) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.claims.released = nil
+	if err := a.Reattach(t.Context(), handle, r.open); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(a)
+	_ = a.Stop(t.Context())
+	if receipts.runs["run-1"] {
+		t.Fatal("a receipt was written for a frame whose Finalize failed")
+	}
+}
