@@ -610,6 +610,17 @@
       "recoverySafe": false
     },
     {
+      "id": "journalTerminalIntervention",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/journal/terminal-intervention",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "journalEmit",
       "method": "POST",
       "path": "/api/v1/runs/{run}/journal/emit",
