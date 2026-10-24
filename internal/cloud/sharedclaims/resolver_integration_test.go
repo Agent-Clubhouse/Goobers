@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,7 @@ func TestSharedPolicyReadsPGWorkflowAndControlPinAsController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	identity.RunID = strings.Repeat("a", 32)
 	identity.ConfigGeneration = "generation"
 	definition, err := reader.ArtifactBytes(identity.Inputs[0].Ref)
 	if err != nil {
