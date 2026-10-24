@@ -28,11 +28,6 @@ type terminalEpoch struct {
 	Delivery func(context.Context) error
 }
 
-// epochSchedulerLogs is the process's shared opener of the epoch's fenced
-// scheduler log. Every consumer (these hooks, the scheduler admission) takes the
-// log from it: a second open in one epoch is refused.
-var epochSchedulerLogs schedulerLogs
-
 // terminalStatus is the live epoch's delivery status, for readiness and the
 // control status page. Nil between epochs.
 var terminalStatus atomic.Pointer[func() terminalcompose.Status]
