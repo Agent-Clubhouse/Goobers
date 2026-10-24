@@ -37,6 +37,7 @@ type (
 		Heal(ctx context.Context, handle *lease.Handle, limit int) (int, error)
 		Sweep(ctx context.Context, handle *lease.Handle, opt blockedrecordspg.SweepOptions) (blockedrecordspg.SweepResult, error)
 		Deferrals(ctx context.Context, handle *lease.Handle) (int, error)
+		Refused(ctx context.Context, handle *lease.Handle) ([]string, error)
 	}
 )
 
@@ -60,7 +61,6 @@ type Delivery struct {
 	maxLag    time.Duration
 
 	mu       sync.Mutex
-	refused  []string
 	next     time.Time
 	healNext time.Time
 	snapshot Status
@@ -78,9 +78,10 @@ type Status struct {
 	LastError error
 	// DeferredCycles is the blocked-record cycles awaiting re-verification.
 	DeferredCycles int
-	// RefusedCycles names the deferred cycles whose escalation the provider
-	// permanently refused (the sweep stopped retrying them). Non-empty is loud: it
-	// is a readiness check and each one is journaled as an error.
+	// RefusedCycles names the cycles whose escalation the provider permanently
+	// refused (the sweep stopped retrying them). It is read from the database each
+	// pass, so it survives a failover and empties when the cycle resolves. Non-empty
+	// is loud: it is a readiness check and each one is journaled as an error.
 	RefusedCycles []string
 	// Healthy is false when the oldest report has waited longer than the bound, or
 	// the backlog could not be read: an unreadable outbox is not a healthy one.
@@ -122,7 +123,7 @@ func (d *Delivery) Status() Status {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	status := d.snapshot
-	status.RefusedCycles = slices.Clone(d.refused) // always current: a refusal stands until restart
+	status.RefusedCycles = slices.Clone(status.RefusedCycles)
 	return status
 }
 
@@ -170,7 +171,7 @@ func (d *Delivery) Tick(ctx context.Context) error {
 		if d.deps.Escalator != nil {
 			opt := blockedrecordspg.SweepOptions{Bound: d.deps.Tuning.DeferralBound, MaxCycles: d.deps.Tuning.SweepCycles, MaxMembers: d.deps.Tuning.SweepMembers, Escalate: d.escalate}
 			result, err := d.heal.Sweep(ctx, d.deps.Handle, opt)
-			d.surfaceRefusals(result.Refused)
+			d.surfaceRefusals(result.NewlyRefused)
 			if err != nil {
 				if err := note(fmt.Errorf("sweep deferred cycles: %w", err)); err != nil {
 					return err
@@ -182,6 +183,10 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	if err := note(deferErr); err != nil {
 		return err
 	}
+	refused, refusedErr := d.heal.Refused(ctx, d.deps.Handle)
+	if err := note(refusedErr); err != nil {
+		return err
+	}
 	backlog, readErr := d.backlog.Backlog(ctx)
 	if err := note(readErr); err != nil {
 		return err
@@ -189,29 +194,21 @@ func (d *Delivery) Tick(ctx context.Context) error {
 	d.mu.Lock()
 	d.snapshot = Status{
 		Pending: backlog.Pending, OldestAge: backlog.Oldest, LastPass: d.deps.Now(), LastError: failure, DeferredCycles: deferred,
-		RefusedCycles: slices.Clone(d.refused),
+		RefusedCycles: refused,
 		Healthy:       readErr == nil && backlog.Oldest <= d.maxLag,
 	}
 	d.mu.Unlock()
 	return nil
 }
 
-// maxRefusedShown bounds the refused cycles kept for the status page.
-const maxRefusedShown = 20
-
-// surfaceRefusals makes a permanently refused escalation loud: a journaled error
-// per cycle, and a standing readiness failure until the process restarts or fails
-// over. The sweep has stopped retrying it, so nothing else would ever say so.
+// surfaceRefusals journals a newly refused escalation once per cycle: the sweep has
+// stopped retrying it, so nothing else would ever say so. The standing condition
+// itself is the durable marker, read into Status every pass.
 func (d *Delivery) surfaceRefusals(keys []string) {
 	for _, key := range keys {
 		d.deps.Log.AppendBestEffort(journal.Event{
 			Type: journal.EventRunnerAnnotation, Reason: "blocked-record cycle escalation permanently refused; the cycle's members stay parked blocked-on-sibling and need a human",
 			Runner: map[string]any{"kind": "blocked_cycle_escalation_refused", "seed": key, "driver": string(journal.DriverEngine)},
 		})
-		d.mu.Lock()
-		if len(d.refused) < maxRefusedShown {
-			d.refused = append(d.refused, key)
-		}
-		d.mu.Unlock()
 	}
 }

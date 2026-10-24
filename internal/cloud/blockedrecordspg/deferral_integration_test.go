@@ -5,6 +5,7 @@ package blockedrecordspg_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -286,29 +287,133 @@ func TestACycleOnAzureDevOpsIsEscalatedNowNotDeferred(t *testing.T) {
 	}
 }
 
-// A permanent refusal of the escalation itself ends the retries and is reported,
-// instead of being retried in silence on every sweep forever.
-func TestAPermanentEscalationRefusalStopsTheRetriesAndIsReported(t *testing.T) {
+func permanentRefusal(msg string) error {
+	return fmt.Errorf("%s: %w", msg, providerwriter.ErrPermanent)
+}
+
+// refuse drives a deferred cycle to a permanent escalation refusal.
+func (r *deferralRig) refuse(t *testing.T) {
+	t.Helper()
+	r.deferCycle(t)
+	r.makeDue(t, 10*time.Minute)
+	r.esc.err = errors.Join(permanentRefusal("comment on #1"), permanentRefusal("comment on #2"))
+	res, err := r.sweep(t, r.store, r.handle)
+	if !errors.Is(err, blockedrecordspg.ErrEscalationRefused) || len(res.NewlyRefused) != 1 || len(res.Refused) != 1 {
+		t.Fatalf("sweep: %+v, %v; want the refusal reported with the cycle named", res, err)
+	}
+	r.esc.err = nil
+}
+
+func (r *deferralRig) refused(t *testing.T, store blockedrecordspg.Store, handle *lease.Handle) []string {
+	t.Helper()
+	keys, err := store.Refused(t.Context(), handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
+// A permanent refusal of the escalation itself ends the retries and is latched in
+// the row: nothing is retried in silence, and the refusal stays visible.
+func TestAPermanentEscalationRefusalStopsTheRetriesAndStaysLatched(t *testing.T) {
+	r := newDeferralRig(t)
+	r.refuse(t)
+	if n, _ := r.store.Deferrals(t.Context(), r.handle); n != 0 {
+		t.Fatalf("deferrals = %d; a refused cycle must not stay due", n)
+	}
+	if got := r.refused(t, r.store, r.handle); len(got) != 1 {
+		t.Fatalf("refused = %v; want the cycle latched", got)
+	}
+	// Nothing further is attempted, and the latch persists across passes.
+	r.makeDue(t, 10*time.Minute)
+	res, err := r.sweep(t, r.store, r.handle)
+	if err != nil || !nothingDone(res) || len(res.Refused) != 1 || r.esc.count() != 0 {
+		t.Fatalf("next sweep: %+v, %v; want nothing retried and the refusal still standing", res, err)
+	}
+}
+
+// The latch is in the database, so a successor leader sees it; the deposed one is
+// fenced out.
+func TestARefusedCycleSurvivesAFailover(t *testing.T) {
+	r := newDeferralRig(t)
+	r.refuse(t)
+	successorManager := pgtest.ControllerManager(t, r.admin, "successor", 0)
+	successor := pgtest.Takeover(t, r.admin, successorManager)
+	next := r.store
+	next.Fence = successorManager
+	if got := r.refused(t, next, successor); len(got) != 1 {
+		t.Fatalf("successor sees refused = %v, want the predecessor's refusal", got)
+	}
+	res, err := r.sweep(t, next, successor)
+	if err != nil || len(res.Refused) != 1 || len(res.NewlyRefused) != 0 {
+		t.Fatalf("successor sweep: %+v, %v; want the refusal standing and not re-announced", res, err)
+	}
+}
+
+// A refusal clears itself with the condition: a re-recorded block on the seed, the
+// seed being forgotten, or the cycle no longer being found.
+func TestARefusedCycleClearsWhenTheCycleResolves(t *testing.T) {
+	t.Run("seed re-recorded", func(t *testing.T) {
+		r := newDeferralRig(t)
+		r.refuse(t)
+		if _, err := r.store.RecordBlock(t.Context(), r.handle, block("2", "9")); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.refused(t, r.store, r.handle); len(got) != 0 {
+			t.Fatalf("refused = %v after the seed was re-recorded", got)
+		}
+	})
+	t.Run("seed forgotten", func(t *testing.T) {
+		r := newDeferralRig(t)
+		r.refuse(t)
+		r.closed.closed["2"] = true
+		if err := r.store.Forget(t.Context(), r.handle, []blockedcycle.Node{{Repository: block("2").Repository, ItemID: "2"}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.refused(t, r.store, r.handle); len(got) != 0 {
+			t.Fatalf("refused = %v after the seed was forgotten", got)
+		}
+	})
+	t.Run("cycle gone but seed kept", func(t *testing.T) {
+		r := newDeferralRig(t)
+		r.refuse(t)
+		// The other member's record disappears (its item closed): the seed row
+		// remains but no cycle runs through it.
+		if _, err := r.admin.Exec(t.Context(), `DELETE FROM control.blocked_record WHERE record_key <> (SELECT record_key FROM control.blocked_record WHERE starts_with(defer_reason, 'refused: '))`); err != nil {
+			t.Fatal(err)
+		}
+		res, err := r.sweep(t, r.store, r.handle)
+		if err != nil || len(res.Refused) != 0 {
+			t.Fatalf("sweep: %+v, %v; want the refusal released", res, err)
+		}
+		if got := r.refused(t, r.store, r.handle); len(got) != 0 {
+			t.Fatalf("refused = %v after the cycle was gone", got)
+		}
+	})
+}
+
+// One member's permanent refusal must not stop a cycle whose other members only
+// failed transiently: that cycle is retried, and refused only once every remaining
+// failure is permanent.
+func TestOneMembersPermanentRefusalDoesNotStopATransientlyFailingCycle(t *testing.T) {
 	r := newDeferralRig(t)
 	r.deferCycle(t)
 	r.makeDue(t, 10*time.Minute)
-	r.esc.err = errors.Join(providerwriter.ErrPermanent, errors.New("comment refused"))
+	r.esc.err = errors.Join(permanentRefusal("comment on #1"), errors.New("provider unavailable on #2"))
 	res, err := r.sweep(t, r.store, r.handle)
-	if !errors.Is(err, blockedrecordspg.ErrEscalationRefused) || len(res.Refused) != 1 {
-		t.Fatalf("sweep: %+v, %v; want the refusal reported with the cycle named", res, err)
+	if err == nil || errors.Is(err, blockedrecordspg.ErrEscalationRefused) || len(res.Refused) != 0 {
+		t.Fatalf("sweep: %+v, %v; want a retryable failure, not a refusal", res, err)
 	}
-	if n, _ := r.store.Deferrals(t.Context(), r.handle); n != 0 {
-		t.Fatalf("deferrals = %d; the marker must be cleared so it is not retried forever", n)
+	if n, _ := r.store.Deferrals(t.Context(), r.handle); n != 1 {
+		t.Fatalf("deferrals = %d, want the marker kept so the transient member is retried", n)
 	}
-	// Nothing further is attempted.
-	r.esc.err = nil
-	r.makeDue(t, 10*time.Minute)
-	if res, err := r.sweep(t, r.store, r.handle); err != nil || !nothingDone(res) {
-		t.Fatalf("next sweep: %+v, %v; want nothing left to retry", res, err)
+	// Once the transient member recovers, only the permanent refusal remains.
+	r.esc.err = permanentRefusal("comment on #1")
+	if res, err := r.sweep(t, r.store, r.handle); !errors.Is(err, blockedrecordspg.ErrEscalationRefused) || len(res.Refused) != 1 {
+		t.Fatalf("sweep: %+v, %v; want the cycle refused once every failure is permanent", res, err)
 	}
-	// A transient refusal, by contrast, keeps the marker (covered above).
 }
 
 func nothingDone(res blockedrecordspg.SweepResult) bool {
-	return res.Dropped == 0 && res.Escalated == 0 && res.Deferred == 0 && len(res.Refused) == 0
+	return res.Dropped == 0 && res.Escalated == 0 && res.Deferred == 0 && len(res.NewlyRefused) == 0
 }

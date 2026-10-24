@@ -1153,7 +1153,7 @@ tables:
   provisioned: true
   fence: owner_token
   rationale: The blocked terminal hook records a learned dependency block and reads every record to detect the cycle it closes,
-    drops the records of items verified closed (self-heal), and marks a cycle it cannot yet verify as deferred for the sweep to re-check, under the controller-lease fence. Records are replaced whole by key.
+    drops the records of items verified closed (self-heal), and marks a cycle it cannot yet verify as deferred for the sweep to re-check (and latches one whose escalation the provider permanently refused, in defer_reason), under the controller-lease fence. Records are replaced whole by key.
   readers:
   - role: goobers_controller
     columns:

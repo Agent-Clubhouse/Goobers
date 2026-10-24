@@ -50,6 +50,9 @@ func (f *fakeLoop) Sweep(_ context.Context, _ *lease.Handle, opt blockedrecordsp
 }
 
 func (f *fakeLoop) Deferrals(context.Context, *lease.Handle) (int, error) { return f.deferred, nil }
+func (f *fakeLoop) Refused(context.Context, *lease.Handle) ([]string, error) {
+	return f.sweepResult.Refused, nil
+}
 
 func (f *fakeLoop) Backlog(context.Context) (terminalreportpg.Backlog, error) {
 	return f.backlog, f.backlogErr
@@ -223,7 +226,7 @@ func (l *memLog) AppendBestEffort(ev journal.Event) { l.events = append(l.events
 // A cycle whose escalation the provider permanently refused is no longer retried by
 // the sweep, so it must be loud: a journaled error per cycle and a standing status.
 func TestAPermanentlyRefusedEscalationIsJournaledAndStaysVisible(t *testing.T) {
-	f, c := &fakeLoop{sweepResult: blockedrecordspg.SweepResult{Refused: []string{"2", "7"}}, sweepErr: blockedrecordspg.ErrEscalationRefused}, &clock{now: time.Unix(1000, 0)}
+	f, c := &fakeLoop{sweepResult: blockedrecordspg.SweepResult{NewlyRefused: []string{"2", "7"}, Refused: []string{"2", "7"}}, sweepErr: blockedrecordspg.ErrEscalationRefused}, &clock{now: time.Unix(1000, 0)}
 	d, reported := newLoop(f, c, Tuning{})
 	d.deps.Escalator = poster{}
 	log := &memLog{}
@@ -244,12 +247,23 @@ func TestAPermanentlyRefusedEscalationIsJournaledAndStaysVisible(t *testing.T) {
 	if journaled != 2 || len(*reported) == 0 {
 		t.Fatalf("journaled %d refusals, reported %v; want one journaled error per cycle and the failure reported", journaled, *reported)
 	}
-	// It stays visible on later passes, and the list is bounded.
-	for i := 0; i < 3*maxRefusedShown; i++ {
-		d.surfaceRefusals([]string{"k"})
+	// It stays visible on later passes without being journaled again, and clears
+	// when the store reports the cycle resolved.
+	f.sweepResult, f.sweepErr = blockedrecordspg.SweepResult{Refused: []string{"2", "7"}}, nil
+	c.now = c.now.Add(time.Hour)
+	if err := d.Tick(t.Context()); err != nil {
+		t.Fatal(err)
 	}
-	if got := len(d.Status().RefusedCycles); got != maxRefusedShown {
-		t.Fatalf("refused list = %d, want it bounded at %d", got, maxRefusedShown)
+	if len(d.Status().RefusedCycles) != 2 || len(log.events) != journaled {
+		t.Fatalf("later pass: refused %v, journaled events %d; want standing and no re-journal", d.Status().RefusedCycles, len(log.events))
+	}
+	f.sweepResult = blockedrecordspg.SweepResult{}
+	c.now = c.now.Add(time.Hour)
+	if err := d.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Status().RefusedCycles; len(got) != 0 {
+		t.Fatalf("refused after resolution = %v, want none", got)
 	}
 }
 
