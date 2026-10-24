@@ -4,11 +4,12 @@ package executor
 
 import (
 	"errors"
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"

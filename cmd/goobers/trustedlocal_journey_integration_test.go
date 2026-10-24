@@ -131,13 +131,16 @@ func qualifyTrustedLocalJourney(t *testing.T, mode string) {
 					return fmt.Errorf("selected ambient login lost")
 				}
 			} else if token, err := req.Credentials.Token(ctx, "agent:model"); err != nil || token != "sk-ant-qualification-model-only" {
-				return fmt.Errorf("selected parent model credential lost: %v", err)
+				return fmt.Errorf("selected parent model credential lost: %w", err)
 			}
 			if req.ChildWorkflows == nil {
 				childCalls.Add(1)
 				result, err := (harness.ExecProcessRunner{}).Run(ctx, harness.ProcessRequest{Command: []string{"/bin/sh", "-c", "printf 'child\\n' > child.txt"}, Dir: req.Workspace, Env: credentials.TrustedLocalBaseEnvironment(ctx, os.Environ()), Timeout: 5 * time.Second})
-				if err != nil || result.ExitCode != 0 {
-					return fmt.Errorf("child process: %v %+v", err, result)
+				if err != nil {
+					return fmt.Errorf("child process: %w", err)
+				}
+				if result.ExitCode != 0 {
+					return fmt.Errorf("child process exited %d: %+v", result.ExitCode, result)
 				}
 				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 			}

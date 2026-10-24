@@ -6,11 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationChildDispositionPreparationAndRetry(t *testing.T) {
