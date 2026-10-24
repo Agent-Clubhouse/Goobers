@@ -904,6 +904,18 @@ func TestFreshnessReporterOnTheActiveModelForBothRuntimeRoles(t *testing.T) {
 	if err := store.UpsertRun(t.Context(), testProjection("run", 3)); err != nil {
 		t.Fatal(err)
 	}
+	// No recorded pass: nothing says a projector is alive, so the model must
+	// not read as current (a dead projector cannot report itself dead).
+	first, err := readmodelpg.NewActiveReader(t.Context(), rolePool(t, admin, "goobers_api"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unproven, err := first.ReadState(t.Context(), readmodel.ReadStateInput{}); err != nil || !reflect.DeepEqual(unproven.Degraded, []string{readmodel.DegradedNoProjectorPass}) {
+		t.Fatalf("no recorded pass read as %+v (%v), want no_projector_pass", unproven.Degraded, err)
+	}
+	if err := store.RecordPass(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
 	for role, pool := range map[string]*pgxpool.Pool{"goobers_api": rolePool(t, admin, "goobers_api"), "goobers_controller": rolePool(t, admin, "goobers_controller")} {
 		reader, err := readmodelpg.NewActiveReader(t.Context(), pool)
 		if err != nil {
@@ -944,5 +956,70 @@ func TestFreshnessReporterOnTheActiveModelForBothRuntimeRoles(t *testing.T) {
 			!reflect.DeepEqual(degraded.Degraded, []string{readmodel.DegradedProjectionLag, readmodel.DegradedProjectFailure}) {
 			t.Fatalf("%s: degraded read state = %+v", role, degraded)
 		}
+	}
+}
+
+func TestReadStateDegradesOnAStaleProjectorPassAndSurfacesPersistedFailures(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	reconcileReadmodelGrants(t, admin)
+	store, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := readmodelpg.NewActiveReader(t.Context(), rolePool(t, admin, "goobers_api"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordPass(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+	current, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || len(current.Degraded) != 0 || current.Completeness != readmodel.CompletenessComplete {
+		t.Fatalf("a fresh pass read as %+v (%v), want current", current, err)
+	}
+
+	// The projector dies: its last pass ages on the database clock.
+	if _, err := admin.Exec(t.Context(), `UPDATE readmodel_v1.meta SET last_pass_at = clock_timestamp() - interval '10 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || !reflect.DeepEqual(stale.Degraded, []string{readmodel.DegradedProjectorStale}) || stale.LagSeconds < 599 {
+		t.Fatalf("a 10 minute old pass read as %+v lag %v (%v), want projector_stale with the age as lag", stale.Degraded, stale.LagSeconds, err)
+	}
+
+	// Open failures recorded by the projector reach a reader that was told nothing.
+	if err := store.RecordPass(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
+	failing, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || failing.Completeness != readmodel.CompletenessPartial || !reflect.DeepEqual(failing.Degraded, []string{readmodel.DegradedProjectFailure}) {
+		t.Fatalf("persisted open failures read as %+v %v (%v), want partial project_failure", failing.Degraded, failing.Completeness, err)
+	}
+}
+
+func TestRecordPassIsRefusedToTheAPIRoleAndToAStaleOwner(t *testing.T) {
+	admin := testPool(t)
+	applyMigrations(t, admin)
+	resetReadmodel(t, admin)
+	reconcileReadmodelGrants(t, admin)
+	owner, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.RecordPass(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+	older, err := readmodelpg.New(t.Context(), admin, testFence{pool: admin, epoch: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := older.RecordPass(t.Context(), 0); !errors.Is(err, readmodelpg.ErrStaleOwner) {
+		t.Fatalf("a deposed owner recorded a pass: %v", err)
+	}
+	api := rolePool(t, admin, "goobers_api")
+	if _, err := api.Exec(t.Context(), `UPDATE readmodel_v1.meta SET last_pass_at = clock_timestamp()`); err == nil {
+		t.Fatal("the API role updated the pass record")
 	}
 }
