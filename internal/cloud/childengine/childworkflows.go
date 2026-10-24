@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -39,9 +40,14 @@ func (c FencedChildWorkflows) service(ctx context.Context) (*childworkflow.HTTPS
 		return nil, httpapi.NewInterventionError(http.StatusServiceUnavailable, "child_workflows_unavailable",
 			"child workflows are unavailable from this control plane; retry", err)
 	}
-	queue := pinningQueue{ChildQueue: store, pins: source}
-	submission := &childworkflow.SubmissionService{Queue: queue, Authority: retryableAuthority{parents}, Now: c.Authority.Fenced.Now}
-	return &childworkflow.HTTPService{Submission: submission, Grants: c.Authority.Grants}, nil
+	return childWorkflowService(store, source, parents, c.Authority.Grants, c.Authority.Fenced.Now), nil
+}
+
+// childWorkflowService is the one composition of the child-workflow service
+// over bound custody, generation pins and the parent authority.
+func childWorkflowService(store childworkflow.ChildQueue, pins generationPins, parents ParentAuthority, grants *podauth.SignedKey, now func() time.Time) *childworkflow.HTTPService {
+	submission := &childworkflow.SubmissionService{Queue: pinningQueue{ChildQueue: store, pins: pins}, Authority: retryableAuthority{parents}, Now: now}
+	return &childworkflow.HTTPService{Submission: submission, Grants: grants}
 }
 
 // ValidateChildWorkflow returns advisory findings without storing a proposal.
