@@ -197,6 +197,35 @@ artifact transport, journal observations, surrender and recovery after a lost
 reply. They use an in-process worker transport; they do not certify a live
 Kubernetes/Temporal deployment or delegated PR publication.
 
+## Engine child admission on the cloud control plane
+
+On the cloud, the engine worker reaches generated-child custody through the
+`goobers-cloud control` role's child-admission plane (see
+[worker transport](../design/worker-blob-transport.md#engine-child-admission-authentication)).
+The plane is composed after the applied configuration and needs the object store
+(`--object-store-url`, `--object-store-container`). Without either, the control
+role refuses to start rather than serve a partial plane.
+
+Each call binds to the controller lease this replica holds at that moment. A
+standby, or a replica mid-failover, answers 503 and the engine retries
+elsewhere. Freezing a child into its manifest loads the config generation its
+parent was accepted under (`envelope.ConfigGeneration`) from the object store.
+It never uses the currently applied generation. It checks the parent's
+generation, workflow and goober digests and the child's effective policy
+against what was accepted. A changed policy refuses the child, a narrowing
+included. A control-plane reload of runner or harness settings does not.
+
+**Troubleshooting a misrouted worker.** 404 and 405 are retryable, because an
+API replica that does not serve the route yet answers that way during a rolling
+deploy. So a worker pointed at the wrong API URL does not fail on its first
+call. It surfaces as `childadmissionclient: … refused with status 404` only
+after the child activity's five-minute schedule-to-close budget, plus up to
+another five minutes while the engine's cleanup cancel retries the same way.
+If a child admission hangs and then fails with 404 or 405, check:
+- the worker's plane URL, the daemon API endpoint it was started with;
+- that every API replica runs a build that serves
+  `/api/v1/engine/children/{admit,load,cancel}`.
+
 ## Remaining delivery gates
 
 Public parent→child→result execution still requires a qualified isolated backend,
