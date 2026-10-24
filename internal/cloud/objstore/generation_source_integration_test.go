@@ -322,3 +322,41 @@ func controllerRolePool(
 	t.Cleanup(pool.Close)
 	return pool
 }
+
+// A generation that is present and valid but could not be read or pinned is
+// a retry, never the permanent refusal a missing or foreign one is: the
+// pointer read and the reader pin fail here with a cancelled request and a
+// released lease (#8085 c review).
+func TestGenerationSourceOutagesAreUnavailable(t *testing.T) {
+	_, admin, store := testMetadata(t, "goobers-generation-source-outage")
+	controller := controllerRolePool(t, admin)
+	metadata, err := NewMetadataWithOptions(controller, store, MetadataOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, digest, err := configgeneration.CaptureForInstance(t.Context(), filepath.Join("..", "..", "instance", "starter"), "instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.RecordGeneration(t.Context(), "instance", digest, archive); err != nil {
+		t.Fatal(err)
+	}
+	manager, handle := controllerLease(t, controller, "generation-outage")
+	source, err := NewGenerationSource(metadata, "instance", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.BindFence(handle)
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := source.Acquire(cancelled, digest); !errors.Is(err, ErrGenerationUnavailable) || errors.Is(err, ErrGenerationNotFound) || errors.Is(err, ErrGenerationInvalid) {
+		t.Fatalf("pointer read that could not run = %v, want ErrGenerationUnavailable", err)
+	}
+	if err := manager.Release(t.Context(), handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Acquire(t.Context(), digest); !errors.Is(err, ErrGenerationUnavailable) {
+		t.Fatalf("reader pin under a released lease = %v, want ErrGenerationUnavailable", err)
+	}
+}
