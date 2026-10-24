@@ -96,6 +96,7 @@ type Generation struct {
 	digest   string
 	eligible map[string]struct{}
 	refusal  *Refusal
+	webhooks []WebhookSubscription
 	pins     map[string]Pins
 	cfg      *instance.Config
 }
@@ -133,6 +134,7 @@ func Evaluate(assess Assessor, digest string, cfg *instance.Config, set *instanc
 			g.eligible[key] = struct{}{}
 		}
 	}
+	g.webhooks = webhookSubscriptions(set, g.eligible)
 	// A finding for a workflow the set does not contain still blocks.
 	if len(blocked) > 0 {
 		g.refusal = &Refusal{Workflows: blocked}

@@ -55,6 +55,16 @@ type DurableSignaler interface {
 	AcceptWebhook(context.Context, Delivery, time.Time) ([]string, error)
 }
 
+var (
+	// ErrDeliveryConflict means a durable signaler already holds this delivery ID
+	// for a different authenticated delivery. It is a permanent identity conflict,
+	// reported as 409 rather than a retryable 503.
+	ErrDeliveryConflict = errors.New("webhook delivery ID belongs to a different delivery")
+	// ErrUnusableDelivery means an authenticated delivery lacks the metadata a
+	// durable signaler needs. It is reported as 400 and must persist nothing.
+	ErrUnusableDelivery = errors.New("webhook delivery lacks usable repository metadata")
+)
+
 // InstanceJournal records rejected deliveries without creating a run.
 type InstanceJournal interface {
 	Append(journal.Event) error
@@ -295,7 +305,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata.PayloadDigest = hex.EncodeToString(payloadHash.Sum(nil))
 	if err := h.dispatchDelivery(metadata, h.now()); err != nil {
-		http.Error(w, "durable webhook acceptance unavailable; retry the same delivery", http.StatusServiceUnavailable)
+		switch {
+		case errors.Is(err, ErrDeliveryConflict):
+			http.Error(w, "delivery ID was already used for a different delivery", http.StatusConflict)
+		case errors.Is(err, ErrUnusableDelivery):
+			h.rejectUnusablePayload(w, err)
+		default:
+			http.Error(w, "durable webhook acceptance unavailable; retry the same delivery", http.StatusServiceUnavailable)
+		}
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
