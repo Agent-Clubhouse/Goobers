@@ -56,3 +56,17 @@ func ReadRateReset(schedulerDir string) (at time.Time, ok bool, err error) {
 	}
 	return parsed, true, nil
 }
+
+// RateResetSource is implemented by a journal.InstanceStore whose rate-limit
+// reset floor does not live in a file next to its Dir (the cloud instance log
+// has no scheduler directory). The scheduler prefers it over ReadRateReset.
+type RateResetSource interface {
+	RateReset() (at time.Time, ok bool, err error)
+}
+
+func (s *Scheduler) readRateReset() (time.Time, bool, error) {
+	if source, ok := s.log.(RateResetSource); ok {
+		return source.RateReset()
+	}
+	return ReadRateReset(s.log.Dir())
+}

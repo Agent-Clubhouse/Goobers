@@ -47,6 +47,9 @@ type Runner struct {
 	ReadmodelBuilder ReadmodelBuilder
 	// StepTimeout bounds each migration step; zero uses DefaultStepTimeout.
 	StepTimeout time.Duration
+	// writePaths overrides the write-path inventory for tests that model an
+	// install made by an older binary; nil loads the current inventory.
+	writePaths func() (cloudschema.Inventory, error)
 	// Report receives non-fatal findings (a deferred partition pass); nil drops them.
 	Report func(error)
 }
@@ -79,7 +82,11 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err := ValidateCatalog(r.Catalog); err != nil {
 		return err
 	}
-	inventory, err := cloudschema.LoadWritePaths()
+	loadWritePaths := cloudschema.LoadWritePaths
+	if r.writePaths != nil {
+		loadWritePaths = r.writePaths
+	}
+	inventory, err := loadWritePaths()
 	if err != nil {
 		return err
 	}
@@ -281,9 +288,9 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 			return fmt.Errorf("bound %s: %w", label, err)
 		}
 	}
-	// Every leased step (migrations, partition indexes, read-model rebuilds,
-	// the grant reconcile) takes table locks; like migration DDL it must give
-	// up rather than queue behind a long reader, and is reported as busy.
+	// Every leased step (each migration and the grant reconcile) takes table
+	// locks; it must give up rather than queue behind a long reader, and is
+	// reported as busy.
 	if _, err := tx.Exec(stepCtx, "SELECT set_config('lock_timeout', $1, true)",
 		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
 		return fmt.Errorf("bound %s lock wait: %w", label, err)

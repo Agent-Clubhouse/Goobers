@@ -956,7 +956,7 @@ jobs:
         env:
           TESTDEP_STRICT: "1"
           GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
-        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey)|HealthStreamAndConsumerCursor|Cloud(Stall|MaxRunDuration|StaleSweeper|FailingRun|FailedTerminal))'
+        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey|StoreAdapter)|HealthStreamAndConsumerCursor|Cloud(Stall|MaxRunDuration|StaleSweeper|FailingRun|FailedTerminal))'
 
       - name: Stop Azurite
         if: always()
@@ -2450,7 +2450,7 @@ jobs:
         run: go test ./cmd/goobers -run 'TestWorkflowValidateChild|TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed|TestOTLPJournalDiagnosticRoutingMatrix|TestFleetHealthProductionExportAndLocalEvidence|TestFleetProducerThroughCollectorKeepsTenantHealthAndOwners|TestFleetUsageProductionStartupReachesStrictBackend|TestRemoteFeatureEvidenceCrossesRealJournalPlaneAndDeduplicates|TestRemoteExecutionDeadlineReachesCurrentActiveStage|TestFeatureDriversFollowAdmittedSelectionAndReload|TestFleetUsageConfiguredUnusedReloadAndRotatingCoverage'
 
       - name: Windows cloud CLI
-        run: go test ./internal/cliregistry ./internal/cloud/operatorcli ./cmd/goobers-cloud
+        run: go test ./internal/cliregistry ./internal/cloud/operatorcli ./cmd/goobers-cloud ./test/ha/kind/cmd/assemblyclassify
 
       - name: Windows shared runtime wiring
         run: go test ./internal/runtimewiring

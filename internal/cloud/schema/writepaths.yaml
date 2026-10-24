@@ -240,9 +240,20 @@ tables:
 - schema: control
   table: source_receipt
   provisioned: true
-  fence: epoch
-  rationale: The controller records one immutable receipt per source delivery inside the controller-lease fence.
+  fence: unique key
+  rationale: One immutable receipt per source delivery, unique by (instance_id, source_key). The controller records
+    schedule and signal receipts inside the controller-lease fence. An API replica records authenticated webhook
+    deliveries without a lease; its transaction serialises on the source key, so concurrent redelivery resolves to
+    one receipt.
   readers:
+  - role: goobers_api
+    columns:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
   - role: goobers_controller
     columns:
     - instance_id
@@ -252,6 +263,14 @@ tables:
     - acceptance_ids
     - accepted_at
   writers:
+  - role: goobers_api
+    insert:
+    - instance_id
+    - source_key
+    - actor
+    - fingerprint
+    - acceptance_ids
+    - accepted_at
   - role: goobers_controller
     insert:
     - instance_id
@@ -412,6 +431,58 @@ tables:
     - provider
     - external_id
     - run_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    delete: true
+- schema: control
+  table: claim_run_history
+  provisioned: true
+  fence: epoch
+  rationale: One record per run and key, as the file ledger keeps, recorded on every grant, renewal and verification and
+    completed on release; retention prunes runs that hold nothing and went quiet. All under the controller-lease fence.
+    The upserts take every column from EXCLUDED, which needs SELECT on each.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - gaggle
+    - provider
+    - external_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - gaggle
+    - provider
+    - external_id
+    - workflow
+    - owner_token
+    - owner_epoch
+    - claimed_at
+    - renewed_at
+    - expires_at
+    - released_at
+    - release_reason
+    - verification
+    update:
     - workflow
     - owner_token
     - owner_epoch
@@ -958,6 +1029,28 @@ tables:
     - last_error
     - retry_at
     - owner_epoch
+- schema: control
+  table: terminal_watermark
+  provisioned: true
+  fence: owner_token
+  rationale: The terminal awaiter records the time through which every closed run has had its terminal frame fired, under the controller-lease
+    fence. A BEFORE UPDATE trigger keeps closed_through and owner_epoch monotonic.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - closed_through
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - closed_through
+    - owner_epoch
+    update:
+    - closed_through
+    - owner_epoch
+    - updated_at
 - schema: journal
   table: run
   provisioned: true
@@ -1559,6 +1652,10 @@ tables:
     - owner_epoch
     update:
     - request_digest
+    - previous_digest
+    - action
+    - attempt_id
+    - requested_at
     - plan_digest
     - applied_at
     - owner_epoch
@@ -1574,13 +1671,31 @@ tables:
     columns:
     - instance_id
     - child_id
+    - revision
     - request_digest
     - previous_digest
-    - plan_digest
+    - action
     - result_ref
+    - attempt_id
+    - requested_at
+    - plan_digest
+    - superseded_at
     - owner_epoch
   writers:
   - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - revision
+    - request_digest
+    - previous_digest
+    - action
+    - result_ref
+    - attempt_id
+    - requested_at
+    - plan_digest
+    - superseded_at
+    - owner_epoch
     update:
     - owner_epoch
     delete: true
@@ -1607,6 +1722,146 @@ tables:
     - observed_at
     - owner_epoch
     delete: true
+- schema: telemetry
+  table: first_success_milestones
+  provisioned: true
+  fence: owner_epoch
+  rationale: Ingest upserts each instance's earliest milestones under the controller-lease fence, predicated on owner_epoch; ON CONFLICT DO UPDATE reads the stored values and needs SELECT on each column it takes from EXCLUDED.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - init_completed_at
+    - first_pr_open_at
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - init_completed_at
+    - first_pr_open_at
+    - owner_epoch
+    update:
+    - init_completed_at
+    - first_pr_open_at
+    - owner_epoch
+    - updated_at
+- schema: telemetry
+  table: defect_aggregate
+  provisioned: true
+  fence: owner_epoch
+  rationale: Ingest upserts the latest finding per aggregate key under the controller-lease fence, predicated on owner_epoch and a newer source_seq; queries page findings by window.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - workflow
+    - aggregate
+    - kind
+    - subject
+    - error_class
+    - signature
+    - observed_at
+    - finding
+    - source_stream
+    - source_seq
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - workflow
+    - aggregate
+    - kind
+    - subject
+    - error_class
+    - signature
+    - observed_at
+    - finding
+    - source_stream
+    - source_seq
+    - owner_epoch
+    update:
+    - observed_at
+    - finding
+    - source_seq
+    - owner_epoch
+- schema: telemetry
+  table: gate_total
+  provisioned: true
+  fence: owner_epoch
+  rationale: Each source stream upserts its complete per-gate evaluation totals under the controller-lease fence, predicated on owner_epoch and a per-stream source_seq watermark; the read adds the sources and derives both gate-noise kinds.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - gaggle
+    - workflow
+    - gate
+    - source_stream
+    - total
+    - non_pass
+    - escalated
+    - evaluated_runs
+    - escalated_runs
+    - observed_at
+    - source_seq
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - gaggle
+    - workflow
+    - gate
+    - source_stream
+    - total
+    - non_pass
+    - escalated
+    - evaluated_runs
+    - escalated_runs
+    - observed_at
+    - source_seq
+    - owner_epoch
+    update:
+    - total
+    - non_pass
+    - escalated
+    - evaluated_runs
+    - escalated_runs
+    - observed_at
+    - source_seq
+    - owner_epoch
+- schema: telemetry
+  table: consumer_cursor
+  provisioned: true
+  fence: owner_epoch
+  rationale: Each telemetry consumer advances its cursor in the same controller-lease fenced transaction as its writes, as an exact compare-and-swap on seq predicated on owner_epoch; FOR UPDATE locks the row.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+    - fingerprint
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+    - fingerprint
+    - owner_epoch
+    update:
+    - seq
+    - fingerprint
+    - owner_epoch
+    - updated_at
 sequences:
 - schema: control
   sequence: terminal_report_generation

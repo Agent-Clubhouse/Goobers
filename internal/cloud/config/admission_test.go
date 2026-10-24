@@ -65,8 +65,12 @@ func ineligible() map[string]apiv1.Workflow {
 	r003 := eligible()
 	r003.Name = "r003"
 	r003.DSLVersion = supportmatrix.V2DSLVersion
+	r004 := eligible()
+	r004.Name = "r004"
+	r004.Spec.Readiness.ClaimVisibility = "shared"
 	return map[string]apiv1.Workflow{
 		cloudreadiness.CodeFeature: r001, cloudreadiness.CodePlacement: r002, cloudreadiness.CodeDSL: r003,
+		cloudreadiness.CodeControlPlane: r004,
 	}
 }
 
@@ -139,8 +143,8 @@ func TestCloudConfigNamesEveryBlocker(t *testing.T) {
 		set.Workflows = append(set.Workflows, w)
 	}
 	refusal := cloudconfig.Admit(readiness.Assess, "d", denyConfig(), set)
-	if refusal == nil || len(refusal.Workflows) != 3 {
-		t.Fatalf("Admit = %+v, want 3 blocked workflows", refusal)
+	if refusal == nil || len(refusal.Workflows) != len(ineligible()) {
+		t.Fatalf("Admit = %+v, want every ineligible fixture blocked", refusal)
 	}
 }
 

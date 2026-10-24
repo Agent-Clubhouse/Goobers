@@ -1,0 +1,102 @@
+apiVersion: temporal.io/v1alpha1
+kind: WorkerDeployment
+metadata:
+  name: goobers
+  namespace: goobers-system
+spec:
+  replicas: 2
+  deployment:
+    replicas: 2
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: goobers-worker
+          app.kubernetes.io/component: worker
+          goobers.dev/role: worker
+      spec:
+        serviceAccountName: goobers-worker
+        terminationGracePeriodSeconds: 360
+        nodeSelector:
+          kubernetes.io/os: linux
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          fsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: goobers
+            command: [goobers-cloud]
+            args:
+              - worker
+              - --task-queue
+              - goobers-engine
+              - --work-root
+              - /var/lib/goobers-worker
+              - --health-addr
+              - :8081
+              - --max-concurrent-activities
+              - "4"
+              - --config-endpoint
+              - https://goobers-api.goobers-system.svc:8080
+              - --config-key-file
+              - /var/run/secrets/goobers/key
+              - --blob-endpoint
+              - https://goobers-api.goobers-system.svc:8080
+              - --daemon-api
+              - https://goobers-api.goobers-system.svc:8080
+              - --dispatch-namespace
+              - enabled
+            env:
+              - name: GOOBERS_TEMPORAL_HOSTPORT
+                value: temporal-frontend.goobers-temporal:7233
+            ports:
+              - name: health
+                containerPort: 8081
+            startupProbe:
+              httpGet: {path: /healthz, port: health}
+              periodSeconds: 10
+              failureThreshold: 180
+            readinessProbe:
+              httpGet: {path: /readyz, port: health}
+              periodSeconds: 10
+            livenessProbe:
+              httpGet: {path: /healthz, port: health}
+              periodSeconds: 15
+            volumeMounts:
+              - {name: workspaces, mountPath: /var/lib/goobers-worker}
+              - {name: config-key, mountPath: /var/run/secrets/goobers, readOnly: true}
+              - {name: harness-home, mountPath: /home/nonroot}
+              - {name: tmp, mountPath: /tmp}
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: [ALL]
+            resources:
+              requests: {cpu: 250m, memory: 512Mi}
+              limits: {cpu: "1", memory: 2Gi}
+        volumes:
+          - name: workspaces
+            emptyDir: {}
+          - name: config-key
+            secret:
+              secretName: goobers-pod-token-key
+          - name: harness-home
+            emptyDir: {}
+          - name: tmp
+            emptyDir: {sizeLimit: 1Gi}
+  rollout:
+    strategy: AllAtOnce
+  sunset:
+    scaledownDelay: 0s
+    deleteDelay: 24h
+  workerOptions:
+    connectionRef:
+      name: goobers-temporal
+    temporalNamespace: default
+    unsafeCustomBuildID: ha-nightly
