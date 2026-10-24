@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/goobers/goobers/internal/cloud/operatorcli"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/workerhost"
@@ -77,7 +79,7 @@ func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
 		return &cloudpg.Pools{}, nil
 	}
 	var backupRef string
-	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string) error {
+	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, backup, _, _ string, _ func(error)) error {
 		backupRef = backup
 		return nil
 	}
@@ -89,6 +91,31 @@ func TestMigrateApplyRequiresBackupAndRunsCatalog(t *testing.T) {
 	code, stdout, stderr := runForTest("migrate", "apply")
 	if code != 0 || stderr != "" || backupRef != "pitr:2026-10-22T20:00:00Z" {
 		t.Fatalf("migrate: code=%d stdout=%q stderr=%q backup=%q", code, stdout, stderr, backupRef)
+	}
+}
+
+// A partition pass deferred by an ATTACH lock timeout must be visible in the
+// migrate Job's logs, not swallowed.
+func TestMigrateApplyPrintsDeferredPartitionWarning(t *testing.T) {
+	originalPools, originalRun, originalSignal := newCloudPools, runCloudMigrations, signalContext
+	t.Cleanup(func() {
+		newCloudPools, runCloudMigrations, signalContext = originalPools, originalRun, originalSignal
+	})
+	t.Setenv("GOOBERS_DATABASE_DIRECT_URL", "postgres://localhost/goobers")
+	t.Setenv("GOOBERS_INSTANCE_ID", "test-instance")
+	t.Setenv("GOOBERS_MIGRATION_BACKUP_REF", "pitr:test")
+	signalContext = func() (context.Context, func()) { return context.Background(), func() {} }
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) { return &cloudpg.Pools{}, nil }
+	runCloudMigrations = func(_ context.Context, _ *cloudpg.Pools, _, _, _ string, report func(error)) error {
+		if report == nil {
+			t.Fatal("migrate must pass a Report so deferred partition passes are visible")
+		}
+		report(&pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"})
+		return nil
+	}
+	code, _, stderr := runForTest("migrate", "apply")
+	if code != 0 || !strings.Contains(stderr, "warning: partition maintenance deferred to the periodic job") || !strings.Contains(stderr, "55P03") {
+		t.Fatalf("migrate: code=%d stderr=%q, want the deferral warning", code, stderr)
 	}
 }
 

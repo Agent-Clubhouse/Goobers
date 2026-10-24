@@ -627,22 +627,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if gerr != nil {
 				return gateEvaluationFailed(ctx, rec, g.Name, gerr, upstream, steps)
 			}
-			// #3384: the patch the reviewer judged, committed as an artifact
-			// and surfaced as the "<gate>.diff" pointer. These are the same
-			// bytes the activity already placed in the reviewer's envelope, so
-			// the pointer the reviewer read and the blob the journal holds are
-			// one object rather than two that agree.
-			gatePointers := pointers
-			if len(review.Diff) > 0 {
-				diffPointer, derr := rec.recordReviewerDiff(ctx, in.RunID, g.Name, review.Diff)
-				if derr != nil {
-					return RunResult{}, derr
-				}
-				if diffPointer != nil {
-					pointers = append(pointers, *diffPointer)
-					gatePointers = pointers
-				}
+			// Adopt the pointer committed before review. An N-1 history still
+			// records its returned diff here, in the original command order.
+			gatePointers, derr := rec.reviewerEvidencePointers(ctx, in.RunID, g.Name, review, pointers)
+			if derr != nil {
+				return RunResult{}, derr
 			}
+			pointers = gatePointers
 			// #3843, BEFORE the outcome is resolved: both finding
 			// transitions can turn a needs-changes verdict into a pass, so
 			// reconciling afterwards would route the run on a decision the
@@ -1162,6 +1153,10 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		} else {
 			ctx = stageActivityContext(ctx, env.Limits)
 		}
+		preparedPointer, err := rec.prepareReviewerDiff(ctx, &env, workspaceBranch, workspaceDelta, g.EffectiveWorkspace(), ev.RequireDiff)
+		if err != nil {
+			return "", nil, GateReviewResult{}, err
+		}
 		// The pod attempt this marker precedes: gateDispatches[g.Name]+1 is
 		// exactly what the retry closure's gatePodAttempt call below will
 		// claim on its first pass — read here without mutating the counter,
@@ -1217,6 +1212,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
+		}
+		if env.PreparedReviewerDiff != nil {
+			review.Prepared, review.PreparedDiff, review.Diff = true, preparedPointer, nil
+			if preparedPointer != nil {
+				review.DiffDigest = preparedPointer.Artifact.Digest
+			}
 		}
 		verdict := review.Verdict
 		return string(verdict.Decision), &verdict, review, nil

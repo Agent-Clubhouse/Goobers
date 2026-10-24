@@ -97,6 +97,7 @@ type Generation struct {
 	eligible map[string]struct{}
 	refusal  *Refusal
 	webhooks []WebhookSubscription
+	pins     map[string]Pins
 }
 
 // Digest identifies the generation the assessment was computed for.

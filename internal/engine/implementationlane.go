@@ -49,9 +49,9 @@ import (
 // differently from the runner and the conformance diff would be the first
 // thing to notice.
 //
-// Artifact bytes are inline in JournalArtifactOp.Data, so the resolver is a
-// digest lookup with no I/O — and, unlike the runner's, it cannot fail for an
-// artifact this run recorded.
+// Inline artifact bytes resolve by digest with no I/O. Recorder receipts and
+// outbox artifacts carry only references; their events project normally, but
+// resolving bytes not present in workflow history fails closed.
 func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref) ([]byte, error), error) {
 	events := make([]journal.Event, 0, len(proj.Ops))
 	byName := map[string]journal.Ref{}
@@ -66,11 +66,11 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			}
 			var ref journal.Ref
 			if a.Ref != nil {
-				ref = *a.Ref
-				if a.OutboxRelPath == "" || a.OutboxOccurrence == 0 {
-					return nil, nil, fmt.Errorf("engine: referenced artifact %q is not an outbox file", a.Name)
+				var err error
+				ref, err = projectedArtifactRef(*a)
+				if err != nil {
+					return nil, nil, err
 				}
-				ref.Path = path.Join("artifacts", "outbox", a.Stage, fmt.Sprintf("attempt-%d", a.Attempt), fmt.Sprintf("occurrence-%d", a.OutboxOccurrence), a.OutboxRelPath)
 			} else {
 				var err error
 				ref, err = journal.ArtifactRef(a.Data)
@@ -127,6 +127,26 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 		return nil, fmt.Errorf("engine: artifact %q is not in this run's projection", ref.Path)
 	}
 	return events, resolve, nil
+}
+
+// Receipt references retain their canonical CAS identity. Outbox references
+// instead project to their occurrence-scoped logical path, as before. Neither
+// contains inline bytes: consumers may describe the ref, but resolving bytes
+// not carried in history still fails closed through projectedEvents' resolver.
+func projectedArtifactRef(a JournalArtifactOp) (journal.Ref, error) {
+	ref := *a.Ref
+	if a.OutboxRelPath != "" || a.OutboxOccurrence != 0 {
+		if a.OutboxRelPath == "" || a.OutboxOccurrence == 0 {
+			return journal.Ref{}, fmt.Errorf("engine: incomplete outbox artifact %q", a.Name)
+		}
+		ref.Path = path.Join("artifacts", "outbox", a.Stage, fmt.Sprintf("attempt-%d", a.Attempt), fmt.Sprintf("occurrence-%d", a.OutboxOccurrence), a.OutboxRelPath)
+		return ref, nil
+	}
+	canonical, err := journal.ArtifactPath(ref.Digest)
+	if err != nil || ref.Path != canonical || ref.Size < 0 || !ref.Integrity.Valid() {
+		return journal.Ref{}, fmt.Errorf("engine: invalid referenced artifact %q", a.Name)
+	}
+	return ref, nil
 }
 
 // projectedArtifactBytes adapts the same projection to internal/gate's
