@@ -55,11 +55,13 @@ type closedSet struct {
 	mu     sync.Mutex
 	closed map[string]bool
 	err    error
+	reads  int
 }
 
 func (c *closedSet) check(_ context.Context, _ string, _ providers.RepositoryRef, item string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reads++
 	return c.closed[item], c.err
 }
 
@@ -70,7 +72,7 @@ func TestAClosedBlockerCannotFormAFalseCycle(t *testing.T) {
 	manager := pgtest.ControllerManager(t, pool, "leader", 0)
 	handle := pgtest.Acquire(t, manager)
 	closed := &closedSet{closed: map[string]bool{}}
-	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, RetryDelays: []time.Duration{time.Millisecond}}
 	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
 		t.Fatal(err)
 	}
@@ -133,29 +135,78 @@ func TestHealForgetsClosedItemsAndTheirTrailAndIsFenced(t *testing.T) {
 	}
 }
 
-// When the read budget is spent before the cycle's members are verified, nothing
-// is escalated yet: the block is recorded, no cycle is reported, and the caller
-// is told verification was deferred.
-func TestACycleWithAnUnverifiedMemberIsNotEscalatedWhenTheBudgetIsSpent(t *testing.T) {
+// When the read budget is spent before the cycle's members are verified, the
+// cycle is NOT parked silently: nothing would ever re-run the decision, so it is
+// escalated, with the unverified members named.
+func TestACycleUnderASpentBudgetIsEscalatedLabelledUnverified(t *testing.T) {
 	pool := pgtest.Pool(t, "brpg")
 	manager := pgtest.ControllerManager(t, pool, "leader", 0)
 	handle := pgtest.Acquire(t, manager)
 	closed := &closedSet{closed: map[string]bool{}}
-	budget := true
-	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Reserve: func(providers.ProviderKind) bool { return budget }}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Reserve: func(providers.ProviderKind) bool { return false }}
 	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
 		t.Fatal(err)
 	}
-	budget = false
 	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
-	if !errors.Is(err, blockedrecordspg.ErrVerificationDeferred) || len(cycle.Affected) != 0 {
-		t.Fatalf("cycle %+v, err %v; want no cycle and ErrVerificationDeferred", cycle, err)
-	}
-	// The block IS recorded, so the cycle is seen again once the budget returns.
-	budget = true
-	cycle, err = store.RecordBlock(t.Context(), handle, block("2", "1"))
 	if err != nil || len(cycle.Affected) != 2 {
-		t.Fatalf("after the budget returned: cycle %+v, err %v; want the verified 2-member cycle", cycle, err)
+		t.Fatalf("cycle %+v, err %v; want the two-member cycle escalated", cycle, err)
+	}
+	if len(cycle.Unverified) != 2 || !strings.Contains(cycle.Unverified[0], "unverifiable: rate limited") {
+		t.Fatalf("notes = %q; want both members labelled unverifiable", cycle.Unverified)
+	}
+	if closed.reads != 0 {
+		t.Fatalf("the provider was read %d times with no budget", closed.reads)
+	}
+}
+
+// A retryable failure is retried inline, then the cycle is escalated with the
+// member named; a recovery on a retry gives a plain verified answer.
+func TestARetryableFailureIsRetriedInlineThenEscalated(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	closed := &closedSet{closed: map[string]bool{}, err: errors.New("GET /issues/2 failed: status 503: unavailable")}
+	delays := []time.Duration{time.Millisecond, time.Millisecond}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, RetryDelays: delays}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	closed.reads = 0
+	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 {
+		t.Fatalf("cycle %+v, err %v; want the cycle escalated after the retries", cycle, err)
+	}
+	// Both members fail: each is read once plus once per retry delay.
+	if want := 2 * (1 + len(delays)); closed.reads != want {
+		t.Fatalf("reads = %d, want %d (every member, then the retries)", closed.reads, want)
+	}
+	if len(cycle.Unverified) != 2 || !strings.Contains(cycle.Unverified[0], "unverifiable: provider unavailable") {
+		t.Fatalf("notes = %q", cycle.Unverified)
+	}
+	// The provider recovers: the same block now verifies cleanly.
+	closed.err = nil
+	cycle, err = store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) != 0 {
+		t.Fatalf("after recovery: cycle %+v, err %v; want a verified cycle with no notes", cycle, err)
+	}
+}
+
+func TestAPermanentVerificationFailureEscalatesAtOnceWithoutRetries(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	closed := &closedSet{closed: map[string]bool{}, err: &blockedrecordspg.VerifyError{Class: "not found", Permanent: true, Message: "[REDACTED]"}}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, RetryDelays: []time.Duration{time.Millisecond, time.Millisecond}}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
+		t.Fatal(err)
+	}
+	closed.reads = 0
+	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) == 0 || !strings.Contains(cycle.Unverified[0], "unverifiable: not found") {
+		t.Fatalf("permanent failure: cycle %+v, err %v; want an immediate escalation naming the reason", cycle, err)
+	}
+	if closed.reads != 2 {
+		t.Fatalf("reads = %d, want one per member and no retries", closed.reads)
 	}
 }
 
@@ -179,57 +230,5 @@ func TestRecordBlockIgnoresTheHealBackoff(t *testing.T) {
 	}
 	if !backoff.Allowed(node) {
 		t.Fatal("the verification did not clear the item's backoff")
-	}
-}
-
-// A member the provider cannot answer holds the cycle while the failure may be
-// transient, then the cycle is escalated with that member named; a failure that
-// can never succeed escalates at once.
-func TestAnUnverifiableMemberHoldsTheCycleThenEscalatesWithANote(t *testing.T) {
-	pool := pgtest.Pool(t, "brpg")
-	manager := pgtest.ControllerManager(t, pool, "leader", 0)
-	handle := pgtest.Acquire(t, manager)
-	now := time.Now()
-	backoff := &blockedrecordspg.Backoff{Now: func() time.Time { return now }}
-	closed := &closedSet{closed: map[string]bool{}, err: errors.New("GET /issues/2 failed: status 503: unavailable")}
-	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Backoff: backoff}
-	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
-		t.Fatal(err)
-	}
-	// First failure: held, nothing escalated.
-	if cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1")); !errors.Is(err, blockedrecordspg.ErrVerificationDeferred) || len(cycle.Affected) != 0 {
-		t.Fatalf("first failed verification: cycle %+v, err %v; want held", cycle, err)
-	}
-	// A second attempt inside the hold is still held.
-	now = now.Add(blockedrecordspg.UnverifiedHold / 2)
-	if _, err := store.RecordBlock(t.Context(), handle, block("2", "1")); !errors.Is(err, blockedrecordspg.ErrVerificationDeferred) {
-		t.Fatalf("second attempt inside the hold = %v, want held", err)
-	}
-	// Past the hold, with at least two attempts: escalated, member named.
-	now = now.Add(blockedrecordspg.UnverifiedHold)
-	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
-	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) == 0 || !strings.Contains(cycle.Unverified[0], "unverifiable: provider unavailable") {
-		t.Fatalf("after the hold: cycle %+v, err %v; want the cycle escalated naming the unverifiable member", cycle, err)
-	}
-	// Recovery clears the failures: a verified-open member escalates plainly.
-	closed.err = nil
-	cycle, err = store.RecordBlock(t.Context(), handle, block("2", "1"))
-	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) != 0 {
-		t.Fatalf("after recovery: cycle %+v, err %v; want a verified cycle with no notes", cycle, err)
-	}
-}
-
-func TestAPermanentVerificationFailureEscalatesAtOnce(t *testing.T) {
-	pool := pgtest.Pool(t, "brpg")
-	manager := pgtest.ControllerManager(t, pool, "leader", 0)
-	handle := pgtest.Acquire(t, manager)
-	closed := &closedSet{closed: map[string]bool{}, err: &blockedrecordspg.VerifyError{Class: "not found", Permanent: true, Message: "[REDACTED]"}}
-	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check, Backoff: &blockedrecordspg.Backoff{}}
-	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
-		t.Fatal(err)
-	}
-	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
-	if err != nil || len(cycle.Affected) != 2 || len(cycle.Unverified) == 0 || !strings.Contains(cycle.Unverified[0], "unverifiable: not found") {
-		t.Fatalf("permanent failure: cycle %+v, err %v; want an immediate escalation naming the reason", cycle, err)
 	}
 }

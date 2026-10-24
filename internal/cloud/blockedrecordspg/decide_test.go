@@ -39,78 +39,64 @@ func TestClassifyTellsRetryableFromPermanent(t *testing.T) {
 	}
 }
 
-func TestBackoffKeepsTheFirstFailureUntilTheItemVerifies(t *testing.T) {
-	now := time.Unix(1000, 0)
-	b := &Backoff{Now: func() time.Time { return now }}
-	n := node(providers.ProviderGitHub, "7")
-	if attempts, first := b.Failures(n); attempts != 0 || !first.IsZero() {
-		t.Fatalf("fresh node failures = %d at %v", attempts, first)
+func TestVerifyCycleRetriesARetryableFailureInlineAndStopsOnPermanentOnes(t *testing.T) {
+	a, b := node(providers.ProviderGitHub, "1"), node(providers.ProviderGitHub, "2")
+	delays := []time.Duration{time.Millisecond, time.Millisecond}
+
+	// A transient failure that recovers on a retry is verified.
+	p := &probe{closed: map[string]bool{"1": true}, failing: map[string]bool{"1": true}}
+	reads := 0
+	store := Store{RetryDelays: delays, Closed: func(ctx context.Context, run string, repo providers.RepositoryRef, id string) (bool, error) {
+		reads++
+		if reads == 2 {
+			p.failing["1"] = false
+		}
+		return p.closedFunc(ctx, run, repo, id)
+	}}
+	closed, skipped, unverifiable := store.verifyCycle(t.Context(), nil, []blockedcycle.Node{a}, "run")
+	if len(closed) != 1 || len(skipped) != 0 || len(unverifiable) != 0 || reads != 2 {
+		t.Fatalf("recovering retry: closed %v skipped %v unverifiable %v after %d reads", closed, skipped, unverifiable, reads)
 	}
-	b.Failed(n)
-	started := now
-	now = now.Add(30 * time.Minute)
-	b.Failed(n)
-	if attempts, first := b.Failures(n); attempts != 2 || !first.Equal(started) {
-		t.Fatalf("failures = %d first %v; want 2, first kept at %v", attempts, first, started)
+
+	// A failure that persists is read once plus once per delay, then reported.
+	p = &probe{failing: map[string]bool{"1": true}}
+	store = Store{RetryDelays: delays, Closed: p.closedFunc}
+	closed, _, unverifiable = store.verifyCycle(t.Context(), nil, []blockedcycle.Node{a}, "run")
+	if len(closed) != 0 || len(unverifiable) != 1 || len(p.calls) != 1+len(delays) {
+		t.Fatalf("persistent failure: closed %v unverifiable %v after %d reads, want %d", closed, unverifiable, len(p.calls), 1+len(delays))
 	}
-	b.Verified(n)
-	if attempts, first := b.Failures(n); attempts != 0 || !first.IsZero() {
-		t.Fatalf("a verified node kept failures %d at %v", attempts, first)
+
+	// A permanent failure is never retried.
+	perm := 0
+	store = Store{RetryDelays: delays, Closed: func(context.Context, string, providers.RepositoryRef, string) (bool, error) {
+		perm++
+		return false, &VerifyError{Class: "not found", Permanent: true, Message: "gone"}
+	}}
+	_, _, unverifiable = store.verifyCycle(t.Context(), nil, []blockedcycle.Node{a, b}, "run")
+	if perm != 2 || len(unverifiable) != 2 || !unverifiable[0].Permanent {
+		t.Fatalf("permanent failures: %d reads, %v; want each read once", perm, unverifiable)
 	}
-	var none *Backoff
-	if attempts, _ := none.Failures(n); attempts != 0 {
-		t.Fatal("a nil Backoff reported failures")
+
+	// Only the failing member is re-read, and a cancelled context ends the waiting.
+	p = &probe{closed: map[string]bool{"2": true}, failing: map[string]bool{"1": true}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	store = Store{RetryDelays: []time.Duration{time.Hour}, Closed: p.closedFunc}
+	closed, _, unverifiable = store.verifyCycle(ctx, nil, []blockedcycle.Node{a, b}, "run")
+	if len(closed) != 1 || closed[0] != b || len(unverifiable) != 1 || len(p.calls) != 2 {
+		t.Fatalf("cancelled wait: closed %v unverifiable %v reads %v; want no retry and no hang", closed, unverifiable, p.calls)
 	}
 }
 
-func TestDecideEscalatesOnlyWhatIsVerifiedOrBoundedlyUnverifiable(t *testing.T) {
-	now := time.Unix(1000, 0)
-	clock := func() time.Time { return now }
-	cycle := blockedcycle.Result{Affected: []blockedcycle.Node{node(providers.ProviderGitHub, "1"), node(providers.ProviderGitHub, "2")}}
-	member := cycle.Affected[1]
-
-	store := Store{Backoff: &Backoff{Now: clock}}
-	// Verified cycle: escalate, no notes.
-	if got, err := store.decide(cycle, false, nil); err != nil || len(got.Affected) != 2 || len(got.Unverified) != 0 {
-		t.Fatalf("verified cycle: %+v, %v", got, err)
+func TestUnverifiedNotesNameEveryUnconfirmedMember(t *testing.T) {
+	notes := unverifiedNotes(
+		[]blockedcycle.Node{node(providers.ProviderGitHub, "3")},
+		[]unverified{{Node: node(providers.ProviderGitHub, "4"), Class: "not found"}})
+	want := []string{"#3: unverifiable: rate limited (provider read budget spent)", "#4: unverifiable: not found"}
+	if len(notes) != 2 || notes[0] != want[0] || notes[1] != want[1] {
+		t.Fatalf("notes = %q, want %q", notes, want)
 	}
-	// A spent read budget defers; nothing is escalated.
-	if got, err := store.decide(cycle, true, nil); !errors.Is(err, ErrVerificationDeferred) || len(got.Affected) != 0 {
-		t.Fatalf("budget spent: %+v, %v", got, err)
-	}
-	// A permanent failure escalates at once, naming the member and why.
-	permanent := []unverified{{Node: member, Class: "not found", Permanent: true}}
-	if got, err := store.decide(cycle, false, permanent); err != nil || len(got.Affected) != 2 || len(got.Unverified) != 1 || got.Unverified[0] != "#2: unverifiable: not found" {
-		t.Fatalf("permanent failure: %+v, %v", got, err)
-	}
-	// A retryable failure is held: once failed, not until 2 attempts AND 1h.
-	retry := []unverified{{Node: member, Class: "rate limited"}}
-	store.Backoff.Failed(member)
-	if _, err := store.decide(cycle, false, retry); !errors.Is(err, ErrVerificationDeferred) {
-		t.Fatalf("first failure = %v, want deferred", err)
-	}
-	now = now.Add(2 * UnverifiedHold)
-	if _, err := store.decide(cycle, false, retry); !errors.Is(err, ErrVerificationDeferred) {
-		t.Fatalf("one attempt, long ago = %v, want deferred (needs %d attempts)", err, MinAttempts)
-	}
-	store.Backoff.Failed(member)
-	if got, err := store.decide(cycle, false, retry); err != nil || len(got.Affected) != 2 || got.Unverified[0] != "#2: unverifiable: rate limited" {
-		t.Fatalf("two attempts over the hold: %+v, %v; want the cycle escalated with the member named", got, err)
-	}
-	// Two attempts but inside the hold: still deferred.
-	fresh := Store{Backoff: &Backoff{Now: clock}}
-	fresh.Backoff.Failed(member)
-	fresh.Backoff.Failed(member)
-	if _, err := fresh.decide(cycle, false, retry); !errors.Is(err, ErrVerificationDeferred) {
-		t.Fatalf("two quick attempts = %v, want deferred until the hour passes", err)
-	}
-	// One member held keeps the whole cycle held even beside a permanent one.
-	mixed := append([]unverified{{Node: cycle.Affected[0], Class: "forbidden", Permanent: true}}, retry...)
-	if _, err := fresh.decide(cycle, false, mixed); !errors.Is(err, ErrVerificationDeferred) {
-		t.Fatalf("a held member beside a permanent one = %v, want deferred", err)
-	}
-	// Without a backoff there is nothing to wait on.
-	if got, err := (Store{}).decide(cycle, false, retry); err != nil || len(got.Unverified) != 1 {
-		t.Fatalf("no backoff: %+v, %v", got, err)
+	if len(unverifiedNotes(nil, nil)) != 0 {
+		t.Fatal("a fully verified cycle carries notes")
 	}
 }

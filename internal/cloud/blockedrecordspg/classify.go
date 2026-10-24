@@ -4,20 +4,10 @@ import (
 	"context"
 	"errors"
 	"regexp"
-	"time"
 
 	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/providers"
-)
-
-// UnverifiedHold is how long a retryable verification failure defers a cycle's
-// escalation, counted from the member's first failed verification (and only once
-// it has failed at least MinAttempts times). A cycle the provider cannot confirm
-// is escalated with that stated, not held forever.
-const (
-	UnverifiedHold = time.Hour
-	MinAttempts    = 2
 )
 
 // unverified is a cycle member whose open state could not be confirmed.
@@ -26,8 +16,8 @@ type unverified struct {
 	// Class names why, for the escalation comment ("rate limited", "not found").
 	Class string
 	// Permanent failures can never succeed on retry (the repository is not
-	// configured, the credential is refused, the item is gone): the cycle is
-	// escalated at once. Retryable ones are held for UnverifiedHold.
+	// configured, the credential is refused, the item is gone) and are not retried;
+	// retryable ones are re-read inline a bounded number of times.
 	Permanent bool
 }
 

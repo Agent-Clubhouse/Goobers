@@ -24,13 +24,6 @@ import (
 // rather than detect against a truncated graph.
 const MaxRecords = 100_000
 
-// ErrVerificationDeferred means a cycle's members could not all be verified
-// because the provider read budget was spent. The block is recorded, but no cycle
-// is reported: escalating needs-human on an unverified cycle could stop work on
-// items that are no longer blocked. The cycle is looked at again the next time any
-// member's block is recorded.
-var ErrVerificationDeferred = errors.New("blocked-record cycle verification deferred: provider read budget spent")
-
 // ClosedFunc reports whether an item is VERIFIED closed on the provider. Only a
 // definite "closed" is true; an error means unknown and the record is kept.
 // runID is the run whose record names the item (the writer resolves the
@@ -51,6 +44,21 @@ type Store struct {
 	// Backoff keeps an item that cannot be verified from being retried on every
 	// pass. Nil retries every time.
 	Backoff *Backoff
+	// RetryDelays are the waits before each inline retry of a retryable
+	// verification failure while a block is being decided (default 5s then 15s,
+	// inside the caller's record timeout).
+	RetryDelays []time.Duration
+}
+
+// DefaultRetryDelays are the inline waits before re-reading a member whose
+// verification failed in a way that may be transient.
+var DefaultRetryDelays = []time.Duration{5 * time.Second, 15 * time.Second}
+
+func (s Store) retryDelays() []time.Duration {
+	if s.RetryDelays != nil {
+		return s.RetryDelays
+	}
+	return DefaultRetryDelays
 }
 
 // Backoff delays re-verifying an item whose last verification failed, doubling
@@ -67,9 +75,7 @@ type Backoff struct {
 
 type backoffState struct {
 	failures int
-	// first is when the item first failed verification, kept until it verifies.
-	first time.Time
-	until time.Time
+	until    time.Time
 }
 
 func (b *Backoff) now() time.Time {
@@ -108,27 +114,12 @@ func (b *Backoff) Failed(node blockedcycle.Node) {
 	}
 	st := b.state[node]
 	st.failures++
-	if st.first.IsZero() {
-		st.first = b.now()
-	}
 	delay := base
 	for i := 1; i < st.failures && delay < limit; i++ {
 		delay *= 2
 	}
 	st.until = b.now().Add(min(delay, limit))
 	b.state[node] = st
-}
-
-// Failures reports how many times node has failed verification since it last
-// verified, and when it first failed.
-func (b *Backoff) Failures(node blockedcycle.Node) (attempts int, first time.Time) {
-	if b == nil {
-		return 0, time.Time{}
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	st := b.state[node]
-	return st.failures, st.first
 }
 
 // Retain drops the state of every node not in live, so entries for items that no
@@ -159,34 +150,33 @@ func (b *Backoff) Verified(node blockedcycle.Node) {
 // RecordBlock replaces the item's record and returns the dependency cycle it
 // closes, if any. The cycle is returned even when persisting fails after
 // detection, as parking.State requires.
+//
+// A cycle is verified before it is escalated: a member whose item is closed is
+// forgotten, and a cycle through it is false. A member that cannot be verified is
+// never silently trusted and never silently held. Nothing re-runs this decision
+// later (a failed frame retries only its claim release), so holding a cycle would
+// leave its members parked blocked-on-sibling with no one to escalate them. Instead
+// a retryable failure is retried inline, within the caller's record timeout, and a
+// cycle still unverified after that (or after a spent read budget, or a permanent
+// failure) is ESCALATED with the unverifiable members named in its comment, so a
+// human sees it and knows what was not confirmed.
 func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
 	cycle, err := s.record(ctx, handle, b)
 	if err != nil || len(cycle.Affected) == 0 || s.Closed == nil {
 		return cycle, err
 	}
-	// A cycle through a closed item is false: a stale record would escalate
-	// non-cyclic items needs-human. Verify the members outside any transaction,
-	// forget the closed ones and look again, until the cycle is real or gone. This
-	// path does not honour the heal backoff (a block is being decided now), but it
-	// does account its reads; if the read budget is spent before every member is
-	// verified, nothing is escalated yet.
+	// This path does not honour the heal backoff (a block is being decided now),
+	// but it accounts its reads.
 	key := blockedrecords.Key(b.Repository, b.ItemID)
-	// The loop is bounded by the cycle's size, so it normally ends by the cycle
-	// disappearing or a pass with nothing to forget. If the bound is ever reached
-	// after a pass that closed some members and left others unchecked, the last
-	// pass's deferral and unverifiable members decide the answer: the cycle is
-	// never handed back as if it were verified.
-	var deferred bool
-	var lastUnverified []unverified
 	for range cycle.Affected {
 		recs, serr := s.snapshot(ctx, handle)
 		if serr != nil {
 			return cycle, serr
 		}
-		closed, passDeferred, unverified := s.closedNodes(ctx, recs, cycle.Affected, b.RunID, false)
-		deferred, lastUnverified = passDeferred, unverified
+		closed, skipped, unverifiable := s.verifyCycle(ctx, recs, cycle.Affected, b.RunID)
 		if len(closed) == 0 {
-			return s.decide(cycle, passDeferred, unverified)
+			cycle.Unverified = unverifiedNotes(skipped, unverifiable)
+			return cycle, nil
 		}
 		if ferr := s.Forget(ctx, handle, closed); ferr != nil {
 			return cycle, ferr
@@ -199,38 +189,73 @@ func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.
 			return cycle, nil
 		}
 	}
-	return s.decide(cycle, deferred, lastUnverified)
-}
-
-// decide turns a verification pass into the answer RecordBlock gives. A cycle
-// whose read budget ran out is deferred, never escalated unverified. A member the
-// provider could not answer is held (deferred) while its failure may be transient,
-// until it has failed at least MinAttempts times over UnverifiedHold; after that, or
-// at once for a failure that can never succeed, the cycle is escalated with the
-// unverifiable members named in its comment, so a human knows what was not checked.
-func (s Store) decide(cycle blockedcycle.Result, deferred bool, unv []unverified) (blockedcycle.Result, error) {
-	if deferred {
-		return blockedcycle.Result{}, ErrVerificationDeferred
-	}
-	var notes []string
-	for _, u := range unv {
-		if !u.Permanent && !s.ripe(u.Node) {
-			return blockedcycle.Result{}, ErrVerificationDeferred
-		}
-		notes = append(notes, "#"+u.Node.ItemID+": unverifiable: "+u.Class)
+	// The loop is bounded by the cycle's size and every pass removes a member, so
+	// this is not reached in practice. If it is, the members the last pass never
+	// read are unverified, not verified.
+	notes := make([]string, 0, len(cycle.Affected))
+	for _, node := range cycle.Affected {
+		notes = append(notes, "#"+node.ItemID+": unverifiable: not re-checked")
 	}
 	cycle.Unverified = notes
 	return cycle, nil
 }
 
-// ripe reports whether a retryable failure has been held long enough. Without a
-// backoff to track it there is nothing to wait on.
-func (s Store) ripe(node blockedcycle.Node) bool {
-	if s.Backoff == nil {
+// verifyCycle reads the members and retries retryable failures inline. It returns
+// the members verified closed, the members never read (the provider's read budget
+// was spent), and the members still unverifiable.
+func (s Store) verifyCycle(ctx context.Context, recs map[string]blockedrecords.Record, members []blockedcycle.Node, fallbackRun string) (closed, skipped []blockedcycle.Node, unverifiable []unverified) {
+	closed, skipped, failed := s.closedNodes(ctx, recs, members, fallbackRun, false)
+	for _, delay := range s.retryDelays() {
+		var retry []blockedcycle.Node
+		for _, u := range failed {
+			if !u.Permanent {
+				retry = append(retry, u.Node)
+			}
+		}
+		if len(retry) == 0 || !wait(ctx, delay) {
+			break
+		}
+		again, notRead, remaining := s.closedNodes(ctx, recs, retry, fallbackRun, false)
+		closed = append(closed, again...)
+		skipped = append(skipped, notRead...)
+		failed = append(keepPermanent(failed), remaining...)
+	}
+	return closed, skipped, failed
+}
+
+// keepPermanent returns the failures that retrying cannot help.
+func keepPermanent(failed []unverified) []unverified {
+	var kept []unverified
+	for _, u := range failed {
+		if u.Permanent {
+			kept = append(kept, u)
+		}
+	}
+	return kept
+}
+
+// wait sleeps for d, and reports false if ctx ended first.
+func wait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
 		return true
 	}
-	attempts, first := s.Backoff.Failures(node)
-	return attempts >= MinAttempts && !first.IsZero() && s.Backoff.now().Sub(first) >= UnverifiedHold
+}
+
+// unverifiedNotes names the members an escalated cycle could not confirm.
+func unverifiedNotes(skipped []blockedcycle.Node, failed []unverified) []string {
+	var notes []string
+	for _, node := range skipped {
+		notes = append(notes, "#"+node.ItemID+": unverifiable: rate limited (provider read budget spent)")
+	}
+	for _, u := range failed {
+		notes = append(notes, "#"+u.Node.ItemID+": unverifiable: "+u.Class)
+	}
+	return notes
 }
 
 func (s Store) record(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
@@ -361,15 +386,15 @@ func runIDs(recs map[string]blockedrecords.Record) map[blockedcycle.Node]string 
 	return nodes
 }
 
-// closedNodes returns the candidates verified closed, whether any candidate went
-// unchecked because its provider's read budget was spent, and the candidates whose
-// read failed (with why). An unverifiable
+// closedNodes returns the candidates verified closed, the candidates left unread
+// because their provider's read budget was spent, and the candidates whose read
+// failed (with why). An unverifiable
 // candidate is kept: a record is only dropped on positive evidence. With
 // honourBackoff, an item that recently failed verification is skipped (the heal
 // sweep); the outcome of every check updates the backoff either way. A provider
 // whose budget is spent is skipped for the rest of the pass, but other providers'
 // items are still checked.
-func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.Record, candidates []blockedcycle.Node, fallbackRun string, honourBackoff bool) (closed []blockedcycle.Node, deferred bool, unverifiable []unverified) {
+func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.Record, candidates []blockedcycle.Node, fallbackRun string, honourBackoff bool) (closed, skipped []blockedcycle.Node, unverifiable []unverified) {
 	runs := runIDs(recs)
 	spent := map[providers.ProviderKind]bool{}
 	for _, node := range candidates {
@@ -378,12 +403,12 @@ func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.R
 		}
 		provider := node.Repository.Provider
 		if spent[provider] {
-			deferred = true
+			skipped = append(skipped, node)
 			continue
 		}
 		if s.Reserve != nil && !s.Reserve(provider) {
 			spent[provider] = true
-			deferred = true
+			skipped = append(skipped, node)
 			continue
 		}
 		run := runs[node]
@@ -402,7 +427,7 @@ func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.R
 			closed = append(closed, node)
 		}
 	}
-	return closed, deferred, unverifiable
+	return closed, skipped, unverifiable
 }
 
 // Forget drops what a closed item leaves behind: its own record, and its
