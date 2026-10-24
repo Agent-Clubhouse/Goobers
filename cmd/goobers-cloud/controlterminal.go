@@ -14,6 +14,7 @@ import (
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/sharedclaims"
 	"github.com/goobers/goobers/internal/cloud/terminalawait"
 	"github.com/goobers/goobers/internal/cloud/terminalcompose"
 	"github.com/goobers/goobers/internal/cloud/terminalwriter"
@@ -81,8 +82,8 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		return nil
 	}
 	provider := p.provider
-	if provider == nil {
-		return failedTerminalPart(errors.New("terminal hooks require the control provider writer"))
+	if provider == nil || p.sharedRegistry == nil {
+		return failedTerminalPart(errors.New("terminal hooks require the control provider writer and shared repository registry"))
 	}
 	runs, backends, writer, registrar := provider.runs, provider.backends, provider.writer, provider.scrubber
 	return func(ctx context.Context, fence *lease.Manager, handle *lease.Handle) (terminalEpoch, error) {
@@ -95,7 +96,7 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		if err != nil {
 			return terminalEpoch{}, err
 		}
-		// The sweep's escalation is the one credentialed write outside a run: it
+		// Instance-level escalation and shared labels use this same writer, which
 		// journals every write to the epoch's fenced log before making it.
 		escalator, err := terminalwriter.NewInstanceWriter(func() (*instance.ConfigSet, string, bool) {
 			candidate, ok := owner.Applied()
@@ -131,13 +132,17 @@ func terminalPart(db databaseServices, p *controlPlanes) func(ctx context.Contex
 		// awaiters withdraw it when the epoch stops.
 		status := comp.Delivery.Status
 		terminalStatus.Store(&status)
-		return terminalEpoch{Awaiters: &clearingAwaiters{Awaiters: comp.Awaiters, published: &status}, Delivery: comp.Delivery.Tick}, nil
+		awaiters := sharedclaims.WithReconciler(comp.Awaiters, func(ctx context.Context) error {
+			return p.sharedRegistry.Reconcile(ctx, handle, escalator)
+		}, report)
+		return terminalEpoch{Awaiters: &clearingAwaiters{Awaiters: awaiters, published: &status}, Delivery: comp.Delivery.Tick}, nil
 	}
 }
 
 // controlProvider is built once at assembly, shared by claim cleanup and terminal
 // hooks. Credentials remain in control and follow the applied configuration.
 type controlProvider struct {
+	pins     func(context.Context, string) (acceptance.RunPins, error)
 	runs     terminalwriter.JournalRuns
 	backends *terminalwriter.ConfiguredBackends
 	writer   *terminalwriter.Writer
@@ -167,7 +172,7 @@ func newControlProvider(db databaseServices, p *controlPlanes) (*controlProvider
 	if err != nil {
 		return nil, fmt.Errorf("control provider writer: %w", err)
 	}
-	return &controlProvider{runs: runs, backends: backends, writer: writer, scrubber: registrar}, nil
+	return &controlProvider{pins: store.RunPinsOf, runs: runs, backends: backends, writer: writer, scrubber: registrar}, nil
 }
 
 // terminalJournal is the journal backend as the terminal hooks use it: the

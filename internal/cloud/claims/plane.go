@@ -20,8 +20,6 @@ const (
 	// ProviderCleanupIssue tracks provider-cleanup release (cleanup custody
 	// and server-side marker removal) in the cloud claims plane.
 	ProviderCleanupIssue = 8093
-	// SharedClaimsIssue tracks shared claim visibility in the cloud.
-	SharedClaimsIssue = 8094
 )
 
 // legacyNamespace is the namespace the scheduler-side Store gives unscoped

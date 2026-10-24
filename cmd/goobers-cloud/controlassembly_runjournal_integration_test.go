@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -25,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -76,8 +78,14 @@ func TestControlRunJournalAnswersFromTheControllerStores(t *testing.T) {
 	for _, run := range []struct{ id, gaggle string }{{asking, "web"}, {sibling, "web"}, {foreign, "api"}} {
 		emitRun(t, planes.Journal, run.id, run.gaggle)
 	}
-	if _, err := planes.Claims.Acquire(t.Context(), httpapi.ClaimRequest{Gaggle: "web", Provider: "github", ItemID: "42", RunID: asking, Workflow: "wf"}); err != nil {
-		t.Fatalf("acquire the asking run's claim: %v", err)
+	// Seed local custody directly: this read-plane fixture has synthetic journal
+	// identities rather than the admission path's immutable workflow pins.
+	claims, err := cloudclaims.New(controller, instanceID, manager, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := claims.ClaimScoped(localscheduler.ClaimKey{Gaggle: "web", Provider: "github", ExternalID: "42"}, asking, "wf", time.Minute); err != nil {
+		t.Fatalf("seed the asking run's claim: %v", err)
 	}
 
 	// The stranded-work answer must come from the claims the run holds: spy on

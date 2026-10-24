@@ -7,6 +7,7 @@ import (
 
 	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/sharedclaims"
 )
 
 // cloudDefaultClaimLease is the lease a claims request without leaseSeconds
@@ -31,15 +32,26 @@ func constructClaims(_ context.Context, db databaseServices, _ controlAuth, mana
 	if err != nil {
 		return err
 	}
+	registry := &sharedclaims.Registry{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Fence: manager, Owner: owner}
+	shared := sharedclaims.Resolver{
+		InstanceID: db.InstanceID, Journal: provider.runs.Journal,
+		Verify: sharedclaims.ControlPins(provider.pins), Runs: provider.runs, Writer: provider.writer,
+		Register: registry.Register, Report: func(err error) {
+			if epochWiring.Report != nil {
+				epochWiring.Report(err)
+			}
+		},
+	}
 	plane, err := cloudclaims.NewPlane(cloudclaims.PlaneConfig{
 		Pool: db.Pools.Transaction, InstanceID: db.InstanceID,
 		Lease: manager, Owner: owner, DefaultLease: cloudDefaultClaimLease,
-		ReleaseMarker: provider.writer.ReleaseClaim,
+		ReleaseMarker: provider.writer.ReleaseClaim, Shared: shared,
 	})
 	if err != nil {
 		return err
 	}
 	p.provider = provider
+	p.sharedRegistry = registry
 	p.Claims = plane
 	p.claimedItems = plane.ClaimedItems
 	return nil

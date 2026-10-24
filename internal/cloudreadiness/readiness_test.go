@@ -262,7 +262,7 @@ func TestUnplaceableWorkflowFailsClosed(t *testing.T) {
 	}
 }
 
-func TestSharedClaimVisibilityBlocksCloudAdmission(t *testing.T) {
+func TestSharedClaimVisibilityAllowsCloudAdmission(t *testing.T) {
 	task := apiv1.Task{
 		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
 		RunsOn: &apiv1.RunsOn{OS: "linux"},
@@ -283,27 +283,7 @@ func TestSharedClaimVisibilityBlocksCloudAdmission(t *testing.T) {
 		Workflows: []apiv1.Workflow{workflow("local", "local"), workflow("shared", "shared")},
 	}
 	result := Assess(readinessRemoteConfig(), set)
-	if len(result.Workflows) != 1 || result.Workflows[0].Name != "shared" {
-		t.Fatalf("blocked workflows = %+v, want only the shared twin of an otherwise eligible workflow", result.Workflows)
-	}
-	blockers := result.Workflows[0].Blockers
-	if len(blockers) != 1 {
-		t.Fatalf("shared blockers = %+v, want exactly the control-plane refusal", blockers)
-	}
-	blocker := blockers[0]
-	if blocker.Code != CodeControlPlane || blocker.Path != "/spec/readiness/claimVisibility" ||
-		blocker.Action.Kind != "control-plane" || blocker.Action.Issue != SharedClaimVisibilityIssue ||
-		blocker.Action.IssueURL == "" {
-		t.Fatalf("shared blocker = %+v", blocker)
-	}
-	if result.Summary.WaitingOnControlPlane != 1 || result.Summary.ConfigFixes != 0 || result.Summary.WaitingOnP4 != 0 {
-		t.Fatalf("summary = %+v, want one control-plane wait", result.Summary)
-	}
-	var text bytes.Buffer
-	if err := WriteText(&text, result); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(text.String(), "RUNTIME004") || !strings.Contains(text.String(), "issues/8094") {
-		t.Fatalf("report does not name the refusal and its issue:\n%s", text.String())
+	if !result.CloudReady || len(result.Workflows) != 0 || result.Summary.WaitingOnControlPlane != 0 {
+		t.Fatalf("shared and local workflow twins should both be cloud ready: %+v", result)
 	}
 }
