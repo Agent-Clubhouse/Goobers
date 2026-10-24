@@ -61,11 +61,11 @@ var exceptions = []exception{
 	{Path: "internal/lifecycle/labels.go", Value: "goobers:blocked-on-sibling", Reason: "canonical lifecycle label registry"},
 	{Path: "internal/lifecycle/labels.go", Value: "goobers:merge-escalated", Reason: "canonical lifecycle label registry"},
 	{Path: "internal/lifecycle/labels.go", Value: "goobers:run-aborted", Reason: "canonical lifecycle label registry"},
+	{Path: "internal/lifecycle/labels.go", Value: "goobers:merge-demoted", Reason: "canonical lifecycle label registry"},
 	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-ready", Reason: "canonical verdict label"},
 	// No entry for goobers:needs-remediation here: applyverdict.go reaches it
 	// through the needsRemediationLabel constant, and this list rejects a stale
 	// exception (#2988).
-	{Path: "cmd/goobers/mergedemotion.go", Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
 	{Path: "cmd/goobers/prcommentwatch.go", Value: "goobers:merge-ready", Reason: "canonical merge-review label the comment watcher treats as already-landing"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
