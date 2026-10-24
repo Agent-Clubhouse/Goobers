@@ -160,6 +160,10 @@ func TestAnEpochEndingRightAfterOpenRetiresOnce(t *testing.T) {
 		if _, err := logs.For(ctx, opener, &lease.Handle{InstanceID: "i", Epoch: 9}, nil); err != nil {
 			t.Fatal(err)
 		}
+		synctest.Wait()
+		if got := retired.Load(); got != 0 {
+			t.Fatalf("retired %d times before the epoch ended: the log must live as long as the epoch", got)
+		}
 		cancel()
 		synctest.Wait()
 		cancel()
