@@ -191,6 +191,12 @@ type RunInput struct {
 	// before the protocol existed, and every lane with no human gate — is a
 	// complete no-op: no hold, no extra journal event, byte-identical history.
 	HITL *HITLPolicy `json:"hitl,omitempty"`
+	// ChildWorkflowsEnabled pins the instance's generated-child posture
+	// (engine.childWorkflows, #8085 d) into the run at start, so a change
+	// to the switch affects new runs only. false (every run started before
+	// the switch existed, and every instance that did not opt in) refuses a
+	// definition declaring task.childWorkflows before any stage, as before.
+	ChildWorkflowsEnabled bool `json:"childWorkflowsEnabled,omitempty"`
 	// RoleRoutedBacklogProvider names the gaggle's backlog provider when its
 	// backlog is routed by role to a provider other than RepoRef's: a GitHub
 	// or Gitea backlog for Azure DevOps code (topology (b),
@@ -268,7 +274,10 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 
 func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && !childProtocolEnabled(ctx) {
-		return RunResult{}, err
+		if !childWorkflowsEnabled(ctx, in) {
+			return RunResult{}, err
+		}
+		ctx = workflow.WithValue(ctx, childProtocolContextKey{}, true)
 	}
 	if err := refuseUnassembledFanOut(ctx, in); err != nil {
 		return RunResult{}, err
