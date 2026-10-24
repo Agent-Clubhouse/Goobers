@@ -69,6 +69,10 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "Reader", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Reader != nil }, construct: constructReader},
 	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }, construct: constructResolve, requires: requiresConfigDirectory},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }, construct: constructEpoch},
+	// After Configuration, Journal and Epoch: the scheduler admission reads the
+	// applied generation, journals through the fenced instance log, and feeds the
+	// observations ledger the Epoch seam persists.
+	{field: "Admission", label: "scheduler admission", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Admission != nil }, construct: constructScheduler, requires: requiresConfigDirectory},
 }
 
 func composeControlPlanes(ctx context.Context, db controlDatabases, auth controlAuth, manager *lease.Manager, owner func() *lease.Handle) (controlPlanes, error) {

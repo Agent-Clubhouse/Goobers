@@ -104,6 +104,37 @@ func (s *Store) RunPinsOf(ctx context.Context, runID string) (RunPins, error) {
 	return scanRunPins(s.pool.QueryRow(ctx, runPinsQuery, s.instanceID, runID))
 }
 
+// openRunPinsQuery reads the pins not yet marked terminal. The columns match
+// runPinsQuery so scanRunPins serves both.
+const openRunPinsQuery = `
+	SELECT run_id, acceptance_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest, config_generation,
+	  repo_ref, branch_namespace, input_digest
+	FROM control.run_pin WHERE instance_id=$1 AND terminal_at IS NULL ORDER BY run_id`
+
+// UnmarkedRunPins reads every pin whose terminal_at is still NULL, in run_id
+// order. That is the runs that MAY be open, not the runs that are: terminal_at is
+// set by the retention sweep only once a run is older than ReplayRetention and
+// confirmed closed, so a recently closed run is still listed. The caller
+// confirms liveness (epoch.TemporalConfirmClosed) before counting a run as
+// open. Rows are immutable apart from terminal_at and the read is strongly
+// consistent, so it is unfenced.
+func (s *Store) UnmarkedRunPins(ctx context.Context) ([]RunPins, error) {
+	rows, err := s.pool.Query(ctx, openRunPinsQuery, s.instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RunPins
+	for rows.Next() {
+		pins, err := scanRunPins(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pins)
+	}
+	return out, rows.Err()
+}
+
 // runPinSweepBatch bounds one retention pass.
 const runPinSweepBatch = 64
 

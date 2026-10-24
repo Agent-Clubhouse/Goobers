@@ -56,6 +56,7 @@ func constructJournal(_ context.Context, db databaseServices, _ controlAuth, man
 		return err
 	}
 	p.Journal = writer
+	p.journalBackend = backend
 	p.journalReader, p.projectorWake, p.projectorHealth = backend, wake, &projectorpg.Health{}
 	p.closers = append(p.closers, writer.Close)
 	return nil
