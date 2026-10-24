@@ -106,6 +106,7 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.reportOutOfOrder(applied)
 	for _, migration := range r.Catalog {
 		if migration.Version > leaseSchemaVersion {
 			continue
@@ -254,6 +255,25 @@ func loadApplied(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) 
 		return nil, fmt.Errorf("load cloud migrations: %w", err)
 	}
 	return applied, nil
+}
+
+// reportOutOfOrder warns about each pending migration numbered below the
+// highest one already applied: it will still be applied, but after migrations
+// that were written to follow it. Pre-merge, test/migrationorder refuses such a
+// number; this only reports it, so a deploy that reaches one is not stopped.
+func (r Runner) reportOutOfOrder(applied map[int]bool) {
+	if r.Report == nil {
+		return
+	}
+	highest := 0
+	for version := range applied {
+		highest = max(highest, version)
+	}
+	for _, migration := range r.Catalog {
+		if !applied[migration.Version] && migration.Version < highest {
+			r.Report(fmt.Errorf("cloud migration %d is applied out of order: this database already has migration %d", migration.Version, highest))
+		}
+	}
 }
 
 // applyLeased runs one versioned migration as a leased step.
