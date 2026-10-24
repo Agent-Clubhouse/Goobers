@@ -83,7 +83,7 @@ func TestControlDatabaseRolesAreSeparated(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { runControlWithDatabases = prior })
-	args := []string{"control", "--object-store-url", "https://store.invalid", "--instance-id", instance, "--api-database-url", apiURL, "--api-database-direct-url", apiURL, "--controller-database-url", controllerURL, "--controller-database-direct-url", controllerURL}
+	args := []string{"control", "--object-store-url", "https://store.invalid", "--instance-id", instance, "--api-database-url", apiURL, "--api-database-direct-url", apiURL, "--controller-database-url", controllerURL, "--controller-database-direct-url", controllerURL, "--config-dir", t.TempDir()}
 	code, _, stderr := runForTest(args...)
 	if code != 0 || !called {
 		t.Fatalf("code=%d called=%v error=%s", code, called, stderr)
