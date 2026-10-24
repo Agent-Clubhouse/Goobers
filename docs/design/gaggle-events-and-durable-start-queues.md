@@ -200,7 +200,7 @@ Identity-bearing discovery is required only for a source that promises to start
 work on a particular item; it is not a prerequisite for these worker starts.
 Repeated observation of an unchanged item does not create a new eligibility episode after a no-work run.
 An episode changes only on a durable source transition, explicit retry, or an existing documented requeue policy.
-Child starts use the same queue and admission; a parked parent occurrence releases execution capacity needed by its child. Runnable sibling accounting prevents a single waiting parallel branch from releasing the entire run permit.
+Child starts use the same queue and admission; a parked parent occurrence releases execution capacity needed by its child. Once a parked parent's resume is refused for capacity, the parent holds the next freed slot ahead of new admissions until it resumes, its admission ends, or the claim lapses (#8174). Runnable sibling accounting prevents a single waiting parallel branch from releasing the entire run permit.
 Logical parent-run accounting remains visible; budget lineage includes all descendants and forbids budget reset through nesting.
 The child design owns parent cancellation and result delivery; this store records the corresponding intent cancellation or admitted run.
 
