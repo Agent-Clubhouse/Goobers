@@ -127,15 +127,19 @@ type controlPlanes struct {
 	// engine workers, over the admissions' fenced custody.
 	EngineChildAuthority httpapi.HandlerOption
 	engineChildren       *childengine.Fenced
-	Configuration        control.Configuration
-	Reader               readservice.Reader
-	Claims               httpapi.ClaimService
-	Triggers             httpapi.TriggerService
-	Journal              httpapi.JournalService
-	RunJournal           httpapi.RunJournalService
-	Resolve              acceptance.StartInputResolver
-	Epoch                func(context.Context, *lease.Handle) (control.EpochServices, error)
-	RunnerHosts          []string
+	engineChildAuthority *childengine.FencedAuthority
+	// ChildWorkflows serves the child-workflow routes to engine parents'
+	// stage pods.
+	ChildWorkflows httpapi.HandlerOption
+	Configuration  control.Configuration
+	Reader         readservice.Reader
+	Claims         httpapi.ClaimService
+	Triggers       httpapi.TriggerService
+	Journal        httpapi.JournalService
+	RunJournal     httpapi.RunJournalService
+	Resolve        acceptance.StartInputResolver
+	Epoch          func(context.Context, *lease.Handle) (control.EpochServices, error)
+	RunnerHosts    []string
 
 	// generations reads retained config generations under the live epoch; the
 	// Configuration constructor owns it and later seams consume it.
@@ -265,7 +269,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	var handler http.Handler
 	var err error
 	if p.complete() {
-		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority)
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority, p.ChildWorkflows)
 	}
 	if err != nil {
 		return nil, err

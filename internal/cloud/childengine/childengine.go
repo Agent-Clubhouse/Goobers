@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
@@ -58,6 +59,15 @@ type Service struct {
 	// Actor attributes parent fences to the control plane.
 	Actor string
 	Now   func() time.Time
+	// Generations, when set, releases the config generation pin each child's
+	// acceptance took, once the engine has bound the child (#8085 c).
+	Generations GenerationUnpins
+}
+
+// GenerationUnpins releases a child's pinned config generation.
+// *objstore.Source implements it.
+type GenerationUnpins interface {
+	UnpinGeneration(ctx context.Context, generation, owner string) error
 }
 
 var _ engine.ChildAdmissions = (*Service)(nil)
@@ -107,7 +117,7 @@ func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (_ e
 	}
 	identity := identityOf(in.Request)
 	if start, err := s.Custody.ChildEngineStart(ctx, identity); err == nil {
-		return binding(in, child, start), nil
+		return binding(in, child, start), s.unpinBound(ctx, identity, child)
 	}
 	receipt, err := s.Custody.ChildStart(ctx, identity)
 	if err != nil {
@@ -138,7 +148,37 @@ func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (_ e
 	if err != nil {
 		return engine.ChildRunBinding{}, err
 	}
-	return binding(in, child, start), nil
+	return binding(in, child, start), s.unpin(ctx, child, receipt.Payload)
+}
+
+// unpinBound releases the pin of a child an earlier Admit already bound.
+func (s *Service) unpinBound(ctx context.Context, identity triggerqueue.ChildIdentity, child triggerqueue.ChildRecord) error {
+	if s.Generations == nil {
+		return nil
+	}
+	receipt, err := s.Custody.ChildStart(ctx, identity)
+	if err != nil {
+		return err
+	}
+	return s.unpin(ctx, child, receipt.Payload)
+}
+
+// unpin releases the generation pin the child's acceptance took: the bound
+// manifest is frozen, so the engine no longer needs the generation. A failed
+// release is retryable; the engine's retried Admit, already bound, releases
+// again, and releasing an absent pin is done.
+func (s *Service) unpin(ctx context.Context, child triggerqueue.ChildRecord, payload []byte) error {
+	if s.Generations == nil {
+		return nil
+	}
+	envelope, err := childworkflow.DecodeStartEnvelope(payload)
+	if err != nil {
+		return err
+	}
+	if err := s.Generations.UnpinGeneration(ctx, envelope.ConfigGeneration, child.AcceptanceID); err != nil {
+		return fmt.Errorf("%w: release the child's config generation pin: %w", engine.ErrChildCustodyUnavailable, err)
+	}
+	return nil
 }
 
 // Load reads the manifest the binding's own start intent recorded. A receipt

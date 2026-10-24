@@ -111,6 +111,11 @@ func controllerPool(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
+	// A pool that silently stayed the owner would hide every grant gap.
+	var role string
+	if err := pool.QueryRow(t.Context(), `SELECT current_user`).Scan(&role); err != nil || role != "goobers_controller" {
+		t.Fatalf("controller pool runs as %q (%v), want goobers_controller", role, err)
+	}
 	return pool
 }
 
