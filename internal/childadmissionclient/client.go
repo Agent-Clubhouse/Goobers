@@ -38,6 +38,12 @@ type Client struct {
 	BaseURL     string
 	TokenSource func() (string, error)
 	HTTP        *http.Client
+	// PodEndpoint is where stage pods reach control; an authority request that
+	// names none is sent with it.
+	PodEndpoint string
+	// Secrets registers every acquired child-workflow bearer with the worker's
+	// exact-value scrubber; required to acquire authority.
+	Secrets interface{ RegisterUntil([]byte, time.Time) }
 }
 
 var _ engine.ChildService = (*Client)(nil)
@@ -78,14 +84,17 @@ func (c *Client) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
 }
 
 // AuthorityForWorker is the engine worker's client for its stage attempts'
-// child-workflow grants, over the same plane and credential as ForWorker. It
-// returns an untyped nil without a key or endpoint, so the engine refuses
-// child-capable stages.
-func AuthorityForWorker(baseURL, owner string, signer *podauth.SignedKey) engine.ChildWorkflowAuthority {
-	if signer == nil || baseURL == "" {
+// child-workflow grants, over the same plane and credential as ForWorker.
+// podEndpoint is where the worker's stage pods reach control, and secrets the
+// worker's shared exact-value registry, so the journal scrubber and the
+// dispatch canary know every bearer. It returns an untyped nil without any of
+// them, so the engine refuses child-capable stages.
+func AuthorityForWorker(baseURL, podEndpoint, owner string, signer *podauth.SignedKey, secrets interface{ RegisterUntil([]byte, time.Time) }) engine.ChildWorkflowAuthority {
+	if signer == nil || baseURL == "" || podEndpoint == "" || secrets == nil {
 		return nil
 	}
-	return &Client{BaseURL: baseURL, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission(owner, workerTokenTTL) }}
+	return &Client{BaseURL: baseURL, PodEndpoint: podEndpoint, Secrets: secrets,
+		TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission(owner, workerTokenTTL) }}
 }
 
 var _ engine.ChildWorkflowAuthority = (*Client)(nil)
@@ -96,6 +105,12 @@ const maxGrantReply = 16 << 10
 // AcquireChildAuthority asks control to bind (or re-deliver) the attempt's
 // grant. The returned grant carries a bearer.
 func (c *Client) AcquireChildAuthority(ctx context.Context, request engine.ChildAuthorityRequest) (engine.ChildAuthorityGrant, error) {
+	if c.Secrets == nil {
+		return engine.ChildAuthorityGrant{}, errors.New("childadmissionclient: child authority requires a secret registry")
+	}
+	if request.Endpoint == "" {
+		request.Endpoint = c.PodEndpoint
+	}
 	if err := request.Validate(); err != nil {
 		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	}
@@ -106,6 +121,7 @@ func (c *Client) AcquireChildAuthority(ctx context.Context, request engine.Child
 	if _, err := grant.Access(request.RunID); err != nil || grant.GrantID == "" {
 		return engine.ChildAuthorityGrant{}, errors.Join(errors.New("childadmissionclient: control returned an invalid child-workflow grant"), err)
 	}
+	c.Secrets.RegisterUntil([]byte(grant.BearerToken), grant.ExpiresAt)
 	return grant, nil
 }
 

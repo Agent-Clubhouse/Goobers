@@ -75,8 +75,15 @@ func authorityServer(t *testing.T, backend engine.ChildWorkflowAuthority) (*poda
 	return signer, server.URL
 }
 
+// registry records registered secrets.
+type registry struct{ secrets []string }
+
+func (r *registry) RegisterUntil(secret []byte, _ time.Time) {
+	r.secrets = append(r.secrets, string(secret))
+}
+
 func workerClient(signer *podauth.SignedKey, url string) *Client {
-	return &Client{BaseURL: url, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission("engine-worker", time.Minute) }}
+	return &Client{BaseURL: url, Secrets: &registry{}, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission("engine-worker", time.Minute) }}
 }
 
 func TestAuthorityRoundTripsThroughTheAuthenticatedPlane(t *testing.T) {
@@ -136,7 +143,7 @@ func TestAuthorityRefusesEveryOtherCredential(t *testing.T) {
 		"none": func() (string, error) { return "unauthenticated", nil },
 	} {
 		t.Run(name, func(t *testing.T) {
-			client := &Client{BaseURL: url, TokenSource: mint}
+			client := &Client{BaseURL: url, Secrets: &registry{}, TokenSource: mint}
 			_, err := client.AcquireChildAuthority(t.Context(), authorityRequest())
 			if err == nil {
 				t.Fatal("authority route admitted a foreign credential")
@@ -200,5 +207,33 @@ func TestAuthorityRefusesMalformedRequestsAndGrants(t *testing.T) {
 	}
 	if got := fmt.Sprintf("%v %+v %#v", backend.grant, backend.grant, backend.grant); strings.Contains(got, backend.grant.BearerToken) {
 		t.Fatalf("formatted grant leaks its bearer: %s", got)
+	}
+}
+
+func TestAuthorityForWorkerFillsThePodEndpointAndRegistersTheBearer(t *testing.T) {
+	backend := &recordingAuthority{grant: engine.ChildAuthorityGrant{Endpoint: "https://control.example", BearerToken: "goobers-child.signed", GrantID: "grant-1"}}
+	signer, url := authorityServer(t, backend)
+	secrets := &registry{}
+	client := AuthorityForWorker(url, "https://control.example", "engine-worker", signer, secrets)
+	request := authorityRequest()
+	request.Endpoint = ""
+	if _, err := client.AcquireChildAuthority(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.acquired) != 1 || backend.acquired[0].Endpoint != "https://control.example" {
+		t.Fatalf("control saw %+v, want the pod endpoint filled in", backend.acquired)
+	}
+	if len(secrets.secrets) != 1 || secrets.secrets[0] != "goobers-child.signed" {
+		t.Fatalf("registered %v, want the acquired bearer", secrets.secrets)
+	}
+	for name, client := range map[string]engine.ChildWorkflowAuthority{
+		"no key":      AuthorityForWorker(url, "https://control.example", "w", nil, secrets),
+		"no endpoint": AuthorityForWorker(url, "", "w", signer, secrets),
+		"no registry": AuthorityForWorker(url, "https://control.example", "w", signer, nil),
+		"no control":  AuthorityForWorker("", "https://control.example", "w", signer, secrets),
+	} {
+		if client != nil {
+			t.Fatalf("%s: AuthorityForWorker returned a client", name)
+		}
 	}
 }
