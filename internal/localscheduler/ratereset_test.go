@@ -164,3 +164,21 @@ func TestReadRateResetPrefersTheLogsSource(t *testing.T) {
 		t.Fatalf("readRateReset = %v, %v, %v", got, ok, err)
 	}
 }
+
+// A log with no directory must not let the file scheduler state resolve against
+// the process working directory.
+func TestFileSchedulerStateRefusesAnEmptyDirectory(t *testing.T) {
+	state := NewFileSchedulerState()
+	if _, err := state.ReadScheduleDemand(""); err == nil {
+		t.Fatal("ReadScheduleDemand accepted an empty directory")
+	}
+	if _, err := state.ReadTriggerEvaluations(""); err == nil {
+		t.Fatal("ReadTriggerEvaluations accepted an empty directory")
+	}
+	if err := state.WriteScheduleDemand("", nil); err == nil {
+		t.Fatal("WriteScheduleDemand accepted an empty directory")
+	}
+	if err := state.WriteTriggerEvaluations("", nil); err == nil {
+		t.Fatal("WriteTriggerEvaluations accepted an empty directory")
+	}
+}

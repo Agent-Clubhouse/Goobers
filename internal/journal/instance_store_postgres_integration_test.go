@@ -3,9 +3,9 @@
 package journal_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -76,20 +76,17 @@ func TestInstanceStoreAdapterRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInstanceStoreAdapterFencedAcrossTakeover: after a real lease takeover the
-// deposed leader's adapter can no longer append (not even best-effort), while
-// the successor reopens the stream, sees the predecessor's events, and
-// continues the sequence gap-free.
+// TestInstanceStoreAdapterFencedAcrossTakeover: another holder takes an EXPIRED
+// lease (heartbeat expired on the database clock, no voluntary release), on its
+// own backend, as a successor process would. The deposed leader's adapter can no
+// longer append (not even best-effort), while the successor reopens the stream,
+// sees the predecessor's events, and continues the sequence gap-free.
 func TestInstanceStoreAdapterFencedAcrossTakeover(t *testing.T) {
-	base := postgresJournalConfigRenew(t, false)
-	var mu sync.Mutex
-	live := base.LiveOwner()
-	config := journalpg.Config{Pool: base.Pool, InstanceID: base.InstanceID, Lease: base.Lease,
-		LiveOwner: func() *lease.Handle { mu.Lock(); defer mu.Unlock(); return live }}
-	backend := postgresBackend(t, config)
+	oldConfig := postgresJournalConfig(t)
+	oldBackend := postgresBackend(t, oldConfig)
 
 	var reported []error
-	old, err := backend.OpenSchedulerLog(t.Context(), func(err error) { reported = append(reported, err) })
+	old, err := oldBackend.OpenSchedulerLog(t.Context(), func(err error) { reported = append(reported, err) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,17 +96,27 @@ func TestInstanceStoreAdapterFencedAcrossTakeover(t *testing.T) {
 		}
 	}
 
-	if err := base.Lease.Release(t.Context(), live); err != nil {
+	// The fixture's own renewer keeps the old lease alive, so the takeover
+	// expires the heartbeat on the database clock first, as a crashed leader's
+	// would lapse, then another holder acquires.
+	if _, err := postgresOwnerPool(t, oldConfig).Exec(t.Context(), `
+		UPDATE control.lease_heartbeat SET expires_at=now()-interval '1 second'
+		WHERE instance_id=$1 AND name='controller'`, oldConfig.InstanceID); err != nil {
 		t.Fatal(err)
 	}
-	next, err := base.Lease.Acquire(t.Context())
+	successorManager, err := lease.New(lease.Config{Pool: oldConfig.Pool, InstanceID: oldConfig.InstanceID, Name: "controller", Holder: "successor"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = base.Lease.Release(t.Context(), next) })
-	mu.Lock()
-	live = next
-	mu.Unlock()
+	next, err := successorManager.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("successor cannot take the expired lease: %v", err)
+	}
+	t.Cleanup(func() { _ = successorManager.Release(context.Background(), next) })
+	successorBackend := postgresBackend(t, journalpg.Config{
+		Pool: oldConfig.Pool, InstanceID: oldConfig.InstanceID, Lease: successorManager,
+		LiveOwner: func() *lease.Handle { return next },
+	})
 
 	if err := old.Append(schedulerEvent("zombie")); err == nil {
 		t.Fatal("deposed leader's adapter appended after takeover")
@@ -119,7 +126,7 @@ func TestInstanceStoreAdapterFencedAcrossTakeover(t *testing.T) {
 		t.Fatalf("deposed best-effort append must be reported once, got %v", reported)
 	}
 
-	successor, err := backend.OpenSchedulerLog(t.Context(), nil)
+	successor, err := successorBackend.OpenSchedulerLog(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("successor cannot reopen the stream: %v", err)
 	}
