@@ -3,6 +3,7 @@ package schedentries
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/startintent"
@@ -20,6 +21,9 @@ type Deps struct {
 	// Build prepares the archived entry of one pinned target (the start-input
 	// resolver); the pin is released when the prepared value is.
 	Build func(context.Context, startintent.Target) (startintent.Prepared, error)
+	// Report receives a failed unpin: it leaks a reader pin on the retained
+	// generation, so it must be visible. May be nil.
+	Report func(error)
 }
 
 // NewSources returns the scheduler's source-start intake over the cloud
@@ -37,7 +41,11 @@ func NewSources(deps Deps) (*startintent.Sources, error) {
 			if err != nil {
 				return nil, err
 			}
-			return func() { _ = generation.Release() }, nil
+			return func() {
+				if err := generation.Release(); err != nil && deps.Report != nil {
+					deps.Report(fmt.Errorf("release generation %s: %w", target.ConfigGeneration, err))
+				}
+			}, nil
 		},
 	}, nil
 }

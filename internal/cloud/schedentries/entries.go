@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -26,10 +27,21 @@ import (
 // identifies a workflow by digest, as the local runner wiring does.
 const workflowVersion = 1
 
-// BacklogPendingReason disables a workflow whose backlog-item trigger cannot be
-// served yet. It is an explicit, named refusal: the entry exists, every run
-// attempt is refused with this diagnostic, and nothing fails silently.
-const BacklogPendingReason = "backlog trigger pending cloud provider counters (L1d)"
+// The provider-backed demand counters (L1d) do not exist in the cloud yet. A
+// workflow that needs one is not left to misbehave silently (a schedule that
+// fires every tick with no work, a desired-concurrency target that never
+// refills, a backlog trigger that never polls): its entry exists, and every run
+// attempt is refused with a named diagnostic.
+const (
+	// BacklogPendingReason: the workflow has a backlog-item trigger.
+	BacklogPendingReason = "backlog trigger pending cloud provider counters (L1d)"
+	// ScheduleDemandPendingReason: a scheduled remediation workflow is sized to
+	// its eligible work locally; unsized, it would start a run every tick.
+	ScheduleDemandPendingReason = "schedule demand counter pending cloud provider counters (L1d)"
+	// RefillPendingReason: Readiness.DesiredConcurrentRuns refills from provider
+	// eligibility; without a counter it would silently never refill.
+	RefillPendingReason = "desired-concurrency refill pending cloud provider counters (L1d)"
+)
 
 // Input is the applied generation and the cloud starter factory.
 type Input struct {
@@ -46,21 +58,52 @@ type Input struct {
 	Starter func(localscheduler.WorkflowIdentity) localscheduler.Starter
 }
 
-// Validate reports whether every enabled trigger of every workflow parses. The
-// config loader calls it at apply time so an unparseable trigger refuses the
-// generation (naming the workflow) instead of failing at tick time.
+// CodeTrigger is the finding code for a trigger the scheduler cannot parse.
+const CodeTrigger = "TRIGGER001"
+
+// Assess reports, per "gaggle/workflow", every workflow whose enabled triggers
+// cannot be parsed (an invalid cron expression or idle backoff, or an instance
+// time zone that does not load, which blocks every workflow). It is an
+// engine-only-admission style assessor: composed with the readiness assessor, an
+// unparseable trigger refuses the whole generation at apply time and `config
+// status` names the workflow, instead of failing at tick time.
+func Assess(cfg *instance.Config, set *instance.ConfigSet) cloudconfig.Assessment {
+	out := cloudconfig.Assessment{}
+	if cfg == nil || set == nil {
+		return out
+	}
+	loc, locErr := cfg.Location()
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
+		var err error
+		if locErr != nil {
+			// Build cannot construct any entry without the zone, so every workflow
+			// is blocked, not just the scheduled ones.
+			err = locErr
+		} else {
+			_, err = triggers(wf, loc)
+		}
+		if err == nil {
+			continue
+		}
+		key := wf.Spec.Gaggle + "/" + wf.Name
+		out[key] = append(out[key], cloudconfig.Finding{
+			Code: CodeTrigger, Path: "/spec/triggers", Message: err.Error(),
+			Unblock: "fix the workflow's trigger (cron expression, idle backoff) or the instance time zone, then re-apply",
+		})
+	}
+	return out
+}
+
+// Validate is Assess flattened to an error naming every offending workflow.
 func Validate(cfg *instance.Config, set *instance.ConfigSet) error {
 	if cfg == nil || set == nil {
 		return errors.New("schedentries: a loaded configuration is required")
 	}
-	loc, err := cfg.Location()
-	if err != nil {
-		return err
-	}
 	var problems []error
-	for i := range set.Workflows {
-		if _, err := triggers(&set.Workflows[i], loc); err != nil {
-			problems = append(problems, err)
+	for key, findings := range Assess(cfg, set) {
+		for _, f := range findings {
+			problems = append(problems, fmt.Errorf("%s: %s", key, f.Message))
 		}
 	}
 	return errors.Join(problems...)
@@ -119,7 +162,18 @@ func Build(in Input) ([]localscheduler.WorkflowEntry, error) {
 			Starter:              starter,
 			RepoRef:              gaggle.Spec.Project,
 			RequiredCapabilities: instance.WorkflowRequiredCapabilities(gaggle, *wf),
-			DisabledReason:       disabledReason(gaggle, wf, t.backlog),
+			DisabledReason:       disabledReason(in.Config, gaggle, wf, t),
+			// ProviderAuth is deliberately unset: the local gate checks the
+			// controller's own provider credentials before autonomous dispatch, but
+			// the cloud control plane runs no stage and holds no stage credentials.
+			// Provider authorization is exercised by the worker that runs the stage.
+			//
+			// HarnessRefusal and PlacementRefusal are also unset. The applied
+			// generation is engine-only by construction and engine placement is
+			// pinned at start.
+			// TODO(L1c): surface an engine-unplaceable workflow here as a
+			// DisabledReason, so it is refused once instead of failing to resolve on
+			// every sweep.
 		}
 		if t.hasRepositoryWebhook && len(t.schedules) > 0 {
 			entry.PollFallbackCause = pollFallbackCause(in.Config, gaggle)
@@ -142,7 +196,10 @@ type parsedTriggers struct {
 	webhookBackoff       localscheduler.IdleBackoffConfig
 	hasRepositoryWebhook bool
 	backlog              bool
-	pollPriority         int32
+	// backlogDeclared is true for any backlog-item trigger, enabled or not: the
+	// refill poll is suppressed by the declaration, as locally.
+	backlogDeclared bool
+	pollPriority    int32
 }
 
 // triggers parses the workflow's enabled triggers, as the local daemon does.
@@ -151,6 +208,9 @@ func triggers(wf *apiv1.Workflow, loc *time.Location) (parsedTriggers, error) {
 	out.webhookBackoff, _ = localscheduler.ParseIdleBackoff(nil)
 	prioritySet := false
 	for _, trigger := range wf.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerBacklogItem {
+			out.backlogDeclared = true
+		}
 		if triggerDisabled(trigger) {
 			continue
 		}
@@ -203,16 +263,55 @@ func triggerDisabled(trigger apiv1.Trigger) bool {
 	return trigger.Type != apiv1.TriggerManual
 }
 
-func disabledReason(gaggle apiv1.Gaggle, wf *apiv1.Workflow, backlog bool) string {
+func disabledReason(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, t parsedTriggers) string {
 	switch {
 	case gaggle.Spec.Enabled != nil && !*gaggle.Spec.Enabled:
 		return fmt.Sprintf("gaggle %q is disabled (spec.enabled=false)", gaggle.Name)
 	case wf.Spec.Enabled != nil && !*wf.Spec.Enabled:
 		return fmt.Sprintf("workflow %q is disabled (spec.enabled=false)", wf.Name)
-	case backlog:
-		return BacklogPendingReason
 	}
-	return ""
+	var pending []string
+	if t.backlog {
+		pending = append(pending, BacklogPendingReason)
+	}
+	if needsScheduleDemand(cfg, gaggle, wf, t) {
+		pending = append(pending, ScheduleDemandPendingReason)
+	}
+	if needsRefill(cfg, wf, t) {
+		pending = append(pending, RefillPendingReason)
+	}
+	return strings.Join(pending, "; ")
+}
+
+// needsScheduleDemand mirrors when the local daemon builds a schedule demand
+// counter: a scheduled workflow whose first stage is the built-in
+// update-behind-pr remediation, with configured repositories. Azure DevOps has
+// no counter locally either (each due tick fires unsized there too).
+func needsScheduleDemand(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, t parsedTriggers) bool {
+	if len(cfg.Repos) == 0 || len(t.schedules) == 0 || gaggle.Spec.Project.Provider == apiv1.ProviderADO {
+		return false
+	}
+	return startsWithGoobersCommand(wf, "update-behind-pr", func(n int) bool { return n == 2 })
+}
+
+// needsRefill mirrors when the local daemon builds a refill demand counter: a
+// desired occupancy, configured repositories, no backlog trigger (which already
+// polls), and a first stage that is the built-in backlog-query.
+func needsRefill(cfg *instance.Config, wf *apiv1.Workflow, t parsedTriggers) bool {
+	if wf.Spec.Readiness.DesiredConcurrentRuns <= 0 || len(cfg.Repos) == 0 || t.backlogDeclared {
+		return false
+	}
+	return startsWithGoobersCommand(wf, "backlog-query", func(n int) bool { return n >= 2 })
+}
+
+func startsWithGoobersCommand(wf *apiv1.Workflow, name string, arity func(int) bool) bool {
+	for _, task := range wf.Spec.Tasks {
+		if task.Name == wf.Spec.Start && task.Run != nil && arity(len(task.Run.Command)) &&
+			task.Run.Command[0] == "goobers" && task.Run.Command[1] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func pollFallbackCause(cfg *instance.Config, gaggle apiv1.Gaggle) string {

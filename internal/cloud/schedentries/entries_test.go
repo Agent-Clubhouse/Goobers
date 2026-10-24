@@ -2,6 +2,7 @@ package schedentries
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -10,9 +11,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/childworkflow"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/startintent"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 type noopStarter struct{}
@@ -142,22 +146,37 @@ func TestBuildRefusesWhatWouldAdmitUnpinnedOrUnstartableWork(t *testing.T) {
 	}
 }
 
-func TestValidateNamesTheUnparseableTrigger(t *testing.T) {
+func TestAssessNamesEveryUnparseableTriggerAndValidateFlattensIt(t *testing.T) {
 	t.Parallel()
 	cfg, set := fixture(apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "not a cron"})
+	findings := Assess(cfg, set)["g/wf"]
+	if len(findings) != 1 || findings[0].Code != CodeTrigger || findings[0].Path != "/spec/triggers" || findings[0].Unblock == "" {
+		t.Fatalf("findings = %+v, want one TRIGGER001 naming the workflow's triggers", findings)
+	}
 	err := Validate(cfg, set)
-	if err == nil || !strings.Contains(err.Error(), `workflow "wf"`) {
+	if err == nil || !strings.Contains(err.Error(), "g/wf") {
 		t.Fatalf("Validate = %v, want an error naming the workflow", err)
 	}
 	if _, buildErr := Build(Input{Generation: "g", Config: cfg, Set: set, Pins: pins(set), Starter: starters}); buildErr == nil {
-		t.Fatal("Build accepted what Validate refuses")
+		t.Fatal("Build accepted what Assess refuses")
 	}
 	cfg, set = fixture(apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "not a cron", Enabled: off()})
-	if err := Validate(cfg, set); err != nil {
-		t.Fatalf("a disabled trigger is never parsed: %v", err)
+	if got := Assess(cfg, set); len(got) != 0 {
+		t.Fatalf("a disabled trigger is never parsed: %v", got)
 	}
 	if err := Validate(nil, set); err == nil {
 		t.Fatal("Validate accepted a missing configuration")
+	}
+	// An unloadable instance time zone blocks every workflow, because Build cannot
+	// construct any entry without it.
+	cfg, set = fixture(apiv1.Trigger{Type: apiv1.TriggerManual})
+	cfg.Timezone = "Not/AZone"
+	if got := Assess(cfg, set); len(got["g/wf"]) != 1 {
+		t.Fatalf("bad time zone findings = %v", got)
+	}
+	cfg, set = fixture(apiv1.Trigger{Type: apiv1.TriggerManual})
+	if got := Assess(cfg, set); len(got) != 0 {
+		t.Fatalf("a clean workflow was blocked: %v", got)
 	}
 }
 
@@ -187,4 +206,119 @@ func TestPackageClosureExcludesTheRunner(t *testing.T) {
 			t.Fatalf("internal/cloud/schedentries depends on %s", dep)
 		}
 	}
+}
+
+func startingWith(set *instance.ConfigSet, command ...string) {
+	set.Workflows[0].Spec.Start = "first"
+	set.Workflows[0].Spec.Tasks = []apiv1.Task{{Name: "first", Type: apiv1.TaskDeterministic, Goal: "g", Run: &apiv1.DeterministicRun{Command: command}}}
+}
+
+// TestBuildRefusesWorkflowsWhoseDemandCountersDoNotExistYet: the local daemon
+// sizes scheduled remediation to eligible work and refills a desired occupancy;
+// the cloud has neither counter until L1d, and must say so instead of firing
+// unsized runs every tick or never refilling.
+func TestBuildRefusesWorkflowsWhoseDemandCountersDoNotExistYet(t *testing.T) {
+	t.Parallel()
+	repos := []instance.RepoRef{{Provider: "github", Owner: "o", Name: "r"}}
+	schedule := apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"}
+
+	cfg, set := fixture(schedule)
+	cfg.Repos = repos
+	startingWith(set, "goobers", "update-behind-pr")
+	if got := build(t, cfg, set)[0].DisabledReason; got != ScheduleDemandPendingReason {
+		t.Fatalf("scheduled remediation workflow reason = %q", got)
+	}
+	// Each condition the local daemon requires must be present.
+	for name, mutate := range map[string]func(*instance.Config, *instance.ConfigSet){
+		"no configured repos":   func(c *instance.Config, _ *instance.ConfigSet) { c.Repos = nil },
+		"no schedule":           func(_ *instance.Config, s *instance.ConfigSet) { s.Workflows[0].Spec.Triggers = nil },
+		"different first stage": func(_ *instance.Config, s *instance.ConfigSet) { startingWith(s, "goobers", "other") },
+		"azure devops (unsized)": func(_ *instance.Config, s *instance.ConfigSet) {
+			s.Gaggles[0].Spec.Project.Provider = apiv1.ProviderADO
+		},
+		"disabled schedule": func(_ *instance.Config, s *instance.ConfigSet) { s.Workflows[0].Spec.Triggers[0].Enabled = off() },
+	} {
+		cfg, set := fixture(schedule)
+		cfg.Repos = repos
+		startingWith(set, "goobers", "update-behind-pr")
+		mutate(cfg, set)
+		if got := build(t, cfg, set)[0].DisabledReason; got != "" {
+			t.Errorf("%s: refused with %q, local builds no counter here", name, got)
+		}
+	}
+
+	cfg, set = fixture(apiv1.Trigger{Type: apiv1.TriggerManual})
+	cfg.Repos = repos
+	set.Workflows[0].Spec.Readiness.DesiredConcurrentRuns = 2
+	startingWith(set, "goobers", "backlog-query")
+	if got := build(t, cfg, set)[0].DisabledReason; got != RefillPendingReason {
+		t.Fatalf("desired-occupancy workflow reason = %q", got)
+	}
+	for name, mutate := range map[string]func(*instance.Config, *instance.ConfigSet){
+		"no desired occupancy": func(_ *instance.Config, s *instance.ConfigSet) {
+			s.Workflows[0].Spec.Readiness.DesiredConcurrentRuns = 0
+		},
+		"no configured repos":   func(c *instance.Config, _ *instance.ConfigSet) { c.Repos = nil },
+		"different first stage": func(_ *instance.Config, s *instance.ConfigSet) { startingWith(s, "goobers", "other") },
+	} {
+		cfg, set := fixture(apiv1.Trigger{Type: apiv1.TriggerManual})
+		cfg.Repos = repos
+		set.Workflows[0].Spec.Readiness.DesiredConcurrentRuns = 2
+		startingWith(set, "goobers", "backlog-query")
+		mutate(cfg, set)
+		if got := build(t, cfg, set)[0].DisabledReason; got != "" {
+			t.Errorf("%s: refused with %q, local builds no counter here", name, got)
+		}
+	}
+
+	// A backlog-item trigger already polls and fans out, so it reports only the
+	// backlog reason, never a second refill poll.
+	cfg, set = fixture(apiv1.Trigger{Type: apiv1.TriggerBacklogItem})
+	cfg.Repos = repos
+	set.Workflows[0].Spec.Readiness.DesiredConcurrentRuns = 2
+	startingWith(set, "goobers", "backlog-query")
+	if got := build(t, cfg, set)[0].DisabledReason; got != BacklogPendingReason {
+		t.Fatalf("backlog workflow reason = %q", got)
+	}
+}
+
+func TestSourcesReportAFailedUnpinAndStillReleasesOnSuccess(t *testing.T) {
+	t.Parallel()
+	var reported []error
+	released := 0
+	sources, err := NewSources(Deps{
+		Queue:       nopQueue{},
+		Generations: failingRelease{err: errors.New("unpin failed"), count: &released},
+		Build: func(context.Context, startintent.Target) (startintent.Prepared, error) {
+			return startintent.Prepared{}, nil
+		},
+		Report: func(err error) { reported = append(reported, err) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := sources.Acquire(t.Context(), startintent.Target{ConfigGeneration: "sha256:gen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if released != 1 || len(reported) != 1 || !strings.Contains(reported[0].Error(), "sha256:gen") {
+		t.Fatalf("released=%d reported=%v, want one release attempt and one report naming the generation", released, reported)
+	}
+	if _, err := NewSources(Deps{}); err == nil {
+		t.Fatal("NewSources accepted no dependencies")
+	}
+}
+
+type failingRelease struct {
+	err   error
+	count *int
+}
+
+func (f failingRelease) Acquire(context.Context, string) (childworkflow.Generation, error) {
+	return childworkflow.Generation{Release: func() error { *f.count++; return f.err }}, nil
+}
+
+type nopQueue struct {
+	triggerqueue.SchedulerPolicyStore
 }

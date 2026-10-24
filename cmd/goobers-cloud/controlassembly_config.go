@@ -11,6 +11,8 @@ import (
 	"github.com/goobers/goobers/internal/cloud/generationpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/objstore"
+	"github.com/goobers/goobers/internal/cloud/schedentries"
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // constructConfiguration composes the control role's single configuration owner:
@@ -32,7 +34,7 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	if err != nil {
 		return err
 	}
-	configuration, err := cloudconfig.NewDirConfiguration(readiness.Assess, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID})
+	configuration, err := cloudconfig.NewDirConfiguration(configurationAssessor, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID})
 	if err != nil {
 		return err
 	}
@@ -43,6 +45,18 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	p.Configuration = configuration
 	p.generations = leasedGenerations{inner: source, owner: db.EpochHandle}
 	return nil
+}
+
+// configurationAssessor is the apply-time eligibility check: engine-only
+// readiness (RUNTIME00x) plus the scheduler's own trigger parsing (TRIGGER001),
+// so a generation the cloud scheduler could not tick is refused whole, with the
+// offending workflow named in `config status`, instead of failing later.
+func configurationAssessor(cfg *instance.Config, set *instance.ConfigSet) cloudconfig.Assessment {
+	assessment := readiness.Assess(cfg, set)
+	for key, findings := range schedentries.Assess(cfg, set) {
+		assessment[key] = append(assessment[key], findings...)
+	}
+	return assessment
 }
 
 // leasedActivator binds the activator's fence to the epoch handle that is live
