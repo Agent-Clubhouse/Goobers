@@ -16,8 +16,8 @@ import (
 
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/terminalhooks"
 	"github.com/goobers/goobers/internal/terminalhooks/parking"
 	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
@@ -103,7 +103,7 @@ type Policy struct {
 
 // Blocked is runner.Config.Blocked (#544/#545/#552); the policy itself is
 // parking.Blocked, shared with the cloud controller.
-func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
+func (p *Policy) Blocked(ctx context.Context, o terminalhooks.BlockedOutcome) error {
 	ctx = p.terminalHandlerAttributionContext(ctx, o.RunID, o.Stage)
 	return parking.Blocked(ctx, p.Poster, p.State, o)
 }
@@ -129,7 +129,7 @@ func (p *Policy) Blocked(ctx context.Context, o runner.BlockedOutcome) error {
 // Best-effort per item: one item's provider failure doesn't skip the rest; the
 // joined error is journaled by the runner (failed_handling_failed), never
 // fatal to the terminal transition.
-func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
+func (p *Policy) Failed(ctx context.Context, o terminalhooks.FailedOutcome) error {
 	ctx = p.terminalHandlerAttributionContext(ctx, o.RunID, o.Stage)
 	// #3361/#3364: an infra-fault terminal (credential materialization, git,
 	// network, lock contention, a harness that never gave the agent a turn) is
@@ -152,7 +152,7 @@ func (p *Policy) Failed(ctx context.Context, o runner.FailedOutcome) error {
 }
 
 // ExistingFix is runner.Config.ExistingFix (#3236); see parking.ExistingFix.
-func (p *Policy) ExistingFix(ctx context.Context, o runner.ExistingFixOutcome) error {
+func (p *Policy) ExistingFix(ctx context.Context, o terminalhooks.ExistingFixOutcome) error {
 	return parking.ExistingFix(ctx, p.Poster, o)
 }
 
@@ -173,7 +173,7 @@ func (p *Policy) ExistingFix(ctx context.Context, o runner.ExistingFixOutcome) e
 // not reach the provider — or a claimed item with no recorded repository
 // identity — leaves an actionable diagnostic in the run trace alongside the
 // durable outbox entry.
-func (p *Policy) TerminalNotifier(inner runner.TerminalNotifier) runner.TerminalNotifier {
+func (p *Policy) TerminalNotifier(inner terminalhooks.TerminalNotifier) terminalhooks.TerminalNotifier {
 	return func(runID string, phase journal.RunPhase, finalState string) error {
 		var errs []error
 		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
@@ -241,12 +241,12 @@ func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL s
 	fault, readErr := p.journaledTerminalFault(runID)
 	var err error
 	switch fault {
-	case runner.TerminalFaultItemInfrastructure:
+	case terminalhooks.TerminalFaultItemInfrastructure:
 		err = errors.Join(
 			p.State.VoidRemediationCharge(ctx, p.Poster, runID),
 			p.applyInfraCircuitBreaker(ctx, runID, finalState, runURL),
 		)
-	case runner.TerminalFaultSubstrate:
+	case terminalhooks.TerminalFaultSubstrate:
 		err = p.State.VoidRemediationCharge(ctx, p.Poster, runID)
 	default:
 		err = p.applyCircuitBreaker(ctx, runID, finalState, runURL)
@@ -254,7 +254,7 @@ func (p *Policy) chargeTerminal(ctx context.Context, runID, finalState, runURL s
 	return errors.Join(readErr, err)
 }
 
-func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, error) {
+func (p *Policy) journaledTerminalFault(runID string) (terminalhooks.TerminalFault, error) {
 	reader, err := journal.OpenReadOnly(filepath.Join(p.RunsDir, runID))
 	var events []journal.Event
 	if err == nil {
@@ -271,7 +271,7 @@ func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, err
 	// Only a cancelled run can have been stopped by the engine stall sweep, so
 	// only it consults the sweep's record: a local terminal never depends on
 	// the instance log being readable.
-	if p.EngineInterruption != nil && runner.EndedByCancellation(events) {
+	if p.EngineInterruption != nil && terminalhooks.EndedByCancellation(events) {
 		var ierr error
 		if interruption, ierr = p.EngineInterruption(runID); ierr != nil {
 			// Without the sweep's record a cancelled engine run stays an
@@ -279,7 +279,7 @@ func (p *Policy) journaledTerminalFault(runID string) (runner.TerminalFault, err
 			err = fmt.Errorf("read engine interruption for run %q: %w", runID, ierr)
 		}
 	}
-	return runner.JournaledTerminalFault(events, interruption), err
+	return terminalhooks.JournaledTerminalFault(events, interruption), err
 }
 
 // chargeFailed charges a failed terminal by its class:
@@ -310,7 +310,7 @@ func (p *Policy) chargeFailed(ctx context.Context, runID, stage, runURL string, 
 
 // failedOutcomeClass is the terminal's class: the runner's explicit
 // FaultClass when it set one, else the class of its code.
-func failedOutcomeClass(o runner.FailedOutcome) telemetry.ErrorClass {
+func failedOutcomeClass(o terminalhooks.FailedOutcome) telemetry.ErrorClass {
 	if o.FaultClass != "" {
 		return o.FaultClass
 	}

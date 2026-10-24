@@ -172,10 +172,9 @@ type TerminalPreparer func(runID string, phase journal.RunPhase, jr *journal.Run
 // implementations must be idempotent.
 type TerminalFinalizer func(runID string, phase journal.RunPhase) error
 
-// TerminalNotifier performs a best-effort side effect for a newly-terminal
-// live run. Errors are deliberately ignored so notification delivery can never
-// affect run processing.
-type TerminalNotifier func(runID string, phase journal.RunPhase, finalState string) error
+// TerminalNotifier is terminalhooks.TerminalNotifier: a best-effort side effect
+// for a newly-terminal live run.
+type TerminalNotifier = terminalhooks.TerminalNotifier
 
 // The terminal outcome and handler types live in internal/terminalhooks, the
 // runner-free home shared with the cloud controller; these aliases keep every
