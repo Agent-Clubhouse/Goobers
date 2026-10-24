@@ -47,7 +47,10 @@ type Writer interface {
 	UpdateComment(ctx context.Context, ref ItemRef, commentID, body string) error
 	// PullLabels and DeleteBranch target the run's WorkspaceRepository.
 	PullLabels(ctx context.Context, runID, pullID string) ([]string, error)
-	// DeleteBranch treats an already-absent branch as success.
+	// DeleteBranch reports two outcomes that are decisions, not failures: an
+	// already-absent branch as providers.ErrBranchNotFound (recorded as
+	// "branch-not-found"), and a branch an open pull request uses as
+	// *providers.BranchInUseError (kept).
 	DeleteBranch(ctx context.Context, runID, branch string) error
 	// ReleaseClaimMarker removes the provider-visible claim marker for
 	// ref.ItemID held by ref.RunID; an already-absent marker is success. The
