@@ -110,7 +110,9 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 }
 
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
+	prepared := completeArtifactPointer("artifacts/reviewer-diff.patch")
 	return apiv1.InvocationEnvelope{
+		PreparedReviewerDiff:                &apiv1.PreparedReviewerDiff{Observed: true, Artifact: &prepared},
 		ChildWorkflowOrigin:                 &apiv1.ChildWorkflowOrigin{StageOccurrence: journal.StageAttemptID("run-123", 0, "implement", 2), AttemptID: journal.StageAttemptID("run-123", 0, "implement", 4)},
 		TaskID:                              "implement",
 		ArtifactPublication:                 &apiv1.ArtifactPublication{Stage: "implement", Visit: 1, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.json", MaxSize: 100}}},

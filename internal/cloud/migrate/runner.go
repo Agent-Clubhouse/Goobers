@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudschema "github.com/goobers/goobers/internal/cloud/schema"
 )
 
@@ -38,10 +40,15 @@ type Runner struct {
 	InstanceID       string
 	Holder           string
 	PartitionIndexes []PartitionIndexPlan
+	// Partitions defaults to DefaultPartitionPlans; plans whose table is not
+	// present yet are skipped.
+	Partitions       []PartitionPlan
 	Readmodels       []ReadmodelPlan
 	ReadmodelBuilder ReadmodelBuilder
 	// StepTimeout bounds each migration step; zero uses DefaultStepTimeout.
 	StepTimeout time.Duration
+	// Report receives non-fatal findings (a deferred partition pass); nil drops them.
+	Report func(error)
 }
 
 // PartitionIndexPlan describes one parent index and all child indexes.
@@ -124,7 +131,8 @@ func (r Runner) Apply(ctx context.Context) error {
 	})
 }
 
-// finish runs the steps after the versioned migrations: partition indexes,
+// finish runs the steps after the versioned migrations: partition maintenance,
+// partition indexes,
 // read-model rebuilds, and the grant reconcile.
 func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, inventory cloudschema.Inventory) error {
 	for _, index := range r.PartitionIndexes {
@@ -145,10 +153,39 @@ func (r Runner) finish(ctx context.Context, manager *cloudlease.Manager, handle 
 	// grants never require rewriting an applied migration. The reconcile and
 	// its verification scale with the schema, so they run as a leased step,
 	// not inside the 2s fenced transaction.
-	return r.leasedStep(ctx, manager, handle, conn, "cloud grant reconcile",
+	if err := r.leasedStep(ctx, manager, handle, conn, "cloud grant reconcile",
 		func(stepCtx context.Context, tx pgx.Tx) error {
 			return cloudschema.ReconcileGrants(stepCtx, tx, inventory)
-		})
+		}); err != nil {
+		return err
+	}
+	return r.maintainPartitions(ctx, manager, handle, conn)
+}
+
+// maintainPartitions runs after the grant reconcile on purpose: it is
+// housekeeping the deploy must not depend on. Another maintainer holding the
+// lock (the control role's periodic job) is doing this same work, and so is a
+// DEFAULT lock that a long reader keeps us from taking (55P03): both leave the
+// next periodic pass to finish, and the latter is reported, not fatal.
+func (r Runner) maintainPartitions(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn) error {
+	plans := r.Partitions
+	if plans == nil {
+		plans = DefaultPartitionPlans
+	}
+	maintainer := PartitionMaintainer{Pool: r.Direct, Lease: manager,
+		Handle: func() *cloudlease.Handle { return handle }, Plans: plans,
+		DeferCurrentMonth: true}
+	err := maintainer.EnsureOn(ctx, conn)
+	switch {
+	case err == nil, errors.Is(err, ErrMigrationBusy):
+		return nil
+	case isLockTimeout(err):
+		if r.Report != nil {
+			r.Report(fmt.Errorf("partition maintenance deferred to the periodic job: %w", err))
+		}
+		return nil
+	}
+	return err
 }
 
 type heldLock struct {
@@ -309,4 +346,13 @@ func CheckPoolCompatibility(ctx context.Context, pool *pgxpool.Pool, binary stri
 		return fmt.Errorf("load cloud schema for compatibility check: %w", err)
 	}
 	return CheckCompatibility(binary, applied, catalog)
+}
+
+// WarningTo returns a Runner.Report that prints a non-fatal finding (a partition
+// pass deferred to the periodic job) as a warning on w, so it shows in the
+// Job's logs. The diagnostic is the sanitized class, as for errors.
+func WarningTo(w io.Writer, command string) func(error) {
+	return func(err error) {
+		_, _ = fmt.Fprintf(w, "goobers-cloud %s: warning: partition maintenance deferred to the periodic job: %s\n", command, cloudpg.SafeDiagnostic(err))
+	}
 }

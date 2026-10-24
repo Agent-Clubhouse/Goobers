@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -38,13 +39,14 @@ import (
 // digest-addressed with the same scheme the journal uses, which is what lets a
 // projection adopt them later rather than re-derive them.
 //
-// THE REMAINING GAP, stated plainly: nothing adopts these yet. The engine's
-// projection carries only context manifests and gate verdicts — it has no
-// channel for executor-produced bytes, and no span kind at all for transcripts.
-// Until that channel exists, these artifacts are durable and reachable on disk
-// but do not appear in the projected journal. That is the artifact/transcript
-// projection gap, not something this type can close on its own.
+// ReportArtifact lets the owning activity return trusted recorder receipts
+// for journal adoption. Ordinary artifacts use this channel; spans and prepared
+// named outputs retain their separate publication protocols.
 type StagingArtifacts struct {
+	// ReportArtifact carries successful ordinary recorder writes to the owning
+	// activity. Spans and prepared named-output blobs have separate protocols.
+	ReportArtifact func(invoke.ArtifactReceipt)
+
 	// root is the per-run staging root, e.g. <runs>/.staging-artifacts/<runID>.
 	root string
 	// Scrubber redacts secrets before bytes are written, matching the journal's
@@ -83,6 +85,14 @@ func (s *StagingArtifacts) StoreErrors() []error {
 // through to a fleet-wide store.
 func NewStagingArtifacts(dir string, scrubber journal.Scrubber, store blobstore.Store) *StagingArtifacts {
 	return &StagingArtifacts{root: dir, Scrubber: scrubber, Store: store}
+}
+
+// NewStagingArtifactsForInvocation binds recorder receipts to the owning
+// invocation's reporter, when one is present in ctx.
+func NewStagingArtifactsForInvocation(ctx context.Context, dir string, scrubber journal.Scrubber, store blobstore.Store) *StagingArtifacts {
+	recorder := NewStagingArtifacts(dir, scrubber, store)
+	recorder.ReportArtifact = invoke.ArtifactReporter(ctx)
+	return recorder
 }
 
 // StagingArtifactsDir is the staging root for runID beneath a runs directory.
@@ -232,6 +242,9 @@ func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity
 		if err := s.Store.Put(context.Background(), ref.Digest, data); err != nil {
 			s.putErrs = append(s.putErrs, err)
 		}
+	}
+	if kind == "artifacts" && s.ReportArtifact != nil {
+		s.ReportArtifact(invoke.ArtifactReceipt{Name: name, Ref: apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType, Integrity: ref.Integrity}})
 	}
 	return ref, nil
 }

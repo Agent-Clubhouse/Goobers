@@ -1082,6 +1082,67 @@ tables:
     - emit_key
     - epoch
     - body
+- schema: journal
+  table: health_event
+  provisioned: true
+  fence: owner_token
+  rationale: Gaggle health transitions are appended by the current health-stream token under the controller-lease fence and paged by cursor. Partitions inherit the parent's policy.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - emit_key
+    - body
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - type
+    - gaggle
+    - emit_key
+    - epoch
+    - body
+- schema: journal
+  table: instance_emit_key
+  provisioned: true
+  fence: owner_token
+  rationale: Scheduler emit-key dedup is written in the same controller-lease-fenced transaction as the event (and by the instance_event row trigger for the previous binary), so a retry is idempotent across months.
+  readers: []
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - emit_key
+    - seq
+- schema: journal
+  table: consumer_cursor
+  provisioned: true
+  fence: none-by-design
+  rationale: Durable per-consumer cursors over the instance and health streams advance by compare-and-swap on seq; each consumer owns its row, so a lease fence is not part of the contract.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+    update:
+    - seq
+    - updated_at
 - schema: control
   table: child_parent
   provisioned: true
