@@ -253,6 +253,12 @@
       "reason": "Cloud control-plane scheduling library; runs on the Linux unit shards (its PG16 exactly-once suite is cloudintegration-tagged)."
     },
     {
+      "package": "internal/cloud/epoch",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud epoch-service tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/cloud/startinput",
       "coverage": "none",
       "category": "not-selected",
@@ -293,6 +299,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Cloud terminal-awaiter tests run in the Linux unit job; the cloud control plane has no Windows deployment target."
+    },
+    {
+      "package": "internal/cloud/terminalwriter",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud provider-writer tests run in the Linux unit job and its PostgreSQL binding test in cloud-pg; the cloud control plane has no Windows deployment target."
     },
     {
       "package": "internal/blockedrecords",

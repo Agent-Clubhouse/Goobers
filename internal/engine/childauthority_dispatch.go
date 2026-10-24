@@ -34,6 +34,11 @@ func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStag
 	}
 	runID := input.Envelope.RunID
 	grant, err := a.ChildAuthority.AcquireChildAuthority(ctx, ChildAuthorityRequest{RunID: runID, Origin: *origin})
+	if errors.Is(err, ErrChildCustodyUnavailable) {
+		// The control plane, not the stage, failed: retry as infrastructure
+		// so the attempt never charges the run's stage budget for it.
+		return nil, temporal.NewApplicationErrorWithCause(err.Error(), FailureTypeInfrastructure, err)
+	}
 	if err != nil {
 		return nil, classifyChildCustody(ctx, err)
 	}
