@@ -54,7 +54,7 @@ func eligible() apiv1.Workflow {
 	}
 }
 
-// ineligible returns one fixture per RUNTIME code.
+// ineligible returns one fixture per unsupported runtime requirement.
 func ineligible() map[string]apiv1.Workflow {
 	r001 := eligible()
 	r001.Name = "r001"
@@ -65,12 +65,8 @@ func ineligible() map[string]apiv1.Workflow {
 	r003 := eligible()
 	r003.Name = "r003"
 	r003.DSLVersion = supportmatrix.V2DSLVersion
-	r004 := eligible()
-	r004.Name = "r004"
-	r004.Spec.Readiness.ClaimVisibility = "shared"
 	return map[string]apiv1.Workflow{
 		cloudreadiness.CodeFeature: r001, cloudreadiness.CodePlacement: r002, cloudreadiness.CodeDSL: r003,
-		cloudreadiness.CodeControlPlane: r004,
 	}
 }
 
@@ -99,6 +95,26 @@ func hasCode(refusal *cloudconfig.Refusal, code string) bool {
 		}
 	}
 	return false
+}
+
+func TestCloudConfigApplyAdmitsLocalAndSharedClaimVisibility(t *testing.T) {
+	for _, visibility := range []string{"local", "shared"} {
+		t.Run(visibility, func(t *testing.T) {
+			act := &recordingActivator{}
+			applier := cloudconfig.NewApplier(readiness.Assess, act)
+			w := eligible()
+			w.Spec.Readiness.ClaimVisibility = visibility
+			if err := apply(applier, "sha256:good", denyConfig(), workflowSet(w)); err != nil {
+				t.Fatalf("apply %s visibility: %v", visibility, err)
+			}
+			if len(act.digests) != 1 || act.digests[0] != "sha256:good" {
+				t.Fatalf("activated generations=%v", act.digests)
+			}
+			if err := applier.Guard().Admit("sha256:good", "g", w.Name); err != nil {
+				t.Fatalf("applied workflow refused by execution guard: %v", err)
+			}
+		})
+	}
 }
 
 func TestCloudConfigApplyRefusesIneligibleWorkflow(t *testing.T) {

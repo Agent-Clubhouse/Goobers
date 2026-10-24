@@ -225,14 +225,14 @@ func (p *Plane) insert(
 	return p.granted(ctx, tx, epoch, key, request.RunID, expires)
 }
 
-// liveLegacyHolder reports a live unscoped claim on the item, which is
+// liveLegacyHolder reports unscoped live or pending custody on the item, which is
 // exclusive against every namespace because its namespace is unresolved.
 func (p *Plane) liveLegacyHolder(ctx context.Context, tx pgx.Tx, itemID string) (string, bool, error) {
 	var holder string
 	err := tx.QueryRow(ctx, `
 		SELECT run_id FROM control.claim
 		WHERE instance_id=$1 AND gaggle=$2 AND provider=$2 AND external_id=$3
-		  AND expires_at>clock_timestamp()`,
+		  AND (expires_at>clock_timestamp() OR release_pending_at IS NOT NULL OR shared_admission_pending)`,
 		p.instanceID, legacyNamespace, itemID,
 	).Scan(&holder)
 	if errors.Is(err, pgx.ErrNoRows) {

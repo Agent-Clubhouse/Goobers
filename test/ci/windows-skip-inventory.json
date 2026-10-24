@@ -427,6 +427,12 @@
       "reason": "Cloud provider-observation adapter has no Windows deployment target; unit tests run on Linux and the PostgreSQL two-takeover test runs in the cloud-pg job."
     },
     {
+      "package": "internal/cloud/sharedclaims",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud shared-claim policy and registry have no Windows deployment target; unit tests run on Linux and runtime-role PostgreSQL tests run in the cloud-pg job."
+    },
+    {
       "package": "internal/cloud/schema",
       "coverage": "none",
       "category": "not-selected",

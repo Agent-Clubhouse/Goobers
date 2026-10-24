@@ -24,6 +24,7 @@ import (
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
 	"github.com/goobers/goobers/internal/cloud/projectorpg"
+	"github.com/goobers/goobers/internal/cloud/sharedclaims"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -140,16 +141,17 @@ type controlPlanes struct {
 	ChildWorkflows httpapi.HandlerOption
 	// BlobPlane serves the stage blob plane over control's object store, on
 	// every replica, leader or not (#8188).
-	BlobPlane     httpapi.HandlerOption
-	Configuration control.Configuration
-	Reader        readservice.Reader
-	provider      *controlProvider
-	Claims        httpapi.ClaimService
-	Triggers      httpapi.TriggerService
-	Journal       httpapi.JournalService
-	RunJournal    httpapi.RunJournalService
-	Resolve       acceptance.StartInputResolver
-	Epoch         func(context.Context, *lease.Handle) (control.EpochServices, error)
+	BlobPlane      httpapi.HandlerOption
+	Configuration  control.Configuration
+	Reader         readservice.Reader
+	provider       *controlProvider
+	sharedRegistry *sharedclaims.Registry
+	Claims         httpapi.ClaimService
+	Triggers       httpapi.TriggerService
+	Journal        httpapi.JournalService
+	RunJournal     httpapi.RunJournalService
+	Resolve        acceptance.StartInputResolver
+	Epoch          func(context.Context, *lease.Handle) (control.EpochServices, error)
 	// Admission builds each epoch's scheduler-backed admission of accepted starts
 	// (control.Runtime.Admission).
 	Admission   func(context.Context, control.AdmissionDeps) (control.Admission, error)
