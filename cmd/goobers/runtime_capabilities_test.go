@@ -95,6 +95,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// daemon-owned instance journal. This authenticated machine-to-daemon
 		// write is workflow execution, not read-only status navigation.
 		"workerConfigDivergence": true,
+		// The trusted worker commits a fenced terminal journal transition; this
+		// is the execution-plane write, not the operator-facing intervention.
+		"journalTerminalIntervention": true,
 		// claims/recover (#4016): a stage pod asking the daemon to run the
 		// stale-claim sweep it cannot run itself (the sweep reads run journals
 		// under the instance root and honours interventions and the recovery

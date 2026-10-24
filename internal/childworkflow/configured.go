@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -242,4 +243,21 @@ func ConfiguredAdmission(parent ParentSelection, backend Backend, cfg *instance.
 	}
 	input, _, err := configuredContext(ConfiguredRequest{Gaggle: parent.Gaggle, ParentWorkflow: parent.Workflow, ParentStage: parent.Stage, Backend: backend}, cfg, set, admit)
 	return input, err
+}
+
+// OfflineGooberAdmission resolves Goober harness configuration against the
+// instance's harness registry without launching anything. It is the
+// admission both the daemon and the cloud control plane use, so acceptance
+// and freeze resolve the same Goobers.
+func OfflineGooberAdmission(cfg *instance.Config, goobers map[string]apiv1.GooberSpec) (AdmittedGoobers, error) {
+	registry, err := runtimewiring.BuildHarnessRegistry(nil, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, "", "", true, nil, false)
+	if err != nil {
+		return AdmittedGoobers{}, err
+	}
+	resolved, warnings, err := runtimewiring.AdmitGooberHarnessConfigs(registry, goobers)
+	result := AdmittedGoobers{Goobers: resolved, HarnessNames: registry.Names()}
+	for _, warning := range warnings {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("Goober/%s: %s", warning.Goober, warning.Warning.Message))
+	}
+	return result, err
 }

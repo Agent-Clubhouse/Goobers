@@ -140,6 +140,35 @@ type Thresholds struct {
 	MinCICheckFailureRuns int `json:"minCICheckFailureRuns,omitempty"`
 }
 
+// FindingPassesThresholds applies the admitted aggregate threshold contract.
+func FindingPassesThresholds(finding Finding, thresholds Thresholds) bool {
+	switch finding.Kind {
+	case "stage-failure-rate":
+		return (thresholds.MinSamples == 0 ||
+			finding.Metrics["totalAttempts"] >= float64(thresholds.MinSamples)) &&
+			(thresholds.MaxFailureRate == 0 ||
+				finding.Metrics["failureRate"] >= thresholds.MaxFailureRate)
+	case "error-signature":
+		return thresholds.MinErrorSignatureCount == 0 ||
+			finding.Metrics["count"] >= float64(thresholds.MinErrorSignatureCount)
+	case "gate-never-fails":
+		return thresholds.MinGateEvaluations == 0 ||
+			finding.Metrics["totalEvaluations"] >= float64(thresholds.MinGateEvaluations)
+	case "gate-repass-churn":
+		return (thresholds.MinGateEvaluations == 0 ||
+			finding.Metrics["totalEvaluations"] >= float64(thresholds.MinGateEvaluations)) &&
+			(thresholds.MaxGateEscalationRate == 0 ||
+				finding.Metrics["escalationRate"] >= thresholds.MaxGateEscalationRate)
+	case "credit-assignment":
+		return (thresholds.MinCreditRuns == 0 ||
+			finding.Metrics["runs"] >= float64(thresholds.MinCreditRuns)) &&
+			(thresholds.MinCreditFailureShare == 0 ||
+				finding.Metrics["failureShare"] >= thresholds.MinCreditFailureShare)
+	default:
+		return false
+	}
+}
+
 // DefectAggregateRequest is one bounded read.
 type DefectAggregateRequest struct {
 	// Gaggle is the containment key. The client always sends its OWN gaggle;
