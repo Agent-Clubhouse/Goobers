@@ -1552,6 +1552,10 @@ tables:
     - owner_epoch
     update:
     - request_digest
+    - previous_digest
+    - action
+    - attempt_id
+    - requested_at
     - plan_digest
     - applied_at
     - owner_epoch
@@ -1567,13 +1571,31 @@ tables:
     columns:
     - instance_id
     - child_id
+    - revision
     - request_digest
     - previous_digest
-    - plan_digest
+    - action
     - result_ref
+    - attempt_id
+    - requested_at
+    - plan_digest
+    - superseded_at
     - owner_epoch
   writers:
   - role: goobers_controller
+    insert:
+    - instance_id
+    - child_id
+    - revision
+    - request_digest
+    - previous_digest
+    - action
+    - result_ref
+    - attempt_id
+    - requested_at
+    - plan_digest
+    - superseded_at
+    - owner_epoch
     update:
     - owner_epoch
     delete: true
