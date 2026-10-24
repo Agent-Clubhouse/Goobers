@@ -77,6 +77,46 @@ func (c *Client) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
 	return c.call(ctx, apicontract.EngineChildCancelPath, b, http.StatusNoContent, 0, nil)
 }
 
+// AuthorityForWorker is the engine worker's client for its stage attempts'
+// child-workflow grants, over the same plane and credential as ForWorker. It
+// returns an untyped nil without a key or endpoint, so the engine refuses
+// child-capable stages.
+func AuthorityForWorker(baseURL, owner string, signer *podauth.SignedKey) engine.ChildWorkflowAuthority {
+	if signer == nil || baseURL == "" {
+		return nil
+	}
+	return &Client{BaseURL: baseURL, TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission(owner, workerTokenTTL) }}
+}
+
+var _ engine.ChildWorkflowAuthority = (*Client)(nil)
+
+// maxGrantReply bounds an authority response: one grant and its metadata.
+const maxGrantReply = 16 << 10
+
+// AcquireChildAuthority asks control to bind (or re-deliver) the attempt's
+// grant. The returned grant carries a bearer.
+func (c *Client) AcquireChildAuthority(ctx context.Context, request engine.ChildAuthorityRequest) (engine.ChildAuthorityGrant, error) {
+	if err := request.Validate(); err != nil {
+		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	var grant engine.ChildAuthorityGrant
+	if err := c.call(ctx, apicontract.EngineChildAuthorityPath, request, http.StatusOK, maxGrantReply, &grant); err != nil {
+		return engine.ChildAuthorityGrant{}, err
+	}
+	if _, err := grant.Access(request.RunID); err != nil || grant.GrantID == "" {
+		return engine.ChildAuthorityGrant{}, errors.Join(errors.New("childadmissionclient: control returned an invalid child-workflow grant"), err)
+	}
+	return grant, nil
+}
+
+// ReleaseChildAuthority asks control to revoke exactly the named grant.
+func (c *Client) ReleaseChildAuthority(ctx context.Context, release engine.ChildAuthorityRelease) error {
+	if err := release.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	return c.call(ctx, apicontract.EngineChildAuthorityReleasePath, release, http.StatusNoContent, 0, nil)
+}
+
 // Park is not served yet.
 func (c *Client) Park(context.Context, engine.ChildParkInput) error { return ErrCustodyUnmapped }
 

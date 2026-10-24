@@ -71,7 +71,7 @@ func TestAuthoritiesBindRedeliverAndReleaseTheExactGrant(t *testing.T) {
 	f := newAuthorityFamily(t)
 	authorities := f.authorities()
 	pins, origin := f.parent.pins, f.parent.origin
-	grant, err := authorities.Acquire(t.Context(), pins.RunID, origin, podEndpoint)
+	grant, err := authorities.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{RunID: pins.RunID, Origin: origin, Endpoint: podEndpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,29 +91,29 @@ func TestAuthoritiesBindRedeliverAndReleaseTheExactGrant(t *testing.T) {
 
 	// The worker's response was lost: the same live attempt gets the same
 	// grant back, not a second one and not a refusal.
-	again, err := authorities.Acquire(t.Context(), pins.RunID, origin, podEndpoint)
+	again, err := authorities.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{RunID: pins.RunID, Origin: origin, Endpoint: podEndpoint})
 	if err != nil || again.GrantID != grant.GrantID || !again.ExpiresAt.Equal(grant.ExpiresAt) {
 		t.Fatalf("redelivery = %+v, %v; want grant %s again", again, err, grant.GrantID)
 	}
 
 	// A release naming another grant leaves the binding live.
-	if err := authorities.Release(t.Context(), pins.RunID, origin, "some-other-grant"); err != nil {
+	if err := authorities.ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: pins.RunID, Origin: origin, GrantID: "some-other-grant"}); err != nil {
 		t.Fatal(err)
 	}
 	if bound, err = f.controller.ChildAuthority(t.Context(), parent, origin.StageOccurrence); err != nil || bound.Revoked {
 		t.Fatalf("a release of another grant revoked this one: %+v, %v", bound, err)
 	}
-	if err := authorities.Release(t.Context(), pins.RunID, origin, grant.GrantID); err != nil {
+	if err := authorities.ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: pins.RunID, Origin: origin, GrantID: grant.GrantID}); err != nil {
 		t.Fatal(err)
 	}
 	if bound, err = f.controller.ChildAuthority(t.Context(), parent, origin.StageOccurrence); err != nil || !bound.Revoked {
 		t.Fatalf("released grant still live: %+v, %v", bound, err)
 	}
-	if err := authorities.Release(t.Context(), pins.RunID, origin, grant.GrantID); err != nil {
+	if err := authorities.ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: pins.RunID, Origin: origin, GrantID: grant.GrantID}); err != nil {
 		t.Fatalf("a repeated release = %v, want done", err)
 	}
 	// A revoked attempt is never revived.
-	if _, err := authorities.Acquire(t.Context(), pins.RunID, origin, podEndpoint); !errors.Is(err, engine.ErrChildCustodyRefused) {
+	if _, err := authorities.AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{RunID: pins.RunID, Origin: origin, Endpoint: podEndpoint}); !errors.Is(err, engine.ErrChildCustodyRefused) {
 		t.Fatalf("acquire after release = %v, want a refusal", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestAuthoritiesBindRedeliverAndReleaseTheExactGrant(t *testing.T) {
 func TestAuthoritiesReleaseOnUnadoptedCustodyIsRetried(t *testing.T) {
 	f := newAuthorityFamily(t)
 	pins, origin := f.parent.pins, f.parent.origin
-	grant, err := f.authorities().Acquire(t.Context(), pins.RunID, origin, podEndpoint)
+	grant, err := f.authorities().AcquireChildAuthority(t.Context(), engine.ChildAuthorityRequest{RunID: pins.RunID, Origin: origin, Endpoint: podEndpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,13 +132,13 @@ func TestAuthoritiesReleaseOnUnadoptedCustodyIsRetried(t *testing.T) {
 	}
 	f.takeOver(t, "controller-2")
 	f.bindController(t)
-	if err := f.authorities().Release(t.Context(), pins.RunID, origin, grant.GrantID); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
+	if err := f.authorities().ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: pins.RunID, Origin: origin, GrantID: grant.GrantID}); !errors.Is(err, engine.ErrChildCustodyUnavailable) {
 		t.Fatalf("release on unadopted custody = %v, want a retryable unavailability", err)
 	}
 	if _, err := f.controller.AdoptStaleChildCustody(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.authorities().Release(t.Context(), pins.RunID, origin, grant.GrantID); err != nil {
+	if err := f.authorities().ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: pins.RunID, Origin: origin, GrantID: grant.GrantID}); err != nil {
 		t.Fatalf("release after adoption: %v", err)
 	}
 	bound, err := f.controller.ChildAuthority(t.Context(), triggerqueue.ChildParent{Gaggle: pins.Gaggle, ParentRunID: pins.RunID}, origin.StageOccurrence)
@@ -149,10 +149,10 @@ func TestAuthoritiesReleaseOnUnadoptedCustodyIsRetried(t *testing.T) {
 
 func TestAuthoritiesReleaseOfAnUnknownRunOrUnboundStageIsDone(t *testing.T) {
 	f := newAuthorityFamily(t)
-	if err := f.authorities().Release(t.Context(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", f.parent.origin, "grant"); err != nil {
+	if err := f.authorities().ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Origin: f.parent.origin, GrantID: "grant"}); err != nil {
 		t.Fatalf("release for an unpinned run = %v", err)
 	}
-	if err := f.authorities().Release(t.Context(), f.parent.pins.RunID, f.parent.origin, "grant"); err != nil {
+	if err := f.authorities().ReleaseChildAuthority(t.Context(), engine.ChildAuthorityRelease{RunID: f.parent.pins.RunID, Origin: f.parent.origin, GrantID: "grant"}); err != nil {
 		t.Fatalf("release with nothing bound = %v", err)
 	}
 }

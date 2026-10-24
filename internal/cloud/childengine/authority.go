@@ -262,45 +262,47 @@ type Authorities struct {
 	Now    func() time.Time
 }
 
-// AuthorityGrant is one bound grant, for the worker to deliver to the stage
-// pod. Endpoint is the control API base the pod reaches control on.
-type AuthorityGrant struct {
-	Endpoint, BearerToken, GrantID string
-	ExpiresAt                      time.Time
-}
+var _ engine.ChildWorkflowAuthority = Authorities{}
 
-// Acquire binds (or, for the same live attempt, re-delivers) the grant of the
-// run's active stage attempt named by origin. endpoint is where the stage pod
-// reaches this control plane; it is not part of the grant.
-func (a Authorities) Acquire(ctx context.Context, runID string, origin apiv1.ChildWorkflowOrigin, endpoint string) (AuthorityGrant, error) {
+// AcquireChildAuthority binds (or, for the same live attempt, re-delivers) the
+// grant of the run's active stage attempt the request's origin names.
+func (a Authorities) AcquireChildAuthority(ctx context.Context, request engine.ChildAuthorityRequest) (engine.ChildAuthorityGrant, error) {
 	if a.Queue == nil || a.Grants == nil {
-		return AuthorityGrant{}, errors.New("childengine: authorities require child custody and a grant key")
+		return engine.ChildAuthorityGrant{}, errors.New("childengine: authorities require child custody and a grant key")
 	}
-	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: endpoint,
+	if err := request.Validate(); err != nil {
+		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	runID, origin := request.RunID, request.Origin
+	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: request.Endpoint,
 		// Control never journals or logs the bearer: it is returned to the
 		// worker, which registers it with the stage's scrubber.
 		Secrets: discardSecrets{}, Now: a.Now}
 	access, _, err := issuer.AcquireOrRecover(ctx, apiv1.InvocationEnvelope{RunID: runID, ChildWorkflowOrigin: &origin})
 	if err != nil {
-		return AuthorityGrant{}, classify(err)
+		return engine.ChildAuthorityGrant{}, classify(err)
 	}
-	// The grant outlives this request: release is the worker's DELETE, not
+	// The grant outlives this request: release is the worker's own call, not
 	// the issuer's in-process close.
 	grant, err := a.Grants.VerifyChildWorkflowGrant(access.BearerToken)
 	if err != nil {
-		return AuthorityGrant{}, err
+		return engine.ChildAuthorityGrant{}, err
 	}
-	return AuthorityGrant{Endpoint: access.Endpoint, BearerToken: access.BearerToken, GrantID: grant.ID, ExpiresAt: grant.ExpiresAt}, nil
+	return engine.ChildAuthorityGrant{Endpoint: access.Endpoint, BearerToken: access.BearerToken, GrantID: grant.ID, ExpiresAt: grant.ExpiresAt}, nil
 }
 
-// Release revokes exactly the named grant of the run's stage occurrence. A
-// grant already replaced by a newer attempt, or never bound, is released; an
-// earlier epoch's custody that adoption has not reached is retried, never
-// reported as released.
-func (a Authorities) Release(ctx context.Context, runID string, origin apiv1.ChildWorkflowOrigin, grantID string) error {
+// ReleaseChildAuthority revokes exactly the named grant of the run's stage
+// occurrence. A grant already replaced by a newer attempt, or never bound, is
+// released; an earlier epoch's custody that adoption has not reached is
+// retried, never reported as released.
+func (a Authorities) ReleaseChildAuthority(ctx context.Context, release engine.ChildAuthorityRelease) error {
 	if a.Queue == nil {
 		return errors.New("childengine: authorities require child custody")
 	}
+	if err := release.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	runID, origin, grantID := release.RunID, release.Origin, release.GrantID
 	pins, err := a.Queue.RunPinsOf(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

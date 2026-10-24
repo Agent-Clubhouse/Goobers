@@ -209,6 +209,12 @@ const (
 	EngineChildAdmitPath  = V1Prefix + "/engine/children/admit"
 	EngineChildLoadPath   = V1Prefix + "/engine/children/load"
 	EngineChildCancelPath = V1Prefix + "/engine/children/cancel"
+	// EngineChildAuthorityPath and EngineChildAuthorityReleasePath are the
+	// same plane's child-workflow grant acquire and release for an engine
+	// parent's stage attempt (#8085 b): the worker asks control to bind the
+	// grant at stage dispatch and to revoke it when the stage activity ends.
+	EngineChildAuthorityPath        = V1Prefix + "/engine/children/authority"
+	EngineChildAuthorityReleasePath = V1Prefix + "/engine/children/authority/release"
 
 	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
 	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
@@ -385,6 +391,10 @@ const (
 	RouteEngineChildAdmit   RouteID = "engineChildAdmit"
 	RouteEngineChildLoad    RouteID = "engineChildLoad"
 	RouteEngineChildCancel  RouteID = "engineChildCancel"
+	// RouteEngineChildAuthority and RouteEngineChildAuthorityRelease acquire
+	// and release an engine parent stage's child-workflow grant.
+	RouteEngineChildAuthority        RouteID = "engineChildAuthority"
+	RouteEngineChildAuthorityRelease RouteID = "engineChildAuthorityRelease"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
 	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
@@ -676,6 +686,8 @@ var v1Routes = []Route{
 	{ID: RouteEngineChildAdmit, Method: http.MethodPost, Path: EngineChildAdmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildLoad, Method: http.MethodPost, Path: EngineChildLoadPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildCancel, Method: http.MethodPost, Path: EngineChildCancelPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildAuthority, Method: http.MethodPost, Path: EngineChildAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildAuthorityRelease, Method: http.MethodPost, Path: EngineChildAuthorityReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The blob plane (decision 010/012, §2a) is the network transport for the
 	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET
