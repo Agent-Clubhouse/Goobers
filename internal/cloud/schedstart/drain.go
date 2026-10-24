@@ -2,9 +2,12 @@ package schedstart
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -38,6 +41,9 @@ type Drain struct {
 	Parallel int
 	Timeout  time.Duration
 	Report   func(error)
+	// RejectAccepted must atomically refuse only an unstarted ordinary row,
+	// under the epoch fence. It must never reject dispatching or child custody.
+	RejectAccepted func(context.Context, string, string, time.Time) error
 
 	// dispatch overrides the service dispatch in tests.
 	dispatch func(admission, execution context.Context, record triggerqueue.Record) error
@@ -104,5 +110,33 @@ func (d Drain) dispatchOne(admission, execution context.Context, record triggerq
 	if d.dispatch != nil {
 		return d.dispatch(admission, execution, record)
 	}
+	// Resolve before BeginDispatch: resolver failures prove no engine call was
+	// made. After dispatch, failures are uncertain and must retain custody.
+	in, err := d.Config.Resolve(admission, record)
+	if err != nil {
+		return d.refuse(admission, record, err)
+	}
+	// Keep the resolved input bound to this acceptance. The scheduler still
+	// admits the run before invoking the engine, without resolving a second time
+	// after the row has crossed into uncertain custody.
+	d.Config.Resolve = func(context.Context, triggerqueue.Record) (engine.RunInput, error) {
+		return in, nil
+	}
 	return d.bind(record).Dispatch(admission, execution, record)
+}
+
+func (d Drain) refuse(ctx context.Context, record triggerqueue.Record, err error) error {
+	if errors.Is(err, acceptance.ErrCorruptStart) {
+		return err
+	}
+	if errors.Is(err, acceptance.ErrNotOrdinaryStart) {
+		return nil
+	}
+	if errors.Is(err, acceptance.ErrPermanentStart) {
+		if d.RejectAccepted == nil {
+			return errors.Join(err, errors.New("schedstart: accepted rejection unavailable"))
+		}
+		return errors.Join(err, d.RejectAccepted(ctx, record.ID, err.Error(), d.Service.Now()))
+	}
+	return err // transient: leave Accepted for the next sweep
 }
