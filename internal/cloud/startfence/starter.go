@@ -199,14 +199,25 @@ func runMemo(in engine.RunInput) (map[string]interface{}, error) {
 // startOwner binds immutable input identity while allowing a successor epoch.
 func startOwner(in engine.RunInput) (StartOwnerMemo, error) {
 	owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID, InstanceID: in.InstanceID}
-	in.OwnerEpoch, in.StarterID = 0, ""
-	raw, err := json.Marshal(in)
+	digest, err := InputDigest(in)
 	if err != nil {
 		return StartOwnerMemo{}, err
 	}
-	sum := sha256.Sum256(raw)
-	owner.InputDigest = "sha256:" + hex.EncodeToString(sum[:])
+	owner.InputDigest = digest
 	return owner, nil
+}
+
+// InputDigest is a start's immutable input identity: the RunInput without the
+// owner epoch and starter, which a lease successor may change. An existing
+// workflow is adopted only when its start-owner memo carries this digest.
+func InputDigest(in engine.RunInput) (string, error) {
+	in.OwnerEpoch, in.StarterID = 0, ""
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // New requires a durable admission adapter before any Temporal operation.

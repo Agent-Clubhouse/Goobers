@@ -113,7 +113,9 @@ func (r Runner) Apply(ctx context.Context) error {
 		if applied[migration.Version] {
 			continue
 		}
-		if err := applyOne(ctx, session.conn, migration, r.BackupRef); err != nil {
+		if err := retryLockTimeout(ctx, migration, func() error {
+			return applyOne(ctx, session.conn, migration, r.BackupRef)
+		}); err != nil {
 			return err
 		}
 	}
@@ -130,7 +132,9 @@ func (r Runner) Apply(ctx context.Context) error {
 			if migration.Version <= leaseSchemaVersion || applied[migration.Version] {
 				continue
 			}
-			if err := r.applyLeased(runCtx, manager, handle, session.conn, migration); err != nil {
+			if err := retryLockTimeout(runCtx, migration, func() error {
+				return r.applyLeased(runCtx, manager, handle, session.conn, migration)
+			}); err != nil {
 				return err
 			}
 		}
@@ -284,7 +288,17 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 			return fmt.Errorf("bound %s: %w", label, err)
 		}
 	}
+	// Every leased step (migrations, partition indexes, read-model rebuilds,
+	// the grant reconcile) takes table locks; like migration DDL it must give
+	// up rather than queue behind a long reader, and is reported as busy.
+	if _, err := tx.Exec(stepCtx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound %s lock wait: %w", label, err)
+	}
 	if err := step(stepCtx, tx); err != nil {
+		if isLockTimeout(err) {
+			return fmt.Errorf("%w: %s could not take its locks: %w", ErrMigrationBusy, label, err)
+		}
 		return err
 	}
 	if err := manager.Confirm(stepCtx, tx, handle); err != nil {
@@ -311,7 +325,22 @@ func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, back
 	return nil
 }
 
+// Migration DDL takes ACCESS EXCLUSIVE locks. Queued behind one long reader,
+// such a lock request would queue every later append and read behind itself
+// and stall the journal for the whole deploy, so each migration gives up on a
+// lock it cannot take within migrationLockTimeout and is retried, then fails
+// as busy (the Job retries later), as partition maintenance does (55P03).
+var (
+	migrationLockTimeout = 5 * time.Second
+	migrationLockTries   = 3
+	migrationLockBackoff = 2 * time.Second
+)
+
 func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string) error {
+	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound cloud migration %d lock wait: %w", migration.Version, err)
+	}
 	if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 		return fmt.Errorf("apply cloud migration %d: %w", migration.Version, err)
 	}
@@ -324,6 +353,27 @@ func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef st
 		return fmt.Errorf("record cloud migration %d: %w", migration.Version, err)
 	}
 	return nil
+}
+
+// retryLockTimeout reruns one migration's transaction when it gave up on a
+// lock (55P03), and reports ErrMigrationBusy once the tries are spent. Each
+// attempt rolled back whole, so a retry starts clean.
+func retryLockTimeout(ctx context.Context, migration Migration, apply func() error) error {
+	var err error
+	for attempt := 1; attempt <= migrationLockTries; attempt++ {
+		if err = apply(); err == nil || !isLockTimeout(err) {
+			return err
+		}
+		if attempt == migrationLockTries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(migrationLockBackoff):
+		}
+	}
+	return fmt.Errorf("%w: cloud migration %d could not take its locks: %w", ErrMigrationBusy, migration.Version, err)
 }
 
 // AppliedMigrations loads compatibility metadata for startup readiness checks.
