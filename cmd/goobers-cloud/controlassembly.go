@@ -61,9 +61,10 @@ var controlAssembly = []controlAssemblySeam{
 	// After EngineChildAuthority: every child-workflow call re-resolves the
 	// parent through the same authority and checks the grant it bound.
 	{field: "ChildWorkflows", label: "child workflows", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.ChildWorkflows != nil }, construct: constructChildWorkflows, requires: requiresObjectStore},
-	{field: "Claims", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Claims != nil }, construct: constructClaims},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }, construct: constructTriggers},
 	{field: "Journal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Journal != nil }, construct: constructJournal, requires: requiresObjectStore},
+	// After Configuration and Journal: cleanup binds provider access to run pins.
+	{field: "Claims", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Claims != nil }, construct: constructClaims, requires: requiresConfigDirectory},
 	// After Journal: reads come from the journal plane and its projector.
 	{field: "Reader", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Reader != nil }, construct: constructReader},
 	// After Configuration, Claims, Journal and Reader: the cross-run journal
