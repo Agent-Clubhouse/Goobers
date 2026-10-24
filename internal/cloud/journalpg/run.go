@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -76,6 +77,10 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `INSERT INTO journal.run(instance_id,run_id,gaggle,workflow,run_yaml,created_at)
   SELECT instance_id,$5,$6,$7,$8,clock_timestamp() FROM control.lease WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`, h.InstanceID, h.Name, h.Holder, h.Epoch, id.RunID, id.Gaggle, id.Workflow, raw)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.SchemaName == "journal" && pgErr.TableName == "run" {
+			return os.ErrExist
+		}
 		if err = requireWrite(tag.RowsAffected(), err); err != nil {
 			return err
 		}
