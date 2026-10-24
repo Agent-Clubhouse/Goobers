@@ -115,8 +115,7 @@ func validateControlObjectStore(options controlOptions) error {
 // controlPlanes is the composition seam for independently landing PG backends.
 // No local filesystem implementation or successful no-op recovery is installed.
 type controlPlanes struct {
-	// EngineChildAdmissions installs the service's HTTP plane once #7879's
-	// service and worker client composition land together.
+	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
 	Configuration         control.Configuration
 	Reader                readservice.Reader

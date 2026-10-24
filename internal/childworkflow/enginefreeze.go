@@ -34,6 +34,15 @@ type EngineFreezeContext struct {
 	ParentGooberDigest   string
 }
 
+// FreezeContextFor is the freeze context of a resolved engine child authority.
+func FreezeContextFor(a Authority) (EngineFreezeContext, error) {
+	if a.Execution == nil {
+		return EngineFreezeContext{}, fmt.Errorf("%w: authority has no execution binding", ErrFrozenChildDrift)
+	}
+	return EngineFreezeContext{Admission: a.Admission, Execution: *a.Execution, ConfigGeneration: a.ConfigGeneration,
+		ParentWorkflowDigest: a.ParentWorkflowDigest, ParentGooberDigest: a.ParentGooberDigest}, nil
+}
+
 // EngineFreezeResolver loads the pinned context for one accepted envelope.
 type EngineFreezeResolver func(context.Context, ChildStartEnvelope) (EngineFreezeContext, error)
 
