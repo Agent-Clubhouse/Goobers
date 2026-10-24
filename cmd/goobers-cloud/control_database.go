@@ -139,6 +139,9 @@ func runControlConfigured(args []string, stdout, stderr io.Writer) int {
 		err = bindControlObjectStore(&databases.Controller, o.objectStoreURL, o.objectStoreContainer, o.objectStoreAccountName, o.objectStoreAccountKeyFile)
 	}
 	if err == nil {
+		err = bindControlConfiguration(&databases.Controller, o.configDir)
+	}
+	if err == nil {
 		err = runControlWithDatabases(ctx, databases, o, log.New(stderr, "goobers-cloud control: ", log.LstdFlags))
 	}
 	if err != nil {

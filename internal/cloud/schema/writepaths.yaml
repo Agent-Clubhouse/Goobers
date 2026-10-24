@@ -194,6 +194,50 @@ tables:
     - start_retry_epoch
     delete: true
 - schema: control
+  table: run_pin
+  provisioned: true
+  fence: owner_epoch
+  rationale: "Start-fence run pins (HA-P4 cloud child authority, migration 0023) are inserted only inside the controller
+    lease fence that confirms or adopts the Temporal start, are immutable after insert except terminal_at, which the controller
+    retention sweep sets once the run is closed, and are deleted only after that. API and worker paths never read or write them."
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - acceptance_id
+    - gaggle
+    - workflow
+    - workflow_version
+    - workflow_digest
+    - goober_digest
+    - config_generation
+    - repo_ref
+    - branch_namespace
+    - input_digest
+    - owner_epoch
+    - created_at
+    - terminal_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - acceptance_id
+    - gaggle
+    - workflow
+    - workflow_version
+    - workflow_digest
+    - goober_digest
+    - config_generation
+    - repo_ref
+    - branch_namespace
+    - input_digest
+    - owner_epoch
+    update:
+    - terminal_at
+    delete: true
+- schema: control
   table: source_receipt
   provisioned: true
   fence: epoch
@@ -870,6 +914,44 @@ tables:
     - owner_epoch
     - delivered_at
     delete: true
+- schema: control
+  table: stall_action
+  provisioned: true
+  fence: owner_epoch
+  rationale: The stall sweeper records and advances each run's cancel or terminate action under the controller-lease fence,
+    predicated on owner_epoch; retries list terminating actions. ON CONFLICT DO UPDATE needs SELECT on each column it takes from EXCLUDED.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - identity
+    - reason
+    - state
+    - detected_at
+    - cancel_requested_at
+    - terminated_at
+    - retry_at
+    - owner_epoch
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - identity
+    - reason
+    - state
+    - detected_at
+    - owner_epoch
+    update:
+    - identity
+    - reason
+    - state
+    - cancel_requested_at
+    - terminated_at
+    - last_error
+    - retry_at
+    - owner_epoch
 - schema: journal
   table: run
   provisioned: true
@@ -882,6 +964,7 @@ tables:
     - run_id
     - gaggle
     - run_yaml
+    - created_at
   writers:
   - role: goobers_controller
     insert:
@@ -906,6 +989,7 @@ tables:
     - last_seq
     - owner_epoch
     - owner_token
+    - last_append_at
   writers:
   - role: goobers_controller
     insert:
@@ -1082,6 +1166,67 @@ tables:
     - emit_key
     - epoch
     - body
+- schema: journal
+  table: health_event
+  provisioned: true
+  fence: owner_token
+  rationale: Gaggle health transitions are appended by the current health-stream token under the controller-lease fence and paged by cursor. Partitions inherit the parent's policy.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - emit_key
+    - body
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - seq
+    - at
+    - type
+    - gaggle
+    - emit_key
+    - epoch
+    - body
+- schema: journal
+  table: instance_emit_key
+  provisioned: true
+  fence: owner_token
+  rationale: Scheduler emit-key dedup is written in the same controller-lease-fenced transaction as the event (and by the instance_event row trigger for the previous binary), so a retry is idempotent across months.
+  readers: []
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - stream
+    - emit_key
+    - seq
+- schema: journal
+  table: consumer_cursor
+  provisioned: true
+  fence: none-by-design
+  rationale: Durable per-consumer cursors over the instance and health streams advance by compare-and-swap on seq; each consumer owns its row, so a lease fence is not part of the contract.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - consumer
+    - stream
+    - seq
+    update:
+    - seq
+    - updated_at
 - schema: control
   table: child_parent
   provisioned: true

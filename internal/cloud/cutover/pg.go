@@ -67,6 +67,8 @@ func (PGInstall) BucketReachable(context.Context) error {
 type Connect struct {
 	Admin func(ctx context.Context) (*pgx.Conn, error)
 	Owner func(ctx context.Context) (*pgxpool.Pool, error)
+	// Report receives non-fatal migration findings; nil drops them.
+	Report func(error)
 }
 
 // PGSteps returns the ordered bootstrap steps for a PostgreSQL install. The
@@ -127,7 +129,7 @@ func PGSteps(connect Connect, instanceID, leaseName, backupRef, holder string, e
 			if err != nil {
 				return false, err
 			}
-			if err := (cloudmigrate.Runner{Direct: direct, Catalog: catalog, BackupRef: backupRef, InstanceID: instanceID, Holder: holder}).Apply(ctx); err != nil {
+			if err := (cloudmigrate.Runner{Direct: direct, Catalog: catalog, BackupRef: backupRef, InstanceID: instanceID, Holder: holder, Report: connect.Report}).Apply(ctx); err != nil {
 				return false, err
 			}
 			after, err := cloudmigrate.AppliedMigrations(ctx, direct)

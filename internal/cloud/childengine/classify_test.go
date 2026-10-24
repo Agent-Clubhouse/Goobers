@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	cloudlease "github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 func TestClassifySeparatesFailoverFromPermanentRefusal(t *testing.T) {
-	for _, err := range []error{cloudlease.ErrStale, cloudlease.ErrSelfFenced, cloudlease.ErrFencedTransactionTimeout, cloudlease.ErrHeld, fmt.Errorf("fenced write: %w", cloudlease.ErrStale)} {
+	for _, err := range []error{cloudlease.ErrStale, cloudlease.ErrSelfFenced, cloudlease.ErrFencedTransactionTimeout, cloudlease.ErrHeld, fmt.Errorf("fenced write: %w", cloudlease.ErrStale), acceptance.ErrStaleChildEpoch, objstore.ErrGenerationUnavailable} {
 		if got := classify(err); !errors.Is(got, engine.ErrChildCustodyUnavailable) || !errors.Is(got, err) || errors.Is(got, engine.ErrChildCustodyRefused) {
 			t.Errorf("classify(%v) = %v, want unavailable", err, got)
 		}

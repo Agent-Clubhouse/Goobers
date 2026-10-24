@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +13,7 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 	workflow := loadCIWorkflow(t)
 	job := workflow.Jobs["cloud-pg"]
 	if job.Name != "cloud PostgreSQL and Azurite integration" ||
-		job.TimeoutMinutes != 15 ||
+		job.TimeoutMinutes != 30 ||
 		!slices.Contains(job.Needs, "scope") ||
 		!slices.Contains(job.Needs, "temporal-cli") ||
 		!strings.Contains(job.If, "needs.scope.outputs.cloud == 'true'") {
@@ -48,9 +49,13 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 		!strings.Contains(run.Run, " -json ") || !strings.Contains(run.Run, "set -uo pipefail") ||
 		!strings.Contains(run.Run, `tee "$RUNNER_TEMP/cloud-pg-test.json"`) ||
 		!strings.Contains(run.Run, `go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1`) ||
-		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/...") ||
+		!strings.Contains(run.Run, "./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... ./cmd/goobers-cloud") ||
 		run.Env["TESTDEP_STRICT"] != "1" {
 		t.Fatalf("cloud integration step = %+v", run)
+	}
+	pending := job.step(t, "Verify journal equivalence pending issues")
+	if pending.Run != "go run ./test/journalequivalence/cmd/equivalence verify-pending" || pending.Env["GH_TOKEN"] != "${{ github.token }}" || pending.ContinueOnError {
+		t.Fatalf("known journal divergences are not checked live: %+v", pending)
 	}
 	upload := job.step(t, "Upload cloud integration test events")
 	if upload.If != "always()" || !strings.Contains(upload.Uses, "actions/upload-artifact@") ||
@@ -71,5 +76,37 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 	}
 	if !slices.Contains(workflow.Jobs["required-ci"].Needs, "cloud-pg") {
 		t.Fatal("required-ci does not include cloud-pg")
+	}
+}
+
+func TestCloudPGTimingIsAdvisoryAndIncludesSetup(t *testing.T) {
+	job := loadCIWorkflow(t).Jobs["cloud-pg"]
+	report := job.step(t, "Report cloud job timing budget")
+	if report.If != "always()" || !report.ContinueOnError ||
+		!strings.Contains(report.Run, "/attempts/$GITHUB_RUN_ATTEMPT/jobs") ||
+		!strings.Contains(report.Run, ".started_at") ||
+		!strings.Contains(report.Run, "testtiming wall -job cloud-pg") {
+		t.Fatalf("cloud job wall timing must include setup and remain advisory: %+v", report)
+	}
+	upload := job.step(t, "Upload cloud job timing")
+	if upload.If != "always()" || !upload.ContinueOnError || upload.with("path") != "test-timings/cloud-pg.json" {
+		t.Fatalf("cloud timing evidence not retained: %+v", upload)
+	}
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "test-timing-budgets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var budgets struct {
+		Jobs map[string]struct {
+			BudgetSeconds int  `json:"budgetSeconds"`
+			AlertOnBudget bool `json:"alertOnBudget"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(data, &budgets); err != nil {
+		t.Fatal(err)
+	}
+	budget := budgets.Jobs["cloud-pg"]
+	if budget.BudgetSeconds != 900 || !budget.AlertOnBudget || job.TimeoutMinutes*60 <= budget.BudgetSeconds {
+		t.Fatalf("cloud job needs a soft 15m budget and separate hang guard: %+v", budget)
 	}
 }
