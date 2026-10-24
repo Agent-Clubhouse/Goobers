@@ -37,6 +37,25 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 		return "", "", err
 	}
 	r := &runOwner{key: journal.RunKey{Gaggle: request.Identity.Gaggle, RunID: request.Identity.RunID}, token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, options: normalizedOptions(request.Options)}
+	if !b.beginMint(r.key, h.Epoch) {
+		return "", "", journal.ErrRunOwned
+	}
+	defer b.endMint(r.key)
+	minted, err := b.unresolvedOwner(ctx, r.key, h.Epoch, true)
+	if err != nil {
+		return "", "", err
+	}
+	if minted != nil {
+		r.token = journal.OwnerToken(*minted)
+		if err := b.resolveMinted(ctx, r, nil, true); err == nil {
+			handle := b.keepRun(r)
+			b.changed(r, 1)
+			return handle, r.token, nil
+		} else if !errors.Is(err, errMintNotCommitted) {
+			return "", "", err
+		}
+		r.token = journal.OwnerToken(rand.Text())
+	}
 	id, blobs, err := prepareIdentity(r, request)
 	if err != nil {
 		return "", "", err
@@ -75,6 +94,7 @@ func (b *Backend) CreateRun(ctx context.Context, request journal.CreateRunReques
 		}
 		return b.storeCheckpoint(ctx, tx, r, checkpoint)
 	})
+	err = b.resolveMintError(ctx, r, nil, true, err)
 	if err != nil {
 		return "", "", err
 	}
@@ -121,9 +141,10 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 	if err != nil {
 		return "", "", journal.RecoverReport{}, err
 	}
-	if b.ownsRun(key, h.Epoch) {
+	if !b.beginMint(key, h.Epoch) {
 		return "", "", journal.RecoverReport{}, journal.ErrRunOwned
 	}
+	defer b.endMint(key)
 	if err := ctx.Err(); err != nil {
 		return "", "", journal.RecoverReport{}, errors.Join(journal.ErrRunOwned, err)
 	}
@@ -135,7 +156,7 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 		if err == nil {
 			return b.keepRun(r), r.token, report, nil
 		}
-		if errors.Is(err, errHistoryChanged) {
+		if errors.Is(err, errHistoryChanged) || errors.Is(err, errMintNotCommitted) {
 			continue
 		}
 		if !errors.Is(err, journal.ErrRunOwned) {
@@ -152,30 +173,18 @@ func (b *Backend) RecoverRun(ctx context.Context, key journal.RunKey, options jo
 	}
 }
 
-// ownsRun forgets only incarnations from strictly older controller epochs.
-// Handles already handed to callers retain their old epoch and cannot write.
-func (b *Backend) ownsRun(key journal.RunKey, epoch int64) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	owned := false
-	for handle, r := range b.runs {
-		if r.epoch < epoch {
-			delete(b.runs, handle)
-		} else if r.key == key {
-			owned = true
-		}
-	}
-	return owned
-}
-
 func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options journal.RunWriterOptions) (*runOwner, journal.RecoverReport, error) {
 	h, err := b.liveOwner()
 	if err != nil {
 		return nil, journal.RecoverReport{}, err
 	}
 	r := &runOwner{key: key, token: journal.OwnerToken(rand.Text()), epoch: h.Epoch, options: normalizedOptions(options)}
+	minted, err := b.unresolvedOwner(ctx, key, h.Epoch, false)
+	if err != nil {
+		return nil, journal.RecoverReport{}, err
+	}
 	// Reject current owners before reading potentially large immutable history.
-	if err := b.recoverableRun(ctx, key, h.Epoch); err != nil {
+	if err := b.recoverableRun(ctx, key, h.Epoch, minted); err != nil {
 		return nil, journal.RecoverReport{}, err
 	}
 	snapshot, err := b.snapshot(ctx, key.RunID)
@@ -192,12 +201,14 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 	paths := completedTranscriptPartials(snapshot.events)
 	report := journal.RecoverReport{LastSeq: uint64(snapshot.seq), Events: snapshot.events}
 	err = b.config.Lease.WithFence(ctx, h, func(ctx context.Context, tx pgx.Tx) error {
-		if err := b.claimRun(ctx, tx, h, r, snapshot.seq); err != nil {
+		if err := b.claimRun(ctx, tx, h, r, snapshot.seq, minted); err != nil {
 			return err
 		}
 		return b.storeCheckpoint(ctx, tx, r, checkpoint)
 	})
+	err = b.resolveMintError(ctx, r, minted, false, err)
 	if err == nil {
+		b.forgetUnresolved(key)
 		err = b.removeTranscriptPartials(ctx, r, paths)
 		if err != nil {
 			// A failed cleanup must not strand a same-epoch owner that was never
@@ -210,7 +221,7 @@ func (b *Backend) tryRecover(ctx context.Context, key journal.RunKey, options jo
 	return r, report, err
 }
 
-func (b *Backend) recoverableRun(ctx context.Context, key journal.RunKey, liveEpoch int64) error {
+func (b *Backend) recoverableRun(ctx context.Context, key journal.RunKey, liveEpoch int64, minted *string) error {
 	var epoch int64
 	var token *string
 	var gaggle string
@@ -221,17 +232,17 @@ func (b *Backend) recoverableRun(ctx context.Context, key journal.RunKey, liveEp
 	if err != nil {
 		return err
 	}
-	return validateRecoveryOwner(key, gaggle, token, epoch, liveEpoch)
+	return validateRecoveryOwner(key, gaggle, token, epoch, liveEpoch, minted)
 }
 
-func validateRecoveryOwner(key journal.RunKey, gaggle string, token *string, epoch, liveEpoch int64) error {
+func validateRecoveryOwner(key journal.RunKey, gaggle string, token *string, epoch, liveEpoch int64, minted *string) error {
 	if gaggle != key.Gaggle {
 		return os.ErrNotExist
 	}
 	if epoch > liveEpoch {
 		return lease.ErrStale
 	}
-	if token != nil && epoch == liveEpoch {
+	if token != nil && epoch == liveEpoch && (minted == nil || *token != *minted) {
 		return journal.ErrRunOwned
 	}
 	return nil
@@ -239,7 +250,7 @@ func validateRecoveryOwner(key journal.RunKey, gaggle string, token *string, epo
 
 // claimRun validates the pre-fence snapshot under the counter lock. No event
 // history is read here; takeover plus the prepared checkpoint is one short TX.
-func (b *Backend) claimRun(ctx context.Context, tx pgx.Tx, h *lease.Handle, r *runOwner, expected int64) error {
+func (b *Backend) claimRun(ctx context.Context, tx pgx.Tx, h *lease.Handle, r *runOwner, expected int64, minted *string) error {
 	var epoch, seq int64
 	var token *string
 	var gaggle string
@@ -250,14 +261,14 @@ func (b *Backend) claimRun(ctx context.Context, tx pgx.Tx, h *lease.Handle, r *r
 	if err != nil {
 		return err
 	}
-	if err := validateRecoveryOwner(r.key, gaggle, token, epoch, h.Epoch); err != nil {
+	if err := validateRecoveryOwner(r.key, gaggle, token, epoch, h.Epoch, minted); err != nil {
 		return err
 	}
 	if seq != expected {
 		return errHistoryChanged
 	}
-	tag, err := tx.Exec(ctx, `UPDATE journal.run_seq s SET owner_epoch=$4,owner_token=$6 WHERE s.instance_id=$1 AND s.run_id=$5 AND (s.owner_token IS NULL OR s.owner_epoch<$4) AND s.owner_epoch<=$4
- AND EXISTS(SELECT 1 FROM control.lease l WHERE l.instance_id=$1 AND l.name=$2 AND l.holder=$3 AND l.epoch=$4)`, h.InstanceID, h.Name, h.Holder, h.Epoch, r.key.RunID, r.token)
+	tag, err := tx.Exec(ctx, `UPDATE journal.run_seq s SET owner_epoch=$4,owner_token=$6 WHERE s.instance_id=$1 AND s.run_id=$5 AND (s.owner_token IS NULL OR s.owner_epoch<$4 OR (s.owner_epoch=$4 AND s.owner_token=$7)) AND s.owner_epoch<=$4
+ AND EXISTS(SELECT 1 FROM control.lease l WHERE l.instance_id=$1 AND l.name=$2 AND l.holder=$3 AND l.epoch=$4)`, h.InstanceID, h.Name, h.Holder, h.Epoch, r.key.RunID, r.token, minted)
 	if err = requireWrite(tag.RowsAffected(), err); err != nil {
 		return err
 	}
