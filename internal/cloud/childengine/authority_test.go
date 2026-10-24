@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/podauth"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -21,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -254,7 +259,12 @@ func TestParentAuthorityRefusesAJournalThatDisagreesWithItsPins(t *testing.T) {
 			id := f.identity
 			edit(&id)
 			f.run, f.origin = startParentJournal(t, id, f.definition)
-			requireRefused(t, f)
+			err := refusal(t, f)
+			// A local (driverless) journal passes the shared active-stage
+			// check, so the refusal must be the pin cross-check's.
+			if name == "local driver" && !strings.Contains(err.Error(), "disagrees with its start-fence pins") {
+				t.Fatalf("local-driver journal refused by %v, want the journal/pin disagreement", err)
+			}
 		})
 	}
 	t.Run("journal without a workspace repository", func(t *testing.T) {
@@ -330,4 +340,42 @@ func refusal(t *testing.T, f *parentFixture) error {
 		t.Fatalf("error %v is not a permanent refusal", err)
 	}
 	return err
+}
+
+func TestStageGrantTTLIsTheStageDurationPlusMarginCapped(t *testing.T) {
+	limited := func(task apiv1.Task) childworkflow.Authority {
+		return childworkflow.Authority{Admission: childworkflow.AdmissionContext{ParentTask: task}}
+	}
+	for name, tc := range map[string]struct {
+		task apiv1.Task
+		want time.Duration
+	}{
+		"timeout":            {apiv1.Task{TimeoutSeconds: 600}, 10*time.Minute + stageGrantMargin},
+		"limit":              {apiv1.Task{Limits: &apiv1.Limits{MaxDurationSeconds: 1200}}, 20*time.Minute + stageGrantMargin},
+		"timeout over limit": {apiv1.Task{TimeoutSeconds: 600, Limits: &apiv1.Limits{MaxDurationSeconds: 1200}}, 10*time.Minute + stageGrantMargin},
+		"default":            {apiv1.Task{}, dispatcher.DefaultStageTimeout + stageGrantMargin},
+		"capped":             {apiv1.Task{TimeoutSeconds: 7 * 24 * 3600}, podauth.MaxChildWorkflowGrantTTL},
+	} {
+		if got := StageGrantTTL(limited(tc.task)); got != tc.want {
+			t.Errorf("%s: TTL = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// Production still refuses task.childWorkflows (#7758): the engine's Run
+// refuses this parent before any stage, so no child origin is ever committed,
+// no grant can be acquired, and the child-workflow routes control now serves
+// have nothing to authorize. Lifting the refusal needs #8085 (d)'s end-to-end
+// qualification and a product-owner go-ahead; this fails first.
+func TestProductionStillRefusesChildWorkflows(t *testing.T) {
+	f := newParentFixture(t)
+	var parent struct {
+		Spec apiv1.WorkflowSpec `json:"spec"`
+	}
+	if err := json.Unmarshal(f.definition, &parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := wf.RefuseChildWorkflowExecution(parent.Spec); !errors.Is(err, wf.ErrChildWorkflowExecutionUnsupported) {
+		t.Fatalf("a child-enabled parent = %v; the production refusal was lifted without #8085 (d) and a PO go-ahead", err)
+	}
 }

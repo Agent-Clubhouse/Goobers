@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/startfence"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
@@ -274,7 +275,7 @@ func (a Authorities) AcquireChildAuthority(ctx context.Context, request engine.C
 		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	}
 	runID, origin := request.RunID, request.Origin
-	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: request.Endpoint,
+	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: request.Endpoint, TTL: StageGrantTTL,
 		// Control never journals or logs the bearer: it is returned to the
 		// worker, which registers it with the stage's scrubber.
 		Secrets: discardSecrets{}, Now: a.Now}
@@ -330,3 +331,23 @@ func (a Authorities) ReleaseChildAuthority(ctx context.Context, release engine.C
 type discardSecrets struct{}
 
 func (discardSecrets) RegisterUntil([]byte, time.Time) {}
+
+// stageGrantMargin covers the stage activity's heartbeat timeout plus pod
+// dispatch and start, beyond the stage's own duration.
+const stageGrantMargin = 10 * time.Minute
+
+// StageGrantTTL is a stage attempt's grant lifetime (design §6): the parent
+// stage's duration (its timeout, else its limit, else the dispatcher's default
+// stage timeout) plus the activity margin, capped by the grant maximum. A
+// longer wait renews through the same attempt's re-acquire.
+func StageGrantTTL(authority childworkflow.Authority) time.Duration {
+	task := authority.Admission.ParentTask
+	duration := dispatcher.DefaultStageTimeout
+	switch {
+	case task.TimeoutSeconds > 0:
+		duration = time.Duration(task.TimeoutSeconds) * time.Second
+	case task.Limits != nil && task.Limits.MaxDurationSeconds > 0:
+		duration = time.Duration(task.Limits.MaxDurationSeconds) * time.Second
+	}
+	return min(duration+stageGrantMargin, podauth.MaxChildWorkflowGrantTTL)
+}
