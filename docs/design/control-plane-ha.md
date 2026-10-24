@@ -1376,6 +1376,24 @@ The adversarial review (verdict: rethink) drove the current shape: the cloud DSL
 - PR #7689 sets the api pod grace to 3660s with an explicit `--drain-timeout 60m`, and the prepared worker grace to `DefaultDrainTimeout + ChildSettlementTimeout + 30s` (360s). It also corrects DS §10's Temporal Schedules text and documents the `RunScheduled` inverse as legacy, which completes HA-P0-09.
 - HA-P0-08 (stage-boundary drain) replaces the interim 60-minute drain bound and shrinks the api grace to the new bound + 60s; it updates `TestDeployReferenceAPISingletonShutdownAndDisruption` accordingly.
 
+### A.4a Group D: terminal-hook composition into the epoch (#7818)
+
+The cloud controller fires the same seven terminal hooks as the daemon (existing-fix, blocked, failed, escalation, prepare, notify, finalize), through one fenced, leader-owned awaiter (`internal/cloud/terminalawait`) instead of `awaitInto`. The policies are shared runner-free packages; the cloud supplies state and a provider writer.
+
+**Per epoch (handle, fence):**
+
+1. `claims.Plane` supplies `epoch.Claims`, the run's claimed item IDs, and the claim holders the awaiter also discovers.
+2. One `terminalwriter.Writer` (stateless) is the only provider path: every call is keyed by run ID and resolves repository and credentials from the run's pinned configuration. Absent branch -> `providers.ErrBranchNotFound`; a branch an open pull request uses -> `*providers.BranchInUseError`; refusals map to `providerwriter.ErrPermanent` / `ErrRepositoryNotPinned`. A comment write without an idempotency key is refused.
+3. State in PostgreSQL under the controller-lease fence: `blockedrecordspg`, `failurestreakpg`, `noworkstreakpg` (`terminalstate.State` composes them), the framed receipt (`terminalframedpg`) and the closed-run watermark (`terminalwatermarkpg`).
+4. Hook outcomes are appended to the instance log through the FENCED instance append (as the scheduler log does), not the best-effort writer: they are part of the durable record.
+5. The awaiter gets `Closed` (Temporal visibility), `Watermark`, `Framed` and the hook options (`WithParking`, `WithFailed`, `WithNotify`, `WithPrepare`). Each policy is built per run: poster = `providerposter.Poster{writer, runID}`, `Reports` = the terminal-report outbox.
+
+**Delivery loop.** `Outbox.Reconcile` and the blocked-record `Heal` run in their own budgeted, jittered epoch loop fenced by the handle, not in the awaiter's tick, so a slow provider can never stall terminal detection. It is visible: an informational `terminalOutbox` readiness check (it does not gate `Ready`) and a lag block on the control status page. `Heal` runs on its own slow cadence (minutes, `DefaultHealEvery`), because it reads the provider for each item it verifies; those reads go through the shared provider quota ledger (`epochWiring.Quota`), verify through the applied configuration's binding for the repository (a run's pin is swept days after it ends), and back off per item so an unverifiable record neither burns reads nor occupies heal slots. Records are also verified when a new block would close a cycle.
+
+**Delivery semantics.** Frames are at-least-once across epochs. The framed receipt is written after Finalize succeeds, so a successor skips completed frames; a frame that crashed earlier is re-fired and must be idempotent: provider comments carry a run-derived idempotency key, streak charges and no-work increments skip a run that already charged, label and branch operations converge. Non-finalize hook failures are recorded and NOT re-fired after the receipt: there is no retroactive delivery when a missing capability arrives later.
+
+**Not ported.** pr-remediation charge voiding and superseded-run settlement have no cloud lane until #8131 and are no-ops; the cloud records no claim purpose, so curation claims are not exempted from the no-work streak.
+
 ### A.4 Still UNVERIFIED
 
 - KEDA Temporal scaler; Worker Controller fit.

@@ -1122,3 +1122,28 @@ func TestPlaneListNamespaceFailsWhenEitherReadFails(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaneListsClaimedRunsAndItemsAsController(t *testing.T) {
+	f := newPlaneFixture(t)
+	plane := f.leader(t, "a").plane
+	ctx := t.Context()
+	if runs, err := plane.ClaimedRuns(ctx); err != nil || len(runs) != 0 {
+		t.Fatalf("empty ledger: %v, %v", runs, err)
+	}
+	for _, claim := range []httpapi.ClaimRequest{request("42", "run-a"), request("43", "run-a"), request("44", "run-b")} {
+		if got, err := plane.Acquire(ctx, claim); err != nil || !got.Ok {
+			t.Fatalf("acquire %s = %+v, %v", claim.ItemID, got, err)
+		}
+	}
+	runs, err := plane.ClaimedRuns(ctx)
+	if err != nil || !reflect.DeepEqual(runs, []string{"run-a", "run-b"}) {
+		t.Fatalf("claimed runs = %v, %v", runs, err)
+	}
+	items, err := plane.ClaimedItems(ctx, "run-a")
+	if err != nil || !reflect.DeepEqual(items, []string{"42", "43"}) {
+		t.Fatalf("run-a items = %v, %v", items, err)
+	}
+	if items, err := plane.ClaimedItems(ctx, "run-none"); err != nil || len(items) != 0 {
+		t.Fatalf("unknown run items = %v, %v", items, err)
+	}
+}

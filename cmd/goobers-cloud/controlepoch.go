@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/terminalreportpg"
+	"github.com/goobers/goobers/internal/localscheduler"
 )
 
 // epochWiring holds the Epoch parts other PRs compose. The Epoch seam is real
@@ -22,13 +23,19 @@ type epochWiringParts struct {
 	// Claims builds the claim plane's epoch maintenance (claims.Plane,
 	// p3/cloud-claims) bound to the epoch's fence and handle.
 	Claims func(fence *lease.Manager, handle *lease.Handle) (epoch.Claims, error)
-	// Awaiters builds the leader-owned terminal-effect awaiters (optional until
-	// the terminal hooks are composed).
-	Awaiters func(fence *lease.Manager, handle *lease.Handle) (epoch.Awaiters, error)
+	// Terminal builds the epoch's terminal machinery: the leader-owned awaiters
+	// that fire the terminal hooks, and the outbox delivery loop. When unset it is
+	// composed from the control planes (terminalPart); a test or another
+	// composition may set it.
+	Terminal func(ctx context.Context, fence *lease.Manager, handle *lease.Handle) (terminalEpoch, error)
 	// Observations supplies provider-observation restore/capture.
 	Observations func() epoch.Observations
 	// Report receives per-run awaiter failures.
 	Report func(error)
+	// Quota is the process's shared provider quota ledger (the scheduler's), so
+	// the terminal hooks' provider reads are accounted in it. Optional until the
+	// scheduler is composed; without it those reads are unmetered but slow.
+	Quota func() *localscheduler.ProviderQuotaState
 }
 
 var epochWiring epochWiringParts
@@ -45,6 +52,9 @@ func (p epochWiringParts) missing() []string {
 	if p.Observations == nil {
 		missing = append(missing, "provider observations")
 	}
+	if p.Terminal == nil {
+		missing = append(missing, "terminal hooks")
+	}
 	return missing
 }
 
@@ -55,8 +65,20 @@ func constructEpoch(_ context.Context, db databaseServices, _ controlAuth, _ *le
 	if db.Pools == nil || db.Pools.Direct == nil {
 		return errors.New("epoch services require the controller's direct pool")
 	}
-	p.Epoch = func(_ context.Context, handle *lease.Handle) (control.EpochServices, error) {
+	defaultTerminal := terminalPart(db, p)
+	var defaultClaims func(*lease.Manager, *lease.Handle) (epoch.Claims, error)
+	if plane, ok := p.Claims.(epoch.Claims); ok {
+		// The claim plane takes its fence from the handle on every call.
+		defaultClaims = func(*lease.Manager, *lease.Handle) (epoch.Claims, error) { return plane, nil }
+	}
+	p.Epoch = func(ctx context.Context, handle *lease.Handle) (control.EpochServices, error) {
 		parts := epochWiring
+		if parts.Terminal == nil {
+			parts.Terminal = defaultTerminal
+		}
+		if parts.Claims == nil {
+			parts.Claims = defaultClaims
+		}
 		if missing := parts.missing(); len(missing) > 0 {
 			return control.EpochServices{}, fmt.Errorf("cloud epoch services are not composed yet: %s", strings.Join(missing, ", "))
 		}
@@ -72,18 +94,21 @@ func constructEpoch(_ context.Context, db databaseServices, _ controlAuth, _ *le
 		if err != nil {
 			return control.EpochServices{}, err
 		}
-		var awaiters epoch.Awaiters
-		if parts.Awaiters != nil {
-			if awaiters, err = parts.Awaiters(fence, handle); err != nil {
-				return control.EpochServices{}, err
-			}
+		term, err := parts.Terminal(ctx, fence, handle)
+		if err != nil {
+			return control.EpochServices{}, err
 		}
-		return epoch.Build(epoch.Config{
+		services, err := epoch.Build(epoch.Config{
 			Handle: handle, Claims: claims,
 			Cancel: cancelpg.Store{Fence: fence}, Terminal: terminalreportpg.Store{Fence: fence},
-			Open: epoch.TemporalOpenRuns{Client: *temporal}, ConfirmClosed: epoch.TemporalConfirmClosed(*temporal), Awaiters: awaiters,
+			Open: epoch.TemporalOpenRuns{Client: *temporal}, ConfirmClosed: epoch.TemporalConfirmClosed(*temporal), Awaiters: term.Awaiters, L3: term.Delivery,
 			Observations: parts.Observations(), Report: parts.Report,
 		})
+		if err != nil {
+			// Nothing started: withdraw the status the terminal part published.
+			_ = term.Awaiters.Stop(ctx)
+		}
+		return services, err
 	}
 	return nil
 }

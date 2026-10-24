@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,13 @@ import (
 // rather than detect against a truncated graph.
 const MaxRecords = 100_000
 
+// ErrVerificationDeferred means a cycle's members could not all be verified
+// because the provider read budget was spent. The block is recorded, but no cycle
+// is reported: escalating needs-human on an unverified cycle could stop work on
+// items that are no longer blocked. The cycle is looked at again the next time any
+// member's block is recorded.
+var ErrVerificationDeferred = errors.New("blocked-record cycle verification deferred: provider read budget spent")
+
 // ClosedFunc reports whether an item is VERIFIED closed on the provider. Only a
 // definite "closed" is true; an error means unknown and the record is kept.
 // runID is the run whose record names the item (the writer resolves the
@@ -36,6 +44,99 @@ type Store struct {
 	// Closed verifies closure before a cycle is acted on and during Heal. Without
 	// it no record is ever dropped, so stale records can accumulate.
 	Closed ClosedFunc
+	// Reserve accounts one provider read of the given provider in the shared
+	// quota ledger and reports whether it may be made now; false skips the
+	// verification (the record is kept and tried again later). Nil allows all.
+	Reserve func(providers.ProviderKind) bool
+	// Backoff keeps an item that cannot be verified from being retried on every
+	// pass. Nil retries every time.
+	Backoff *Backoff
+}
+
+// Backoff delays re-verifying an item whose last verification failed, doubling
+// from base up to max, so a record that can never be verified (its repository is
+// no longer configured, its credentials are gone) neither burns provider reads
+// nor occupies heal slots forever. It is safe for concurrent use.
+type Backoff struct {
+	Base, Max time.Duration
+	Now       func() time.Time
+
+	mu    sync.Mutex
+	state map[blockedcycle.Node]backoffState
+}
+
+type backoffState struct {
+	failures int
+	until    time.Time
+}
+
+func (b *Backoff) now() time.Time {
+	if b.Now != nil {
+		return b.Now()
+	}
+	return time.Now()
+}
+
+// Allowed reports whether node may be verified now.
+func (b *Backoff) Allowed(node blockedcycle.Node) bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.now().Before(b.state[node].until)
+}
+
+// Failed records a failed verification of node.
+func (b *Backoff) Failed(node blockedcycle.Node) {
+	if b == nil {
+		return
+	}
+	base, limit := b.Base, b.Max
+	if base <= 0 {
+		base = 10 * time.Minute
+	}
+	if limit <= 0 {
+		limit = 6 * time.Hour
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == nil {
+		b.state = map[blockedcycle.Node]backoffState{}
+	}
+	st := b.state[node]
+	st.failures++
+	delay := base
+	for i := 1; i < st.failures && delay < limit; i++ {
+		delay *= 2
+	}
+	st.until = b.now().Add(min(delay, limit))
+	b.state[node] = st
+}
+
+// Retain drops the state of every node not in live, so entries for items that no
+// longer appear in any record do not accumulate.
+func (b *Backoff) Retain(live map[blockedcycle.Node]bool) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for node := range b.state {
+		if !live[node] {
+			delete(b.state, node)
+		}
+	}
+}
+
+// Verified clears node's failures.
+func (b *Backoff) Verified(node blockedcycle.Node) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.state, node)
 }
 
 // RecordBlock replaces the item's record and returns the dependency cycle it
@@ -48,15 +149,21 @@ func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.
 	}
 	// A cycle through a closed item is false: a stale record would escalate
 	// non-cyclic items needs-human. Verify the members outside any transaction,
-	// forget the closed ones and look again, until the cycle is real or gone.
+	// forget the closed ones and look again, until the cycle is real or gone. This
+	// path does not honour the heal backoff (a block is being decided now), but it
+	// does account its reads; if the read budget is spent before every member is
+	// verified, nothing is escalated yet.
 	key := blockedrecords.Key(b.Repository, b.ItemID)
 	for range cycle.Affected {
 		recs, serr := s.snapshot(ctx, handle)
 		if serr != nil {
 			return cycle, serr
 		}
-		closed := s.closedNodes(ctx, recs, cycle.Affected, b.RunID)
+		closed, deferred := s.closedNodes(ctx, recs, cycle.Affected, b.RunID, false)
 		if len(closed) == 0 {
+			if deferred {
+				return blockedcycle.Result{}, ErrVerificationDeferred
+			}
 			return cycle, nil
 		}
 		if ferr := s.Forget(ctx, handle, closed); ferr != nil {
@@ -201,21 +308,45 @@ func runIDs(recs map[string]blockedrecords.Record) map[blockedcycle.Node]string 
 	return nodes
 }
 
-// closedNodes returns the candidates verified closed. An unverifiable one is
-// kept: a record is only dropped on positive evidence.
-func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.Record, candidates []blockedcycle.Node, fallbackRun string) []blockedcycle.Node {
+// closedNodes returns the candidates verified closed, and whether any candidate
+// went unchecked because its provider's read budget was spent. An unverifiable
+// candidate is kept: a record is only dropped on positive evidence. With
+// honourBackoff, an item that recently failed verification is skipped (the heal
+// sweep); the outcome of every check updates the backoff either way. A provider
+// whose budget is spent is skipped for the rest of the pass, but other providers'
+// items are still checked.
+func (s Store) closedNodes(ctx context.Context, recs map[string]blockedrecords.Record, candidates []blockedcycle.Node, fallbackRun string, honourBackoff bool) (closed []blockedcycle.Node, deferred bool) {
 	runs := runIDs(recs)
-	var closed []blockedcycle.Node
+	spent := map[providers.ProviderKind]bool{}
 	for _, node := range candidates {
+		if honourBackoff && !s.Backoff.Allowed(node) {
+			continue
+		}
+		provider := node.Repository.Provider
+		if spent[provider] {
+			deferred = true
+			continue
+		}
+		if s.Reserve != nil && !s.Reserve(provider) {
+			spent[provider] = true
+			deferred = true
+			continue
+		}
 		run := runs[node]
 		if run == "" {
 			run = fallbackRun
 		}
-		if done, err := s.Closed(ctx, run, node.Repository, node.ItemID); err == nil && done {
+		done, err := s.Closed(ctx, run, node.Repository, node.ItemID)
+		if err != nil {
+			s.Backoff.Failed(node)
+			continue
+		}
+		s.Backoff.Verified(node)
+		if done {
 			closed = append(closed, node)
 		}
 	}
-	return closed
+	return closed, deferred
 }
 
 // Forget drops what a closed item leaves behind: its own record, and its
@@ -228,6 +359,7 @@ func (s Store) Forget(ctx context.Context, handle *lease.Handle, closed []blocke
 	gone := map[blockedcycle.Node]bool{}
 	for _, node := range closed {
 		gone[node] = true
+		s.Backoff.Verified(node) // a forgotten item needs no backoff entry
 	}
 	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		recs, err := load(ctx, tx, handle.InstanceID)
@@ -285,6 +417,14 @@ func (s Store) Heal(ctx context.Context, handle *lease.Handle, limit int) (int, 
 	sort.Slice(nodes, func(i, j int) bool {
 		return blockedrecords.Key(nodes[i].Repository, nodes[i].ItemID) < blockedrecords.Key(nodes[j].Repository, nodes[j].ItemID)
 	})
+	live := make(map[blockedcycle.Node]bool, len(nodes))
+	for _, node := range nodes {
+		live[node] = true
+	}
+	s.Backoff.Retain(live)
+	// Items in backoff take no slot: an unverifiable item must not occupy the
+	// window and starve the ones that can be checked.
+	nodes = readyNodes(nodes, s.Backoff)
 	if len(nodes) > limit {
 		// Rotate the window each minute so no item is starved by the ones before it.
 		now := time.Now
@@ -294,6 +434,17 @@ func (s Store) Heal(ctx context.Context, handle *lease.Handle, limit int) (int, 
 		start := int(now().Unix()/60) % len(nodes)
 		nodes = append(nodes[start:], nodes[:start]...)[:limit]
 	}
-	closed := s.closedNodes(ctx, recs, nodes, "")
+	closed, _ := s.closedNodes(ctx, recs, nodes, "", true)
 	return len(closed), s.Forget(ctx, handle, closed)
+}
+
+// readyNodes drops the nodes still in backoff, preserving order.
+func readyNodes(nodes []blockedcycle.Node, backoff *Backoff) []blockedcycle.Node {
+	ready := nodes[:0:0]
+	for _, node := range nodes {
+		if backoff.Allowed(node) {
+			ready = append(ready, node)
+		}
+	}
+	return ready
 }
