@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/cloud/childengine"
+	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
+	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/enginechildplane"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type controlPlaneConstructor func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error
@@ -43,6 +46,8 @@ var controlAssembly = []controlAssemblySeam{
 	// After Configuration: freezing a child resolves its pinned generation
 	// against the applied configuration.
 	{field: "EngineChildAdmissions", label: "engine child admissions", issue: "#7879", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAdmissions != nil }, construct: constructEngineChildAdmissions, requires: requiresObjectStore},
+	// After EngineChildAdmissions: grants bind in the same fenced custody.
+	{field: "EngineChildAuthority", label: "engine child authority", issue: "#8085", controller: true, present: func(p controlPlanes) bool { return p.EngineChildAuthority != nil }, construct: constructEngineChildAuthority, requires: requiresObjectStore},
 	{field: "Reader", issue: "#7811", present: func(p controlPlanes) bool { return p.Reader != nil }},
 	{field: "Claims", issue: "#7808", present: func(p controlPlanes) bool { return p.Claims != nil }},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }},
@@ -140,5 +145,40 @@ func constructEngineChildAdmissions(_ context.Context, db databaseServices, _ co
 		return err
 	}
 	p.EngineChildAdmissions = httpapi.WithEngineChildAdmissions(plane)
+	p.engineChildren = &admissions
+	return nil
+}
+
+// constructEngineChildAuthority binds engine parents' child-workflow grants
+// for engine workers (#8085 b), from the run pins, the control-side journal and
+// the live Temporal execution, in the admissions' fenced custody.
+func constructEngineChildAuthority(_ context.Context, db databaseServices, auth controlAuth, manager *lease.Manager, owner func() *lease.Handle, p *controlPlanes) error {
+	switch {
+	case p.engineChildren == nil:
+		return errors.New("engine child authority requires the engine child admissions (#7879)")
+	case db.Temporal == nil:
+		return errors.New("engine child authority requires the control Temporal client")
+	case auth.GrantKeys == nil:
+		return errors.New("engine child authority requires the credential-grant key")
+	}
+	backend, err := journalpg.New(journalpg.Config{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Lease: manager, LiveOwner: owner})
+	if err != nil {
+		return err
+	}
+	authority := childengine.FencedAuthority{Fenced: *p.engineChildren, Grants: auth.GrantKeys,
+		Journal: func(ctx context.Context, runID string) (journal.RunReader, error) {
+			return backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
+		},
+		Execution: func(ctx context.Context, runID string) (startfence.StartedExecution, error) {
+			return startfence.DescribeStarted(ctx, db.Temporal, runID)
+		}}
+	if err := authority.Validate(); err != nil {
+		return err
+	}
+	plane, err := enginechildplane.NewAuthority(authority)
+	if err != nil {
+		return err
+	}
+	p.EngineChildAuthority = httpapi.WithEngineChildAuthority(plane)
 	return nil
 }

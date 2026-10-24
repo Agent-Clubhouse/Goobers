@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/control"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
@@ -108,15 +109,19 @@ func validateControlObjectStore(options controlOptions) error {
 type controlPlanes struct {
 	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
-	Configuration         control.Configuration
-	Reader                readservice.Reader
-	Claims                httpapi.ClaimService
-	Triggers              httpapi.TriggerService
-	Journal               httpapi.JournalService
-	RunJournal            httpapi.RunJournalService
-	Resolve               acceptance.StartInputResolver
-	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
-	RunnerHosts           []string
+	// EngineChildAuthority binds engine parents' child-workflow grants for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildAuthority httpapi.HandlerOption
+	engineChildren       *childengine.Fenced
+	Configuration        control.Configuration
+	Reader               readservice.Reader
+	Claims               httpapi.ClaimService
+	Triggers             httpapi.TriggerService
+	Journal              httpapi.JournalService
+	RunJournal           httpapi.RunJournalService
+	Resolve              acceptance.StartInputResolver
+	Epoch                func(context.Context, *lease.Handle) (control.EpochServices, error)
+	RunnerHosts          []string
 
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
@@ -165,6 +170,14 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	// Dialled before assembly: the child-authority seam reads live engine
+	// executions. Control cannot serve without Temporal either way.
+	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
+	if err != nil {
+		return err
+	}
+	defer temporal.Close()
+	db.Controller.Temporal = temporal
 	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
@@ -176,11 +189,6 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err := services.validate(); err != nil {
 		return err
 	}
-	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
-	if err != nil {
-		return err
-	}
-	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
 	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
 	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
@@ -213,7 +221,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	var handler http.Handler
 	var err error
 	if p.complete() {
-		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions)
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority)
 	}
 	if err != nil {
 		return nil, err
