@@ -327,10 +327,23 @@ func TestStartLoopNeverSeesEngineOwnedChildren(t *testing.T) {
 	if got := pendingIDs(); fmt.Sprint(got) != fmt.Sprint([]string{ordinary.ID}) {
 		t.Fatalf("pending after admission = %v, want only %s", got, ordinary.ID)
 	}
-	// A child acceptance left dispatching by a lost epoch is not ordinary
-	// uncertain custody either; only the ordinary row is reconciled.
-	if err := f.store.BeginDispatch(t.Context(), in.Request.AcceptanceID); err != nil {
+	// The engine bind is the child's dispatch (#8085 d): its acceptance is
+	// dispatched and the child running, so the start loop can never dispatch
+	// it a second time.
+	var acceptanceState, childState string
+	if err := f.pool.QueryRow(t.Context(), `SELECT a.state, c.state FROM control.acceptance AS a JOIN control.child_lineage AS c
+		ON c.instance_id=a.instance_id AND c.acceptance_id=a.id WHERE a.instance_id=$1 AND a.id=$2`, testInstance, in.Request.AcceptanceID).Scan(&acceptanceState, &childState); err != nil {
 		t.Fatal(err)
+	}
+	if acceptanceState != "dispatched" || childState != string(triggerqueue.ChildRunning) {
+		t.Fatalf("bound engine child: acceptance %s, child %s; want dispatched and running", acceptanceState, childState)
+	}
+	if err := f.store.BeginDispatch(t.Context(), in.Request.AcceptanceID); !errors.Is(err, triggerqueue.ErrTransition) {
+		t.Fatalf("start loop dispatch of a bound engine child = %v, want ErrTransition (no double start)", err)
+	}
+	// A re-bind of the same start changes nothing.
+	if _, err := activities(f.service(time.Hour)).AdmitEngineChild(t.Context(), in); err != nil {
+		t.Fatalf("re-admit: %v", err)
 	}
 	if err := f.store.BeginDispatch(t.Context(), ordinary.ID); err != nil {
 		t.Fatal(err)
