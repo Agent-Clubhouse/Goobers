@@ -133,7 +133,11 @@ func TestReleasesChildAuthorityOnlyWhenTheAttemptIsDoneWithIt(t *testing.T) {
 		"retryable failure": {outcome: temporal.NewApplicationError("infra", FailureTypeInfrastructure)},
 		"timeout":           {outcome: context.DeadlineExceeded},
 		"worker handoff":    {outcome: fmt.Errorf("drain: %w", dispatcher.ErrWorkerHandoff)},
-		"unclassified":      {outcome: errors.New("dispatch fault")},
+		// What the activity actually returns on a handoff: the reattach path
+		// turns it into a retryable application error that no longer wraps
+		// the sentinel. Kept, because the pod outlives the activity.
+		"handoff as a retryable application error": {outcome: temporal.NewApplicationError("dispatch handed off to another worker", FailureTypeInfrastructure)},
+		"unclassified": {outcome: errors.New("dispatch fault")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			authority := &fakeChildAuthority{grant: liveGrant()}
