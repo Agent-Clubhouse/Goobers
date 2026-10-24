@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/objstore"
 	"github.com/goobers/goobers/internal/cloud/schedentries"
+	"github.com/goobers/goobers/internal/cloud/startpin"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -34,7 +35,7 @@ func constructConfiguration(_ context.Context, db databaseServices, _ controlAut
 	if err != nil {
 		return err
 	}
-	configuration, err := cloudconfig.NewDirConfiguration(configurationAssessor, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID})
+	configuration, err := cloudconfig.NewDirConfiguration(configurationAssessor, leasedActivator{inner: activator, manager: manager, owner: db.EpochHandle}, cloudconfig.DirSource{Root: db.ConfigDir, InstanceID: db.InstanceID, Pins: startpin.Compute})
 	if err != nil {
 		return err
 	}

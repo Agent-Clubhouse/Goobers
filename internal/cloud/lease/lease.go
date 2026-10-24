@@ -254,11 +254,23 @@ func (m *Manager) selfFenceRemaining(handle *Handle) time.Duration {
 
 // Release voluntarily gives up authority and bumps the epoch.
 func (m *Manager) Release(ctx context.Context, handle *Handle) error {
+	// A self-fenced holder must not hand the lease over early: its authority
+	// may already have been taken over, and in-flight effects outside the
+	// database are bounded only by the TTL. It lets the lease expire instead.
+	// The release transaction is bounded by the remaining window, as WithFence
+	// bounds a fenced write, so a release stuck behind a lock cannot commit a
+	// handoff after its authority lapsed.
+	remaining := m.selfFenceRemaining(handle)
+	if remaining <= 0 {
+		return ErrSelfFenced
+	}
+	ctx, cancel := context.WithTimeoutCause(ctx, remaining, ErrSelfFenced)
+	defer cancel()
 	tx, err := m.config.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("begin lease release: %w", err)
+		return releaseError(ctx, "begin lease release", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	var heartbeatHolder string
 	var heartbeatEpoch int64
 	err = tx.QueryRow(ctx, `
@@ -269,10 +281,15 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 		handle.InstanceID, handle.Name,
 	).Scan(&heartbeatHolder, &heartbeatEpoch)
 	if err != nil {
-		return fmt.Errorf("lock lease heartbeat for release: %w", err)
+		return releaseError(ctx, "lock lease heartbeat for release", err)
 	}
 	if heartbeatHolder != handle.Holder || heartbeatEpoch != handle.Epoch {
 		return ErrStale
+	}
+	// The row lock can wait behind a takeover or a fenced write; recheck the
+	// window once it is held.
+	if m.SelfFenced(handle) {
+		return ErrSelfFenced
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE control.lease
@@ -281,7 +298,7 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 		handle.InstanceID, handle.Name, handle.Holder, handle.Epoch,
 	)
 	if err != nil {
-		return fmt.Errorf("release lease authority: %w", err)
+		return releaseError(ctx, "release lease authority", err)
 	}
 	if tag.RowsAffected() != 1 {
 		return ErrStale
@@ -292,7 +309,7 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 		WHERE instance_id=$1 AND name=$2 AND holder=$3 AND epoch=$4`,
 		handle.InstanceID, handle.Name, handle.Holder, handle.Epoch, handle.Epoch+1,
 	); err != nil {
-		return fmt.Errorf("release lease heartbeat: %w", err)
+		return releaseError(ctx, "release lease heartbeat", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE control.lease_history
@@ -300,10 +317,21 @@ func (m *Manager) Release(ctx context.Context, handle *Handle) error {
 		WHERE instance_id=$1 AND name=$2 AND epoch=$3 AND released_at IS NULL`,
 		handle.InstanceID, handle.Name, handle.Epoch,
 	); err != nil {
-		return fmt.Errorf("record voluntary lease release: %w", err)
+		return releaseError(ctx, "record voluntary lease release", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
+		// COMMIT failing on the deadline is not proof of a rollback, so it is
+		// never reported as a clean self-fence.
 		return fmt.Errorf("commit lease release: %w", err)
 	}
 	return nil
+}
+
+// releaseError reports a release that ran out of its self-fence window as
+// ErrSelfFenced (nothing committed), and anything else as it is.
+func releaseError(ctx context.Context, step string, err error) error {
+	if errors.Is(context.Cause(ctx), ErrSelfFenced) {
+		return ErrSelfFenced
+	}
+	return fmt.Errorf("%s: %w", step, err)
 }

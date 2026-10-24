@@ -123,6 +123,13 @@ func (s *Store) byKey(ctx context.Context, query rowQuerier, key string) (trigge
 	return scanRecord(query.QueryRow(ctx, acceptanceSelect+" AND idem_key=$2", s.instanceID, key))
 }
 
+// ByRun reads the acceptance that owns an engine run (the acceptance's run ID is
+// the workflow ID). The terminal awaiter identifies a closed run from it.
+func (s *Store) ByRun(ctx context.Context, runID string) (triggerqueue.Record, error) {
+	record, err := scanRecord(s.pool.QueryRow(ctx, acceptanceSelect+" AND run_id=$2", s.instanceID, runID))
+	return record, noRows(err)
+}
+
 // Get binds an acceptance read to its actor.
 func (s *Store) Get(ctx context.Context, id, actor string) (triggerqueue.Record, error) {
 	record, err := scanRecord(s.pool.QueryRow(ctx, acceptanceSelect+" AND id=$2 AND actor=$3", s.instanceID, id, actor))
