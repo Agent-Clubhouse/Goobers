@@ -7,10 +7,15 @@ import (
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/terminalhooks"
 	"github.com/goobers/goobers/internal/terminalhooks/frame"
+	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/providerposter"
+	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
+	"github.com/goobers/goobers/providers"
 )
 
 // Releaser releases every claim a run holds (claims.Plane.ReleaseRun).
@@ -108,16 +113,36 @@ func stamp(out frame.Outcome, ev journal.Event) journal.Event {
 	return ev
 }
 
-// Hooks assembles the cloud frame for one run: the implemented hook (claim
-// release) plus a visible pending record for every hook still to come. The
-// existing-fix, blocked and failed handlers, escalation, branch cleanup and the
-// notification each record themselves as pending when they would have fired.
-func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Recorder, claimedItems func(runID string) ([]string, error)) *frame.Hooks {
+// Option extends the cloud frame with hooks that have a real implementation.
+type Option func(*options)
+
+type options struct {
+	writer  providerwriter.Writer
+	parking parking.State
+}
+
+// WithParking implements the existing-fix, escalation and blocked hooks: the
+// block records and claimed items come from state, and every provider write goes
+// through writer (providerwriter.Pending until the control role holds provider
+// credentials, #8093, in which case the writes are reported as failed, never
+// silently dropped).
+func WithParking(writer providerwriter.Writer, state parking.State) Option {
+	return func(o *options) { o.writer, o.parking = writer, state }
+}
+
+// Hooks assembles the cloud frame for one run: the implemented hooks (claim
+// release, plus those added by options) and a visible pending record for every
+// hook still to come.
+func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Recorder, claimedItems func(runID string) ([]string, error), opts ...Option) *frame.Hooks {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	pending := func(hook string) func(context.Context, frame.Outcome) error { return Pending(record, hook) }
 	outcomeOf := func(runID string) frame.Outcome {
 		return frame.Outcome{RunID: runID, Gaggle: id.Gaggle, Workflow: id.Workflow}
 	}
-	return &frame.Hooks{
+	h := &frame.Hooks{
 		RepoRef:      id.RepoRef,
 		ClaimedItems: claimedItems,
 		ExistingFix: func(ctx context.Context, o terminalhooks.ExistingFixOutcome) error {
@@ -137,4 +162,20 @@ func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Reco
 		Finalize: Finalize(claims, handle, record),
 		Record:   record,
 	}
+	if o.writer != nil && o.parking != nil {
+		h.ExistingFix = func(ctx context.Context, e terminalhooks.ExistingFixOutcome) error {
+			return parking.ExistingFix(ctx, providerposter.Poster{Writer: o.writer, RunID: e.RunID}, e)
+		}
+		h.Blocked = func(ctx context.Context, b terminalhooks.BlockedOutcome) error {
+			return parking.Blocked(ctx, providerposter.Poster{Writer: o.writer, RunID: b.RunID}, o.parking, b)
+		}
+		h.Escalate = func(ctx context.Context, out frame.Outcome, itemID, stage, reason string) error {
+			notifier := gate.EscalationNotifier{Poster: providerposter.Poster{Writer: o.writer, RunID: out.RunID}}
+			repo := providers.RepositoryRef{Provider: providers.ProviderKind(id.RepoRef.Provider), Owner: id.RepoRef.Owner, Name: id.RepoRef.Name}
+			// The run-notification marker (run, seq) makes a repeated post a no-op;
+			// a run escalates once, so the sequence is fixed.
+			return notifier.NotifyStageEscalated(ctx, repo, itemID, out.RunID, 0, stage, reason)
+		}
+	}
+	return h
 }

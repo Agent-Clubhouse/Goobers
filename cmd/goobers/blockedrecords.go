@@ -36,7 +36,6 @@ const blockedRecordsFileName = stateclient.KeyBlockedRecords
 type blockedRecord = blockedrecords.Record
 
 var (
-	blockedCycleRecords              = blockedrecords.CycleRecords
 	findBlockedCycle                 = blockedrecords.FindCycle
 	findAllBlockedCycles             = blockedrecords.FindAllCycles
 	blockedRecordKey                 = blockedrecords.Key
@@ -48,10 +47,9 @@ var (
 	blockedRecordAppliesToRepository = blockedrecords.AppliesToRepository
 )
 
-// blockedCycleNode and blockedCycleResult are the cycle detector's own types
+// blockedCycleResult is the cycle detector's own type
 // (internal/blockedcycle), aliased here so this package's blocked-record
 // plumbing keeps reading in its own vocabulary.
-type blockedCycleNode = blockedcycle.Node
 
 type blockedCycleResult = blockedcycle.Result
 
