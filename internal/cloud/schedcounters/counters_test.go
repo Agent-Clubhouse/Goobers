@@ -528,7 +528,7 @@ func TestTheRefresherSpendsQuotaAndKeepsItsLastCountWhenShed(t *testing.T) {
 	quota := localscheduler.NewProviderQuotaState()
 	quota.Record(apiv1.ProviderGitHub, 1, time.Now().Add(time.Hour))
 	var opens atomic.Int32
-	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond})
+	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond, OpenPRMaxStale: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,4 +650,83 @@ func TestARateLimitedPollFailsImmediatelyInsteadOfSleepingInsideTheTick(t *testi
 	if _, err := counter.EligibleCount(ctx); err == nil || ctx.Err() != nil || requests.Load() != 1 {
 		t.Fatalf("err=%v ctx=%v after %d request(s), want a prompt failure after exactly one", err, ctx.Err(), requests.Load())
 	}
+}
+
+// Serving the last list while shed is bounded: a window reporting a bogus
+// far-future reset must not freeze the cap on an old count for hours.
+func TestAShedRefresherStopsServingItsLastListAfterTheBound(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		reset   time.Duration // window reset, from the first poll
+		advance time.Duration // clock movement before the shed poll
+		stale   bool
+	}{
+		"inside both bounds":                 {reset: time.Hour, advance: 2 * time.Second, stale: false},
+		"bogus far-future reset":             {reset: 1000 * time.Hour, advance: (maxStaleIntervals + 1) * 45 * time.Second, stale: true},
+		"reset sooner than the interval cap": {reset: 30 * time.Second, advance: 31 * time.Second, stale: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			clock := start
+			quota := localscheduler.NewProviderQuotaState()
+			quota.Record(apiv1.ProviderGitHub, 1, start.Add(tc.reset))
+			var opens atomic.Int32
+			l := newLister(Deps{Open: consuming(&fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}, &opens), Quota: quota})
+			l.now = func() time.Time { return clock }
+			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "o", Name: "r"}
+			if _, err := l.ListOpenPullRequests(t.Context(), repo); err != nil {
+				t.Fatal(err)
+			}
+			clock = start.Add(tc.advance)
+			prs, err := l.ListOpenPullRequests(t.Context(), repo)
+			var budget *localscheduler.ProviderPollBudgetError
+			switch {
+			case tc.stale && !errors.As(err, &budget):
+				t.Fatalf("a shed poll past the bound returned %v %v, want the budget error", prs, err)
+			case !tc.stale && (err != nil || len(prs) != 1):
+				t.Fatalf("a shed poll inside the bound returned %v %v, want the last list", prs, err)
+			}
+			if opens.Load() != 1 {
+				t.Fatalf("a shed poll still opened a provider (%d opens)", opens.Load())
+			}
+		})
+	}
+}
+
+// The scheduler retires an expired window on its tick; the refresher must then
+// refresh from the provider again instead of holding the list it kept while shed.
+func TestTheRefresherRefreshesAfterTheSchedulerRetiresTheWindow(t *testing.T) {
+	t.Parallel()
+	cfg, set := cappedGeneration()
+	f := &fakeProvider{prs: []providers.OpenPRSummary{{Head: "goobers/wf/a"}}}
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 1, reset)
+	var opens atomic.Int32
+	c, err := New(Deps{Config: cfg, Set: set, Open: consuming(f, &opens), Quota: quota, OpenPRInterval: time.Millisecond, OpenPRMaxStale: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	waitFor(t, func() bool { n, known := c.OpenPRs().OpenPRCount("g", "wf"); return known && n == 1 })
+
+	// The forge now has more open PRs, but the window is empty: still the old count.
+	f.mu.Lock()
+	f.prs = []providers.OpenPRSummary{{Head: "goobers/wf/a"}, {Head: "goobers/wf/b"}, {Head: "goobers/wf/c"}}
+	f.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	if n, _ := c.OpenPRs().OpenPRCount("g", "wf"); n != 1 {
+		t.Fatalf("count moved to %d while the window was exhausted", n)
+	}
+
+	// The scheduler's tick retires the window once its reset has passed.
+	if budget := quota.ReservePolls(apiv1.ProviderGitHub, reset.Add(time.Second), 1); !budget.Reset {
+		t.Fatalf("the window was not retired: %+v", budget)
+	}
+	waitFor(t, func() bool { n, _ := c.OpenPRs().OpenPRCount("g", "wf"); return n == 3 })
+	cancel()
+	<-done
 }

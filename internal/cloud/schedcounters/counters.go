@@ -78,6 +78,9 @@ type Deps struct {
 	SelfIdentity string
 	// OpenPRInterval overrides localscheduler.DefaultOpenPRRefreshInterval.
 	OpenPRInterval time.Duration
+	// OpenPRMaxStale bounds how long a refresher shed by the quota ledger keeps
+	// serving its last list. Zero means maxStaleIntervals refresh intervals.
+	OpenPRMaxStale time.Duration
 	// Report receives refresh failures that leave a count unknown. May be nil.
 	Report func(error)
 }
@@ -240,7 +243,7 @@ func (c *Counters) buildOpenPRs() (*localscheduler.OpenPRRefresherSet, error) {
 			// goobers:merge-escalated marks a PR parked pending a human; it cannot
 			// be drained, so counting it only starves new work (#986).
 			refresher = localscheduler.NewOpenPRRefresher(
-				&lister{open: c.deps.Open, quota: c.deps.Quota, report: c.deps.Report}, repo, c.deps.OpenPRInterval,
+				newLister(c.deps), repo, c.deps.OpenPRInterval,
 				[]string{providers.LabelMergeEscalated}, namespaces)
 			byRepo[key] = refresher
 		}
@@ -271,19 +274,40 @@ func (c *Counters) repoFor(project apiv1.RepoRef) (providers.RepositoryRef, erro
 	}
 }
 
+// maxStaleIntervals bounds how long a shed refresher keeps serving its last
+// list: a quota window reporting a bogus far-future reset must not freeze the
+// cap on an old count indefinitely.
+const maxStaleIntervals = 5
+
 // lister adapts the per-call opener to the refresher's lister and routes every
 // poll through the quota ledger. A poll the ledger sheds serves the last list
-// this lister read instead of failing: a failed poll leaves the refresher's
-// count unknown, and an unknown count lifts the cap, which would turn a quota
-// shortage into unthrottled dispatch.
+// this lister read, until the window's reset or maxStaleIntervals refresh
+// intervals have passed, whichever is sooner: a failed poll leaves the
+// refresher's count unknown, and an unknown count lifts the cap, which would
+// turn a quota shortage into unthrottled dispatch. Past that bound the shed
+// poll fails and the count goes unknown, as it does for any other failed poll.
 type lister struct {
-	open   Opener
-	quota  *localscheduler.ProviderQuotaState
-	report func(error)
+	open     Opener
+	quota    *localscheduler.ProviderQuotaState
+	maxStale time.Duration
+	now      func() time.Time
 
 	mu   sync.Mutex
 	last []providers.OpenPRSummary
+	at   time.Time
 	have bool
+}
+
+func newLister(deps Deps) *lister {
+	interval := deps.OpenPRInterval
+	if interval <= 0 {
+		interval = localscheduler.DefaultOpenPRRefreshInterval
+	}
+	maxStale := deps.OpenPRMaxStale
+	if maxStale <= 0 {
+		maxStale = maxStaleIntervals * interval
+	}
+	return &lister{open: deps.Open, quota: deps.Quota, maxStale: maxStale, now: time.Now}
 }
 
 func (l *lister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
@@ -292,7 +316,7 @@ func (l *lister) ListOpenPullRequests(ctx context.Context, repo providers.Reposi
 	if l.quota != nil {
 		budget := l.quota.ReserveCurrentPolls(apiv1.Provider(repo.Provider), 1)
 		if budget.Allowed == 0 {
-			return l.shed(&localscheduler.ProviderPollBudgetError{Provider: budget.Provider, Remaining: budget.RemainingBefore, Requested: 1, ResetAt: budget.ResetAt})
+			return l.shed(budget)
 		}
 		ctx = localscheduler.WithProviderPollBudget(ctx, budget)
 	}
@@ -307,15 +331,23 @@ func (l *lister) ListOpenPullRequests(ctx context.Context, repo providers.Reposi
 		return nil, err
 	}
 	l.mu.Lock()
-	l.last, l.have = append(l.last[:0], prs...), true
+	l.last, l.at, l.have = append(l.last[:0], prs...), l.now(), true
 	l.mu.Unlock()
 	return prs, nil
 }
 
-func (l *lister) shed(shedErr error) ([]providers.OpenPRSummary, error) {
+func (l *lister) shed(budget localscheduler.ProviderPollBudget) ([]providers.OpenPRSummary, error) {
+	shedErr := &localscheduler.ProviderPollBudgetError{Provider: budget.Provider, Remaining: budget.RemainingBefore, Requested: 1, ResetAt: budget.ResetAt}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !l.have {
+		return nil, shedErr
+	}
+	deadline := l.at.Add(l.maxStale)
+	if !budget.ResetAt.IsZero() && budget.ResetAt.Before(deadline) {
+		deadline = budget.ResetAt
+	}
+	if l.now().After(deadline) {
 		return nil, shedErr
 	}
 	return append([]providers.OpenPRSummary(nil), l.last...), nil
