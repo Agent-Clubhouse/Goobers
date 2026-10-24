@@ -160,6 +160,9 @@ var copilotLongContextModels = map[string]bool{
 // "<text>" --allow-all-tools --log-level error` performs the task and exits,
 // confirmed by TestCopilotAdapterLiveSmoke.
 type CopilotAdapter struct {
+	// backend is the internal execution seam. Production leaves it nil, which
+	// preserves the CLI implementation; the SDK backend is not selectable yet.
+	backend copilotBackend
 	// Command is the base CLI invocation, e.g. []string{"copilot"}.
 	Command []string
 	// RequireLauncherContract rejects unverified launcher overrides before
@@ -917,6 +920,14 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
+	backend := c.backend
+	if backend == nil {
+		backend = copilotCLIBackend{adapter: c}
+	}
+	return backend.Run(ctx, req)
+}
+
+func (c *CopilotAdapter) runCLI(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
 	}
