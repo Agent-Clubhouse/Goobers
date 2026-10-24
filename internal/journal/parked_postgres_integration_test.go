@@ -103,3 +103,61 @@ func recordsToEvents(records []journal.EventRecord) []journal.Event {
 	}
 	return events
 }
+
+// Each run is projected from its own events alone: a run with no child
+// events that sorts after a parked one is not parked.
+func TestParkedOnChildProjectsEachRunFromItsOwnEvents(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	clock := &writerClock{}
+	parked := "00000000000000000000000000082001"
+	handle, owner := createEngineRunHandle(t, backend, parked, now.Add(-time.Hour), now.Add(-time.Hour), clock)
+	appendChildWait(t, backend, handle, owner, clock, parked, now.Add(-30*time.Minute), time.Time{})
+	plain := "00000000000000000000000000082002"
+	handle, owner = createEngineRunHandle(t, backend, plain, now.Add(-time.Hour), now.Add(-time.Hour), clock)
+	// An event the projection reads but that leaves a wait untouched: carried
+	// over from the parked run, the parked run's wait would still project.
+	if _, err := backend.AppendBatch(t.Context(), handle, owner, []journal.Event{{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "operator.note"}}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := backend.ParkedOnChild(t.Context(), []string{plain, parked})
+	if err != nil || !got[parked] || got[plain] {
+		t.Fatalf("parked = %v, %v; want only %s parked", got, err, parked)
+	}
+}
+
+// A stored event this binary cannot read fails the lookup, as every journal
+// read does; it is never projected as if absent.
+func TestParkedOnChildRefusesAnUnknownEventSchema(t *testing.T) {
+	config := postgresJournalConfig(t)
+	backend := postgresBackend(t, config)
+	now := databaseClock(t, config)
+	clock := &writerClock{}
+	parked := "00000000000000000000000000083001"
+	handle, owner := createEngineRunHandle(t, backend, parked, now.Add(-time.Hour), now.Add(-time.Hour), clock)
+	appendChildWait(t, backend, handle, owner, clock, parked, now.Add(-30*time.Minute), time.Time{})
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
+		UPDATE journal.run_event SET body=$1
+		WHERE instance_id=$2 AND run_id=$3 AND type='stage.started'`,
+		[]byte(`{"schema":"goobers.dev/event/v999","type":"stage.started","stage":"build","attempt":1}`), config.InstanceID, parked); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := backend.ParkedOnChild(t.Context(), []string{parked}); !errors.Is(err, journal.ErrJournalMigrationRequired) || got != nil {
+		t.Fatalf("lookup over an unknown event schema = %v, %v; want ErrJournalMigrationRequired", got, err)
+	}
+	// The lookup reads only the projection's event types (L1 runs it every
+	// tick): a row of a type it never reads, here run.started, is not read.
+	other := "00000000000000000000000000083002"
+	handle, owner = createEngineRunHandle(t, backend, other, now.Add(-time.Hour), now.Add(-time.Hour), clock)
+	appendChildWait(t, backend, handle, owner, clock, other, now.Add(-30*time.Minute), time.Time{})
+	if _, err := postgresOwnerPool(t, config).Exec(t.Context(), `
+		UPDATE journal.run_event SET body=$1
+		WHERE instance_id=$2 AND run_id=$3 AND type='run.started'`,
+		[]byte(`{"schema":"goobers.dev/event/v999","type":"run.started"}`), config.InstanceID, other); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := backend.ParkedOnChild(t.Context(), []string{other}); err != nil || !got[other] {
+		t.Fatalf("lookup over an unread event type = %v, %v; want the projection read without it", got, err)
+	}
+}

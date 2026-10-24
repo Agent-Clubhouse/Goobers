@@ -34,10 +34,18 @@ func (b *Backend) ParkedOnChild(ctx context.Context, runIDs []string) (map[strin
 	for id := range parked {
 		ids = append(ids, id)
 	}
+	// Only the event types the projection reads: L1 rebuilds this inventory
+	// every tick, and stage outputs, progress and transcripts dominate a
+	// journal's bytes.
+	projected := journal.ChildWaitProjectionTypes()
+	types := make([]string, len(projected))
+	for i, t := range projected {
+		types[i] = string(t)
+	}
 	rows, err := b.config.Pool.Query(ctx, `
 		SELECT run_id, body FROM journal.run_event
-		WHERE instance_id=$1 AND run_id=ANY($2)
-		ORDER BY run_id, seq`, b.config.InstanceID, ids)
+		WHERE instance_id=$1 AND run_id=ANY($2) AND type=ANY($3)
+		ORDER BY run_id, seq`, b.config.InstanceID, ids, types)
 	if err != nil {
 		return nil, fmt.Errorf("journalpg: parked-on-child lookup: %w", err)
 	}
