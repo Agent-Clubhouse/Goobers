@@ -57,6 +57,7 @@ Options:
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
   --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
   --self-execution POLICY        Must be deny (default deny)
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
@@ -64,6 +65,8 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
   --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
                                  optional goobers/ (or GOOBERS_CONFIG_DIR); required
 
@@ -73,7 +76,9 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
+	webhookSecretFile                                                           string
 	objectStoreURL, objectStoreContainer                                        string
+	objectStoreAccountName, objectStoreAccountKeyFile                           string
 	checkAssembly                                                               bool
 }
 
@@ -83,12 +88,15 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.cert, "tls-cert", "", "TLS certificate")
 	f.StringVar(&o.key, "tls-key", "", "TLS private key")
 	f.StringVar(&o.podKey, "pod-key-file", environmentOr("GOOBERS_POD_KEY_FILE", ""), "signed pod key file")
+	f.StringVar(&o.webhookSecretFile, "github-webhook-secret-file", environmentOr("GOOBERS_GITHUB_WEBHOOK_SECRET_FILE", ""), "GitHub webhook HMAC secret file")
 	f.StringVar(&o.selfExecution, "self-execution", "deny", "must be deny")
 	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
 	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
 	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	f.StringVar(&o.objectStoreAccountName, "object-store-account-name", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_NAME"), "Azure storage account for shared-key authentication")
+	f.StringVar(&o.objectStoreAccountKeyFile, "object-store-account-key-file", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_KEY_FILE"), "file containing the Azure storage account key")
 	f.StringVar(&o.configDir, "config-dir", environmentOr("GOOBERS_CONFIG_DIR", ""), "mounted instance config directory")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {
@@ -224,6 +232,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	handler, stopWebhook, err := mountWebhook(ctx, o, db, services.Configuration, handler, logger)
+	if err != nil {
+		return err
+	}
+	defer stopWebhook()
 	var opts []httpapi.ServerOption
 	if o.cert != "" || o.key != "" {
 		opts = append(opts, httpapi.WithTLS(o.cert, o.key))

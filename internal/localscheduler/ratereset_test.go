@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // TestRateResetRoundTrip proves a written marker reads back at the same
@@ -141,5 +143,42 @@ func TestWriteRateResetPublishesAtomically(t *testing.T) {
 	}
 	if string(got) != string(newContent) {
 		t.Fatalf("marker after successful write = %q, want complete new content %q", got, newContent)
+	}
+}
+
+type resetSourceLog struct {
+	journal.InstanceStore
+	at time.Time
+}
+
+func (r resetSourceLog) RateReset() (time.Time, bool, error) { return r.at, true, nil }
+func (r resetSourceLog) Dir() string                         { return "/nonexistent/never-read" }
+
+// A log with its own reset source must win over (and never touch) the file next
+// to Dir, and a log without one keeps reading the file.
+func TestReadRateResetPrefersTheLogsSource(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	s := &Scheduler{log: resetSourceLog{at: at}}
+	got, ok, err := s.readRateReset()
+	if err != nil || !ok || !got.Equal(at) {
+		t.Fatalf("readRateReset = %v, %v, %v", got, ok, err)
+	}
+}
+
+// A log with no directory must not let the file scheduler state resolve against
+// the process working directory.
+func TestFileSchedulerStateRefusesAnEmptyDirectory(t *testing.T) {
+	state := NewFileSchedulerState()
+	if _, err := state.ReadScheduleDemand(""); err == nil {
+		t.Fatal("ReadScheduleDemand accepted an empty directory")
+	}
+	if _, err := state.ReadTriggerEvaluations(""); err == nil {
+		t.Fatal("ReadTriggerEvaluations accepted an empty directory")
+	}
+	if err := state.WriteScheduleDemand("", nil); err == nil {
+		t.Fatal("WriteScheduleDemand accepted an empty directory")
+	}
+	if err := state.WriteTriggerEvaluations("", nil); err == nil {
+		t.Fatal("WriteTriggerEvaluations accepted an empty directory")
 	}
 }
