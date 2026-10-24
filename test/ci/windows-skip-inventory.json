@@ -259,6 +259,12 @@
       "reason": "Cloud control-plane scheduling library; runs on the Linux unit shards (its PG16 exactly-once suite is cloudintegration-tagged)."
     },
     {
+      "package": "internal/cloud/triggers",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cloud trigger plane tests run in the Linux unit and cloud-pg jobs; the cloud control plane has no Windows deployment target."
+    },
+    {
       "package": "internal/terminalhooks/frame",
       "coverage": "none",
       "category": "not-selected",
