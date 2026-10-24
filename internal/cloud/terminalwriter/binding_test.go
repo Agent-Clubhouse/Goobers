@@ -89,6 +89,33 @@ func (g oneGeneration) Acquire(context.Context, string) (childworkflow.Generatio
 	return childworkflow.Generation{Set: g.set, Release: func() error { return nil }}, nil
 }
 
+type countedIdentityJournal struct {
+	journal.RunReader
+	identity journal.RunIdentity
+	opens    []journal.RunRef
+	reads    int
+}
+
+func (j *countedIdentityJournal) OpenRun(_ context.Context, ref journal.RunRef) (journal.RunReader, error) {
+	j.opens = append(j.opens, ref)
+	return j, nil
+}
+
+func (j *countedIdentityJournal) Identity() (journal.RunIdentity, error) {
+	j.reads++
+	return j.identity, nil
+}
+
+type countedGenerations struct {
+	childworkflow.GenerationSource
+	calls int
+}
+
+func (g *countedGenerations) Acquire(ctx context.Context, digest string) (childworkflow.Generation, error) {
+	g.calls++
+	return g.GenerationSource.Acquire(ctx, digest)
+}
+
 func childBindingFixture() (JournalRuns, ChildLink, journal.RunIdentity) {
 	service := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "service"}
 	link := ChildLink{
@@ -134,6 +161,50 @@ func TestBindChildInheritsItsParentsPin(t *testing.T) {
 		bound.Project.Owner != "acme" || bound.Project.Name != "service" ||
 		!sameRepository(bound.Workspace, repositoryRef(bound.Project)) {
 		t.Fatalf("binding = %+v", bound)
+	}
+}
+
+func TestBindChildRefusesJournalLineageGaggleMismatch(t *testing.T) {
+	runs, link, identity := childBindingFixture()
+	// The top-level identity, custody and parent pin still agree. Only the
+	// journal's child lineage claims a different gaggle.
+	identity.Child.Gaggle = "other"
+	runs.Children = AcceptanceChildren(func(_ context.Context, runID string) (triggerqueue.ChildRecord, error) {
+		if runID != identity.RunID {
+			t.Fatalf("custody lookup = %q, want %q", runID, identity.RunID)
+		}
+		return triggerqueue.ChildRecord{
+			Identity: triggerqueue.ChildIdentity{
+				ChildParent:     triggerqueue.ChildParent{Gaggle: link.Gaggle, ParentRunID: link.ParentRunID},
+				StageOccurrence: link.StageOccurrence,
+				InvocationKey:   link.InvocationKey,
+			},
+			AcceptanceID: link.AcceptanceID,
+		}, nil
+	})
+	reader := &countedIdentityJournal{identity: identity}
+	generations := &countedGenerations{GenerationSource: runs.Generations}
+	runs.Journal = reader
+	runs.Generations = generations
+	backend := &fakeBackend{calls: &[]call{}}
+	writer, err := New(runs, fakeBackends{backend}, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = writer.WorkItem(t.Context(), providerwriter.ItemRef{
+		RunID: identity.RunID, Repo: workspaceRepo, ItemID: "42",
+	})
+	if !errors.Is(err, providerwriter.ErrRepositoryNotPinned) || !providerwriter.Permanent(err) {
+		t.Errorf("%v, want a permanent ErrRepositoryNotPinned", err)
+	}
+	if len(reader.opens) != 1 || reader.opens[0].ID != identity.RunID || !reader.opens[0].ReadOnly || reader.reads != 1 {
+		t.Errorf("journal opens = %+v, identity reads = %d; want one read-only child OpenRun/Identity", reader.opens, reader.reads)
+	}
+	if generations.calls != 0 {
+		t.Errorf("generation acquisitions = %d, want zero", generations.calls)
+	}
+	if backend.cap != "" || len(*backend.calls) != 0 {
+		t.Errorf("provider capability = %q, calls = %+v; want no provider access", backend.cap, *backend.calls)
 	}
 }
 
