@@ -25,6 +25,10 @@ type Config struct {
 	InstanceID string
 	Lease      *lease.Manager
 	LiveOwner  func() *lease.Handle
+	// TerminalCleanup performs idempotent forge/claim cleanup after a fenced
+	// watchdog terminal is durable.
+	TerminalCleanup func(context.Context, journal.RunIdentity, string) error
+
 	// InstanceClock timestamps instance-log events before partition routing.
 	// Nil uses time.Now.
 	InstanceClock func() time.Time

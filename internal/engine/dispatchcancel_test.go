@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,8 +77,13 @@ func TestReviewerDispatchReceivesCancellationOptions(t *testing.T) {
 	var dispatches int
 	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
 		if info.ActivityType.Name != ActDispatchStage {
-			if info.HeartbeatTimeout != 0 {
-				t.Errorf("local %s requires dispatch heartbeats", info.ActivityType.Name)
+			want := time.Duration(0)
+			if strings.HasSuffix(info.ActivityType.Name, "CancelSafe") {
+				want = dispatchHeartbeatTimeout
+			}
+			if info.HeartbeatTimeout != want {
+				t.Errorf("local %s heartbeat=%s, want %s",
+					info.ActivityType.Name, info.HeartbeatTimeout, want)
 			}
 			return
 		}

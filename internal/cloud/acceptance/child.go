@@ -117,7 +117,7 @@ func (s *Store) AcceptChild(
 			return err
 		}
 		if parentEpoch != epoch {
-			return triggerqueue.ErrTransition
+			return ErrStaleChildEpoch
 		}
 		if cancelled != nil {
 			return triggerqueue.ErrParentCancelled
@@ -395,32 +395,6 @@ func (s *Store) ChildProposal(
 		return triggerqueue.ChildProposal{}, triggerqueue.ErrChildProposalUnavailable
 	}
 	return triggerqueue.ChildProposal{Digest: record.ProposalDigest, Source: source}, nil
-}
-
-// AdoptChildren moves exact predecessor custody to the current live epoch.
-func (s *Store) AdoptChildren(ctx context.Context, predecessorEpoch int64) (int64, error) {
-	if predecessorEpoch < 1 || s.handle == nil || predecessorEpoch >= s.handle.Epoch {
-		return 0, triggerqueue.ErrTransition
-	}
-	var adopted int64
-	err := s.withFence(ctx, func(txCtx context.Context, tx pgx.Tx, epoch int64) error {
-		for _, table := range []string{
-			"child_parent", "child_occurrence", "child_lineage", "child_authority",
-			"child_blob", "child_blob_read", "child_publication",
-			"child_disposition", "child_disposition_history",
-		} {
-			tag, err := tx.Exec(txCtx, fmt.Sprintf(`
-				UPDATE control.%s SET owner_epoch=$3
-				WHERE instance_id=$1 AND owner_epoch=$2`, table),
-				s.instanceID, predecessorEpoch, epoch)
-			if err != nil {
-				return err
-			}
-			adopted += tag.RowsAffected()
-		}
-		return nil
-	})
-	return adopted, err
 }
 
 func validChildTransition(from, to triggerqueue.ChildState) bool {
