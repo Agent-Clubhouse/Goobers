@@ -196,7 +196,8 @@ func (w *world) skewedController(holder string, skew time.Duration, handle func(
 			if err != nil {
 				return nil, err
 			}
-			return collectOpenRuns(ctx, openRunInputs{Pins: pins, Uncertain: uncertain, Closed: func(_ context.Context, runID string) (bool, error) {
+			// The real parked-on-child read runs here too, as goobers_controller.
+			return collectOpenRuns(ctx, openRunInputs{Pins: pins, Uncertain: uncertain, Parked: backend.ParkedOnChild, Closed: func(_ context.Context, runID string) (bool, error) {
 				w.mu.Lock()
 				defer w.mu.Unlock()
 				return w.closed[runID], nil

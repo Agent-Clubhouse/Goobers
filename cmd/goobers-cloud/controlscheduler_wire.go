@@ -81,7 +81,17 @@ func constructScheduler(_ context.Context, db databaseServices, _ controlAuth, m
 			if err != nil {
 				return nil, err
 			}
-			return collectOpenRuns(ctx, openRunInputs{Pins: pins, Uncertain: uncertain, Closed: runClosedFunc(confirmClosed)})
+			return collectOpenRuns(ctx, openRunInputs{
+				Pins: pins, Uncertain: uncertain, Closed: runClosedFunc(confirmClosed),
+				// A parent parked on a child holds no slot, as locally. Strongly
+				// consistent (committed journal events); an error leaves every slot held.
+				Parked: p.journalBackend.ParkedOnChild,
+				ParkedFailed: func(err error) {
+					if epochWiring.Report != nil {
+						epochWiring.Report(err)
+					}
+				},
+			})
 		},
 		Terminal: schedstart.TemporalTerminal(db.Temporal),
 		Entries: func(candidate cloudconfig.Candidate, counters generationCounters) ([]localscheduler.WorkflowEntry, error) {
