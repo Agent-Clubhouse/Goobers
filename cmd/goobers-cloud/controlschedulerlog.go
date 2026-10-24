@@ -83,3 +83,7 @@ func (s *schedulerLogs) For(ctx context.Context, opener schedulerLogOpener, hand
 	}()
 	return shared, nil
 }
+
+// epochSchedulerLogs is the process's shared opener: every consumer of the
+// scheduler log (the scheduler admission, the terminal hooks) takes it from here.
+var epochSchedulerLogs schedulerLogs
