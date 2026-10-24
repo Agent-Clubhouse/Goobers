@@ -471,7 +471,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		Environment:   inventory.definitions.Manifest.Spec.Instance.Environment,
 		ComputerName:  computerName,
 		InstanceRoot:  s.sources.Layout.Root,
-		RootIdentity:  inspectRootIdentity(s.sources.Layout.Root),
+		RootIdentity:  s.rootIdentity(),
 		Ready:         ready,
 		Status:        status,
 		Concurrency: Concurrency{
@@ -517,7 +517,7 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 	for i := range inventory.definitions.Gaggles {
 		def := &inventory.definitions.Gaggles[i]
 		item := Gaggle{
-			Template:       gaggletemplate.InventoryStatus(s.sources.Layout.Root, def.Name),
+			Template:       s.gaggleTemplate(def.Name),
 			Name:           def.Name,
 			DisplayName:    displayName(def.Spec.DisplayName, def.Name),
 			Enabled:        definitionEnabled(def.Spec.Enabled),
@@ -1221,4 +1221,13 @@ func (s *Local) Workflow(ctx context.Context, gaggle, name string) (WorkflowDeta
 		return WorkflowDetail{}, err
 	}
 	return annotated[WorkflowDetail](ctx, s, out), nil
+}
+
+// gaggleTemplate reads a gaggle's template metadata from the instance root.
+// A rootless service has none to read: skipped by design.
+func (s *Local) gaggleTemplate(gaggle string) *gaggletemplate.Status {
+	if s.sources.Rootless {
+		return nil
+	}
+	return gaggletemplate.InventoryStatus(s.sources.Layout.Root, gaggle)
 }
