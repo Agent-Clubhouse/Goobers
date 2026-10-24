@@ -96,3 +96,37 @@ func TestProbedAuthorityDoesNotBlockAcquiresBehindASlowProbe(t *testing.T) {
 		t.Fatalf("probing acquire = %v", err)
 	}
 }
+
+type countingAuthority struct{ acquired int }
+
+func (c *countingAuthority) AcquireChildAuthority(context.Context, engine.ChildAuthorityRequest) (engine.ChildAuthorityGrant, error) {
+	c.acquired++
+	return engine.ChildAuthorityGrant{}, nil
+}
+func (c *countingAuthority) ReleaseChildAuthority(context.Context, engine.ChildAuthorityRelease) error {
+	return nil
+}
+
+// While the first probe is in flight (its slot claimed, no outcome recorded
+// yet), a concurrent acquire is refused, never lent (#8191 review).
+func TestConcurrentAcquireDuringTheFirstProbeIsRefused(t *testing.T) {
+	inner := &countingAuthority{}
+	started, release := make(chan struct{}), make(chan struct{})
+	p := &ProbedAuthority{Inner: inner, Probe: func(context.Context) error {
+		close(started)
+		<-release
+		return errors.New("canary absent")
+	}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.AcquireChildAuthority(context.Background(), engine.ChildAuthorityRequest{})
+		done <- err
+	}()
+	<-started
+	_, err := p.AcquireChildAuthority(context.Background(), engine.ChildAuthorityRequest{})
+	close(release)
+	<-done
+	if !errors.Is(err, childresult.ErrBlobPlaneUnverified) || !errors.Is(err, engine.ErrChildCustodyUnavailable) || inner.acquired != 0 {
+		t.Fatalf("acquire during the first in-flight probe = %v (inner acquired %d times); want refused, never lent", err, inner.acquired)
+	}
+}

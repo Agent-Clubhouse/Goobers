@@ -91,7 +91,12 @@ func (p *ProbedAuthority) AcquireChildAuthority(ctx context.Context, request eng
 	}
 	p.mu.Unlock()
 	if !verified {
+		// Unverified is refused whatever is in flight: before any probe has
+		// recorded an outcome, last is nil, and nil must never lend.
 		err := last
+		if err == nil {
+			err = fmt.Errorf("%w: the canary probe has not completed", childresult.ErrBlobPlaneUnverified)
+		}
 		if due {
 			err = p.probe(ctx)
 		}
