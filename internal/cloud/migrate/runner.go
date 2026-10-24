@@ -281,7 +281,17 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 			return fmt.Errorf("bound %s: %w", label, err)
 		}
 	}
+	// Every leased step (migrations, partition indexes, read-model rebuilds,
+	// the grant reconcile) takes table locks; like migration DDL it must give
+	// up rather than queue behind a long reader, and is reported as busy.
+	if _, err := tx.Exec(stepCtx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound %s lock wait: %w", label, err)
+	}
 	if err := step(stepCtx, tx); err != nil {
+		if isLockTimeout(err) {
+			return fmt.Errorf("%w: %s could not take its locks: %w", ErrMigrationBusy, label, err)
+		}
 		return err
 	}
 	if err := manager.Confirm(stepCtx, tx, handle); err != nil {

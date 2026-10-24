@@ -20,6 +20,12 @@ Options:
 
 Environment:
   GOOBERS_DATABASE_DIRECT_URL  Direct PostgreSQL URL
+
+A migration that cannot take its locks (a long reader, or another migration
+holding the migration lock) is retried with backoff for up to 20 minutes.
+If the database stays busy that long the command exits 75 (EX_TEMPFAIL):
+nothing was applied in the busy step, and re-syncing the deployment once the
+contention ends applies the remaining migrations. Any other failure exits 1.
 .fi
 .SH SEE ALSO
 \fBgoobers-cloud\fR(1)
