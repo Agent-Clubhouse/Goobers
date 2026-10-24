@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -15,7 +17,6 @@ import (
 	"github.com/goobers/goobers/internal/cloud/startpin"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestConfigurationConstructorFailsClosedWithoutItsDependencies(t *testing.T) {
