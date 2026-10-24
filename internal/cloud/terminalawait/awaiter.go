@@ -50,6 +50,9 @@ type Workflows interface {
 
 // Identity names a run for the frame.
 type Identity struct {
+	// RunID is set by the awaiter after Identify, so a Hooks factory can build the
+	// frame for this particular run.
+	RunID    string
 	Gaggle   string
 	Workflow string
 	RepoRef  apiv1.RepoRef
@@ -420,6 +423,7 @@ func (a *Awaiters) await(ctx context.Context, runID string) {
 		out.Result = engine.RunResult{} // a walk-level failure carries no status
 	}
 	out.Phase = frame.PhaseFor(out.Result)
+	id.RunID = runID
 	hooks := a.cfg.Hooks(a.handle, id)
 	if err := hooks.RunFinalizing(ctx, out); err != nil {
 		if ctx.Err() == nil {
