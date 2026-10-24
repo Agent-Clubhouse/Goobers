@@ -871,6 +871,42 @@ tables:
     - delivered_at
     delete: true
 - schema: control
+  table: failure_streak
+  provisioned: true
+  fence: owner_token
+  rationale: The failed and escalated terminal hooks advance an item's consecutive-failure count (work or infrastructure kind) and
+    a completed run resets it by deleting the row, under the controller-lease fence.
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - kind
+    - repo_key
+    - item_id
+    - count
+    - run_id
+    - stage
+    - owner_epoch
+    - updated_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - kind
+    - repo_key
+    - item_id
+    - count
+    - run_id
+    - stage
+    - owner_epoch
+    update:
+    - count
+    - run_id
+    - stage
+    - owner_epoch
+    - updated_at
+    delete: true
+- schema: control
   table: blocked_record
   provisioned: true
   fence: owner_token

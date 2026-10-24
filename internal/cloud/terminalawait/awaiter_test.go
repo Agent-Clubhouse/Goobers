@@ -19,11 +19,15 @@ import (
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/startintent"
+	"github.com/goobers/goobers/internal/terminalhooks"
 	"github.com/goobers/goobers/internal/terminalhooks/frame"
 	"github.com/goobers/goobers/internal/terminalhooks/parking"
+	"github.com/goobers/goobers/internal/terminalhooks/providerposter"
 	"github.com/goobers/goobers/internal/terminalhooks/providerwriter"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/providers"
@@ -931,5 +935,58 @@ func TestParkingHooksWithAPendingWriterReportFailureButStillRecordTheBlock(t *te
 	}
 	if !failed {
 		t.Fatalf("a provider write that cannot happen yet was not reported as pending #8093: %+v", r.rec.events)
+	}
+}
+
+type breakerState struct {
+	escalationnotify.State // only the methods the failed path calls are implemented
+	streaks                map[string]int
+	repo                   providers.RepositoryRef
+}
+
+func (s *breakerState) ClaimedItems(string) ([]escalationnotify.Item, error) {
+	return []escalationnotify.Item{{ItemID: "42", Repo: s.repo}}, nil
+}
+func (s *breakerState) ReconcileParkOutbox(context.Context, gate.Commenter) error { return nil }
+func (s *breakerState) RunURL(string) (string, error)                             { return "", nil }
+func (s *breakerState) LoadFailureStreak(_ context.Context, _ gate.Commenter, _ providers.RepositoryRef, item string) (int, error) {
+	return s.streaks[item], nil
+}
+func (s *breakerState) WriteFailureStreak(_ providers.RepositoryRef, item string, count int, _, _ string) error {
+	s.streaks[item] = count
+	return nil
+}
+
+func TestTheFailedHookChargesTheStreakUnderTheRunsAttribution(t *testing.T) {
+	r := newRig()
+	w := &recWriter{}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	st := &breakerState{streaks: map[string]int{}, repo: repo}
+	var attributed providers.Attribution
+	policyFor := func(runID string) *escalationnotify.Policy {
+		return &escalationnotify.Policy{Poster: providerposter.Poster{Writer: w, RunID: runID}, State: st, Gaggle: "web"}
+	}
+	id := Identity{Gaggle: "web", Workflow: "implementation", RepoRef: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "web"}}
+	hooks := Hooks(r.claims, &lease.Handle{}, id, r.rec, nil, WithFailed(policyFor))
+	hooks.Failed = wrapFailed(hooks.Failed, func(ctx context.Context) { attributed, _ = providers.AttributionFromContext(ctx) })
+	hooks.Run(t.Context(), frame.Outcome{
+		RunID: "run-9", Gaggle: "web", Workflow: "implementation", Phase: journal.PhaseFailed,
+		Result: engine.RunResult{Status: engine.StatusFailed, FinalState: "implement", FailureCode: "run_failed"},
+	})
+	if st.streaks["42"] != 1 {
+		t.Fatalf("streak = %v, want the failed terminal counted", st.streaks)
+	}
+	if attributed.Run != "run-9" || attributed.Gaggle != "web" || !attributed.Goobers {
+		t.Fatalf("hook context lacks the run's attribution: %+v", attributed)
+	}
+	if len(w.reqs) == 0 || w.refs[0].RunID != "run-9" {
+		t.Fatalf("failure comment not written on behalf of the run: %+v", w.refs)
+	}
+}
+
+func wrapFailed(next terminalhooks.FailedHandler, observe func(context.Context)) terminalhooks.FailedHandler {
+	return func(ctx context.Context, o terminalhooks.FailedOutcome) error {
+		observe(ctx)
+		return next(ctx, o)
 	}
 }

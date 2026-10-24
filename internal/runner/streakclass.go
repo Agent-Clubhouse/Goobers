@@ -2,8 +2,9 @@ package runner
 
 import "github.com/goobers/goobers/internal/terminalhooks"
 
-// The terminal-fault classification lives in internal/terminalhooks so the cloud
-// controller can use it without the local runner; these keep the runner's names.
+// TerminalFault is terminalhooks.TerminalFault: the classification lives in
+// internal/terminalhooks so the cloud controller can use it without the local
+// runner; these keep the runner's names.
 type TerminalFault = terminalhooks.TerminalFault
 
 const (

@@ -97,7 +97,7 @@ type Policy struct {
 	State              State
 	EngineInterruption func(runID string) (string, error)
 	// Reports durably retains provider projections without replaying charges.
-	Reports *terminalreport.Queue
+	Reports terminalreport.Outbox
 	Gaggle  string
 }
 

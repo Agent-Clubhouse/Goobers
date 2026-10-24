@@ -7,6 +7,7 @@ import (
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -119,6 +120,15 @@ type Option func(*options)
 type options struct {
 	writer  providerwriter.Writer
 	parking parking.State
+	failed  func(runID string) *escalationnotify.Policy
+}
+
+// WithFailed implements the failed hook: the failure-streak circuit breaker
+// (#1054), through the policy policyFor builds for the run (its poster, state and
+// terminal_report outbox are the caller's). The provider writes inside it are
+// reported as failed while the writer is Pending, but the streak is counted.
+func WithFailed(policyFor func(runID string) *escalationnotify.Policy) Option {
+	return func(o *options) { o.failed = policyFor }
 }
 
 // WithParking implements the existing-fix, escalation and blocked hooks: the
@@ -161,6 +171,20 @@ func Hooks(claims Releaser, handle *lease.Handle, id Identity, record frame.Reco
 		Notify:   pending("notify (circuit breaker, terminal notification)"),
 		Finalize: Finalize(claims, handle, record),
 		Record:   record,
+	}
+	if o.failed != nil || (o.writer != nil && o.parking != nil) {
+		// The shared policies attribute provider writes to the run; the daemon
+		// reads that from the run's journal, the cloud supplies it.
+		h.Context = func(ctx context.Context, out frame.Outcome) context.Context {
+			return providers.WithAttributionContext(ctx, providers.Attribution{
+				Schema: 1, Goobers: true, Gaggle: out.Gaggle, Workflow: out.Workflow, Goober: "runner", Run: out.RunID,
+			})
+		}
+	}
+	if o.failed != nil {
+		h.Failed = func(ctx context.Context, f terminalhooks.FailedOutcome) error {
+			return o.failed(f.RunID).Failed(ctx, f)
+		}
 	}
 	if o.writer != nil && o.parking != nil {
 		h.ExistingFix = func(ctx context.Context, e terminalhooks.ExistingFixOutcome) error {

@@ -15,7 +15,8 @@ func TestFailureProjectionReplaysWithoutClaimsOrRechargingStreak(t *testing.T) {
 		t.Run(string(provider), func(t *testing.T) {
 			p, poster, state := newTestPolicy(t)
 			now := time.Now()
-			p.Reports = &terminalreport.Queue{Dir: t.TempDir(), Now: func() time.Time { return now }}
+			queue := &terminalreport.Queue{Dir: t.TempDir(), Now: func() time.Time { return now }}
+			p.Reports = queue
 			repo := providers.RepositoryRef{Provider: provider, Owner: "acme", Project: "project", Name: "app"}
 			state.items["run-1"] = []Item{{Repo: repo, ItemID: "42"}}
 			poster.listErr = &providers.RateLimitError{Provider: provider, Reset: now.Add(time.Minute)}
@@ -28,7 +29,7 @@ func TestFailureProjectionReplaysWithoutClaimsOrRechargingStreak(t *testing.T) {
 			delete(state.items, "run-1") // Finalization released claims; replay still owes the comment.
 			poster.listErr = nil
 			now = now.Add(2 * time.Minute)
-			restart := terminalreport.Queue{Dir: p.Reports.Dir, Now: p.Reports.Now}
+			restart := terminalreport.Queue{Dir: queue.Dir, Now: queue.Now}
 			if err := restart.Reconcile(context.Background(), 8, func(ctx context.Context, e terminalreport.Effect) error { return e.Apply(ctx, poster) }); err != nil {
 				t.Fatal(err)
 			}
