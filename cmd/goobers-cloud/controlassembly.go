@@ -62,9 +62,11 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "Claims", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Claims != nil }, construct: constructClaims},
 	{field: "Triggers", issue: "#7818", present: func(p controlPlanes) bool { return p.Triggers != nil }, construct: constructTriggers},
 	{field: "Journal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Journal != nil }, construct: constructJournal, requires: requiresObjectStore},
-	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
 	// After Journal: reads come from the journal plane and its projector.
 	{field: "Reader", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Reader != nil }, construct: constructReader},
+	// After Configuration, Claims, Journal and Reader: the cross-run journal
+	// read plane answers from all four.
+	{field: "RunJournal", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.RunJournal != nil }, construct: constructRunJournal, requires: requiresObjectStore},
 	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }, construct: constructEpoch},
 }
