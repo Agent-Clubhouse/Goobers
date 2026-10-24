@@ -13,6 +13,7 @@ import (
 	"context"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -116,3 +117,8 @@ type ExistingFixOutcome struct {
 // close the issue, when a no-work completion indicates the fix already exists
 // on main (issue #3236).
 type ExistingFixHandler func(ctx context.Context, o ExistingFixOutcome) error
+
+// TerminalNotifier performs a best-effort side effect for a newly-terminal live
+// run. Errors are deliberately ignored so notification delivery can never affect
+// run processing.
+type TerminalNotifier func(runID string, phase journal.RunPhase, finalState string) error
