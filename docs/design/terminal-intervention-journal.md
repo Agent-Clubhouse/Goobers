@@ -1,9 +1,8 @@
 # Fenced terminal journal interventions
 
-> Status: approved — journal seam provided here; workflow/API delivery remains pending.
+> Status: implemented
 > Tracking: #7899
-> Pending-delivery: #7899
-> Scope-delta: The workflow/API layer must qualify terminal capability discovery, durable-before-ack Updates, and N-1 replay before removing the production refusal.
+> Delivered-by: #8111, #7899
 
 Issue #7899 has two layers: the fenced file/PG journal seam (#8111), and the
 versioned workflow/worker/API composition. A workflow advertises

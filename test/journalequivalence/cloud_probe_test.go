@@ -32,8 +32,8 @@ func TestCloudJournalEquivalentToLocal(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			for repetition := 0; repetition < 3; repetition++ {
 				t.Run(fmt.Sprint(repetition+1), func(t *testing.T) {
-					if _, pending := PendingFixtures()[scenario.name]; pending {
-						compareKnownTerminalDivergence(t, scenario)
+					if scenario.name == "gate-fail-rerun" || scenario.name == "gate-override" {
+						compareCloudTerminalIntervention(t, scenario)
 					} else if scenario.name == "stage-boundary-cancellation" {
 						compareCloudDrain(t, scenario)
 					} else {
