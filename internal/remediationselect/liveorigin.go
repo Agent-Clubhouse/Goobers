@@ -10,6 +10,13 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// BranchOwnershipReader is the one cross-run journal read the live-origin
+// filter needs. journalclient.CrossRun satisfies it, as does the cloud journal
+// plane.
+type BranchOwnershipReader interface {
+	BranchOwnership(ctx context.Context, req journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error)
+}
+
 // FilterLiveOriginPullRequests drops the candidates whose live origin run still
 // owns them (or whose ownership cannot be verified), and returns a deferral
 // message for each.
@@ -18,7 +25,7 @@ import (
 // issue claim or removing its worktree between stages. Its journaled branch
 // ownership therefore fences remediation independently of claim expiry.
 // This lookup must run outside the claims lock: pods use the journal plane.
-func FilterLiveOriginPullRequests(ctx context.Context, reader journalclient.CrossRun, gaggle, currentRunID string, candidates []providers.PullRequestSummary) ([]providers.PullRequestSummary, []string, error) {
+func FilterLiveOriginPullRequests(ctx context.Context, reader BranchOwnershipReader, gaggle, currentRunID string, candidates []providers.PullRequestSummary) ([]providers.PullRequestSummary, []string, error) {
 	available := make([]providers.PullRequestSummary, 0, len(candidates))
 	var deferred []string
 	for _, pr := range candidates {

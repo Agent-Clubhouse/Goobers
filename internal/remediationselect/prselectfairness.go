@@ -1,16 +1,22 @@
 package remediationselect
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/claimsclient"
-	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/providers"
 )
 
-// PullRequestClaimListing is the one namespace read the PR claim-status
+// NamespaceLister is the one ledger read the PR claim filters need.
+// claimsclient.Ledger satisfies it; the cloud claims plane supplies its own.
+type NamespaceLister interface {
+	ListNamespace(ctx context.Context, gaggle, provider string) (claimsclient.Listing, error)
+}
+
+// PullRequestClaimListingContext is the one namespace read the PR claim-status
 // filters consult: the gaggle's own repository-provider namespace (its
 // legacy unscoped entries included, which the ledger holds exclusive against
 // every scoped claimant), or the legacy namespace alone when the stage runs
@@ -28,17 +34,20 @@ import (
 // Entries already covered by the primary read (the gaggle's own legacy
 // unscoped claims) are excluded from this second read to avoid double
 // counting them.
-func PullRequestClaimListing(ledger claimsclient.Ledger, gaggle string, provider providers.ProviderKind) (claimsclient.Listing, error) {
+//
+// The caller supplies the context and the narrow ledger read, so callers that
+// are not stage processes (the cloud scheduler) can use it.
+func PullRequestClaimListingContext(ctx context.Context, ledger NamespaceLister, gaggle string, provider providers.ProviderKind) (claimsclient.Listing, error) {
 	providerNamespace := ""
 	if gaggle != "" {
 		providerNamespace = string(provider)
 	}
-	claims, err := ledger.ListNamespace(scheduling.ClaimContext(), gaggle, providerNamespace)
+	claims, err := ledger.ListNamespace(ctx, gaggle, providerNamespace)
 	if err != nil {
 		return claimsclient.Listing{}, fmt.Errorf("read PR claims: %w", err)
 	}
 	if gaggle != "" && provider != providers.ProviderGitHub {
-		legacy, err := ledger.ListNamespace(scheduling.ClaimContext(), gaggle, string(providers.ProviderGitHub))
+		legacy, err := ledger.ListNamespace(ctx, gaggle, string(providers.ProviderGitHub))
 		if err != nil {
 			return claimsclient.Listing{}, fmt.Errorf("read legacy github-scoped PR claims: %w", err)
 		}
