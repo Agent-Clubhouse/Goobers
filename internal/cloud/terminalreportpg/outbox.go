@@ -166,3 +166,27 @@ func (o Outbox) record(e terminalreport.Effect, outcome string, duplicates *gate
 	}
 	return nil
 }
+
+// Backlog is the undelivered terminal reports: how many, and how long the oldest
+// has been waiting on the database clock. Zero means nothing is owed.
+type Backlog struct {
+	Pending int
+	Oldest  time.Duration
+}
+
+// Backlog reads the outbox backlog for the handle's instance.
+func (o Outbox) Backlog(ctx context.Context) (Backlog, error) {
+	var backlog Backlog
+	err := o.Store.Fence.WithFence(ctx, o.Handle, func(ctx context.Context, tx pgx.Tx) error {
+		var oldest float64
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*), coalesce(extract(epoch FROM clock_timestamp() - min(created_at)), 0)
+			FROM control.terminal_report WHERE instance_id=$1 AND delivered_at IS NULL`,
+			o.Handle.InstanceID).Scan(&backlog.Pending, &oldest); err != nil {
+			return err
+		}
+		backlog.Oldest = time.Duration(oldest * float64(time.Second))
+		return nil
+	})
+	return backlog, err
+}
