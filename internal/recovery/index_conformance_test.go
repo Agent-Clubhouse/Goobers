@@ -137,7 +137,8 @@ func TestRecordIndexConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		return recoveryindex.Backend{
-			Open: func(*testing.T) recovery.RecordIndex { return inventoryIndex{root: root} },
+			Open:              func(*testing.T) recovery.RecordIndex { return inventoryIndex{root: root} },
+			DeletesDuringReap: true,
 			StageBundle: func(t *testing.T, data []byte) string {
 				file, err := os.CreateTemp(staging, "bundle-*")
 				if err != nil {

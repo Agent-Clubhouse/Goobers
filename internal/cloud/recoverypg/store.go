@@ -242,16 +242,18 @@ func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]rec
 	return reaped, nil
 }
 
-// RetiredBundles lists up to limit tombstoned bundle locations: reaped and not
-// yet released, so still to be deleted from object storage. Tombstones are
-// written only under the fence, so the read is unfenced, like Get.
+// RetiredBundles lists up to limit of instanceID's tombstoned bundle
+// locations, oldest reaped first: reaped and not yet released, so still to be
+// deleted from object storage. Only instanceID's own tombstones are listed;
+// another instance's could never be released here. Tombstones are written
+// only under the fence, so the read is unfenced, like Get.
 func (s Store) RetiredBundles(ctx context.Context, instanceID string, limit int) ([]string, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT bundle_key FROM control.recovery_bundle_tombstone
-		WHERE instance_id=$1 ORDER BY bundle_key LIMIT $2`, instanceID, limit)
+		WHERE instance_id=$1 ORDER BY reaped_at, bundle_key LIMIT $2`, instanceID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list retired recovery bundles: %w", err)
 	}

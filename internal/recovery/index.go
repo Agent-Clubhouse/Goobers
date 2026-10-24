@@ -56,9 +56,16 @@ type RecordIndex interface {
 	Get(ctx context.Context, key RecordKey) (IndexedRecord, error)
 	Reap(ctx context.Context, limit int) ([]IndexedRecord, error)
 	// RetiredBundles lists up to limit bundle locations a Reap retired and no
-	// ReleaseBundle has released yet: the bundles still to delete. It, not
-	// Reap's result, is what a reaper deletes from, so a Reap whose commit
-	// succeeded but whose result was lost is finished on the next pass.
+	// ReleaseBundle has released yet, oldest retired first: the bundles still
+	// to delete. It, not Reap's result, is what a reaper deletes from, so a
+	// Reap whose commit succeeded but whose result was lost is finished on the
+	// next pass. A reaper continues past a bundle whose delete fails rather
+	// than stopping, so a permanently undeletable bundle at the head of the
+	// list cannot starve the rest.
+	//
+	// Deleting a listed bundle is safe because bundle locations are never
+	// reused across publications: every Publish stages its bundle at a fresh
+	// location, so a retired location never holds another record's bundle.
 	RetiredBundles(ctx context.Context, limit int) ([]string, error)
 	ReleaseBundle(ctx context.Context, bundle string) error
 }

@@ -912,12 +912,13 @@ tables:
   provisioned: true
   fence: epoch
   rationale: Reaped bundle keys are tombstoned in the reap transaction and released after storage deletion, both under the
-    controller-lease fence.
+    controller-lease fence. The reaper lists them oldest reaped first, so it reads reaped_at.
   readers:
   - role: goobers_controller
     columns:
     - instance_id
     - bundle_key
+    - reaped_at
   writers:
   - role: goobers_controller
     insert:

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -284,6 +285,69 @@ func TestLostReapResultIsRecoveredFromTombstones(t *testing.T) {
 	}
 	if left, err := reader.RetiredBundles(t.Context(), handle.InstanceID, 10); err != nil || len(left) != 0 {
 		t.Fatalf("after release, retired bundles = %v, %v; want none", left, err)
+	}
+}
+
+// reapOne publishes run's record at bundle with a short retention and reaps
+// it, discarding the result.
+func reapOne(t *testing.T, store recoverypg.Store, handle *lease.Handle, run, bundle string) {
+	t.Helper()
+	if _, err := store.Publish(t.Context(), handle, record(run), bundle, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.Reap(t.Context(), handle, 10); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRetiredBundlesListOnlyTheInstancesOwn: on a shared database another
+// instance's tombstones are never listed; this instance could never release
+// them, and deleting them would cross tenants.
+func TestRetiredBundlesListOnlyTheInstancesOwn(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	managerA := pgtest.Manager(t, pool, "holder", 0)
+	handleA := pgtest.Acquire(t, managerA)
+	managerB, err := lease.New(lease.Config{Pool: pool, InstanceID: "other-instance", Name: "control", Holder: "holder-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleB := pgtest.Acquire(t, managerB)
+	storeA, storeB := recoverypg.Store{Pool: pool, Fence: managerA}, recoverypg.Store{Pool: pool, Fence: managerB}
+	reapOne(t, storeA, handleA, "run-a", "bundles/a")
+	reapOne(t, storeB, handleB, "run-b", "bundles/b")
+	for _, tc := range []struct {
+		store  recoverypg.Store
+		handle *lease.Handle
+		want   string
+	}{{storeA, handleA, "bundles/a"}, {storeB, handleB, "bundles/b"}} {
+		got, err := tc.store.RetiredBundles(t.Context(), tc.handle.InstanceID, 10)
+		if err != nil || len(got) != 1 || got[0] != tc.want {
+			t.Fatalf("instance %s retired bundles = %v, %v; want only its own %q", tc.handle.InstanceID, got, err, tc.want)
+		}
+	}
+}
+
+// TestRetiredBundlesHonourTheLimitOldestReapedFirst: the list is bounded and
+// ordered by when each bundle was reaped, not by key, so a bundle that can
+// never be deleted at the head of the key order cannot starve the rest.
+func TestRetiredBundlesHonourTheLimitOldestReapedFirst(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := recoverypg.Store{Pool: pool, Fence: manager}
+	// Key order is the reverse of reap order.
+	for i, bundle := range []string{"bundles/z", "bundles/y", "bundles/x"} {
+		reapOne(t, store, handle, fmt.Sprintf("run-%d", i), bundle)
+	}
+	got, err := store.RetiredBundles(t.Context(), handle.InstanceID, 2)
+	if err != nil || !slices.Equal(got, []string{"bundles/z", "bundles/y"}) {
+		t.Fatalf("RetiredBundles(2) = %v, %v; want the two oldest reaped [bundles/z bundles/y]", got, err)
+	}
+	for _, limit := range []int{0, -1} {
+		if got, err := store.RetiredBundles(t.Context(), handle.InstanceID, limit); err != nil || got != nil {
+			t.Fatalf("RetiredBundles(%d) = %v, %v; want nothing", limit, got, err)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ import (
 type Backend struct {
 	Open        func(t *testing.T) recovery.RecordIndex
 	StageBundle func(t *testing.T, data []byte) string
+	// DeletesDuringReap marks an index that deletes reaped bundles itself
+	// during Reap, so nothing is ever left retired; otherwise RetiredBundles
+	// must list every bundle a Reap retired.
+	DeletesDuringReap bool
 }
 
 // Run executes the suite. newBackend returns an empty index per subtest.
@@ -291,8 +296,8 @@ func bundleBelongsToOne(t *testing.T, backend Backend) {
 
 // lostReapResultRetired: a Reap whose commit succeeded but whose result never
 // reached the caller (#8163). The reaper drives deletion from RetiredBundles,
-// which must list the reaped bundle unless the index deleted it during Reap,
-// and draining it (delete, then ReleaseBundle) leaves nothing retired.
+// which must list exactly the reaped bundle unless the index deletes during
+// Reap, and draining it (delete, then ReleaseBundle) leaves nothing retired.
 func lostReapResultRetired(t *testing.T, backend Backend) {
 	index, data := backend.Open(t), []byte("bundle")
 	record := fixture("lost", 'b', data)
@@ -309,8 +314,12 @@ func lostReapResultRetired(t *testing.T, backend Backend) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retired) > 1 || (len(retired) == 1 && retired[0] != bundle) {
-		t.Fatalf("retired bundles = %v, want none (deleted during Reap) or exactly %q", retired, bundle)
+	want := []string{bundle}
+	if backend.DeletesDuringReap {
+		want = nil
+	}
+	if !slices.Equal(retired, want) {
+		t.Fatalf("retired bundles = %v, want %v (deletes during reap: %v)", retired, want, backend.DeletesDuringReap)
 	}
 	for _, retiredBundle := range retired {
 		if err := index.ReleaseBundle(t.Context(), retiredBundle); err != nil {
