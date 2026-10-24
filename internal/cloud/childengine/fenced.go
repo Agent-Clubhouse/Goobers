@@ -175,7 +175,7 @@ func (a FencedAuthority) bound(ctx context.Context) (*acceptance.Store, *objstor
 		return nil, nil, ParentAuthority{}, err
 	}
 	parents := ParentAuthority{InstanceID: a.Fenced.InstanceID, Pins: store.RunPinsOf, Journal: a.Journal, Execution: a.Execution,
-		Generations: source, Applied: a.Fenced.Applied}
+		StartPending: store.StartPending, Generations: source, Applied: a.Fenced.Applied}
 	return store, source, parents, nil
 }
 

@@ -379,3 +379,62 @@ func TestProductionStillRefusesChildWorkflows(t *testing.T) {
 		t.Fatalf("a child-enabled parent = %v; the production refusal was lifted without #8085 (d) and a PO go-ahead", err)
 	}
 }
+
+// A run with no pins yet is a retry only while its start is being
+// confirmed: its engine execution runs the start a still-dispatching
+// acceptance made. Every other unpinned run is refused (#8085 c review).
+func TestUnpinnedRunIsRetryableOnlyWhileItsStartIsConfirming(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit      func(*parentFixture, *ParentAuthority)
+		retryable bool
+	}{
+		"start still dispatching": {func(_ *parentFixture, p *ParentAuthority) {
+			p.StartPending = func(context.Context, string) (bool, error) { return true, nil }
+		}, true},
+		"start settled": {func(_ *parentFixture, p *ParentAuthority) {
+			p.StartPending = func(context.Context, string) (bool, error) { return false, nil }
+		}, false},
+		"no start-state reader": {func(*parentFixture, *ParentAuthority) {}, false},
+		"execution not running": {func(f *parentFixture, p *ParentAuthority) {
+			f.execution.Status = enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED
+			p.StartPending = func(context.Context, string) (bool, error) { return true, nil }
+		}, false},
+		"execution has no start owner": {func(f *parentFixture, p *ParentAuthority) {
+			f.execution.Owner = nil
+			p.StartPending = func(context.Context, string) (bool, error) { return true, nil }
+		}, false},
+		// Could not tell: retry, never refuse (nothing is granted without pins).
+		"start state unreadable": {func(_ *parentFixture, p *ParentAuthority) {
+			p.StartPending = func(context.Context, string) (bool, error) { return false, errors.New("connection reset") }
+		}, true},
+		"execution unreadable": {func(f *parentFixture, p *ParentAuthority) {
+			f.describe = serviceerror.NewUnavailable("temporal down")
+			p.StartPending = func(context.Context, string) (bool, error) { return true, nil }
+		}, true},
+		"execution unknown to the engine": {func(f *parentFixture, p *ParentAuthority) {
+			f.describe = serviceerror.NewNotFound("gone")
+			p.StartPending = func(context.Context, string) (bool, error) { return true, nil }
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newParentFixture(t)
+			authority := f.authority()
+			authority.Pins = func(context.Context, string) (acceptance.RunPins, error) { return acceptance.RunPins{}, sql.ErrNoRows }
+			var asked []string
+			tc.edit(f, &authority)
+			if pending := authority.StartPending; pending != nil {
+				authority.StartPending = func(ctx context.Context, id string) (bool, error) {
+					asked = append(asked, id)
+					return pending(ctx, id)
+				}
+			}
+			_, err := authority.PrepareOrigin(t.Context(), f.pins.RunID, f.origin)
+			if retryable := errors.Is(classify(err), engine.ErrChildCustodyUnavailable); retryable != tc.retryable || err == nil {
+				t.Fatalf("unpinned run = %v (retryable %v), want retryable %v", err, retryable, tc.retryable)
+			}
+			if name == "start still dispatching" && (len(asked) != 1 || asked[0] != f.pins.AcceptanceID) {
+				t.Fatalf("start state asked for %v, want the memo's acceptance %s", asked, f.pins.AcceptanceID)
+			}
+		})
+	}
+}

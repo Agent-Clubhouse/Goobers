@@ -504,3 +504,35 @@ func TestPGRunPinSweepRotatesPastLiveRunsAndIsolatesUnconfirmed(t *testing.T) {
 		t.Fatalf("terminal pins = %v, want only the closed runs", terminal)
 	}
 }
+
+// StartPending is true exactly while a start is dispatching: before the
+// confirmation that records its pins commits.
+func TestPGStartPendingTracksTheUnconfirmedStart(t *testing.T) {
+	store, _ := testStore(t, 1)
+	record, _, err := store.Accept(t.Context(), "manual/pending", "operator", []byte(`{"workflow":"flow"}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.StartPending(t.Context(), record.ID); err != nil || pending {
+		t.Fatalf("accepted, not dispatching: pending=%v, %v", pending, err)
+	}
+	if err := store.BeginDispatch(t.Context(), record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.StartPending(t.Context(), record.ID); err != nil || !pending {
+		t.Fatalf("dispatching: pending=%v, %v; want true", pending, err)
+	}
+	authority, err := store.ReadStartAuthority(t.Context(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfirmStart(t.Context(), record.ID, authority.RunID, RunPins{RunID: authority.RunID, AcceptanceID: record.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.StartPending(t.Context(), record.ID); err != nil || pending {
+		t.Fatalf("confirmed: pending=%v, %v; want false", pending, err)
+	}
+	if pending, err := store.StartPending(t.Context(), "trigger-unknown"); err != nil || pending {
+		t.Fatalf("unknown acceptance: pending=%v, %v; want false", pending, err)
+	}
+}

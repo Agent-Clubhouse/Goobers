@@ -38,9 +38,12 @@ type ParentAuthority struct {
 	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
 	// Execution describes the run's live engine execution
 	// (startfence.DescribeStarted over the control Temporal client).
-	Execution   func(ctx context.Context, runID string) (startfence.StartedExecution, error)
-	Generations childworkflow.GenerationSource
-	Applied     AppliedConfiguration
+	Execution func(ctx context.Context, runID string) (startfence.StartedExecution, error)
+	// StartPending reports whether an acceptance's start is still being
+	// confirmed (acceptance.Store.StartPending); optional.
+	StartPending func(ctx context.Context, acceptanceID string) (bool, error)
+	Generations  childworkflow.GenerationSource
+	Applied      AppliedConfiguration
 }
 
 func (p ParentAuthority) validate() error {
@@ -104,6 +107,19 @@ func (p ParentAuthority) resolver(ctx context.Context, runID string) (*childwork
 	}
 	pins, err := p.Pins(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
+		confirming, checkErr := p.startConfirming(ctx, runID)
+		if checkErr != nil {
+			// Whether this is a start still confirming could not be told:
+			// retry rather than refuse; nothing is granted without pins.
+			return nil, nil, fmt.Errorf("%w: run %s has no pins yet: %w", engine.ErrChildCustodyUnavailable, runID, checkErr)
+		}
+		if confirming {
+			// The start fence records pins in the transaction that confirms
+			// the Temporal start, after the start itself: a live run whose
+			// confirmation has not committed (a control restart in that
+			// window) gets its pins on the next reconcile.
+			return nil, nil, fmt.Errorf("%w: run %s start is not confirmed yet", engine.ErrChildCustodyUnavailable, runID)
+		}
 		// No start-fence row: not a top-level run this control plane started
 		// (the I2 recursion guard), or started before the pins existed.
 		return nil, nil, fmt.Errorf("%w: run %s has no start-fence pins", childworkflow.ErrAuthorityUnavailable, runID)
@@ -168,6 +184,29 @@ func journalUnavailable(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w: parent journal: %w", engine.ErrChildCustodyUnavailable, err)
+}
+
+// startConfirming reports a run with no pins yet whose engine execution is
+// running the start its still-dispatching acceptance made. An error means it
+// could not be told; an execution Temporal no longer knows is not this case.
+func (p ParentAuthority) startConfirming(ctx context.Context, runID string) (bool, error) {
+	if p.StartPending == nil {
+		return false, nil
+	}
+	started, err := p.Execution(ctx, runID)
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !started.Engine || started.Status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING || started.Owner == nil || started.Owner.AcceptanceID == "" {
+		return false, nil
+	}
+	// The acceptance is read from this control plane's own custody, which is
+	// what binds the run to this instance.
+	return p.StartPending(ctx, started.Owner.AcceptanceID)
 }
 
 // missingPin names the first pin the bind needs that the start left empty.
