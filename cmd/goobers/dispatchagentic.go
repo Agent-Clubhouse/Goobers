@@ -484,7 +484,7 @@ func (r podArtifactRecorder) AppendContext(ctx context.Context, ev journal.Event
 func podAgenticExecutorInput(w runtimewiring.PodExecutorWiring) runtimewiring.AgenticExecutorInput {
 	input := runtimewiring.PodAgenticExecutorInput(w)
 	input.ArtifactRecorder = podCheckpointRecorder(w)
-	input.ChildWorkflows = parentPodAccess(w.Registry)
+	input.ChildWorkflows = runtimewiring.DeliveredChildWorkflowAccess(w.Registry, parentPodAccess(w.Registry))
 	return input
 }
 
