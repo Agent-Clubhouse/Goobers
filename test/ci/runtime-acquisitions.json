@@ -25,6 +25,7 @@
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",
       ".github/workflows/ci.yml#checks/fmt \u00b7 tidy \u00b7 no-phone-home \u00b7 vet \u00b7 build \u00b7 portal:go-modules",
+      ".github/workflows/ci.yml#cloud-pg/Enforce migration numbering above the base:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Verify journal equivalence pending issues:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke:go-modules",
       ".github/workflows/ci.yml#cloud-pg/Run cloud integration smoke[2]:go-modules",
