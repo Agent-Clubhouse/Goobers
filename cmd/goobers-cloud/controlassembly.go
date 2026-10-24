@@ -208,6 +208,9 @@ func constructEngineChildProtocol(ctx context.Context, db databaseServices, _ co
 	if err := putBlobPlaneCanary(ctx, db.Blobs, db.InstanceID); err != nil {
 		return err
 	}
+	if db.Pools == nil {
+		return errors.New("engine child protocol requires the controller database")
+	}
 	backend, err := journalpg.New(journalpg.Config{Pool: db.Pools.Transaction, InstanceID: db.InstanceID, Lease: manager, LiveOwner: owner})
 	if err != nil {
 		return err

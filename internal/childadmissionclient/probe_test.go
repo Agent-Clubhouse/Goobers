@@ -52,3 +52,47 @@ func TestProbedAuthorityWithholdsUntilTheBlobPlaneIsVerified(t *testing.T) {
 		t.Fatalf("acquire after verification = %v (probes %d), want no re-probe", err, probes)
 	}
 }
+
+// A slow probe (a network call) does not hold the lock: while one acquire is
+// probing, another returns at once with the last outcome, still withheld.
+func TestProbedAuthorityDoesNotBlockAcquiresBehindASlowProbe(t *testing.T) {
+	inner := &recordingAuthority{}
+	clock := time.Unix(1_800_000_000, 0)
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	slow := false
+	probed := &ProbedAuthority{Inner: inner, Now: func() time.Time { return clock },
+		Probe: func(context.Context) error {
+			if slow {
+				started <- struct{}{}
+				<-release
+			}
+			return errors.New("blob not found")
+		}}
+	_ = probed.Verify(t.Context())
+	clock = clock.Add(BlobPlaneProbeInterval)
+	slow = true
+	done := make(chan error, 1)
+	go func() {
+		_, err := probed.AcquireChildAuthority(context.Background(), authorityRequest())
+		done <- err
+	}()
+	<-started // the first acquire is inside its probe
+	result := make(chan error, 1)
+	go func() {
+		_, err := probed.AcquireChildAuthority(context.Background(), authorityRequest())
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, childresult.ErrBlobPlaneUnverified) {
+			t.Fatalf("concurrent acquire = %v, want the last outcome (withheld)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a concurrent acquire blocked behind the slow probe")
+	}
+	close(release)
+	if err := <-done; !errors.Is(err, childresult.ErrBlobPlaneUnverified) {
+		t.Fatalf("probing acquire = %v", err)
+	}
+}

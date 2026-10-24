@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -247,18 +248,23 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 // this instance must be readable through it (#8085 d, #8188). The probe runs
 // at boot and again, paced, while it fails.
 func probedChildAuthority(authority engine.ChildWorkflowAuthority, seams *workerSeams, instanceID string) engine.ChildWorkflowAuthority {
-	if authority == nil || seams == nil || seams.store == nil {
-		return authority
+	if authority == nil {
+		return nil
 	}
 	digest, _ := childresult.BlobPlaneCanary(instanceID)
-	probed := &childadmissionclient.ProbedAuthority{Inner: authority,
-		Probe: func(ctx context.Context) error {
+	probed := &childadmissionclient.ProbedAuthority{Inner: authority}
+	if seams == nil || seams.store == nil {
+		// No stage blob store to probe: fail closed, never lend unprobed.
+		probed.Probe = func(context.Context) error { return errors.New("the worker has no stage blob store to probe") }
+	} else {
+		probed.Probe = func(ctx context.Context) error {
 			_, err := seams.store.Get(ctx, digest)
 			return err
-		},
-		Report: func(err error) {
+		}
+		probed.Report = func(err error) {
 			seams.log("ERROR: %v: canary %s not readable through the stage blob plane %s", err, digest, seams.store.Describe())
-		}}
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = probed.Verify(ctx)
