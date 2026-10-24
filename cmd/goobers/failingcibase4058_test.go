@@ -187,7 +187,7 @@ func TestBaseAdvanceUnparkResetsRemediationBudget(t *testing.T) {
 			}
 			// The reset must produce a real attempt, not an instant re-park:
 			// the counter restarts at 1 and the stale stall digest is gone.
-			if got := state.AttemptsByCause.forCause(remediationCauseFailingCI); got != 1 {
+			if got := state.AttemptsByCause.ForCause(remediationCauseFailingCI); got != 1 {
 				t.Fatalf("failing-ci attempts = %d, want 1 — the released PR must get a fresh budget", got)
 			}
 			if state.Cycles != 1 {
