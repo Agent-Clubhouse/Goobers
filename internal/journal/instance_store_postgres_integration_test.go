@@ -3,9 +3,11 @@
 package journal_test
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -62,6 +64,9 @@ func TestInstanceStoreAdapterRoundTrip(t *testing.T) {
 	}
 	if _, ok, err := log.RateReset(); err != nil || ok {
 		t.Fatalf("RateReset = %v, %v; the cloud log has no reset marker", ok, err)
+	}
+	if err := log.ResetRateLimit(time.Now()); !errors.Is(err, journalpg.ErrRateResetUnsupported) {
+		t.Fatalf("ResetRateLimit = %v; the cloud must refuse loudly, not no-op", err)
 	}
 	if store.Dir() != "" {
 		t.Fatalf("Dir = %q", store.Dir())

@@ -73,6 +73,15 @@ func (l *SchedulerLog) LastSeq() (uint64, error) { return l.backend.InstanceLast
 // comes from RateReset rather than a file under Dir.
 func (l *SchedulerLog) Dir() string { return "" }
 
+// ErrRateResetUnsupported is the explicit refusal for an operator rate-limit
+// reset against the cloud scheduler. It must stay loud: a silent no-op would
+// look like a successful reset while MaxRunsPerHour keeps refusing starts.
+var ErrRateResetUnsupported = errors.New("journalpg: reset-rate-limit is not supported in cloud yet (tracked with L1d/L1e)")
+
+// ResetRateLimit refuses. The floor is a local file marker today; the cloud
+// scheduler has no durable equivalent, so no caller may believe it was applied.
+func (l *SchedulerLog) ResetRateLimit(time.Time) error { return ErrRateResetUnsupported }
+
 // RateReset reports no operator reset floor. The cloud has no
 // `goobers reset-rate-limit` marker yet, and the scheduler must not fall back
 // to reading a relative "rate-reset" file from the process working directory.
