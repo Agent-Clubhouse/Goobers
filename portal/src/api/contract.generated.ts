@@ -56,6 +56,7 @@ export const apiRoutes = {
   "triggerStatus": { method: "GET", path: "/api/v1/triggers/{acceptance}", actionClass: "read-only-navigation" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
   "cancelRun": { method: "POST", path: "/api/v1/runs/{run}/cancel", actionClass: "maintenance" },
+  "journalTerminalIntervention": { method: "POST", path: "/api/v1/runs/{run}/journal/terminal-intervention", actionClass: "workflow-execution" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
   "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
   "credentialRefresh": { method: "POST", path: "/api/v1/credentials/refresh", actionClass: "workflow-execution" },
