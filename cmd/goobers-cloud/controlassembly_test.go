@@ -132,6 +132,7 @@ func populatedControlPlanes() controlPlanes {
 		Epoch: func(context.Context, *lease.Handle) (control.EpochServices, error) {
 			return control.EpochServices{}, nil
 		},
+		Admission: func(context.Context, control.AdmissionDeps) (control.Admission, error) { return nil, nil },
 	}
 }
 

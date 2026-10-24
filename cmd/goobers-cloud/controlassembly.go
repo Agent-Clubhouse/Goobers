@@ -67,8 +67,12 @@ var controlAssembly = []controlAssemblySeam{
 	{field: "RunJournal", issue: "#7818", present: func(p controlPlanes) bool { return p.RunJournal != nil }},
 	// After Journal: reads come from the journal plane and its projector.
 	{field: "Reader", issue: "#7818", controller: true, present: func(p controlPlanes) bool { return p.Reader != nil }, construct: constructReader},
-	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }},
+	{field: "Resolve", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Resolve != nil }, construct: constructResolve, requires: requiresConfigDirectory},
 	{field: "Epoch", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Epoch != nil }, construct: constructEpoch},
+	// After Configuration, Journal and Epoch: the scheduler admission reads the
+	// applied generation, journals through the fenced instance log, and feeds the
+	// observations ledger the Epoch seam persists.
+	{field: "Admission", label: "scheduler admission", controller: true, issue: "#7818", present: func(p controlPlanes) bool { return p.Admission != nil }, construct: constructScheduler, requires: requiresConfigDirectory},
 	// The blob plane touches no database and needs no lease (#8188).
 	{field: "BlobPlane", label: "blob plane", issue: "#8188", present: func(p controlPlanes) bool { return p.BlobPlane != nil }, construct: constructBlobPlane, requires: requiresObjectStore},
 }

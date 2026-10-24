@@ -26,6 +26,11 @@ type Outcome struct {
 	Phase                                     journal.RunPhase
 	FailureStage, FailureCode, FailureMessage string
 	NoWork                                    bool
+	// Gone means the execution is unknown to the engine (NotFound), as opposed
+	// to having closed with a result or an execution error. For a run the engine
+	// confirmed started that is "permanently gone"; for a start that never reached
+	// the engine it only means "not started yet".
+	Gone bool
 }
 
 // Terminal blocks until the run closes and returns its outcome. It returns an
@@ -46,7 +51,42 @@ type Config struct {
 	StartTimeout time.Duration
 	// TerminalBackoff paces retries of a failing Terminal (zero: 1s, capped 30s).
 	TerminalBackoff Backoff
-	Report          func(error)
+	// Settled reports whether an uncertain start's acceptance ended without a
+	// run (rejected, requeued, or gone), so its slot may be released when the
+	// engine does not know the workflow. Unset, such a holder is held until the
+	// engine reports a real outcome: the conservative direction.
+	Settled func(ctx context.Context, acceptanceID string) (bool, error)
+	Report  func(error)
+}
+
+// ErrStartPending means an uncertain start has not reached the engine yet: its
+// slot stays held and the wait is retried.
+var ErrStartPending = errors.New("schedstart: the uncertain start has not reached the engine yet")
+
+// uncertainTerminal wraps Terminal for a holder whose start is unresolved. A
+// recovered start can still happen after the predecessor died mid-start (the
+// recovery re-drives dispatching rows about a minute later), so the engine's
+// NotFound must not release the slot while the acceptance is still live;
+// otherwise the successor admits another run and the recovered start runs over
+// MaxConcurrentRuns.
+func (c Config) uncertainTerminal(acceptanceID string) Terminal {
+	return func(ctx context.Context, runID string) (Outcome, error) {
+		outcome, err := c.Terminal(ctx, runID)
+		if err != nil || !outcome.Gone {
+			return outcome, err
+		}
+		if c.Settled == nil {
+			return Outcome{}, ErrStartPending
+		}
+		settled, err := c.Settled(ctx, acceptanceID)
+		if err != nil {
+			return Outcome{}, err
+		}
+		if !settled {
+			return Outcome{}, ErrStartPending
+		}
+		return outcome, nil
+	}
 }
 
 // Backoff is a capped exponential retry delay.
@@ -101,9 +141,13 @@ func (c Config) awaitTerminal(ctx context.Context, runID string) (Outcome, error
 func (c Config) WatchReconciled(ctx context.Context, open []OpenRun, release func(runID, workflow string), tracker *Tracker) {
 	for _, run := range open {
 		done := tracker.register()
+		watch := c
+		if run.AcceptanceID != "" {
+			watch.Terminal = c.uncertainTerminal(run.AcceptanceID)
+		}
 		go func() {
 			defer done()
-			if _, err := c.awaitTerminal(ctx, run.RunID); err != nil {
+			if _, err := watch.awaitTerminal(ctx, run.RunID); err != nil {
 				return // epoch ended: the next leader reconciles again
 			}
 			release(run.RunID, run.Identity.Workflow)
