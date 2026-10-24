@@ -1023,3 +1023,56 @@ func TestRecordPassIsRefusedToTheAPIRoleAndToAStaleOwner(t *testing.T) {
 		t.Fatal("the API role updated the pass record")
 	}
 }
+
+// TestRebuildCopiesByColumnNameNotPosition: a target version whose columns are
+// in a different order from its source must still receive each value in the
+// column of the same name (#8156). The target's run table is recreated with
+// owner_epoch first after the build has prepared it, then the build resumes.
+func TestRebuildCopiesByColumnNameNotPosition(t *testing.T) {
+	pool := testPool(t)
+	applyMigrations(t, pool)
+	resetReadmodel(t, pool)
+	if _, err := pool.Exec(t.Context(), `DROP SCHEMA IF EXISTS readmodel_v3 CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	seedRebuildRows(t, pool, 3)
+	base := testFence{pool: pool, epoch: 7}
+	// The first fenced transaction prepares the target; the second would copy.
+	builder, _ := readmodelpg.NewBuilder(pool, &countingFence{base: base, failAt: 2})
+	if err := builder.Build(t.Context(), "readmodel_v3"); !errors.Is(err, errInjectedFence) {
+		t.Fatalf("prepare-only build = %v, want injected fence error", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		DROP TABLE readmodel_v3.run CASCADE;
+		CREATE TABLE readmodel_v3.run (
+			owner_epoch bigint NOT NULL CHECK (owner_epoch > 0),
+			disposition text NOT NULL,
+			run_id text PRIMARY KEY,
+			last_activity_at timestamptz NOT NULL,started_at timestamptz NOT NULL,
+			terminal boolean NOT NULL,phase text NOT NULL,workflow text NOT NULL,gaggle text NOT NULL,
+			projection jsonb NOT NULL,
+			source_seq bigint NOT NULL CHECK (source_seq >= 0),
+			stages text[] NOT NULL DEFAULT '{}',any_token_measured boolean NOT NULL DEFAULT false,
+			any_premium_measured boolean NOT NULL DEFAULT false,
+			any_cost_measured boolean NOT NULL DEFAULT false,
+			any_retry_waste boolean NOT NULL DEFAULT false
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	builder, _ = readmodelpg.NewBuilder(pool, &countingFence{base: base})
+	if err := builder.Build(t.Context(), "readmodel_v3"); err != nil {
+		t.Fatalf("resumed build into a reordered target: %v", err)
+	}
+	var mismatched int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM readmodel_v1.run AS s FULL JOIN readmodel_v3.run AS d USING (run_id)
+		WHERE d.run_id IS NULL OR s.run_id IS NULL
+		   OR (s.source_seq, s.gaggle, s.workflow, s.phase, s.disposition, s.terminal)
+		      IS DISTINCT FROM (d.source_seq, d.gaggle, d.workflow, d.phase, d.disposition, d.terminal)
+		   OR d.owner_epoch <> 7`).Scan(&mismatched); err != nil {
+		t.Fatal(err)
+	}
+	if mismatched != 0 {
+		t.Fatalf("%d rows landed in the wrong columns of the reordered target", mismatched)
+	}
+}
