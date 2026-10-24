@@ -103,7 +103,7 @@ func TestControlAssemblyRoutesEachConstructorToItsRole(t *testing.T) {
 	t.Cleanup(func() { controlAssembly = prior })
 	// journal.* is granted to goobers_controller only (writepaths.yaml), so the
 	// journal plane and everything that reads the journal runs on its pool.
-	controllerFields := map[string]bool{"Configuration": true, "Resolve": true, "Epoch": true, "Journal": true}
+	controllerFields := map[string]bool{"Configuration": true, "EngineChildAdmissions": true, "Resolve": true, "Epoch": true, "Journal": true}
 	for i := range controlAssembly {
 		field := controlAssembly[i].field
 		want := api
@@ -139,6 +139,34 @@ func TestControlRequiresAnObjectStoreAtBoot(t *testing.T) {
 	code, _, stderr := runForTest("control", "--instance-id", "team-blue")
 	if code != 2 || !strings.Contains(stderr, "--object-store-url") {
 		t.Fatalf("code=%d error=%s", code, stderr)
+	}
+}
+
+func TestControlRequiresAConfigDirBeforeDatabase(t *testing.T) {
+	prior := newCloudPools
+	newCloudPools = func(context.Context, cloudpg.Config) (*cloudpg.Pools, error) {
+		t.Fatal("opened a pool before the config directory was checked")
+		return nil, errors.New("unreachable")
+	}
+	t.Cleanup(func() { newCloudPools = prior })
+	t.Setenv("GOOBERS_CONFIG_DIR", "")
+	t.Setenv("GOOBERS_API_DATABASE_URL", "postgres://goobers_api:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_API_DATABASE_DIRECT_URL", "postgres://goobers_api:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_CONTROLLER_DATABASE_URL", "postgres://goobers_controller:secret@localhost/goobers_team_blue")
+	t.Setenv("GOOBERS_CONTROLLER_DATABASE_DIRECT_URL", "postgres://goobers_controller:secret@localhost/goobers_team_blue")
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ dir, want string }{
+		{"", "--config-dir (or GOOBERS_CONFIG_DIR) is required"},
+		{filepath.Join(t.TempDir(), "missing"), "config directory is not readable"},
+		{file, "config directory is not a directory"},
+	} {
+		code, _, stderr := runForTest("control", "--instance-id", "team-blue", "--object-store-url", "https://store.invalid", "--config-dir", tc.dir)
+		if code != 2 || !strings.Contains(stderr, tc.want) || strings.Contains(stderr, "database operation failed") {
+			t.Fatalf("config dir %q: code=%d error=%s", tc.dir, code, stderr)
+		}
 	}
 }
 

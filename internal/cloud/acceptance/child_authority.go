@@ -47,7 +47,10 @@ func (s *Store) BindChildAuthority(
 		).Scan(&cancelled, &settled, &parentEpoch); err != nil {
 			return err
 		}
-		if parentEpoch != epoch || cancelled != nil {
+		if parentEpoch != epoch {
+			return ErrStaleChildEpoch
+		}
+		if cancelled != nil {
 			return triggerqueue.ErrParentCancelled
 		}
 		if settled != nil {

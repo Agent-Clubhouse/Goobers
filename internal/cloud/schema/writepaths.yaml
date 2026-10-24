@@ -194,6 +194,50 @@ tables:
     - start_retry_epoch
     delete: true
 - schema: control
+  table: run_pin
+  provisioned: true
+  fence: owner_epoch
+  rationale: "Start-fence run pins (HA-P4 cloud child authority, migration 0023) are inserted only inside the controller
+    lease fence that confirms or adopts the Temporal start, are immutable after insert except terminal_at, which the controller
+    retention sweep sets once the run is closed, and are deleted only after that. API and worker paths never read or write them."
+  readers:
+  - role: goobers_controller
+    columns:
+    - instance_id
+    - run_id
+    - acceptance_id
+    - gaggle
+    - workflow
+    - workflow_version
+    - workflow_digest
+    - goober_digest
+    - config_generation
+    - repo_ref
+    - branch_namespace
+    - input_digest
+    - owner_epoch
+    - created_at
+    - terminal_at
+  writers:
+  - role: goobers_controller
+    insert:
+    - instance_id
+    - run_id
+    - acceptance_id
+    - gaggle
+    - workflow
+    - workflow_version
+    - workflow_digest
+    - goober_digest
+    - config_generation
+    - repo_ref
+    - branch_namespace
+    - input_digest
+    - owner_epoch
+    update:
+    - terminal_at
+    delete: true
+- schema: control
   table: source_receipt
   provisioned: true
   fence: epoch
@@ -412,8 +456,8 @@ tables:
   table: meta
   provisioned: true
   fence: owner_epoch
-  rationale: The projector advances change counters and the owner epoch under its lease fence. Readers load identity, readiness
-    and the change floor.
+  rationale: The projector advances change counters and the owner epoch under its lease fence. The projector also records its last completed catch-up pass
+    and open failure count. Readers load identity, readiness, the change floor and that pass record.
   readers:
   - role: goobers_api
     columns:
@@ -423,6 +467,8 @@ tables:
     - next_change_seq
     - built_at
     - ready
+    - last_pass_at
+    - open_failures
   - role: goobers_controller
     columns:
     - singleton
@@ -432,12 +478,16 @@ tables:
     - next_change_seq
     - built_at
     - owner_epoch
+    - last_pass_at
+    - open_failures
   writers:
   - role: goobers_controller
     update:
     - min_change_seq
     - next_change_seq
     - owner_epoch
+    - last_pass_at
+    - open_failures
 - schema: readmodel_v*
   table: run
   provisioned: true
@@ -1012,7 +1062,7 @@ tables:
   table: run_event
   provisioned: true
   fence: owner_token
-  rationale: Events are appended once at a counter-allocated seq by the current writer token. Dedup, atomic-occurrence, notification, operator and progress-window checks read the indexed keys; replay and readers page bodies.
+  rationale: Events are appended once at a counter-allocated seq by the current writer token. Dedup, atomic-occurrence, notification, operator and progress-window checks read the indexed keys; replay and readers page bodies, with the database-clock recorded_at for stall accounting.
   readers:
   - role: goobers_controller
     columns:
@@ -1034,6 +1084,7 @@ tables:
     - at
     - at_submicro
     - body
+    - recorded_at
   writers:
   - role: goobers_controller
     insert:
