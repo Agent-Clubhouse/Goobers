@@ -17,8 +17,17 @@ const ContinuationClaimTTL = 10 * time.Minute
 // refused for capacity, so the next slot that frees is its (#8174).
 type continuationClaim struct {
 	identity WorkflowIdentity
-	since    time.Time
-	until    time.Time
+	// maxConcurrent is the claimer's workflow cap when it last asked: a claim
+	// holds an instance slot only while its own workflow has room for it.
+	maxConcurrent int
+	since         time.Time
+	until         time.Time
+}
+
+// olderThan reports whether claim a (run aRun) was made before claim b (run
+// bRun); run IDs break ties so the order is total.
+func olderThan(a continuationClaim, aRun string, b continuationClaim, bRun string) bool {
+	return a.since.Before(b.since) || a.since.Equal(b.since) && aRun < bRun
 }
 
 func (c *Conditions) clockNow() time.Time {
@@ -38,28 +47,43 @@ func (c *Conditions) pruneClaimsLocked(now time.Time) {
 }
 
 // heldByClaimsLocked counts the live claims that hold capacity against an
-// admission: every claim for a new start (except runID's own), and, for the
-// resume of a claiming run, only the claims older than its own, so waiting
-// parents resume first come first served. c.mu is held.
+// admission: every claim for a new start, and for the resume of a claiming
+// run only the claims older than its own, so waiting parents resume first
+// come, first served. A claim always holds its own workflow's slot, but it
+// holds an instance slot only while its workflow has room for it (active
+// runs plus older claims of the same workflow below its cap): a parent still
+// waiting on its own workflow cannot use an instance slot, so it must not
+// freeze one against other workflows. c.mu is held.
 func (c *Conditions) heldByClaimsLocked(identity WorkflowIdentity, runID string) (workflow, instance int) {
 	own, claiming := c.claims[runID]
 	for other, claim := range c.claims {
-		if other == runID {
+		if other == runID || claiming && !olderThan(claim, other, own, runID) {
 			continue
 		}
-		if claiming && !claim.since.Before(own.since) && (claim.since.After(own.since) || other > runID) {
-			continue
-		}
-		instance++
 		if claim.identity == identity {
 			workflow++
+		}
+		if c.claimCanUseInstanceLocked(other, claim) {
+			instance++
 		}
 	}
 	return workflow, instance
 }
 
+// claimCanUseInstanceLocked reports whether the claim's own workflow has a
+// slot for it, so an instance slot would let it resume. c.mu is held.
+func (c *Conditions) claimCanUseInstanceLocked(runID string, claim continuationClaim) bool {
+	ahead := 0
+	for other, older := range c.claims {
+		if other != runID && older.identity == claim.identity && olderThan(older, other, claim, runID) {
+			ahead++
+		}
+	}
+	return c.active[claim.identity]+ahead < claim.maxConcurrent
+}
+
 // markContinuationWaitingLocked records or renews runID's claim. c.mu is held.
-func (c *Conditions) markContinuationWaitingLocked(runID string, identity WorkflowIdentity, now time.Time) {
+func (c *Conditions) markContinuationWaitingLocked(runID string, identity WorkflowIdentity, maxConcurrent int, now time.Time) {
 	if c.claims == nil {
 		c.claims = map[string]continuationClaim{}
 	}
@@ -67,7 +91,8 @@ func (c *Conditions) markContinuationWaitingLocked(runID string, identity Workfl
 	if !ok || claim.identity != identity {
 		claim = continuationClaim{identity: identity, since: now}
 	}
-	claim.until = now.Add(ContinuationClaimTTL)
+	// A renewal keeps the claim's place: since is never reset.
+	claim.maxConcurrent, claim.until = maxConcurrent, now.Add(ContinuationClaimTTL)
 	c.claims[runID] = claim
 }
 
@@ -93,7 +118,15 @@ func (c *Conditions) reserveParentContinuation(runID string, identity WorkflowId
 		return ok, reason
 	}
 	if reason == ReasonMaxParallel || reason == ReasonInstanceMaxParallel {
-		c.markContinuationWaitingLocked(runID, identity, now)
+		c.markContinuationWaitingLocked(runID, identity, maxConcurrentRuns(r), now)
 	}
 	return ok, reason
+}
+
+// maxConcurrentRuns is a workflow's concurrency cap, defaulting to one.
+func maxConcurrentRuns(r apiv1.ReadinessConditions) int {
+	if r.MaxConcurrentRuns <= 0 {
+		return 1
+	}
+	return int(r.MaxConcurrentRuns)
 }

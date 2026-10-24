@@ -33,10 +33,20 @@ type claimFixture struct {
 // runs; started runs block until finished.
 func newClaimFixture(t *testing.T, maxConcurrent int32, workflows ...string) *claimFixture {
 	t.Helper()
+	caps := map[string]int32{}
+	for _, name := range workflows {
+		caps[name] = maxConcurrent
+	}
+	return newClaimFixtureCaps(t, caps)
+}
+
+// newClaimFixtureCaps is newClaimFixture with a cap per workflow.
+func newClaimFixtureCaps(t *testing.T, caps map[string]int32) *claimFixture {
+	t.Helper()
 	f := &claimFixture{t: t, starter: releasableStarter{finish: make(chan struct{})}, now: time.Unix(1_800_000_000, 0)}
 	t.Cleanup(func() { close(f.starter.finish) })
 	var entries []WorkflowEntry
-	for _, name := range workflows {
+	for name, maxConcurrent := range caps {
 		entries = append(entries, WorkflowEntry{Workflow: name, Gaggle: "own", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
 			Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: maxConcurrent, MaxRunsPerHour: 1000}, Starter: f.starter})
 	}
@@ -295,7 +305,7 @@ func TestNoClaimsMeansUnchangedAdmissionDecisions(t *testing.T) {
 			// Claims come and go on one tracker only, never live at a decision.
 			if rng.Intn(3) == 0 {
 				touched.mu.Lock()
-				touched.markContinuationWaitingLocked("run-"+identity.Workflow, identity, clock)
+				touched.markContinuationWaitingLocked("run-"+identity.Workflow, identity, int(readiness.MaxConcurrentRuns), clock)
 				touched.mu.Unlock()
 				if rng.Intn(2) == 0 {
 					touched.ClearContinuationClaim("run-" + identity.Workflow)
@@ -327,5 +337,141 @@ func TestNoClaimsMeansUnchangedAdmissionDecisions(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A parent still waiting on its OWN workflow cap cannot use an instance slot,
+// so its claim must not hold one: a parent of another workflow with room
+// resumes, and another workflow's trigger is admitted (#8185 review P2).
+func TestWorkflowCappedClaimDoesNotFreezeTheInstancePool(t *testing.T) {
+	setup := func(t *testing.T) (*claimFixture, *ChildParentSuspension) {
+		t.Helper()
+		f := newClaimFixture(t, 1, "parent", "other", "third")
+		f.s.conditions.SetInstanceLimits(2, nil, nil)
+		p, releaseP := f.park(strings.Repeat("a", 32), "parent")
+		t.Cleanup(releaseP)
+		p2, releaseP2 := f.park(strings.Repeat("b", 32), "other")
+		t.Cleanup(releaseP2)
+		if err := f.trigger("parent"); err != nil { // X takes the parent's lent slot
+			t.Fatal(err)
+		}
+		if err := p.Resume(t.Context()); !refusedFor(err, ReasonMaxParallel) {
+			t.Fatalf("parent resume = %v, want max-parallel (its own workflow is full)", err)
+		}
+		f.now = f.now.Add(time.Second)
+		return f, p2
+	}
+	t.Run("younger parent of another workflow", func(t *testing.T) {
+		_, p2 := setup(t)
+		if err := p2.Resume(t.Context()); err != nil {
+			t.Fatalf("resume of a parent whose workflow and instance have room = %v", err)
+		}
+	})
+	t.Run("another workflow's trigger", func(t *testing.T) {
+		f, _ := setup(t)
+		if err := f.trigger("third"); err != nil {
+			t.Fatalf("a third workflow's trigger with an instance slot free = %v", err)
+		}
+	})
+}
+
+// Renewals keep a claim's place: two parents retrying interleaved resume in
+// the order they first started waiting, however their retries alternate.
+func TestInterleavedRetriesKeepFirstComeFirstServed(t *testing.T) {
+	f := newClaimFixture(t, 2, "parent")
+	first, releaseFirst := f.park(strings.Repeat("a", 32), "parent")
+	defer releaseFirst()
+	second, releaseSecond := f.park(strings.Repeat("b", 32), "parent")
+	defer releaseSecond()
+	for range 2 {
+		if err := f.trigger("parent"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, wait := range []*ChildParentSuspension{first, second, second, first} {
+		if err := wait.Resume(t.Context()); err == nil {
+			t.Fatal("resumed over a full pool")
+		}
+		f.now = f.now.Add(time.Second)
+	}
+	f.finishOne("parent")
+	if err := second.Resume(t.Context()); !refusedFor(err, ReasonMaxParallel) {
+		t.Fatalf("the later waiter (renewed earlier) resumed first: %v", err)
+	}
+	if err := first.Resume(t.Context()); err != nil {
+		t.Fatalf("the first waiter's resume = %v", err)
+	}
+}
+
+// A watchdog force-releasing a waiting parent's admission drops its claim.
+func TestReleaseRunDropsTheParentsClaim(t *testing.T) {
+	f := newClaimFixture(t, 1, "parent")
+	parent := strings.Repeat("a", 32)
+	wait, release := f.park(parent, "parent")
+	defer release()
+	if err := f.trigger("parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait.Resume(t.Context()); err == nil {
+		t.Fatal("resumed over a full pool")
+	}
+	f.s.ReleaseRun(parent, "parent")
+	if len(f.s.conditions.claims) != 0 {
+		t.Fatalf("claims after ReleaseRun = %v", f.s.conditions.claims)
+	}
+	f.finishOne("parent")
+	if err := f.trigger("parent"); err != nil {
+		t.Fatalf("a trigger after the waiting parent was released = %v", err)
+	}
+}
+
+// Reported worker availability nets out a waiting parent's claim on the pool.
+func TestWorkerAvailabilityNetsOutWaitingClaims(t *testing.T) {
+	f := newClaimFixture(t, 5, "parent", "other")
+	f.s.conditions.SetInstanceLimits(2, nil, nil)
+	wait, release := f.park(strings.Repeat("a", 32), "parent")
+	defer release()
+	for range 2 {
+		if err := f.trigger("other"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wait.Resume(t.Context()); !refusedFor(err, ReasonInstanceMaxParallel) {
+		t.Fatalf("resume over a full pool = %v", err)
+	}
+	f.finishOne("other")
+	if available, observable := f.s.conditions.WorkerAvailability(); !observable || available != 0 {
+		t.Fatalf("availability with a free slot the waiting parent holds = %d (observable %v), want 0", available, observable)
+	}
+}
+
+// Of two parents waiting on one workflow's single slot, only the older can
+// use an instance slot; the younger one holds none until its turn.
+func TestYoungerSameWorkflowWaiterHoldsNoInstanceSlot(t *testing.T) {
+	f := newClaimFixtureCaps(t, map[string]int32{"parent": 1, "other": 5, "third": 5})
+	f.s.conditions.SetInstanceLimits(2, nil, nil)
+	older, releaseOlder := f.park(strings.Repeat("a", 32), "parent")
+	defer releaseOlder()
+	younger, releaseYounger := f.park(strings.Repeat("b", 32), "parent")
+	defer releaseYounger()
+	for range 2 {
+		if err := f.trigger("other"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := older.Resume(t.Context()); err == nil {
+		t.Fatal("older parent resumed over a full pool")
+	}
+	f.now = f.now.Add(time.Second)
+	if err := younger.Resume(t.Context()); err == nil {
+		t.Fatal("younger parent resumed over a full pool")
+	}
+	f.finishOne("other")
+	f.finishOne("other")
+	if err := f.trigger("third"); err != nil {
+		t.Fatalf("a third workflow's trigger with one pool slot owed to the older parent and one free = %v", err)
+	}
+	if err := older.Resume(t.Context()); err != nil {
+		t.Fatalf("the older parent's resume = %v", err)
 	}
 }

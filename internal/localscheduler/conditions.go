@@ -512,7 +512,10 @@ func (c *Conditions) WorkerAvailability() (available int, observable bool) {
 	if c.instanceMaxParallel <= 0 {
 		return 0, false
 	}
-	available = c.instanceMaxParallel - c.totalActive
+	// A waiting parent's claim on the pool is not availability (#8174).
+	c.pruneClaimsLocked(c.clockNow())
+	_, held := c.heldByClaimsLocked(WorkflowIdentity{}, "")
+	available = c.instanceMaxParallel - c.totalActive - held
 	if available < 0 {
 		available = 0
 	}
