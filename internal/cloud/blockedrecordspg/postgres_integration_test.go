@@ -3,7 +3,10 @@
 package blockedrecordspg_test
 
 import (
+	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/goobers/goobers/internal/cloud/blockedrecordspg"
@@ -21,7 +24,7 @@ func block(item string, blockers ...string) parking.Block {
 
 func TestACycleIsDetectedAcrossLeaseEpochs(t *testing.T) {
 	pool := pgtest.Pool(t, "brpg")
-	oldManager := pgtest.Manager(t, pool, "old", 0)
+	oldManager := pgtest.ControllerManager(t, pool, "old", 0)
 	old := pgtest.Acquire(t, oldManager)
 	oldStore := blockedrecordspg.Store{Fence: oldManager}
 	if cycle, err := oldStore.RecordBlock(t.Context(), old, block("1", "2")); err != nil || len(cycle.Affected) != 0 {
@@ -29,7 +32,7 @@ func TestACycleIsDetectedAcrossLeaseEpochs(t *testing.T) {
 	}
 	// The block that closes the cycle is recorded by the successor leader: the
 	// predecessor's record must have survived the lease change.
-	newManager := pgtest.Manager(t, pool, "new", 0)
+	newManager := pgtest.ControllerManager(t, pool, "new", 0)
 	successor := pgtest.Takeover(t, pool, newManager)
 	newStore := blockedrecordspg.Store{Fence: newManager}
 	cycle, err := newStore.RecordBlock(t.Context(), successor, block("2", "pr/1"))
@@ -46,29 +49,84 @@ func TestACycleIsDetectedAcrossLeaseEpochs(t *testing.T) {
 	}
 }
 
-func TestBlockedRecordWritesRunAsTheControllerRole(t *testing.T) {
+type closedSet struct {
+	mu     sync.Mutex
+	closed map[string]bool
+	err    error
+}
+
+func (c *closedSet) check(_ context.Context, _ string, _ providers.RepositoryRef, item string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed[item], c.err
+}
+
+// A record naming a blocker that has since closed must not close a cycle: that
+// would escalate a non-cyclic item needs-human.
+func TestAClosedBlockerCannotFormAFalseCycle(t *testing.T) {
 	pool := pgtest.Pool(t, "brpg")
-	conn, err := pool.Acquire(t.Context())
-	if err != nil {
+	manager := pgtest.ControllerManager(t, pool, "leader", 0)
+	handle := pgtest.Acquire(t, manager)
+	closed := &closedSet{closed: map[string]bool{}}
+	store := blockedrecordspg.Store{Fence: manager, Closed: closed.check}
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Release()
-	if _, err := conn.Exec(t.Context(), "SET ROLE goobers_controller"); err != nil {
+	// Item 2 closed since 1 recorded its block on it; 2 is then (re)blocked on 1.
+	closed.closed["2"] = true
+	cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 0 {
+		t.Fatalf("closed blocker formed a cycle: %+v, %v", cycle, err)
+	}
+	// An unverifiable item keeps the cycle: dropping on a guess would hide a real one.
+	closed.closed["2"], closed.err = false, errors.New("provider unavailable")
+	if _, err := store.RecordBlock(t.Context(), handle, block("1", "2")); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Exec(t.Context(), "RESET ROLE") //nolint:errcheck
-	for i := range 2 {
-		if _, err := conn.Exec(t.Context(), `
-			INSERT INTO control.blocked_record (instance_id, record_key, record, owner_epoch) VALUES ('i', 'k', '{}', $1)
-			ON CONFLICT (instance_id, record_key) DO UPDATE
-			SET record = EXCLUDED.record, owner_epoch = EXCLUDED.owner_epoch, recorded_at = now()`, i+1); err != nil {
-			t.Fatalf("controller upsert %d: %v", i, err)
+	cycle, err = store.RecordBlock(t.Context(), handle, block("2", "1"))
+	if err != nil || len(cycle.Affected) != 2 {
+		t.Fatalf("unverifiable members dropped a cycle: %+v, %v", cycle, err)
+	}
+}
+
+func TestHealForgetsClosedItemsAndTheirTrailAndIsFenced(t *testing.T) {
+	pool := pgtest.Pool(t, "brpg")
+	controller := pgtest.ControllerPool(t, pool)
+	oldManager := pgtest.ControllerManager(t, pool, "old", 0)
+	old := pgtest.Acquire(t, oldManager)
+	closed := &closedSet{closed: map[string]bool{"2": true}}
+	store := blockedrecordspg.Store{Fence: oldManager, Closed: closed.check}
+	for _, b := range []parking.Block{block("1", "2", "3"), block("2", "9"), block("4", "2")} {
+		if _, err := store.RecordBlock(t.Context(), old, b); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if _, err := conn.Exec(t.Context(), `SELECT record_key, record FROM control.blocked_record WHERE instance_id='i' ORDER BY record_key`); err != nil {
-		t.Fatalf("controller read: %v", err)
+	count := func() int {
+		var n int
+		if err := controller.QueryRow(t.Context(), `SELECT count(*) FROM control.blocked_record`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
-	if _, err := conn.Exec(t.Context(), `DELETE FROM control.blocked_record`); err == nil {
-		t.Fatal("controller role may delete blocked records; the grant is wider than the reviewed write path")
+	if count() != 3 {
+		t.Fatalf("records = %d, want 3", count())
+	}
+	newManager := pgtest.ControllerManager(t, pool, "new", 0)
+	successor := pgtest.Takeover(t, pool, newManager)
+	if _, err := store.Heal(t.Context(), old, 100); !errors.Is(err, lease.ErrStale) {
+		t.Fatalf("stale leader Heal = %v, want ErrStale", err)
+	}
+	next := blockedrecordspg.Store{Fence: newManager, Closed: closed.check}
+	forgot, err := next.Heal(t.Context(), successor, 100)
+	if err != nil || forgot != 1 {
+		t.Fatalf("Heal = %d, %v; want exactly item 2 forgotten", forgot, err)
+	}
+	// 2's own record is gone, 4 (blocked only on 2) is gone, 1 keeps blocker 3.
+	if count() != 1 {
+		t.Fatalf("records after heal = %d, want 1", count())
+	}
+	var raw string
+	if err := controller.QueryRow(t.Context(), `SELECT record::text FROM control.blocked_record`).Scan(&raw); err != nil || !strings.Contains(raw, `"3"`) || strings.Contains(raw, `"2"`) {
+		t.Fatalf("remaining record = %s, %v", raw, err)
 	}
 }
