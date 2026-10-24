@@ -130,6 +130,14 @@ func (s *Store) ByRun(ctx context.Context, runID string) (triggerqueue.Record, e
 	return record, noRows(err)
 }
 
+// RecordByID reads an acceptance by ID without an actor, for control-side
+// reconciliation (the successor's view of an uncertain start). A pruned or
+// unknown row returns sql.ErrNoRows.
+func (s *Store) RecordByID(ctx context.Context, id string) (triggerqueue.Record, error) {
+	record, err := scanRecord(s.pool.QueryRow(ctx, acceptanceSelect+" AND id=$2", s.instanceID, id))
+	return record, noRows(err)
+}
+
 // Get binds an acceptance read to its actor.
 func (s *Store) Get(ctx context.Context, id, actor string) (triggerqueue.Record, error) {
 	record, err := scanRecord(s.pool.QueryRow(ctx, acceptanceSelect+" AND id=$2 AND actor=$3", s.instanceID, id, actor))
