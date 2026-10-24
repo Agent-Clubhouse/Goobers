@@ -242,6 +242,14 @@ func (r standaloneDashboardReader) ActiveClaims(ctx context.Context) (readservic
 	return reader.ActiveClaims(ctx)
 }
 
+func (r standaloneDashboardReader) RunAttribution(ctx context.Context, runID, gaggle string) (readservice.RunAttributionResult, error) {
+	reader, ok := r.Reader.(readservice.RunAttributionReader)
+	if !ok {
+		return readservice.RunAttributionResult{}, readservice.ErrTelemetryUnavailable
+	}
+	return reader.RunAttribution(ctx, runID, gaggle)
+}
+
 func runDashboard(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()
