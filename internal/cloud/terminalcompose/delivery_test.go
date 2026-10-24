@@ -31,6 +31,7 @@ type fakeLoop struct {
 	backlog      terminalreportpg.Backlog
 	backlogErr   error
 	refusedReads int
+	refusedErr   error
 }
 
 func (f *fakeLoop) Reconcile(_ context.Context, budget int, _ func(context.Context, terminalreport.Effect) error) error {
@@ -53,6 +54,9 @@ func (f *fakeLoop) Sweep(_ context.Context, _ *lease.Handle, opt blockedrecordsp
 func (f *fakeLoop) Deferrals(context.Context, *lease.Handle) (int, error) { return f.deferred, nil }
 func (f *fakeLoop) Refused(context.Context, *lease.Handle) ([]string, error) {
 	f.refusedReads++
+	if f.refusedErr != nil {
+		return nil, f.refusedErr
+	}
 	return f.sweepResult.Refused, nil
 }
 
@@ -285,6 +289,33 @@ func TestTheRefusedScanRunsOnTheHealCadenceNotEveryPass(t *testing.T) {
 	}
 	if got := d.Status().RefusedCycles; len(got) != 1 {
 		t.Fatalf("refused between scans = %v, want the last answer to stand", got)
+	}
+}
+
+// A failed refused-cycle read keeps the last known list and marks it unknown, so
+// readiness can fail closed; the next good read clears the mark.
+func TestAFailedRefusedReadKeepsTheLastListAndMarksItUnknown(t *testing.T) {
+	f, c := &fakeLoop{sweepResult: blockedrecordspg.SweepResult{Refused: []string{"2"}}}, &clock{now: time.Unix(1000, 0)}
+	d, _ := newLoop(f, c, Tuning{})
+	tick := func() Status {
+		t.Helper()
+		c.now = c.now.Add(time.Hour) // every pass is a heal pass
+		if err := d.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		return d.Status()
+	}
+	if s := tick(); len(s.RefusedCycles) != 1 || s.RefusedUnknown {
+		t.Fatalf("status = %+v, want one refused and a known answer", s)
+	}
+	f.refusedErr = errors.New("database unavailable")
+	if s := tick(); len(s.RefusedCycles) != 1 || !s.RefusedUnknown {
+		t.Fatalf("status after a failed read = %+v, want the last list kept and the answer marked unknown", s)
+	}
+	f.refusedErr = nil
+	f.sweepResult = blockedrecordspg.SweepResult{}
+	if s := tick(); len(s.RefusedCycles) != 0 || s.RefusedUnknown {
+		t.Fatalf("status after recovery = %+v, want none and known", s)
 	}
 }
 

@@ -174,18 +174,6 @@ func (b *Backoff) Verified(node blockedcycle.Node) {
 // release), which is why deferral is a stored marker with a driver, not an
 // in-memory hold.
 func (s Store) RecordBlock(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
-	cycle, err := s.recordBlock(ctx, handle, b)
-	if err == nil && len(cycle.Affected) > 0 {
-		// The cycle is being escalated now, through this seed: a refusal latched on
-		// another seed of the same cycle is superseded by this fresh attempt.
-		if rerr := s.releaseRefused(ctx, handle, cycle.Affected); rerr != nil && isStale(rerr) {
-			return cycle, rerr
-		}
-	}
-	return cycle, err
-}
-
-func (s Store) recordBlock(ctx context.Context, handle *lease.Handle, b parking.Block) (blockedcycle.Result, error) {
 	cycle, err := s.record(ctx, handle, b)
 	if err != nil || len(cycle.Affected) == 0 || s.Closed == nil {
 		return cycle, err
@@ -403,6 +391,18 @@ func (s State) RecordBlock(b parking.Block) (blockedcycle.Result, error) {
 	defer cancel()
 	return s.Store.RecordBlock(ctx, s.Handle, b)
 }
+
+// CycleEscalated is called once the caller has escalated a cycle RecordBlock
+// returned (parking.Blocked, on success only): a refusal latched on another seed
+// of that cycle described an earlier attempt that this one supersedes. Releasing
+// it any earlier would turn readiness green on a cycle nobody has been told about.
+func (s State) CycleEscalated(cycle blockedcycle.Result) error {
+	ctx, cancel := context.WithTimeout(context.Background(), recordTimeout)
+	defer cancel()
+	return s.Store.releaseRefused(ctx, s.Handle, cycle.Affected)
+}
+
+var _ parking.CycleEscalationObserver = State{}
 
 // recordTimeout bounds one record write (the parking.State seam carries no
 // context).

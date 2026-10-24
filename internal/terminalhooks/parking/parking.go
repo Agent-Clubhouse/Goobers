@@ -45,6 +45,14 @@ type State interface {
 	RecordBlock(b Block) (blockedcycle.Result, error)
 }
 
+// CycleEscalationObserver is an optional State extension: Blocked calls
+// CycleEscalated after the cycle's escalation writes all succeeded (never on a
+// failed one), so state keeping a per-cycle marker can retire it only once the
+// cycle has really been escalated.
+type CycleEscalationObserver interface {
+	CycleEscalated(cycle blockedcycle.Result) error
+}
+
 // Blocked is the instance-level consequence of a stage reporting status
 // "blocked" (#544/#545/#552).
 // Every blocked driving issue is parked (swap off goobers:ready and the
@@ -148,7 +156,13 @@ func Blocked(ctx context.Context, poster Poster, state State, o terminalhooks.Bl
 				errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
 			}
 			if len(cycle.Affected) > 0 {
-				errs = append(errs, EscalateCycle(ctx, poster, cycle))
+				if err := EscalateCycle(ctx, poster, cycle); err != nil {
+					errs = append(errs, err)
+				} else if observer, ok := state.(CycleEscalationObserver); ok {
+					if err := observer.CycleEscalated(cycle); err != nil {
+						errs = append(errs, fmt.Errorf("note escalated cycle: %w", err))
+					}
+				}
 				continue
 			}
 		}

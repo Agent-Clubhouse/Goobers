@@ -421,10 +421,19 @@ func TestARefusalLatchedOnOneSeedIsSupersededByAnotherSeedsEscalation(t *testing
 		r.refuse(t)
 		cycle, err := r.store.RecordBlock(t.Context(), r.handle, block("1", "2"))
 		if err != nil || len(cycle.Affected) != 2 {
-			t.Fatalf("cycle %+v, err %v; want the cycle escalated inline", cycle, err)
+			t.Fatalf("cycle %+v, err %v; want the cycle returned for inline escalation", cycle, err)
+		}
+		// Returning the cycle is not escalating it: the caller's writes may yet fail,
+		// and readiness must not go green on a cycle nobody was told about.
+		if got := r.refused(t, r.store, r.handle); len(got) != 1 {
+			t.Fatalf("refused = %v before the escalation happened, want the latch to stand", got)
+		}
+		state := blockedrecordspg.State{Store: r.store, Handle: r.handle}
+		if err := state.CycleEscalated(cycle); err != nil {
+			t.Fatal(err)
 		}
 		if got := r.refused(t, r.store, r.handle); len(got) != 0 {
-			t.Fatalf("refused = %v after an inline escalation through another seed", got)
+			t.Fatalf("refused = %v after the escalation succeeded", got)
 		}
 	})
 }
