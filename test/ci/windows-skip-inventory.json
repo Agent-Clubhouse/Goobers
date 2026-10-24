@@ -1027,6 +1027,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/remediationselect",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure remediation-selection logic extracted from cmd/goobers (#8131); no Windows-specific seam, covered by the cmd/goobers Windows run through its re-exports and by the Linux unit shards."
+    },
+    {
       "package": "internal/retryutil",
       "coverage": "none",
       "category": "not-selected",
