@@ -1,6 +1,6 @@
 # #7818: shared per-epoch scheduler log opener
 
-Growth: +85 non-test lines and +1 production file in `cmd/goobers-cloud`
+Growth: +91 non-test lines and +1 production file in `cmd/goobers-cloud`
 (`controlschedulerlog.go`).
 
 Opening the scheduler stream takes its owner token, so a second open in the same
