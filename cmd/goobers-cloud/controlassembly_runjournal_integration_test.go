@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -62,7 +63,8 @@ func TestControlRunJournalAnswersFromTheControllerStores(t *testing.T) {
 	}
 	owner := func() *lease.Handle { return handle }
 	db := databaseServices{Pools: &cloudpg.Pools{Transaction: controller, Direct: controller}, InstanceID: instanceID, Blobs: blobs}
-	var planes controlPlanes
+	db.Acceptances = &acceptance.Store{}
+	planes := claimProviderPlanes()
 	for _, construct := range []func(context.Context, databaseServices, controlAuth, *lease.Manager, func() *lease.Handle, *controlPlanes) error{constructJournal, constructClaims} {
 		if err := construct(t.Context(), db, controlAuth{}, manager, owner, &planes); err != nil {
 			t.Fatal(err)

@@ -24,13 +24,22 @@ func constructClaims(_ context.Context, db databaseServices, _ controlAuth, mana
 	if manager == nil || owner == nil {
 		return errors.New("control claims require the controller lease")
 	}
+	if db.Pools.Transaction == nil {
+		return errors.New("control claims requires a pool")
+	}
+	provider, err := newControlProvider(db, p)
+	if err != nil {
+		return err
+	}
 	plane, err := cloudclaims.NewPlane(cloudclaims.PlaneConfig{
 		Pool: db.Pools.Transaction, InstanceID: db.InstanceID,
 		Lease: manager, Owner: owner, DefaultLease: cloudDefaultClaimLease,
+		ReleaseMarker: provider.writer.ReleaseClaim,
 	})
 	if err != nil {
 		return err
 	}
+	p.provider = provider
 	p.Claims = plane
 	p.claimedItems = plane.ClaimedItems
 	return nil
