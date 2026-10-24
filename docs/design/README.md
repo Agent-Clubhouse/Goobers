@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 15 |
+| `draft` | 16 |
 | `approved` | 28 |
 | `implemented` | 30 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **83** |
+| **Total** | **84** |
 
 ## `docs/adr/`
 
@@ -52,6 +52,7 @@ word — read the page, not this table, before depending on it.
 | [Design: DSL Version Lifecycle & Multi-Version Runtime](dsl-version-lifecycle.md) | `implemented` | — | — | #860, #861, #862, #863, #864, #865, #866, #867, #868, #869 | — | — | — |
 | [Design: an e2e soak harness for load-dependent failures](e2e-soak-harness.md) | `approved` | — | — | — | #1480, #1481 | — | — |
 | [Design: Child workflows and conditional fan-out on the Temporal engine](engine-child-workflows.md) | `draft` | distributed engine, admission, journal, workspaces, capacity | — | — | — | — | — |
+| [Design: Child-workflow authority for engine parents on the cloud](engine-parent-child-authority.md) | `draft` | cloud control plane, engine worker, child-workflow grants, threat model | — | — | — | — | — |
 | [Design: EvalSuite CI gating, baseline management & alerting](evals-ci-gating.md) | `historical` | — | — | — | — | — | — |
 | [Design: EvalSuite — end-to-end workflow evaluation](evals-suite.md) | `historical` | — | — | — | — | — | — |
 | [External call-out stages](external-call-out-stages.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |

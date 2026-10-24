@@ -938,7 +938,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... \
+          go test -p 1 -tags=integration,cloudpg,cloudintegration -timeout 12m -count=1 -json ./internal/cloud/... ./internal/livejournal/... ./test/ha/invariants/... ./test/journalequivalence/... ./cmd/goobers-cloud \
             | tee "$RUNNER_TEMP/cloud-pg-test.json" > /dev/null || status=$?
           go run ./test/ci cloud-pg-report "$RUNNER_TEMP/cloud-pg-test.json" || status=1
           exit "$status"
@@ -956,7 +956,7 @@ jobs:
         env:
           TESTDEP_STRICT: "1"
           GOOBERS_TEST_POSTGRES_URL: postgres://goobers:goobers-ci@127.0.0.1:5432/goobers?sslmode=disable
-        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey|StoreAdapter)|HealthStreamAndConsumerCursor)'
+        run: go test -race -tags=cloudintegration -timeout 12m -count=1 ./internal/journal -run 'Test(Journal.*Postgres|JournalSeqContiguous|StaleOwnerEmitRejected|JournalRollback|NoNotifyInEmitTransaction|Postgres|PartitionedDedup|Instance(Counter|EmitKey|StoreAdapter)|HealthStreamAndConsumerCursor|Cloud(Stall|MaxRunDuration|StaleSweeper|FailingRun|FailedTerminal))'
 
       - name: Stop Azurite
         if: always()

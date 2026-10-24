@@ -47,8 +47,10 @@ type Applier struct {
 
 	// mu serialises the whole assess→activate→bind→status transition, so
 	// Status and the guard always describe the generation actually active.
-	mu     sync.Mutex
-	status Status
+	mu      sync.Mutex
+	status  Status
+	applied Candidate
+	ok      bool
 }
 
 // NewApplier returns an Applier that activates through activator.
@@ -75,6 +77,7 @@ func (a *Applier) Apply(ctx context.Context, c Candidate) error {
 	gen.pins = maps.Clone(c.Pins)
 	a.guard.Replace(gen)
 	a.status = Status{Applied: c.Digest}
+	a.applied, a.ok = c, true
 	return nil
 }
 
@@ -83,4 +86,12 @@ func (a *Applier) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.status
+}
+
+// Applied returns the running generation, if one has been applied. Its Config
+// and Set are shared, immutable snapshots: callers must not mutate them.
+func (a *Applier) Applied() (Candidate, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.applied, a.ok
 }
