@@ -41,14 +41,15 @@ const predecessorReleaseSQL = `
 	    verification=excluded.verification`
 
 // writePathsBefore0035 is the current inventory without the columns added after
-// 0035's boundary: 0035's own, and the deferred marker 0036 adds to blocked_record.
+// 0035's boundary: cleanup custody, deferred markers, and shared claim custody.
 func writePathsBefore0035() (cloudschema.Inventory, error) {
 	inventory, err := cloudschema.LoadWritePaths()
 	if err != nil {
 		return inventory, err
 	}
 	added := func(column string) bool {
-		return slices.Contains([]string{"release_pending_at", "verify_after", "deferred_since", "defer_attempts", "defer_reason"}, column)
+		return slices.Contains([]string{"release_pending_at", "verify_after", "deferred_since", "defer_attempts", "defer_reason",
+			"shared_owner", "shared_deadline", "shared_admission_pending", "shared_revoked"}, column)
 	}
 	for i := range inventory.Tables {
 		table := &inventory.Tables[i]
