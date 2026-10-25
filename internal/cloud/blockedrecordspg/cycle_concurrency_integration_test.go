@@ -85,7 +85,7 @@ func TestConcurrentOppositeEdgesDeferExactlyOneSeed(t *testing.T) {
 		cycle, err := store.RecordBlock(t.Context(), handle, block("2", "1"))
 		second <- result{cycle, err}
 	}()
-	waitForGraphLock(t, admin, firstPID)
+	waitForGraphLock(t, admin, firstPID, handle.InstanceID)
 	// Both fenced transactions are now live: the first has inserted its edge
 	// and the second must wait before inserting the opposite edge. Without the
 	// graph lock the second passes the first's uncommitted edge undetected.
@@ -109,15 +109,20 @@ func TestConcurrentOppositeEdgesDeferExactlyOneSeed(t *testing.T) {
 }
 
 // Observe PostgreSQL's actual lock wait, never assume overlap from a sleep.
-func waitForGraphLock(t *testing.T, pool *pgxpool.Pool, blocker uint32) {
+func waitForGraphLock(t *testing.T, pool *pgxpool.Pool, blocker uint32, instanceID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	for {
 		var waiting bool
 		err := pool.QueryRow(ctx, `SELECT EXISTS (
-			SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted
-			AND $1::int = ANY(pg_blocking_pids(pid)))`, blocker).Scan(&waiting)
+			SELECT 1 FROM pg_locks,
+			(SELECT hashtextextended('control.blocked_record:' || $2, 0) AS key) AS graph
+			WHERE locktype='advisory' AND NOT granted
+			AND classid = ((graph.key >> 32) & 4294967295)::oid
+			AND objid = (graph.key & 4294967295)::oid AND objsubid = 1
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND $1::int = ANY(pg_blocking_pids(pid)))`, blocker, instanceID).Scan(&waiting)
 		if err != nil {
 			t.Fatalf("opposite writer never waited for the graph lock: %v", err)
 		}
