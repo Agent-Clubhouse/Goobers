@@ -5,14 +5,17 @@ package childengine
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -20,6 +23,7 @@ import (
 func TestChildQualificationWorkerLoss(t *testing.T) {
 	t.Run("completion", func(t *testing.T) {
 		h := newQualificationHarness(t)
+		qualificationRetryParent(h)
 		barrier := h.StageBarrier("live-grant")
 		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "live-grant"}})
 		run := h.StartParent()
@@ -31,18 +35,19 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		h.KillWorker()
 		qualificationRunning(h, run)
 		qualificationLiveGrant(h, request)
-		// Local stage activities have no heartbeat (#8230); their timeout
-		// exceeds this fixture. Report the scripted executor result via Temporal
-		// RPC after killing the worker. Production Run commits stage/run finish.
-		// The dead worker cannot execute its deferred grant release, so the
-		// eventual refusal specifically exercises the parent-liveness boundary.
-		qualificationSettleInterrupted(h, run, engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{
-			Status: apiv1.ResultSuccess, Summary: "interrupted executor settled"}}, nil)
+		// The shared script heartbeats like production's cancel-safe executor.
+		// Killing it stops those heartbeats (#8230); Temporal times out the
+		// activity and production Run schedules the second stage attempt.
+		// This replacement executor succeeds without acquiring/releasing the
+		// old grant, isolating refusal after the parent's actual completion.
+		h.SetStageScript(qualificationStageScript{"parent-start": {Result: &apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess, Summary: "replacement executor completed"}}})
 		h.StartWorker()
 		var result engine.RunResult
-		if err := run.Get(h.ctx, &result); err != nil || result.Status != engine.StatusCompleted {
+		if err := run.Get(h.ctx, &result); err != nil || result.Status != engine.StatusCompleted || result.Outputs["plan"].Summary != "replacement executor completed" {
 			t.Fatalf("parent did not complete: %+v (%v)", result, err)
 		}
+		qualificationHeartbeatTimeout(h, run)
 		var live bool
 		if err := h.pool.QueryRow(h.ctx, `SELECT NOT revoked AND expires_at>clock_timestamp() FROM control.child_authority
 			WHERE instance_id=$1 AND parent_run_id=$2 AND grant_id=$3`, testInstance, run.GetID(), grant.ID).Scan(&live); err != nil || !live {
@@ -89,6 +94,7 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 	})
 	t.Run("replacement", func(t *testing.T) {
 		h := newQualificationHarness(t)
+		qualificationRetryParent(h)
 		barrier := h.StageBarrier("live-grant")
 		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "live-grant"}})
 		run := h.StartParent()
@@ -98,17 +104,15 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		oldRequest := qualificationBoundRequest(h)
 		oldGrant := qualificationGrant(h, oldRequest)
 		h.KillWorker()
-		// With no local-stage heartbeat (#8230), report the interrupted
-		// scripted executor through Temporal's activity
-		// result API. This does not qualify automatic worker-loss detection:
-		// the retry, replacement origin and bound grant are production paths.
-		qualificationSettleInterrupted(h, run, nil, temporal.NewApplicationError("qualification executor interrupted", engine.FailureTypeInfrastructure))
+		// No activity result is injected: the killed worker stops heartbeating,
+		// and the real timeout/retry creates the replacement stage attempt.
 		replacement := h.StageBarrier("replacement-grant")
 		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "replacement-grant"}})
 		h.StartWorker()
 		if err := replacement.Wait(h.ctx); err != nil {
 			t.Fatal(err)
 		}
+		qualificationHeartbeatTimeout(h, run)
 		newRequest := qualificationBoundRequest(h)
 		newGrant := qualificationGrant(h, newRequest)
 		if newGrant.ID == oldGrant.ID || newGrant.AttemptID == oldGrant.AttemptID || newGrant.StageOccurrence != oldGrant.StageOccurrence {
@@ -132,6 +136,9 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 			}
 			if origin != nil {
 				attempts[origin.AttemptID] = true
+				if origin.AttemptID == newGrant.AttemptID && event.AttemptClass != journal.AttemptInfra {
+					t.Fatalf("replacement attempt class=%q, want infrastructure", event.AttemptClass)
+				}
 			}
 		}
 		if !attempts[oldGrant.AttemptID] || !attempts[newGrant.AttemptID] {
@@ -168,25 +175,52 @@ func qualificationNoChildren(h *qualificationHarness) {
 	}
 }
 
-func qualificationSettleInterrupted(h *qualificationHarness, run client.WorkflowRun, result any, failure error) {
+// qualificationRetryParent publishes a real two-attempt definition before the
+// parent starts, then rebuilds every affected start pin from that generation.
+// The workflow also applies its independent infrastructure budget to heartbeat
+// loss on this stage, which declares no policy actions.
+func qualificationRetryParent(h *qualificationHarness) {
 	h.t.Helper()
-	description, err := h.temporal.Client().DescribeWorkflowExecution(h.ctx, run.GetID(), run.GetRunID())
+	generation := h.ReloadConfig(func(directory string) {
+		definition := strings.Replace(childEnabledParent, "      goal: Plan a child workflow", "      retry: {maxAttempts: 2}\n      goal: Plan a child workflow", 1)
+		if err := os.WriteFile(filepath.Join(directory, "gaggles", "example", "workflows", "default-implement.yaml"), []byte(definition), 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	})
+	candidate, _ := h.applied.Applied()
+	_, machine, err := childworkflow.StageCatalog(candidate.Config, candidate.Set,
+		childworkflow.ParentSelection{Gaggle: "example", Workflow: "default-implement", Stage: "plan"},
+		childworkflow.BackendEngine, childworkflow.OfflineGooberAdmission)
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	var activityID string
-	for _, pending := range description.PendingActivities {
-		if pending.ActivityType.GetName() == engine.ActInvokeGoober || pending.ActivityType.GetName() == "InvokeGooberCancelSafe" {
-			if activityID != "" || pending.State != enumspb.PENDING_ACTIVITY_STATE_STARTED {
-				h.t.Fatal("interrupted executor is not one started activity")
+	h.input.Spec = machine.Def.Spec
+	h.input.ConfigGeneration = generation
+	h.input.WorkflowDigest, h.input.GooberDigest, _ = parentPins(h.t, candidate.Config, h.configDir, candidate.Set)
+}
+
+func qualificationHeartbeatTimeout(h *qualificationHarness, run client.WorkflowRun) {
+	h.t.Helper()
+	history := h.temporal.Client().GetWorkflowHistory(h.ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	stages := map[int64]bool{}
+	timeouts := 0
+	for history.HasNext() {
+		event, err := history.Next()
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if scheduled := event.GetActivityTaskScheduledEventAttributes(); scheduled != nil {
+			name := scheduled.GetActivityType().GetName()
+			stages[event.GetEventId()] = name == engine.ActInvokeGoober || name == "InvokeGooberCancelSafe"
+		}
+		if timeout := event.GetActivityTaskTimedOutEventAttributes(); timeout != nil && stages[timeout.GetScheduledEventId()] {
+			if timeout.GetFailure().GetTimeoutFailureInfo().GetTimeoutType() != enumspb.TIMEOUT_TYPE_HEARTBEAT {
+				h.t.Fatal("stage timed out for a reason other than lost worker heartbeats")
 			}
-			activityID = pending.ActivityId
+			timeouts++
 		}
 	}
-	if activityID == "" {
-		h.t.Fatal("no interrupted stage activity in Temporal")
-	}
-	if err := h.temporal.Client().CompleteActivityByID(h.ctx, "default", run.GetID(), run.GetRunID(), activityID, result, failure); err != nil {
-		h.t.Fatal(err)
+	if timeouts != 1 {
+		h.t.Fatalf("stage HEARTBEAT timeout events=%d, want 1", timeouts)
 	}
 }

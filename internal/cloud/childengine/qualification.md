@@ -200,12 +200,13 @@ keep their controller role and column grants.
   parent is running and its TTL has not expired. One case ages only the retained
   grant expiry, leaving its signed bearer unexpired, to exercise the production
   database-clock refusal independently of parent liveness.
-- The scripted local executor has no worker-loss heartbeat (#8230), and the
-  production timeout's five-minute grace exceeds this fixture's deadline.
-  After killing it, the completion/replacement cases report its result or infrastructure
-  failure with Temporal `CompleteActivityByID`. Production `Run` performs the
-  completion or retry, commits the journal, and obtains the replacement grant.
-  These cases do not qualify automatic worker-loss detection or Kubernetes.
+- Completion/replacement use a retained two-attempt parent definition and
+  matching start pins. The scripted executor heartbeats while held, matching
+  production's cancel-safe executor (#8230). Killing its process stops those
+  heartbeats; Temporal's real heartbeat timeout drives production `Run`'s retry.
+  Both cases assert that timeout in Temporal history. The replacement executor
+  returns scripted success or follows the normal child path; no activity result
+  is injected through Temporal's completion API. Kubernetes remains unqualified.
 - Control failover holds the bind response after the grant row commits and
   before the worker receives the acknowledgement or submits a child.
   `FailoverControl` performs voluntary takeover. The successor reconstructs
