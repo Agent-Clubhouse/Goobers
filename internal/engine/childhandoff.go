@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"go.temporal.io/sdk/workflow"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/journal"
 )

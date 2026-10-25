@@ -4,14 +4,15 @@ import (
 	"context"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/stretchr/testify/mock"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 // A heartbeat timeout can hide a committed Finish/revoke and a stopped pod.
