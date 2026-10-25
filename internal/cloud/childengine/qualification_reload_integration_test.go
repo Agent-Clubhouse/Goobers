@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -22,15 +21,19 @@ import (
 	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Scenario 6 changes both the workflow goal and child publication policy while
-// a real child is started but has not yet loaded its frozen manifest.
+// a real child awaits its frozen manifest response, then rolls back the
+// instance opt-in. Existing runs retain permission; a new run is refused.
 func TestChildQualificationConfigReload(t *testing.T) {
 	h := newQualificationHarness(t)
-	loaded, release := qualificationGate(t, h, apicontract.EngineChildLoadPath)
+	loaded := h.InstallHTTPBarrier(func(r *http.Request) bool { return r.URL.Path == apicontract.EngineChildLoadPath })
 	run := h.StartParent()
-	qualificationWait(t, h, loaded)
+	if err := loaded.Wait(h.ctx); err != nil {
+		t.Fatal(err)
+	}
 	oldPins, err := h.epoch.store.RunPinsOf(h.ctx, run.GetID())
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +63,29 @@ func TestChildQualificationConfigReload(t *testing.T) {
 	if generation == oldPins.ConfigGeneration {
 		t.Fatal("reload did not change generation")
 	}
-	release()
+	previous, _ := h.applied.Applied()
+	reloadedGeneration := h.ReloadInstanceConfig(func(filename string) {
+		raw, err := os.ReadFile(filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "selfIdentity:") {
+			t.Fatal("fixture unexpectedly defines selfIdentity")
+		}
+		raw = append(raw, []byte("\nselfIdentity: qualification-reloaded\n")...)
+		if err := os.WriteFile(filename, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}, false)
+	candidate, _ := h.applied.Applied()
+	if candidate.Config == previous.Config || candidate.Config.SelfIdentity != "qualification-reloaded" || candidate.Config.EngineChildWorkflowsEnabled() || !previous.Config.EngineChildWorkflowsEnabled() {
+		t.Fatal("instance reload did not replace policy and roll back the opt-in")
+	}
+	// instance.yaml is outside the retained definition archive.
+	if reloadedGeneration != generation {
+		t.Fatal("instance-only reload changed definition generation")
+	}
+	loaded.Release()
 	qualificationCompleted(t, h, run)
 	pins, err := h.epoch.store.RunPinsOf(h.ctx, run.GetID())
 	if err != nil || pins != oldPins {
@@ -75,13 +100,13 @@ func TestChildQualificationConfigReload(t *testing.T) {
 		t.Fatalf("in-flight parent lost pinned posture: %+v", original)
 	}
 	h.epoch.release()
-	candidate, _ := h.applied.Applied()
 	_, machine, err := childworkflow.StageCatalog(candidate.Config, candidate.Set, childworkflow.ParentSelection{Gaggle: "example", Workflow: "default-implement", Stage: "plan"}, childworkflow.BackendEngine, childworkflow.OfflineGooberAdmission)
 	if err != nil {
 		t.Fatal(err)
 	}
 	next := h.input
 	next.RunID = ""
+	next.ChildWorkflowsEnabled = candidate.Config.EngineChildWorkflowsEnabled()
 	next.ConfigGeneration, next.Spec = generation, machine.Def.Spec
 	next.WorkflowDigest, next.GooberDigest, _ = parentPins(t, candidate.Config, h.configDir, candidate.Set)
 	record, _, err := h.epoch.store.Accept(h.ctx, "qualification-reloaded-parent", "qualification", []byte(`{"workflow":"default-implement"}`), time.Now())
@@ -103,13 +128,19 @@ func TestChildQualificationConfigReload(t *testing.T) {
 	defer releaseNext()
 	h.StartWorker()
 	newRun := h.temporal.Client().GetWorkflow(h.ctx, started.RunID, "")
-	qualificationCompleted(t, h, newRun)
+	if err := newRun.Get(h.ctx, nil); err == nil || !strings.Contains(err.Error(), workflow.ErrChildWorkflowExecutionUnsupported.Error()) {
+		t.Fatalf("new run did not honor reloaded disabled child posture: %v", err)
+	}
 	newInput := qualificationRunInput(t, h, newRun)
 	newPins, err := h.epoch.store.RunPinsOf(h.ctx, started.RunID)
-	if err != nil || newPins.ConfigGeneration != generation || newPins.WorkflowDigest == oldPins.WorkflowDigest || newInput.ConfigGeneration != generation || newInput.Spec.Tasks[0].ChildWorkflows.AllowPRPublication || newInput.Spec.Tasks[0].Goal != "Plan using the reloaded configuration" {
+	if err != nil || newPins.ConfigGeneration != generation || newPins.WorkflowDigest == oldPins.WorkflowDigest || newInput.ConfigGeneration != generation || newInput.ChildWorkflowsEnabled || newInput.Spec.Tasks[0].ChildWorkflows.AllowPRPublication || newInput.Spec.Tasks[0].Goal != "Plan using the reloaded configuration" {
 		t.Fatalf("new run did not use reloaded policy: pins=%+v input=%+v: %v", newPins, newInput, err)
 	}
-	t.Log("qualification scenario 6: in-flight parent and frozen child kept their generation and permission; a new completed run used the reloaded goal and child policy")
+	var children int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1`, testInstance).Scan(&children); err != nil || children != 1 {
+		t.Fatalf("disabled new run created another child: %d: %v", children, err)
+	}
+	t.Log("qualification scenario 6: in-flight parent and frozen child kept their generation and permission; a new run pinned the reloaded definition and was refused by the disabled instance posture")
 }
 
 func qualificationRunInput(t *testing.T, h *qualificationHarness, run client.WorkflowRun) engine.RunInput {
@@ -124,38 +155,4 @@ func qualificationRunInput(t *testing.T, h *qualificationHarness, run client.Wor
 		t.Fatal(err)
 	}
 	return input
-}
-
-// Gate only transport timing; the original authenticated production handler
-// still performs every operation. Cleanup releases blocked requests first.
-func qualificationGate(t *testing.T, h *qualificationHarness, path string) (<-chan struct{}, func()) {
-	t.Helper()
-	reached, proceed := make(chan struct{}), make(chan struct{})
-	var seen, released sync.Once
-	release := func() { released.Do(func() { close(proceed) }) }
-	t.Cleanup(release)
-	h.routerMu.Lock()
-	inner := h.handler
-	h.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == path {
-			seen.Do(func() { close(reached) })
-			select {
-			case <-proceed:
-			case <-r.Context().Done():
-				return
-			}
-		}
-		inner.ServeHTTP(w, r)
-	})
-	h.routerMu.Unlock()
-	return reached, release
-}
-
-func qualificationWait(t *testing.T, h *qualificationHarness, reached <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-reached:
-	case <-h.ctx.Done():
-		t.Fatal("durable qualification boundary: ", h.ctx.Err())
-	}
 }

@@ -6,9 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -31,37 +29,15 @@ import (
 func TestChildQualificationSingleSlot(t *testing.T) {
 	h := newQualificationHarness(t)
 	h.SetSlotLimit(1)
-	loaded, releaseLoad := qualificationGate(t, h, apicontract.EngineChildLoadPath)
-	refused, releaseRefusal := make(chan struct{}), make(chan struct{})
-	var once, releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(releaseRefusal) }) }
-	t.Cleanup(unblock)
-	h.routerMu.Lock()
-	inner := h.handler
-	h.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != apicontract.EngineChildCompletePath {
-			inner.ServeHTTP(w, r)
-			return
-		}
-		response := httptest.NewRecorder()
-		inner.ServeHTTP(response, r) // real Complete installs the continuation claim
-		if response.Code == http.StatusServiceUnavailable {
-			once.Do(func() { close(refused) })
-			select {
-			case <-releaseRefusal:
-			case <-r.Context().Done():
-				return
-			}
-		}
-		for key, values := range response.Header() {
-			w.Header()[key] = values
-		}
-		w.WriteHeader(response.Code)
-		_, _ = w.Write(response.Body.Bytes())
-	})
-	h.routerMu.Unlock()
+	loaded := h.InstallHTTPBarrier(func(r *http.Request) bool { return r.URL.Path == apicontract.EngineChildLoadPath })
+	// Hold the first real completion response after it attempts reacquisition.
+	// The durable sealed result and competing-trigger refusal below prove that
+	// this boundary installed a capacity claim rather than merely returning.
+	completion := h.InstallHTTPBarrier(func(r *http.Request) bool { return r.URL.Path == apicontract.EngineChildCompletePath })
 	parent := h.StartParent()
-	qualificationWait(t, h, loaded)
+	if err := loaded.Wait(h.ctx); err != nil {
+		t.Fatal(err)
+	}
 	parked, err := h.epoch.backend.ParkedOnChild(h.ctx, []string{parent.GetID()})
 	if err != nil || !parked[parent.GetID()] {
 		t.Fatalf("parent was not durably parked: %v: %v", parked, err)
@@ -119,8 +95,10 @@ func TestChildQualificationSingleSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	holderExecution := description.WorkflowExecutionInfo.Execution.RunId
-	releaseLoad()
-	qualificationWait(t, h, refused)
+	loaded.Release()
+	if err := completion.Wait(h.ctx); err != nil {
+		t.Fatal(err)
+	}
 	var sealed int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1 AND parent_run_id=$2 AND state='completed' AND result_receipt_digest<>''`, testInstance, parent.GetID()).Scan(&sealed); err != nil || sealed != 1 {
 		t.Fatalf("parent waited without a sealed child result: %d: %v", sealed, err)
@@ -144,7 +122,7 @@ func TestChildQualificationSingleSlot(t *testing.T) {
 		}
 	}
 	assertRefused() // the holder has released; only the parent's claim protects it
-	unblock()
+	completion.Release()
 	qualificationCompleted(t, h, parent)
 	assertRefused() // Complete reacquired the slot held by the fixture's parent
 	if _, err := h.temporal.Client().DescribeWorkflowExecution(h.ctx, competitorID, ""); err == nil {
