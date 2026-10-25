@@ -45,19 +45,20 @@ func TestFrozenChildManifestContract(t *testing.T) {
 		t.Fatalf("valid manifest refused: %+v %v", child, err)
 	}
 	cases := map[string]func(*FrozenChildManifest){
-		"source bytes differ from SourceDigest": func(m *FrozenChildManifest) { m.Source = append(m.Source, '\n') },
-		"source digest differs from accepted":   func(m *FrozenChildManifest) { m.Source = []byte("other"); m.SourceDigest = journal.Digest(m.Source) },
-		"missing source bytes":                  func(m *FrozenChildManifest) { m.Source = nil },
-		"missing canonical identity":            func(m *FrozenChildManifest) { m.CanonicalDigest = "" },
-		"unknown manifest version":              func(m *FrozenChildManifest) { m.Version = 2 },
-		"compiled digest drift":                 func(m *FrozenChildManifest) { m.Input.Spec.Tasks[0].Goal = "changed" },
-		"other child run":                       func(m *FrozenChildManifest) { m.Input.RunID = "child-2" },
-		"other tenant":                          func(m *FrozenChildManifest) { m.Input.Gaggle = "api" },
-		"implicit preview":                      func(m *FrozenChildManifest) { m.Input.PreviewFeaturesEnabled = nil },
-		"no live journal":                       func(m *FrozenChildManifest) { m.Input.LiveJournal = false },
-		"unpinned kit":                          func(m *FrozenChildManifest) { m.Input.GooberDigest = "" },
-		"unpinned configuration":                func(m *FrozenChildManifest) { m.Input.ConfigGeneration = "latest" },
-		"human-in-the-loop posture":             func(m *FrozenChildManifest) { m.Input.HITL = &HITLPolicy{} },
+		"annotations differ from workflow digest": func(m *FrozenChildManifest) { m.Input.Annotations = map[string]string{"example.com/policy": "changed"} },
+		"source bytes differ from SourceDigest":   func(m *FrozenChildManifest) { m.Source = append(m.Source, '\n') },
+		"source digest differs from accepted":     func(m *FrozenChildManifest) { m.Source = []byte("other"); m.SourceDigest = journal.Digest(m.Source) },
+		"missing source bytes":                    func(m *FrozenChildManifest) { m.Source = nil },
+		"missing canonical identity":              func(m *FrozenChildManifest) { m.CanonicalDigest = "" },
+		"unknown manifest version":                func(m *FrozenChildManifest) { m.Version = 2 },
+		"compiled digest drift":                   func(m *FrozenChildManifest) { m.Input.Spec.Tasks[0].Goal = "changed" },
+		"other child run":                         func(m *FrozenChildManifest) { m.Input.RunID = "child-2" },
+		"other tenant":                            func(m *FrozenChildManifest) { m.Input.Gaggle = "api" },
+		"implicit preview":                        func(m *FrozenChildManifest) { m.Input.PreviewFeaturesEnabled = nil },
+		"no live journal":                         func(m *FrozenChildManifest) { m.Input.LiveJournal = false },
+		"unpinned kit":                            func(m *FrozenChildManifest) { m.Input.GooberDigest = "" },
+		"unpinned configuration":                  func(m *FrozenChildManifest) { m.Input.ConfigGeneration = "latest" },
+		"human-in-the-loop posture":               func(m *FrozenChildManifest) { m.Input.HITL = &HITLPolicy{} },
 		"recursive child": func(m *FrozenChildManifest) {
 			m.Input.Spec.Tasks = []apiv1.Task{{Name: "work", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "w", Next: "check", ChildWorkflows: &apiv1.ChildWorkflowPolicy{}}}
 			m.Input.WorkflowDigest, _ = wf.ComputeDigest(wf.Definition{Name: m.Input.WorkflowName, Version: m.Input.Version, DSLVersion: m.Input.DSLVersion, Spec: m.Input.Spec})

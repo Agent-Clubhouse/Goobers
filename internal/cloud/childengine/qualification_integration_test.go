@@ -186,7 +186,7 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	}
 	h.applied.candidate = cloudconfig.Candidate{Digest: digest, Config: cfg, Set: set}
 	h.input = engine.RunInput{InstanceID: testInstance, Gaggle: "example", WorkflowName: machine.Def.Name, Version: machine.Def.Version,
-		DSLVersion: machine.Def.DSLVersion, Spec: machine.Def.Spec, WorkflowDigest: workflowDigest, GooberDigest: gooberDigest, ConfigGeneration: digest,
+		DSLVersion: machine.Def.DSLVersion, Annotations: machine.Def.Annotations, Spec: machine.Def.Spec, WorkflowDigest: workflowDigest, GooberDigest: gooberDigest, ConfigGeneration: digest,
 		RepoRef: gaggleProject(t, set, "example"), BranchNamespace: providers.NormalizeBranchNamespace(""), LiveJournal: true, PreviewFeaturesEnabled: &enabled, ChildWorkflowsEnabled: true}
 	h.keyFile = filepath.Join(t.TempDir(), "keyring.json")
 	raw, err := json.Marshal(map[string]podauth.SigningKey{"current": {ID: "qualification", Key: []byte("qualification-key-material-32bytes")}})

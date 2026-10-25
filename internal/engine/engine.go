@@ -79,14 +79,17 @@ type RunInput struct {
 	InstanceID          string `json:"instanceId,omitempty"`
 	RunID               string `json:"runId"`
 	// StartPredecessorEpoch is admission-only proof, never serialized to Temporal.
-	StartPredecessorEpoch  int64              `json:"-"`
-	AcceptanceID           string             `json:"acceptanceId,omitempty"`
-	OwnerEpoch             int64              `json:"ownerEpoch,omitempty"`
-	StarterID              string             `json:"starterId,omitempty"`
-	Gaggle                 string             `json:"gaggle"`
-	WorkflowName           string             `json:"workflowName"`
-	Version                int                `json:"version"`
-	DSLVersion             string             `json:"dslVersion,omitempty"`
+	StartPredecessorEpoch int64  `json:"-"`
+	AcceptanceID          string `json:"acceptanceId,omitempty"`
+	OwnerEpoch            int64  `json:"ownerEpoch,omitempty"`
+	StarterID             string `json:"starterId,omitempty"`
+	Gaggle                string `json:"gaggle"`
+	WorkflowName          string `json:"workflowName"`
+	Version               int    `json:"version"`
+	DSLVersion            string `json:"dslVersion,omitempty"`
+	// Annotations is part of the digested definition, pinned with Spec.
+	// Absent in old histories; never recovered from current configuration.
+	Annotations            map[string]string  `json:"annotations,omitempty"`
 	WorkflowDigest         string             `json:"workflowDigest"`
 	PreviewFeaturesEnabled *bool              `json:"previewFeaturesEnabled,omitempty"`
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
@@ -284,8 +287,14 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		return RunResult{}, err
 	}
 	in.Item = normalizeItemIntegrity(in.Item)
+	definition := in.definition()
+	if workflow.GetVersion(ctx, workflowDefinitionAnnotationsChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		// Old histories journaled the definition without annotations. Preserve
+		// those recorded bytes and their digest on replay.
+		definition.Annotations = nil
+	}
 	m, err := wf.Compile(
-		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
+		definition,
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
 	)
 	if err != nil {

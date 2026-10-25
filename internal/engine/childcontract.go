@@ -161,7 +161,7 @@ func decodeFrozenChildManifest(b ChildRunBinding, data []byte) (RunInput, error)
 	if err := refuseGeneratedChildShape(child); err != nil {
 		return RunInput{}, err
 	}
-	digest, err := wf.ComputeDigest(wf.Definition{Name: child.WorkflowName, Version: child.Version, DSLVersion: child.DSLVersion, Spec: child.Spec})
+	digest, err := wf.ComputeDigest(child.definition())
 	if err != nil || digest != child.WorkflowDigest {
 		return RunInput{}, errors.New("engine: frozen workflow digest mismatch")
 	}

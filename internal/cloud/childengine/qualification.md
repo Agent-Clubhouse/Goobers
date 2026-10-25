@@ -47,6 +47,9 @@ Production `Run` verifies the child's Temporal lineage and loads this digest-bou
 permission before executing. Neither the current config nor an unverified child
 input boolean can enable a frozen child. The accompanying production-entry unit
 tests cover enabled and disabled manifests and a disabled parent.
+The input also carries the workflow's annotations, which participate in its
+digest. Ordinary starts and frozen-child manifests preserve the full definition;
+the engine's version gate retains the prior journal digest on old histories.
 
 ## Adding scenarios
 
