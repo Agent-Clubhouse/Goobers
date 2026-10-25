@@ -39,6 +39,7 @@ import (
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
 	"github.com/goobers/goobers/internal/cloud/schedstart"
 	"github.com/goobers/goobers/internal/cloud/startfence"
+	"github.com/goobers/goobers/internal/cloud/startinput"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -51,7 +52,9 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runtimewiring"
+	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -86,6 +89,7 @@ type qualificationHarness struct {
 	workerDone                            chan error
 	workerLogs                            []*bytes.Buffer
 	slotLimit                             int
+	resolveParentInput                    bool
 }
 
 type qualificationEpoch struct {
@@ -381,11 +385,18 @@ func (h *qualificationHarness) stopControl() {
 // Start the worker only after confirmation so it cannot outrun its start pins.
 func (h *qualificationHarness) StartParent() client.WorkflowRun {
 	h.KillWorker()
-	record, _, err := h.epoch.store.Accept(h.ctx, "qualification-parent", "qualification", []byte(`{"workflow":"default-implement"}`), time.Now())
+	payload := []byte(`{"workflow":"default-implement"}`)
+	if h.resolveParentInput {
+		payload = h.parentStartPayload()
+	}
+	record, _, err := h.epoch.store.Accept(h.ctx, "qualification-parent", "qualification", payload, time.Now())
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	in := h.input
+	if h.resolveParentInput {
+		in = h.resolveStart(record)
+	}
 	in.AcceptanceID = record.ID
 	starter := startfence.New(h.temporal.Client(), h.queue, acceptance.NewStartAdmission(h.epoch.store), &h.applied)
 	result, err := starter.Start(h.ctx, in)
@@ -400,6 +411,55 @@ func (h *qualificationHarness) StartParent() client.WorkflowRun {
 	h.epoch.release = release
 	h.StartWorker()
 	return h.temporal.Client().GetWorkflow(h.ctx, result.RunID, "")
+}
+
+func (h *qualificationHarness) parentStartPayload() []byte {
+	h.t.Helper()
+	candidate, _ := h.applied.Applied()
+	workflowDigest, gooberDigest, _ := parentPins(h.t, candidate.Config, h.configDir, candidate.Set)
+	envelope := startintent.Envelope{
+		Kind:    startintent.Kind,
+		Request: startintent.Request{Gaggle: "example", Workflow: "default-implement"},
+		Target: startintent.Target{
+			Gaggle: "example", Workflow: "default-implement", ConfigGeneration: candidate.Digest,
+			WorkflowDigest: workflowDigest, GooberDigest: gooberDigest,
+		},
+	}
+	payload, err := envelope.Marshal()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return payload
+}
+
+func (h *qualificationHarness) resolveStart(record triggerqueue.Record) engine.RunInput {
+	h.t.Helper()
+	resolver := h.startResolver()
+	in, err := resolver.Resolve(h.ctx, record)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	// The harness worker owns a per-test Temporal queue rather than the runner
+	// declared by the generated instance fixture.
+	in.Placements = h.input.Placements
+	return in
+}
+
+func (h *qualificationHarness) startResolver() *startinput.Resolver {
+	h.t.Helper()
+	generations, err := objstore.NewGenerationSource(h.objects, testInstance, h.t.TempDir())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	generations.BindFence(h.epoch.handle)
+	return &startinput.Resolver{
+		Generations: generations,
+		Config: func() *instance.Config {
+			current, _ := h.applied.Applied()
+			return current.Config
+		},
+		InstanceID: testInstance,
+	}
 }
 
 // KillWorker kills only this harness's child PID and joins it. Restart with

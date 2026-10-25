@@ -7,6 +7,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 func TestResolvePinsTheEnabledChildPostureByDefault(t *testing.T) {
@@ -44,15 +45,18 @@ func TestDisabledChildPostureRefusesChildWorkflowsBeforeAnyStage(t *testing.T) {
 		{Name: "plan"},
 		{Name: "fanout", ChildWorkflows: &apiv1.ChildWorkflowPolicy{}},
 	}}
-	err := refuseDisabledChildren(false, spec)
+	err := refuseDisabledChildren(triggerqueue.Accepted, false, spec)
 	if !errors.Is(err, ErrChildWorkflowsDisabled) || !errors.Is(err, acceptance.ErrPermanentStart) {
 		t.Fatalf("disabled posture refusal = %v; want a permanent ErrChildWorkflowsDisabled", err)
 	}
-	if err := refuseDisabledChildren(true, spec); err != nil {
+	if err := refuseDisabledChildren(triggerqueue.Dispatching, false, spec); err != nil {
+		t.Fatalf("dispatching recovery was refused after posture rollback: %v", err)
+	}
+	if err := refuseDisabledChildren(triggerqueue.Accepted, true, spec); err != nil {
 		t.Fatalf("enabled posture must admit children: %v", err)
 	}
 	plain := apiv1.WorkflowSpec{Tasks: []apiv1.Task{{Name: "plan"}}}
-	if err := refuseDisabledChildren(false, plain); err != nil {
+	if err := refuseDisabledChildren(triggerqueue.Accepted, false, plain); err != nil {
 		t.Fatalf("a workflow without children is unaffected by the posture: %v", err)
 	}
 }

@@ -56,11 +56,10 @@ func TestAnnotationRecoveryDoesNotAdoptADifferentStart(t *testing.T) {
 		"same epoch and starter": func(in *engine.RunInput, owner *StartOwnerMemo) {
 			owner.OwnerEpoch, owner.StarterID = in.OwnerEpoch, in.StarterID
 		},
-		"future epoch":     func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 8 },
-		"child permission": func(in *engine.RunInput, _ *StartOwnerMemo) { in.ChildWorkflowsEnabled = true },
-		"run":              func(in *engine.RunInput, _ *StartOwnerMemo) { in.RunID = "other" },
-		"self permission":  func(in *engine.RunInput, _ *StartOwnerMemo) { in.SelfExecutionDenied = !in.SelfExecutionDenied },
-		"gaggle":           func(in *engine.RunInput, _ *StartOwnerMemo) { in.Gaggle = "other" },
+		"future epoch":    func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 8 },
+		"run":             func(in *engine.RunInput, _ *StartOwnerMemo) { in.RunID = "other" },
+		"self permission": func(in *engine.RunInput, _ *StartOwnerMemo) { in.SelfExecutionDenied = !in.SelfExecutionDenied },
+		"gaggle":          func(in *engine.RunInput, _ *StartOwnerMemo) { in.Gaggle = "other" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			legacy := cloudStartInput(7)
@@ -74,6 +73,55 @@ func TestAnnotationRecoveryDoesNotAdoptADifferentStart(t *testing.T) {
 			result, err := starter.Start(t.Context(), in)
 			if err != nil || !result.NotMine || result.Adopt {
 				t.Fatalf("different start adopted: %+v, %v", result, err)
+			}
+		})
+	}
+}
+
+func TestPredecessorWithOppositeChildPostureRemainsAdoptable(t *testing.T) {
+	started := cloudStartInput(7)
+	started.ChildWorkflowsEnabled = true
+	in := started
+	in.ChildWorkflowsEnabled = false
+	starter := existingStartWithInput(t, started, StartOwnerMemo{
+		AcceptanceID: in.AcceptanceID, OwnerEpoch: 6, StarterID: "predecessor",
+	})
+	admission := &annotationRecoveryAdmission{}
+	starter.admission = admission
+
+	result, err := starter.Start(t.Context(), in)
+	if err != nil || !result.Adopt || result.NotMine {
+		t.Fatalf("opposite-posture predecessor is not adoptable: %+v, %v", result, err)
+	}
+	if !admission.confirmed.ChildWorkflowsEnabled {
+		t.Fatal("confirmation did not preserve the started child-workflow posture")
+	}
+	startedDigest, err := InputDigest(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmedDigest, err := InputDigest(admission.confirmed)
+	if err != nil || confirmedDigest != startedDigest {
+		t.Fatalf("confirmed digest = %s (%v), want started digest %s", confirmedDigest, err, startedDigest)
+	}
+}
+
+func TestOppositeChildPostureDoesNotAdoptDifferentOwnerOrGeneration(t *testing.T) {
+	for name, change := range map[string]func(*engine.RunInput, *StartOwnerMemo){
+		"owner":      func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.AcceptanceID = "other" },
+		"generation": func(in *engine.RunInput, _ *StartOwnerMemo) { in.ConfigGeneration = "other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			started := cloudStartInput(7)
+			started.ChildWorkflowsEnabled = true
+			in := started
+			in.ChildWorkflowsEnabled = false
+			owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: 6, StarterID: "predecessor"}
+			change(&in, &owner)
+			starter := existingStartWithInput(t, started, owner)
+			result, err := starter.Start(t.Context(), in)
+			if err != nil || !result.NotMine || result.Adopt {
+				t.Fatalf("different %s adopted: %+v, %v", name, result, err)
 			}
 		})
 	}

@@ -177,22 +177,36 @@ func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInp
 	if err != nil {
 		return engine.StartResult{}, in, err
 	}
-	if owner.InstanceID == expected.InstanceID && owner.InputDigest != expected.InputDigest && len(in.Annotations) > 0 &&
+	if owner.InstanceID == expected.InstanceID && owner.InputDigest != expected.InputDigest &&
 		owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch > 0 && owner.OwnerEpoch < in.OwnerEpoch && owner.StarterID != "" {
-		// Before annotations were carried in RunInput, the same pinned generation
-		// produced an annotation-less start. Only a predecessor of this exact
-		// acceptance may match that encoding; every other input field (including
-		// generation and workflow/goober pins) remains covered by its digest.
-		legacy := in
-		legacy.Annotations = nil
-		legacyOwner, err := startOwner(legacy)
-		if err != nil {
-			return engine.StartResult{}, in, err
+		// A predecessor may carry either of the explicitly supported encodings:
+		// annotation-less input from before annotations were pinned, or the
+		// opposite child-workflow posture from before a config rollback/re-enable.
+		// Every other input field remains covered by the digest.
+		candidates := make([]engine.RunInput, 0, 3)
+		if len(in.Annotations) > 0 {
+			legacy := in
+			legacy.Annotations = nil
+			candidates = append(candidates, legacy)
 		}
-		if owner.InputDigest == legacyOwner.InputDigest {
-			// Confirm the input actually running, so persisted pins keep the old
-			// memo digest and the run never gains annotations during adoption.
-			in, expected = legacy, legacyOwner
+		opposite := in
+		opposite.ChildWorkflowsEnabled = !in.ChildWorkflowsEnabled
+		candidates = append(candidates, opposite)
+		if len(in.Annotations) > 0 {
+			opposite.Annotations = nil
+			candidates = append(candidates, opposite)
+		}
+		for _, candidate := range candidates {
+			candidateOwner, candidateErr := startOwner(candidate)
+			if candidateErr != nil {
+				return engine.StartResult{}, in, candidateErr
+			}
+			if owner.InputDigest == candidateOwner.InputDigest {
+				// Confirm the input actually running, so persisted pins keep its
+				// original posture, annotations, and memo digest during adoption.
+				in, expected = candidate, candidateOwner
+				break
+			}
 		}
 	}
 	if owner.InstanceID != expected.InstanceID || owner.InputDigest != expected.InputDigest {
