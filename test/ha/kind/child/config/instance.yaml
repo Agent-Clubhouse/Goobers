@@ -10,7 +10,6 @@ engine:
   namespace: kind-child
   taskQueue: kind-child-engine
   workerVersioning: true
-  childWorkflows: {enabled: true}
 credentials:
   - capability: agent:model
     harness: claude-code

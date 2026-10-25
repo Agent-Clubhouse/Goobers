@@ -2,7 +2,6 @@ package instance
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -4560,15 +4559,18 @@ func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
 	}
 }
 
-// Generated child workflows are OFF unless an instance opts in, and the
-// opt-in survives loading (#8085 d).
-func TestEngineChildWorkflowsAreOffUnlessOptedIn(t *testing.T) {
-	if (&Config{}).EngineChildWorkflowsEnabled() || (*Config)(nil).EngineChildWorkflowsEnabled() ||
-		(&Config{Engine: &EngineConfig{ChildWorkflows: &EngineChildWorkflowsConfig{}}}).EngineChildWorkflowsEnabled() {
-		t.Fatal("child workflows enabled without an opt-in")
+// Generated child workflows are ON unless an instance explicitly disables
+// them; a nil config remains disabled because there is no instance posture.
+func TestEngineChildWorkflowsAreOnUnlessDisabled(t *testing.T) {
+	if !(&Config{}).EngineChildWorkflowsEnabled() {
+		t.Fatal("child workflows disabled by default")
 	}
-	if !(&Config{Engine: &EngineConfig{ChildWorkflows: &EngineChildWorkflowsConfig{Enabled: true}}}).EngineChildWorkflowsEnabled() {
-		t.Fatal("engine.childWorkflows.enabled did not enable child workflows")
+	if (*Config)(nil).EngineChildWorkflowsEnabled() {
+		t.Fatal("nil config enabled child workflows")
+	}
+	disabled := false
+	if (&Config{Engine: &EngineConfig{ChildWorkflows: &EngineChildWorkflowsConfig{Enabled: &disabled}}}).EngineChildWorkflowsEnabled() {
+		t.Fatal("engine.childWorkflows.enabled=false did not disable child workflows")
 	}
 }
 
@@ -4578,6 +4580,7 @@ func TestEngineChildWorkflowsAreOffUnlessOptedIn(t *testing.T) {
 // resolver. The fixture must set every field; the reflection guard fails
 // when a new EngineConfig field is added without extending it.
 func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
+	childWorkflowsEnabled := true
 	authored := EngineConfig{
 		HostPort:         "temporal.internal:7233",
 		Namespace:        "authored-namespace",
@@ -4585,7 +4588,7 @@ func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
 		HITL:             &EngineHITLConfig{Enabled: true, Window: "4h", Actors: []string{"operator"}},
 		TLS:              &temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", ServerName: "temporal-frontend"},
 		WorkerVersioning: true,
-		ChildWorkflows:   &EngineChildWorkflowsConfig{Enabled: true},
+		ChildWorkflows:   &EngineChildWorkflowsConfig{Enabled: &childWorkflowsEnabled},
 	}
 	value := reflect.ValueOf(authored)
 	for i := 0; i < value.NumField(); i++ {
@@ -4718,19 +4721,21 @@ func TestTerminalBranchRetentionDuration(t *testing.T) {
 	}
 }
 
-// Until child workflows can run safely end to end, an instance cannot opt
-// into them by accident: loading refuses the switch by name and names what
-// remains (#8085 d). An explicit off, or no block, loads.
-func TestLoadConfigRefusesEngineChildWorkflowsUntilTheProtocolIsComplete(t *testing.T) {
+// Config load defaults child workflows on and preserves an explicit rollback.
+func TestLoadConfigDefaultsEngineChildWorkflowsOn(t *testing.T) {
 	base := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n"
-	if _, err := LoadConfig(writeInstanceYAML(t, base+"  childWorkflows:\n    enabled: true\n")); !errors.Is(err, ErrEngineChildWorkflowsIncomplete) ||
-		!strings.Contains(err.Error(), "product decision") || strings.Contains(err.Error(), "#8188") || strings.Contains(err.Error(), "capacity plane") {
-		t.Fatalf("LoadConfig with child workflows enabled = %v, want the named refusal", err)
-	}
-	for name, yaml := range map[string]string{"explicitly off": base + "  childWorkflows:\n    enabled: false\n", "absent": base} {
-		cfg, err := LoadConfig(writeInstanceYAML(t, yaml))
-		if err != nil || cfg.EngineChildWorkflowsEnabled() {
-			t.Fatalf("%s: LoadConfig = %v (enabled %v)", name, err, cfg != nil && cfg.EngineChildWorkflowsEnabled())
+	for name, tc := range map[string]struct {
+		yaml    string
+		enabled bool
+	}{
+		"explicitly on":  {yaml: base + "  childWorkflows:\n    enabled: true\n", enabled: true},
+		"explicitly off": {yaml: base + "  childWorkflows:\n    enabled: false\n", enabled: false},
+		"empty block":    {yaml: base + "  childWorkflows: {}\n", enabled: true},
+		"absent":         {yaml: base, enabled: true},
+	} {
+		cfg, err := LoadConfig(writeInstanceYAML(t, tc.yaml))
+		if err != nil || cfg.EngineChildWorkflowsEnabled() != tc.enabled {
+			t.Fatalf("%s: LoadConfig = %v (enabled %v, want %v)", name, err, cfg != nil && cfg.EngineChildWorkflowsEnabled(), tc.enabled)
 		}
 	}
 }

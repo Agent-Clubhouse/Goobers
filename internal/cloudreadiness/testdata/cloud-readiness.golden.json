@@ -4,12 +4,11 @@
   "cloudReady": false,
   "summary": {
     "blockedWorkflows": 2,
-    "totalBlockers": 7,
+    "totalBlockers": 6,
     "configFixes": 4,
-    "waitingOnP4": 3,
+    "waitingOnP4": 2,
     "p4Issues": [
       7753,
-      7758,
       7763
     ]
   },
@@ -30,19 +29,6 @@
             "description": "wait for engine parity in #7753",
             "issue": 7753,
             "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7753"
-          }
-        },
-        {
-          "code": "RUNTIME001",
-          "feature": "task.childWorkflows",
-          "stage": "agent",
-          "path": "/spec/tasks/0/childWorkflows",
-          "message": "engine does not support task.childWorkflows",
-          "action": {
-            "kind": "p4",
-            "description": "wait for engine parity in #7758: enablement awaits a product decision (#8085)",
-            "issue": 7758,
-            "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7758"
           }
         },
         {
@@ -125,25 +111,6 @@
           "workflow": "all-features",
           "stage": "fan",
           "path": "/spec/parallels/0"
-        }
-      ]
-    },
-    {
-      "key": "RUNTIME001:task.childWorkflows",
-      "code": "RUNTIME001",
-      "feature": "task.childWorkflows",
-      "action": {
-        "kind": "p4",
-        "description": "wait for engine parity in #7758: enablement awaits a product decision (#8085)",
-        "issue": 7758,
-        "issueUrl": "https://github.com/Agent-Clubhouse/Goobers/issues/7758"
-      },
-      "occurrences": [
-        {
-          "gaggle": "g",
-          "workflow": "all-features",
-          "stage": "agent",
-          "path": "/spec/tasks/0/childWorkflows"
         }
       ]
     },

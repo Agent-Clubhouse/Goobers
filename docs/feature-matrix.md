@@ -558,7 +558,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.artifactSlots.name` | 3.1 | preview | supported | supported | preview | v0.5.0 |
 | `task.artifactSlots.schemaPath` | 3.1 | preview | supported | supported | preview | v0.5.0 |
 | `task.capabilities` | 3.1 | ga | supported | supported | preview | dev |
-| `task.childWorkflows` | 3.1 | preview | supported | unsupported | preview | dev |
+| `task.childWorkflows` | 3.1 | preview | supported | supported | preview | dev |
 | `task.childWorkflows.allowPRPublication` | 3.1 | preview | supported | supported | preview | dev |
 | `task.childWorkflows.allowedCapabilities` | 3.1 | preview | supported | supported | preview | dev |
 | `task.childWorkflows.allowedGoobers` | 3.1 | preview | supported | supported | preview | dev |

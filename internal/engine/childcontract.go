@@ -1,8 +1,8 @@
 package engine
 
 // Generated-child wire contracts (HA-P4-08). The protocol that uses them is
-// reachable for parents with a pinned opt-in and their admitted children.
-// The instance config-load refusal remains until qualification is complete.
+// reachable for parents with a pinned enabled posture and their admitted
+// children.
 
 import (
 	"context"

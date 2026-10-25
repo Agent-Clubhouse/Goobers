@@ -1,10 +1,8 @@
 package child
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/childworkflow"
@@ -46,24 +44,13 @@ func TestMountedConfig(t *testing.T) {
 	}
 	path := filepath.Join(root, "instance.yaml")
 	cfg, err := instance.LoadConfig(path)
-	if Pending != "" && errors.Is(err, instance.ErrEngineChildWorkflowsIncomplete) {
-		// The committed overlay MUST opt in. Only this schema test disables the
-		// feature to verify the rest of the config while the production gate exists.
-		raw, readErr := os.ReadFile(path)
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if err := os.WriteFile(path, []byte(strings.Replace(string(raw), "enabled: true", "enabled: false", 1)), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err = instance.LoadConfig(path)
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !cfg.EngineChildWorkflowsEnabled() {
+		t.Fatal("mounted config disables engine child workflows")
+	}
 	// Advisory proposal validation uses the same catalog as runtime admission.
-	// This test-only in-memory opt-in cannot change the deployed config gate.
-	cfg.Engine.ChildWorkflows.Enabled = true
 	source, err := os.ReadFile("fixture/generated-child.yaml")
 	if err != nil {
 		t.Fatal(err)

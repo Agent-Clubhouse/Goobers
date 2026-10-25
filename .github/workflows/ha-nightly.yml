@@ -363,20 +363,9 @@ jobs:
           kubectl kustomize deploy/reference/goobers-cloud/workers >/dev/null
           kubectl kustomize test/ha/kind/child >/dev/null
 
-      # Scenario 10 / CHAOS-13-CHILD is now composed below, after cloud
-      # rollout (not in the earlier generic chaos registry). pending #8085:
-      # removing the gate requires BOTH the production worker handoff adapter
-      # and engine.childWorkflows config enablement. No executor substitution.
-      - name: Check engine child qualification gate
-        id: child
-        if: ${{ always() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
-        run: go run ./test/ha/kind/cmd/child-nightly gate
-
+      # Scenario 10 / CHAOS-13-CHILD runs after cloud rollout, not in the
+      # earlier generic chaos registry. No executor substitution.
       - name: Run engine child happy path and worker failover
-        if: ${{ steps.child.outputs.ready == 'true' }}
         timeout-minutes: 20
         env:
           CLOUD_READY: ${{ steps.cloud.outputs.ready }}
@@ -426,7 +415,7 @@ jobs:
           done
           test "$count" -ge 2
           kubectl -n goobers-cloud wait --for=condition=Ready pod -l goobers.dev/role=worker --timeout=5m
-          go run ./test/ha/kind/cmd/child-nightly run
+          go run ./test/ha/kind/cmd/child-nightly
 
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
