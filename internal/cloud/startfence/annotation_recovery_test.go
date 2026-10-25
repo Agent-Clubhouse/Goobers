@@ -44,17 +44,23 @@ func TestAnnotatedPredecessorStartRemainsAdoptable(t *testing.T) {
 
 func TestAnnotationRecoveryDoesNotAdoptADifferentStart(t *testing.T) {
 	for name, change := range map[string]func(*engine.RunInput, *StartOwnerMemo){
-		"generation":       func(in *engine.RunInput, _ *StartOwnerMemo) { in.ConfigGeneration = "other" },
-		"workflow pin":     func(in *engine.RunInput, _ *StartOwnerMemo) { in.WorkflowDigest = "other" },
-		"goober pin":       func(in *engine.RunInput, _ *StartOwnerMemo) { in.GooberDigest = "other" },
-		"definition":       func(in *engine.RunInput, _ *StartOwnerMemo) { in.Spec.Start = "other" },
-		"instance":         func(in *engine.RunInput, _ *StartOwnerMemo) { in.InstanceID = "other" },
-		"acceptance":       func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.AcceptanceID = "other" },
-		"missing owner":    func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.StarterID = "" },
-		"unowned":          func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 0 },
-		"same epoch":       func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 7 },
+		"generation":    func(in *engine.RunInput, _ *StartOwnerMemo) { in.ConfigGeneration = "other" },
+		"workflow pin":  func(in *engine.RunInput, _ *StartOwnerMemo) { in.WorkflowDigest = "other" },
+		"goober pin":    func(in *engine.RunInput, _ *StartOwnerMemo) { in.GooberDigest = "other" },
+		"definition":    func(in *engine.RunInput, _ *StartOwnerMemo) { in.Spec.Start = "other" },
+		"instance":      func(in *engine.RunInput, _ *StartOwnerMemo) { in.InstanceID = "other" },
+		"acceptance":    func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.AcceptanceID = "other" },
+		"missing owner": func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.StarterID = "" },
+		"unowned":       func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 0 },
+		"same epoch":    func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 7 },
+		"same epoch and starter": func(in *engine.RunInput, owner *StartOwnerMemo) {
+			owner.OwnerEpoch, owner.StarterID = in.OwnerEpoch, in.StarterID
+		},
 		"future epoch":     func(_ *engine.RunInput, owner *StartOwnerMemo) { owner.OwnerEpoch = 8 },
 		"child permission": func(in *engine.RunInput, _ *StartOwnerMemo) { in.ChildWorkflowsEnabled = true },
+		"run":              func(in *engine.RunInput, _ *StartOwnerMemo) { in.RunID = "other" },
+		"self permission":  func(in *engine.RunInput, _ *StartOwnerMemo) { in.SelfExecutionDenied = !in.SelfExecutionDenied },
+		"gaggle":           func(in *engine.RunInput, _ *StartOwnerMemo) { in.Gaggle = "other" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			legacy := cloudStartInput(7)
