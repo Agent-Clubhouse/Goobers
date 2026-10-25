@@ -16,8 +16,8 @@ func TestResolvePinsTheEnabledChildPostureByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if in.ChildWorkflowsEnabled {
-		t.Fatal("mutation expected the enabled child posture pin to be absent")
+	if !in.ChildWorkflowsEnabled {
+		t.Fatal("default instance config must pin child workflows enabled into new runs")
 	}
 	f.balanced(t, "default posture")
 }
