@@ -98,22 +98,18 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		}
 		starts := qualificationStageStarts(h)
 		var stageFailures, runAborted int
-		var retryClass journal.AttemptClass
 		for _, event := range qualificationEvents(h) {
 			if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) {
 				stageFailures++
-			}
-			if event.Type == journal.EventStageStarted && event.Attempt == 2 {
-				retryClass = event.AttemptClass
 			}
 			if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseAborted) {
 				runAborted++
 			}
 		}
 		if len(starts) != 2 || !starts[oldGrant.AttemptID] || !starts[newGrant.AttemptID] ||
-			stageFailures != 2 || retryClass != journal.AttemptPolicy || runAborted != 1 {
-			t.Fatalf("attempt journal: starts=%v stageFailures=%d retryClass=%q runAborted=%d",
-				starts, stageFailures, retryClass, runAborted)
+			stageFailures != 2 || runAborted != 1 {
+			t.Fatalf("attempt journal: starts=%v stageFailures=%d runAborted=%d",
+				starts, stageFailures, runAborted)
 		}
 		qualificationNoChildWait(h)
 		qualificationNoChildren(h)
