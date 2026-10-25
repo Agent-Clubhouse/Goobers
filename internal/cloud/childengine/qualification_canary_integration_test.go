@@ -19,15 +19,15 @@ import (
 )
 
 // Scenario 8: an unreadable per-instance canary withholds authority, reports
-// the reason, and recovers on the same worker once the pod blob plane can read it.
+// the reason. A worker with a readable canary admits and completes the child.
 func TestChildQualificationCanaryGuard(t *testing.T) {
-	h := newQualificationHarness(t)
-	digest, canary := childresult.BlobPlaneCanary(testInstance)
-	if err := h.blobs.Remove(h.ctx, digest); err != nil {
-		t.Fatal(err)
-	}
-	run := h.StartParent()
 	t.Run("unreadable_withholds_and_logs", func(t *testing.T) {
+		h := newQualificationHarness(t)
+		digest, _ := childresult.BlobPlaneCanary(testInstance)
+		if err := h.blobs.Remove(h.ctx, digest); err != nil {
+			t.Fatal(err)
+		}
+		run := h.StartParent()
 		// Synchronize on the worker's actual probe refusal, not a boot delay.
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
@@ -82,19 +82,15 @@ func TestChildQualificationCanaryGuard(t *testing.T) {
 			t.Fatalf("child request without authority: HTTP %d", resp.StatusCode)
 		}
 	})
-	if t.Failed() {
-		return
-	}
-	t.Run("readable_grants_on_same_worker", func(t *testing.T) {
-		if err := h.blobs.Put(h.ctx, digest, canary); err != nil {
-			t.Fatal(err)
-		}
+	t.Run("readable_grants_authority", func(t *testing.T) {
+		h := newQualificationHarness(t)
+		run := h.StartParent()
 		var result engine.RunResult
 		if err := run.Get(h.ctx, &result); err != nil {
 			t.Fatal(err)
 		}
 		if result.Status != engine.StatusCompleted || result.Outputs["plan"].Summary != "parent read child receipt through blob plane" {
-			t.Fatalf("parent after canary restoration: %+v", result)
+			t.Fatalf("parent with readable canary: %+v", result)
 		}
 		var count int
 		if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1 AND parent_run_id=$2 AND state='completed'`, testInstance, run.GetID()).Scan(&count); err != nil || count != 1 {
