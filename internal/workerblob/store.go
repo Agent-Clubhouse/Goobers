@@ -93,7 +93,7 @@ func ValidateEndpoint(raw string) error {
 func Open(ctx context.Context, directory, endpoint, dispatchEndpoint string, source func() (string, error), probe ProbeOptions) (blobstore.Store, error) {
 	if directory == "" {
 		if source == nil {
-			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for endpoint mode")
+			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for endpoint mode (or api.podTokenKeyRingFile for cloud)")
 		}
 		return &dispatcher.BlobClient{BaseURL: endpoint, TokenSource: source}, nil
 	}
@@ -106,7 +106,7 @@ func Open(ctx context.Context, directory, endpoint, dispatchEndpoint string, sou
 			return nil, err
 		}
 		if source == nil {
-			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for dispatch preflight")
+			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for dispatch preflight (or api.podTokenKeyRingFile for cloud)")
 		}
 		remote := &dispatcher.BlobClient{BaseURL: dispatchEndpoint, TokenSource: source}
 		if err := VerifyShared(ctx, local, remote, probe); err != nil {
