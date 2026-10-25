@@ -205,7 +205,12 @@ func cloudStartInput(epoch int64) engine.RunInput {
 
 func existingStart(t *testing.T, owner StartOwnerMemo) *TemporalStarter {
 	t.Helper()
-	identity, err := startOwner(cloudStartInput(7))
+	return existingStartWithInput(t, cloudStartInput(7), owner)
+}
+
+func existingStartWithInput(t *testing.T, input engine.RunInput, owner StartOwnerMemo) *TemporalStarter {
+	t.Helper()
+	identity, err := startOwner(input)
 	if err != nil {
 		t.Fatal(err)
 	}
