@@ -163,3 +163,12 @@ without work. A gate that is not enforced is reported as a failed
 `scheduler-gate:*` check on the readiness probe and journaled once per epoch; the
 controller still serves. `MaxOpenPRs` also fails open until a repository's first
 poll completes, as locally.
+
+## Optional cloud workers
+
+The [worker overlay](workers/README.md) supplies a production cloud worker and
+dispatcher deployment using the control config/blob APIs, a public CA bundle,
+per-build PDBs, and the Temporal Worker Controller. Compose it with each
+gaggle's dispatcher RBAC and stage egress policies. The kind child qualification
+fixture under `test/ha/kind/child` demonstrates that composition with a test-only
+model image; it remains explicitly pending #8085.

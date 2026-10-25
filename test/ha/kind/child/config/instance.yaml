@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+placement: {selfExecution: deny}
+api:
+  podTokenKeyRingFile: /var/run/secrets/goobers/keyring.json
+engine:
+  hostPort: temporal-frontend.goobers-temporal.svc.cluster.local:7233
+  namespace: kind-child
+  taskQueue: kind-child-engine
+  workerVersioning: true
+  childWorkflows: {enabled: true}
+credentials:
+  - capability: agent:model
+    harness: claude-code
+    token: {env: KIND_CHILD_MODEL_TOKEN}
+runners:
+  - name: child-qualification
+    host: goobers-child:BUILD_SHA
+    provides:
+      os: linux
+      shell: true
+      harnesses: [claude-code]
