@@ -858,7 +858,8 @@ jobs:
     if: ${{ needs.scope.outputs.cloud == 'true' }}
     runs-on: ubuntu-latest
     # Hang guard only; the 15-minute design budget is reported, never asserted.
-    timeout-minutes: 30
+    # Real runs reached 22-27 minutes, so the guard leaves headroom above that.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
