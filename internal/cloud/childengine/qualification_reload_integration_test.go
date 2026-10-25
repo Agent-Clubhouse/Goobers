@@ -119,6 +119,18 @@ func TestChildQualificationConfigReload(t *testing.T) {
 	if err != nil || rejected.State != triggerqueue.Rejected {
 		t.Fatalf("new acceptance state = %s: %v", rejected.State, err)
 	}
+	var runRows, startRows, attemptRows, childStartRows int
+	if err := h.pool.QueryRow(h.ctx, `SELECT
+		(SELECT count(*) FROM journal.run WHERE instance_id=$1 AND run_id=$2),
+		(SELECT count(*) FROM control.run_pin WHERE instance_id=$1 AND run_id=$2),
+		(SELECT count(*) FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND type='stage.started'),
+		(SELECT count(*) FROM control.child_engine_start WHERE instance_id=$1 AND parent_workflow_id=$2)`,
+		testInstance, record.RunID).Scan(&runRows, &startRows, &attemptRows, &childStartRows); err != nil {
+		t.Fatal(err)
+	}
+	if runRows != 0 || startRows != 0 || attemptRows != 0 || childStartRows != 0 {
+		t.Fatalf("refused acceptance created run/start/attempt rows: run=%d start=%d attempt=%d childStart=%d", runRows, startRows, attemptRows, childStartRows)
+	}
 	var children int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1`, testInstance).Scan(&children); err != nil || children != 1 {
 		t.Fatalf("disabled new run created another child: %d: %v", children, err)
