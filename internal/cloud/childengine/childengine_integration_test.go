@@ -27,7 +27,7 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
-const testInstance = "child-engine-instance"
+const testInstance = parentInstance
 
 // family is one PostgreSQL database with the lease-fenced store of its
 // current controller, plus the shared blob custody every epoch reads.
