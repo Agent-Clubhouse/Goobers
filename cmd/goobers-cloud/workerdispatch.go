@@ -298,10 +298,10 @@ func validateStageDispatchConfig(cfg *instance.Config, daemonAPI, blobEndpoint s
 	}
 	signed, err := podTokenMinter(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile: %w", err)
+		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile / api.podTokenKeyRingFile: %w", err)
 	}
 	if signed == nil {
-		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile is required for authenticated stage surrender")
+		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile is required for authenticated stage surrender (or api.podTokenKeyRingFile for cloud)")
 	}
 	return signed, nil
 }
@@ -347,16 +347,21 @@ func mergeQueues(existing []string, dispatch []string) []string {
 // podTokenMinter builds the shared-key minter from a loaded instance config, or
 // returns nil when no key is configured (the loopback/no-auth posture).
 //
-// Factored out because TWO consumers in this process need the same key and must
-// not drift: the dispatcher mints the bearer it stamps on a stage pod, and the
-// live-journal emitter mints the bearer it presents to the daemon's journal
-// plane. Both are "this worker proving which run it speaks for", and a second
-// copy of this loading would be a second place for the key path to go stale.
+// Dispatch, journal, blob and worker-plane credentials share this loader.
+// Raw files keep legacy semantics; cloud rings explicitly select current and
+// include its key ID so control can verify tokens during rotation.
 func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 	path := strings.TrimSpace(cfg.API.PodTokenKeyFile)
+	ringPath := strings.TrimSpace(cfg.API.PodTokenKeyRingFile)
+	if path != "" && ringPath != "" {
+		return nil, fmt.Errorf("api.podTokenKeyFile and api.podTokenKeyRingFile are mutually exclusive")
+	}
+	if ringPath != "" {
+		return podauth.LoadKeyRingFile(ringPath, "")
+	}
 	if path == "" {
 		return nil, nil
 	}

@@ -43,7 +43,7 @@ const predecessorReleaseSQL = `
 // writePathsBefore0035 is the current inventory without the columns added after
 // 0035's boundary: cleanup custody, deferred markers, and shared claim custody.
 func writePathsBefore0035() (cloudschema.Inventory, error) {
-	inventory, err := cloudschema.LoadWritePaths()
+	inventory, err := writePathsBefore0039()
 	if err != nil {
 		return inventory, err
 	}
@@ -101,9 +101,9 @@ func TestPredecessorReleaseSurvives0035BeforeTheGrantReconcile(t *testing.T) {
 		VALUES ('i','g','github','42','run-a','w','tok',1,now(),now(),now()+interval '1 hour','{}')`); err != nil {
 		t.Fatal(err)
 	}
-	// 0035 alone, exactly as its leased step commits it, with the current
+	// 0035 alone, exactly as its leased step commits it, with the pre-contract
 	// inventory: no reconcile follows.
-	inventory, err := cloudschema.LoadWritePaths()
+	inventory, err := writePathsBefore0039()
 	if err != nil {
 		t.Fatal(err)
 	}

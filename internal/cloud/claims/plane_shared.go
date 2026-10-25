@@ -98,8 +98,6 @@ func (p *Plane) beginSharedAdmission(ctx context.Context, tx pgx.Tx, epoch int64
 	var revoked bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM control.claim_run_history WHERE instance_id=$1 AND run_id=$2
-		AND gaggle=$3 AND provider=$4 AND external_id=$5 AND shared_revoked
-		UNION ALL SELECT 1 FROM control.claim_history WHERE instance_id=$1 AND run_id=$2
 		AND gaggle=$3 AND provider=$4 AND external_id=$5 AND shared_revoked)`,
 		p.instanceID, owner.Run, key.Gaggle, key.Provider, key.ExternalID).Scan(&revoked); err != nil {
 		return lockedRow{}, false, "", err

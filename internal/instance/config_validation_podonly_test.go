@@ -26,3 +26,14 @@ func TestAPIOffLoopbackNeedsTLSButNotOIDC(t *testing.T) {
 		t.Fatalf("the tier-1 loopback default must stay valid: %v", err)
 	}
 }
+
+func TestAPIPodSigningKeyFilesAreExclusive(t *testing.T) {
+	cfg := APIConfig{PodTokenKeyFile: "raw", PodTokenKeyRingFile: "ring"}
+	if err := cfg.validate("127.0.0.1:8080"); err == nil {
+		t.Fatal("accepted both raw and ring signing keys")
+	}
+	cfg.PodTokenKeyFile = ""
+	if err := cfg.validate("127.0.0.1:8080"); err != nil {
+		t.Fatal(err)
+	}
+}

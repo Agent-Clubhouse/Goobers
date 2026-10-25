@@ -449,8 +449,10 @@ Flags:
                              --instance)
   --config-endpoint <url>    daemon configuration plane; fetches sanitized
                              instance config by digest and updates it live
-  --config-key-file <path>   shared signing key used only to mint worker
+  --config-key-file <path>   raw signing key used only to mint worker
                              config-plane credentials
+  --config-keyring-file <path> JSON key ring for cloud config-plane credentials
+                             (mutually exclusive with --config-key-file)
   --config-history-depth <n>
                              how many superseded config trees to retain
                              so an in-flight run pinned to one is still

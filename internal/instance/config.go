@@ -493,6 +493,11 @@ type APIConfig struct {
 	// rotation requires a coordinated restart and invalidates outstanding pod
 	// tokens and credential-refresh grants until every replica uses the new key.
 	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
+	// PodTokenKeyRingFile explicitly selects a JSON key ring for cloud workers.
+	// Only current signs; its ID permits verification against control's previous
+	// key during rotation. Mutually exclusive with PodTokenKeyFile. Workers read
+	// at startup; roll them after promotion before retiring the previous key.
+	PodTokenKeyRingFile string `json:"podTokenKeyRingFile,omitempty" yaml:"podTokenKeyRingFile,omitempty" credentialPath:"trimmed"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.

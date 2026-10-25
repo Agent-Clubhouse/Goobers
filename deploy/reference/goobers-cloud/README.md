@@ -35,6 +35,26 @@ The control role likewise uses Entra for object storage by default. Emulator or
 private shared-key overlays opt in with `--object-store-account-name` and
 `--object-store-account-key-file`; the key stays in a mounted Secret file.
 
+## Worker signing keys
+
+Mount the `goobers-cloud-pod-key` Secret in every rainbow worker at
+`/var/run/secrets/goobers/pod-key`. Set `--config-keyring-file` to
+`/var/run/secrets/goobers/pod-key/keyring.json` alongside `--config-endpoint`.
+The published instance configuration must set `api.podTokenKeyRingFile` to that
+same path (as in `prereqs/config/instance.yaml`). This selects the decoded current
+key and its ID for configuration fetches and all dispatch, journal, blob, and
+other worker-plane tokens. Invalid rings fail closed.
+
+Do not also set `--config-key-file` or `api.podTokenKeyFile`: the raw and ring
+inputs are mutually exclusive for each plane. The legacy mode-2 references use
+those raw inputs, which preserve arbitrary trimmed raw bytes, even JSON or
+brace-prefixed keys. There is no automatic format detection.
+
+Workers load keys at startup. During rotation, pre-distribute the next key as
+`previous` to control, promote it to `current`, then roll workers. Retain the old
+key as `previous` until every signer has promoted and outstanding tokens expire.
+See [the complete rotation contract](../../../internal/cloud/podauth/README.md).
+
 ## Provisioning
 
 Roles and the database exist before migrate runs (the owner role needs its

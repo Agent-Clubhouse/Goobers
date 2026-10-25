@@ -724,3 +724,22 @@ func walkSchemaPatterns(node any, path string, fn func(path, pattern string)) {
 		}
 	}
 }
+
+func TestInstanceSchemaPodSigningKeyFiles(t *testing.T) {
+	schema := compileInstanceSchema(t)
+	for _, test := range []struct {
+		name, api string
+		valid     bool
+	}{
+		{"raw", "  podTokenKeyFile: /run/secrets/key\n", true},
+		{"ring", "  podTokenKeyRingFile: /run/secrets/keyring.json\n", true},
+		{"both", "  podTokenKeyFile: /run/secrets/key\n  podTokenKeyRingFile: /run/secrets/keyring.json\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateInstanceYAML(t, schema, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\napi:\n"+test.api)
+			if (err == nil) != test.valid {
+				t.Fatalf("valid = %v, error = %v", test.valid, err)
+			}
+		})
+	}
+}

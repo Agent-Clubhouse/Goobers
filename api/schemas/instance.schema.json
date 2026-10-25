@@ -1687,6 +1687,7 @@
       "description": "The daemon's read-only HTTP API. The default posture is tier-1 local trust: loopback only, no authenticator.",
       "type": "object",
       "additionalProperties": false,
+      "not": { "required": ["podTokenKeyFile", "podTokenKeyRingFile"] },
       "properties": {
         "listen": {
           "type": "string",
@@ -1702,6 +1703,12 @@
             "minLength": 1
           },
           "examples": [["127.0.0.1", "10.0.0.0/24"]]
+        },
+        "podTokenKeyRingFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to a JSON key ring for cloud workers. Mutually exclusive with podTokenKeyFile. Signs with the decoded current key and its ID; control verifies current and previous. Workers load at startup and must roll after promotion before the previous key is retired.",
+          "examples": ["/var/run/secrets/goobers/pod-key/keyring.json"]
         },
         "podTokenKeyFile": {
           "type": "string",

@@ -51,6 +51,7 @@ spec:
               - "4"
               - --config-endpoint
               - https://goobers-api.goobers-system.svc:8080
+              # Legacy mode-2 raw key. Cloud-control workers use --config-keyring-file.
               - --config-key-file
               - /var/run/secrets/goobers/key
               - --blob-endpoint

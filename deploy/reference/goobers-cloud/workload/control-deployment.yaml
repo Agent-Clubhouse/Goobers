@@ -191,7 +191,8 @@ spec:
             secretName: goobers-cloud-control-tls
             defaultMode: 0440
         # JSON key ring {"current":{"id":"...","key":"<base64 >=32 bytes>"}}
-        # under key `keyring.json`; shared with workers for pod-token auth.
+        # under key `keyring.json`; workers select it with --config-keyring-file
+        # and api.podTokenKeyRingFile (not the legacy raw-key inputs).
         - name: pod-key
           secret:
             secretName: goobers-cloud-pod-key
