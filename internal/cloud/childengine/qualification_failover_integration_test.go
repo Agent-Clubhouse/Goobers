@@ -80,6 +80,7 @@ func TestChildQualificationFailover(t *testing.T) {
 	}
 	barrier.Release()
 	qualificationCompleted(h, run)
+	h.assertProductionChildHandoff(run)
 	var current int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage
 		WHERE instance_id=$1 AND parent_run_id=$2 AND owner_epoch=$3 AND acceptance_id=$4`, testInstance, run.GetID(), h.epoch.handle.Epoch, first.AcceptanceID).Scan(&current); err != nil || current != 1 {

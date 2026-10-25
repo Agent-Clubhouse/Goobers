@@ -193,7 +193,8 @@ Timestamp injection uses a separate database setup connection; runtime pools
 keep their controller role and column grants.
 
 - Retention ages only the acceptance and run-pin timestamps past
-  `ReplayRetention`. Production pruning and pin sweeping consult the real
+  `ReplayRetention` while the committed stage-origin acknowledgement is held,
+  before production dispatch acquires its first grant. Production pruning and pin sweeping consult the real
   Temporal execution before the worker binds and completes its child.
 - Worker loss kills and joins the worker after a grant binds. As designed in
   `engine-parent-child-authority.md` §5/§8, the grant remains usable while the
