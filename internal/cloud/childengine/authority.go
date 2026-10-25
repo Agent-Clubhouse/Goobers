@@ -346,6 +346,10 @@ func (a Authorities) AcquireChildAuthority(ctx context.Context, request engine.C
 	if err := request.Validate(); err != nil {
 		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	}
+	recovered, err := a.recoverStoppedHandoff(ctx, request)
+	if err != nil || recovered.StoppedHandoff != nil {
+		return recovered, classify(err)
+	}
 	runID, origin := request.RunID, request.Origin
 	issuer := childworkflow.GrantIssuer{Queue: a.Queue, Grants: a.Grants, Authority: a.Parents, Endpoint: request.Endpoint, TTL: StageGrantTTL,
 		// Control never journals or logs the bearer: it is returned to the

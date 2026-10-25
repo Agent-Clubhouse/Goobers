@@ -19,6 +19,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -116,16 +118,18 @@ func TestChildQualificationWorkerProcess(t *testing.T) {
 		}
 		return nil
 	}, Report: func(err error) { t.Logf("child authority withheld: %v", err) }}
-	stages := qualificationStages{cfg: cfg, key: key, authority: authority}
-	w := worker.New(c, cfg.Queue, worker.Options{WorkerStopTimeout: time.Second, MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval})
-	engine.RegisterWith(w, &engine.Activities{EngineChildren: childadmissionclient.ForWorker(cfg.Endpoint, "qualification-worker", key),
-		Journal: &livejournal.HTTPEmitter{BaseURL: cfg.Endpoint, Minter: key}})
-	// These activities replace LLM/container execution and currently construct
-	// ChildWait themselves. The production stopped-dispatch adapter is a separate
-	// qualification prerequisite; see qualification.md.
-	for _, name := range []string{engine.ActInvokeGoober, "InvokeGooberCancelSafe"} {
-		w.RegisterActivityWithOptions(stages.parent, activity.RegisterOptions{Name: name, DisableAlreadyRegisteredCheck: true})
+	surrenders, err := dispatcher.NewSurrenderDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
+	stages := qualificationStages{cfg: cfg, key: key, surrenders: surrenders}
+	w := worker.New(c, cfg.Queue, worker.Options{Identity: "qualification-worker", WorkerStopTimeout: time.Second, MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval, Interceptors: []interceptor.WorkerInterceptor{&qualificationDispatchFaults{initialLoss: cfg.Script["parent-start"].HeartbeatLoss}}})
+	engine.RegisterWith(w, &engine.Activities{EngineChildren: childadmissionclient.ForWorker(cfg.Endpoint, "qualification-worker", key),
+		ChildAuthority: authority, Dispatcher: stages, Surrenders: surrenders,
+		Journal: &livejournal.HTTPEmitter{ChildOriginWorkerID: "qualification-worker", BaseURL: cfg.Endpoint, Minter: key}})
+	// The parent uses the registered production DispatchStage activity. Only
+	// its container executor and surrender storage are scripted. Generated
+	// deterministic child execution retains its existing fixture boundary.
 	for _, name := range []string{engine.ActRunDeterministic, "RunDeterministicCancelSafe"} {
 		w.RegisterActivityWithOptions(stages.child, activity.RegisterOptions{Name: name, DisableAlreadyRegisteredCheck: true})
 	}
@@ -135,19 +139,37 @@ func TestChildQualificationWorkerProcess(t *testing.T) {
 }
 
 type qualificationStages struct {
-	cfg       qualificationWorkerConfig
-	key       *podauth.SignedKey
-	authority engine.ChildWorkflowAuthority
+	cfg        qualificationWorkerConfig
+	key        *podauth.SignedKey
+	surrenders *dispatcher.SurrenderDir
 }
 
-func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnvelope, _ string, _ string, _ apiv1.WorkspaceMode, _ string) (result engine.DispatchStageResult, err error) {
-	ctx, stop := qualificationHeartbeat(ctx, s.cfg.Script["parent-start"].HeartbeatLoss)
-	defer func() {
-		stop()
-		if err != nil && errors.Is(ctx.Err(), context.Canceled) && !errors.Is(context.Cause(ctx), worker.ErrWorkerShutdown) {
-			err = temporal.NewCanceledError()
-		}
-	}()
+// Dispatch models a contained executor joining its writers when it returns.
+// It never creates a handoff; the production observer derives that from custody.
+func (s qualificationStages) Dispatch(ctx context.Context, attempt dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
+	result, err := s.parent(ctx, attempt)
+	report := dispatcher.Report{Runner: "qualification", ParentWritersStopped: true}
+	if result.Status == "" {
+		return report, err
+	}
+	data, marshalErr := json.Marshal(dispatcher.SurrenderedResult{ContractVersion: dispatcher.CurrentSurrenderContract, Result: result.ResultEnvelope, ObservedUsageReported: true})
+	if marshalErr != nil {
+		return report, marshalErr
+	}
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	if putErr := s.surrenders.Put(cleanup, attempt.RunID, attempt.Stage, attempt.IdentityAttempt(), data); putErr != nil {
+		return report, putErr
+	}
+	report.SurrenderConfirmed = true
+	return report, err
+}
+
+func (s qualificationStages) parent(ctx context.Context, attempt dispatcher.Attempt) (engine.DispatchStageResult, error) {
+	if attempt.Envelope == nil {
+		return engine.DispatchStageResult{}, errors.New("scripted parent requires the production dispatch envelope")
+	}
+	env := *attempt.Envelope
 	if result, err := s.step(ctx, "parent-start"); result != nil || err != nil {
 		if result != nil {
 			return *result, err
@@ -191,15 +213,13 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 	if env.ChildWorkflowOrigin == nil {
 		return engine.DispatchStageResult{}, errors.New("parent has no committed child origin")
 	}
-	grant, err := s.authority.AcquireChildAuthority(ctx, engine.ChildAuthorityRequest{RunID: env.RunID, Origin: *env.ChildWorkflowOrigin})
-	if err != nil {
+	var access mcpio.ChildWorkflowAccess
+	if err := json.Unmarshal([]byte(attempt.ChildWorkflowAccess), &access); err != nil {
 		return engine.DispatchStageResult{}, err
 	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.authority.ReleaseChildAuthority(cleanup, engine.ChildAuthorityRelease{RunID: env.RunID, Origin: *env.ChildWorkflowOrigin, GrantID: grant.GrantID})
-	}()
+	if err := access.Validate(env.RunID); err != nil {
+		return engine.DispatchStageResult{}, err
+	}
 	if result, err := s.step(ctx, "parent-granted"); result != nil || err != nil {
 		if result != nil {
 			return *result, err
@@ -215,7 +235,7 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 	if err != nil {
 		return engine.DispatchStageResult{}, err
 	}
-	request.Header.Set("Authorization", "Bearer "+grant.BearerToken)
+	request.Header.Set("Authorization", "Bearer "+access.BearerToken)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(httpapi.HeaderIdempotencyKey, "qualification-child")
 	response, err := http.DefaultClient.Do(request)
@@ -230,19 +250,16 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 	if response.StatusCode != http.StatusAccepted {
 		return engine.DispatchStageResult{}, fmt.Errorf("child start HTTP %d: %s", response.StatusCode, raw)
 	}
-	var started apicontract.ChildWorkflowResponse
-	if err := json.Unmarshal(raw, &started); err != nil {
-		return engine.DispatchStageResult{}, err
-	}
 	if result, err := s.step(ctx, "parent-submitted"); result != nil || err != nil {
 		if result != nil {
 			return *result, err
 		}
 		return engine.DispatchStageResult{}, err
 	}
-	handoff := journal.ChildHandoffRequest{Gaggle: env.Gaggle, ParentRunID: env.RunID, RequestID: journal.Digest([]byte(started.RunID)), Action: "wait",
-		ChildRunID: started.RunID, AcceptanceID: started.AcceptanceID, InvocationKey: "qualification-child", SourceDigest: started.SourceDigest, Origin: *env.ChildWorkflowOrigin}
-	return engine.DispatchStageResult{ChildWait: &handoff}, nil
+	// Acceptance is durable; wait for the production adapter to cancel the
+	// parent execution. Returning a stage-authored ChildWait is impossible here.
+	<-ctx.Done()
+	return engine.DispatchStageResult{}, ctx.Err()
 }
 
 func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun, _ string, _ string) (result engine.DispatchStageResult, err error) {
@@ -259,7 +276,8 @@ func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelo
 		}
 		return engine.DispatchStageResult{}, err
 	}
-	return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "qualification child result"}}, nil
+	// Terminal receipt capture reads the journaled output, as the local runner does.
+	return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "qualification child result", Outputs: map[string]any{"summary": "qualification child result"}}}, nil
 }
 
 // Match engine.heartbeatDispatch: immediately, then every second, continuing
@@ -301,4 +319,43 @@ func qualificationHeartbeat(ctx context.Context, loss bool) (context.Context, fu
 		}
 	}()
 	return context.WithValue(ctx, qualificationHeartbeatKey{}, state), func() { cancel(); <-done }
+}
+
+// Suppress only explicitly injected dispatch heartbeats, at the SDK boundary.
+// Normal parent heartbeats come from production Activities.DispatchStage.
+type qualificationDispatchFaults struct {
+	interceptor.WorkerInterceptorBase
+	initialLoss bool
+}
+
+func (f *qualificationDispatchFaults) InterceptActivity(_ context.Context, next interceptor.ActivityInboundInterceptor) interceptor.ActivityInboundInterceptor {
+	return &qualificationDispatchInbound{ActivityInboundInterceptorBase: interceptor.ActivityInboundInterceptorBase{Next: next}, initialLoss: f.initialLoss}
+}
+
+type qualificationDispatchInbound struct {
+	interceptor.ActivityInboundInterceptorBase
+	initialLoss bool
+	loss        atomic.Bool
+}
+
+func (i *qualificationDispatchInbound) Init(next interceptor.ActivityOutboundInterceptor) error {
+	return i.Next.Init(&qualificationDispatchOutbound{ActivityOutboundInterceptorBase: interceptor.ActivityOutboundInterceptorBase{Next: next}, loss: &i.loss})
+}
+func (i *qualificationDispatchInbound) ExecuteActivity(ctx context.Context, input *interceptor.ExecuteActivityInput) (any, error) {
+	if activity.GetInfo(ctx).ActivityType.Name == engine.ActDispatchStage {
+		i.loss.Store(i.initialLoss)
+		ctx = context.WithValue(ctx, qualificationHeartbeatKey{}, &i.loss)
+	}
+	return i.Next.ExecuteActivity(ctx, input)
+}
+
+type qualificationDispatchOutbound struct {
+	interceptor.ActivityOutboundInterceptorBase
+	loss *atomic.Bool
+}
+
+func (i *qualificationDispatchOutbound) RecordHeartbeat(ctx context.Context, details ...any) {
+	if !i.loss.Load() {
+		i.Next.RecordHeartbeat(ctx, details...)
+	}
 }

@@ -82,7 +82,8 @@ func (s *Store) BindChildAuthority(
 			ON CONFLICT (instance_id,gaggle,parent_run_id,occurrence) DO UPDATE
 			SET grant_id=excluded.grant_id,attempt_id=excluded.attempt_id,
 			    config_digest=excluded.config_digest,policy_digest=excluded.policy_digest,
-			    expires_at=excluded.expires_at,revoked=false,owner_epoch=excluded.owner_epoch
+			    expires_at=excluded.expires_at,revoked=false,owner_epoch=excluded.owner_epoch,
+                stopped_handoff=NULL
 			WHERE control.child_authority.instance_id=$1
 			  AND control.child_authority.owner_epoch=$10`,
 			s.instanceID, grant.Gaggle, grant.ParentRunID, grant.StageOccurrence,

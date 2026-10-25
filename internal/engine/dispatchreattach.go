@@ -52,12 +52,12 @@ func executeDispatchActivity(ctx workflow.Context, input DispatchStageInput) (Di
 		remaining := deadline.Sub(workflow.Now(ctx))
 		if remaining+stageTimeoutGrace <= 0 {
 			timeout := temporal.NewApplicationError("engine: stage attempt deadline and grace expired during worker handoff", FailureTypeStage)
-			return DispatchStageResult{}, dispatchHandoffWorkerLoss(timeout)
+			return DispatchStageResult{}, dispatchReattachFailure(input, timeout)
 		}
 		if handoffs > maxDispatchHandoffs {
 			message := fmt.Sprintf("engine: worker handoff limit %d exhausted", maxDispatchHandoffs)
 			exhausted := temporal.NewApplicationError(message, failureTypeHandoffExhausted)
-			return DispatchStageResult{}, dispatchHandoffWorkerLoss(exhausted)
+			return DispatchStageResult{}, dispatchReattachFailure(input, exhausted)
 		}
 		attemptCtx := ctx
 		if handoffs > 0 {
@@ -68,8 +68,8 @@ func executeDispatchActivity(ctx workflow.Context, input DispatchStageInput) (Di
 		err := workflow.ExecuteActivity(attemptCtx, ActDispatchStage, input).Get(attemptCtx, &result)
 		next, handoff := dispatchHandoffCustody(err)
 		if !handoff {
-			if custody != nil && err != nil {
-				return result, dispatchHandoffWorkerLoss(err)
+			if err != nil && !isChildHandoffFailure(err) && (custody != nil || temporal.IsTimeoutError(err) && input.ChildWorkflowsEnabled && input.Envelope.ChildWorkflowOrigin != nil) {
+				return result, dispatchReattachFailure(input, err)
 			}
 			return result, err
 		}
@@ -112,4 +112,11 @@ func dispatchHandoffCustody(err error) (*dispatcher.PodCustody, bool) {
 		current = appErr
 	}
 	return nil, false
+}
+
+func dispatchReattachFailure(input DispatchStageInput, err error) error {
+	if input.ChildWorkflowsEnabled && input.Envelope.ChildWorkflowOrigin != nil {
+		return childHandoffFailure(err)
+	}
+	return dispatchHandoffWorkerLoss(err)
 }

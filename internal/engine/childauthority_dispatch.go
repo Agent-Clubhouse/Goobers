@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // childAuthorityRelease bounds the worker's release of a stage attempt's
@@ -17,34 +18,50 @@ import (
 // inert when the attempt ends, so release is best effort.
 const childAuthorityRelease = 30 * time.Second
 
+// childStageAuthority retains the exact grant lent to this dispatch.
 // stageChildAuthority acquires, before a fresh pod is created, the
 // child-workflow grant of an engine parent's child-capable agentic stage
 // attempt and stamps it onto the attempt (docs/design/
 // engine-parent-child-authority.md §2). It returns the release to run when the
 // activity ends, or nil when the attempt needs no grant: a deterministic
-// stage, a stage without a committed child origin, or an adopted pod that
-// already carries its grant.
-func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStageInput, attempt *dispatcher.Attempt) (func(error), error) {
+// stage or a stage without a committed child origin. Adoption recovers the
+// same grant so a replacement worker also observes accepted requests.
+type childStageAuthority struct {
+	recovered   *journal.ChildHandoffRequest
+	release     func(error)
+	observation ChildHandoffObservation
+}
+
+func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStageInput, attempt *dispatcher.Attempt) (*childStageAuthority, error) {
 	origin := input.Envelope.ChildWorkflowOrigin
-	if input.Run != nil || origin == nil || input.Custody != nil {
+	if input.Run != nil || origin == nil {
 		return nil, nil
+	}
+	if !input.ChildWorkflowsEnabled {
+		return nil, temporal.NewNonRetryableApplicationError("engine: child handoff is disabled by the frozen run pin", childCustodyRefusedType, nil)
 	}
 	if a.ChildAuthority == nil {
 		return nil, temporal.NewNonRetryableApplicationError("engine: a child-capable stage needs the control child authority, which this worker does not have", childCustodyRefusedType, ErrNotConfigured)
 	}
 	runID := input.Envelope.RunID
 	grant, err := a.ChildAuthority.AcquireChildAuthority(ctx, ChildAuthorityRequest{RunID: runID, Origin: *origin})
+	if err != nil && input.Custody != nil {
+		return nil, childHandoffFailure(err)
+	}
 	if errors.Is(err, ErrChildCustodyUnavailable) {
 		// The control plane, not the stage, failed: retry as infrastructure
 		// so the attempt never charges the run's stage budget for it.
 		return nil, temporal.NewApplicationErrorWithCause(err.Error(), FailureTypeInfrastructure, err)
 	}
 	if err != nil {
-		return nil, classifyChildCustody(ctx, err)
+		return nil, childHandoffFailure(err)
+	}
+	if grant.StoppedHandoff != nil {
+		return &childStageAuthority{recovered: grant.StoppedHandoff}, nil
 	}
 	access, err := grant.Access(runID)
 	if err != nil {
-		return nil, temporal.NewNonRetryableApplicationError("engine: control returned an invalid child-workflow grant", childCustodyRefusedType, err)
+		return nil, childHandoffFailure(err)
 	}
 	encoded, err := json.Marshal(access)
 	if err != nil {
@@ -52,7 +69,7 @@ func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStag
 	}
 	attempt.ChildWorkflowAccess = string(encoded)
 	release := ChildAuthorityRelease{RunID: runID, Origin: *origin, GrantID: grant.GrantID}
-	return func(outcome error) {
+	return &childStageAuthority{observation: ChildHandoffObservation{ChildAuthorityRelease: release}, release: func(outcome error) {
 		if !releasesChildAuthority(outcome) {
 			return
 		}
@@ -69,7 +86,7 @@ func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStag
 			case <-time.After(delay):
 			}
 		}
-	}, nil
+	}}, nil
 }
 
 // releasesChildAuthority reports whether the activity's outcome ends the
@@ -89,5 +106,11 @@ func releasesChildAuthority(outcome error) bool {
 		return application.NonRetryable()
 	default:
 		return false
+	}
+}
+
+func (a *childStageAuthority) finish(outcome error) {
+	if a != nil && a.release != nil {
+		a.release(outcome)
 	}
 }

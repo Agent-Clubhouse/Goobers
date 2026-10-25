@@ -824,6 +824,9 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
+	// ParentWritersStopped attests termination of the exact contained parent pod.
+	// Neither DELETE acceptance nor object absence supplies this evidence.
+	ParentWritersStopped bool
 	// PodCreateAttempted distinguishes a refusal before the Kubernetes create
 	// call from an ambiguous create outcome that may already be executing.
 	PodCreateAttempted bool
@@ -979,6 +982,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// in versioned error details. Keeping this stamp before creation preserves
 	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
+	if attempt.ChildWorkflowAccess != "" {
+		pod, err = prepareParentHandoffPod(pod, attempt)
+		if err != nil {
+			return report, err
+		}
+	}
 
 	if err := d.createAttemptPod(ctx, pod, attempt, &report); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
@@ -991,6 +1000,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 
 func (d *Dispatcher) finishAttemptPod(ctx context.Context, attempt Attempt, pod *corev1.Pod, report *Report) error {
 	phase, superviseErr := d.superviseAttempt(ctx, attempt, pod, report)
+	if attempt.ChildWorkflowAccess != "" {
+		phase, superviseErr = d.stopParentHandoffPod(ctx, attempt, pod, report, phase, superviseErr)
+	}
 	report.Phase = phase
 	if superviseErr != nil && ctx.Err() != nil && workerHandoffRequested(ctx) {
 		return ErrWorkerHandoff

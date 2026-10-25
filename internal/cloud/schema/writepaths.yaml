@@ -1666,6 +1666,7 @@ tables:
     - policy_digest
     - expires_at
     - revoked
+    - stopped_handoff
     - owner_epoch
   writers:
   - role: goobers_controller
@@ -1680,6 +1681,7 @@ tables:
     - policy_digest
     - expires_at
     - revoked
+    - stopped_handoff
     - owner_epoch
     update:
     - grant_id
@@ -1688,6 +1690,7 @@ tables:
     - policy_digest
     - expires_at
     - revoked
+    - stopped_handoff
     - owner_epoch
     delete: true
 - schema: control

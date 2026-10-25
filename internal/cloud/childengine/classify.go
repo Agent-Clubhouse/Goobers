@@ -30,7 +30,7 @@ func classify(err error) error {
 		return err
 	case errors.Is(err, cloudlease.ErrStale), errors.Is(err, cloudlease.ErrSelfFenced),
 		errors.Is(err, cloudlease.ErrFencedTransactionTimeout), errors.Is(err, cloudlease.ErrHeld),
-		errors.Is(err, acceptance.ErrStaleChildEpoch), errors.Is(err, objstore.ErrGenerationUnavailable),
+		errors.Is(err, acceptance.ErrStaleChildEpoch), errors.Is(err, acceptance.ErrChildObservationChanged), errors.Is(err, objstore.ErrGenerationUnavailable),
 		pgconn.SafeToRetry(err):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyUnavailable, err)
 	case errors.Is(err, errNotLiveChild), errors.Is(err, errBindingDiffers), errors.Is(err, errResultDiffers), errors.Is(err, errChildAlreadyFinished), errors.Is(err, sql.ErrNoRows),
@@ -40,7 +40,7 @@ func classify(err error) error {
 		// repaired by retrying.
 		errors.Is(err, triggerqueue.ErrConflict), errors.Is(err, triggerqueue.ErrChildResultUnavailable),
 		// The accepted child no longer reproduces from its pinned generation.
-		errors.Is(err, childworkflow.ErrFrozenChildDrift), errors.Is(err, childworkflow.ErrAuthorityUnavailable), errors.Is(err, childworkflow.ErrSubmissionInvalid),
+		errors.Is(err, childworkflow.ErrAuthorityChanged), errors.Is(err, childworkflow.ErrFrozenChildDrift), errors.Is(err, childworkflow.ErrAuthorityUnavailable), errors.Is(err, childworkflow.ErrSubmissionInvalid),
 		errors.Is(err, objstore.ErrGenerationNotFound), errors.Is(err, objstore.ErrGenerationInvalid):
 		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
 	default:

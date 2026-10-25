@@ -67,6 +67,8 @@ export const apiRoutes = {
   "engineChildLoad": { method: "POST", path: "/api/v1/engine/children/load", actionClass: "workflow-execution" },
   "engineChildCancel": { method: "POST", path: "/api/v1/engine/children/cancel", actionClass: "workflow-execution" },
   "engineChildAuthority": { method: "POST", path: "/api/v1/engine/children/authority", actionClass: "workflow-execution" },
+  "engineChildOrigin": { method: "POST", path: "/api/v1/engine/children/origin", actionClass: "workflow-execution" },
+  "engineChildHandoff": { method: "POST", path: "/api/v1/engine/children/authority/handoff", actionClass: "workflow-execution" },
   "engineChildAuthorityRelease": { method: "POST", path: "/api/v1/engine/children/authority/release", actionClass: "workflow-execution" },
   "engineChildPark": { method: "POST", path: "/api/v1/engine/children/park", actionClass: "workflow-execution" },
   "engineChildFinalize": { method: "POST", path: "/api/v1/engine/children/finalize", actionClass: "workflow-execution" },
