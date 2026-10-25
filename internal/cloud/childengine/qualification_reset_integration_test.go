@@ -88,4 +88,5 @@ func qualificationCompleted(t *testing.T, h *qualificationHarness, run client.Wo
 	if result.Status != engine.StatusCompleted || result.Outputs["plan"].Summary != "parent read child receipt through blob plane" {
 		t.Fatalf("parent result: %+v", result)
 	}
+	h.assertProductionChildHandoff(run)
 }

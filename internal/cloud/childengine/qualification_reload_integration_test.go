@@ -107,7 +107,7 @@ func TestChildQualificationConfigReload(t *testing.T) {
 	next := h.input
 	next.RunID = ""
 	next.ChildWorkflowsEnabled = candidate.Config.EngineChildWorkflowsEnabled()
-	next.ConfigGeneration, next.Spec = generation, machine.Def.Spec
+	next.ConfigGeneration, next.Spec, next.Annotations = generation, machine.Def.Spec, machine.Def.Annotations
 	next.WorkflowDigest, next.GooberDigest, _ = parentPins(t, candidate.Config, h.configDir, candidate.Set)
 	record, _, err := h.epoch.store.Accept(h.ctx, "qualification-reloaded-parent", "qualification", []byte(`{"workflow":"default-implement"}`), time.Now())
 	if err != nil {
