@@ -32,11 +32,15 @@ func TestChildQualificationConfigReload(t *testing.T) {
 	h.resolveParentInput = true
 	loaded := h.InstallHTTPBarrier(func(r *http.Request) bool { return r.URL.Path == apicontract.EngineChildLoadPath })
 	run := h.StartParent()
-	if err := loaded.Wait(h.ctx); err != nil {
-		t.Fatal(err)
-	}
 	oldPins, err := h.epoch.store.RunPinsOf(h.ctx, run.GetID())
 	if err != nil {
+		t.Fatal(err)
+	}
+	startedInput := qualificationRunInput(t, h, run)
+	if !startedInput.ChildWorkflowsEnabled {
+		t.Fatal("production resolver did not pin the enabled child-workflow posture")
+	}
+	if err := loaded.Wait(h.ctx); err != nil {
 		t.Fatal(err)
 	}
 	var manifestDigest string
