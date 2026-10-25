@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
@@ -48,7 +49,6 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/providers"
-	enumspb "go.temporal.io/api/enums/v1"
 )
 
 // qualificationHarness runs the production control HTTP planes and engine.Run
