@@ -181,3 +181,40 @@ Before declaring a scenario qualified, read its passing event (including any
 subtests) from the hosted `cloud-pg-test-events` artifact. A compile-only check or
 skipped local test is not qualification evidence. Scenarios 2–9 and the kind
 nightly remain unqualified by this happy-path test.
+
+## Fault scenario boundaries
+
+The retention, worker-loss, and failover scenario files add scenarios 2–4.
+Their qualification still requires the hosted event evidence described above.
+They use the shared stage barriers and outer HTTP response barrier;
+all resumed requests and probes use the production authenticated HTTP planes.
+Timestamp injection uses a separate database setup connection; runtime pools
+keep their controller role and column grants.
+
+- Retention ages only the acceptance and run-pin timestamps past
+  `ReplayRetention` while the committed stage-origin acknowledgement is held,
+  before production dispatch acquires its first grant. Production pruning and pin sweeping consult the real
+  Temporal execution before the worker binds and completes its child.
+- Worker loss kills and joins the worker after a grant binds. As designed in
+  `engine-parent-child-authority.md` §5/§8, the grant remains usable while the
+  parent is running and its TTL has not expired. One case ages only the retained
+  grant expiry, leaving its signed bearer unexpired, to exercise the production
+  database-clock refusal independently of parent liveness.
+- Custody adoption persists the original pod receipt in a Temporal heartbeat
+  before killing the worker. The replacement activity rebinds the same grant
+  and adopts the same pod/attempt; releasing its fixture-owned executor produces
+  a real failed result. The workflow's status gate repasses once, so the next
+  attempt binds a fresh grant and refuses the old one before the bounded repass
+  terminates.
+- The missing-custody case explicitly disables pod custody reporting. Its one
+  real `DispatchStage` heartbeat timeout fails closed as
+  `GoobersChildHandoffUnconfirmed`: no replacement dispatch or `ChildWait` is
+  produced, while the unrevoked, unexpired grant is refused once the parent is
+  terminal. No activity result is injected through Temporal's completion API.
+  Kubernetes remains unqualified.
+- Control failover holds the bind response after the grant row commits and
+  before the worker receives the acknowledgement or submits a child.
+  `FailoverControl` performs voluntary takeover. The successor reconstructs
+  scheduler capacity, adopts custody, serves submission and idempotent replay,
+  and completes the child/parent. Concurrent held scheduler reservations probe
+  the bound of at most one extra admission per parent.
