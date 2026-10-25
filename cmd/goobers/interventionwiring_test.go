@@ -289,6 +289,11 @@ func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *test
 				{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
 				{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
 			}, interventionDeterministic{}, nil)
+			if err := instance.WriteConfig(fixture.layout.ConfigFile(), &instance.Config{
+				RunConditions: instance.RunConditions{ClaimsLockTimeout: "50ms"},
+			}); err != nil {
+				t.Fatal(err)
+			}
 
 			lockPath := filepath.Join(fixture.layout.SchedulerDir(), claimLockFileName)
 			holder, err := lock.TryAcquire(lockPath)
@@ -303,7 +308,8 @@ func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *test
 			input := tc.input
 			input.RunID = runID
 			input.IdempotencyKey = "same-request"
-			admission, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			const requestBudget = 2 * time.Second
+			admission, cancel := context.WithTimeout(context.Background(), requestBudget)
 			defer cancel()
 			started := time.Now()
 			_, err = tc.run(admission, fixture.service, input)
@@ -319,7 +325,7 @@ func TestRunInterventionClaimLockContentionReturnsTypedErrorBeforeBudget(t *test
 			if admission.Err() != nil {
 				t.Fatalf("admission expired before typed response after %s: %v", elapsed, admission.Err())
 			}
-			if elapsed >= 500*time.Millisecond {
+			if elapsed >= requestBudget {
 				t.Fatalf("typed response took %s, want before request budget", elapsed)
 			}
 

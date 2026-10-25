@@ -22,6 +22,7 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -408,8 +409,8 @@ func buildAllMetricsCompatibilityScenario(t *testing.T) metricCompatibilityScena
 		t.Fatal(err)
 	}
 	requests := collector.waitForMetricRequests(t, 1)
-	collector.stop()
 	shutdownCompatibilityClient(t, client)
+	collector.stop()
 
 	return metricCompatibilityScenario{
 		Name:        "all-metrics-temporality-and-terminal-paths",
@@ -454,8 +455,8 @@ func buildForceFlushThenPeriodicScenario(t *testing.T) metricCompatibilityScenar
 
 	requests := collector.waitForMetricRequests(t, 1)
 	requests = collector.waitForMetricRequests(t, len(requests)+1)
-	collector.stop()
 	shutdownCompatibilityClient(t, client)
+	collector.stop()
 
 	return metricCompatibilityScenario{
 		Name:        "force-flush-then-periodic",
@@ -485,8 +486,8 @@ func buildDaemonRestartScenario(t *testing.T) metricCompatibilityScenario {
 		t.Fatal(err)
 	}
 	requests := collector.waitForMetricRequests(t, 1)
-	collector.stop()
 	shutdownCompatibilityClient(t, first)
+	collector.stop()
 	collector.reset()
 	collector.start(t)
 
@@ -506,8 +507,8 @@ func buildDaemonRestartScenario(t *testing.T) metricCompatibilityScenario {
 		t.Fatal(err)
 	}
 	secondRequests := collector.waitForMetricRequests(t, 1)
-	collector.stop()
 	shutdownCompatibilityClient(t, second)
+	collector.stop()
 
 	return metricCompatibilityScenario{
 		Name:        "daemon-restart-new-cumulative-stream",
@@ -560,6 +561,7 @@ func buildCollectorRestartScenario(t *testing.T) metricCompatibilityScenario {
 	if err := client.Flush(flushCtx); err != nil {
 		t.Fatalf("flush with collector down: %v", err)
 	}
+	collector.waitForUnavailableExport(t)
 
 	collector.start(t)
 	if err := client.Flush(context.Background()); err != nil {
@@ -592,8 +594,8 @@ func buildCollectorRestartScenario(t *testing.T) metricCompatibilityScenario {
 			AttrOutcome:  OutcomeSuccess,
 		}, 3) != nil
 	})
-	collector.stop()
 	shutdownCompatibilityClient(t, client)
+	collector.stop()
 
 	selected := []*collectormetrics.ExportMetricsServiceRequest{
 		requestWithCounterValue(recovered, MetricRunOutcomes, map[string]string{
@@ -672,17 +674,22 @@ func newMetricCompatibilityCollectorServer(t *testing.T) *metricCompatibilityCol
 		t.Fatal(err)
 	}
 	server := &metricCompatibilityCollectorServer{
-		t:         t,
-		addr:      listener.Addr().String(),
-		collector: &recordingCompatibilityMetricCollector{notify: make(chan struct{}, 32)},
-		server:    grpc.NewServer(),
-		listener:  listener,
+		t:    t,
+		addr: listener.Addr().String(),
+		collector: &recordingCompatibilityMetricCollector{
+			available:   true,
+			notify:      make(chan struct{}, 32),
+			unavailable: make(chan struct{}, 1),
+		},
+		server:   grpc.NewServer(),
+		listener: listener,
 	}
 	collectormetrics.RegisterMetricsServiceServer(server.server, server.collector)
 	collectortrace.RegisterTraceServiceServer(server.server, traceNoopCollector{})
 	go func() {
 		_ = server.server.Serve(listener)
 	}()
+	t.Cleanup(server.close)
 	return server
 }
 
@@ -692,20 +699,14 @@ func (s *metricCompatibilityCollectorServer) endpoint() string {
 
 func (s *metricCompatibilityCollectorServer) start(t *testing.T) {
 	t.Helper()
-	listener, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.server = grpc.NewServer()
-	collectormetrics.RegisterMetricsServiceServer(s.server, s.collector)
-	collectortrace.RegisterTraceServiceServer(s.server, traceNoopCollector{})
-	s.listener = listener
-	go func() {
-		_ = s.server.Serve(listener)
-	}()
+	s.collector.setAvailable(true)
 }
 
 func (s *metricCompatibilityCollectorServer) stop() {
+	s.collector.setAvailable(false)
+}
+
+func (s *metricCompatibilityCollectorServer) close() {
 	if s.server != nil {
 		s.server.Stop()
 		s.server = nil
@@ -713,6 +714,15 @@ func (s *metricCompatibilityCollectorServer) stop() {
 	if s.listener != nil {
 		_ = s.listener.Close()
 		s.listener = nil
+	}
+}
+
+func (s *metricCompatibilityCollectorServer) waitForUnavailableExport(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.collector.unavailable:
+	case <-time.After(10 * time.Second):
+		t.Fatal("collector did not observe an export while unavailable")
 	}
 }
 
@@ -743,16 +753,27 @@ func (traceNoopCollector) Export(context.Context, *collectortrace.ExportTraceSer
 
 type recordingCompatibilityMetricCollector struct {
 	collectormetrics.UnimplementedMetricsServiceServer
-	mu       sync.Mutex
-	requests []*collectormetrics.ExportMetricsServiceRequest
-	notify   chan struct{}
+	mu          sync.Mutex
+	available   bool
+	requests    []*collectormetrics.ExportMetricsServiceRequest
+	notify      chan struct{}
+	unavailable chan struct{}
 }
 
 func (c *recordingCompatibilityMetricCollector) Export(
-	_ context.Context,
+	ctx context.Context,
 	req *collectormetrics.ExportMetricsServiceRequest,
 ) (*collectormetrics.ExportMetricsServiceResponse, error) {
 	c.mu.Lock()
+	if !c.available {
+		c.mu.Unlock()
+		select {
+		case c.unavailable <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
 	c.requests = append(c.requests, proto.Clone(req).(*collectormetrics.ExportMetricsServiceRequest))
 	c.mu.Unlock()
 	select {
@@ -760,6 +781,12 @@ func (c *recordingCompatibilityMetricCollector) Export(
 	default:
 	}
 	return &collectormetrics.ExportMetricsServiceResponse{}, nil
+}
+
+func (c *recordingCompatibilityMetricCollector) setAvailable(available bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.available = available
 }
 
 func (c *recordingCompatibilityMetricCollector) waitForRequests(t *testing.T, want int) []*collectormetrics.ExportMetricsServiceRequest {
