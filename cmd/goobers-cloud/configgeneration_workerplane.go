@@ -46,6 +46,7 @@ func (w *workerSeams) mergeAuthorityContext(ctx context.Context, env apiv1.Invoc
 }
 
 func wireWorkerJournalAuthority(seams *workerSeams, emitter *livejournal.HTTPEmitter, root string) error {
+	emitter.ChildOriginWorkerID = emitter.TerminalWorkerID
 	if seams == nil {
 		return nil
 	}

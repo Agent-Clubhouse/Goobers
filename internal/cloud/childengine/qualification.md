@@ -11,7 +11,9 @@ not use Temporal's in-memory workflow test environment.
 1. Publish the instance's configuration archive in Azurite with PG metadata.
 2. Accept and start the parent through the real start fence, recording run pins.
 3. Run production `engine.Run` in a separate worker process. Its remote parent placement
-   runs production `Activities.DispatchStage`, which lends the bound grant. The
+   journals its stage origin through the signed worker-host seam (control matches
+   the active Temporal activity and recorded batch), then runs production
+   `Activities.DispatchStage`, which lends the bound grant. The
    scripted container submits a child through the authenticated stage route;
    the production observer reads accepted custody, stops the parent executor,
    and authors `ChildWait`. History assertions require the frozen enable pin,

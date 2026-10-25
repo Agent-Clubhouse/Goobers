@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -144,6 +145,10 @@ func (f Fenced) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
 // controller lease epoch, exactly as Fenced serves admissions, and shares its
 // epoch adoption.
 type FencedAuthority struct {
+	OriginTemporal OriginTemporal
+	OriginJournal  interface {
+		Emit(context.Context, livejournal.EmitRequest) (livejournal.EmitResponse, error)
+	}
 	Fenced Fenced
 	// Journal opens a run's journal read-only from the control-side backend.
 	Journal func(ctx context.Context, runID string) (journal.RunReader, error)

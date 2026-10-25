@@ -189,6 +189,7 @@ func constructEngineChildAuthority(_ context.Context, db databaseServices, auth 
 		return err
 	}
 	authority := childengine.FencedAuthority{Fenced: *p.engineChildren, Grants: auth.GrantKeys,
+		OriginTemporal: db.Temporal, OriginJournal: p.Journal,
 		Journal: func(ctx context.Context, runID string) (journal.RunReader, error) {
 			return backend.OpenRun(ctx, journal.RunRef{ID: runID, ReadOnly: true})
 		},

@@ -312,7 +312,7 @@ func (h *qualificationHarness) startControl() {
 	open := func(ctx context.Context, id string) (journal.RunReader, error) {
 		return e.backend.OpenRunReader(ctx, journal.RunKey{Gaggle: "example", RunID: id})
 	}
-	authority := FencedAuthority{Fenced: fenced, Journal: open, Execution: func(ctx context.Context, id string) (startfence.StartedExecution, error) {
+	authority := FencedAuthority{Fenced: fenced, OriginTemporal: h.temporal.Client(), OriginJournal: e.writer, Journal: open, Execution: func(ctx context.Context, id string) (startfence.StartedExecution, error) {
 		return startfence.DescribeStarted(ctx, h.temporal.Client(), id)
 	}, Grants: auth.GrantKeys}
 	protocol := FencedProtocol{Fenced: fenced, Journal: open, Capacity: &SchedulerCapacity{Slots: e.scheduler}}

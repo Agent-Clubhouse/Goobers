@@ -259,7 +259,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.configDigest != nil
 	case apicontract.RouteEngineChildAdmit, apicontract.RouteEngineChildLoad, apicontract.RouteEngineChildCancel:
 		available = config.engineChildren != nil
-	case apicontract.RouteEngineChildAuthority, apicontract.RouteEngineChildAuthorityRelease:
+	case apicontract.RouteEngineChildOrigin, apicontract.RouteEngineChildHandoff, apicontract.RouteEngineChildAuthority, apicontract.RouteEngineChildAuthorityRelease:
 		available = config.engineChildAuthority != nil
 	case apicontract.RouteEngineChildPark, apicontract.RouteEngineChildFinalize, apicontract.RouteEngineChildComplete:
 		available = config.engineChildProtocol != nil

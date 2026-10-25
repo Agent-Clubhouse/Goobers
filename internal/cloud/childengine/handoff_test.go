@@ -62,7 +62,7 @@ func TestObserveCloudChildHandoffFromAcceptedCustody(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.Close()
+			defer func() { _ = store.Close() }()
 			now := time.Now()
 			bound := authority.Origin.Binding(now.Add(time.Hour))
 			if err := store.BindChildAuthority(t.Context(), bound, "", now); err != nil {

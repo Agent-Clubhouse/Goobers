@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/livejournal"
 )
 
 // Authority serves httpapi.EngineChildAuthority over an
@@ -56,4 +57,18 @@ func (a Authority) Observe(ctx context.Context, decode func(any) error) (any, er
 	}
 	handoff, err := observer.ObserveChildHandoff(ctx, request)
 	return handoff, planeError(err)
+}
+
+// Origin verifies the resident activity before the controller journals its batch.
+func (a Authority) Origin(ctx context.Context, worker string, decode func(any) error) (any, error) {
+	var request livejournal.ChildOriginEmitRequest
+	if err := decode(&request); err != nil {
+		return nil, err
+	}
+	emitter, ok := a.Authorities.(livejournal.ChildOriginEmitter)
+	if !ok {
+		return nil, planeError(engine.ErrChildCustodyUnavailable)
+	}
+	response, err := emitter.EmitChildOrigin(ctx, worker, request)
+	return response, planeError(err)
 }

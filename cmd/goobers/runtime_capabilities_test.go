@@ -108,7 +108,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// The engine child-admission plane (#7879): a resident engine worker
 		// advancing a run's generated-child custody. POSTs carrying receipts.
 		"engineChildAdmit": true, "engineChildLoad": true, "engineChildCancel": true,
-		"engineChildHandoff": true, "engineChildAuthority": true, "engineChildAuthorityRelease": true,
+		"engineChildOrigin": true, "engineChildHandoff": true, "engineChildAuthority": true, "engineChildAuthorityRelease": true,
 		"engineChildPark": true, "engineChildFinalize": true, "engineChildComplete": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.

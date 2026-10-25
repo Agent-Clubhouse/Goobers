@@ -219,6 +219,7 @@ const (
 	// grant at stage dispatch and to revoke it when the stage activity ends.
 	EngineChildAuthorityPath        = V1Prefix + "/engine/children/authority"
 	EngineChildHandoffPath          = V1Prefix + "/engine/children/authority/handoff"
+	EngineChildOriginPath           = V1Prefix + "/engine/children/origin"
 	EngineChildAuthorityReleasePath = V1Prefix + "/engine/children/authority/release"
 	// EngineChildParkPath, EngineChildFinalizePath and EngineChildCompletePath
 	// are the rest of the engine child protocol (#8085 d): parking a parent on
@@ -408,6 +409,7 @@ const (
 	// and release an engine parent stage's child-workflow grant.
 	RouteEngineChildAuthority        RouteID = "engineChildAuthority"
 	RouteEngineChildHandoff          RouteID = "engineChildHandoff"
+	RouteEngineChildOrigin           RouteID = "engineChildOrigin"
 	RouteEngineChildAuthorityRelease RouteID = "engineChildAuthorityRelease"
 	// RouteEngineChildPark, RouteEngineChildFinalize and RouteEngineChildComplete
 	// park a parent on its child, seal the child's result, and resume the parent.
@@ -707,6 +709,7 @@ var v1Routes = []Route{
 	{ID: RouteEngineChildLoad, Method: http.MethodPost, Path: EngineChildLoadPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildCancel, Method: http.MethodPost, Path: EngineChildCancelPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildAuthority, Method: http.MethodPost, Path: EngineChildAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteEngineChildOrigin, Method: http.MethodPost, Path: EngineChildOriginPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildHandoff, Method: http.MethodPost, Path: EngineChildHandoffPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildAuthorityRelease, Method: http.MethodPost, Path: EngineChildAuthorityReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEngineChildPark, Method: http.MethodPost, Path: EngineChildParkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},

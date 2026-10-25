@@ -123,10 +123,10 @@ func TestChildQualificationWorkerProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	stages := qualificationStages{cfg: cfg, key: key, surrenders: surrenders}
-	w := worker.New(c, cfg.Queue, worker.Options{WorkerStopTimeout: time.Second, MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval, Interceptors: []interceptor.WorkerInterceptor{&qualificationDispatchFaults{initialLoss: cfg.Script["parent-start"].HeartbeatLoss}}})
+	w := worker.New(c, cfg.Queue, worker.Options{Identity: "qualification-worker", WorkerStopTimeout: time.Second, MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval, Interceptors: []interceptor.WorkerInterceptor{&qualificationDispatchFaults{initialLoss: cfg.Script["parent-start"].HeartbeatLoss}}})
 	engine.RegisterWith(w, &engine.Activities{EngineChildren: childadmissionclient.ForWorker(cfg.Endpoint, "qualification-worker", key),
 		ChildAuthority: authority, Dispatcher: stages, Surrenders: surrenders,
-		Journal: &livejournal.HTTPEmitter{BaseURL: cfg.Endpoint, Minter: key}})
+		Journal: &livejournal.HTTPEmitter{ChildOriginWorkerID: "qualification-worker", BaseURL: cfg.Endpoint, Minter: key}})
 	// The parent uses the registered production DispatchStage activity. Only
 	// its container executor and surrender storage are scripted. Generated
 	// deterministic child execution retains its existing fixture boundary.
