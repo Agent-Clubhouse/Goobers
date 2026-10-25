@@ -49,7 +49,7 @@ The v1 residual risks are accepted for v0.6.0:
 |---|---|---|
 | R1 | A worker with the shared key can mint a child grant. | Control refuses every grant that has no matching bound authority row. |
 | R2 | Failover can over-admit by at most one child per parent. | Durable parent capacity and custody prevent unbounded admission. |
-| R3 | Retired child receipts are retained for 30 days. | Further revision growth is refused with `ErrChildDispositionHistoryFull`. |
+| R3 | A child's sealed result is retained only for 30 days after its parent settles. | Re-reading an older continuation fails with the named `ErrResultRetired`, never a generic error. |
 | R4 | The child bearer is present in the pod environment. | It is attempt-scoped, scrubbed from journals, and bounded by its grant. |
 | R5 | A compromised worker can keep an attempt alive. | Grant TTL and the bound Temporal execution's `RUNNING` check bound the window. |
 | R6 | Strict policy freeze can produce spurious drift refusals. | Drift fails closed; it cannot authorize an unsafe child. |
@@ -57,7 +57,8 @@ The v1 residual risks are accepted for v0.6.0:
 
 After pod custody is established, a pod error on a child-capable stage ends the
 run with `childHandoffFailure` rather than retrying the stage. This availability
-tradeoff prevents ambiguous custody from dispatching the child twice.
+tradeoff prevents re-dispatching the parent stage after a child may already
+have been admitted.
 
 ## Local-to-cloud command map
 
