@@ -276,7 +276,8 @@ func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelo
 		}
 		return engine.DispatchStageResult{}, err
 	}
-	return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "qualification child result"}}, nil
+	// Terminal receipt capture reads the journaled output, as the local runner does.
+	return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "qualification child result", Outputs: map[string]any{"summary": "qualification child result"}}}, nil
 }
 
 // Match engine.heartbeatDispatch: immediately, then every second, continuing
