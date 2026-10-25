@@ -121,9 +121,10 @@ func childParentRunnerSide(t *testing.T, runID string) ([]journal.Event, []apiv1
 func childParentEngineSide(t *testing.T, runID string) ([]journal.Event, []apiv1.InvocationEnvelope, error) {
 	t.Helper()
 	f := newChildFixture()
-	env, dir := childEnvironment(t, f)
+	env, dir := childEnvironmentWithEntry(t, f, Run)
 	in := runInput("child-parent", childOriginParitySpec())
 	in.RunID, in.DSLVersion, in.LiveJournal, in.RepoRef = runID, "3.1", true, parityRepoRef
+	in.ChildWorkflowsEnabled = true
 	env.ExecuteWorkflow("Run", in)
 	return liveEvents(t, dir, runID), f.envelopes, env.GetWorkflowError()
 }

@@ -108,7 +108,7 @@ func (f EngineFreezer) Freeze(ctx context.Context, request journal.ChildHandoffR
 	preview := true
 	input := engine.RunInput{
 		InstanceID: pinned.Execution.InstanceID, RunID: child.RunID, Gaggle: e.Gaggle,
-		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, WorkflowDigest: proposal.Machine.Digest(), Spec: def.Spec,
+		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Annotations: def.Annotations, WorkflowDigest: proposal.Machine.Digest(), Spec: def.Spec,
 		// task.childWorkflows is itself preview-gated: a parent that may
 		// request children already carries the acknowledgement its child needs.
 		PreviewFeaturesEnabled: &preview, LiveJournal: true,

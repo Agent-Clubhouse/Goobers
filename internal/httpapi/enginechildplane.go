@@ -43,6 +43,8 @@ type EngineChildPlane interface {
 type EngineChildAuthority interface {
 	Acquire(ctx context.Context, decode func(any) error) (any, error)
 	Release(ctx context.Context, decode func(any) error) error
+	Observe(ctx context.Context, decode func(any) error) (any, error)
+	Origin(ctx context.Context, worker string, decode func(any) error) (any, error)
 }
 
 // EngineChildProtocol is the rest of the engine child protocol behind the
@@ -92,8 +94,8 @@ func WithEngineChildAdmissions(plane EngineChildPlane) HandlerOption {
 }
 
 func engineChildPlanePath(path string) bool {
-	return path == apicontract.EngineChildAdmitPath || path == apicontract.EngineChildLoadPath || path == apicontract.EngineChildCancelPath ||
-		path == apicontract.EngineChildAuthorityPath || path == apicontract.EngineChildAuthorityReleasePath ||
+	return path == apicontract.EngineChildOriginPath || path == apicontract.EngineChildAdmitPath || path == apicontract.EngineChildLoadPath || path == apicontract.EngineChildCancelPath ||
+		path == apicontract.EngineChildHandoffPath || path == apicontract.EngineChildAuthorityPath || path == apicontract.EngineChildAuthorityReleasePath ||
 		path == apicontract.EngineChildParkPath || path == apicontract.EngineChildFinalizePath || path == apicontract.EngineChildCompletePath
 }
 
@@ -181,9 +183,13 @@ func registerEngineChildPlaneRoutes(router *Router, config handlerConfig, errorL
 		func(w http.ResponseWriter, _ any) { w.WriteHeader(http.StatusNoContent) }))
 	authority := config.engineChildAuthority
 	granted := authority != nil
+	registerEngineChildOrigin(router, authority, errorLog)
 	router.Handle(apicontract.RouteEngineChildAuthority, handleEngineChild(granted, errorLog, "acquire engine child authority",
 		func(ctx context.Context, decode func(any) error) (any, error) { return authority.Acquire(ctx, decode) },
 		func(w http.ResponseWriter, grant any) { writeJSON(w, http.StatusOK, grant) }))
+	router.Handle(apicontract.RouteEngineChildHandoff, handleEngineChild(granted, errorLog, "observe engine child handoff",
+		func(ctx context.Context, decode func(any) error) (any, error) { return authority.Observe(ctx, decode) },
+		func(w http.ResponseWriter, request any) { writeJSON(w, http.StatusOK, request) }))
 	router.Handle(apicontract.RouteEngineChildAuthorityRelease, handleEngineChild(granted, errorLog, "release engine child authority",
 		func(ctx context.Context, decode func(any) error) (any, error) {
 			return nil, authority.Release(ctx, decode)

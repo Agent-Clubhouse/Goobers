@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -144,6 +145,10 @@ func (f Fenced) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
 // controller lease epoch, exactly as Fenced serves admissions, and shares its
 // epoch adoption.
 type FencedAuthority struct {
+	OriginTemporal OriginTemporal
+	OriginJournal  interface {
+		Emit(context.Context, livejournal.EmitRequest) (livejournal.EmitResponse, error)
+	}
 	Fenced Fenced
 	// Journal opens a run's journal read-only from the control-side backend.
 	Journal func(ctx context.Context, runID string) (journal.RunReader, error)
@@ -266,4 +271,13 @@ func (p FencedProtocol) Complete(ctx context.Context, in engine.ChildCompletionI
 		return apiv1.ContextPointer{}, err
 	}
 	return service.Complete(ctx, in)
+}
+
+// ObserveChildHandoff reads accepted custody under the current controller lease.
+func (a FencedAuthority) ObserveChildHandoff(ctx context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	authorities, err := a.authorities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return authorities.ObserveChildHandoff(ctx, request)
 }

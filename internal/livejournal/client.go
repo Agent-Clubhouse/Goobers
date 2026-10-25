@@ -34,6 +34,9 @@ import (
 // redelivery safe — a retried or replayed batch can only be a no-op on the
 // server side.
 type HTTPEmitter struct {
+	// ChildOriginWorkerID enables only the activity-bound child-origin seam.
+	// It must equal the resident worker identity configured in Temporal.
+	ChildOriginWorkerID string
 	// TerminalWorkerID enables the resident worker's dedicated terminal seam.
 	// Stage pod emitters leave this unset and cannot mint its credential.
 	TerminalWorkerID string
@@ -83,6 +86,9 @@ type errorEnvelope struct {
 
 // Emit posts one batch.
 func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error) {
+	if e.ChildOriginWorkerID != "" && req.HasChildStageStart() {
+		return e.emitChildOrigin(ctx, req)
+	}
 	base := strings.TrimRight(e.BaseURL, "/")
 	if base == "" {
 		return EmitResponse{}, errors.New("livejournal: HTTP emitter has no base URL")

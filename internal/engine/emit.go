@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -51,6 +52,10 @@ func (a *Activities) EmitJournal(ctx context.Context, req livejournal.EmitReques
 	if a.Journal == nil {
 		return livejournal.EmitResponse{}, classifySeamError(invoke.InfrastructureFailure(
 			fmt.Errorf("run %s requires live journaling but this worker wires no journal emitter: %w", req.RunID, ErrNotConfigured)))
+	}
+	if req.HasChildStageStart() && activity.IsActivity(ctx) {
+		info := activity.GetInfo(ctx)
+		ctx = livejournal.WithChildOriginActivity(ctx, livejournal.ChildOriginActivity{WorkflowRunID: info.WorkflowExecution.RunID, ActivityID: info.ActivityID, Attempt: info.Attempt})
 	}
 	resp, err := a.Journal.Emit(ctx, req)
 	if err != nil {

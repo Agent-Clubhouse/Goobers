@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -113,6 +114,13 @@ func (c *Client) AcquireChildAuthority(ctx context.Context, request engine.Child
 	var grant engine.ChildAuthorityGrant
 	if err := c.call(ctx, apicontract.EngineChildAuthorityPath, request, http.StatusOK, maxGrantReply, &grant); err != nil {
 		return engine.ChildAuthorityGrant{}, err
+	}
+	if grant.StoppedHandoff != nil {
+		h := grant.StoppedHandoff
+		if grant.GrantID == "" || h.Validate(&request.Origin) != nil || h.ParentRunID != request.RunID || h.RequestID != engine.ChildHandoffDigest(*h) {
+			return engine.ChildAuthorityGrant{}, engine.ErrChildCustodyRefused
+		}
+		return grant, nil
 	}
 	if _, err := grant.Access(request.RunID); err != nil || grant.GrantID == "" {
 		return engine.ChildAuthorityGrant{}, errors.Join(errors.New("childadmissionclient: control returned an invalid child-workflow grant"), err)
@@ -223,4 +231,14 @@ func statusClass(status int) error {
 	default:
 		return nil
 	}
+}
+
+// ObserveChildHandoff reads control-owned acceptance, never pod output.
+func (c *Client) ObserveChildHandoff(ctx context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	if err := request.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	var out *journal.ChildHandoffRequest
+	err := c.call(ctx, apicontract.EngineChildHandoffPath, request, http.StatusOK, maxReceiptBytes, &out)
+	return out, err
 }

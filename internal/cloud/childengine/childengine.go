@@ -141,6 +141,10 @@ func (s *Service) Admit(ctx context.Context, in engine.ChildAdmissionInput) (_ e
 	if err != nil {
 		return engine.ChildRunBinding{}, fmt.Errorf("childengine: freeze accepted child: %w", err)
 	}
+	// The workflow worker supplies its parent's pinned posture as part of
+	// the admission command. Keep it in immutable, digest-bound custody; an
+	// applied generation or a later load must never decide this permission.
+	manifest.Input.ChildWorkflowsEnabled = in.ChildWorkflowsEnabled
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		return engine.ChildRunBinding{}, err

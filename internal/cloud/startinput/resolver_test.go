@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // generationVariant lets two generation digests carry different content.
@@ -141,6 +142,32 @@ func TestResolveBuildsThePinnedRunInput(t *testing.T) {
 		t.Fatalf("acquires = %d, want 1", f.src.acquires)
 	}
 	f.balanced(t, "success")
+}
+
+func TestResolvePreservesDefinitionAnnotations(t *testing.T) {
+	f := newFixture(t)
+	f.src.variants["annotated"] = func(set *instance.ConfigSet) {
+		for i := range set.Workflows {
+			if set.Workflows[i].Name == "implementation" {
+				if set.Workflows[i].Annotations == nil {
+					set.Workflows[i].Annotations = map[string]string{}
+				}
+				set.Workflows[i].Annotations["example.com/policy"] = "pinned"
+			}
+		}
+	}
+	in, err := f.resolver.Resolve(t.Context(), f.record(t, "annotated", "implementation", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Annotations["example.com/policy"] != "pinned" {
+		t.Fatal("start lost definition annotations")
+	}
+	digest, err := workflow.ComputeDigest(workflow.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Annotations: in.Annotations, Spec: in.Spec})
+	if err != nil || digest != in.WorkflowDigest {
+		t.Fatalf("resolved definition digest %s != pin %s: %v", digest, in.WorkflowDigest, err)
+	}
+	f.balanced(t, "annotated start")
 }
 
 // TestResolveMapsEverySourceToLocalProvenance covers each source kind with the

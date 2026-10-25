@@ -8,6 +8,7 @@ import (
 
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // BlobPlaneProbeInterval paces re-probing while unverified: each acquire
@@ -110,4 +111,13 @@ func (p *ProbedAuthority) AcquireChildAuthority(ctx context.Context, request eng
 // ReleaseChildAuthority always releases through Inner.
 func (p *ProbedAuthority) ReleaseChildAuthority(ctx context.Context, release engine.ChildAuthorityRelease) error {
 	return p.Inner.ReleaseChildAuthority(ctx, release)
+}
+
+// ObserveChildHandoff uses the same authority that passed the blob probe.
+func (p *ProbedAuthority) ObserveChildHandoff(ctx context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	observer, ok := p.Inner.(engine.ChildHandoffObserver)
+	if !ok {
+		return nil, engine.ErrChildCustodyUnavailable
+	}
+	return observer.ObserveChildHandoff(ctx, request)
 }

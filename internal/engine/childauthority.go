@@ -6,6 +6,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
 )
 
@@ -22,12 +23,14 @@ type ChildAuthorityRequest struct {
 }
 
 // ChildAuthorityGrant is one bound grant, delivered only to the stage pod's
-// child-workflow tool. BearerToken is a secret.
+// child-workflow tool. BearerToken is a secret. A sealed StoppedHandoff instead
+// tells the worker to recover a completed handoff without dispatching a pod.
 type ChildAuthorityGrant struct {
-	Endpoint    string    `json:"endpoint"`
-	BearerToken string    `json:"bearerToken"`
-	GrantID     string    `json:"grantId"`
-	ExpiresAt   time.Time `json:"expiresAt"`
+	Endpoint       string                       `json:"endpoint"`
+	BearerToken    string                       `json:"bearerToken"`
+	GrantID        string                       `json:"grantId"`
+	ExpiresAt      time.Time                    `json:"expiresAt"`
+	StoppedHandoff *journal.ChildHandoffRequest `json:"stoppedHandoff,omitempty"`
 }
 
 // String redacts the grant from incidental formatted diagnostics.

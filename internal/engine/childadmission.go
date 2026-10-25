@@ -134,6 +134,11 @@ func (r *runJournal) childAdmissionPlanFor(ctx workflow.Context, in RunInput, t 
 		Request: request, ParentWorkflow: in.WorkflowName, Stage: t.Name, OriginSeq: receipt.Seq,
 		ParentWorkflowID: info.WorkflowExecution.ID, ParentTemporalRunID: info.WorkflowExecution.RunID,
 	}}
+	// Preserve old admission command payloads on replay. New admissions carry
+	// the parent's pinned permission into immutable child custody.
+	if workflow.GetVersion(ctx, "engine-child-admission-posture-v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		plan.Input.ChildWorkflowsEnabled = in.ChildWorkflowsEnabled
+	}
 	return plan, plan.validate(in)
 }
 
@@ -187,6 +192,9 @@ func cancelChild(ctx workflow.Context, binding ChildRunBinding, cause error) err
 func (r *runJournal) dispatchWithChildAdmission(ctx workflow.Context, in RunInput, t apiv1.Task, step childStep, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error)) (stageActivityResult, error) {
 	attempt, class := step.Attempt, step.Class
 	result, err := dispatch(ctx, attempt, class)
+	if isChildHandoffFailure(err) {
+		return stageActivityResult{}, childWaitError{err}
+	}
 	if result.ChildWait == nil {
 		result.Integrity = r.childResultIntegrity(t.Name, result.Integrity)
 		return result, err

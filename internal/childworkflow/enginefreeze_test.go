@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,8 +39,12 @@ func engineAdmission() AdmissionContext {
 
 func newFreezeFixture(t *testing.T) freezeFixture {
 	t.Helper()
+	return newFreezeFixtureWithSource(t, []byte(validProposal))
+}
+
+func newFreezeFixtureWithSource(t *testing.T, source []byte) freezeFixture {
+	t.Helper()
 	admission := engineAdmission()
-	source := []byte(validProposal)
 	proposal, err := validator(t, admission).Validate(source)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +152,21 @@ func TestFrozenBytesMatchTheAdmittedDigestThroughTheEngine(t *testing.T) {
 	tampered := append(append([]byte(nil), data...), ' ')
 	if _, err := (&engine.Activities{EngineChildren: manifestStore{tampered}}).LoadEngineChild(t.Context(), binding); err == nil {
 		t.Fatal("engine accepted bytes that differ from the admitted digest")
+	}
+}
+
+func TestFrozenChildPreservesDefinitionAnnotations(t *testing.T) {
+	source := strings.Replace(validProposal, "  name: generated-check", "  name: generated-check\n  annotations:\n    example.com/policy: pinned", 1)
+	fixture := newFreezeFixtureWithSource(t, []byte(source))
+	data, manifest := fixture.freeze(t)
+	if manifest.Input.Annotations["example.com/policy"] != "pinned" {
+		t.Fatal("frozen input lost annotations")
+	}
+	binding := engine.ChildRunBinding{Request: fixture.request, Child: fixture.child, ManifestDigest: journal.Digest(data), ParentWorkflow: "parent",
+		ParentWorkflowID: "parent-wf", ParentTemporalRunID: "parent-trun", Deadline: fixture.child.AcceptedAt.Add(time.Hour)}
+	loaded, err := (&engine.Activities{EngineChildren: manifestStore{data}}).LoadEngineChild(t.Context(), binding)
+	if err != nil || !reflect.DeepEqual(loaded, manifest.Input) {
+		t.Fatalf("annotated frozen input failed digest validation: %+v, %v", loaded, err)
 	}
 }
 

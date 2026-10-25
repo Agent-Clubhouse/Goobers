@@ -1,9 +1,8 @@
 package engine
 
 // Generated-child wire contracts (HA-P4-08). The protocol that uses them is
-// reachable only through an internal entry point that sets
-// childProtocolContextKey; production Run and RegisterWith keep refusing
-// task.childWorkflows until the qualification item lifts the refusal.
+// reachable for parents with a pinned opt-in and their admitted children.
+// The instance config-load refusal remains until qualification is complete.
 
 import (
 	"context"
@@ -76,11 +75,15 @@ type ChildRunBinding struct {
 // ChildAdmissionInput is built from the committed origin and owning execution.
 // Request is a dispatch adapter's verified handoff; the service rechecks authority.
 type ChildAdmissionInput struct {
-	Request             journal.ChildHandoffRequest `json:"request"`
-	ParentWorkflowID    string                      `json:"parentWorkflowId"`
-	ParentWorkflow      string                      `json:"parentWorkflow"`
-	ParentTemporalRunID string                      `json:"parentTemporalRunId"`
-	Stage               string                      `json:"stage"`
+	// ChildWorkflowsEnabled is copied from the parent's immutable RunInput,
+	// never from current configuration. Admission freezes it into the child's
+	// digest-addressed manifest before binding the start.
+	ChildWorkflowsEnabled bool                        `json:"childWorkflowsEnabled,omitempty"`
+	Request               journal.ChildHandoffRequest `json:"request"`
+	ParentWorkflowID      string                      `json:"parentWorkflowId"`
+	ParentWorkflow        string                      `json:"parentWorkflow"`
+	ParentTemporalRunID   string                      `json:"parentTemporalRunId"`
+	Stage                 string                      `json:"stage"`
 	// OriginSeq is the committed journal sequence of the bound stage start.
 	OriginSeq uint64 `json:"originSeq"`
 }
@@ -158,7 +161,7 @@ func decodeFrozenChildManifest(b ChildRunBinding, data []byte) (RunInput, error)
 	if err := refuseGeneratedChildShape(child); err != nil {
 		return RunInput{}, err
 	}
-	digest, err := wf.ComputeDigest(wf.Definition{Name: child.WorkflowName, Version: child.Version, DSLVersion: child.DSLVersion, Spec: child.Spec})
+	digest, err := wf.ComputeDigest(child.definition())
 	if err != nil || digest != child.WorkflowDigest {
 		return RunInput{}, errors.New("engine: frozen workflow digest mismatch")
 	}

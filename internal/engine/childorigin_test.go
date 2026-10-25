@@ -19,6 +19,7 @@ func TestChildOriginAgenticDispatchCopy(t *testing.T) {
 	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 	putSurrendered(t, store, "parent", "work", 2, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}})
 	input := dispatchInput("parent", "work", 2)
+	input.ChildWorkflowsEnabled = true
 	input.Envelope.Goober = "coder"
 	input.Envelope.ChildWorkflowOrigin = &apiv1.ChildWorkflowOrigin{StageOccurrence: journal.StageAttemptID("parent", 1, "work", 2), AttemptID: journal.StageAttemptID("parent", 1, "work", 7)}
 	authority := &fakeChildAuthority{grant: ChildAuthorityGrant{Endpoint: "https://control.example", BearerToken: "goobers-child.signed", GrantID: "grant-1"}}

@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/enginechildplane"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -24,6 +25,8 @@ import (
 type recordingAuthority struct {
 	acquired []engine.ChildAuthorityRequest
 	released []engine.ChildAuthorityRelease
+	observed []engine.ChildHandoffObservation
+	handoff  *journal.ChildHandoffRequest
 	grant    engine.ChildAuthorityGrant
 	fail     error
 }
@@ -148,6 +151,9 @@ func TestAuthorityRefusesEveryOtherCredential(t *testing.T) {
 			if err == nil {
 				t.Fatal("authority route admitted a foreign credential")
 			}
+			if _, err := client.ObserveChildHandoff(t.Context(), engine.ChildHandoffObservation{ChildAuthorityRelease: engine.ChildAuthorityRelease{RunID: authorityRun, Origin: authorityRequest().Origin, GrantID: "grant-1"}}); err == nil {
+				t.Fatal("handoff route admitted a foreign credential")
+			}
 			// The grant authenticates here; the authorizer must be what refuses it.
 			if name == "child-workflow grant" && !strings.Contains(err.Error(), "status 403") {
 				t.Fatalf("child-workflow grant refused by %v, want the authorizer's 403", err)
@@ -235,5 +241,41 @@ func TestAuthorityForWorkerFillsThePodEndpointAndRegistersTheBearer(t *testing.T
 		if client != nil {
 			t.Fatalf("%s: AuthorityForWorker returned a client", name)
 		}
+	}
+}
+
+func (r *recordingAuthority) ObserveChildHandoff(_ context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	r.observed = append(r.observed, request)
+	return r.handoff, r.fail
+}
+
+func TestHandoffRoundTripsOnlyThroughWorkerPlane(t *testing.T) {
+	backend := &recordingAuthority{handoff: &journal.ChildHandoffRequest{ParentRunID: authorityRun, Origin: authorityRequest().Origin}}
+	signer, url := authorityServer(t, backend)
+	client := workerClient(signer, url)
+	request := engine.ChildHandoffObservation{ChildAuthorityRelease: engine.ChildAuthorityRelease{RunID: authorityRun, Origin: authorityRequest().Origin, GrantID: "bound-grant"}, Finish: true}
+	got, err := client.ObserveChildHandoff(t.Context(), request)
+	if err != nil || got == nil || *got != *backend.handoff || len(backend.observed) != 1 || backend.observed[0] != request {
+		t.Fatalf("handoff=%+v error=%v requests=%+v", got, err, backend.observed)
+	}
+	backend.handoff = nil
+	if got, err := client.ObserveChildHandoff(t.Context(), request); err != nil || got != nil {
+		t.Fatalf("no acceptance=%+v error=%v", got, err)
+	}
+}
+
+func TestAuthorityRecoversStoppedHandoffWithoutABearer(t *testing.T) {
+	h := journal.ChildHandoffRequest{Gaggle: "example", ParentRunID: authorityRun, Origin: authorityRequest().Origin, Action: "wait", ChildRunID: "fedcba9876543210fedcba9876543210", AcceptanceID: "trigger-fedcba9876543210fedcba9876543210", InvocationKey: "first", SourceDigest: journal.Digest([]byte("source"))}
+	h.RequestID = engine.ChildHandoffDigest(h)
+	backend := &recordingAuthority{grant: engine.ChildAuthorityGrant{GrantID: "bound", StoppedHandoff: &h}}
+	signer, url := authorityServer(t, backend)
+	client := workerClient(signer, url)
+	got, err := client.AcquireChildAuthority(t.Context(), authorityRequest())
+	if err != nil || got.StoppedHandoff == nil || *got.StoppedHandoff != h || got.BearerToken != "" || len(client.Secrets.(*registry).secrets) != 0 {
+		t.Fatalf("recovery=%+v %v", got.StoppedHandoff, err)
+	}
+	h.Origin.AttemptID = "forged-attempt"
+	if _, err := client.AcquireChildAuthority(t.Context(), authorityRequest()); !errors.Is(err, engine.ErrChildCustodyRefused) {
+		t.Fatalf("forged recovery accepted: %v", err)
 	}
 }
