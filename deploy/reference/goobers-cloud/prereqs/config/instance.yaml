@@ -4,6 +4,10 @@ apiVersion: goobers.dev/v1alpha1
 kind: Instance
 schemaVersion: 2
 repos: []
+# Sanitized worker configuration keeps this path; workers mount the same Secret
+# as control and explicitly load its ring, rather than treating JSON as raw bytes.
+api:
+  podTokenKeyRingFile: /var/run/secrets/goobers/pod-key/keyring.json
 placement:
   selfExecution: deny
 engine:
