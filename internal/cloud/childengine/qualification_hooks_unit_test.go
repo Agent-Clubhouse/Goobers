@@ -137,7 +137,8 @@ func TestQualificationInstanceReloadReadsEditedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := h.reloadInstanceConfig(false)
-	if before.SelfIdentity == after.SelfIdentity || after.SelfIdentity != "qualification-reloaded" || !before.Engine.ChildWorkflows.Enabled || after.Engine.ChildWorkflows.Enabled {
+	if before.SelfIdentity == after.SelfIdentity || after.SelfIdentity != "qualification-reloaded" ||
+		!before.EngineChildWorkflowsEnabled() || after.EngineChildWorkflowsEnabled() {
 		t.Fatal("reload did not read edited instance policy and explicit test posture independently of old config")
 	}
 }

@@ -46,6 +46,25 @@ func permanent(format string, args ...any) error {
 // the acceptance pinned. The start is refused; it is never re-pinned.
 var ErrPinDrift = fmt.Errorf("%w: cloud start: retained generation differs from the pinned digests", acceptance.ErrPermanentStart)
 
+// ErrChildWorkflowsDisabled refuses, before any stage, a workflow that declares
+// task.childWorkflows while the instance has engine.childWorkflows.enabled set
+// to false (the rollback).
+var ErrChildWorkflowsDisabled = errors.New("task.childWorkflows is disabled on this instance (engine.childWorkflows.enabled: false)")
+
+// refuseDisabledChildren permanently refuses a definition declaring children
+// when the instance posture disables them; it is a no-op when enabled.
+func refuseDisabledChildren(enabled bool, spec apiv1.WorkflowSpec) error {
+	if enabled {
+		return nil
+	}
+	for _, task := range spec.Tasks {
+		if task.ChildWorkflows != nil {
+			return fmt.Errorf("%w: task %q: %w", acceptance.ErrPermanentStart, task.Name, ErrChildWorkflowsDisabled)
+		}
+	}
+	return nil
+}
+
 // Resolver builds RunInputs for accepted starts.
 type Resolver struct {
 	// Generations retains a generation by digest (the object-store source).
@@ -157,6 +176,13 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 	if err := engineadmission.RefusePlacedDefinition(def.Name, def.Spec, placements); err != nil {
 		return engine.RunInput{}, fmt.Errorf("%w: %w", acceptance.ErrPermanentStart, err)
 	}
+	// The generated-child posture is pinned into the run here, at start. With
+	// the rollback (engine.childWorkflows.enabled: false) a workflow declaring
+	// children is refused before any stage rather than failing mid-run.
+	childrenEnabled := cfg.EngineChildWorkflowsEnabled()
+	if err := refuseDisabledChildren(childrenEnabled, def.Spec); err != nil {
+		return engine.RunInput{}, err
+	}
 	controls, err := runControls(cfg, project, gaggle, def)
 	if err != nil {
 		return engine.RunInput{}, err
@@ -173,6 +199,7 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 		Annotations:            def.Annotations,
 		WorkflowDigest:         machine.Digest(),
 		PreviewFeaturesEnabled: &preview,
+		ChildWorkflowsEnabled:  childrenEnabled,
 		Spec:                   def.Spec,
 		RepoRef:                project,
 		TriggerKind:            kind,

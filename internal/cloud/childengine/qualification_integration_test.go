@@ -175,10 +175,8 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The production config-load refusal remains intact. Only this instance's
-	// in-memory configuration and started RunInput opt into qualification.
-	enabled := true
-	cfg.Engine = &instance.EngineConfig{ChildWorkflows: &instance.EngineChildWorkflowsConfig{Enabled: enabled}}
+	// Qualification starts from the production default-on posture.
+	previewEnabled := true
 	set := loadSet(t, h.configDir)
 	selected := childworkflow.ParentSelection{Gaggle: "example", Workflow: "default-implement", Stage: "plan"}
 	_, machine, err := childworkflow.StageCatalog(cfg, set, selected, childworkflow.BackendEngine, childworkflow.OfflineGooberAdmission)
@@ -196,7 +194,7 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	h.applied.candidate = cloudconfig.Candidate{Digest: digest, Config: cfg, Set: set}
 	h.input = engine.RunInput{InstanceID: testInstance, Gaggle: "example", WorkflowName: machine.Def.Name, Version: machine.Def.Version,
 		DSLVersion: machine.Def.DSLVersion, Annotations: machine.Def.Annotations, Spec: machine.Def.Spec, WorkflowDigest: workflowDigest, GooberDigest: gooberDigest, ConfigGeneration: digest,
-		RepoRef: gaggleProject(t, set, "example"), BranchNamespace: providers.NormalizeBranchNamespace(""), LiveJournal: true, PreviewFeaturesEnabled: &enabled, ChildWorkflowsEnabled: true, Placements: []engine.PinnedPlacement{{Stage: "plan", Queue: h.queue, Eligible: []dispatcher.RunnerSpec{{Name: "qualification", HostKind: "image", Host: "qualification:qualification", OS: "linux"}}}}}
+		RepoRef: gaggleProject(t, set, "example"), BranchNamespace: providers.NormalizeBranchNamespace(""), LiveJournal: true, PreviewFeaturesEnabled: &previewEnabled, ChildWorkflowsEnabled: cfg.EngineChildWorkflowsEnabled(), Placements: []engine.PinnedPlacement{{Stage: "plan", Queue: h.queue, Eligible: []dispatcher.RunnerSpec{{Name: "qualification", HostKind: "image", Host: "qualification:qualification", OS: "linux"}}}}}
 	h.keyFile = filepath.Join(t.TempDir(), "keyring.json")
 	raw, err := json.Marshal(map[string]podauth.SigningKey{"current": {ID: "qualification", Key: []byte("qualification-key-material-32bytes")}})
 	if err != nil {
@@ -379,7 +377,7 @@ func (h *qualificationHarness) stopControl() {
 	}
 }
 
-// StartParent uses the real acceptance/start fence and pins the opt-in input.
+// StartParent uses the real acceptance/start fence and pins the instance posture.
 // Start the worker only after confirmation so it cannot outrun its start pins.
 func (h *qualificationHarness) StartParent() client.WorkflowRun {
 	h.KillWorker()
@@ -513,11 +511,11 @@ func (h *qualificationHarness) openRuns(ctx context.Context) ([]schedstart.OpenR
 
 // ReloadConfig captures a new retained generation after edit changes the test
 // config tree. Applied readers switch atomically; already-started inputs and
-// retained generations stay unchanged. The test-only instance opt-in stays on.
+// retained generations stay unchanged. The current instance posture is kept.
 func (h *qualificationHarness) ReloadConfig(edit func(string)) string {
 	edit(h.configDir)
 	current, _ := h.applied.Applied()
-	return h.reloadConfig(current.Config.Engine.ChildWorkflows.Enabled)
+	return h.reloadConfig(current.Config.EngineChildWorkflowsEnabled())
 }
 
 func (h *qualificationHarness) reloadConfig(enabled bool) string {
@@ -537,8 +535,8 @@ func (h *qualificationHarness) reloadConfig(enabled bool) string {
 }
 
 // ReloadInstanceConfig reloads instance.yaml through production validation and
-// also captures the definition tree. enabled is the explicit test-instance
-// opt-in, applied only after validation while the production refusal remains.
+// also captures the definition tree. enabled is the requested test-instance
+// posture and can explicitly exercise rollback.
 func (h *qualificationHarness) ReloadInstanceConfig(edit func(string), enabled bool) string {
 	edit(h.configFile)
 	return h.reloadConfig(enabled)
@@ -552,7 +550,7 @@ func (h *qualificationHarness) reloadInstanceConfig(enabled bool) *instance.Conf
 	if cfg.Engine == nil {
 		cfg.Engine = &instance.EngineConfig{}
 	}
-	cfg.Engine.ChildWorkflows = &instance.EngineChildWorkflowsConfig{Enabled: enabled}
+	cfg.Engine.ChildWorkflows = &instance.EngineChildWorkflowsConfig{Enabled: &enabled}
 	return cfg
 }
 

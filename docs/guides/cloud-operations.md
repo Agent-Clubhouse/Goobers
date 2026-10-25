@@ -25,6 +25,41 @@ alpha binaries are refused by the compatibility check and remain unready.
 Do not restart alpha pods against the upgraded database. Rolling back requires
 stopping the new pods and restoring the pre-upgrade backup first.
 
+## Engine child workflows
+
+Engine child workflows are enabled by default in v0.6.0 stable. The v1 protocol
+supports waiting for a generated child and discarding its workspace result; it
+does not support merging or replacing the parent workspace.
+
+To stop admitting children for new runs, set the instance configuration
+explicitly and apply it:
+
+```yaml
+engine:
+  childWorkflows:
+    enabled: false
+```
+
+The posture is pinned when each run starts. Changing the setting does not alter
+in-flight runs; retain child-capable workers until those runs settle.
+
+The v1 residual risks are accepted for v0.6.0:
+
+| ID | Residual risk | Bound |
+|---|---|---|
+| R1 | A worker with the shared key can mint a child grant. | Control refuses every grant that has no matching bound authority row. |
+| R2 | Failover can over-admit by at most one child per parent. | Durable parent capacity and custody prevent unbounded admission. |
+| R3 | A child's sealed result is retained only for 30 days after its parent settles. | Re-reading an older continuation fails with the named `ErrResultRetired`, never a generic error. |
+| R4 | The child bearer is present in the pod environment. | It is attempt-scoped, scrubbed from journals, and bounded by its grant. |
+| R5 | A compromised worker can keep an attempt alive. | Grant TTL and the bound Temporal execution's `RUNNING` check bound the window. |
+| R6 | Strict policy freeze can produce spurious drift refusals. | Drift fails closed; it cannot authorize an unsafe child. |
+| R7 | Merge and replace are unavailable. | v1 supports wait/discard only. |
+
+After pod custody is established, a pod error on a child-capable stage ends the
+run with `childHandoffFailure` rather than retrying the stage. This availability
+tradeoff prevents re-dispatching the parent stage after a child may already
+have been admitted.
+
 ## Local-to-cloud command map
 
 Workflow-stage and connector commands are intentionally absent: cloud workers

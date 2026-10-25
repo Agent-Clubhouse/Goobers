@@ -20,25 +20,14 @@ stage pod, not in worker memory.
 The nightly composes `deploy/reference/goobers-cloud/workers`, the cloud base,
 and the reference gaggle namespace. It registers a separate `kind-child`
 Temporal namespace to avoid changing the earlier worker scenarios' version
-routing. The instance explicitly sets `engine.childWorkflows.enabled=true`.
+routing. The instance omits `engine.childWorkflows`, exercising the default-on
+posture shipped by v0.6.0.
 Workers and stages trust the generated public control CA; they never receive
 the private TLS key or database/object-store credentials.
 
-## Pending enablement
-
-The explicit `pending #8085` marker in `fixture.go` gates deployment and
-execution. It requires **both** the production cloud-worker parent handoff
-adapter and the instance config refusal/default flip. Closing #8085 while the
-marker remains makes the nightly fail. The gate writes both scenarios as
-skipped, with the issue reference, in `child-chaos-summary.json`; these are not
-qualification passes. The old CHAOS-13-CHILD placeholder has moved from the
-earlier generic chaos registry to this post-cloud-rollout workflow step.
-
-After both dependencies land, remove the marker's pending value and these
-pending notes in the default-flip PR. Do not remove the instance opt-in or the
-runtime assertions. Run `ha-nightly.yml` on the proposed head and inspect the
-uploaded `CHILD-HAPPY.json`, `CHAOS-13-CHILD.json`, and summary before claiming
-qualification. This branch intentionally has no local kind evidence.
+The nightly runs this qualification after cloud rollout. Inspect the uploaded
+`CHILD-HAPPY.json`, `CHAOS-13-CHILD.json`, and `child-chaos-summary.json`
+artifacts before claiming qualification.
 
 ## Static validation
 

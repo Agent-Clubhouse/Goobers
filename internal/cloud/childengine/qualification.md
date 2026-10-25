@@ -55,10 +55,10 @@ The shared wrapper clamps writes to a predecessor's later evaluation cursor
 when a successor's clock is behind. Startup and takeover reconcile those durable snapshots;
 slot-limit reloads never fall back to file scheduler state.
 
-The production config-load refusal and default remain unchanged. The harness
-loads a normal fixture config and enables children only on its in-memory instance
-config and the parent's pinned `RunInput`. Retained generation contents still pass
-normal validation. No process-wide switch or production bypass is installed. The parent's permission
+Production enables child workflows by default. The harness loads a normal
+fixture config and pins that production posture into the parent's `RunInput`.
+Retained generation contents pass normal validation. No process-wide switch or
+production bypass is installed. The parent's permission
 travels in the versioned admission command and is frozen into the child manifest.
 Production `Run` verifies the child's Temporal lineage and loads this digest-bound
 permission before executing. Neither the current config nor an unverified child
@@ -130,12 +130,11 @@ Add a `qualification_<scenario>_integration_test.go` in package `childengine`:
 - `ResetParent(run, workflowTaskCompletedEventID)` issues the Temporal reset RPC.
 - `ReloadConfig(edit)` edits the fixture definition directory, reloads both the
   definition set **and instance.yaml**, records the archive, and atomically
-  changes the applied candidate. It preserves the test-instance opt-in.
+  changes the applied candidate. It preserves the test-instance posture.
   `ReloadInstanceConfig(edit, enabled)` passes the instance.yaml filename to
-  `edit` and sets the explicit test-instance opt-in after production validation;
-  use `false` to test rollback. Both reloads retain old inputs/archives and read
-  real files; neither runs the directory watcher. Do not write `enabled: true`
-  into instance.yaml while the production config-load refusal remains.
+  `edit` and pins the requested posture after production validation; use
+  `false` to test rollback. Both reloads retain old inputs/archives and read real
+  files; neither runs the directory watcher.
 - `SetSlotLimit(n)` reloads scheduler capacity without changing run inputs.
 
 The fields expose the real backend/client for assertions and narrowly scoped

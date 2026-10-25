@@ -19,8 +19,8 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) != 2 || (os.Args[1] != "gate" && os.Args[1] != "run") {
-		return fmt.Errorf("usage: child-nightly gate|run")
+	if len(os.Args) != 1 {
+		return fmt.Errorf("usage: child-nightly")
 	}
 	evidence := os.Getenv("HA_EVIDENCE_DIR")
 	if evidence == "" {
@@ -28,42 +28,9 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	if os.Args[1] == "run" {
-		if child.Pending != "" {
-			return fmt.Errorf("child qualification is %s: requires production handoff adapter and config enablement", child.Pending)
-		}
-		address := os.Getenv("CHILD_TEMPORAL_ADDRESS")
-		if address == "" {
-			return fmt.Errorf("CHILD_TEMPORAL_ADDRESS is required")
-		}
-		return child.Run(ctx, chaos.OSExecutor{}, address, evidence)
+	address := os.Getenv("CHILD_TEMPORAL_ADDRESS")
+	if address == "" {
+		return fmt.Errorf("CHILD_TEMPORAL_ADDRESS is required")
 	}
-	ready := child.Pending == ""
-	if !ready {
-		ref, ok := chaos.PendingNumber(child.Pending)
-		if !ok {
-			return fmt.Errorf("invalid child pending marker %q", child.Pending)
-		}
-		if err := chaos.VerifyPendingOpen(ctx, chaos.OSExecutor{}, []string{ref}); err != nil {
-			return err
-		}
-		if err := child.WritePending(evidence); err != nil {
-			return err
-		}
-		fmt.Printf("::notice title=Child qualification pending::%s: requires production handoff adapter and instance config enablement; CHILD-HAPPY and CHAOS-13-CHILD remain unqualified\n", child.Pending)
-	}
-	output := os.Getenv("GITHUB_OUTPUT")
-	if output == "" {
-		return fmt.Errorf("GITHUB_OUTPUT is required")
-	}
-	file, err := os.OpenFile(output, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(file, "ready=%t\n", ready)
-	closeErr := file.Close()
-	if err != nil {
-		return err
-	}
-	return closeErr
+	return child.Run(ctx, chaos.OSExecutor{}, address, evidence)
 }

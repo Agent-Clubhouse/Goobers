@@ -26,11 +26,6 @@ import (
 	"github.com/goobers/goobers/test/ha/childscenarios"
 )
 
-// Pending must be removed only after BOTH the production cloud-worker parent
-// handoff adapter and instance child-workflow enablement ship. A config flip
-// alone cannot produce the trusted ChildWait needed to launch a child.
-var Pending = "pending #8085"
-
 const happyPath = "CHILD-HAPPY"
 
 type lineage struct {
@@ -99,19 +94,6 @@ func Run(ctx context.Context, exec chaos.Executor, address, evidence string) err
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
-}
-
-// WritePending records both scenarios as explicitly unqualified. The nightly
-// command also verifies that the cited enablement issue is still open.
-func WritePending(evidence string) error {
-	if Pending == "" {
-		return errors.New("enabled child qualification cannot write a pending result")
-	}
-	var results []chaos.Result
-	for _, id := range []string{happyPath, childscenarios.Chaos13Child} {
-		results = append(results, chaos.Result{ID: id, Status: chaos.Skipped, Reason: Pending, Duration: "0s"})
-	}
-	return writeJSON(filepath.Join(evidence, "child-chaos-summary.json"), chaos.Summary{Results: results})
 }
 
 func writeJSON(path string, value any) error {

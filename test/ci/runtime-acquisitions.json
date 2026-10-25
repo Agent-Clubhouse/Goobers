@@ -77,7 +77,6 @@
       ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Detect goobers-cloud control assembly[2]:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Render Temporal HA values:go-modules",
-      ".github/workflows/ha-nightly.yml#smoke/Check engine child qualification gate:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Run engine child happy path and worker failover:go-modules",
       ".github/workflows/ha-nightly.yml#smoke/Validate engine child fixture and overlays:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",

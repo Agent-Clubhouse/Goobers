@@ -1563,18 +1563,17 @@ type EngineConfig struct {
 	// authoritative build ID and promotes a version only after its pollers are
 	// healthy.
 	WorkerVersioning bool `json:"workerVersioning,omitempty" yaml:"workerVersioning,omitempty"`
-	// ChildWorkflows opts this instance's engine-driven runs into generated
-	// child workflows (#8085 d). OFF by default: an engine run whose workflow
-	// declares task.childWorkflows is refused before any stage, exactly as
-	// before. The posture is pinned into each run at start, so turning it on
-	// or off affects new runs only.
+	// ChildWorkflows controls generated child workflows for engine-driven runs
+	// (#8085 d). They are enabled by default; setting enabled=false is the
+	// rollback. The posture is pinned into each run at start, so changing it
+	// affects new runs only.
 	ChildWorkflows *EngineChildWorkflowsConfig `json:"childWorkflows,omitempty" yaml:"childWorkflows,omitempty"`
 }
 
 // EngineChildWorkflowsConfig is the instance's posture on generated child
 // workflows for engine-driven runs.
 type EngineChildWorkflowsConfig struct {
-	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // EngineHITLConfig is the instance's posture on holding an engine-driven run's
@@ -2364,14 +2363,14 @@ func (c *Config) EngineHITLEnabled() bool {
 	return hitl != nil && hitl.Enabled
 }
 
-// EngineChildWorkflowsEnabled reports whether this instance opted its
-// engine-driven runs into generated child workflows (#8085 d).
+// EngineChildWorkflowsEnabled reports the generated-child posture pinned into
+// new engine-driven runs (#8085 d).
 func (c *Config) EngineChildWorkflowsEnabled() bool {
 	if c == nil {
 		return false
 	}
 	children := c.EffectiveEngineConfig().ChildWorkflows
-	return children != nil && children.Enabled
+	return children == nil || children.Enabled == nil || *children.Enabled
 }
 
 // EngineProjectionEnabled reports whether instance YAML or a host/address

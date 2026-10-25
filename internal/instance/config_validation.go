@@ -1,7 +1,6 @@
 package instance
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -69,28 +68,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.validateEgress,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },
 		c.validateSandbox,
-		c.validateEngineChildWorkflows,
 	)
-}
-
-// EngineChildWorkflowsBlockers names what still prevents enabling generated
-// child workflows on the engine (#8085 d). The engineering is done: control
-// serves the whole child protocol, the parent capacity plane is composed per
-// epoch, and the stage blob plane serves control's object store. What remains
-// is the product owner's enablement decision.
-//
-// The config refusal and cloud readiness both report it, so they cannot drift.
-const EngineChildWorkflowsBlockers = "enablement awaits a product decision (#8085)"
-
-// ErrEngineChildWorkflowsIncomplete refuses opting an instance into generated
-// child workflows until the child protocol can run safely end to end.
-var ErrEngineChildWorkflowsIncomplete = errors.New("engine.childWorkflows.enabled: child workflows are not enabled yet: " + EngineChildWorkflowsBlockers)
-
-func (c *Config) validateEngineChildWorkflows() error {
-	if c.EngineChildWorkflowsEnabled() {
-		return ErrEngineChildWorkflowsIncomplete
-	}
-	return nil
 }
 
 func (c *WorkcopiesConfig) validate() error {

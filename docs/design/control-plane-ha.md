@@ -752,7 +752,7 @@ One database per instance (`goobers_<instance>`) on a shared server, with schema
 | `runs/<id>/events.jsonl`, `state.json`, `run.yaml` | `journal.run`, `journal.run_seq`, `journal.run_checkpoint`, `journal.run_event`, `journal.run_artifact` | `body bytea` = exact scrubbed line; JSONB only as a non-authoritative generated column |
 | `scheduler/events.jsonl[.gen-N]` | `journal.instance_event` (monthly partitions) + `journal.instance_seq` | consumers re-key from byte offset to `(stream, seq)` (rollup ingest cursor `telemetry/rollup/schema.go:406-410`, export catch-up `journalcatchup_store.go:20-27`); local keeps offsets behind the same interface |
 | `health/events.jsonl` | `journal.health_event` | |
-| `claims.json` + history | `control.claim`, `control.claim_history` (30-day purge) | owner token + epoch + DB-clock expiry (sharedclaim-shaped); merge lock = a renewed claim row that fails closed |
+| `claims.json` + history | `control.claim`, `control.claim_run_history` (30-day purge) | owner token + epoch + DB-clock expiry (sharedclaim-shaped); merge lock = a renewed claim row that fails closed |
 | scheduler-state keys, M5 files, watermarks | `control.scheduler_state(scope, key, value, etag, owner_epoch)` | same transaction domain as claims via `pg_advisory_xact_lock('claims:'||instance)` (PgBouncer-safe; preserves today's coarse serialization) |
 | `accepted-triggers.db` (acceptances, source receipts, schedule cursor, demand, child custody) | `control.acceptance` (`id = trigger-<runid>`, `owner_epoch` on `dispatching`), `control.source_receipt`, `control.source_cursor`, `control.schedule_demand`, child custody tables | the cursor CAS + source receipt is the double-fire invariant |
 | `cancellation-receipts.db` | `control.cancel_receipt` | |
