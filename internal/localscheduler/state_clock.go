@@ -15,6 +15,7 @@ import "time"
 // one host with one clock, so it has no such regression to tolerate.
 type SkewTolerantState struct{ SchedulerState }
 
+// WriteTriggerEvaluations clamps each evaluation to its last persisted value.
 func (s SkewTolerantState) WriteTriggerEvaluations(dir string, evaluations map[WorkflowIdentity]time.Time) error {
 	stored, err := s.ReadTriggerEvaluations(dir)
 	if err != nil {
