@@ -43,7 +43,7 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		adoption := h.InstallHTTPBarrier(qualificationAuthorityRequest)
 		h.SetStageScript(qualificationStageScript{"parent-start": {Result: &apiv1.ResultEnvelope{
 			Status: apiv1.ResultFailure,
-			Error:  &apiv1.ErrorInfo{Code: "replacement_attempt_failed", Message: "replacement attempt failed"}}}})
+			Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "replacement attempt failed"}}}})
 		h.StartWorker()
 		if err := adoption.Wait(h.ctx); err != nil {
 			t.Fatal(err)
