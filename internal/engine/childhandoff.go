@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"go.temporal.io/sdk/workflow"
 
@@ -10,11 +11,15 @@ import (
 )
 
 // ChildHandoffObservation names only authority lent to the worker. Finish
-// revokes it before the final read, closing acceptance versus invocation exit.
+// atomically revokes it with the final custody check, closing acceptance
+// versus invocation exit.
 // Neither child identity nor source is accepted from the stage.
 type ChildHandoffObservation struct {
 	ChildAuthorityRelease
 	Finish bool `json:"finish,omitempty"`
+	// Stopped is worker-observed proof, never stage output. Control seals the
+	// accepted handoff atomically with revocation only when this is true.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 // ChildHandoffObserver reads accepted custody over the worker-only plane.

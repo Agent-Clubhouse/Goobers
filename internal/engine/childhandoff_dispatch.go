@@ -34,6 +34,9 @@ func (a *Activities) dispatchWithChildHandoff(ctx context.Context, attempt dispa
 		report, err := a.dispatchOrAdopt(ctx, attempt, input)
 		return report, nil, err
 	}
+	if authority.recovered != nil {
+		return checkedChildHandoff(input, childDispatchOutcome{report: dispatcher.Report{ParentWritersStopped: true}}, authority.recovered)
+	}
 	observer, ok := a.ChildAuthority.(ChildHandoffObserver)
 	if !ok {
 		return dispatcher.Report{}, nil, childHandoffFailure(ErrNotConfigured)
@@ -59,7 +62,8 @@ func (a *Activities) dispatchWithChildHandoff(ctx context.Context, attempt dispa
 			final, closeFinal := context.WithTimeout(context.WithoutCancel(ctx), childAuthorityRelease)
 			request := authority.observation
 			request.Finish = true
-			handoff, err := observer.ObserveChildHandoff(final, request)
+			request.Stopped = output.report.ParentWritersStopped
+			handoff, err := observeFinalChildHandoff(final, observer, request)
 			closeFinal()
 			if err != nil {
 				return output.report, nil, childHandoffFailure(err)
@@ -89,7 +93,8 @@ func (a *Activities) dispatchWithChildHandoff(ctx context.Context, attempt dispa
 			final, closeFinal := context.WithTimeout(context.WithoutCancel(ctx), childAuthorityRelease)
 			request := authority.observation
 			request.Finish = true
-			confirmed, confirmErr := observer.ObserveChildHandoff(final, request)
+			request.Stopped = output.report.ParentWritersStopped
+			confirmed, confirmErr := observeFinalChildHandoff(final, observer, request)
 			closeFinal()
 			if confirmErr != nil || confirmed == nil || *confirmed != *handoff {
 				return output.report, nil, childHandoffFailure(errors.Join(errors.New("child acceptance changed during stop"), confirmErr))
@@ -111,4 +116,20 @@ func checkedChildHandoff(input DispatchStageInput, output childDispatchOutcome, 
 
 func childHandoffSettled(handoff *journal.ChildHandoffRequest, err error) bool {
 	return handoff != nil || isChildHandoffFailure(err)
+}
+
+// A changed snapshot or controller takeover can be retried while the stopped
+// pod remains in custody. Exhausting this bound refuses; it never redispatches.
+func observeFinalChildHandoff(ctx context.Context, observer ChildHandoffObserver, request ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	for {
+		handoff, err := observer.ObserveChildHandoff(ctx, request)
+		if !errors.Is(err, ErrChildCustodyUnavailable) {
+			return handoff, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errors.Join(err, ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

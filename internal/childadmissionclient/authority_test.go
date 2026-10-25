@@ -263,3 +263,19 @@ func TestHandoffRoundTripsOnlyThroughWorkerPlane(t *testing.T) {
 		t.Fatalf("no acceptance=%+v error=%v", got, err)
 	}
 }
+
+func TestAuthorityRecoversStoppedHandoffWithoutABearer(t *testing.T) {
+	h := journal.ChildHandoffRequest{Gaggle: "example", ParentRunID: authorityRun, Origin: authorityRequest().Origin, Action: "wait", ChildRunID: "fedcba9876543210fedcba9876543210", AcceptanceID: "trigger-fedcba9876543210fedcba9876543210", InvocationKey: "first", SourceDigest: journal.Digest([]byte("source"))}
+	h.RequestID = engine.ChildHandoffDigest(h)
+	backend := &recordingAuthority{grant: engine.ChildAuthorityGrant{GrantID: "bound", StoppedHandoff: &h}}
+	signer, url := authorityServer(t, backend)
+	client := workerClient(signer, url)
+	got, err := client.AcquireChildAuthority(t.Context(), authorityRequest())
+	if err != nil || got.StoppedHandoff == nil || *got.StoppedHandoff != h || got.BearerToken != "" || len(client.Secrets.(*registry).secrets) != 0 {
+		t.Fatalf("recovery=%+v %v", got.StoppedHandoff, err)
+	}
+	h.Origin.AttemptID = "forged-attempt"
+	if _, err := client.AcquireChildAuthority(t.Context(), authorityRequest()); !errors.Is(err, engine.ErrChildCustodyRefused) {
+		t.Fatalf("forged recovery accepted: %v", err)
+	}
+}

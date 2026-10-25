@@ -9,9 +9,12 @@ import (
 )
 
 func TestParentHandoffRequiresExactStoppedWriters(t *testing.T) {
-	for _, scenario := range []string{"stopped", "replaced", "phase-only", "name-only-api"} {
+	for _, scenario := range []string{"stopped", "replaced", "phase-only", "running", "waiting", "name-only-api"} {
 		t.Run(scenario, func(t *testing.T) {
 			pods := &childPodFake{changeUID: scenario == "replaced", missingStatus: scenario == "phase-only"}
+			if scenario == "running" || scenario == "waiting" {
+				pods.liveState = scenario
+			}
 			var api PodAPI = pods
 			if scenario == "name-only-api" {
 				api = &pods.fakePodAPI

@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // childAuthorityRelease bounds the worker's release of a stage attempt's
@@ -26,6 +27,7 @@ const childAuthorityRelease = 30 * time.Second
 // stage or a stage without a committed child origin. Adoption recovers the
 // same grant so a replacement worker also observes accepted requests.
 type childStageAuthority struct {
+	recovered   *journal.ChildHandoffRequest
 	release     func(error)
 	observation ChildHandoffObservation
 }
@@ -43,17 +45,23 @@ func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStag
 	}
 	runID := input.Envelope.RunID
 	grant, err := a.ChildAuthority.AcquireChildAuthority(ctx, ChildAuthorityRequest{RunID: runID, Origin: *origin})
+	if err != nil && input.Custody != nil {
+		return nil, childHandoffFailure(err)
+	}
 	if errors.Is(err, ErrChildCustodyUnavailable) {
 		// The control plane, not the stage, failed: retry as infrastructure
 		// so the attempt never charges the run's stage budget for it.
 		return nil, temporal.NewApplicationErrorWithCause(err.Error(), FailureTypeInfrastructure, err)
 	}
 	if err != nil {
-		return nil, classifyChildCustody(ctx, err)
+		return nil, childHandoffFailure(err)
+	}
+	if grant.StoppedHandoff != nil {
+		return &childStageAuthority{recovered: grant.StoppedHandoff}, nil
 	}
 	access, err := grant.Access(runID)
 	if err != nil {
-		return nil, temporal.NewNonRetryableApplicationError("engine: control returned an invalid child-workflow grant", childCustodyRefusedType, err)
+		return nil, childHandoffFailure(err)
 	}
 	encoded, err := json.Marshal(access)
 	if err != nil {
@@ -102,7 +110,7 @@ func releasesChildAuthority(outcome error) bool {
 }
 
 func (a *childStageAuthority) finish(outcome error) {
-	if a != nil {
+	if a != nil && a.release != nil {
 		a.release(outcome)
 	}
 }

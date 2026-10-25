@@ -18,6 +18,7 @@ type handoffTestQueue struct {
 	*triggerqueue.Store
 	pins    acceptance.RunPins
 	corrupt bool
+	receipt []byte
 }
 
 func (q handoffTestQueue) RunPinsOf(context.Context, string) (acceptance.RunPins, error) {
@@ -84,13 +85,14 @@ func TestObserveCloudChildHandoffFromAcceptedCustody(t *testing.T) {
 				request.Origin.AttemptID = "forged-attempt"
 			case "untrusted-receipt":
 				queue.corrupt = true
-			case "revoked", "final-read":
+			case "revoked":
 				if err := store.RevokeChildAuthority(t.Context(), bound); err != nil {
 					t.Fatal(err)
 				}
-				request.Finish = scenario == "final-read"
+			case "final-read":
+				request.Finish, request.Stopped = true, true
 			}
-			owner := Authorities{Queue: queue, Parents: f.authority()}
+			owner := Authorities{Queue: &queue, Parents: f.authority()}
 			got, err := owner.ObserveChildHandoff(t.Context(), request)
 			switch scenario {
 			case "no-child":
@@ -118,4 +120,26 @@ func TestObserveCloudChildHandoffFromAcceptedCustody(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (q *handoffTestQueue) RecoverChildHandoff(context.Context, triggerqueue.ChildAuthority) ([]byte, error) {
+	return q.receipt, nil
+}
+func (q *handoffTestQueue) ConfirmChildHandoff(ctx context.Context, grant triggerqueue.ChildAuthority, _ *triggerqueue.ChildRecord, receipt []byte, finish, stopped bool) error {
+	if len(q.receipt) != 0 {
+		return nil
+	}
+	if err := q.CheckChildAuthority(ctx, grant, time.Now()); err != nil {
+		return err
+	}
+	if !finish {
+		return nil
+	}
+	if err := q.RevokeChildAuthority(ctx, grant); err != nil {
+		return err
+	}
+	if stopped {
+		q.receipt = receipt
+	}
+	return nil
 }
