@@ -231,12 +231,27 @@ func TestClaim0022KeepsPredecessorHistoryReaderAndWriter(t *testing.T) {
 //go:embed testdata/claim_history_writepaths.yaml
 var retiredClaimHistoryInventory []byte
 
-// writePathsBefore0039 restores the retired table's grants for tests of earlier
-// expand migrations. Production's current inventory intentionally omits it.
+// writePathsBefore0039 matches the catalog through 0038: restore the table
+// retired by 0039 and omit the stopped-handoff column introduced by 0040.
+// Production keeps the current inventory unchanged.
 func writePathsBefore0039() (cloudschema.Inventory, error) {
 	inventory, err := cloudschema.LoadWritePaths()
 	if err != nil {
 		return inventory, err
+	}
+	for i := range inventory.Tables {
+		table := &inventory.Tables[i]
+		if table.Schema != "control" || table.Name != "child_authority" {
+			continue
+		}
+		post0038 := func(column string) bool { return column == "stopped_handoff" }
+		for j := range table.Readers {
+			table.Readers[j].Columns = slices.DeleteFunc(slices.Clone(table.Readers[j].Columns), post0038)
+		}
+		for j := range table.Writers {
+			table.Writers[j].Insert = slices.DeleteFunc(slices.Clone(table.Writers[j].Insert), post0038)
+			table.Writers[j].Update = slices.DeleteFunc(slices.Clone(table.Writers[j].Update), post0038)
+		}
 	}
 	var retired cloudschema.Inventory
 	if err := yaml.Unmarshal(retiredClaimHistoryInventory, &retired); err != nil {
@@ -244,4 +259,43 @@ func writePathsBefore0039() (cloudschema.Inventory, error) {
 	}
 	inventory.Tables = append(inventory.Tables, retired.Tables...)
 	return inventory, inventory.Validate()
+}
+
+// Historical fixtures must not ask PostgreSQL to grant columns whose
+// migrations were deliberately excluded from their catalog.
+func TestHistoricalClaimInventoriesExcludeStoppedHandoff(t *testing.T) {
+	for name, load := range map[string]func() (cloudschema.Inventory, error){
+		"before0022": writePathsBefore0022,
+		"before0035": writePathsBefore0035,
+		"before0039": writePathsBefore0039,
+		"current":    cloudschema.LoadWritePaths,
+	} {
+		t.Run(name, func(t *testing.T) {
+			inventory, err := load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var read, insert, update, retired bool
+			for _, table := range inventory.Tables {
+				if table.Schema != "control" {
+					continue
+				}
+				retired = retired || table.Name == "claim_history"
+				if table.Name != "child_authority" {
+					continue
+				}
+				for _, reader := range table.Readers {
+					read = read || slices.Contains(reader.Columns, "stopped_handoff")
+				}
+				for _, writer := range table.Writers {
+					insert = insert || slices.Contains(writer.Insert, "stopped_handoff")
+					update = update || slices.Contains(writer.Update, "stopped_handoff")
+				}
+			}
+			current := name == "current"
+			if read != current || insert != current || update != current || retired == current {
+				t.Fatalf("inventory boundary: stopped_handoff select=%v insert=%v update=%v retired_table=%v", read, insert, update, retired)
+			}
+		})
+	}
 }
