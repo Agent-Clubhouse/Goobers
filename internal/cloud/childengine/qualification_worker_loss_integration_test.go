@@ -28,8 +28,7 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		barrier := h.StageBarrier("live-grant")
 		h.SetStageScript(qualificationStageScript{"parent-granted": {
 			Barrier: "live-grant",
-			Result: &apiv1.ResultEnvelope{Status: apiv1.ResultFailure,
-				Error: &apiv1.ErrorInfo{Code: "original_attempt_failed", Message: "original retained executor failed", Retryable: true}},
+			Error:   "original retained executor failed",
 		}})
 		run := h.StartParent()
 		if err := barrier.Wait(h.ctx); err != nil {
@@ -97,22 +96,27 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 			t.Fatalf("parent terminal failure: %+v (%v)", result, err)
 		}
 		starts := qualificationStageStarts(h)
-		finished := map[int]string{}
-		finishedCount := 0
+		var executorErrors, stageFailures int
+		runFailed := 0
 		var retryClass journal.AttemptClass
 		for _, event := range qualificationEvents(h) {
-			if event.Type == journal.EventStageFinished {
-				finishedCount++
-				finished[event.Attempt] = event.Status
+			if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
+				executorErrors++
+			}
+			if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) {
+				stageFailures++
 			}
 			if event.Type == journal.EventStageStarted && event.Attempt == 2 {
 				retryClass = event.AttemptClass
 			}
+			if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseFailed) {
+				runFailed++
+			}
 		}
 		if len(starts) != 2 || !starts[oldGrant.AttemptID] || !starts[newGrant.AttemptID] ||
-			finishedCount != 2 || finished[1] != string(apiv1.ResultFailure) ||
-			finished[2] != string(apiv1.ResultFailure) || retryClass != journal.AttemptInfra {
-			t.Fatalf("attempt journal: starts=%v finished=%v count=%d retryClass=%q", starts, finished, finishedCount, retryClass)
+			executorErrors != 1 || stageFailures != 1 || retryClass != journal.AttemptInfra || runFailed != 1 {
+			t.Fatalf("attempt journal: starts=%v executorErrors=%d stageFailures=%d retryClass=%q runFailed=%d",
+				starts, executorErrors, stageFailures, retryClass, runFailed)
 		}
 		qualificationNoChildWait(h)
 		qualificationNoChildren(h)
@@ -173,10 +177,17 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		if starts := qualificationStageStarts(h); len(starts) != 1 || !starts[grant.AttemptID] {
 			t.Fatalf("missing custody journaled a fresh attempt: %v", starts)
 		}
+		var stageFinished, runFailed int
 		for _, event := range qualificationEvents(h) {
-			if event.Type == journal.EventStageFinished || event.Type == journal.EventRunFinished {
-				t.Fatalf("fail-closed worker loss journaled a terminal result: %+v", event)
+			if event.Type == journal.EventStageFinished {
+				stageFinished++
 			}
+			if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseFailed) {
+				runFailed++
+			}
+		}
+		if stageFinished != 0 || runFailed != 1 {
+			t.Fatalf("fail-closed journal: stage.finished=%d run.finished failed=%d", stageFinished, runFailed)
 		}
 		var retained bool
 		if err := h.pool.QueryRow(h.ctx, `SELECT NOT revoked AND expires_at>clock_timestamp()

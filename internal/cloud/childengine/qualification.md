@@ -204,7 +204,7 @@ keep their controller role and column grants.
 - Custody adoption persists the original pod receipt in a Temporal heartbeat
   before killing the worker. The replacement activity rebinds the same grant
   and adopts the same pod/attempt; releasing its fixture-owned executor produces
-  a real failed result, after which the workflow's second attempt binds a fresh
+  a real executor failure, after which the workflow's second attempt binds a fresh
   grant and refuses the old one.
 - The missing-custody case explicitly disables pod custody reporting. Its one
   real `DispatchStage` heartbeat timeout fails closed as
