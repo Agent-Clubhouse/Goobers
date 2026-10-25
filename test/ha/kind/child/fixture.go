@@ -310,7 +310,7 @@ func (f *fixture) childExecution(ctx context.Context) (*commonpb.WorkflowExecuti
 		return nil, err
 	}
 	if input.RunID != f.lineage.ChildRunID || input.FrozenChild == nil {
-		return nil, errors.New("Temporal child does not match retained lineage")
+		return nil, errors.New("temporal child does not match retained lineage")
 	}
 	return execution, nil
 }
