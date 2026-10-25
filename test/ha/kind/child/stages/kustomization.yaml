@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gaggle-reference
+resources:
+  - ../../../../../deploy/reference/gaggle-namespace/base
+  - networkpolicy.yaml
+patches:
+  - target: {kind: Namespace}
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: gaggle-reference
+      - op: replace
+        path: /metadata/labels/goobers.dev~1gaggle
+        value: reference
+  - target: {kind: RoleBinding, name: goobers-dispatcher}
+    patch: |-
+      - op: replace
+        path: /subjects/0/namespace
+        value: goobers-cloud

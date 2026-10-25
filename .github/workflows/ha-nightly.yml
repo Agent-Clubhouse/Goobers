@@ -356,6 +356,78 @@ jobs:
           kubectl -n goobers-cloud wait --for=condition=Ready pod -l app.kubernetes.io/name=goobers-control --timeout=2m
           kubectl -n goobers-cloud get pdb goobers-control
 
+      - name: Validate engine child fixture and overlays
+        run: |
+          go test ./test/ha/kind/child ./test/ha/childscenarios
+          node --check test/ha/kind/child/fixture/model.cjs
+          kubectl kustomize deploy/reference/goobers-cloud/workers >/dev/null
+          kubectl kustomize test/ha/kind/child >/dev/null
+
+      # Scenario 10 / CHAOS-13-CHILD is now composed below, after cloud
+      # rollout (not in the earlier generic chaos registry). pending #8085:
+      # removing the gate requires BOTH the production worker handoff adapter
+      # and engine.childWorkflows config enablement. No executor substitution.
+      - name: Check engine child qualification gate
+        id: child
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+        run: go run ./test/ha/kind/cmd/child-nightly gate
+
+      - name: Run engine child happy path and worker failover
+        if: ${{ steps.child.outputs.ready == 'true' }}
+        timeout-minutes: 20
+        env:
+          CLOUD_READY: ${{ steps.cloud.outputs.ready }}
+          HA_EVIDENCE_DIR: ${{ runner.temp }}/ha-nightly/evidence
+          CHILD_TEMPORAL_ADDRESS: 127.0.0.1:17234
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CLOUD_READY" = true
+          context="$(mktemp -d)"
+          forward_pid=
+          cleanup() {
+            if [ -n "$forward_pid" ]; then
+              kill "$forward_pid" 2>/dev/null || true
+              wait "$forward_pid" 2>/dev/null || true
+            fi
+            rm -rf "$context"
+          }
+          trap cleanup EXIT
+          # Only the public CA enters the model image and worker ConfigMap.
+          kubectl -n goobers-cloud get secret goobers-cloud-control-tls \
+            -o jsonpath='{.data.tls\.crt}' | base64 -d > "$context/ca.crt"
+          kubectl -n goobers-cloud create configmap goobers-cloud-control-ca \
+            --from-file=ca.crt="$context/ca.crt" --dry-run=client -o yaml | kubectl apply -f -
+          cp test/ha/kind/child/fixture/{Dockerfile,model.cjs,generated-child.yaml} "$context/"
+          docker build -t "goobers-child:$GITHUB_SHA" "$context"
+          kind load docker-image "goobers-child:$GITHUB_SHA" --name goobers-ha-nightly
+          kubectl -n goobers-temporal port-forward service/temporal-frontend 17234:7233 \
+            --address 127.0.0.1 > "$HA_EVIDENCE_DIR/child-port-forward.log" 2>&1 &
+          forward_pid=$!
+          for attempt in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/17234) 2>/dev/null; then break; fi
+            kill -0 "$forward_pid"
+            sleep 1
+          done
+          if ! temporal --address "$CHILD_TEMPORAL_ADDRESS" operator namespace describe --namespace kind-child >/dev/null 2>&1; then
+            temporal --address "$CHILD_TEMPORAL_ADDRESS" operator namespace create --namespace kind-child --retention 168h
+          fi
+          build_id="$(git describe --tags --match='v[0-9]*' --always --dirty)-$GITHUB_SHA"
+          kubectl kustomize test/ha/kind/child | sed -e "s/BUILD_SHA/$GITHUB_SHA/g" -e "s/BUILD_ID/$build_id/g" > "$context/child.yaml"
+          kubectl apply -f "$context/child.yaml"
+          kubectl -n goobers-cloud rollout status deployment/goobers-control --timeout=5m
+          for attempt in {1..60}; do
+            count="$(kubectl -n goobers-cloud get pods -l goobers.dev/role=worker -o name | wc -l)"
+            if [ "$count" -ge 2 ]; then break; fi
+            sleep 2
+          done
+          test "$count" -ge 2
+          kubectl -n goobers-cloud wait --for=condition=Ready pod -l goobers.dev/role=worker --timeout=5m
+          go run ./test/ha/kind/cmd/child-nightly run
+
       - name: Inject alarm-drill failure
         if: ${{ inputs.inject_failure }}
         run: |
