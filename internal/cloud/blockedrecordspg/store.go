@@ -313,6 +313,15 @@ func (s Store) record(ctx context.Context, handle *lease.Handle, b parking.Block
 	}
 	var cycle blockedcycle.Result
 	err = s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
+		// The epoch's shared lock fences takeover, but allows concurrent hooks.
+		// Serialize inserts and their cycle snapshots per instance so opposite
+		// edges cannot both miss the other's uncommitted write at READ COMMITTED.
+		// Take this in a separate statement: the following snapshot must see the
+		// preceding lock holder's commit. The fence bounds the wait and rolls back
+		// on failure; the transaction releases the lock on either commit or abort.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('control.blocked_record:' || $1, 0))`, handle.InstanceID); err != nil {
+			return fmt.Errorf("lock blocked-record graph: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO control.blocked_record (instance_id, record_key, record, owner_epoch)
 			VALUES ($1, $2, $3, $4)
