@@ -52,7 +52,7 @@ func writePathsBefore0035() (cloudschema.Inventory, error) {
 	})
 	added := func(column string) bool {
 		return slices.Contains([]string{"release_pending_at", "verify_after", "deferred_since", "defer_attempts", "defer_reason",
-			"shared_owner", "shared_deadline", "shared_admission_pending", "shared_revoked", "stopped_handoff"}, column)
+			"shared_owner", "shared_deadline", "shared_admission_pending", "shared_revoked"}, column)
 	}
 	for i := range inventory.Tables {
 		table := &inventory.Tables[i]
