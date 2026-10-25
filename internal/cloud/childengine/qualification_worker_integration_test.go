@@ -37,8 +37,10 @@ import (
 )
 
 type qualificationWorkerConfig struct {
-	Address, Queue, Endpoint, KeyFile, InstanceID string
-	Script                                        qualificationStageScript
+	GaggleNamespaces                                            map[string]string
+	Address, Queue, Endpoint, KeyFile, InstanceID, SurrenderDir string
+	DisablePodCustody                                           bool
+	Script                                                      qualificationStageScript
 }
 
 // Phases: parent-start, parent-granted, parent-submitted, parent-resumed, child.
@@ -118,7 +120,7 @@ func TestChildQualificationWorkerProcess(t *testing.T) {
 		}
 		return nil
 	}, Report: func(err error) { t.Logf("child authority withheld: %v", err) }}
-	surrenders, err := dispatcher.NewSurrenderDir(t.TempDir())
+	surrenders, err := dispatcher.NewSurrenderDir(cfg.SurrenderDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,25 +146,46 @@ type qualificationStages struct {
 	surrenders *dispatcher.SurrenderDir
 }
 
-// Dispatch models a contained executor joining its writers when it returns.
+// Dispatch uses the real pod dispatcher against fixture-owned execution.
 // It never creates a handoff; the production observer derives that from custody.
-func (s qualificationStages) Dispatch(ctx context.Context, attempt dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
-	result, err := s.parent(ctx, attempt)
-	report := dispatcher.Report{Runner: "qualification", ParentWritersStopped: true}
-	if result.Status == "" {
-		return report, err
+func (s qualificationStages) Dispatch(ctx context.Context, attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.Report, error) {
+	d, err := s.dispatcher(attempt)
+	if err != nil {
+		return dispatcher.Report{}, err
 	}
-	data, marshalErr := json.Marshal(dispatcher.SurrenderedResult{ContractVersion: dispatcher.CurrentSurrenderContract, Result: result.ResultEnvelope, ObservedUsageReported: true})
-	if marshalErr != nil {
-		return report, marshalErr
+	if s.cfg.DisablePodCustody {
+		// Explicit fault injection: remove the engine-installed observer, leaving
+		// the production heartbeat and missing-custody refusal path unchanged.
+		ctx = dispatcher.WithPodCustodyObserver(ctx, func(dispatcher.PodCustody) {})
 	}
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	defer cancel()
-	if putErr := s.surrenders.Put(cleanup, attempt.RunID, attempt.Stage, attempt.IdentityAttempt(), data); putErr != nil {
-		return report, putErr
+	return d.Dispatch(ctx, attempt, eligible)
+}
+
+func (s qualificationStages) AdoptPod(ctx context.Context, attempt dispatcher.Attempt, custody dispatcher.PodCustody) (dispatcher.Report, error) {
+	d, err := s.dispatcher(attempt)
+	if err != nil {
+		return dispatcher.Report{}, err
 	}
-	report.SurrenderConfirmed = true
-	return report, err
+	return d.AdoptPod(ctx, attempt, custody)
+}
+
+func (s qualificationStages) dispatcher(attempt dispatcher.Attempt) (*dispatcher.Dispatcher, error) {
+	pods := &qualificationPodClient{endpoint: s.cfg.Endpoint, attempt: attempt, script: s.cfg.Script}
+	return dispatcher.New(dispatcher.Config{
+		GaggleNamespaces: s.cfg.GaggleNamespaces,
+		InstanceID:       s.cfg.InstanceID, Owner: "qualification-worker", EmbeddedVersion: "qualification",
+		TokenMinter: s.key, KitWriter: qualificationKitWriter{},
+		BlobEndpoint: s.cfg.Endpoint, WriteAPIBase: s.cfg.Endpoint,
+		SupervisionInterval: 20 * time.Millisecond,
+	}, pods, nil, dispatcher.PlaneSurrenderGate{Plane: s.surrenders}, nil)
+}
+
+// The simulated container does not consume a kit. Only this executor input is
+// synthetic; pod rendering, custody publication, adoption and stop checks are real.
+type qualificationKitWriter struct{}
+
+func (qualificationKitWriter) WriteKit(context.Context, dispatcher.Attempt) (string, error) {
+	return "sha256:" + strings.Repeat("a", 64), nil
 }
 
 func (s qualificationStages) parent(ctx context.Context, attempt dispatcher.Attempt) (engine.DispatchStageResult, error) {

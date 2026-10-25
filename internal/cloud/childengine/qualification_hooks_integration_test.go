@@ -90,6 +90,10 @@ func (h *qualificationHarness) SetStageScript(script qualificationStageScript) {
 }
 
 func (h *qualificationHarness) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == qualificationPodRoute {
+		h.pods.ServeHTTP(w, r)
+		return
+	}
 	const stagePrefix = "/__qualification/stage-barrier/"
 	h.hooks.mu.Lock()
 	if strings.HasPrefix(r.URL.Path, stagePrefix) {

@@ -45,8 +45,9 @@ type parentFixture struct {
 }
 
 // parentInstance is the control plane's instance in the fixture; the
-// PostgreSQL tests use the same instance for custody.
-const parentInstance = "child-engine-instance"
+// PostgreSQL tests use the same instance for custody. It must be a valid
+// durable instance ID so production dispatch stamps its pod identity label.
+const parentInstance = "0123456789abcdef0123456789abcdef"
 
 // fixtureGeneration is a well-formed generation digest; the tree it names is
 // the fixture's retained configuration.
