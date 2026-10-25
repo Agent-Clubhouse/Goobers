@@ -13,7 +13,7 @@ func TestCloudPGJobIsPathConditionalAndPinned(t *testing.T) {
 	workflow := loadCIWorkflow(t)
 	job := workflow.Jobs["cloud-pg"]
 	if job.Name != "cloud PostgreSQL and Azurite integration" ||
-		job.TimeoutMinutes != 30 ||
+		job.TimeoutMinutes != 45 ||
 		!slices.Contains(job.Needs, "scope") ||
 		!slices.Contains(job.Needs, "temporal-cli") ||
 		!strings.Contains(job.If, "needs.scope.outputs.cloud == 'true'") {
