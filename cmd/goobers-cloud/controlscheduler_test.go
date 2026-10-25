@@ -442,7 +442,7 @@ func TestSkewTolerantStateClampsRegressionsOnly(t *testing.T) {
 	stored := time.Date(2026, 10, 24, 12, 0, 6, 0, time.UTC)
 	other := localscheduler.WorkflowIdentity{Gaggle: testGaggle, Workflow: "other"}
 	inner := &recordingState{stored: map[localscheduler.WorkflowIdentity]time.Time{testIdentity: stored}}
-	err := skewTolerantState{SchedulerState: inner}.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{
+	err := localscheduler.SkewTolerantState{SchedulerState: inner}.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{
 		testIdentity: stored.Add(-6 * time.Second), // behind: clamped
 		other:        stored.Add(-time.Hour),       // never stored: written as given
 	})
@@ -456,7 +456,7 @@ func TestSkewTolerantStateClampsRegressionsOnly(t *testing.T) {
 		t.Fatalf("an identity with no stored cursor was altered: %v", inner.written[other])
 	}
 	inner.stored = map[localscheduler.WorkflowIdentity]time.Time{testIdentity: stored}
-	_ = skewTolerantState{SchedulerState: inner}.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{testIdentity: stored.Add(time.Minute)})
+	_ = localscheduler.SkewTolerantState{SchedulerState: inner}.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{testIdentity: stored.Add(time.Minute)})
 	if !inner.written[testIdentity].Equal(stored.Add(time.Minute)) {
 		t.Fatalf("an advance was altered: %v", inner.written[testIdentity])
 	}

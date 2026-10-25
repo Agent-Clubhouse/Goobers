@@ -32,8 +32,10 @@ and journal operations use the production HTTP routes and backend adapters.
 The scheduler is the production `localscheduler`/`SchedulerCapacity`; the fixture
 reserves the parent's slot after starting it rather than running trigger polling.
 Each control epoch composes its PG `journalpg.SchedulerLog` with a lease-bound
-`cloud/claims.Store` through `WithSchedulerState`, matching cloud control's
-scheduler-state wiring. Startup and takeover reconcile those durable snapshots;
+`cloud/claims.Store` wrapped by the shared `localscheduler.SkewTolerantState`
+through `WithSchedulerState`, matching cloud control's scheduler-state wiring.
+The shared wrapper clamps writes to a predecessor's later evaluation cursor
+when a successor's clock is behind. Startup and takeover reconcile those durable snapshots;
 slot-limit reloads never fall back to file scheduler state.
 
 The production config-load refusal and default remain unchanged. The harness

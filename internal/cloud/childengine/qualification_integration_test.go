@@ -279,12 +279,13 @@ func (h *qualificationHarness) startControl() {
 	// Mirror controlscheduler_wire.go: the epoch's PG journal log and its
 	// lease-bound claims store are separate scheduler dependencies. A PG log
 	// has no directory, so leaving the default file state breaks Reload.
+	// Use the same clock-skew wrapper as production Prepare as well.
 	state, err := cloudclaims.New(h.pool, testInstance, manager, handle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.scheduler = localscheduler.New(h.entries(), e.log,
-		localscheduler.WithSchedulerState(state),
+		localscheduler.WithSchedulerState(localscheduler.SkewTolerantState{SchedulerState: state}),
 		localscheduler.WithRunDirReconciler(schedstart.NewReconciler(h.openRuns)))
 	if err := e.scheduler.Reconcile("", time.Now()); err != nil {
 		t.Fatal(err)

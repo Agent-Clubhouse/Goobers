@@ -2,13 +2,30 @@
 
 package childengine
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
+	"github.com/goobers/goobers/internal/localscheduler"
+)
 
 // Slot-limit hooks must use the same durable scheduler state as production
 // control. This needs no parent/worker, so a child-protocol failure cannot mask
 // the reload/failover wiring regression.
 func TestQualificationSlotLimitUsesPostgresState(t *testing.T) {
 	h := newQualificationHarness(t)
+	// A prior controller may have stored an evaluation ahead of this node's
+	// clock. Reload and takeover must clamp rather than regress or refuse it.
+	identity := localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "default-implement"}
+	future := time.Now().UTC().Add(time.Minute)
+	state, err := cloudclaims.New(h.pool, testInstance, h.epoch.manager, h.epoch.handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteTriggerEvaluations("", map[localscheduler.WorkflowIdentity]time.Time{identity: future}); err != nil {
+		t.Fatal(err)
+	}
 	assertCapacity := func(limit int) {
 		t.Helper()
 		releases := make([]func(), 0, limit)
@@ -31,8 +48,16 @@ func TestQualificationSlotLimitUsesPostgresState(t *testing.T) {
 	}
 	assertPersisted := func() {
 		t.Helper()
+		current, err := cloudclaims.New(h.pool, testInstance, h.epoch.manager, h.epoch.handle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evaluations, err := current.ReadTriggerEvaluations("")
+		if err != nil || !evaluations[identity].Equal(future) {
+			t.Fatalf("reload regressed the stored cursor: %v, %v", evaluations, err)
+		}
 		var count int
-		err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.scheduler_state
+		err = h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.scheduler_state
 WHERE instance_id=$1 AND scope IN ('schedule-demand', 'trigger-evaluations')
 AND key='snapshot' AND owner_epoch=$2`, testInstance, h.epoch.handle.Epoch).Scan(&count)
 		if err != nil || count != 2 {
