@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -28,22 +27,17 @@ func TestChildQualificationCanaryGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 		run := h.StartParent()
-		// Synchronize on the worker's actual probe refusal, not a boot delay.
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			data, err := os.ReadFile(h.workerLog.Name())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(string(data), "child authority withheld: "+childresult.ErrBlobPlaneUnverified.Error()) {
-				break
-			}
-			select {
-			case <-h.ctx.Done():
-				t.Fatalf("no canary refusal logged: %v\n%s", h.ctx.Err(), data)
-			case <-ticker.C:
-			}
+		// Wait for the production workflow to report the probe refusal, then join
+		// the worker before reading its captured log buffer.
+		var result engine.RunResult
+		err := run.Get(h.ctx, &result)
+		h.KillWorker()
+		if err == nil || !strings.Contains(err.Error(), childresult.ErrBlobPlaneUnverified.Error()) {
+			t.Fatalf("parent without readable canary: result=%+v err=%v", result, err)
+		}
+		output := h.workerLogs[0].String()
+		if !strings.Contains(output, "child authority withheld: "+childresult.ErrBlobPlaneUnverified.Error()) {
+			t.Fatalf("no canary refusal logged:\n%s", output)
 		}
 		for _, table := range []string{"child_authority", "child_lineage"} {
 			var count int
