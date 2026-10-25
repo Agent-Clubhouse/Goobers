@@ -267,3 +267,12 @@ func (p FencedProtocol) Complete(ctx context.Context, in engine.ChildCompletionI
 	}
 	return service.Complete(ctx, in)
 }
+
+// ObserveChildHandoff reads accepted custody under the current controller lease.
+func (a FencedAuthority) ObserveChildHandoff(ctx context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	authorities, err := a.authorities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return authorities.ObserveChildHandoff(ctx, request)
+}

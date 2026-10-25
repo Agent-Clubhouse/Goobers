@@ -11,7 +11,7 @@ import (
 
 func TestWorkerChildAdmissionIdentityIsConfinedToItsPlane(t *testing.T) {
 	plane := map[string]bool{apicontract.EngineChildAdmitPath: true, apicontract.EngineChildLoadPath: true, apicontract.EngineChildCancelPath: true,
-		apicontract.EngineChildAuthorityPath: true, apicontract.EngineChildAuthorityReleasePath: true,
+		apicontract.EngineChildHandoffPath: true, apicontract.EngineChildAuthorityPath: true, apicontract.EngineChildAuthorityReleasePath: true,
 		apicontract.EngineChildParkPath: true, apicontract.EngineChildFinalizePath: true, apicontract.EngineChildCompletePath: true}
 	paths := []string{apicontract.ConfigDigestPath, RunsPath, EventsPath, HealthPath, apicontract.EngineChildAdmitPath + "/", "/api/v1/unknown"}
 	for _, route := range apicontract.V1Routes() {

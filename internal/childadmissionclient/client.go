@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -223,4 +224,14 @@ func statusClass(status int) error {
 	default:
 		return nil
 	}
+}
+
+// ObserveChildHandoff reads control-owned acceptance, never pod output.
+func (c *Client) ObserveChildHandoff(ctx context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	if err := request.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	var out *journal.ChildHandoffRequest
+	err := c.call(ctx, apicontract.EngineChildHandoffPath, request, http.StatusOK, maxReceiptBytes, &out)
+	return out, err
 }

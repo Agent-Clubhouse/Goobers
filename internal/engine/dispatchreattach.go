@@ -68,7 +68,7 @@ func executeDispatchActivity(ctx workflow.Context, input DispatchStageInput) (Di
 		err := workflow.ExecuteActivity(attemptCtx, ActDispatchStage, input).Get(attemptCtx, &result)
 		next, handoff := dispatchHandoffCustody(err)
 		if !handoff {
-			if custody != nil && err != nil {
+			if custody != nil && err != nil && !isChildHandoffFailure(err) {
 				return result, dispatchHandoffWorkerLoss(err)
 			}
 			return result, err

@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
 )
 
@@ -41,7 +42,7 @@ func (f *fakeChildAuthority) ReleaseChildAuthority(_ context.Context, release Ch
 const authorityRunID = "0123456789abcdef0123456789abcdef"
 
 func childCapableInput() DispatchStageInput {
-	return DispatchStageInput{Envelope: apiv1.InvocationEnvelope{RunID: authorityRunID,
+	return DispatchStageInput{ChildWorkflowsEnabled: true, Envelope: apiv1.InvocationEnvelope{RunID: authorityRunID,
 		ChildWorkflowOrigin: &apiv1.ChildWorkflowOrigin{StageOccurrence: "occ-1", AttemptID: "att-1"}}}
 }
 
@@ -64,7 +65,7 @@ func TestStageChildAuthorityStampsTheGrantOntoAFreshAttempt(t *testing.T) {
 	if err := json.Unmarshal([]byte(attempt.ChildWorkflowAccess), &access); err != nil || access.BearerToken != "goobers-child.signed" || access.Endpoint != "https://control.example" {
 		t.Fatalf("attempt carries %q (%v)", attempt.ChildWorkflowAccess, err)
 	}
-	release(nil)
+	release.release(nil)
 	if len(authority.released) != 1 || authority.released[0].GrantID != "grant-1" || authority.released[0].Origin.AttemptID != "att-1" {
 		t.Fatalf("released %+v, want the exact grant", authority.released)
 	}
@@ -74,7 +75,6 @@ func TestStageChildAuthorityIsOnlyForFreshChildCapableAgenticAttempts(t *testing
 	for name, edit := range map[string]func(*DispatchStageInput){
 		"deterministic stage": func(in *DispatchStageInput) { in.Run = &apiv1.DeterministicRun{Command: []string{"true"}} },
 		"no child origin":     func(in *DispatchStageInput) { in.Envelope.ChildWorkflowOrigin = nil },
-		"adopted pod":         func(in *DispatchStageInput) { in.Custody = &dispatcher.PodCustody{} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			authority := &fakeChildAuthority{grant: liveGrant()}
@@ -151,7 +151,7 @@ func TestReleasesChildAuthorityOnlyWhenTheAttemptIsDoneWithIt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			release(tc.outcome)
+			release.release(tc.outcome)
 			if released := len(authority.released) == 1; released != tc.release {
 				t.Fatalf("released=%v, want %v", released, tc.release)
 			}
@@ -166,8 +166,12 @@ func TestStageChildAuthorityReleaseRetriesAnUnavailableControlPlane(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	release(nil)
+	release.release(nil)
 	if len(authority.released) != 2 {
 		t.Fatalf("release calls = %d, want a retry after unavailability", len(authority.released))
 	}
+}
+
+func (f *fakeChildAuthority) ObserveChildHandoff(context.Context, ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	return nil, nil
 }

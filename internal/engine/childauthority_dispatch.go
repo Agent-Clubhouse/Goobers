@@ -17,17 +17,26 @@ import (
 // inert when the attempt ends, so release is best effort.
 const childAuthorityRelease = 30 * time.Second
 
+// childStageAuthority retains the exact grant lent to this dispatch.
 // stageChildAuthority acquires, before a fresh pod is created, the
 // child-workflow grant of an engine parent's child-capable agentic stage
 // attempt and stamps it onto the attempt (docs/design/
 // engine-parent-child-authority.md §2). It returns the release to run when the
 // activity ends, or nil when the attempt needs no grant: a deterministic
-// stage, a stage without a committed child origin, or an adopted pod that
-// already carries its grant.
-func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStageInput, attempt *dispatcher.Attempt) (func(error), error) {
+// stage or a stage without a committed child origin. Adoption recovers the
+// same grant so a replacement worker also observes accepted requests.
+type childStageAuthority struct {
+	release     func(error)
+	observation ChildHandoffObservation
+}
+
+func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStageInput, attempt *dispatcher.Attempt) (*childStageAuthority, error) {
 	origin := input.Envelope.ChildWorkflowOrigin
-	if input.Run != nil || origin == nil || input.Custody != nil {
+	if input.Run != nil || origin == nil {
 		return nil, nil
+	}
+	if !input.ChildWorkflowsEnabled {
+		return nil, temporal.NewNonRetryableApplicationError("engine: child handoff is disabled by the frozen run pin", childCustodyRefusedType, nil)
 	}
 	if a.ChildAuthority == nil {
 		return nil, temporal.NewNonRetryableApplicationError("engine: a child-capable stage needs the control child authority, which this worker does not have", childCustodyRefusedType, ErrNotConfigured)
@@ -52,7 +61,7 @@ func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStag
 	}
 	attempt.ChildWorkflowAccess = string(encoded)
 	release := ChildAuthorityRelease{RunID: runID, Origin: *origin, GrantID: grant.GrantID}
-	return func(outcome error) {
+	return &childStageAuthority{observation: ChildHandoffObservation{ChildAuthorityRelease: release}, release: func(outcome error) {
 		if !releasesChildAuthority(outcome) {
 			return
 		}
@@ -69,7 +78,7 @@ func (a *Activities) stageChildAuthority(ctx context.Context, input DispatchStag
 			case <-time.After(delay):
 			}
 		}
-	}, nil
+	}}, nil
 }
 
 // releasesChildAuthority reports whether the activity's outcome ends the

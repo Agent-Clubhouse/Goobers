@@ -86,6 +86,8 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 // written, and an existing history must replay identically
 // (dispatchone_test.go's recorded-history fixture is the guard).
 type DispatchStageInput struct {
+	// ChildWorkflowsEnabled is copied from the immutable RunInput, never stage output.
+	ChildWorkflowsEnabled bool `json:"childWorkflowsEnabled,omitempty"`
 	// PodAttempt is the physical dispatch ordinal across task graph visits.
 	// Zero retains the legacy Envelope.Attempt identity. Journal lineage stays
 	// in Envelope.Attempt/Class and is independent of this surrender/pod key.
@@ -379,20 +381,21 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
 		result, err := executeDispatchActivity(ctx, DispatchStageInput{
-			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
-			FanOutVisit:      rec.fanOutVisit(),
-			FanOutBranch:     rec.branch,
-			Class:            dispatchAttemptClass(ctx, class),
-			Envelope:         attemptEnv,
-			ExactInputs:      exactInputs,
-			Placement:        placement,
-			Run:              t.Run,
-			Workspace:        t.Workspace,
-			WorkspaceDelta:   workspaceDelta,
-			WorkspaceBranch:  workspaceBranch,
-			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-			Outbox:           append([]string(nil), t.Outbox...),
-			UsageAllowance:   versionedRemoteUsageAllowance(ctx, allowance),
+			PodAttempt:            dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
+			FanOutVisit:           rec.fanOutVisit(),
+			FanOutBranch:          rec.branch,
+			Class:                 dispatchAttemptClass(ctx, class),
+			Envelope:              attemptEnv,
+			ChildWorkflowsEnabled: childHandoffDispatchEnabled(ctx, in, attemptEnv),
+			ExactInputs:           exactInputs,
+			Placement:             placement,
+			Run:                   t.Run,
+			Workspace:             t.Workspace,
+			WorkspaceDelta:        workspaceDelta,
+			WorkspaceBranch:       workspaceBranch,
+			OwningWorkflowID:      workflow.GetInfo(ctx).WorkflowExecution.ID,
+			Outbox:                append([]string(nil), t.Outbox...),
+			UsageAllowance:        versionedRemoteUsageAllowance(ctx, allowance),
 		})
 		result.Integrity = runsemantics.StageResultIntegrity(result.Integrity, produced)
 		return result, err
@@ -802,10 +805,16 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return stageActivityResult{}, err
 	}
 	if release != nil {
-		defer func() { release(outcome) }()
+		defer func() { release.release(outcome) }()
 	}
 
-	report, err := a.dispatchOrAdopt(ctx, attempt, input)
+	report, handoff, err := a.dispatchWithChildHandoff(ctx, attempt, input, release)
+	if handoff != nil {
+		return stageActivityResult{ChildWait: handoff, Placement: placementProvenance(report)}, err
+	}
+	if isChildHandoffFailure(err) {
+		return stageActivityResult{}, err
+	}
 	a.logDispatchCleanup(ctx, attempt, report)
 	// Defense-in-depth for the settled-outcome invariant (#3588): once the
 	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
