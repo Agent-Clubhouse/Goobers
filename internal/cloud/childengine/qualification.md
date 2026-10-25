@@ -20,9 +20,12 @@ not use Temporal's in-memory workflow test environment.
    terminal state, and output. The final parent result proves this read occurred.
 
 The stage executor is scripted instead of invoking an LLM or launching a
-Kubernetes pod. Worker stage-activity registrations are the only executor
-substitution. This is hosted backend qualification, not real Kubernetes
-qualification (scenario 10). Control uses the runtime controller database role;
+Kubernetes pod. The scripted parent also constructs and returns `ChildWait`
+itself. Thus #8226 qualifies the engine/control child protocol only: production
+stopped-dispatch-to-`ChildWait` adaptation is **not qualified**, pending the cloud
+worker handoff adapter PR (`p4-child-handoff`). That adapter and a scenario using
+it are prerequisites for enablement. Real Kubernetes qualification remains
+scenario 10. Control uses the runtime controller database role;
 the worker subprocess receives only the Temporal address, HTTP endpoint, and
 signing-key file, with no PostgreSQL or Azure credentials. All persistent custody
 and journal operations use the production HTTP routes and backend adapters.
@@ -67,6 +70,13 @@ Add a `qualification_<scenario>_integration_test.go` in package `childengine`:
   the child stage returns). An error follows normal activity retry policy.
   Named barriers hold every visit, including worker retries, until released;
   scripts persist across worker replacement. Change scripts only while stopped.
+  Scripted stages heartbeat immediately and every second, including while a
+  barrier or HTTP response is held and during cancellation cleanup. The worker
+  uses production's eight-second maximum heartbeat RPC throttle, so heartbeat
+  replies deliver cancellation and the blocked request exits with it. A phase's
+  explicit `HeartbeatLoss: true` suppresses heartbeat generation until the next
+  phase or the activity ends; use it only for heartbeat-loss injection. A killed
+  worker naturally stops heartbeating. Merely holding a barrier does not.
 - `FailoverControl()` closes the old HTTP/journal owner, releases the lease, and
   composes a successor epoch. Scheduler capacity is reconstructed from Temporal
   liveness and committed child-wait journal events. This models voluntary
@@ -113,6 +123,10 @@ HTTP and stage barriers unblock on request cancellation and are released during
 test cleanup. An HTTP barrier models a delayed response, not cancellation of
 the already-committed operation. These hooks are fixture HTTP endpoints only;
 they do not add routes or fault switches to production.
+Control and HTTP-server errors are forwarded to the test log. The PG live writer
+uses the same configured sentinel root as production's `cloudJournalRunsRoot`;
+it does not write a file journal. This avoids rejecting the first journal emit
+before the PG backend is consulted.
 
 Before declaring a scenario qualified, read its passing event (including any
 subtests) from the hosted `cloud-pg-test-events` artifact. A compile-only check or

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -52,8 +51,9 @@ import (
 )
 
 // qualificationHarness runs the production control HTTP planes and engine.Run
-// against PostgreSQL, Azurite and Temporal. Only the stage executor is scripted;
-// it lives in a separate worker process with no database or storage credentials.
+// against PostgreSQL, Azurite and Temporal. Stage execution and the stopped-
+// dispatch ChildWait adaptation are scripted in a separate worker process with
+// no database or storage credentials; the production adapter is not qualified.
 // See qualification.md before adding scenarios or fault injection.
 type qualificationHarness struct {
 	t                                     *testing.T
@@ -185,7 +185,9 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	if err := os.WriteFile(h.keyFile, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.server = httptest.NewServer(http.HandlerFunc(h.serveHTTP))
+	h.server = httptest.NewUnstartedServer(http.HandlerFunc(h.serveHTTP))
+	h.server.Config.ErrorLog = log.New(qualificationLogWriter{t}, "qualification HTTP: ", 0)
+	h.server.Start()
 	t.Cleanup(h.server.Close)
 	h.startControl()
 	t.Cleanup(h.stopControl)
@@ -265,7 +267,7 @@ func (h *qualificationHarness) startControl() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.writer, err = livejournal.NewWriter(func(string) (string, bool) { return "", false }, livejournal.WithBackend(e.backend))
+	e.writer, err = livejournal.NewWriter(func(string) (string, bool) { return qualificationCloudJournalRunsRoot, true }, livejournal.WithBackend(e.backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +307,7 @@ func (h *qualificationHarness) startControl() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := httpapi.NewHandler(struct{ readservice.Reader }{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
+	handler, err := httpapi.NewHandler(struct{ readservice.Reader }{}, httpapi.RequireRoles(), log.New(qualificationLogWriter{t}, "qualification control: ", 0),
 		httpapi.WithAuthenticator(auth), httpapi.WithJournalService(e.writer), httpapi.WithBlobService(h.blobs), httpapi.WithLeaseFreeBlobPlane(),
 		httpapi.WithEngineChildAdmissions(admissionsPlane), httpapi.WithEngineChildAuthority(authorityPlane), httpapi.WithEngineChildProtocol(protocolPlane),
 		httpapi.WithChildWorkflowService(FencedChildWorkflows{Authority: authority}))

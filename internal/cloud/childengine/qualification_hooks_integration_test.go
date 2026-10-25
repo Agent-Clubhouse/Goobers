@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 )
 
 // qualificationBarrier reports arrival before holding the caller. Release is
@@ -132,4 +133,16 @@ func (h *qualificationHarness) serveHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	w.WriteHeader(response.Code)
 	_, _ = io.Copy(w, response.Body)
+}
+
+// Match cloudJournalRunsRoot and its resolver in
+// cmd/goobers-cloud/controlassembly_journal.go. This is a sentinel: the PG
+// backend owns storage, but livejournal still requires a configured root.
+const qualificationCloudJournalRunsRoot = "/nonexistent/goobers-cloud-journal"
+
+type qualificationLogWriter struct{ t *testing.T }
+
+func (w qualificationLogWriter) Write(data []byte) (int, error) {
+	w.t.Logf("%s", strings.TrimSpace(string(data)))
+	return len(data), nil
 }

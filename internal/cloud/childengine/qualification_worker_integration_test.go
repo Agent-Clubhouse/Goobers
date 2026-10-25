@@ -13,11 +13,13 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -41,13 +43,17 @@ type qualificationWorkerConfig struct {
 // A nil Result and empty Error continue the normal scripted happy path.
 type qualificationStageScript map[string]qualificationStageStep
 type qualificationStageStep struct {
-	Barrier string
-	Result  *apiv1.ResultEnvelope
-	Error   string
+	Barrier       string
+	Result        *apiv1.ResultEnvelope
+	Error         string
+	HeartbeatLoss bool
 }
 
 func (s qualificationStages) step(ctx context.Context, phase string) (*engine.DispatchStageResult, error) {
 	step := s.cfg.Script[phase]
+	if state, ok := ctx.Value(qualificationHeartbeatKey{}).(*atomic.Bool); ok {
+		state.Store(step.HeartbeatLoss)
+	}
 	if step.Barrier != "" {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Endpoint+"/__qualification/stage-barrier/"+url.PathEscape(step.Barrier), nil)
 		if err != nil {
@@ -111,11 +117,12 @@ func TestChildQualificationWorkerProcess(t *testing.T) {
 		return nil
 	}, Report: func(err error) { t.Logf("child authority withheld: %v", err) }}
 	stages := qualificationStages{cfg: cfg, key: key, authority: authority}
-	w := worker.New(c, cfg.Queue, worker.Options{WorkerStopTimeout: time.Second})
+	w := worker.New(c, cfg.Queue, worker.Options{WorkerStopTimeout: time.Second, MaxHeartbeatThrottleInterval: engine.DispatchHeartbeatThrottleInterval})
 	engine.RegisterWith(w, &engine.Activities{EngineChildren: childadmissionclient.ForWorker(cfg.Endpoint, "qualification-worker", key),
 		Journal: &livejournal.HTTPEmitter{BaseURL: cfg.Endpoint, Minter: key}})
-	// The sole fixture boundary replaces an LLM/container executor. Everything
-	// before and after these two stage activities is the production engine.
+	// These activities replace LLM/container execution and currently construct
+	// ChildWait themselves. The production stopped-dispatch adapter is a separate
+	// qualification prerequisite; see qualification.md.
 	for _, name := range []string{engine.ActInvokeGoober, "InvokeGooberCancelSafe"} {
 		w.RegisterActivityWithOptions(stages.parent, activity.RegisterOptions{Name: name, DisableAlreadyRegisteredCheck: true})
 	}
@@ -133,7 +140,14 @@ type qualificationStages struct {
 	authority engine.ChildWorkflowAuthority
 }
 
-func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnvelope, _ string, _ string, _ apiv1.WorkspaceMode, _ string) (engine.DispatchStageResult, error) {
+func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnvelope, _ string, _ string, _ apiv1.WorkspaceMode, _ string) (result engine.DispatchStageResult, err error) {
+	ctx, stop := qualificationHeartbeat(ctx, s.cfg.Script["parent-start"].HeartbeatLoss)
+	defer func() {
+		stop()
+		if err != nil && errors.Is(ctx.Err(), context.Canceled) && !errors.Is(context.Cause(ctx), worker.ErrWorkerShutdown) {
+			err = temporal.NewCanceledError()
+		}
+	}()
 	if result, err := s.step(ctx, "parent-start"); result != nil || err != nil {
 		if result != nil {
 			return *result, err
@@ -231,7 +245,14 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 	return engine.DispatchStageResult{ChildWait: &handoff}, nil
 }
 
-func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun, _ string, _ string) (engine.DispatchStageResult, error) {
+func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun, _ string, _ string) (result engine.DispatchStageResult, err error) {
+	ctx, stop := qualificationHeartbeat(ctx, s.cfg.Script["child"].HeartbeatLoss)
+	defer func() {
+		stop()
+		if err != nil && errors.Is(ctx.Err(), context.Canceled) && !errors.Is(context.Cause(ctx), worker.ErrWorkerShutdown) {
+			err = temporal.NewCanceledError()
+		}
+	}()
 	if result, err := s.step(ctx, "child"); result != nil || err != nil {
 		if result != nil {
 			return *result, err
@@ -239,4 +260,45 @@ func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelo
 		return engine.DispatchStageResult{}, err
 	}
 	return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "qualification child result"}}, nil
+}
+
+// Match engine.heartbeatDispatch: immediately, then every second, continuing
+// through cancellation cleanup until the activity returns. The worker uses
+// the production maximum RPC throttle so heartbeat replies deliver cancels.
+type qualificationHeartbeatKey struct{}
+
+func qualificationHeartbeat(ctx context.Context, loss bool) (context.Context, func()) {
+	if !activity.IsActivity(ctx) {
+		return ctx, func() {}
+	}
+	state := &atomic.Bool{}
+	state.Store(loss)
+	heartbeatCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	var sequence uint64
+	record := func() {
+		if state.Load() {
+			return
+		}
+		sequence++
+		activity.RecordHeartbeat(heartbeatCtx, struct {
+			Sequence    uint64    `json:"sequence"`
+			GeneratedAt time.Time `json:"generatedAt"`
+		}{sequence, time.Now().UTC()})
+	}
+	record()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				record()
+			}
+		}
+	}()
+	return context.WithValue(ctx, qualificationHeartbeatKey{}, state), func() { cancel(); <-done }
 }
