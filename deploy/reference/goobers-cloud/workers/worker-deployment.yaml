@@ -52,7 +52,7 @@ spec:
               - "4"
               - --config-endpoint
               - https://goobers-control.goobers-cloud.svc:8080
-              - --config-key-file
+              - --config-keyring-file
               - /var/run/secrets/goobers/keyring.json
               - --blob-endpoint
               - https://goobers-control.goobers-cloud.svc:8080

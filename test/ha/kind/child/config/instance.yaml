@@ -4,7 +4,7 @@ schemaVersion: 2
 repos: []
 placement: {selfExecution: deny}
 api:
-  podTokenKeyFile: /var/run/secrets/goobers/keyring.json
+  podTokenKeyRingFile: /var/run/secrets/goobers/keyring.json
 engine:
   hostPort: temporal-frontend.goobers-temporal.svc.cluster.local:7233
   namespace: kind-child
