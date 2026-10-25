@@ -10,22 +10,27 @@ not use Temporal's in-memory workflow test environment.
 
 1. Publish the instance's configuration archive in Azurite with PG metadata.
 2. Accept and start the parent through the real start fence, recording run pins.
-3. Run production `engine.Run` in a separate worker process. Its scripted parent
-   activity acquires a bound grant over HTTP and submits a generated child via
-   the authenticated stage child-workflow route.
+3. Run production `engine.Run` in a separate worker process. Its remote parent placement
+   runs production `Activities.DispatchStage`, which lends the bound grant. The
+   scripted container submits a child through the authenticated stage route;
+   the production observer reads accepted custody, stops the parent executor,
+   and authors `ChildWait`. History assertions require the frozen enable pin,
+   two production dispatch invocations, and exactly one trusted handoff.
 4. Admit, freeze, load, park, execute, finalize, and complete through production
    control services, PG custody/journals, and a real Temporal child workflow.
 5. Resume the parent. It reads the continuation receipt over the pods' blob
    plane using a scoped pod bearer and verifies its digest, size, child identity,
    terminal state, and output. The final parent result proves this read occurred.
 
-The stage executor is scripted instead of invoking an LLM or launching a
-Kubernetes pod. The scripted parent also constructs and returns `ChildWait`
-itself. Thus #8226 qualifies the engine/control child protocol only: production
-stopped-dispatch-to-`ChildWait` adaptation is **not qualified**, pending the cloud
-worker handoff adapter PR (`p4-child-handoff`). That adapter and a scenario using
-it are prerequisites for enablement. Real Kubernetes qualification remains
-scenario 10. Control uses the runtime controller database role;
+The container executor and surrender store are scripted instead of invoking an
+LLM or launching a Kubernetes pod. Grant acquisition, polling control-owned
+acceptance, fenced grant revocation and stopped-handoff sealing, and `ChildWait`
+construction run through the
+production dispatch adapter. The scripted executor acknowledges its own return
+as writer termination; exact Kubernetes UID/finalizer/container stop evidence
+remains covered by dispatcher unit tests and still requires scenario 10's real
+Kubernetes qualification. No fixture constructs `ChildWait`.
+Control uses the runtime controller database role;
 the worker subprocess receives only the Temporal address, HTTP endpoint, and
 signing-key file, with no PostgreSQL or Azure credentials. All persistent custody
 and journal operations use the production HTTP routes and backend adapters.
@@ -74,16 +79,17 @@ Add a `qualification_<scenario>_integration_test.go` in package `childengine`:
   name, an optional `Result` (`*apiv1.ResultEnvelope`), or an `Error` string.
   After release, an empty outcome continues the normal happy-path script.
   Phases are `parent-start`, `parent-granted` (live grant, before submission),
-  `parent-submitted` (admission accepted, before returning the wait handoff),
+  `parent-submitted` (submission accepted; the production observer may now cancel the barrier to stop the parent),
   `parent-resumed` (after reading/verifying the receipt), and `child` (before
-  the child stage returns). An error follows normal activity retry policy.
+  the child stage returns). Ambiguous handoff failures stop the parent without
+  a fresh dispatch; other errors follow the normal activity policy.
   Named barriers hold every visit, including worker retries, until released;
   scripts persist across worker replacement. Change scripts only while stopped.
-  Scripted stages heartbeat immediately and every second, including while a
+  Production parent dispatch and scripted child stages heartbeat immediately and every second, including while a
   barrier or HTTP response is held and during cancellation cleanup. The worker
   uses production's eight-second maximum heartbeat RPC throttle, so heartbeat
   replies deliver cancellation and the blocked request exits with it. A phase's
-  explicit `HeartbeatLoss: true` suppresses heartbeat generation until the next
+  explicit `HeartbeatLoss: true` suppresses heartbeat delivery (at a test-only SDK interceptor for production parent dispatch) until the next
   phase or the activity ends; use it only for heartbeat-loss injection. A killed
   worker naturally stops heartbeating. Merely holding a barrier does not.
 - `FailoverControl()` closes the old HTTP/journal owner, releases the lease, and

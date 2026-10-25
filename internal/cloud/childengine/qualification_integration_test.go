@@ -24,6 +24,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -39,6 +40,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/schedstart"
 	"github.com/goobers/goobers/internal/cloud/startfence"
 	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/enginechildplane"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -53,9 +55,9 @@ import (
 )
 
 // qualificationHarness runs the production control HTTP planes and engine.Run
-// against PostgreSQL, Azurite and Temporal. Stage execution and the stopped-
-// dispatch ChildWait adaptation are scripted in a separate worker process with
-// no database or storage credentials; the production adapter is not qualified.
+// against PostgreSQL, Azurite and Temporal. Production DispatchStage adapts
+// accepted custody; only its container executor is scripted in a separate
+// worker process with no database or storage credentials.
 // See qualification.md before adding scenarios or fault injection.
 type qualificationHarness struct {
 	t                                     *testing.T
@@ -187,7 +189,7 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	h.applied.candidate = cloudconfig.Candidate{Digest: digest, Config: cfg, Set: set}
 	h.input = engine.RunInput{InstanceID: testInstance, Gaggle: "example", WorkflowName: machine.Def.Name, Version: machine.Def.Version,
 		DSLVersion: machine.Def.DSLVersion, Annotations: machine.Def.Annotations, Spec: machine.Def.Spec, WorkflowDigest: workflowDigest, GooberDigest: gooberDigest, ConfigGeneration: digest,
-		RepoRef: gaggleProject(t, set, "example"), BranchNamespace: providers.NormalizeBranchNamespace(""), LiveJournal: true, PreviewFeaturesEnabled: &enabled, ChildWorkflowsEnabled: true}
+		RepoRef: gaggleProject(t, set, "example"), BranchNamespace: providers.NormalizeBranchNamespace(""), LiveJournal: true, PreviewFeaturesEnabled: &enabled, ChildWorkflowsEnabled: true, Placements: []engine.PinnedPlacement{{Stage: "plan", Queue: h.queue, Eligible: []dispatcher.RunnerSpec{{Name: "qualification", HostKind: "image", OS: "linux"}}}}}
 	h.keyFile = filepath.Join(t.TempDir(), "keyring.json")
 	raw, err := json.Marshal(map[string]podauth.SigningKey{"current": {ID: "qualification", Key: []byte("qualification-key-material-32bytes")}})
 	if err != nil {
@@ -470,7 +472,8 @@ func TestChildQualificationHappyPath(t *testing.T) {
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1 AND state='completed'`, testInstance).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("completed children=%d: %v", count, err)
 	}
-	t.Log("qualification: real PG + Azurite + Temporal parent/child completed; parent consumed the sealed receipt through the authenticated pod blob plane")
+	h.assertProductionChildHandoff(run)
+	t.Log("qualification: production DispatchStage observed acceptance and stopped its scripted executor; real PG + Azurite + Temporal parent/child completed; parent consumed the sealed receipt through the authenticated pod blob plane")
 }
 
 // FailoverControl retires the old HTTP/journal writers, releases the real
@@ -538,4 +541,41 @@ func (h *qualificationHarness) reloadInstanceConfig(enabled bool) *instance.Conf
 	}
 	cfg.Engine.ChildWorkflows = &instance.EngineChildWorkflowsConfig{Enabled: enabled}
 	return cfg
+}
+
+// History proves the happy path crossed the production dispatch activity and
+// transported its frozen enable pin and trusted handoff, not a fixture Invoke.
+func (h *qualificationHarness) assertProductionChildHandoff(run client.WorkflowRun) {
+	h.t.Helper()
+	history := h.temporal.Client().GetWorkflowHistory(h.ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	dispatches := map[int64]bool{}
+	handoffs := 0
+	for history.HasNext() {
+		event, err := history.Next()
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if scheduled := event.GetActivityTaskScheduledEventAttributes(); scheduled != nil && scheduled.ActivityType.Name == engine.ActDispatchStage {
+			var input engine.DispatchStageInput
+			if err := converter.GetDefaultDataConverter().FromPayloads(scheduled.Input, &input); err != nil {
+				h.t.Fatal(err)
+			}
+			if !input.ChildWorkflowsEnabled || input.Envelope.ChildWorkflowOrigin == nil {
+				h.t.Fatal("production dispatch lost frozen child authority")
+			}
+			dispatches[event.EventId] = true
+		}
+		if completed := event.GetActivityTaskCompletedEventAttributes(); completed != nil && dispatches[completed.ScheduledEventId] {
+			var result engine.DispatchStageResult
+			if err := converter.GetDefaultDataConverter().FromPayloads(completed.Result, &result); err != nil {
+				h.t.Fatal(err)
+			}
+			if result.ChildWait != nil {
+				handoffs++
+			}
+		}
+	}
+	if len(dispatches) != 2 || handoffs != 1 {
+		h.t.Fatalf("production dispatch history: %d invocations, %d handoffs", len(dispatches), handoffs)
+	}
 }
