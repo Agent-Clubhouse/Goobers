@@ -60,9 +60,9 @@ import (
 // worker process with no database or storage credentials.
 // See qualification.md before adding scenarios or fault injection.
 type qualificationHarness struct {
-	t                                     *testing.T
-	ctx                                   context.Context
-	pool                                  *pgxpool.Pool
+	t    *testing.T
+	ctx  context.Context
+	pool *pgxpool.Pool
 	// owner is the migration-owner pool, for setup that only migrations perform
 	// in production. Production paths under test always use pool.
 	owner                                 *pgxpool.Pool
