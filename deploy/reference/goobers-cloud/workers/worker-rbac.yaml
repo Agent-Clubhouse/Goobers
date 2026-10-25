@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: goobers-cloud-worker
+  namespace: goobers-cloud
+rules:
+  - apiGroups: [temporal.io]
+    resources: [workerdeployments]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: goobers-cloud-worker
+  namespace: goobers-cloud
+subjects:
+  - kind: ServiceAccount
+    name: goobers-worker
+    namespace: goobers-cloud
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: goobers-cloud-worker

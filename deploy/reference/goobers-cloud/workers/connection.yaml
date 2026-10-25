@@ -1,0 +1,7 @@
+apiVersion: temporal.io/v1alpha1
+kind: Connection
+metadata:
+  name: goobers-temporal
+  namespace: goobers-cloud
+spec:
+  hostPort: temporal-frontend.goobers-temporal.svc.cluster.local:7233
