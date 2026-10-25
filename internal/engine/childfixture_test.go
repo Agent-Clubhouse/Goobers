@@ -302,11 +302,17 @@ func registerChildActivities(r childRegistrar, a *Activities, f *childFixture) {
 
 func childEnvironment(t *testing.T, f *childFixture) (*testsuite.TestWorkflowEnvironment, string) {
 	t.Helper()
+	return childEnvironmentWithEntry(t, f, runWithChildWorkflows)
+}
+
+func childEnvironmentWithEntry(t *testing.T, f *childFixture, entry any) (*testsuite.TestWorkflowEnvironment, string) {
+	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&suite)
 	f.now = env.Now
 	env.SetWorkerOptions(temporalworker.Options{DeadlockDetectionTimeout: temporaltest.DeadlockDetectionTimeout})
 	writer, dir := newLiveWriter(t)
-	registerChildProtocol(env, &Activities{EngineChildren: f, Journal: writer, Auto: gate.NewAutomatedEvaluator()}, f)
+	env.RegisterWorkflowWithOptions(entry, workflow.RegisterOptions{Name: "Run"})
+	registerChildActivities(env, &Activities{EngineChildren: f, Journal: writer, Auto: gate.NewAutomatedEvaluator()}, f)
 	return env, dir
 }
