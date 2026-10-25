@@ -157,3 +157,36 @@ func (b *recordingReadmodelBuilder) Flip(_ context.Context, name string, version
 	b.calls = append(b.calls, "flip:"+name+":"+strconv.Itoa(version))
 	return nil
 }
+
+// The stable release retires the predecessor table in the same upgrade that
+// introduces per-run history. Semver prereleases remain below its stable floor.
+func TestClaimHistoryContractBinaryFloor(t *testing.T) {
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract Migration
+	for _, m := range catalog {
+		if m.Version == 39 {
+			contract = m
+		}
+	}
+	if contract.Kind != Contract || contract.BinaryVersion != "0.7.0" || contract.MinCompatibleBinary != "0.6.0" {
+		t.Fatalf("claim history contract metadata = %+v", contract)
+	}
+	applied := []Applied{{Version: contract.Version, Kind: contract.Kind,
+		BinaryVersion: contract.BinaryVersion, MinCompatibleBinary: contract.MinCompatibleBinary}}
+	for _, binary := range []string{"0.6.0-alpha.6", "v0.6.0-alpha.6", "0.6.0-alpha.7", "0.6.0-rc.1"} {
+		t.Run(binary, func(t *testing.T) {
+			err := CheckCompatibility(binary, applied, nil)
+			if !errors.Is(err, ErrBinaryTooOld) || !IsIncompatible(err) {
+				t.Fatalf("prerelease compatibility = %v, want clean ErrBinaryTooOld refusal", err)
+			}
+		})
+	}
+	for _, binary := range []string{"0.6.0", "v0.6.0", "0.7.0"} {
+		if err := CheckCompatibility(binary, applied, catalog); err != nil {
+			t.Fatalf("release %s refused: %v", binary, err)
+		}
+	}
+}

@@ -39,7 +39,7 @@ INSERT INTO journal.instance_seq (instance_id, stream, last_seq, owner_epoch) VA
 INSERT INTO journal.instance_event (instance_id, stream, seq, at, type, run_id, emit_key, epoch, body) VALUES
   ('i','main',1,'2026-01-01 00:02:00+00','t','r1','e1',1,'\x00'),
   ('i','main',2,'2026-01-01 00:11:00+00','t','r1','e2',2,'\x00');
-INSERT INTO control.claim_history VALUES
+INSERT INTO control.claim_run_history (instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at,released_at,release_reason,verification) VALUES
   ('i','g','gh','42','r1','w','tok1',1,'2026-01-01 00:01:00+00','2026-01-01 00:01:00+00','2026-01-01 00:05:00+00','2026-01-01 00:05:00+00','{}',NULL),
   ('i','g','gh','42','r2','w','tok2',1,'2026-01-01 00:05:00+00','2026-01-01 00:05:00+00','2026-01-01 00:08:00+00','2026-01-01 00:08:00+00','{}',NULL);
 INSERT INTO control.claim VALUES
@@ -161,6 +161,17 @@ func TestIntegrationInvariantsAgainstRealSchema(t *testing.T) {
 			t.Fatal("pending invariants not reported as skipped")
 		}
 	})
+	t.Run("expired overwrite and live run record do not overlap", func(t *testing.T) {
+		report := inTx(t, true, `
+INSERT INTO control.claim_run_history
+  (instance_id,run_id,gaggle,provider,external_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at)
+VALUES
+  ('i','expired','g','gh','42','w','old',1,'2026-01-01 00:08:00+00','2026-01-01 00:08:00+00','2026-01-01 00:09:00+00'),
+  ('i','r3','g','gh','42','w','tok3',2,'2026-01-01 00:09:00+00','2026-01-01 00:09:00+00','2026-01-01 00:20:00+00')`)
+		if !report.OK() {
+			t.Fatalf("per-run history violated: %+v", report.Violations)
+		}
+	})
 	t.Run("empty database is not a pass", func(t *testing.T) {
 		report := inTx(t, false)
 		var want int
@@ -192,7 +203,7 @@ func TestIntegrationQueryErrorIsNotAPass(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_TEST_POSTGRES_URL")
 	pool := newSchemaDB(t)
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DROP TABLE control.claim_history"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE control.claim_run_history"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Check(ctx, pool); err == nil {

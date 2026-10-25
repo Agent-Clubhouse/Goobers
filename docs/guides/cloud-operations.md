@@ -9,6 +9,22 @@ Commands whose PostgreSQL control-plane operation has not landed fail closed
 and name the owning issue. They do not read an instance root or simulate a
 successful cloud operation.
 
+## Upgrading cloud schemas from 0.6.0 alpha to 0.6.0
+
+Cloud schemas from **any 0.6.0 alpha require a stop-the-world upgrade to
+v0.6.0 stable**. Scale all old pods to zero and wait for them to terminate
+before running the new release's migration job. Take a restorable backup or
+PITR mark and supply its reference to `goobers-cloud migrate`. Start only the
+v0.6.0 pods after migrations succeed.
+
+Migration 0039 retires `control.claim_history`; history is stored exclusively
+in `control.claim_run_history`, seeded by migration 0022 during the upgrade.
+In particular, v0.6.0-alpha.6 only knows the retired table and cannot serve
+alongside the new release. The schema's minimum compatible binary is `0.6.0`:
+alpha binaries are refused by the compatibility check and remain unready.
+Do not restart alpha pods against the upgraded database. Rolling back requires
+stopping the new pods and restoring the pre-upgrade backup first.
+
 ## Local-to-cloud command map
 
 Workflow-stage and connector commands are intentionally absent: cloud workers

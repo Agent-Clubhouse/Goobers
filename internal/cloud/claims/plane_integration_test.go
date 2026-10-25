@@ -754,14 +754,12 @@ func TestPlaneHistoryRetentionMatchesFileLedger(t *testing.T) {
 	if _, err := p.Acquire(ctx, request("held", "active")); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"claim_history", "claim_run_history"} {
-		if _, err := f.owner.Exec(ctx, `
-			UPDATE control.`+table+`
-			SET claimed_at=claimed_at-$2::interval, renewed_at=renewed_at-$2::interval, released_at=released_at-$2::interval
-			WHERE instance_id=$1 AND external_id LIKE 'old-%'`,
-			pgtest.InstanceID, localscheduler.ClaimHistoryTTL+time.Hour); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := f.owner.Exec(ctx, `
+		UPDATE control.claim_run_history
+		SET claimed_at=claimed_at-$2::interval, renewed_at=renewed_at-$2::interval, released_at=released_at-$2::interval
+		WHERE instance_id=$1 AND external_id LIKE 'old-%'`,
+		pgtest.InstanceID, localscheduler.ClaimHistoryTTL+time.Hour); err != nil {
+		t.Fatal(err)
 	}
 	items := func(run string) map[string]bool {
 		t.Helper()
@@ -787,12 +785,10 @@ func TestPlaneHistoryRetentionMatchesFileLedger(t *testing.T) {
 	if _, err := p.Acquire(ctx, request("trigger-prune", "other")); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"claim_history", "claim_run_history"} {
-		var stored int
-		if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.`+table+` WHERE instance_id=$1 AND run_id='quiet'`,
-			pgtest.InstanceID).Scan(&stored); err != nil || stored != 0 {
-			t.Fatalf("quiet run %s rows after prune = %d (%v), want 0", table, stored, err)
-		}
+	var stored int
+	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim_run_history WHERE instance_id=$1 AND run_id='quiet'`,
+		pgtest.InstanceID).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("quiet run history rows after prune = %d (%v), want 0", stored, err)
 	}
 	var kept int
 	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM control.claim_run_history WHERE instance_id=$1 AND run_id='active'`,
@@ -842,49 +838,9 @@ func TestPlaneReleaseRunIsTheTerminalRelease(t *testing.T) {
 	}
 }
 
-// TestPlaneHistorySeesPredecessorRelease: during a rolling upgrade the
-// previous binary releases by appending to control.claim_history only. The
-// current plane's history must still show that run's record released.
-func TestPlaneHistorySeesPredecessorRelease(t *testing.T) {
-	f := newPlaneFixture(t)
-	r := f.leader(t, "a")
-	ctx := t.Context()
-	if got, err := r.plane.Acquire(ctx, request("42", "run-a")); err != nil || !got.Ok {
-		t.Fatalf("acquire = %+v, %v", got, err)
-	}
-	// The previous claims.Store.ReleaseScoped, verbatim, as the controller.
-	tag, err := f.controller.Exec(ctx, `
-		WITH moved AS (
-			DELETE FROM control.claim
-			WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4
-			  AND run_id=$5 AND owner_epoch=$6
-			RETURNING *
-		)
-		INSERT INTO control.claim_history
-			(instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-			 claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
-		SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,
-		       claimed_at,renewed_at,expires_at,clock_timestamp(),$7,verification
-		FROM moved`,
-		pgtest.InstanceID, "g", "github", "42", "run-a", r.handle.Load().Epoch, []byte(`{"disposition":"abandoned"}`))
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("predecessor release = %v, %v", tag, err)
-	}
-	got, err := r.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run-a", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Entries) != 0 || len(got.History) != 1 || got.History[0].ReleasedAt == nil ||
-		got.History[0].ReleaseReason.Disposition != claimrelease.Abandoned {
-		t.Fatalf("history after a predecessor release = %+v, want one released record", got)
-	}
-}
-
-// TestPlaneMixedVersionRetentionKeepsRunHistory (reviewer probe E): after the
-// previous binary releases one of a long-running run's leases, an unrelated
-// claim's prune must keep the run's other records, because its newest
-// activity across both history stores is that recent release.
-func TestPlaneMixedVersionRetentionKeepsRunHistory(t *testing.T) {
+// TestPlaneRecentReleaseRetainsRunHistory: a recent release keeps all of a
+// long-running run's records, including an old overwritten lease, through pruning.
+func TestPlaneRecentReleaseRetainsRunHistory(t *testing.T) {
 	f := newPlaneFixture(t)
 	r := f.leader(t, "review")
 	ctx := t.Context()
@@ -904,13 +860,10 @@ func TestPlaneMixedVersionRetentionKeepsRunHistory(t *testing.T) {
  UPDATE control.claim SET claimed_at=now()-interval '60 days',renewed_at=now()-interval '60 days' WHERE run_id='long-run'`); err != nil {
 		t.Fatal(err)
 	}
-	// Previous Store's release, with its production role and current live epoch.
-	tag, err := f.controller.Exec(ctx, `WITH moved AS (
- DELETE FROM control.claim WHERE instance_id=$1 AND gaggle=$2 AND provider=$3 AND external_id=$4 AND run_id=$5 AND owner_epoch=$6 RETURNING *)
- INSERT INTO control.claim_history (instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at,released_at,release_reason,verification)
- SELECT instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at,clock_timestamp(),$7,verification FROM moved`, pgtest.InstanceID, "g", "github", "held", "long-run", r.handle.Load().Epoch, []byte(`{"disposition":"completed"}`))
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("N-1 release: %v %v", tag, err)
+	release := request("held", "long-run")
+	release.Reason = claimrelease.Completed.Reason()
+	if _, err := r.plane.Release(ctx, release); err != nil {
+		t.Fatalf("release: %v", err)
 	}
 	count := func() int {
 		got, err := r.plane.List(ctx, httpapi.ClaimListRequest{RunID: "long-run", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
@@ -926,18 +879,21 @@ func TestPlaneMixedVersionRetentionKeepsRunHistory(t *testing.T) {
 		t.Fatalf("trigger: %+v %v", got, err)
 	}
 	if n := count(); n != 2 {
-		t.Fatalf("mixed-version prune lost retained history: before=2 after=%d; release just now must retain whole run for %v", n, localscheduler.ClaimHistoryTTL)
+		t.Fatalf("prune lost retained history: before=2 after=%d; release just now must retain whole run for %v", n, localscheduler.ClaimHistoryTTL)
 	}
 }
 
-// TestPlaneDualWriteIsAtomicAtOneInstant (reviewer probe): a release that
-// fails in the run-history write rolls back the claim deletion and the
-// incarnation append, and a successful one stamps both at one instant; no
-// other runtime role can touch run history.
-func TestPlaneDualWriteIsAtomicAtOneInstant(t *testing.T) {
+// TestPlaneReleaseHistoryIsAtomic: a failed history write rolls back the claim
+// deletion; a successful release completes the run record. Other runtime roles
+// cannot touch run history.
+func TestPlaneReleaseHistoryIsAtomic(t *testing.T) {
 	f := newPlaneFixture(t)
 	r := f.leader(t, "review")
 	ctx := t.Context()
+	var retired bool
+	if err := f.controller.QueryRow(ctx, `SELECT to_regclass('control.claim_history') IS NULL`).Scan(&retired); err != nil || !retired {
+		t.Fatalf("predecessor table retired=%v (%v): history must work without it", retired, err)
+	}
 	req := request("atomic", "run")
 	req.Reason = claimrelease.Completed.Reason()
 	if got, err := r.plane.Acquire(ctx, req); err != nil || !got.Ok {
@@ -949,12 +905,12 @@ func TestPlaneDualWriteIsAtomicAtOneInstant(t *testing.T) {
 	if _, err := r.plane.Release(ctx, req); err == nil {
 		t.Fatal("injected release rejection ignored")
 	}
-	var active, old int
-	if err := f.owner.QueryRow(ctx, `SELECT (SELECT count(*) FROM control.claim WHERE external_id='atomic'),(SELECT count(*) FROM control.claim_history WHERE external_id='atomic')`).Scan(&active, &old); err != nil {
+	var active, released int
+	if err := f.owner.QueryRow(ctx, `SELECT (SELECT count(*) FROM control.claim WHERE external_id='atomic'),(SELECT count(*) FROM control.claim_run_history WHERE external_id='atomic' AND released_at IS NOT NULL)`).Scan(&active, &released); err != nil {
 		t.Fatal(err)
 	}
-	if active != 1 || old != 0 {
-		t.Fatalf("non-atomic rollback: active=%d old=%d", active, old)
+	if active != 1 || released != 0 {
+		t.Fatalf("non-atomic rollback: active=%d released=%d", active, released)
 	}
 	if _, err := f.owner.Exec(ctx, `ALTER TABLE control.claim_run_history DROP CONSTRAINT review_reject_release`); err != nil {
 		t.Fatal(err)
@@ -962,12 +918,10 @@ func TestPlaneDualWriteIsAtomicAtOneInstant(t *testing.T) {
 	if _, err := r.plane.Release(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	var a, b time.Time
-	if err := f.owner.QueryRow(ctx, `SELECT a.released_at,b.released_at FROM control.claim_history a JOIN control.claim_run_history b USING(instance_id,run_id,gaggle,provider,external_id) WHERE a.external_id='atomic'`).Scan(&a, &b); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Equal(b) {
-		t.Fatalf("release instants differ %v %v", a, b)
+	got, err := r.plane.List(ctx, httpapi.ClaimListRequest{RunID: "run", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+	if err != nil || len(got.Entries) != 0 || len(got.History) != 1 ||
+		got.History[0].ReleasedAt == nil || got.History[0].ReleaseReason.Disposition != claimrelease.Completed {
+		t.Fatalf("released history = %+v (%v), want one completed run record and no lease", got, err)
 	}
 	for _, role := range []string{"goobers_api", "goobers_worker"} {
 		var exists bool
@@ -1103,7 +1057,7 @@ func TestPlaneListNamespaceFailsWhenEitherReadFails(t *testing.T) {
 	}
 
 	role := pgx.Identifier{pgroles.Controller}.Sanitize()
-	for name, table := range map[string]string{"entries": "control.claim", "history": "control.claim_history"} {
+	for name, table := range map[string]string{"entries": "control.claim", "history": "control.claim_run_history"} {
 		if _, err := f.owner.Exec(ctx, "REVOKE SELECT (verification) ON "+table+" FROM "+role); err != nil {
 			t.Fatal(err)
 		}

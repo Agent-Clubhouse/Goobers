@@ -22,7 +22,7 @@ var injections = map[string][][]string{
 		`UPDATE journal.run_seq SET last_seq = 3 WHERE run_id = 'r2'`,
 	}},
 	"no-claim-with-two-runs": {{
-		`INSERT INTO control.claim_history VALUES ('i','g','gh','42','r4','w','tok4',1,'2026-01-01 00:02:00+00','2026-01-01 00:02:00+00','2026-01-01 00:03:00+00','2026-01-01 00:04:00+00','{}',NULL)`,
+		`INSERT INTO control.claim_run_history (instance_id,gaggle,provider,external_id,run_id,workflow,owner_token,owner_epoch,claimed_at,renewed_at,expires_at,released_at,release_reason,verification) VALUES ('i','g','gh','42','r4','w','tok4',1,'2026-01-01 00:02:00+00','2026-01-01 00:02:00+00','2026-01-01 00:03:00+00','2026-01-01 00:04:00+00','{}',NULL)`,
 	}},
 	"one-acceptance-per-source-key": {{
 		`INSERT INTO control.source_receipt VALUES ('i','src3','act','fp',ARRAY['a1'],'2026-01-01 00:01:00+00')`,
