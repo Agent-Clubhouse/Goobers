@@ -23,7 +23,7 @@ if (receipts.length) {
   const match = prompt.match(/write your [^\n]+ as JSON to `([^`]+)`/);
   if (!match || path.isAbsolute(match[1]) || match[1].split('/').includes('..')) throw Error('completion contract missing');
   fs.mkdirSync(path.dirname(match[1]), {recursive: true});
-  fs.writeFileSync(match[1], JSON.stringify({status: 'success', outputs: {summary: 'kind parent consumed child receipt'}}));
+  fs.writeFileSync(match[1], JSON.stringify({status: 'success', summary: 'kind parent consumed child receipt'}));
   console.log(JSON.stringify({type: 'result', subtype: 'success', is_error: false, result: 'receipt consumed', usage: {input_tokens: 1, output_tokens: 1}}));
   process.exit(0);
 }

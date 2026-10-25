@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // The model substitute must actually inspect the materialized receipt. A
@@ -55,14 +57,11 @@ func TestModelConsumesOnlyCompletedReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var got struct {
-				Status  string
-				Outputs struct{ Summary string }
-			}
+			var got apiv1.ResultEnvelope
 			if err := json.Unmarshal(completion, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != "success" || got.Outputs.Summary != "kind parent consumed child receipt" {
+			if got.Status != apiv1.ResultSuccess || got.Summary != "kind parent consumed child receipt" {
 				t.Fatalf("completion=%s", completion)
 			}
 		})
