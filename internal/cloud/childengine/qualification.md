@@ -31,6 +31,10 @@ signing-key file, with no PostgreSQL or Azure credentials. All persistent custod
 and journal operations use the production HTTP routes and backend adapters.
 The scheduler is the production `localscheduler`/`SchedulerCapacity`; the fixture
 reserves the parent's slot after starting it rather than running trigger polling.
+Each control epoch composes its PG `journalpg.SchedulerLog` with a lease-bound
+`cloud/claims.Store` through `WithSchedulerState`, matching cloud control's
+scheduler-state wiring. Startup and takeover reconcile those durable snapshots;
+slot-limit reloads never fall back to file scheduler state.
 
 The production config-load refusal and default remain unchanged. The harness
 loads a normal fixture config and enables children only on its in-memory instance

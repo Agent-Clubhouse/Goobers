@@ -29,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	cloudclaims "github.com/goobers/goobers/internal/cloud/claims"
 	cloudconfig "github.com/goobers/goobers/internal/cloud/config"
 	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -275,11 +276,18 @@ func (h *qualificationHarness) startControl() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.scheduler = localscheduler.New(h.entries(), e.log, localscheduler.WithRunDirReconciler(schedstart.NewReconciler(h.openRuns)))
-	if h.input.RunID != "" {
-		if err := e.scheduler.Reconcile("", time.Now()); err != nil {
-			t.Fatal(err)
-		}
+	// Mirror controlscheduler_wire.go: the epoch's PG journal log and its
+	// lease-bound claims store are separate scheduler dependencies. A PG log
+	// has no directory, so leaving the default file state breaks Reload.
+	state, err := cloudclaims.New(h.pool, testInstance, manager, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.scheduler = localscheduler.New(h.entries(), e.log,
+		localscheduler.WithSchedulerState(state),
+		localscheduler.WithRunDirReconciler(schedstart.NewReconciler(h.openRuns)))
+	if err := e.scheduler.Reconcile("", time.Now()); err != nil {
+		t.Fatal(err)
 	}
 	fenced := Fenced{Pool: h.pool, InstanceID: testInstance, Lease: manager, Owner: func() *lease.Handle { return handle }, Blobs: h.blobs, Objects: h.objects,
 		Applied: &h.applied, Wait: time.Minute, Actor: "qualification-control", Now: time.Now, Adoption: &EpochAdoption{}}
