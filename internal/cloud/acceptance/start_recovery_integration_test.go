@@ -114,6 +114,52 @@ func TestPGRecoveryStaleLeaseCannotReserveRetries(t *testing.T) {
 	}
 }
 
+func TestPGRecoveryAdoptsStartAcrossChildPostureRollback(t *testing.T) {
+	first, pool := testStore(t, 1)
+	in := acceptedStartInput(t, first)
+	in.ChildWorkflowsEnabled = true
+	temporal := &pgStartClient{loseResponse: true}
+	starter := startfence.New(temporal, "cloud", NewStartAdmission(first), testGenerationAdmission{})
+	if _, err := starter.Start(t.Context(), in); err == nil {
+		t.Fatal("start response was not lost")
+	}
+	if temporal.executions != 1 {
+		t.Fatalf("Temporal executions = %d, want 1", temporal.executions)
+	}
+	if err := first.manager.Release(t.Context(), first.handle); err != nil {
+		t.Fatal(err)
+	}
+
+	successor := successorStore(t, pool)
+	recovery := startfence.New(temporal, "cloud", NewStartAdmission(successor), testGenerationAdmission{})
+	resolve := func(_ context.Context, record triggerqueue.Record) (engine.RunInput, error) {
+		reloaded := in
+		reloaded.AcceptanceID = record.ID
+		reloaded.ChildWorkflowsEnabled = false
+		return reloaded, nil
+	}
+	if err := successor.RecoverStarts(t.Context(), recovery, resolve); err != nil {
+		t.Fatal(err)
+	}
+	if temporal.executions != 1 || temporal.calls != 2 {
+		t.Fatalf("recovery executions/calls = %d/%d, want 1/2", temporal.executions, temporal.calls)
+	}
+	startedDigest, err := startfence.InputDigest(temporal.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state, persistedDigest string
+	if err := pool.QueryRow(t.Context(), `SELECT a.state, p.input_digest
+		FROM control.acceptance a JOIN control.run_pin p
+		ON p.instance_id=a.instance_id AND p.run_id=a.run_id
+		WHERE a.instance_id=$1 AND a.id=$2`, successor.instanceID, in.AcceptanceID).Scan(&state, &persistedDigest); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(triggerqueue.Dispatched) || persistedDigest != startedDigest || !temporal.input.ChildWorkflowsEnabled {
+		t.Fatalf("recovery state/digest/posture = %s/%s/%v, want dispatched/%s/true", state, persistedDigest, temporal.input.ChildWorkflowsEnabled, startedDigest)
+	}
+}
+
 func TestPGRecoverySkipsLockedRowsAndBoundsReservations(t *testing.T) {
 	store, pool := testStore(t, 1)
 	_, err := pool.Exec(t.Context(), `INSERT INTO control.acceptance

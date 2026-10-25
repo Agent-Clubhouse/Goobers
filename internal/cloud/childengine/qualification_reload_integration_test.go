@@ -4,6 +4,7 @@ package childengine
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,12 +17,11 @@ import (
 	"go.temporal.io/sdk/converter"
 
 	"github.com/goobers/goobers/internal/apicontract"
-	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
-	"github.com/goobers/goobers/internal/cloud/startfence"
+	"github.com/goobers/goobers/internal/cloud/startinput"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 // Scenario 6 changes both the workflow goal and child publication policy while
@@ -29,13 +29,18 @@ import (
 // instance posture. Existing runs retain permission; a new run is refused.
 func TestChildQualificationConfigReload(t *testing.T) {
 	h := newQualificationHarness(t)
+	h.resolveParentInput = true
 	loaded := h.InstallHTTPBarrier(func(r *http.Request) bool { return r.URL.Path == apicontract.EngineChildLoadPath })
 	run := h.StartParent()
-	if err := loaded.Wait(h.ctx); err != nil {
-		t.Fatal(err)
-	}
 	oldPins, err := h.epoch.store.RunPinsOf(h.ctx, run.GetID())
 	if err != nil {
+		t.Fatal(err)
+	}
+	startedInput := qualificationRunInput(t, h, run)
+	if !startedInput.ChildWorkflowsEnabled {
+		t.Fatal("production resolver did not pin the enabled child-workflow posture")
+	}
+	if err := loaded.Wait(h.ctx); err != nil {
 		t.Fatal(err)
 	}
 	var manifestDigest string
@@ -100,47 +105,37 @@ func TestChildQualificationConfigReload(t *testing.T) {
 		t.Fatalf("in-flight parent lost pinned posture: %+v", original)
 	}
 	h.epoch.release()
-	_, machine, err := childworkflow.StageCatalog(candidate.Config, candidate.Set, childworkflow.ParentSelection{Gaggle: "example", Workflow: "default-implement", Stage: "plan"}, childworkflow.BackendEngine, childworkflow.OfflineGooberAdmission)
+	record, _, err := h.epoch.store.Accept(h.ctx, "qualification-reloaded-parent", "qualification", h.parentStartPayload(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := h.input
-	next.RunID = ""
-	next.ChildWorkflowsEnabled = candidate.Config.EngineChildWorkflowsEnabled()
-	next.ConfigGeneration, next.Spec, next.Annotations = generation, machine.Def.Spec, machine.Def.Annotations
-	next.WorkflowDigest, next.GooberDigest, _ = parentPins(t, candidate.Config, h.configDir, candidate.Set)
-	record, _, err := h.epoch.store.Accept(h.ctx, "qualification-reloaded-parent", "qualification", []byte(`{"workflow":"default-implement"}`), time.Now())
-	if err != nil {
+	if _, err := h.startResolver().Resolve(h.ctx, record); !errors.Is(err, acceptance.ErrPermanentStart) || !errors.Is(err, startinput.ErrChildWorkflowsDisabled) {
+		t.Fatalf("new acceptance was not refused by the reloaded disabled posture: %v", err)
+	}
+	if err := h.epoch.store.RejectAccepted(h.ctx, record.ID, startinput.ErrChildWorkflowsDisabled.Error(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	next.AcceptanceID = record.ID
-	// Confirm durable pins before allowing the separate worker to execute.
-	h.KillWorker()
-	starter := startfence.New(h.temporal.Client(), h.queue, acceptance.NewStartAdmission(h.epoch.store), &h.applied)
-	started, err := starter.Start(h.ctx, next)
-	if err != nil {
+	rejected, err := h.epoch.store.Get(h.ctx, record.ID, "qualification")
+	if err != nil || rejected.State != triggerqueue.Rejected {
+		t.Fatalf("new acceptance state = %s: %v", rejected.State, err)
+	}
+	var runRows, startRows, attemptRows, childStartRows int
+	if err := h.pool.QueryRow(h.ctx, `SELECT
+		(SELECT count(*) FROM journal.run WHERE instance_id=$1 AND run_id=$2),
+		(SELECT count(*) FROM control.run_pin WHERE instance_id=$1 AND run_id=$2),
+		(SELECT count(*) FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND type='stage.started'),
+		(SELECT count(*) FROM control.child_engine_start WHERE instance_id=$1 AND parent_workflow_id=$2)`,
+		testInstance, record.RunID).Scan(&runRows, &startRows, &attemptRows, &childStartRows); err != nil {
 		t.Fatal(err)
 	}
-	releaseNext, ok, reason := h.epoch.scheduler.ReserveContinuation(started.RunID, next.Gaggle, next.WorkflowName)
-	if !ok {
-		t.Fatal(reason)
-	}
-	defer releaseNext()
-	h.StartWorker()
-	newRun := h.temporal.Client().GetWorkflow(h.ctx, started.RunID, "")
-	if err := newRun.Get(h.ctx, nil); err == nil || !strings.Contains(err.Error(), workflow.ErrChildWorkflowExecutionUnsupported.Error()) {
-		t.Fatalf("new run did not honor reloaded disabled child posture: %v", err)
-	}
-	newInput := qualificationRunInput(t, h, newRun)
-	newPins, err := h.epoch.store.RunPinsOf(h.ctx, started.RunID)
-	if err != nil || newPins.ConfigGeneration != generation || newPins.WorkflowDigest == oldPins.WorkflowDigest || newInput.ConfigGeneration != generation || newInput.ChildWorkflowsEnabled || newInput.Spec.Tasks[0].ChildWorkflows.AllowPRPublication || newInput.Spec.Tasks[0].Goal != "Plan using the reloaded configuration" {
-		t.Fatalf("new run did not use reloaded policy: pins=%+v input=%+v: %v", newPins, newInput, err)
+	if runRows != 0 || startRows != 0 || attemptRows != 0 || childStartRows != 0 {
+		t.Fatalf("refused acceptance created run/start/attempt rows: run=%d start=%d attempt=%d childStart=%d", runRows, startRows, attemptRows, childStartRows)
 	}
 	var children int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1`, testInstance).Scan(&children); err != nil || children != 1 {
 		t.Fatalf("disabled new run created another child: %d: %v", children, err)
 	}
-	t.Log("qualification scenario 6: in-flight parent and frozen child kept their generation and permission; a new run pinned the reloaded definition and was refused by the disabled instance posture")
+	t.Log("qualification scenario 6: in-flight parent and frozen child kept their generation and permission; production start resolution refused a new acceptance under the reloaded disabled posture")
 }
 
 func qualificationRunInput(t *testing.T, h *qualificationHarness, run client.WorkflowRun) engine.RunInput {

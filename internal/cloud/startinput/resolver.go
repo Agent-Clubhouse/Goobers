@@ -53,8 +53,8 @@ var ErrChildWorkflowsDisabled = errors.New("task.childWorkflows is disabled on t
 
 // refuseDisabledChildren permanently refuses a definition declaring children
 // when the instance posture disables them; it is a no-op when enabled.
-func refuseDisabledChildren(enabled bool, spec apiv1.WorkflowSpec) error {
-	if enabled {
+func refuseDisabledChildren(state triggerqueue.State, enabled bool, spec apiv1.WorkflowSpec) error {
+	if state != triggerqueue.Accepted || enabled {
 		return nil
 	}
 	for _, task := range spec.Tasks {
@@ -180,7 +180,7 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 	// the rollback (engine.childWorkflows.enabled: false) a workflow declaring
 	// children is refused before any stage rather than failing mid-run.
 	childrenEnabled := cfg.EngineChildWorkflowsEnabled()
-	if err := refuseDisabledChildren(childrenEnabled, def.Spec); err != nil {
+	if err := refuseDisabledChildren(record.State, childrenEnabled, def.Spec); err != nil {
 		return engine.RunInput{}, err
 	}
 	controls, err := runControls(cfg, project, gaggle, def)
