@@ -63,6 +63,9 @@ type qualificationHarness struct {
 	t                                     *testing.T
 	ctx                                   context.Context
 	pool                                  *pgxpool.Pool
+	// owner is the migration-owner pool, for setup that only migrations perform
+	// in production. Production paths under test always use pool.
+	owner                                 *pgxpool.Pool
 	blobs                                 *objstore.Azure
 	objects                               *objstore.Metadata
 	temporal                              *testsuite.DevServer
@@ -129,7 +132,7 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	if err := f.manager.Release(ctx, f.handle); err != nil {
 		t.Fatal(err)
 	}
-	h := &qualificationHarness{t: t, ctx: ctx, pool: controllerPool(t, f.pool), queue: "child-qualification-" + uuid.NewString(), slotLimit: 1}
+	h := &qualificationHarness{t: t, ctx: ctx, pool: controllerPool(t, f.pool), owner: f.pool, queue: "child-qualification-" + uuid.NewString(), slotLimit: 1}
 	// Register first so all worker processes are joined before their output is
 	// read, including workers replaced during a fault scenario.
 	t.Cleanup(func() {

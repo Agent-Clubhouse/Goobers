@@ -145,7 +145,9 @@ func qualificationCollectReceipt(t *testing.T, h *qualificationHarness, digest s
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.pool.Exec(h.ctx, `INSERT INTO control.blob_reference_writer_protocol (writer_class,protocol_version) VALUES ('journal',1),('recovery',1),('child-custody',1) ON CONFLICT DO NOTHING`); err != nil {
+	// Writer-class registration is a migration (owner) write, never a runtime
+	// one; the controller only reads the registry.
+	if _, err := h.owner.Exec(h.ctx, `INSERT INTO control.blob_reference_writer_protocol (writer_class,protocol_version) VALUES ('journal',1),('recovery',1),('child-custody',1) ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	var referenced bool
