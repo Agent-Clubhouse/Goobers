@@ -26,7 +26,7 @@ import (
 
 // Scenario 6 changes both the workflow goal and child publication policy while
 // a real child awaits its frozen manifest response, then rolls back the
-// instance opt-in. Existing runs retain permission; a new run is refused.
+// instance posture. Existing runs retain permission; a new run is refused.
 func TestChildQualificationConfigReload(t *testing.T) {
 	h := newQualificationHarness(t)
 	loaded := h.InstallHTTPBarrier(func(r *http.Request) bool { return r.URL.Path == apicontract.EngineChildLoadPath })
@@ -79,7 +79,7 @@ func TestChildQualificationConfigReload(t *testing.T) {
 	}, false)
 	candidate, _ := h.applied.Applied()
 	if candidate.Config == previous.Config || candidate.Config.SelfIdentity != "qualification-reloaded" || candidate.Config.EngineChildWorkflowsEnabled() || !previous.Config.EngineChildWorkflowsEnabled() {
-		t.Fatal("instance reload did not replace policy and roll back the opt-in")
+		t.Fatal("instance reload did not replace policy and disable child workflows")
 	}
 	// instance.yaml is outside the retained definition archive.
 	if reloadedGeneration != generation {

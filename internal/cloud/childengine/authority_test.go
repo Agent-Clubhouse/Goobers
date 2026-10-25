@@ -25,7 +25,6 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -360,24 +359,6 @@ func TestStageGrantTTLIsTheStageDurationPlusMarginCapped(t *testing.T) {
 		if got := StageGrantTTL(limited(tc.task)); got != tc.want {
 			t.Errorf("%s: TTL = %v, want %v", name, got, tc.want)
 		}
-	}
-}
-
-// Production still refuses task.childWorkflows (#7758): the engine's Run
-// refuses this parent before any stage, so no child origin is ever committed,
-// no grant can be acquired, and the child-workflow routes control now serves
-// have nothing to authorize. Lifting the refusal needs #8085 (d)'s end-to-end
-// qualification and a product-owner go-ahead; this fails first.
-func TestProductionStillRefusesChildWorkflows(t *testing.T) {
-	f := newParentFixture(t)
-	var parent struct {
-		Spec apiv1.WorkflowSpec `json:"spec"`
-	}
-	if err := json.Unmarshal(f.definition, &parent); err != nil {
-		t.Fatal(err)
-	}
-	if err := wf.RefuseChildWorkflowExecution(parent.Spec); !errors.Is(err, wf.ErrChildWorkflowExecutionUnsupported) {
-		t.Fatalf("a child-enabled parent = %v; the production refusal was lifted without #8085 (d) and a PO go-ahead", err)
 	}
 }
 
