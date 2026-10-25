@@ -104,6 +104,9 @@ not a guessed delay. Keep the control/worker implementations shared; do not copy
 or replace custody with mocks. Cleanup joins the worker and lease renewal,
 closes HTTP/journal resources, stops Temporal, and deletes the test blob container
 and database. A missing dependency fails with `TESTDEP_STRICT=1` in hosted CI.
+On failure, harness cleanup dumps the original worker's output and every
+restarted worker's output after joining them. Control and HTTP errors already
+go to the test log. Scenarios do not need their own worker log dump.
 
 For example, to kill the worker with a live stage grant before child submission:
 

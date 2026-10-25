@@ -3,6 +3,7 @@
 package childengine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -74,7 +75,7 @@ type qualificationHarness struct {
 	epoch                                 *qualificationEpoch
 	worker                                *exec.Cmd
 	workerDone                            chan error
-	workerLog                             *os.File
+	workerLogs                            []*bytes.Buffer
 	slotLimit                             int
 }
 
@@ -127,6 +128,15 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 		t.Fatal(err)
 	}
 	h := &qualificationHarness{t: t, ctx: ctx, pool: controllerPool(t, f.pool), queue: "child-qualification-" + uuid.NewString(), slotLimit: 1}
+	// Register first so all worker processes are joined before their output is
+	// read, including workers replaced during a fault scenario.
+	t.Cleanup(func() {
+		if t.Failed() {
+			for i, output := range h.workerLogs {
+				t.Logf("qualification worker process %d output:\n%s", i+1, output.String())
+			}
+		}
+	})
 	h.blobs = qualificationAzure(t)
 	var err error
 	h.objects, err = objstore.NewMetadataWithOptions(h.pool, h.blobs, objstore.MetadataOptions{})
@@ -392,7 +402,6 @@ func (h *qualificationHarness) KillWorker() {
 	}
 	_ = h.worker.Process.Kill()
 	<-h.workerDone
-	_ = h.workerLog.Close()
 	h.worker = nil
 }
 func (h *qualificationHarness) StartWorker() {
@@ -408,14 +417,13 @@ func (h *qualificationHarness) StartWorker() {
 	if err := os.WriteFile(file, raw, 0o600); err != nil {
 		h.t.Fatal(err)
 	}
-	output, err := os.Create(filepath.Join(h.t.TempDir(), "worker.log"))
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	h.workerLog = output
+	output := new(bytes.Buffer)
+	h.workerLogs = append(h.workerLogs, output)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestChildQualificationWorkerProcess$", "-test.v")
 	// Pass only test transport configuration: no database or Azurite credentials.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GOOBERS_CHILD_QUALIFICATION_WORKER=" + file}
+	// The same comparable writer makes os/exec serialize stdout/stderr writes;
+	// cleanup reads the buffer only after Wait has joined the copy goroutine.
 	cmd.Stdout, cmd.Stderr = output, output
 	if err := cmd.Start(); err != nil {
 		h.t.Fatal(err)
@@ -453,8 +461,6 @@ func TestChildQualificationHappyPath(t *testing.T) {
 	run := h.StartParent()
 	var result engine.RunResult
 	if err := run.Get(h.ctx, &result); err != nil {
-		data, _ := os.ReadFile(h.workerLog.Name())
-		t.Logf("worker: %s", data)
 		t.Fatal(err)
 	}
 	if result.Status != engine.StatusCompleted || result.Outputs["plan"].Summary != "parent read child receipt through blob plane" {
