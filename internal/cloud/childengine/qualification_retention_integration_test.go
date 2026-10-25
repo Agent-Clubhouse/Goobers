@@ -6,16 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/cloud/epoch"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
 func TestChildQualificationRetention(t *testing.T) {
 	h := newQualificationHarness(t)
-	held := qualificationPause(h, apicontract.EngineChildAuthorityPath)
+	barrier := h.StageBarrier("retention-before-bind")
+	h.SetStageScript(qualificationStageScript{"parent-start": {Barrier: "retention-before-bind"}})
 	run := h.StartParent()
-	request := qualificationNext(h, held)
+	if err := barrier.Wait(h.ctx); err != nil {
+		t.Fatal(err)
+	}
 	// The worker has committed stage.started but has not bound a grant. Age
 	// only retention timestamps; Temporal liveness, pins and the sweep are real.
 	before, err := h.epoch.store.RunPinsOf(h.ctx, run.GetID())
@@ -46,7 +48,7 @@ func TestChildQualificationRetention(t *testing.T) {
 	if err := h.pool.QueryRow(h.ctx, `SELECT terminal_at FROM control.run_pin WHERE instance_id=$1 AND run_id=$2`, testInstance, run.GetID()).Scan(&terminal); err != nil || terminal != nil {
 		t.Fatalf("live parent pin marked terminal: %v (%v)", terminal, err)
 	}
-	request.Resume()
+	barrier.Release()
 	qualificationCompleted(h, run)
 	var grants int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_authority WHERE instance_id=$1 AND parent_run_id=$2`, testInstance, run.GetID()).Scan(&grants); err != nil || grants != 1 {

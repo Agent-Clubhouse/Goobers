@@ -8,12 +8,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"go.temporal.io/sdk/client"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/childadmissionclient"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
@@ -35,63 +35,53 @@ func qualificationAge(h *qualificationHarness, query string, args ...any) {
 	}
 }
 
-// qualificationPause holds transport before entering the control router, so a
-// held request neither owns the epoch lock nor changes a production decision.
-// Install before starting the worker. Probes still use the real HTTP listener.
-func qualificationPause(h *qualificationHarness, path string) <-chan *qualificationHeldRequest {
-	next := h.server.Config.Handler
-	held := make(chan *qualificationHeldRequest, 4)
-	suffix := path[strings.LastIndex(path, "}")+1:]
-	h.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, suffix) || r.Header.Get("X-Qualification-Probe") == "true" {
-			next.ServeHTTP(w, r)
-			return
+// qualificationBoundRequest re-delivers the worker's already-bound grant
+// through the production authority client. It cannot silently mint a new grant.
+func qualificationBoundRequest(h *qualificationHarness) *qualificationSubmission {
+	h.t.Helper()
+	request := engine.ChildAuthorityRequest{RunID: h.input.RunID}
+	for _, event := range qualificationEvents(h) {
+		if event.Type != journal.EventStageStarted {
+			continue
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		origin, err := journal.ChildWorkflowOriginForEvent(h.input.RunID, event)
 		if err != nil {
-			http.Error(w, "read interrupted request", http.StatusBadRequest)
-			return
+			h.t.Fatal(err)
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		request := &qualificationHeldRequest{body: body, header: r.Header.Clone(), resume: make(chan struct{})}
-		select {
-		case held <- request:
-		case <-r.Context().Done():
-			return
-		case <-h.ctx.Done():
-			return
+		if origin != nil {
+			request.Origin = *origin
 		}
-		select {
-		case <-request.resume:
-			next.ServeHTTP(w, r)
-		case <-r.Context().Done():
-		case <-h.ctx.Done():
-		}
-	})
-	return held
+	}
+	var boundID string
+	if err := h.pool.QueryRow(h.ctx, `SELECT grant_id FROM control.child_authority
+		WHERE instance_id=$1 AND parent_run_id=$2 AND occurrence=$3 AND NOT revoked`,
+		testInstance, h.input.RunID, request.Origin.StageOccurrence).Scan(&boundID); err != nil {
+		h.t.Fatal(err)
+	}
+	key, err := podauth.LoadKeyRingFile(h.keyFile, "")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	authority := childadmissionclient.AuthorityForWorker(h.server.URL, h.server.URL, "qualification-probe", key, journal.NewRegistryScrubber())
+	grant, err := authority.AcquireChildAuthority(h.ctx, request)
+	if err != nil || grant.GrantID != boundID {
+		h.t.Fatalf("re-delivery did not preserve the worker's bound grant: %v", err)
+	}
+	body, err := json.Marshal(map[string]string{"source": generatedChild})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return &qualificationSubmission{body: body, header: http.Header{
+		"Authorization": {"Bearer " + grant.BearerToken}, "Content-Type": {"application/json"},
+	}}
 }
 
-type qualificationHeldRequest struct {
+type qualificationSubmission struct {
 	body   []byte
 	header http.Header
-	resume chan struct{}
-	once   sync.Once
 }
 
-func (r *qualificationHeldRequest) Resume() { r.once.Do(func() { close(r.resume) }) }
-
-func qualificationNext(h *qualificationHarness, held <-chan *qualificationHeldRequest) *qualificationHeldRequest {
-	h.t.Helper()
-	select {
-	case request := <-held:
-		return request
-	case <-h.ctx.Done():
-		h.t.Fatal("worker did not reach the requested durable boundary:", h.ctx.Err())
-		return nil
-	}
-}
-
-func qualificationProbe(h *qualificationHarness, captured *qualificationHeldRequest, path, key string, status int, code string) []byte {
+func qualificationProbe(h *qualificationHarness, captured *qualificationSubmission, path, key string, status int, code string) []byte {
 	h.t.Helper()
 	path = strings.Replace(path, "{run}", h.input.RunID, 1)
 	request, err := http.NewRequestWithContext(h.ctx, http.MethodPost, h.server.URL+path, bytes.NewReader(captured.body))
@@ -99,7 +89,6 @@ func qualificationProbe(h *qualificationHarness, captured *qualificationHeldRequ
 		h.t.Fatal(err)
 	}
 	request.Header = captured.header.Clone()
-	request.Header.Set("X-Qualification-Probe", "true")
 	if key != "" {
 		request.Header.Set(httpapi.HeaderIdempotencyKey, key)
 	}
@@ -124,7 +113,7 @@ func qualificationProbe(h *qualificationHarness, captured *qualificationHeldRequ
 	return raw
 }
 
-func qualificationGrant(h *qualificationHarness, request *qualificationHeldRequest) podauth.ChildWorkflowGrant {
+func qualificationGrant(h *qualificationHarness, request *qualificationSubmission) podauth.ChildWorkflowGrant {
 	h.t.Helper()
 	key, err := podauth.LoadKeyRingFile(h.keyFile, podauth.CredentialGrantKeyDomain)
 	if err != nil {

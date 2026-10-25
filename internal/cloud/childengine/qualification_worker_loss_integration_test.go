@@ -20,13 +20,19 @@ import (
 func TestChildQualificationWorkerLoss(t *testing.T) {
 	t.Run("completion", func(t *testing.T) {
 		h := newQualificationHarness(t)
-		held := qualificationPause(h, apicontract.ChildWorkflowStartPath)
+		barrier := h.StageBarrier("live-grant")
+		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "live-grant"}})
 		run := h.StartParent()
-		request := qualificationNext(h, held)
+		if err := barrier.Wait(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		request := qualificationBoundRequest(h)
 		grant := qualificationGrant(h, request)
 		h.KillWorker()
+		qualificationRunning(h, run)
 		qualificationLiveGrant(h, request)
-		// The executor is scripted: report its result through the real Temporal
+		// Local stage activities have no heartbeat (#8230); their timeout
+		// exceeds this fixture. Report the scripted executor result via Temporal
 		// RPC after killing the worker. Production Run commits stage/run finish.
 		// The dead worker cannot execute its deferred grant release, so the
 		// eventual refusal specifically exercises the parent-liveness boundary.
@@ -56,11 +62,16 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 	})
 	t.Run("ttl", func(t *testing.T) {
 		h := newQualificationHarness(t)
-		held := qualificationPause(h, apicontract.ChildWorkflowStartPath)
+		barrier := h.StageBarrier("live-grant")
+		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "live-grant"}})
 		run := h.StartParent()
-		request := qualificationNext(h, held)
+		if err := barrier.Wait(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		request := qualificationBoundRequest(h)
 		grant := qualificationGrant(h, request)
 		h.KillWorker()
+		qualificationRunning(h, run)
 		qualificationLiveGrant(h, request)
 		// Advance only the retained grant's expiry past the database clock.
 		// The signed bearer remains unexpired: the production custody check,
@@ -78,17 +89,27 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 	})
 	t.Run("replacement", func(t *testing.T) {
 		h := newQualificationHarness(t)
-		held := qualificationPause(h, apicontract.ChildWorkflowStartPath)
+		barrier := h.StageBarrier("live-grant")
+		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "live-grant"}})
 		run := h.StartParent()
-		oldRequest := qualificationNext(h, held)
+		if err := barrier.Wait(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		oldRequest := qualificationBoundRequest(h)
 		oldGrant := qualificationGrant(h, oldRequest)
 		h.KillWorker()
-		// Report the interrupted scripted executor through Temporal's activity
+		// With no local-stage heartbeat (#8230), report the interrupted
+		// scripted executor through Temporal's activity
 		// result API. This does not qualify automatic worker-loss detection:
 		// the retry, replacement origin and bound grant are production paths.
 		qualificationSettleInterrupted(h, run, nil, temporal.NewApplicationError("qualification executor interrupted", engine.FailureTypeInfrastructure))
+		replacement := h.StageBarrier("replacement-grant")
+		h.SetStageScript(qualificationStageScript{"parent-granted": {Barrier: "replacement-grant"}})
 		h.StartWorker()
-		newRequest := qualificationNext(h, held)
+		if err := replacement.Wait(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		newRequest := qualificationBoundRequest(h)
 		newGrant := qualificationGrant(h, newRequest)
 		if newGrant.ID == oldGrant.ID || newGrant.AttemptID == oldGrant.AttemptID || newGrant.StageOccurrence != oldGrant.StageOccurrence {
 			t.Fatal("restarted worker did not bind a fresh grant for the replacement attempt")
@@ -117,7 +138,7 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 			t.Fatal("journal lacks the original and replacement stage attempts")
 		}
 		qualificationNoChildren(h)
-		newRequest.Resume()
+		replacement.Release()
 		qualificationCompleted(h, run)
 	})
 }
@@ -130,7 +151,7 @@ func qualificationRunning(h *qualificationHarness, run client.WorkflowRun) {
 	}
 }
 
-func qualificationLiveGrant(h *qualificationHarness, request *qualificationHeldRequest) {
+func qualificationLiveGrant(h *qualificationHarness, request *qualificationSubmission) {
 	h.t.Helper()
 	raw := qualificationProbe(h, request, apicontract.ChildWorkflowValidatePath, "", http.StatusOK, "")
 	var result apicontract.ChildWorkflowValidationResponse

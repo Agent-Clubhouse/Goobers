@@ -14,21 +14,26 @@ import (
 
 func TestChildQualificationFailover(t *testing.T) {
 	h := newQualificationHarness(t)
-	held := qualificationPause(h, apicontract.ChildWorkflowStartPath)
+	barrier := h.InstallHTTPBarrier(func(request *http.Request) bool {
+		return request.Method == http.MethodPost && request.URL.Path == apicontract.EngineChildAuthorityPath
+	})
 	run := h.StartParent()
-	request := qualificationNext(h, held)
-	grant := qualificationGrant(h, request)
+	if err := barrier.Wait(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var boundID string
 	var owner int64
-	if err := h.pool.QueryRow(h.ctx, `SELECT owner_epoch FROM control.child_authority
-		WHERE instance_id=$1 AND parent_run_id=$2 AND grant_id=$3 AND NOT revoked`, testInstance, run.GetID(), grant.ID).Scan(&owner); err != nil || owner != h.epoch.handle.Epoch {
+	if err := h.pool.QueryRow(h.ctx, `SELECT grant_id,owner_epoch FROM control.child_authority
+		WHERE instance_id=$1 AND parent_run_id=$2 AND NOT revoked`, testInstance, run.GetID()).Scan(&boundID, &owner); err != nil || owner != h.epoch.handle.Epoch {
 		t.Fatalf("bind did not commit in predecessor epoch: %d (%v)", owner, err)
 	}
 	var children int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage WHERE instance_id=$1 AND parent_run_id=$2`, testInstance, run.GetID()).Scan(&children); err != nil || children != 0 {
 		t.Fatalf("submit overtook failover boundary: %d (%v)", children, err)
 	}
-	// Voluntary takeover occurs after the real bound row commits and before
-	// submit enters the router. No lease-expiry or Kubernetes claim is made.
+	// Voluntary takeover occurs after the real bound row commits, with its
+	// acknowledgement held outside routerMu, before the worker can submit.
+	// No lease-expiry or Kubernetes claim is made.
 	h.FailoverControl()
 	if h.epoch.handle.Epoch <= owner {
 		t.Fatal("control epoch did not advance")
@@ -52,6 +57,11 @@ func TestChildQualificationFailover(t *testing.T) {
 		t.Fatalf("failover over-admitted %d runs for one parent, bound is 1", len(releases))
 	}
 	t.Logf("failover over-admission: %d extra runs for one parent", len(releases))
+	request := qualificationBoundRequest(h)
+	grant := qualificationGrant(h, request)
+	if grant.ID != boundID {
+		t.Fatal("takeover replaced the predecessor's bound grant")
+	}
 	var first, duplicate apicontract.ChildWorkflowResponse
 	raw := qualificationProbe(h, request, apicontract.ChildWorkflowStartPath, "qualification-child", http.StatusAccepted, "")
 	if err := json.Unmarshal(raw, &first); err != nil || first.RunID == "" || first.Duplicate {
@@ -68,7 +78,7 @@ func TestChildQualificationFailover(t *testing.T) {
 		WHERE a.instance_id=$1 AND a.parent_run_id=$2`, testInstance, run.GetID(), grant.ID, h.epoch.handle.Epoch).Scan(&adopted); err != nil || !adopted {
 		t.Fatalf("successor lost bound custody: adopted=%t (%v)", adopted, err)
 	}
-	request.Resume()
+	barrier.Release()
 	qualificationCompleted(h, run)
 	var current int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage

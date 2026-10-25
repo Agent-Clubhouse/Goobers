@@ -187,7 +187,7 @@ nightly remain unqualified by this happy-path test.
 
 The retention, worker-loss, and failover scenario files add scenarios 2–4.
 Their qualification still requires the hosted event evidence described above.
-They pause the worker's HTTP request before it enters the control router;
+They use the shared stage barriers and outer HTTP response barrier;
 all resumed requests and probes use the production authenticated HTTP planes.
 Timestamp injection uses a separate database setup connection; runtime pools
 keep their controller role and column grants.
@@ -200,12 +200,14 @@ keep their controller role and column grants.
   parent is running and its TTL has not expired. One case ages only the retained
   grant expiry, leaving its signed bearer unexpired, to exercise the production
   database-clock refusal independently of parent liveness.
-- The scripted local executor has no short worker-loss heartbeat. After killing
-  it, the completion/replacement cases report its result or infrastructure
+- The scripted local executor has no worker-loss heartbeat (#8230), and the
+  production timeout's five-minute grace exceeds this fixture's deadline.
+  After killing it, the completion/replacement cases report its result or infrastructure
   failure with Temporal `CompleteActivityByID`. Production `Run` performs the
   completion or retry, commits the journal, and obtains the replacement grant.
   These cases do not qualify automatic worker-loss detection or Kubernetes.
-- Control failover occurs after the grant row commits and before child submit.
+- Control failover holds the bind response after the grant row commits and
+  before the worker receives the acknowledgement or submits a child.
   `FailoverControl` performs voluntary takeover. The successor reconstructs
   scheduler capacity, adopts custody, serves submission and idempotent replay,
   and completes the child/parent. Concurrent held scheduler reservations probe
