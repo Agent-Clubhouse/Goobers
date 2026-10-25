@@ -10,13 +10,14 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jackc/pgx/v5"
+	"go.temporal.io/sdk/client"
+
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
-	"github.com/jackc/pgx/v5"
-	"go.temporal.io/sdk/client"
 )
 
 // qualificationAge changes only scenario timestamps with a separate setup
