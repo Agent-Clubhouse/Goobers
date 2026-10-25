@@ -24,18 +24,28 @@ not use Temporal's in-memory workflow test environment.
    plane using a scoped pod bearer and verifies its digest, size, child identity,
    terminal state, and output. The final parent result proves this read occurred.
 
-The container executor and surrender store are scripted instead of invoking an
-LLM or launching a Kubernetes pod. Grant acquisition, polling control-owned
-acceptance, fenced grant revocation and stopped-handoff sealing, and `ChildWait`
-construction run through the
-production dispatch adapter. The scripted executor acknowledges its own return
-as writer termination; exact Kubernetes UID/finalizer/container stop evidence
-remains covered by dispatcher unit tests and still requires scenario 10's real
-Kubernetes qualification. No fixture constructs `ChildWait`.
+The harness runs the real Kubernetes dispatcher against a test-only HTTP
+`PodAPI`. The fixture owns simulated pod objects, container executors, and a
+shared surrender directory, independently of worker subprocesses. Creation
+assigns an immutable UID to the production-rendered pod. Adoption uses the real
+`Dispatcher.AdoptPod` identity checks and joins that existing execution; it never
+creates a replacement or repeats parent submission. Namespace comes from the
+instance's gaggle configuration, and the shared fixture instance ID is a valid
+durable ID so production renders its instance label.
+
+Only container execution, kit content, and Kubernetes API responses are
+simulated. Grant acquisition, polling control-owned acceptance, exact-UID
+adoption, fenced grant revocation and stopped-handoff sealing, and `ChildWait`
+construction use production code. On deletion the simulated executor is canceled
+and joined before its container reports `Terminated`. The retained finalizer,
+isolated production pod spec and same UID are checked by the real dispatcher
+before `ParentWritersStopped` can become true. A running or replaced object
+cannot supply stop proof. The fixture does not qualify real Kubernetes/kubelet
+behavior; scenario 10 remains required for that. No fixture constructs `ChildWait`.
 Control uses the runtime controller database role;
-the worker subprocess receives only the Temporal address, HTTP endpoint, and
-signing-key file, with no PostgreSQL or Azure credentials. All persistent custody
-and journal operations use the production HTTP routes and backend adapters.
+the worker subprocess receives the Temporal address, fixture HTTP endpoint, signing-key file,
+namespace mapping, and shared surrender directory, with no PostgreSQL or Azure
+credentials. All child admission custody and journal operations use the production HTTP routes and backend adapters.
 The scheduler is the production `localscheduler`/`SchedulerCapacity`; the fixture
 reserves the parent's slot after starting it rather than running trigger polling.
 Each control epoch composes its PG `journalpg.SchedulerLog` with a lease-bound
@@ -68,6 +78,23 @@ Add a `qualification_<scenario>_integration_test.go` in package `childengine`:
   worker, and returns the real Temporal `client.WorkflowRun`.
 - `KillWorker()` kills and joins only the harness-owned worker PID;
   `StartWorker()` replaces it using the same task queue and durable services.
+  Simulated pods and their executors survive the kill. Surrenders remain keyed
+  by run, stage, and physical `IdentityAttempt`; adoption increments neither
+  the logical attempt nor `PodAttempt`.
+- `WaitForPodCustody(run)` waits for a custody-bearing heartbeat in Temporal's
+  pending activity details and checks its UID against the retained pod. Call it
+  after a stage barrier and **before killing the worker** to test adoption.
+  Observing the local callback or the initial heartbeat is insufficient: the
+  initial heartbeat precedes creation, and RPC delivery is throttled to eight
+  seconds. Production workflow recovery passes that recorded custody into the
+  replacement `DispatchStage`; the replacement never reconstructs it from disk.
+- `SetPodCustodyReporting(false)` explicitly disables receipt reporting for a
+  missing-custody fault scenario. Reporting defaults to **on**. Set it before
+  starting the worker. The real dispatcher still creates the pod, but its
+  engine-installed custody callback is suppressed. A killed worker then produces
+  a real heartbeat timeout without custody and production fails closed with
+  `childHandoffFailure`, without fresh dispatch. This hook does not revoke or
+  expire the grant; assert the actual durable grant state in the scenario.
 - `InstallHTTPBarrier(match)` holds the first matching HTTP response **after**
   the real route finishes, before the client receives it. `Wait(ctx)` observes
   that boundary; `Release()` delivers the original status, headers, and body.
@@ -75,7 +102,7 @@ Add a `qualification_<scenario>_integration_test.go` in package `childengine`:
   This barrier is outside `routerMu`. Do not block an inner route handler:
   routing holds `routerMu.RLock` through `ServeHTTP`, so an inner gate would
   deadlock `FailoverControl`, which needs its write lock to retire the epoch.
-- `StageBarrier(name)` creates a named worker-stage barrier. Before starting
+- `StageBarrier(name)` creates a named container-stage barrier. Before starting
   a worker, call `SetStageScript(qualificationStageScript{...})`; the script is
   serialized into the subprocess configuration. Each phase accepts a `Barrier`
   name, an optional `Result` (`*apiv1.ResultEnvelope`), or an `Error` string.
@@ -87,6 +114,8 @@ Add a `qualification_<scenario>_integration_test.go` in package `childengine`:
   a fresh dispatch; other errors follow the normal activity policy.
   Named barriers hold every visit, including worker retries, until released;
   scripts persist across worker replacement. Change scripts only while stopped.
+  An already-created pod retains its original script: adopting it joins that
+  execution instead of restarting phases or submitting a second child.
   Production parent dispatch and scripted child stages heartbeat immediately and every second, including while a
   barrier or HTTP response is held and during cancellation cleanup. The worker
   uses production's eight-second maximum heartbeat RPC throttle, so heartbeat
@@ -131,12 +160,13 @@ run := h.StartParent()
 if err := barrier.Wait(h.ctx); err != nil {
     t.Fatal(err)
 }
-// Assert durable binding, kill the worker, then test the old grant's refusal.
+// Assert durable binding and wait for Temporal to persist exact pod custody.
+custody := h.WaitForPodCustody(run)
 h.KillWorker()
 barrier.Release()
 h.StartWorker()
 // Assert the scenario's expected workflow and custody outcome using run.
-_ = run
+_ = custody
 ```
 
 HTTP and stage barriers unblock on request cancellation and are released during
