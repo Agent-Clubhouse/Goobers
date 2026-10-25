@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -140,5 +141,25 @@ func TestDispatchStageChildHandoffRefusals(t *testing.T) {
 				t.Fatalf("error permits stage retry: %v", err)
 			}
 		})
+	}
+}
+
+func TestProductionChildHandoffFailureDoesNotRetryStage(t *testing.T) {
+	f := newChildFixture()
+	env, _ := childEnvironmentWithEntry(t, f, Run)
+	calls := 0
+	refused := func(context.Context, apiv1.InvocationEnvelope, string, string, apiv1.WorkspaceMode, string) (DispatchStageResult, error) {
+		calls++
+		return DispatchStageResult{}, childHandoffFailure(errors.New("parent stop is ambiguous"))
+	}
+	for _, name := range []string{ActInvokeGoober, actInvokeGooberCancelSafe} {
+		env.RegisterActivityWithOptions(refused, activity.RegisterOptions{Name: name, DisableAlreadyRegisteredCheck: true})
+	}
+	in := childParentInput()
+	in.ChildWorkflowsEnabled = true
+	in.Spec.Tasks[0].Retry = &apiv1.RetryPolicy{MaxAttempts: 3}
+	env.ExecuteWorkflow(Run, in)
+	if env.GetWorkflowError() == nil || calls != 1 || len(f.admissions) != 0 {
+		t.Fatalf("ambiguous stop: error=%v calls=%d admissions=%d", env.GetWorkflowError(), calls, len(f.admissions))
 	}
 }
