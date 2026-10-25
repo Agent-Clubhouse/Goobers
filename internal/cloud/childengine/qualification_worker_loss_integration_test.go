@@ -249,7 +249,7 @@ func qualificationRetryParent(h *qualificationHarness) {
       automated:
         check: status-equals
       branches:
-        pass: "@complete"
+        pass: ""
         fail: plan
         escalate: "@abort"
 `
