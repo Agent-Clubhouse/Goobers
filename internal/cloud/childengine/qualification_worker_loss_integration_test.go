@@ -78,15 +78,16 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		qualificationDispatchHistory(h, run, 3, 1, false)
 		newRequest := qualificationBoundRequest(h)
 		newGrant := qualificationGrant(h, newRequest)
-		if newGrant.ID == oldGrant.ID || newGrant.AttemptID == oldGrant.AttemptID || newGrant.StageOccurrence != oldGrant.StageOccurrence {
+		if newGrant.ID == oldGrant.ID || newGrant.AttemptID == oldGrant.AttemptID ||
+			newGrant.StageOccurrence == oldGrant.StageOccurrence {
 			t.Fatalf("retry authority did not advance the attempt: old=%+v new=%+v", oldGrant, newGrant)
 		}
 		qualificationProbe(h, oldRequest, apicontract.ChildWorkflowStartPath, "stale-attempt", http.StatusForbidden, "child_workflow_authority_changed")
 		var current bool
 		if err := h.pool.QueryRow(h.ctx, `SELECT a.grant_id=$3 AND a.attempt_id=$4 AND NOT a.revoked AND p.cancelled_at IS NULL
 			FROM control.child_authority a JOIN control.child_parent p USING (instance_id,gaggle,parent_run_id)
-			WHERE a.instance_id=$1 AND a.parent_run_id=$2`,
-			testInstance, run.GetID(), newGrant.ID, newGrant.AttemptID).Scan(&current); err != nil || !current {
+			WHERE a.instance_id=$1 AND a.parent_run_id=$2 AND a.occurrence=$5`,
+			testInstance, run.GetID(), newGrant.ID, newGrant.AttemptID, newGrant.StageOccurrence).Scan(&current); err != nil || !current {
 			t.Fatalf("replacement authority custody: %t (%v)", current, err)
 		}
 		replacement.Release()
