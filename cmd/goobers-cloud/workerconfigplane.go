@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,12 @@ type workerConfigPlaneSetup struct {
 }
 
 type workerConfigPlaneUsageError struct{ error }
+
+func workerConfigKeyFlags(fs *flag.FlagSet) (*string, *string) {
+	configKeyFile := fs.String("config-key-file", workerEnvOr("GOOBERS_WORKER_CONFIG_KEY_FILE", ""), "shared signing key for worker configuration fetches")
+	configKeyRingFile := fs.String("config-keyring-file", workerEnvOr("GOOBERS_WORKER_CONFIG_KEYRING_FILE", ""), "JSON key ring for worker configuration fetches; exclusive with --config-key-file")
+	return configKeyFile, configKeyRingFile
+}
 
 func prepareWorkerConfigPlane(endpoint, keyFile, keyRingFile, workRoot string) (workerConfigPlaneSetup, error) {
 	if keyFile != "" && keyRingFile != "" {
