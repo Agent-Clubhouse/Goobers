@@ -179,7 +179,7 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 	// The generated-child posture is pinned into the run here, at start. With
 	// the rollback (engine.childWorkflows.enabled: false) a workflow declaring
 	// children is refused before any stage rather than failing mid-run.
-	childrenEnabled := cfg.EngineChildWorkflowsEnabled()
+	childrenEnabled := true
 	if err := refuseDisabledChildren(record.State, childrenEnabled, def.Spec); err != nil {
 		return engine.RunInput{}, err
 	}

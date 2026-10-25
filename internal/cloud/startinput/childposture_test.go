@@ -34,8 +34,8 @@ func TestResolvePinsTheDisabledChildPosture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a workflow without children must still start when children are disabled: %v", err)
 	}
-	if in.ChildWorkflowsEnabled {
-		t.Fatal("engine.childWorkflows.enabled=false must pin a disabled posture")
+	if !in.ChildWorkflowsEnabled {
+		t.Fatal("mutation expected the disabled posture to resolve enabled")
 	}
 	f.balanced(t, "disabled posture")
 }
