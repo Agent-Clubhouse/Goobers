@@ -134,6 +134,11 @@ func (r *runJournal) childAdmissionPlanFor(ctx workflow.Context, in RunInput, t 
 		Request: request, ParentWorkflow: in.WorkflowName, Stage: t.Name, OriginSeq: receipt.Seq,
 		ParentWorkflowID: info.WorkflowExecution.ID, ParentTemporalRunID: info.WorkflowExecution.RunID,
 	}}
+	// Preserve old admission command payloads on replay. New admissions carry
+	// the parent's pinned permission into immutable child custody.
+	if workflow.GetVersion(ctx, "engine-child-admission-posture-v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		plan.Input.ChildWorkflowsEnabled = in.ChildWorkflowsEnabled
+	}
 	return plan, plan.validate(in)
 }
 

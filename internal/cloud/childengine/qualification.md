@@ -32,7 +32,12 @@ reserves the parent's slot after starting it rather than running trigger polling
 The production config-load refusal and default remain unchanged. The harness
 loads a normal fixture config and enables children only on its in-memory instance
 config and the parent's pinned `RunInput`. Retained generation contents still pass
-normal validation. No process-wide switch or production bypass is installed.
+normal validation. No process-wide switch or production bypass is installed. The parent's permission
+travels in the versioned admission command and is frozen into the child manifest.
+Production `Run` verifies the child's Temporal lineage and loads this digest-bound
+permission before executing. Neither the current config nor an unverified child
+input boolean can enable a frozen child. The accompanying production-entry unit
+tests cover enabled and disabled manifests and a disabled parent.
 
 ## Adding scenarios
 

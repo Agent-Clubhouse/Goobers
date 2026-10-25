@@ -218,6 +218,7 @@ func (f *childFixture) Admit(_ context.Context, in ChildAdmissionInput) (ChildRu
 	}
 	f.calls = append(f.calls, "admit")
 	manifest := childManifestFor(in.Request)
+	manifest.Input.ChildWorkflowsEnabled = in.ChildWorkflowsEnabled
 	if f.changeLoad != nil {
 		f.changeLoad(&manifest)
 	}
@@ -276,6 +277,10 @@ type childRegistrar interface {
 // name with the activities this slice may schedule.
 func registerChildProtocol(r childRegistrar, a *Activities, f *childFixture) {
 	r.RegisterWorkflowWithOptions(runWithChildWorkflows, workflow.RegisterOptions{Name: "Run"})
+	registerChildActivities(r, a, f)
+}
+
+func registerChildActivities(r childRegistrar, a *Activities, f *childFixture) {
 	r.RegisterActivity(a.EmitJournal)
 	r.RegisterActivity(a.AdmitEngineChild)
 	r.RegisterActivity(a.LoadEngineChild)

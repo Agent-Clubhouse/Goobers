@@ -2,8 +2,8 @@ package engine
 
 // Generated-child execution (HA-P4-09): the parent parks, starts the frozen
 // child as a Temporal child workflow of Run, and continues the same stage
-// occurrence with the bounded result. Reachable only under the protocol
-// context; production Run refuses frozen inputs until #7758 qualifies.
+// occurrence with the bounded result. Production children load their immutable
+// admission and execute only with the permission pinned by their parent.
 
 import (
 	"context"
@@ -263,6 +263,8 @@ func waitEngineChild(ctx workflow.Context, b ChildRunBinding, wait livejournal.A
 		WaitForCancellation: true, WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE, WorkflowExecutionTimeout: remaining + childCleanupTimeout,
 		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}})
 	enabled := true
+	// ManifestDigest carries the parent's frozen admission posture across the
+	// workflow boundary; runFrozenChild reads it through LoadEngineChild.
 	future := workflow.ExecuteChildWorkflow(childCtx, Run, RunInput{RunID: b.Child.RunID, Gaggle: b.Child.Identity.Gaggle, FrozenChild: &b, PreviewFeaturesEnabled: &enabled, LiveJournal: true})
 	if err = awaitChildFuture(ctx, owned, future, cancelChild, remaining); err != nil {
 		return cleanup(err)
@@ -330,7 +332,12 @@ func awaitChildFuture(ctx, owned workflow.Context, future workflow.ChildWorkflow
 // runFrozenChild executes an admitted child from its verified manifest and
 // always returns through the trusted finalizer, success or not.
 func runFrozenChild(ctx workflow.Context, in RunInput) (RunResult, error) {
-	if !childProtocolEnabled(ctx) {
+	// Legacy internal-entry histories keep their original command sequence.
+	// Production children must load their immutable admission before deciding
+	// permission. The parent input supplies only the digest-bound receipt,
+	// never an ambient configuration switch or an independently asserted bit.
+	pinnedPosture := !childProtocolEnabled(ctx)
+	if pinnedPosture && workflow.GetVersion(ctx, "engine-frozen-child-posture-v1", workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 		return RunResult{}, errors.New("engine: generated child execution remains disabled")
 	}
 	if in.Spec.Start != "" || len(in.Spec.Tasks) != 0 {
@@ -347,6 +354,9 @@ func runFrozenChild(ctx workflow.Context, in RunInput) (RunResult, error) {
 	var frozen RunInput
 	if err := workflow.ExecuteActivity(childActivityContext(ctx), "LoadEngineChild", binding).Get(ctx, &frozen); err != nil {
 		return RunResult{}, err
+	}
+	if pinnedPosture && !frozen.ChildWorkflowsEnabled {
+		return RunResult{}, errors.New("engine: generated child execution remains disabled by its parent's pinned posture")
 	}
 	r := binding.Request
 	frozen.childLineage = &journal.ChildLineage{Gaggle: r.Gaggle, ParentRunID: r.ParentRunID, ParentWorkflow: binding.ParentWorkflow, StageOccurrence: r.Origin.StageOccurrence,

@@ -71,7 +71,8 @@ const (
 type RunInput struct {
 	// childLineage is derived only from a verified frozen binding during workflow execution.
 	childLineage *journal.ChildLineage
-	// FrozenChild is internal protocol data; the production Run entry refuses it.
+	// FrozenChild is an immutable admission reference. Production Run verifies
+	// its lineage and loads the parent permission from its pinned manifest.
 	FrozenChild *ChildRunBinding `json:"frozenChild,omitempty"`
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
 	SelfExecutionDenied bool   `json:"selfExecutionDenied,omitempty"`
