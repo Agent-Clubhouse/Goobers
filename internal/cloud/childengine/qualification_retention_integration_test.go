@@ -59,7 +59,7 @@ func TestChildQualificationRetention(t *testing.T) {
 		t.Fatalf("live parent pin marked terminal: %v (%v)", terminal, err)
 	}
 	barrier.Release()
-	qualificationCompleted(h, run)
+	qualificationChildCompleted(h, run)
 	h.assertProductionChildHandoff(run)
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_authority WHERE instance_id=$1 AND parent_run_id=$2`, testInstance, run.GetID()).Scan(&grants); err != nil || grants != 1 {
 		t.Fatalf("grant binding after acceptance pruning: %d (%v)", grants, err)

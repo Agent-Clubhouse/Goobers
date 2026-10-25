@@ -79,7 +79,7 @@ func TestChildQualificationFailover(t *testing.T) {
 		t.Fatalf("successor lost bound custody: adopted=%t (%v)", adopted, err)
 	}
 	barrier.Release()
-	qualificationCompleted(h, run)
+	qualificationChildCompleted(h, run)
 	h.assertProductionChildHandoff(run)
 	var current int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM control.child_lineage

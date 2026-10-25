@@ -139,7 +139,7 @@ func qualificationEvents(h *qualificationHarness) []journal.Event {
 	return events
 }
 
-func qualificationCompleted(h *qualificationHarness, run client.WorkflowRun) {
+func qualificationChildCompleted(h *qualificationHarness, run client.WorkflowRun) {
 	h.t.Helper()
 	var result engine.RunResult
 	if err := run.Get(h.ctx, &result); err != nil {
