@@ -12,12 +12,14 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/goobers/goobers/internal/runtimewiring"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
 	"github.com/goobers/goobers/internal/configmirror"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/podauth"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func TestWorkerFetchesConfigByDigest(t *testing.T) {
@@ -36,10 +38,17 @@ func TestWorkerFetchesConfigByDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	keyFile := filepath.Join(t.TempDir(), "keyring.json")
+	writeWorkerRing(t, keyFile, podauth.SigningKey{ID: "cloud", Key: bytes.Repeat([]byte("k"), 32)}, nil)
+	auth, err := cloudauth.New(cloudauth.Config{Mode: "signed", KeyFile: keyFile, Revocations: admitAllGrants{}, Fallback: httpapi.DenyAllAuthenticator{}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var archiveGets atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if !strings.HasPrefix(request.Header.Get("Authorization"), "Bearer goobers-worker.") {
-			t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
+		if _, err := auth.Authenticate(request); err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 		requested := request.URL.Query().Get("digest")
 		if requested == "" {
@@ -61,15 +70,11 @@ func TestWorkerFetchesConfigByDigest(t *testing.T) {
 		_, _ = io.Copy(w, file)
 	}))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "worker-key")
-	if err := os.WriteFile(keyFile, []byte(strings.Repeat("k", 32)), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	got := captureWorkerHost(t)
 	var stdout, stderr bytes.Buffer
 	code := runWorker([]string{
 		"--config-endpoint", server.URL,
-		"--config-key-file", keyFile,
+		"--config-keyring-file", keyFile,
 		"--work-root", t.TempDir(),
 		"--blob-store", t.TempDir(),
 		"--config-reload-interval", "0",
@@ -165,7 +170,7 @@ func TestWorkerPlaneReplicasShareDaemonIdentity(t *testing.T) {
 	fixture := newWorkerConfigPlaneFixture(t)
 	fixture.publish(t)
 	for range 2 {
-		setup, err := prepareWorkerConfigPlane(fixture.server.URL, fixture.keyFile, t.TempDir())
+		setup, err := prepareWorkerConfigPlane(fixture.server.URL, fixture.keyFile, "", t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +210,7 @@ func TestWorkerConfigPlaneRetriesInterruptedSnapshotTransfer(t *testing.T) {
 		_, _ = w.Write(data)
 	}))
 	t.Cleanup(server.Close)
-	if _, err := prepareWorkerConfigPlane(server.URL, fixture.keyFile, t.TempDir()); err != nil {
+	if _, err := prepareWorkerConfigPlane(server.URL, fixture.keyFile, "", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	if transfers.Load() != 2 {
@@ -217,7 +222,7 @@ func TestWorkerConfigPlaneRotationsPreserveStableRootAndLeasedSnapshot(t *testin
 	fixture := newWorkerConfigPlaneFixture(t)
 	fixture.publish(t)
 	workRoot := t.TempDir()
-	setup, err := prepareWorkerConfigPlane(fixture.server.URL, fixture.keyFile, workRoot)
+	setup, err := prepareWorkerConfigPlane(fixture.server.URL, fixture.keyFile, "", workRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

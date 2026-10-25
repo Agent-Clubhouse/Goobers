@@ -101,6 +101,9 @@ func (c *WorkcopiesConfig) validate() error {
 }
 
 func (c APIConfig) validate(address string) error {
+	if strings.TrimSpace(c.PodTokenKeyFile) != "" && strings.TrimSpace(c.PodTokenKeyRingFile) != "" {
+		return fmt.Errorf("api.podTokenKeyFile and api.podTokenKeyRingFile are mutually exclusive")
+	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("api.listen: must be a host:port address: %w", err)
