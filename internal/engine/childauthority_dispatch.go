@@ -100,3 +100,9 @@ func releasesChildAuthority(outcome error) bool {
 		return false
 	}
 }
+
+func (a *childStageAuthority) finish(outcome error) {
+	if a != nil {
+		a.release(outcome)
+	}
+}

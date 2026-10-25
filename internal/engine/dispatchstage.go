@@ -804,18 +804,13 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if err != nil {
 		return stageActivityResult{}, err
 	}
-	if release != nil {
-		defer func() { release.release(outcome) }()
-	}
+	defer func() { release.finish(outcome) }()
 
 	report, handoff, err := a.dispatchWithChildHandoff(ctx, attempt, input, release)
-	if handoff != nil {
+	a.logDispatchCleanup(ctx, attempt, report)
+	if childHandoffSettled(handoff, err) {
 		return stageActivityResult{ChildWait: handoff, Placement: placementProvenance(report)}, err
 	}
-	if isChildHandoffFailure(err) {
-		return stageActivityResult{}, err
-	}
-	a.logDispatchCleanup(ctx, attempt, report)
 	// Defense-in-depth for the settled-outcome invariant (#3588): once the
 	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
 	// authoritative outcome — so ANY dispatcher error that arrives with

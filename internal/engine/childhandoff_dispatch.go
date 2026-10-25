@@ -108,3 +108,7 @@ func checkedChildHandoff(input DispatchStageInput, output childDispatchOutcome, 
 	}
 	return output.report, handoff, nil
 }
+
+func childHandoffSettled(handoff *journal.ChildHandoffRequest, err error) bool {
+	return handoff != nil || isChildHandoffFailure(err)
+}
