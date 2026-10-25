@@ -28,7 +28,8 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		barrier := h.StageBarrier("live-grant")
 		h.SetStageScript(qualificationStageScript{"parent-granted": {
 			Barrier: "live-grant",
-			Error:   "original retained executor failed",
+			Result: &apiv1.ResultEnvelope{Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "original retained executor failed"}},
 		}})
 		run := h.StartParent()
 		if err := barrier.Wait(h.ctx); err != nil {
@@ -91,32 +92,27 @@ func TestChildQualificationWorkerLoss(t *testing.T) {
 		replacement.Release()
 
 		var result engine.RunResult
-		if err := run.Get(h.ctx, &result); err != nil || result.Status != engine.StatusFailed ||
-			result.FailureCode != "replacement_attempt_failed" {
+		if err := run.Get(h.ctx, &result); err != nil || result.Status != engine.StatusBlocked {
 			t.Fatalf("parent terminal failure: %+v (%v)", result, err)
 		}
 		starts := qualificationStageStarts(h)
-		var executorErrors, stageFailures int
-		runFailed := 0
+		var stageFailures, runAborted int
 		var retryClass journal.AttemptClass
 		for _, event := range qualificationEvents(h) {
-			if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
-				executorErrors++
-			}
 			if event.Type == journal.EventStageFinished && event.Status == string(apiv1.ResultFailure) {
 				stageFailures++
 			}
 			if event.Type == journal.EventStageStarted && event.Attempt == 2 {
 				retryClass = event.AttemptClass
 			}
-			if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseFailed) {
-				runFailed++
+			if event.Type == journal.EventRunFinished && event.Status == string(journal.PhaseAborted) {
+				runAborted++
 			}
 		}
 		if len(starts) != 2 || !starts[oldGrant.AttemptID] || !starts[newGrant.AttemptID] ||
-			executorErrors != 1 || stageFailures != 1 || retryClass != journal.AttemptInfra || runFailed != 1 {
-			t.Fatalf("attempt journal: starts=%v executorErrors=%d stageFailures=%d retryClass=%q runFailed=%d",
-				starts, executorErrors, stageFailures, retryClass, runFailed)
+			stageFailures != 2 || retryClass != journal.AttemptPolicy || runAborted != 1 {
+			t.Fatalf("attempt journal: starts=%v stageFailures=%d retryClass=%q runAborted=%d",
+				starts, stageFailures, retryClass, runAborted)
 		}
 		qualificationNoChildWait(h)
 		qualificationNoChildren(h)
@@ -242,14 +238,21 @@ func qualificationNoChildren(h *qualificationHarness) {
 	}
 }
 
-// qualificationRetryParent publishes a real two-attempt definition before the
+// qualificationRetryParent publishes a real one-repass definition before the
 // parent starts, then rebuilds every affected start pin from that generation.
-// The workflow also applies its independent infrastructure budget to heartbeat
-// loss on this stage, which declares no policy actions.
 func qualificationRetryParent(h *qualificationHarness) {
 	h.t.Helper()
 	generation := h.ReloadConfig(func(directory string) {
-		definition := strings.Replace(childEnabledParent, "      goal: Plan a child workflow", "      retry: {maxAttempts: 2}\n      goal: Plan a child workflow", 1)
+		definition := strings.Replace(childEnabledParent, "      goal: Plan a child workflow", "      goal: Plan a child workflow\n      next: retry-gate", 1) + `  gates:
+    - name: retry-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: "@complete"
+        fail: plan
+        escalate: "@abort"
+`
 		if err := os.WriteFile(filepath.Join(directory, "gaggles", "example", "workflows", "default-implement.yaml"), []byte(definition), 0o600); err != nil {
 			h.t.Fatal(err)
 		}
@@ -264,6 +267,7 @@ func qualificationRetryParent(h *qualificationHarness) {
 	h.input.Spec = machine.Def.Spec
 	h.input.ConfigGeneration = generation
 	h.input.WorkflowDigest, h.input.GooberDigest, _ = parentPins(h.t, candidate.Config, h.configDir, candidate.Set)
+	h.input.RunControls.MaxRepasses = 1
 }
 
 func qualificationStageStarts(h *qualificationHarness) map[string]bool {
