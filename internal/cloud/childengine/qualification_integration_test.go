@@ -56,23 +56,25 @@ import (
 // it lives in a separate worker process with no database or storage credentials.
 // See qualification.md before adding scenarios or fault injection.
 type qualificationHarness struct {
-	t                         *testing.T
-	ctx                       context.Context
-	pool                      *pgxpool.Pool
-	blobs                     *objstore.Azure
-	objects                   *objstore.Metadata
-	temporal                  *testsuite.DevServer
-	applied                   qualificationConfig
-	configDir, keyFile, queue string
-	input                     engine.RunInput
-	server                    *httptest.Server
-	routerMu                  sync.RWMutex
-	handler                   http.Handler
-	epoch                     *qualificationEpoch
-	worker                    *exec.Cmd
-	workerDone                chan error
-	workerLog                 *os.File
-	slotLimit                 int
+	t                                     *testing.T
+	ctx                                   context.Context
+	pool                                  *pgxpool.Pool
+	blobs                                 *objstore.Azure
+	objects                               *objstore.Metadata
+	temporal                              *testsuite.DevServer
+	applied                               qualificationConfig
+	configDir, configFile, keyFile, queue string
+	stageScript                           qualificationStageScript
+	hooks                                 qualificationHooks
+	input                                 engine.RunInput
+	server                                *httptest.Server
+	routerMu                              sync.RWMutex
+	handler                               http.Handler
+	epoch                                 *qualificationEpoch
+	worker                                *exec.Cmd
+	workerDone                            chan error
+	workerLog                             *os.File
+	slotLimit                             int
 }
 
 type qualificationEpoch struct {
@@ -145,6 +147,7 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	}
 	layout := instance.NewLayout(root)
 	h.configDir = layout.ConfigDir()
+	h.configFile = layout.ConfigFile()
 	if err := os.WriteFile(filepath.Join(h.configDir, "gaggles", "example", "workflows", "default-implement.yaml"), []byte(childEnabledParent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -182,15 +185,7 @@ func newQualificationHarness(t *testing.T) *qualificationHarness {
 	if err := os.WriteFile(h.keyFile, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.routerMu.RLock()
-		defer h.routerMu.RUnlock()
-		if h.handler == nil {
-			http.Error(w, "control changing epoch", http.StatusServiceUnavailable)
-			return
-		}
-		h.handler.ServeHTTP(w, r)
-	}))
+	h.server = httptest.NewServer(http.HandlerFunc(h.serveHTTP))
 	t.Cleanup(h.server.Close)
 	h.startControl()
 	t.Cleanup(h.stopControl)
@@ -393,7 +388,7 @@ func (h *qualificationHarness) StartWorker() {
 	if h.worker != nil {
 		h.t.Fatal("worker already running")
 	}
-	cfg := qualificationWorkerConfig{Address: h.temporal.FrontendHostPort(), Queue: h.queue, Endpoint: h.server.URL, KeyFile: h.keyFile, InstanceID: testInstance}
+	cfg := qualificationWorkerConfig{Address: h.temporal.FrontendHostPort(), Queue: h.queue, Endpoint: h.server.URL, KeyFile: h.keyFile, InstanceID: testInstance, Script: h.stageScript}
 	file := filepath.Join(h.t.TempDir(), "worker.json")
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -489,6 +484,11 @@ func (h *qualificationHarness) openRuns(ctx context.Context) ([]schedstart.OpenR
 func (h *qualificationHarness) ReloadConfig(edit func(string)) string {
 	edit(h.configDir)
 	current, _ := h.applied.Applied()
+	return h.reloadConfig(current.Config.Engine.ChildWorkflows.Enabled)
+}
+
+func (h *qualificationHarness) reloadConfig(enabled bool) string {
+	cfg := h.reloadInstanceConfig(enabled)
 	set := loadSet(h.t, h.configDir)
 	archive, digest, err := configgeneration.CaptureForInstance(h.ctx, h.configDir, testInstance)
 	if err != nil {
@@ -498,7 +498,27 @@ func (h *qualificationHarness) ReloadConfig(edit func(string)) string {
 		h.t.Fatal(err)
 	}
 	h.applied.mu.Lock()
-	h.applied.candidate = cloudconfig.Candidate{Digest: digest, Config: current.Config, Set: set}
+	h.applied.candidate = cloudconfig.Candidate{Digest: digest, Config: cfg, Set: set}
 	h.applied.mu.Unlock()
 	return digest
+}
+
+// ReloadInstanceConfig reloads instance.yaml through production validation and
+// also captures the definition tree. enabled is the explicit test-instance
+// opt-in, applied only after validation while the production refusal remains.
+func (h *qualificationHarness) ReloadInstanceConfig(edit func(string), enabled bool) string {
+	edit(h.configFile)
+	return h.reloadConfig(enabled)
+}
+
+func (h *qualificationHarness) reloadInstanceConfig(enabled bool) *instance.Config {
+	cfg, err := instance.LoadConfig(h.configFile)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if cfg.Engine == nil {
+		cfg.Engine = &instance.EngineConfig{}
+	}
+	cfg.Engine.ChildWorkflows = &instance.EngineChildWorkflowsConfig{Enabled: enabled}
+	return cfg
 }

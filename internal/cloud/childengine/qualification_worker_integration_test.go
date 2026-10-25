@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -31,7 +32,44 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 )
 
-type qualificationWorkerConfig struct{ Address, Queue, Endpoint, KeyFile, InstanceID string }
+type qualificationWorkerConfig struct {
+	Address, Queue, Endpoint, KeyFile, InstanceID string
+	Script                                        qualificationStageScript
+}
+
+// Phases: parent-start, parent-granted, parent-submitted, parent-resumed, child.
+// A nil Result and empty Error continue the normal scripted happy path.
+type qualificationStageScript map[string]qualificationStageStep
+type qualificationStageStep struct {
+	Barrier string
+	Result  *apiv1.ResultEnvelope
+	Error   string
+}
+
+func (s qualificationStages) step(ctx context.Context, phase string) (*engine.DispatchStageResult, error) {
+	step := s.cfg.Script[phase]
+	if step.Barrier != "" {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Endpoint+"/__qualification/stage-barrier/"+url.PathEscape(step.Barrier), nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			return nil, fmt.Errorf("stage barrier HTTP %d", response.StatusCode)
+		}
+	}
+	if step.Error != "" {
+		return nil, errors.New(step.Error)
+	}
+	if step.Result != nil {
+		return &engine.DispatchStageResult{ResultEnvelope: *step.Result}, nil
+	}
+	return nil, nil
+}
 
 // TestChildQualificationWorkerProcess is the subprocess entry point. In the
 // normal suite it passes without starting anything; only StartWorker sets the
@@ -96,6 +134,12 @@ type qualificationStages struct {
 }
 
 func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnvelope, _ string, _ string, _ apiv1.WorkspaceMode, _ string) (engine.DispatchStageResult, error) {
+	if result, err := s.step(ctx, "parent-start"); result != nil || err != nil {
+		if result != nil {
+			return *result, err
+		}
+		return engine.DispatchStageResult{}, err
+	}
 	for _, pointer := range env.ContextPointers {
 		if !childresult.IsContinuationPointer(pointer) {
 			continue
@@ -122,6 +166,12 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 		if err := json.Unmarshal(receipt, &sealed); err != nil || sealed.Input.Summary != "qualification child result" || sealed.Input.State != "completed" || sealed.RunID == env.RunID || sealed.RunID == "" {
 			return engine.DispatchStageResult{}, errors.New("child receipt lacks expected result")
 		}
+		if result, err := s.step(ctx, "parent-resumed"); result != nil || err != nil {
+			if result != nil {
+				return *result, err
+			}
+			return engine.DispatchStageResult{}, err
+		}
 		return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "parent read child receipt through blob plane"}}, nil
 	}
 	if env.ChildWorkflowOrigin == nil {
@@ -136,6 +186,12 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 		defer cancel()
 		_ = s.authority.ReleaseChildAuthority(cleanup, engine.ChildAuthorityRelease{RunID: env.RunID, Origin: *env.ChildWorkflowOrigin, GrantID: grant.GrantID})
 	}()
+	if result, err := s.step(ctx, "parent-granted"); result != nil || err != nil {
+		if result != nil {
+			return *result, err
+		}
+		return engine.DispatchStageResult{}, err
+	}
 	body, err := json.Marshal(map[string]string{"source": generatedChild})
 	if err != nil {
 		return engine.DispatchStageResult{}, err
@@ -164,11 +220,23 @@ func (s qualificationStages) parent(ctx context.Context, env apiv1.InvocationEnv
 	if err := json.Unmarshal(raw, &started); err != nil {
 		return engine.DispatchStageResult{}, err
 	}
+	if result, err := s.step(ctx, "parent-submitted"); result != nil || err != nil {
+		if result != nil {
+			return *result, err
+		}
+		return engine.DispatchStageResult{}, err
+	}
 	handoff := journal.ChildHandoffRequest{Gaggle: env.Gaggle, ParentRunID: env.RunID, RequestID: journal.Digest([]byte(started.RunID)), Action: "wait",
 		ChildRunID: started.RunID, AcceptanceID: started.AcceptanceID, InvocationKey: "qualification-child", SourceDigest: started.SourceDigest, Origin: *env.ChildWorkflowOrigin}
 	return engine.DispatchStageResult{ChildWait: &handoff}, nil
 }
 
-func (s qualificationStages) child(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun, string, string) (engine.DispatchStageResult, error) {
+func (s qualificationStages) child(ctx context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun, _ string, _ string) (engine.DispatchStageResult, error) {
+	if result, err := s.step(ctx, "child"); result != nil || err != nil {
+		if result != nil {
+			return *result, err
+		}
+		return engine.DispatchStageResult{}, err
+	}
 	return engine.DispatchStageResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "qualification child result"}}, nil
 }
