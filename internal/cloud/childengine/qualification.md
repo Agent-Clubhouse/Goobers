@@ -182,3 +182,31 @@ Before declaring a scenario qualified, read its passing event (including any
 subtests) from the hosted `cloud-pg-test-events` artifact. A compile-only check or
 skipped local test is not qualification evidence. Scenarios 2–9 and the kind
 nightly remain unqualified by this happy-path test.
+
+## Fault scenario boundaries
+
+The retention, worker-loss, and failover scenario files add scenarios 2–4.
+Their qualification still requires the hosted event evidence described above.
+They pause the worker's HTTP request before it enters the control router;
+all resumed requests and probes use the production authenticated HTTP planes.
+Timestamp injection uses a separate database setup connection; runtime pools
+keep their controller role and column grants.
+
+- Retention ages only the acceptance and run-pin timestamps past
+  `ReplayRetention`. Production pruning and pin sweeping consult the real
+  Temporal execution before the worker binds and completes its child.
+- Worker loss kills and joins the worker after a grant binds. As designed in
+  `engine-parent-child-authority.md` §5/§8, the grant remains usable while the
+  parent is running and its TTL has not expired. One case ages only the retained
+  grant expiry, leaving its signed bearer unexpired, to exercise the production
+  database-clock refusal independently of parent liveness.
+- The scripted local executor has no short worker-loss heartbeat. After killing
+  it, the completion/replacement cases report its result or infrastructure
+  failure with Temporal `CompleteActivityByID`. Production `Run` performs the
+  completion or retry, commits the journal, and obtains the replacement grant.
+  These cases do not qualify automatic worker-loss detection or Kubernetes.
+- Control failover occurs after the grant row commits and before child submit.
+  `FailoverControl` performs voluntary takeover. The successor reconstructs
+  scheduler capacity, adopts custody, serves submission and idempotent replay,
+  and completes the child/parent. Concurrent held scheduler reservations probe
+  the bound of at most one extra admission per parent.
