@@ -1827,6 +1827,8 @@ func (e *ShellExecutor) runContextEnv(ctx context.Context, env apiv1.InvocationE
 		goober = "deterministic"
 	}
 	runEnv := []string{
+		// Empty deliberately shadows ambient values for legacy envelopes.
+		DSLVersionEnvVar + "=" + env.DSLVersion,
 		TaskEnvVar + "=" + task,
 		GooberEnvVar + "=" + goober,
 		InstanceIDEnvVar + "=" + env.InstanceID,

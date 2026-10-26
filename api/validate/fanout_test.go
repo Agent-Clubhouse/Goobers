@@ -136,7 +136,7 @@ func TestValidateFanOutDesignExamples(t *testing.T) {
 
 func TestFanOutRejectedBeforeDSL31(t *testing.T) {
 	for name, doc := range map[string]string{"selective parallel": fanOutSelectiveWorkflow, "map": fanOutMapWorkflow} {
-		for _, version := range []string{"2.0", "3.0"} {
+		for _, version := range []string{"2.0", "2.1", "3.0"} {
 			t.Run(name+"/"+version, func(t *testing.T) {
 				// Drop the 3.1-only artifact slot so the fan-out field alone
 				// decides the verdict.

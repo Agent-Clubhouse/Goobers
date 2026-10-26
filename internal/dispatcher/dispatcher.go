@@ -353,6 +353,8 @@ type Attempt struct {
 	Workflow string
 	Stage    string
 	Number   int
+	// DSLVersion is pinned by the originating invocation, never authored Env.
+	DSLVersion string
 	// PodAttempt separates physical dispatch identity from the journal ordinal.
 	// Zero uses Number for legacy callers.
 	PodAttempt int

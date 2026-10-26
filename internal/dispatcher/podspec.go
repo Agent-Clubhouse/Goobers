@@ -456,7 +456,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
+	executorTriggerRefEnv, executorDSLVersionEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -472,6 +472,7 @@ const (
 	executorBranchNamespaceEnv    = "GOOBERS_BRANCH_NAMESPACE"
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
+	executorDSLVersionEnv         = "GOOBERS_DSL_VERSION"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
 	// executorStageTimeoutEnv restates executor.StageTimeoutEnvVar: the
 	// deadline dispatch-exec enforces, stamped for goobers-CLI stages so a
@@ -1014,7 +1015,7 @@ var controlEnvReference = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 // against a control-plane bearer stamped earlier in the environment.
 func refuseControlEnvOverrides(attempt Attempt) error {
 	for _, name := range sortedKeys(attempt.Env) {
-		if slices.Contains(DispatcherControlEnv, name) {
+		if strings.EqualFold(name, executorDSLVersionEnv) || slices.Contains(DispatcherControlEnv, name) {
 			return &ControlEnvOverrideError{Key: name}
 		}
 		for _, match := range controlEnvReference.FindAllStringSubmatch(attempt.Env[name], -1) {
@@ -1278,6 +1279,8 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	for _, key := range sortedKeys(attempt.RunContext) {
 		env = append(env, corev1.EnvVar{Name: key, Value: literalPodEnv(attempt.RunContext[key])})
 	}
+	// Always shadow image/EnvFrom values, including for legacy attempts.
+	env = append(env, corev1.EnvVar{Name: executorDSLVersionEnv, Value: literalPodEnv(attempt.DSLVersion)})
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
 		// The routed repository's configured bot login, resolved here because

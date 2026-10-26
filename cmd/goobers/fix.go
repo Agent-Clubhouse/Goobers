@@ -18,7 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema) [--write] [path]\n\n" +
+const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema | --rollback) [--write] [--allow-policy-expansion] [path]\n\n" +
 	"Exactly one mode is required per invocation.\n\n" +
 	"--to <version> mechanically migrates workflows; --instance-schema repairs\n" +
 	"instance.yaml's schema revision. They are separate remedies over separate\n" +
@@ -34,6 +34,15 @@ const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema) [--writ
 	"author-run, reviewable change. Exit codes: 0 = migrated (or nothing to\n" +
 	"migrate), 1 = one or more workflows could not be migrated,\n" +
 	"2 = usage/IO error.\n\n" +
+	"DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue\n" +
+	"additions are listed in the diff; --write requires --allow-policy-expansion\n" +
+	"when new actions are added. The diff also includes each Workflow's required\n" +
+	"metadata.annotations goobers.dev/allow-preview-features: \"true\" opt-in.\n" +
+	"--to 2.1 --write accepts this displayed preview target. Authored opt-outs\n" +
+	"are refused; Instance/Gaggle settings stay unchanged.\n" +
+	"2.1 writes save one bounded .dsl21-migration-backup.json outside config.\n" +
+	"--rollback restores its original bytes, refusing modified destinations.\n" +
+	"After acceptance, archive/remove that backup before another migration.\n\n" +
 	"--instance-schema is the one-line remedy for the instance.yaml load\n" +
 	"refusal \"runners: requires schemaVersion 2\" (#4217): a config that\n" +
 	"declares a runners: inventory must also declare the schema revision that\n" +
@@ -51,6 +60,8 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	to := fs.String("to", "", "target dslVersion to migrate every workflow to (required)")
 	write := fs.Bool("write", false, "apply the migration to each file in place (default: print a diff only)")
+	rollback := fs.Bool("rollback", false, "restore the bounded DSL 2.1 migration backup")
+	allowPolicyExpansion := fs.Bool("allow-policy-expansion", false, "acknowledge the displayed DSL 2.1 policy action additions")
 	instanceSchema := fs.Bool("instance-schema", false, "add the schemaVersion line a runners: inventory requires (#4217)")
 	fs.Usage = helpUsage(stderr, "fix")
 	root, parsed := parseOptionalRoot(fs, args)
@@ -66,6 +77,13 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: fix expects an instance root, not its config directory; pass %s instead\n", filepath.Dir(filepath.Clean(root)))
 			return 2
 		}
+	}
+	if *rollback {
+		return runFixRollback(root, target, *instanceSchema, *write, *allowPolicyExpansion, stdout, stderr)
+	}
+	if *allowPolicyExpansion && (target != "2.1" || !*write || *instanceSchema) {
+		pf(stderr, "error: --allow-policy-expansion requires --to 2.1 --write\n")
+		return 2
 	}
 	if *instanceSchema {
 		if target != "" {
@@ -107,6 +125,10 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
+	}
+
+	if target == "2.1" {
+		return runFixDSL21(root, set, *write, *allowPolicyExpansion, stdout, stderr)
 	}
 
 	ok := true

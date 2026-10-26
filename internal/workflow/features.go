@@ -129,6 +129,9 @@ func AllFeatures() []Feature {
 			features[i].Runtimes = slices.Clone(converted.Runtimes)
 		}
 	}
+	for _, feature := range inheritedV21Features(v20.AllFeatures()) {
+		merge(feature)
+	}
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
 	}
@@ -317,7 +320,7 @@ func binaryLayerFeature(id FeatureID) Feature {
 }
 
 func binaryLayerFeatureSince(id FeatureID, since string) Feature {
-	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, v30.DSLVersion, supportmatrix.V31DSLVersion)
+	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, supportmatrix.V21DSLVersion, v30.DSLVersion, supportmatrix.V31DSLVersion)
 }
 
 func binaryLayerFeatureForDSL(id FeatureID, since string, versions ...string) Feature {

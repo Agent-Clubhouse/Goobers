@@ -1439,7 +1439,7 @@ checkStage (validate-nominations), resultFile (filed-nominations.json).
 Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
 
 ### fix
-Usage: goobers fix (--to <version> | --instance-schema) [--write] [path]
+Usage: goobers fix (--to <version> | --instance-schema | --rollback) [--write] [--allow-policy-expansion] [path]
 
 Exactly one mode is required per invocation.
 
@@ -1458,6 +1458,16 @@ silent multi-step rewrite. Never runs automatically; this is always an
 author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
 migrate), 1 = one or more workflows could not be migrated,
 2 = usage/IO error.
+
+DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue
+additions are listed in the diff; --write requires --allow-policy-expansion
+when new actions are added. The diff also includes each Workflow's required
+metadata.annotations goobers.dev/allow-preview-features: "true" opt-in.
+--to 2.1 --write accepts this displayed preview target. Authored opt-outs
+are refused; Instance/Gaggle settings stay unchanged.
+2.1 writes save one bounded .dsl21-migration-backup.json outside config.
+--rollback restores its original bytes, refusing modified destinations.
+After acceptance, archive/remove that backup before another migration.
 
 --instance-schema is the one-line remedy for the instance.yaml load
 refusal "runners: requires schemaVersion 2" (#4217): a config that
@@ -2307,9 +2317,15 @@ rebase-pr and update-behind-pr classify comments by this same rule
 before they clear needs-remediation; give them the same identityMode and
 excludeAuthors.
 
-Shared mode permits three routing attempts per PR head, recorded on the
-PR. Further attempts park it with needs-human and merge-escalated and a
+With DSL 2.1, 3.0 or 3.1, shared mode permits three routing attempts
+per PR head, recorded on the PR; declare label-issue and comment-on-issue.
+Further attempts park it with needs-human and merge-escalated and a
 visible note; feedback remains unaddressed. A new head resets the budget.
+An explicit DSL 2.0 workflow keeps label-only routing without this budget
+or its comment writes. Dedicated mode does not use the shared-mode cap.
+Standalone calls without a DSL pin or stage context use the guarded default.
+Stages must carry their pinned DSL version; a missing or unknown version
+is refused before provider writes.
 
 Remediation responses carry a feedback-ack frontier: the newest
 timestamp in the feedback snapshot the run assessed, to the second. Such

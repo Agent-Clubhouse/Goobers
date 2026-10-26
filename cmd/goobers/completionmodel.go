@@ -261,6 +261,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "to", takesArg: true, desc: "Target DSL version"},
 		{name: "instance-schema", desc: "Add the schemaVersion a runners: inventory requires"},
 		{name: "write", desc: "Apply migrations in place"},
+		{name: "allow-policy-expansion", desc: "Acknowledge DSL 2.1 policy action additions"},
+		{name: "rollback", desc: "Restore the DSL 2.1 migration backup"},
 	},
 	"doctor": {
 		{name: "record-instance", takesArg: true, desc: "Instance root receiving Kubernetes check results"},
