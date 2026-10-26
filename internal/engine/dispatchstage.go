@@ -585,6 +585,7 @@ func newDispatchAttempt(input DispatchStageInput) dispatcher.Attempt {
 		RunID:          input.Envelope.RunID,
 		Gaggle:         input.Envelope.Gaggle,
 		Workflow:       input.Envelope.WorkflowID,
+		DSLVersion:     input.Envelope.DSLVersion,
 		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
 		Number:         int(input.Envelope.Attempt),
 		PodAttempt:     input.PodAttempt,

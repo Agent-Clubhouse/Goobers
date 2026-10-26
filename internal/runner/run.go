@@ -4681,6 +4681,7 @@ func (r *Runner) automatedGateEnvelope(in StartInput, g apiv1.Gate, gateLimits a
 		InstanceID:       in.instanceID,
 		ConfigGeneration: in.configGeneration,
 		WorkflowID:       in.Machine.Def.Name,
+		DSLVersion:       in.Machine.Def.DSLVersion,
 		RunID:            in.RunID,
 		TriggerRef:       in.Trigger.Ref,
 		Gaggle:           in.Gaggle,

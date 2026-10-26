@@ -118,6 +118,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		ArtifactPublication:                 &apiv1.ArtifactPublication{Stage: "implement", Visit: 1, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.json", MaxSize: 100}}},
 		Attempt:                             1,
 		WorkflowID:                          "implementation",
+		DSLVersion:                          "2.1",
 		RunID:                               "run-123",
 		InstanceID:                          "0123456789abcdef0123456789abcdef",
 		TriggerRef:                          "github:issue:1704",
