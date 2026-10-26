@@ -36,7 +36,9 @@ const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema | --roll
 	"2 = usage/IO error.\n\n" +
 	"DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue\n" +
 	"additions are listed in the diff; --write requires --allow-policy-expansion\n" +
-	"when new actions are added. Instance preview settings are never changed.\n" +
+	"when new actions are added. Each migrated Workflow.metadata.annotations\n" +
+	"must explicitly opt in with goobers.dev/allow-preview-features: \"true\".\n" +
+	"Instance or Gaggle annotations do not opt in; fix never adds this annotation.\n" +
 	"2.1 writes save one bounded .dsl21-migration-backup.json outside config.\n" +
 	"--rollback restores its original bytes, refusing modified destinations.\n" +
 	"After acceptance, archive/remove that backup before another migration.\n\n" +
@@ -76,20 +78,7 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if *rollback {
-		if target != "" || *instanceSchema || *write || *allowPolicyExpansion {
-			pf(stderr, "error: --rollback is a separate mode; do not combine it with migration flags\n")
-			return 2
-		}
-		if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-		if err := dslmigrate.Rollback(root); err != nil {
-			pf(stderr, "error: rollback: %v\n", err)
-			return 1
-		}
-		pln(stdout, "FIX: original workflow bytes restored; migration backup consumed")
-		return 0
+		return runFixRollback(root, target, *instanceSchema, *write, *allowPolicyExpansion, stdout, stderr)
 	}
 	if *allowPolicyExpansion && (target != "2.1" || !*write || *instanceSchema) {
 		pf(stderr, "error: --allow-policy-expansion requires --to 2.1 --write\n")

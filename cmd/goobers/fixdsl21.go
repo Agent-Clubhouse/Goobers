@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dslmigrate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // Plan every file before any write, so a permission refusal or unsupported
@@ -72,5 +73,24 @@ func runFixDSL21(root string, set *instance.ConfigSet, write, allowPolicyExpansi
 		return 1
 	}
 	pf(stdout, "FIX: %d workflows migrated to dslVersion 2.1 (written); backup: %s; restore with goobers fix --rollback %s\n", len(changes), filepath.Join(root, dslmigrate.BackupName), root)
+	return 0
+}
+
+// Rollback is a separate command mode: validate its flags before any mutation
+// and share the same initialized-root checks used by the forward migration.
+func runFixRollback(root, target string, instanceSchema, write, allowPolicyExpansion bool, stdout, stderr io.Writer) int {
+	if target != "" || instanceSchema || write || allowPolicyExpansion {
+		pf(stderr, "error: --rollback is a separate mode; do not combine it with migration flags\n")
+		return 2
+	}
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if err := dslmigrate.Rollback(root); err != nil {
+		pf(stderr, "error: rollback: %v\n", err)
+		return 1
+	}
+	pln(stdout, "FIX: original workflow bytes restored; migration backup consumed")
 	return 0
 }
