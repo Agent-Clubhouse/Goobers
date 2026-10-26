@@ -53,10 +53,14 @@ func TestRequiredPublicCLIOptionsUseHelpEvidenceNotVersion(t *testing.T) {
 						if !slices.Contains(req.Command, "--version") {
 							t.Fatalf("unexpected model/auth operation: %v", req.Command)
 						}
-						if req.StdoutCapture != nil {
-							_, _ = req.StdoutCapture.Write([]byte(name + " " + version + "\n"))
+						banner := name + " " + version + "\n"
+						if name == "copilot" {
+							banner = "GitHub Copilot CLI " + version + ".\n"
 						}
-						return ProcessResult{Transcript: []byte(name + " " + version + "\n")}, nil
+						if req.StdoutCapture != nil {
+							_, _ = req.StdoutCapture.Write([]byte(banner))
+						}
+						return ProcessResult{Transcript: []byte(banner)}, nil
 					})
 					command := []string{fixtureNativeCLI(t, name)}
 					var adapter Adapter
