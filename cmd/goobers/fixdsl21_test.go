@@ -17,6 +17,7 @@ func initFixDSL21Instance(t *testing.T, authorized bool) (root, path, original s
 	actions := "      policyActions: [label-issue] # original policy\n"
 	if authorized {
 		actions = "      policyActions: [label-issue, comment-on-issue] # original policy\n"
+		original = strings.Replace(original, "metadata:\n", "metadata:\n  annotations: {goobers.dev/allow-preview-features: \"true\"}\n", 1)
 	}
 	original = strings.Replace(original, "      capabilities:\n", actions+"      capabilities:\n", 1)
 	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
@@ -50,7 +51,7 @@ func TestFixDSL21PreviewRefusalWriteRollback(t *testing.T) {
 		t.Fatalf("write: %d %s %s", code, stdout, stderr)
 	}
 	current, _ := os.ReadFile(path)
-	if !strings.Contains(string(current), `dslVersion: "2.1"`) || strings.Count(string(current), "comment-on-issue") != 1 {
+	if !strings.Contains(string(current), `dslVersion: "2.1"`) || strings.Count(string(current), "comment-on-issue") != 1 || !strings.Contains(string(current), `goobers.dev/allow-preview-features: "true"`) {
 		t.Fatal(string(current))
 	}
 	code, stdout, stderr = runArgs(t, "fix", "--to", "2.1", "--write", root)
@@ -87,5 +88,48 @@ func TestFixDSL21RejectsConflictingFlags(t *testing.T) {
 		if code, _, _ := runArgs(t, args...); code != 2 {
 			t.Fatalf("%v: code=%d", args, code)
 		}
+	}
+}
+
+func TestFixDSL21PreviewOptInUsesExplicitWriteTarget(t *testing.T) {
+	root, path, original := initFixDSL21Instance(t, true)
+	original = strings.Replace(original, "  annotations: {goobers.dev/allow-preview-features: \"true\"}\n", "", 1)
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runArgs(t, "fix", "--to", "2.1", "--write", root)
+	if code != 0 || strings.Contains(stdout, "POLICY ADD") || !strings.Contains(stdout, "accepts this displayed preview target") {
+		t.Fatalf("write: %d %s %s", code, stdout, stderr)
+	}
+	current, _ := os.ReadFile(path)
+	if !strings.Contains(string(current), `goobers.dev/allow-preview-features: "true"`) {
+		t.Fatal("missing preview opt-in")
+	}
+	code, stdout, stderr = runArgs(t, "fix", "--rollback", root)
+	if code != 0 {
+		t.Fatalf("rollback: %d %s %s", code, stdout, stderr)
+	}
+	current, _ = os.ReadFile(path)
+	if string(current) != original {
+		t.Fatal("rollback failed to remove added preview annotation exactly")
+	}
+}
+
+func TestFixDSL21RefusesAuthoredPreviewOptOutBeforeWrites(t *testing.T) {
+	root, path, original := initFixDSL21Instance(t, true)
+	original = strings.Replace(original, `goobers.dev/allow-preview-features: "true"`, `goobers.dev/allow-preview-features: "false"`, 1)
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runArgs(t, "fix", "--to", "2.1", "--write", "--allow-policy-expansion", root)
+	if code != 1 || !strings.Contains(stderr, "explicitly does not enable preview") {
+		t.Fatalf("refusal: %d %s %s", code, stdout, stderr)
+	}
+	current, _ := os.ReadFile(path)
+	if string(current) != original {
+		t.Fatal("overrode authored preview choice")
+	}
+	if _, err := os.Stat(filepath.Join(root, dslmigrate.BackupName)); !os.IsNotExist(err) {
+		t.Fatal("refusal created backup")
 	}
 }

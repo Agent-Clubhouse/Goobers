@@ -28,13 +28,13 @@ func TestV21SurgicalPermissionMigration(t *testing.T) {
 			if strings.Count(result.After, "comment-on-issue") != 1 {
 				t.Fatal(result.After)
 			}
-			if strings.Contains(result.After, "goobers.dev/allow-preview-features") {
-				t.Fatal("migration silently opted into preview features")
+			if strings.Count(result.After, "goobers.dev/allow-preview-features") != 1 {
+				t.Fatal("migration did not include the required workflow preview opt-in")
 			}
 			if !strings.Contains(strings.Join(result.Notes, " "), "Workflow.metadata.annotations") {
 				t.Fatal("preview annotation ownership is unclear")
 			}
-			if !strings.Contains(result.After, "dslVersion: '2.1' # pin"+eol) || !strings.Contains(result.After, "metadata: {name: watcher, custom: untouched}"+eol) {
+			if !strings.Contains(result.After, "dslVersion: '2.1' # pin"+eol) || !strings.Contains(result.After, "name: watcher, custom: untouched}"+eol) {
 				t.Fatal(result.After)
 			}
 			again, err := Migrate([]byte(source), "2.1")
@@ -70,7 +70,7 @@ func TestV21PinOnlyAndSeparateV3Path(t *testing.T) {
 		`[{name: other, run: {command: [sh, -c, "goobers pr-comment-watch"]}}]`,
 		`[{name: other, run: {command: [goobers, ci-poll]}}]`,
 	} {
-		source := "dslVersion: \"2.0\"\nspec: {tasks: " + tasks + "}\n"
+		source := "dslVersion: \"2.0\"\nmetadata: {annotations: {goobers.dev/allow-preview-features: \"true\"}}\nspec: {tasks: " + tasks + "}\n"
 		result, err := Migrate([]byte(source), "2.1")
 		if err != nil {
 			t.Fatal(err)

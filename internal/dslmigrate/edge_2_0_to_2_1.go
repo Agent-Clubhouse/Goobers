@@ -62,7 +62,14 @@ func applyV20ToV21SourcePreserving(source []byte, root, version *yaml.Node, to s
 		return nil, nil, err
 	}
 	edits := []sourceEdit{pin}
-	notes := []string{"DSL 2.1 is PREVIEW: each migrated Workflow.metadata.annotations must explicitly set goobers.dev/allow-preview-features to \"true\" before validation or execution; Instance/Gaggle annotations do not opt in. Migration does not add this annotation.", "DSL 2.1 opts pr-comment-watch into its durable three-route budget; DSL 2.0 retains its stable behavior."}
+	previewEdit, err := previewOptInV21SourceEdit(source, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	if previewEdit != nil {
+		edits = append(edits, *previewEdit)
+	}
+	notes := []string{`DSL 2.1 is PREVIEW: the diff includes any required Workflow.metadata.annotations goobers.dev/allow-preview-features: "true" opt-in; --to 2.1 --write accepts this displayed preview target. Instance/Gaggle settings are unchanged.`, "DSL 2.1 opts pr-comment-watch into its durable three-route budget; DSL 2.0 retains its stable behavior."}
 	for _, task := range commentWatchTasks(root) {
 		if hasCommentAction(task) {
 			continue

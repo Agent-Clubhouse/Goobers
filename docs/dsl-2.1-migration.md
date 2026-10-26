@@ -15,9 +15,9 @@ goobers fix --to 2.1 ./instance
 
 The command shows every workflow diff and a `POLICY ADD` line for each recognized
 `goobers pr-comment-watch` task requiring new authority. It retains comments,
-user fields and formatting, changing only the version pin and the required
-policy list entries. Already-authorized watchers receive only a version edit;
-other commands receive no new actions. Unsupported YAML shapes fail without
+user fields and formatting, changing only the version pin, required per-workflow
+preview opt-in and required policy list entries. Already-authorized watchers
+receive no new policy actions; other commands receive no new actions. Unsupported YAML shapes fail without
 rewriting the file. Review both the permission additions and the 2.1 behavioral
 change before applying them:
 
@@ -29,9 +29,10 @@ goobers fix --to 2.1 --write --allow-policy-expansion ./instance
 When no new actions are needed, omit `--allow-policy-expansion`. The flag is an
 operator acknowledgment of the displayed additions, not an authorization to
 acquire credentials or to change an external service's permissions. This command
-does not execute workflows, add preview opt-in annotations, broaden tokens or
-modify capability grants. Explicit preview opt-in belongs on **each migrated
-Workflow's `metadata.annotations`**, not on the Instance or Gaggle:
+does not execute workflows, broaden tokens or modify capability grants.
+
+The diff includes the required preview opt-in on **each migrated Workflow's
+`metadata.annotations`** when absent:
 
 ```yaml
 metadata:
@@ -39,10 +40,14 @@ metadata:
     goobers.dev/allow-preview-features: "true"
 ```
 
-Review and add that annotation explicitly to each intended workflow, then
-validate the resulting configuration with the target binary before starting it.
-Existing annotations are preserved. Neither `--write` nor
-`--allow-policy-expansion` silently opts a workflow into preview features.
+`--to 2.1 --write` explicitly accepts the displayed preview target and its required
+workflow annotation. No additional preview flag is needed. An existing exact
+`"true"` value is preserved; an authored `"false"` or other non-enabling value
+refuses the entire planned migration before writes. Review that authored choice
+separately; the tool never overrides it. Unrelated annotations are preserved,
+and Instance/Gaggle settings remain unchanged. DSL 2.1 remains PREVIEW and the
+default DSL remains 2.0. Validate the migrated configuration with the target
+binary before starting it.
 
 Every planned file is checked before writing. Mixed unsupported version cohorts
 are refused before any workflow writes. Output order is deterministic. Repeating
