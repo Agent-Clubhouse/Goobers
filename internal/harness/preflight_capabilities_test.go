@@ -23,6 +23,10 @@ func TestRequiredPublicCLIOptionsUseHelpEvidenceNotVersion(t *testing.T) {
 						missingFlag = "--no-remote-export"
 					}
 					if missing {
+						if name == "copilot" {
+							actual = strings.ReplaceAll(actual, "--no-remote-export", "--sync-session")
+							missingFlag = "--sync-session"
+						}
 						actual = strings.ReplaceAll(actual, "      "+missingFlag+"\n", "")
 						actual += "Description: use " + missingFlag + " if supported.\n"
 					}
@@ -49,10 +53,14 @@ func TestRequiredPublicCLIOptionsUseHelpEvidenceNotVersion(t *testing.T) {
 						if !slices.Contains(req.Command, "--version") {
 							t.Fatalf("unexpected model/auth operation: %v", req.Command)
 						}
-						if req.StdoutCapture != nil {
-							_, _ = req.StdoutCapture.Write([]byte(name + " " + version + "\n"))
+						banner := name + " " + version + "\n"
+						if name == "copilot" {
+							banner = "GitHub Copilot CLI " + version + ".\n"
 						}
-						return ProcessResult{Transcript: []byte(name + " " + version + "\n")}, nil
+						if req.StdoutCapture != nil {
+							_, _ = req.StdoutCapture.Write([]byte(banner))
+						}
+						return ProcessResult{Transcript: []byte(banner)}, nil
 					})
 					command := []string{fixtureNativeCLI(t, name)}
 					var adapter Adapter
@@ -202,5 +210,47 @@ func TestCodexAmbientCapabilitiesRequireIgnoreUserConfig(t *testing.T) {
 		} else if err == nil || !strings.Contains(err.Error(), "--ignore-user-config") || loginCalls != 0 {
 			t.Fatalf("missing option: login=%d err=%v", loginCalls, err)
 		}
+	}
+}
+
+// A real CLI 1.0.103 failed campaign admission because help advertises only
+// --sync-session[=<on|off>], while the adapter already selects that control.
+func TestCopilotPreflightRequiresSelectedSessionExportControl(t *testing.T) {
+	for _, tc := range []struct{ name, version, option, missing string }{
+		{"legacy", "GitHub Copilot CLI 1.0.102.", "--no-remote-export", ""},
+		{"modern", "GitHub Copilot CLI 1.0.103.", "--sync-session[=<on|off>]", ""},
+		{"modern-missing", "GitHub Copilot CLI 1.0.103.", "--no-remote-export", "--sync-session"},
+		{"legacy-missing", "GitHub Copilot CLI 1.0.102.", "--sync-session[=<on|off>]", "--no-remote-export"},
+		{"unknown", "unparseable", "--no-remote-export", ""},
+		{"modern-prose-only", "GitHub Copilot CLI 1.0.103.", "Description: --sync-session[=<on|off>]", "--sync-session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			help := strings.ReplaceAll(string(readTestData(t, "copilot-capability-help.txt")), "--no-remote-export", tc.option)
+			calls := 0
+			adapter := &CopilotAdapter{Command: []string{fixtureNativeCLI(t, "copilot")}, Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+				calls++
+				output := tc.version + "\n"
+				if slices.Contains(req.Command, "--help") {
+					output = help
+				} else if !slices.Contains(req.Command, "--version") {
+					t.Fatalf("unexpected model/auth call: %v", req.Command)
+				}
+				if req.StdoutCapture != nil {
+					_, _ = req.StdoutCapture.Write([]byte(output))
+				}
+				return ProcessResult{Transcript: []byte(output)}, nil
+			})}
+			_, err := adapter.Preflight(context.Background())
+			if tc.missing != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.missing) {
+					t.Fatalf("missing %s was accepted: %v", tc.missing, err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("expected bounded version/help probes, got %d", calls)
+			}
+		})
 	}
 }

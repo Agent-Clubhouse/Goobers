@@ -12,7 +12,7 @@ or resolve model credentials.
 | --- | --- |
 | Codex | `--json`, `--ignore-rules`, `--disable`, `--sandbox`, `--skip-git-repo-check`, `--cd`, `--config` |
 | Codex ambient ChatGPT | Above plus `--ignore-user-config` |
-| Copilot native defaults | `--allow-all-tools`, `--log-level`, `--log-dir`, `--session-id`, `--no-remote-export` |
+| Copilot native defaults | `--allow-all-tools`, `--log-level`, `--log-dir`, `--session-id`, and the runtime-selected export control: `--no-remote-export` before 1.0.103 or `--sync-session` on 1.0.103 and newer |
 
 Option-definition lines must appear in stdout; stderr and prose mentioning an
 option do not count. Empty, oversized, timed-out and unsuccessful help requests
