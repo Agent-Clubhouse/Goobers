@@ -157,6 +157,8 @@ complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'promote 
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l to -r -d 'Target DSL version'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l instance-schema -d 'Add the schemaVersion a runners: inventory requires'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l write -d 'Apply migrations in place'
+complete -c goobers -n '__fish_seen_subcommand_from fix' -l allow-policy-expansion -d 'Acknowledge DSL 2.1 policy action additions'
+complete -c goobers -n '__fish_seen_subcommand_from fix' -l rollback -d 'Restore the DSL 2.1 migration backup'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l record-instance -r -d 'Instance root receiving Kubernetes check results'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l result-max-age -r -d 'Recorded Kubernetes result freshness window'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l psa-namespaces -r -d 'Namespaces for rendered pod admission checks'

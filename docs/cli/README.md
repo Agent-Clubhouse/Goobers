@@ -2020,7 +2020,7 @@ $ goobers file-issues
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 
 ~~~text
-Usage: goobers fix (--to <version> | --instance-schema) [--write] [path]
+Usage: goobers fix (--to <version> | --instance-schema | --rollback) [--write] [--allow-policy-expansion] [path]
 
 Exactly one mode is required per invocation.
 
@@ -2039,6 +2039,13 @@ silent multi-step rewrite. Never runs automatically; this is always an
 author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
 migrate), 1 = one or more workflows could not be migrated,
 2 = usage/IO error.
+
+DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue
+additions are listed in the diff; --write requires --allow-policy-expansion
+when new actions are added. Instance preview settings are never changed.
+2.1 writes save one bounded .dsl21-migration-backup.json outside config.
+--rollback restores its original bytes, refusing modified destinations.
+After acceptance, archive/remove that backup before another migration.
 
 --instance-schema is the one-line remedy for the instance.yaml load
 refusal "runners: requires schemaVersion 2" (#4217): a config that
