@@ -18,6 +18,16 @@ default. Explicit DSL 2.0 keeps label-only routing; 2.1 and 3.x require the
 comment-backed shared-identity routing budget. Feedback acknowledgement and
 explicitly requested landing disarm remain unchanged.
 
+Recovery compatibility: a local interrupted run reconstructs new invocations
+from its verified pinned workflow definition. An already-scheduled Temporal
+activity may instead retain an older invocation payload without `dslVersion`.
+The watcher refuses that payload before provider writes. Retrying the activity
+or restarting its worker does not add the missing field; it requires a fresh
+invocation dispatched by an upgraded runner from the pinned definition. This
+change does not provide an operator command to rewrite or repair historical
+activity payloads, and it never guesses the version from stage inputs or the
+current daemon environment.
+
 Three JSON envelopes carry everything, defined in Go (`api/v1alpha1/envelope.go`,
 `artifact.go`) and mirrored by closed JSON Schemas (`api/schemas/*.schema.json`):
 
