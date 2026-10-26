@@ -41,7 +41,7 @@ func previewOptInV21SourceEdit(source []byte, root *yaml.Node) (*sourceEdit, err
 	}
 	if existing, _ := mapValue(annotations, previewAnnotationV21); existing != nil {
 		if existing.Kind != yaml.ScalarNode || existing.Value != "true" {
-			return nil, fmt.Errorf("Workflow.metadata.annotations %s explicitly does not enable preview features; review that authored value before migrating to DSL 2.1", previewAnnotationV21)
+			return nil, fmt.Errorf("workflow.metadata.annotations %s explicitly does not enable preview features; review that authored value before migrating to DSL 2.1", previewAnnotationV21)
 		}
 		return nil, nil
 	}
