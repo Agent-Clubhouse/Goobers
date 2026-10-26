@@ -29,9 +29,20 @@ goobers fix --to 2.1 --write --allow-policy-expansion ./instance
 When no new actions are needed, omit `--allow-policy-expansion`. The flag is an
 operator acknowledgment of the displayed additions, not an authorization to
 acquire credentials or to change an external service's permissions. This command
-does not execute workflows, change instance preview settings, broaden tokens or
-modify capability grants. Explicitly configure preview opt-in separately and
+does not execute workflows, add preview opt-in annotations, broaden tokens or
+modify capability grants. Explicit preview opt-in belongs on **each migrated
+Workflow's `metadata.annotations`**, not on the Instance or Gaggle:
+
+```yaml
+metadata:
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+```
+
+Review and add that annotation explicitly to each intended workflow, then
 validate the resulting configuration with the target binary before starting it.
+Existing annotations are preserved. Neither `--write` nor
+`--allow-policy-expansion` silently opts a workflow into preview features.
 
 Every planned file is checked before writing. Mixed unsupported version cohorts
 are refused before any workflow writes. Output order is deterministic. Repeating

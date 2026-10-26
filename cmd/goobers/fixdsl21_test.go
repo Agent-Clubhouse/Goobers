@@ -32,7 +32,7 @@ func TestFixDSL21PreviewRefusalWriteRollback(t *testing.T) {
 		if (len(flags) == 4 && code != 0) || (len(flags) == 5 && code != 1) {
 			t.Fatalf("code=%d out=%s err=%s", code, stdout, stderr)
 		}
-		for _, want := range []string{"POLICY ADD", "comment-on-issue", "PREVIEW", "+dslVersion:"} {
+		for _, want := range []string{"POLICY ADD", "comment-on-issue", "PREVIEW", "Workflow.metadata.annotations", "goobers.dev/allow-preview-features", "+dslVersion:"} {
 			if !strings.Contains(stdout, want) {
 				t.Fatalf("missing %q: %s", want, stdout)
 			}

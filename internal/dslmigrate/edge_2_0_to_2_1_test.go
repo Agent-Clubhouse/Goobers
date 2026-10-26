@@ -28,6 +28,12 @@ func TestV21SurgicalPermissionMigration(t *testing.T) {
 			if strings.Count(result.After, "comment-on-issue") != 1 {
 				t.Fatal(result.After)
 			}
+			if strings.Contains(result.After, "goobers.dev/allow-preview-features") {
+				t.Fatal("migration silently opted into preview features")
+			}
+			if !strings.Contains(strings.Join(result.Notes, " "), "Workflow.metadata.annotations") {
+				t.Fatal("preview annotation ownership is unclear")
+			}
 			if !strings.Contains(result.After, "dslVersion: '2.1' # pin"+eol) || !strings.Contains(result.After, "metadata: {name: watcher, custom: untouched}"+eol) {
 				t.Fatal(result.After)
 			}
