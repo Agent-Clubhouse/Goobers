@@ -3217,7 +3217,7 @@ summary:focus-visible {
 }
 
 .warning-code {
-  background: var(--warning-soft);
+  background-color: var(--warning-soft);
   border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent);
   border-radius: 5px;
   color: var(--warning-ink);
@@ -6457,7 +6457,7 @@ code,
 }
 
 .code-block {
-  background: var(--code-bg);
+  background-color: var(--code-bg);
   border-radius: 7px;
   color: var(--code-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -9470,7 +9470,7 @@ code,
 }
 
 .artifact-content {
-  background: var(--code-bg);
+  background-color: var(--code-bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--code-ink);
