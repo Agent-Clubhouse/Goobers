@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func commentWatcherDefinition(t *testing.T, version string) Definition {
