@@ -24,7 +24,7 @@ func commentWatchRoutingBudgetEnabled() (bool, error) {
 		if os.Getenv(executor.RunIDEnvVar) == "" && os.Getenv(executor.WorkflowEnvVar) == "" && os.Getenv(executor.TaskEnvVar) == "" {
 			return true, nil
 		}
-		return false, fmt.Errorf("pr-comment-watch: missing pinned DSL version in stage context; restart from the pinned workflow definition before routing feedback")
+		return false, fmt.Errorf("pr-comment-watch: missing pinned DSL version in stage invocation; an upgraded runner must dispatch a new invocation from the pinned workflow definition")
 	default:
 		return false, fmt.Errorf("pr-comment-watch: unsupported pinned DSL version %q", version)
 	}
