@@ -80,7 +80,7 @@ _goobers_completion()
             flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --format --strict"
             ;;
         fix)
-            flags+=" --to --instance-schema --write"
+            flags+=" --to --instance-schema --write --allow-policy-expansion --rollback"
             ;;
         doctor)
             flags+=" --record-instance --result-max-age --psa-namespaces --psa-service-account --temporal-codec --instance --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
