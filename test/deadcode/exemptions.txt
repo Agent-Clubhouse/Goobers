@@ -140,6 +140,9 @@ github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal sche
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
 github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
+github.com/goobers/goobers/internal/harness.copilotSDKBackend.Run # Direct SDK backend foundation is intentionally absent from production routing until follow-on SDK delivery qualifies it; exercised by boundary tests. expires=2027-01-31
+github.com/goobers/goobers/internal/harness.copilotSDKModelCredential # Credential projection is reachable only through the intentionally unrouted direct SDK backend foundation; exercised by boundary tests. expires=2027-01-31
+github.com/goobers/goobers/internal/harness.copilotSDKOperationError # SDK cancellation classification is reachable only through the intentionally unrouted direct SDK backend foundation; exercised by boundary tests. expires=2027-01-31
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.

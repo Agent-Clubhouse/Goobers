@@ -303,9 +303,16 @@ the doc set.)
 - **Agentic stages** — an agent harness invoked in the stage worktree with an
   **invocation envelope** (goal, context pointers, capability grants); it must finish
   by producing a **result envelope** (status, outputs, artifact pointers). Harness
-  choice is a *stage-level detail*: the first adapter is the **GitHub Copilot CLI**;
-  other harnesses (e.g. Claude Code) are additional adapters behind the same
-  invocation/result contract, not architectural changes.
+  choice is a *stage-level detail*: the logical `copilot` harness keeps provider,
+  model, prompt, credential, completion, and result policy above an internal
+  execution-backend seam. The **GitHub Copilot CLI** remains its default backend in
+  0.5. A direct Copilot SDK backend uses client/session APIs rather than translating
+  CLI arguments, and is opt-in only once its runtime and policy support are
+  qualified. Unsupported SDK configurations fail explicitly; there is no silent
+  fallback to the CLI, no CLI deprecation or default switch, and no in-process or
+  daemon-global environment requirement. Other harnesses (e.g. Claude Code) remain
+  additional adapters behind the same invocation/result contract, not architectural
+  changes.
 - **Gates** — evaluate results and branch: automated checks, agentic reviewers, or
   human approval (`GT-*`). A gate is a **machine state, not a stage**: its automated
   and agentic evaluators *run with stage-execution semantics* (declared env, timeout,
