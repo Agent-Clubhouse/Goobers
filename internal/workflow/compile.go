@@ -524,6 +524,35 @@ func compileV31(def Definition, config compileConfig) (*Machine, error) {
 	if diagnostics := artifactContractDiagnostics(def); len(diagnostics) > 0 {
 		return nil, &CompileError{Workflow: def.Name, Diagnostics: diagnostics}
 	}
+	if config.goobers != nil {
+		names := make([]string, 0, len(config.goobers))
+		for name := range config.goobers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		legacyGoobers := make(map[string]apiv1.GooberSpec, len(config.goobers))
+		var problems []string
+		for _, name := range names {
+			spec := config.goobers[name]
+			features, err := featuresForV31Goober(spec)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("goober %q: %s", name, err))
+				continue
+			}
+			for _, diagnostic := range checkV31FeatureSupport(ensureRuntimeSupport(features), config.allowPreviewFeatures) {
+				if diagnostic.Blocking {
+					problems = append(problems, fmt.Sprintf("goober %q: %s", name, diagnostic.Message))
+				}
+			}
+			legacyGoobers[name], _ = gooberWithoutMCPRequiredness(spec)
+		}
+		if len(problems) > 0 {
+			return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+		}
+		// Requiredness is checked at 3.1 above, not by the frozen 3.0 scanner.
+		// Compile materializes the original Goobers after this delegate returns.
+		config.goobers = legacyGoobers
+	}
 	machine, err := compileV30Base(def, config)
 	if err != nil {
 		return nil, err

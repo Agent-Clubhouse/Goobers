@@ -178,6 +178,11 @@ historical harness-specific omitted-field behavior. Set `dslVersion: "3.1"` to
 opt into uniform MCP requiredness; migration does not silently change older
 pins.
 
+A Goober that explicitly sets `required` cannot also be consumed by a DSL 2.0
+or 3.0 Workflow. When the field is omitted, each consuming Workflow keeps its
+version's default: compiling a 3.1 Workflow does not rewrite the shared Goober
+declaration or change an older Workflow's MCP behavior.
+
 Claude Code does not emit its `system/init` MCP status until after the prompt
 has been submitted. For a required server failure, Goobers aborts as soon as
 that init status arrives, before accepting an assistant or tool event; the
