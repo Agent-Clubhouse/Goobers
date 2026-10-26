@@ -9470,7 +9470,7 @@ code,
 }
 
 .artifact-content {
-  background: var(--code-bg);
+  background-color: var(--code-bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--code-ink);
