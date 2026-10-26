@@ -971,7 +971,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                         <TextField
                           label="Required toolchain capability"
                           onChange={setCapability}
-                          placeholder="node@20"
+                          placeholder="node@24"
                           value={capability}
                         />
                       </div>

@@ -145,7 +145,7 @@ for a full claude-code gaggle reference).
 
 ### Check prerequisites
 
-The sample's CI command requires Node.js 20 or newer and npm. Confirm both are
+The sample's CI command uses Node.js 24.22.1 and npm. Confirm both are
 available on the same `PATH` Goobers will use before materializing the sample:
 
 ```sh
@@ -153,11 +153,11 @@ node --version
 npm --version
 ```
 
-The first command must report `v20.0.0` or newer, and both commands must
+The first command should report `v24.22.1`, and both commands must
 succeed. At run start, Goobers preflights the configured `npm` CI executable
 before any workflow stage executes. If npm is missing, the run fails before it
 claims or changes an issue with a `ciCommand executable "npm" not found` error;
-install Node.js 20+ and npm, then run the command again. The preflight checks
+install Node.js 24.22.1 and npm, then run the command again. The preflight checks
 that npm exists, not the Node.js major version, so do not skip the literal
 version checks above.
 

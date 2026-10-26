@@ -25,7 +25,8 @@ tutorial against the Goobers source checkout itself.
 
 ## Run locally
 
-Node.js 20 or newer is required.
+Use Node.js 24.22.1 with npm, matching the sample CI. Supported Node.js lines
+start at 22.23.4, 24.22.1, and 26.12.1; older patches are not supported.
 
 ```text
 npm run ci
