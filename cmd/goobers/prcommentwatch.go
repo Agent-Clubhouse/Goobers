@@ -169,9 +169,14 @@ type prCommentWatchSettings struct {
 	// them on fresh human feedback (#6134). Opt-in, because it is a new
 	// mutation the task must declare (policy action disarm-landing).
 	disarmLandings bool
+	routingBudget  bool
 }
 
 func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatchSettings, error) {
+	routingBudget, err := commentWatchRoutingBudgetEnabled()
+	if err != nil {
+		return prCommentWatchSettings{}, err
+	}
 	rawMax := providerInput("maxPullRequests", "20")
 	maxPRs, err := strconv.Atoi(rawMax)
 	if err != nil || maxPRs < 1 {
@@ -195,6 +200,7 @@ func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatch
 	exclude := toLowerSet(splitLabelList(providerInput("excludeLabels", defaultExclude)))
 	return prCommentWatchSettings{
 		maxPRs:         maxPRs,
+		routingBudget:  routingBudget,
 		base:           providerInput("base", providerBaseBranch()),
 		prefixes:       splitLabelList(providerInput("headPrefixes", providerBranchNamespace())),
 		exclude:        exclude,
@@ -323,9 +329,13 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 			return fmt.Errorf("disarm the armed landing: %w", err)
 		}
 	}
-	exhausted, err := reserveCommentWatchRoute(ctx, forge, pr, comments, classifier)
-	if err != nil {
-		return err
+	exhausted := false
+	if settings.routingBudget {
+		var err error
+		exhausted, err = reserveCommentWatchRoute(ctx, forge, pr, comments, classifier)
+		if err != nil {
+			return err
+		}
 	}
 	if exhausted {
 		remove := carriedLabels(pr.Labels, map[string]bool{mergeReadyLabel: true, needsRemediationLabel: true})

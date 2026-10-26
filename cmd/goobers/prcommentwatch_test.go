@@ -20,6 +20,8 @@ import (
 // in and returns it, mirroring backlogquery_test.go's harness.
 func commentWatchWorkDir(t *testing.T) string {
 	t.Helper()
+	// Existing watcher cases exercise the guarded, explicitly opted-in contract.
+	t.Setenv(executor.DSLVersionEnvVar, "2.1")
 	dir := t.TempDir()
 	t.Chdir(dir)
 	return dir
@@ -393,6 +395,7 @@ type giteaCommentWatchFake struct {
 	labels          map[string]int64
 	issueLabelNames []string
 	appliedLabelIDs []int64
+	budgetComments  []map[string]interface{}
 }
 
 func newGiteaCommentWatchFake() *giteaCommentWatchFake {
@@ -417,10 +420,17 @@ func (g *giteaCommentWatchFake) handler(t *testing.T) http.HandlerFunc {
 			}})
 		case r.URL.Path == "/api/v1/repos/o/r/issues/1/comments" && r.Method == http.MethodGet:
 			t1 := time.Now().UTC().Add(-2 * time.Hour)
-			writeGiteaJSON(t, w, []map[string]interface{}{
+			comments := []map[string]interface{}{
 				{"id": 1, "body": stampOwnFixtureBody("on it", "comment"), "created_at": t1, "user": map[string]string{"login": "goobers-bot"}},
 				{"id": 2, "body": "please fix", "created_at": t1.Add(time.Hour), "user": map[string]string{"login": "gneitzke"}},
-			})
+			}
+			writeGiteaJSON(t, w, append(comments, g.budgetComments...))
+		case r.URL.Path == "/api/v1/repos/o/r/issues/1/comments" && r.Method == http.MethodPost:
+			var body map[string]string
+			decodeGiteaJSON(t, r, &body)
+			comment := map[string]interface{}{"id": len(g.budgetComments) + 3, "body": body["body"], "created_at": time.Now().UTC(), "user": map[string]string{"login": "goobers-bot"}}
+			g.budgetComments = append(g.budgetComments, comment)
+			writeGiteaJSON(t, w, comment)
 		case r.URL.Path == "/api/v1/repos/o/r/labels" && r.Method == http.MethodGet:
 			out := make([]map[string]interface{}, 0, len(g.labels))
 			for name, id := range g.labels {
@@ -483,6 +493,17 @@ func decodeGiteaJSON(t *testing.T, r *http.Request, out interface{}) {
 // stage at a gitea repo via instance.yaml + GOOBERS_REPO_PROVIDER=gitea. The
 // label is created on the fly and applied by its resolved ID.
 func TestPRCommentWatchGiteaEndToEnd(t *testing.T) {
+	for _, tc := range []struct {
+		version, mode string
+		comments      int
+	}{
+		{"2.0", "shared", 0}, {"2.1", "shared", 1}, {"3.0", "shared", 1}, {"3.1", "shared", 1}, {"2.1", "dedicated", 0},
+	} {
+		t.Run(tc.version+"/"+tc.mode, func(t *testing.T) { testPRCommentWatchGiteaVersion(t, tc.version, tc.mode, tc.comments) })
+	}
+}
+
+func testPRCommentWatchGiteaVersion(t *testing.T, version, mode string, wantComments int) {
 	root := initDemo(t)
 	fake := newGiteaCommentWatchFake()
 	server := httptest.NewServer(fake.handler(t))
@@ -509,6 +530,8 @@ func TestPRCommentWatchGiteaEndToEnd(t *testing.T) {
 	t.Setenv(executor.RepoNameEnvVar, "r")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	dir := commentWatchWorkDir(t)
+	t.Setenv(executor.DSLVersionEnvVar, version)
+	t.Setenv(executor.InputEnvVar("identityMode"), mode)
 
 	code, stdout, stderr := runArgs(t, "pr-comment-watch", root)
 	if code != 0 {
@@ -516,9 +539,13 @@ func TestPRCommentWatchGiteaEndToEnd(t *testing.T) {
 	}
 
 	fake.mu.Lock()
+	commentCount := len(fake.budgetComments)
 	labelID, created := fake.labels[needsRemediationLabel]
 	applied := append([]int64(nil), fake.appliedLabelIDs...)
 	fake.mu.Unlock()
+	if commentCount != wantComments {
+		t.Fatalf("budget comments = %d, want %d", commentCount, wantComments)
+	}
 	if !created {
 		t.Fatalf("expected %s to be created on the gitea repo", needsRemediationLabel)
 	}

@@ -11,6 +11,7 @@ func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 	in := InvocationEnvelope{
 		TaskID:              "implement-001",
 		WorkflowID:          "default-implement",
+		DSLVersion:          "2.1",
 		RunID:               "0af7651916cd43dd8448eb211c80319c",
 		TriggerRef:          "github-webhook:pull_request#42",
 		Gaggle:              "acme-web",

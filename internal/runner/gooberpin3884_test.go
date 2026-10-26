@@ -45,6 +45,7 @@ func TestRunnerStampsThePinnedGooberDigestOnEveryEnvelope(t *testing.T) {
 		Machine:      fixtureMachine(t),
 		GooberDigest: pin,
 	}
+	in.Machine.Def.DSLVersion = "2.1"
 	env, workspace, err := r.buildEnvelope(
 		context.Background(), in, "implement", "do the work", nil,
 		nil, apiv1.Limits{}, nil, apiv1.WorkspaceScratch, false, "",
@@ -54,6 +55,10 @@ func TestRunnerStampsThePinnedGooberDigestOnEveryEnvelope(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = workspace.Remove(context.Background()) })
 
+	gateEnv := r.automatedGateEnvelope(in, apiv1.Gate{Name: "check"}, apiv1.Limits{}, nil)
+	if env.DSLVersion != "2.1" || gateEnv.DSLVersion != "2.1" {
+		t.Fatalf("lost pinned contract: task %q gate %q", env.DSLVersion, gateEnv.DSLVersion)
+	}
 	if env.GooberDigest != pin {
 		t.Fatalf("runner envelope GooberDigest = %q, want the run's pin %q — the engine's envelopes carry it "+
 			"(engine.buildInvocation) and the two drivers' dispatch payloads must name the same kit", env.GooberDigest, pin)
