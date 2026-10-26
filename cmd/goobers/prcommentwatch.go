@@ -93,9 +93,15 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"rebase-pr and update-behind-pr classify comments by this same rule\n" +
 	"before they clear needs-remediation; give them the same identityMode and\n" +
 	"excludeAuthors.\n\n" +
-	"Shared mode permits three routing attempts per PR head, recorded on the\n" +
-	"PR. Further attempts park it with needs-human and merge-escalated and a\n" +
-	"visible note; feedback remains unaddressed. A new head resets the budget.\n\n" +
+	"With DSL 2.1, 3.0 or 3.1, shared mode permits three routing attempts\n" +
+	"per PR head, recorded on the PR; declare label-issue and comment-on-issue.\n" +
+	"Further attempts park it with needs-human and merge-escalated and a\n" +
+	"visible note; feedback remains unaddressed. A new head resets the budget.\n" +
+	"An explicit DSL 2.0 workflow keeps label-only routing without this budget\n" +
+	"or its comment writes. Dedicated mode does not use the shared-mode cap.\n" +
+	"Standalone calls without a DSL pin or stage context use the guarded default.\n" +
+	"Stages must carry their pinned DSL version; a missing or unknown version\n" +
+	"is refused before provider writes.\n\n" +
 	"Remediation responses carry a feedback-ack frontier: the newest\n" +
 	"timestamp in the feedback snapshot the run assessed, to the second. Such\n" +
 	"a response acknowledges only human comments within that second or\n" +
