@@ -95,3 +95,44 @@ Some command modes change the required action set:
 The command's generated [CLI reference](../../cli/README.md) documents the
 mode and inputs. `goobers validate` computes the prescribed policy-action set
 from the command, flags, and static/dynamic inputs.
+
+## DSL 2.1: explicit comment-watcher routing budgets
+
+DSL 2.1 enters preview on the v0.6.0 line. It requires the instance preview
+acknowledgement (`goobers.dev/allow-preview-features: "true"`). DSL 2.0 remains
+supported and the default for programmatically unpinned definitions; author-facing
+workflows still require an explicit `dslVersion`. No DSL 3.x graduation is implied.
+
+### Compatibility boundary
+
+The v0.5.0 stable DSL 2.0 `pr-comment-watch` contract requires `label-issue`.
+The later mandatory `comment-on-issue` requirement was a compatibility regression:
+existing 2.0 workflows could no longer compile. Restoring the label-only base
+requirement is a contract-preserving interpreter patch. The frozen 2.0 compiled
+goldens and their recorded digests remain unchanged.
+
+DSL 2.1 opts into the durable, provider-comment-backed three-route budget and
+requires both `label-issue` and `comment-on-issue`. DSL 3.0 and 3.1 retain that
+budget and permission requirement. The boundary applies equally to GitHub,
+Gitea and Azure DevOps; broad credentials do not substitute for a declared action.
+A 2.0 pin retains the old absence of this new budget, including its shared-identity
+loop risk. Operators must retain their outer scheduling, quota and human-hold
+controls. This is not a blanket rollback of later watcher correctness fixes:
+feedback acknowledgements and explicitly enabled `blockUnansweredFeedback`
+continue to work, and the latter still requires `disarm-landing`.
+
+### Implementation boundary
+
+The 2.1 router reuses the frozen 2.0 language surface with a narrow version-specific
+permission admission check, as the 3.1 router reuses 3.0. It retains the explicit
+2.1 pin in the compiled machine and digest so runtime policy follows that pin.
+Feature support levels are inherited without graduating preview features.
+Placement, repository handoff and artifact syntax from 3.x are not introduced.
+Version-level preview admission remains at the existing config-validation gate;
+internal compiler calls do not independently admit a configuration for execution.
+
+Upgrading requires an explicit version change and approval of the new comment
+permission wherever a watcher lacks it. Migration must preserve the original
+2.0 source for comparison and rollback. Compilation proves only the static
+contract; external provider behavior and distributed execution require their
+own validation evidence.
