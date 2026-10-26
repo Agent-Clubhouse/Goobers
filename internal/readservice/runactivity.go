@@ -8,5 +8,6 @@ func withRunActivity(summary RunSummary, observations runOperationalObservations
 	summary.ActiveStages = activity.Active
 	summary.ActivityTruncated = activity.Truncated
 	summary.WaitingForGate = activity.WaitingForGate
+	summary.TerminalSummary = observations.terminal.Summary(summary.Phase, observations.reliability.TerminalCause)
 	return withRunReliability(summary)
 }
