@@ -98,8 +98,10 @@ from the command, flags, and static/dynamic inputs.
 
 ## DSL 2.1: explicit comment-watcher routing budgets
 
-DSL 2.1 enters preview on the v0.6.0 line. It requires the instance preview
-acknowledgement (`goobers.dev/allow-preview-features: "true"`). DSL 2.0 remains
+DSL 2.1 enters preview on the v0.6.0 line. Each migrated Workflow must opt in
+through its own `metadata.annotations` entry
+`goobers.dev/allow-preview-features: "true"`; a Manifest or Gaggle annotation
+does not authorize the Workflow. DSL 2.0 remains
 supported and the default for programmatically unpinned definitions; author-facing
 workflows still require an explicit `dslVersion`. No DSL 3.x graduation is implied.
 
