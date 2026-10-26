@@ -17,7 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/platform/durability"
 )
 
-// One outstanding transaction per instance, outside scanned config. There is
+// BackupName identifies the one outstanding transaction per instance, outside
+// scanned config. There is
 // no append-only history: rollback consumes it; an operator may archive/remove
 // it after accepting the migration. Never overwrite an unconsumed backup.
 const BackupName = ".dsl21-migration-backup.json"
@@ -25,6 +26,7 @@ const maxBackupBytes = 8 << 20
 const maxBackupFiles = 128
 const transactionLockName = ".dsl21-migration.lock"
 
+// FileChange is one source-preserving workflow edit within a bounded transaction.
 type FileChange struct {
 	Path          string // slash-separated, relative to the instance config directory
 	Before, After string
@@ -181,7 +183,7 @@ func readBackup(root string) (*migrationBackup, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxBackupBytes+1))
 	if err != nil {
 		return nil, err
