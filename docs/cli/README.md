@@ -2042,9 +2042,10 @@ migrate), 1 = one or more workflows could not be migrated,
 
 DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue
 additions are listed in the diff; --write requires --allow-policy-expansion
-when new actions are added. Each migrated Workflow.metadata.annotations
-must explicitly opt in with goobers.dev/allow-preview-features: "true".
-Instance or Gaggle annotations do not opt in; fix never adds this annotation.
+when new actions are added. The diff also includes each Workflow's required
+metadata.annotations goobers.dev/allow-preview-features: "true" opt-in.
+--to 2.1 --write accepts this displayed preview target. Authored opt-outs
+are refused; Instance/Gaggle settings stay unchanged.
 2.1 writes save one bounded .dsl21-migration-backup.json outside config.
 --rollback restores its original bytes, refusing modified destinations.
 After acceptance, archive/remove that backup before another migration.

@@ -36,9 +36,10 @@ const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema | --roll
 	"2 = usage/IO error.\n\n" +
 	"DSL 2.0 to 2.1 is an opt-in PREVIEW migration. Watcher comment-on-issue\n" +
 	"additions are listed in the diff; --write requires --allow-policy-expansion\n" +
-	"when new actions are added. Each migrated Workflow.metadata.annotations\n" +
-	"must explicitly opt in with goobers.dev/allow-preview-features: \"true\".\n" +
-	"Instance or Gaggle annotations do not opt in; fix never adds this annotation.\n" +
+	"when new actions are added. The diff also includes each Workflow's required\n" +
+	"metadata.annotations goobers.dev/allow-preview-features: \"true\" opt-in.\n" +
+	"--to 2.1 --write accepts this displayed preview target. Authored opt-outs\n" +
+	"are refused; Instance/Gaggle settings stay unchanged.\n" +
 	"2.1 writes save one bounded .dsl21-migration-backup.json outside config.\n" +
 	"--rollback restores its original bytes, refusing modified destinations.\n" +
 	"After acceptance, archive/remove that backup before another migration.\n\n" +
