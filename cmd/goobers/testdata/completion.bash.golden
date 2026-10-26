@@ -121,6 +121,8 @@ _goobers_completion()
             ;;
         temporal)
             case "${COMP_WORDS[2]:-}" in
+                rollout-status) flags+=" --timeout" ;;
+                worker-contract) flags+=" --workflow-ir --allow-preview" ;;
                 codec-server) flags+=" --listen --tls-cert --tls-key --allow-origin" ;;
             esac
             ;;
@@ -389,7 +391,7 @@ _goobers_completion()
             ;;
         temporal)
             if (( COMP_CWORD == 2 )); then
-                candidates="codec-server"
+                candidates="rollout-status worker-contract codec-server"
             fi
             ;;
         run)

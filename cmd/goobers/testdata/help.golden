@@ -173,7 +173,7 @@ Advanced operator commands:
   service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
   telemetry         configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
-  temporal          operate Temporal payload services
+  temporal          inspect Temporal workers and operate payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
   workspace         explicitly recover pinned repository workspaces
@@ -3430,14 +3430,41 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 
 ### temporal
-Usage: goobers temporal codec-server [flags] [path]
+Usage: goobers temporal <rollout-status|worker-contract|codec-server> [flags]
 
-Serve Temporal Web UI payload decoding over TLS with the instance OIDC view role.
+Inspect native rollout evidence, inspect this binary's workflow contracts, or serve OIDC-authenticated payload decoding. Inspection commands never change routing or admit work.
 
 ### temporal codec-server
 Usage: goobers temporal codec-server --tls-cert <pem> --tls-key <pem> [--listen 127.0.0.1:8444] [--allow-origin https://temporal.example.com] [path]
 
 Requires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POST requires an OIDC bearer token with view permission. Repeat --allow-origin for each exact Web UI origin. No anonymous mode.
+
+### temporal rollout-status
+Usage: goobers temporal rollout-status [--timeout 30s] [path]
+
+Read native worker-deployment routing and per-version drainage as JSON. Uses
+the instance engine endpoint, namespace and TLS configuration. The complete
+inspection is bounded by --timeout (maximum 5m) and 128 versions. A routing
+change or incomplete read fails without printing a misleading snapshot.
+
+This does not change routing, identify last-known-good, prove worker readiness,
+or authorize retiring a build. Drainage timestamps may be stale; pinned
+histories, accepted starts and closed-history queries can still need a build.
+
+### temporal worker-contract
+Usage: goobers temporal worker-contract [--workflow-ir file.json] [--allow-preview]
+
+Emit this executable's digest and declared interpreter contracts as JSON.
+Optionally check a canonical workflow IR (maximum 1 MiB) against this binary.
+The IR must retain its exact source definition and match its normalization.
+Preview support requires --allow-preview; this is an offline inspection flag.
+
+Evidence only: no admission, remote-worker attestation, placement, credential
+or readiness guarantee. The runtime still executes the DSL source. Effective
+versions and build IDs are equality identities, not compatibility ranges.
+
+Exit codes: 0 = manifest emitted / compatible source, 1 = inspection failed
+or source incompatible/unverifiable, 2 = invalid flags or input file.
 
 ### trace
 Usage: goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]

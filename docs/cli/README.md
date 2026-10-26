@@ -154,8 +154,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry shadow`](#goobers-telemetry-shadow) | compare Backprop shadow-mode findings with actual run outcomes |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry test`](#goobers-telemetry-test) | send one secret-safe Application Insights connectivity probe |
-| [`goobers temporal`](#goobers-temporal) | operate Temporal payload services |
+| [`goobers temporal`](#goobers-temporal) | inspect Temporal workers and operate payload services |
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
+| [`goobers temporal rollout-status`](#goobers-temporal-rollout-status) | inspect native routing and drainage without changing the deployment |
+| [`goobers temporal worker-contract`](#goobers-temporal-worker-contract) | inspect this binary's runtime contracts and exact workflow IR source |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
@@ -5306,12 +5308,12 @@ $ goobers telemetry-query --window 24h --format candidate-findings
 
 ## `goobers temporal`
 
-operate Temporal payload services
+inspect Temporal workers and operate payload services
 
 ~~~text
-Usage: goobers temporal codec-server [flags] [path]
+Usage: goobers temporal <rollout-status|worker-contract|codec-server> [flags]
 
-Serve Temporal Web UI payload decoding over TLS with the instance OIDC view role.
+Inspect native rollout evidence, inspect this binary's workflow contracts, or serve OIDC-authenticated payload decoding. Inspection commands never change routing or admit work.
 ~~~
 
 **Examples**
@@ -5334,6 +5336,56 @@ Requires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POS
 
 ~~~console
 $ goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem
+~~~
+
+## `goobers temporal rollout-status`
+
+inspect native routing and drainage without changing the deployment
+
+~~~text
+Usage: goobers temporal rollout-status [--timeout 30s] [path]
+
+Read native worker-deployment routing and per-version drainage as JSON. Uses
+the instance engine endpoint, namespace and TLS configuration. The complete
+inspection is bounded by --timeout (maximum 5m) and 128 versions. A routing
+change or incomplete read fails without printing a misleading snapshot.
+
+This does not change routing, identify last-known-good, prove worker readiness,
+or authorize retiring a build. Drainage timestamps may be stale; pinned
+histories, accepted starts and closed-history queries can still need a build.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers temporal rollout-status --timeout 30s ./instance
+~~~
+
+## `goobers temporal worker-contract`
+
+inspect this binary's runtime contracts and exact workflow IR source
+
+~~~text
+Usage: goobers temporal worker-contract [--workflow-ir file.json] [--allow-preview]
+
+Emit this executable's digest and declared interpreter contracts as JSON.
+Optionally check a canonical workflow IR (maximum 1 MiB) against this binary.
+The IR must retain its exact source definition and match its normalization.
+Preview support requires --allow-preview; this is an offline inspection flag.
+
+Evidence only: no admission, remote-worker attestation, placement, credential
+or readiness guarantee. The runtime still executes the DSL source. Effective
+versions and build IDs are equality identities, not compatibility ranges.
+
+Exit codes: 0 = manifest emitted / compatible source, 1 = inspection failed
+or source incompatible/unverifiable, 2 = invalid flags or input file.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers temporal worker-contract
+$ goobers temporal worker-contract --workflow-ir workflow.json
 ~~~
 
 ## `goobers trace`
