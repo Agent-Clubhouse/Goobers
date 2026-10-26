@@ -16,9 +16,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: portal/package-lock.json
+      - name: Report Node runtime
+        run: node --version
+
       - run: npm ci --no-audit --no-fund
         working-directory: portal
       - run: npm run typecheck && npm test -- src/package.test.tsx src/App.test.tsx src/liveData.test.tsx

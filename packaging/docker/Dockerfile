@@ -28,7 +28,7 @@
 # `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
 # the two disagree, so the bump has to land in the same diff.
 ARG GO_IMAGE=docker.io/library/golang:1.26.10@sha256:3745f1aa11822297b79113f5e84ce2bffeb039734571c39855809cfe9e5d7be6
-ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+ARG PORTAL_NODE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 ARG RUNTIME_IMAGE=docker.io/library/node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG COPILOT_VERSION=1.0.83
 
