@@ -1104,6 +1104,8 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	switch version {
 	case v20.DSLVersion:
 		return &v20Interpreter, nil
+	case supportmatrix.V21DSLVersion:
+		return &v21Interpreter, nil
 	case v30.DSLVersion:
 		return &v30Interpreter, nil
 	case supportmatrix.V31DSLVersion:

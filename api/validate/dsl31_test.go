@@ -140,7 +140,7 @@ func TestValidateDSL31ArtifactInputsRejectsDuplicateLocalNameWithLocation(t *tes
 
 func TestWorkflowSchemaRejectsArtifactContractBeforeDSL31(t *testing.T) {
 	v := newV(t)
-	for _, version := range []string{"2.0", "3.0"} {
+	for _, version := range []string{"2.0", "2.1", "3.0"} {
 		t.Run(version, func(t *testing.T) {
 			workflow := strings.Replace(dsl31ArtifactWorkflow, `dslVersion: "3.1"`, `dslVersion: "`+version+`"`, 1)
 			jsonDoc, err := yaml.YAMLToJSON([]byte(workflow))

@@ -206,3 +206,39 @@ func TestScanSequenceGapsNeverClaimCompleteCoverage(t *testing.T) {
 		})
 	}
 }
+
+// Both execution drivers persist a 2.1 pin. Counting those runs must preserve
+// complete coverage of the static DSL/driver dimensions, rather than marking
+// every feature unknown as an unrecognized pin would.
+func TestScanDSL21CountsV2WithoutInvalidatingCoverage(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
+	for _, sample := range []struct {
+		id     string
+		driver journal.RunDriver
+	}{
+		{"local", ""}, {"worker", journal.DriverEngine},
+	} {
+		run, err := journal.Create(dir, journal.RunIdentity{RunID: sample.id, Gaggle: "g", Workflow: "w", WorkflowVersion: 1, Driver: sample.driver}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: []byte(`{"dslVersion":"2.1"}`)}, journal.WithClock(func() time.Time { return now }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: "success"}); err != nil {
+			_ = run.Close()
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := Scan(t.Context(), dir, "g", now.Add(-time.Minute), now.Add(time.Second))
+	for id, want := range map[string]int64{"dsl.v2": 2, "dsl.v1": 0, "dsl.v3": 0, "runner.local": 1, "runner.engine": 1} {
+		if got[id].Value != want || !got[id].Complete {
+			t.Fatalf("%s = %+v, want %d with complete coverage", id, got[id], want)
+		}
+	}
+	again := Scan(t.Context(), dir, "g", now.Add(-time.Minute), now.Add(time.Second))
+	if !reflect.DeepEqual(got, again) {
+		t.Fatal("repeat scan changed absolute usage counts")
+	}
+}

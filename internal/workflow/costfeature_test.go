@@ -11,7 +11,7 @@ func TestCostPublicationFeatureIsIndependentOfWorkflowPin(t *testing.T) {
 	if !ok || feature.Level != SupportGA {
 		t.Fatalf("feature = %+v, present=%v", feature, ok)
 	}
-	for _, version := range []string{"2.0", "3.0"} {
+	for _, version := range []string{"2.0", "2.1", "3.0", "3.1"} {
 		def := Definition{DSLVersion: version}
 		features, err := FeaturesForGaggle(def, apiv1.GaggleSpec{Cost: &apiv1.CostReporting{}})
 		if err != nil {
@@ -39,7 +39,7 @@ func TestEnabledFeaturesAreIndependentOfWorkflowPin(t *testing.T) {
 		if !ok || feature.Level != SupportGA {
 			t.Fatalf("%s feature = %+v, present=%v", id, feature, ok)
 		}
-		for _, version := range []string{"2.0", "3.0"} {
+		for _, version := range []string{"2.0", "2.1", "3.0", "3.1"} {
 			def := Definition{DSLVersion: version}
 			var features []Feature
 			var err error

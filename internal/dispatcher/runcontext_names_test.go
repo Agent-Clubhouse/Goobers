@@ -26,6 +26,7 @@ func TestRunContextEnvMatchesExecutor(t *testing.T) {
 		executor.BranchNamespaceEnvVar,
 		executor.BaseBranchEnvVar,
 		executor.TriggerRefEnvVar,
+		executor.DSLVersionEnvVar,
 		executor.NeedsHumanAssigneeEnvVar,
 		executor.StageTimeoutEnvVar,
 	} {

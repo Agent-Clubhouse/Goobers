@@ -67,7 +67,7 @@ func (s *Local) DiagnosticFeatureConfiguration() map[string]map[string]bool {
 			switch definition.DSLVersion {
 			case "1.4":
 				features["dsl.v1"] = true
-			case "2.0":
+			case "2.0", "2.1":
 				features["dsl.v2"] = true
 			case "3.0":
 				features["dsl.v3"] = true
