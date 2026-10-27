@@ -22,15 +22,21 @@ const (
 	ModeEnforce Mode = "enforce"
 )
 
+// newEntraTokenSource is a seam so tests need no Azure identity.
+var newEntraTokenSource = decider.NewEntraTokenSource
+
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Settings is the instance-level opt-in. Secrets are never stored here: the
 // endpoint and key are read from the named environment variables, so this
 // struct is safe to commit as an example.
 type Settings struct {
-	Mode                  Mode   `json:"mode,omitempty" yaml:"mode,omitempty"`
-	BaseURLEnv            string `json:"baseURLEnv,omitempty" yaml:"baseURLEnv,omitempty"`
-	KeyEnv                string `json:"keyEnv,omitempty" yaml:"keyEnv,omitempty"`
+	Mode       Mode   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	BaseURLEnv string `json:"baseURLEnv,omitempty" yaml:"baseURLEnv,omitempty"`
+	KeyEnv     string `json:"keyEnv,omitempty" yaml:"keyEnv,omitempty"`
+	// Auth selects the credential: "key" (default, keyEnv) or "entra" (ambient
+	// Azure identity such as workload or managed identity; no key is stored).
+	Auth                  string `json:"auth,omitempty" yaml:"auth,omitempty"`
 	ModelEnv              string `json:"modelEnv,omitempty" yaml:"modelEnv,omitempty"`
 	PublicationLeakScreen bool   `json:"publicationLeakScreen,omitempty" yaml:"publicationLeakScreen,omitempty"`
 	// Fallback is what a caller does on Uncertain or exhausted retries.
@@ -40,6 +46,12 @@ type Settings struct {
 	ShadowSample float64 `json:"shadowSample,omitempty" yaml:"shadowSample,omitempty"`
 	Gate         Config  `json:"gate,omitempty" yaml:"gate,omitempty"`
 }
+
+// Credential kinds for Settings.Auth.
+const (
+	AuthKey   = "key"
+	AuthEntra = "entra"
+)
 
 // Allowed fallbacks. agent keeps today's behavior.
 const (
@@ -69,7 +81,19 @@ func (s *Settings) Validate() error {
 	default:
 		return fmt.Errorf("decisionGate.mode %q must be off, shadow or enforce", s.Mode)
 	}
-	for field, v := range map[string]string{"baseURLEnv": s.BaseURLEnv, "keyEnv": s.KeyEnv, "modelEnv": s.ModelEnv} {
+	switch s.Auth {
+	case "", AuthKey, AuthEntra:
+	default:
+		return fmt.Errorf("decisionGate.auth %q must be key or entra", s.Auth)
+	}
+	fields := map[string]string{"baseURLEnv": s.BaseURLEnv, "keyEnv": s.KeyEnv, "modelEnv": s.ModelEnv}
+	if s.Auth == AuthEntra {
+		if s.KeyEnv != "" {
+			return errors.New("decisionGate.keyEnv must be empty when auth is entra")
+		}
+		delete(fields, "keyEnv")
+	}
+	for field, v := range fields {
 		if v == "" {
 			return fmt.Errorf("decisionGate.%s is required when the gate is on", field)
 		}
@@ -100,11 +124,20 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	cli, err := decider.New(decider.Config{
+	dcfg := decider.Config{
 		BaseURL: strings.TrimSpace(getenv(s.BaseURLEnv)),
-		APIKey:  strings.TrimSpace(getenv(s.KeyEnv)),
 		Model:   strings.TrimSpace(getenv(s.ModelEnv)),
-	})
+	}
+	if s.Auth == AuthEntra {
+		ts, err := newEntraTokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("decisionGate: %w", err)
+		}
+		dcfg.TokenSource = ts
+	} else {
+		dcfg.APIKey = strings.TrimSpace(getenv(s.KeyEnv))
+	}
+	cli, err := decider.New(dcfg)
 	if err != nil {
 		return nil, fmt.Errorf("decisionGate: %w", err)
 	}
