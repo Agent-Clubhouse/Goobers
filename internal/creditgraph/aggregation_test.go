@@ -1,6 +1,60 @@
 package creditgraph
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"testing"
+)
+
+func TestAggregateAttributionEvidencePreservesSignedScores(t *testing.T) {
+	observations := []AttributionObservation{
+		{RunID: "a", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
+			Contributions: []Contribution{
+				{NodeID: "positive", Share: 0.4, Score: 0.4, Confidence: 0.8},
+				{NodeID: "negative", Share: 0.5, Score: -0.5, Confidence: 0.8},
+				{NodeID: "neutral", Share: 0.1, Score: 0.1, Confidence: 0.8},
+			},
+		}},
+		{RunID: "b", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
+			Contributions: []Contribution{
+				{NodeID: "positive", Share: 0.6, Score: 0.6, Confidence: 0.8},
+				{NodeID: "negative", Share: 0.3, Score: 0.3, Confidence: 0.8},
+				{NodeID: "neutral", Share: 0.1, Score: -0.1, Confidence: 0.8},
+			},
+		}},
+	}
+	data, err := json.Marshal(AggregateAttributionEvidence(observations))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cohorts []struct {
+		Paths []struct {
+			Nodes []string `json:"nodes"`
+			Share float64  `json:"share"`
+			Score *float64 `json:"score"`
+		} `json:"topContributingPaths"`
+	}
+	if err := json.Unmarshal(data, &cohorts); err != nil {
+		t.Fatal(err)
+	}
+	if len(cohorts) != 1 || len(cohorts[0].Paths) != 3 {
+		t.Fatalf("unexpected cohorts: %s", data)
+	}
+	expected := map[string][2]float64{
+		"positive": {0.5, 0.5},
+		"negative": {0.4, -0.1},
+		"neutral":  {0.1, 0},
+	}
+	for _, path := range cohorts[0].Paths {
+		want := expected[path.Nodes[len(path.Nodes)-1]]
+		if path.Score == nil {
+			t.Fatalf("signed score missing for %v; unsigned share must not stand in for impact", path.Nodes)
+		}
+		if math.Abs(path.Share-want[0]) > 1e-9 || math.Abs(*path.Score-want[1]) > 1e-9 {
+			t.Errorf("path %v share=%g score=%g, want %v", path.Nodes, path.Share, *path.Score, want)
+		}
+	}
+}
 
 func TestAggregateAttributionEvidenceByCohort(t *testing.T) {
 	obs := []AttributionObservation{

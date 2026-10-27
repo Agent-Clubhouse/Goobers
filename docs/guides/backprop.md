@@ -42,9 +42,35 @@ Today:
   [Agent claims](#agent-claims)). Claims are evidence only: they are listed in
   `attribution.json` and cited on cause findings, but never change credit.
   Later stages read earlier claims with `goobers telemetry claims`.
-- Cohorts and fault-audit findings are JSON only: the daemon's telemetry stats
-  read API and `goobers telemetry-query`. The `goobers telemetry stats` CLI
-  (text or `--json`) reads only the local rollup and does not include them.
+- **Insight > Backprop** shows recorded cohorts and fault-domain findings from
+  the daemon's telemetry stats read API. Filter by gaggle/workflow and window,
+  then workload, effective version, minimum confidence, or recorded node/model
+  path. Stage-scoped aggregation is unavailable. The same records are available
+  through `goobers telemetry-query`; the `goobers telemetry stats` CLI (text or
+  `--json`) reads only the local rollup and does not include them.
+
+### Inspect recorded cohorts
+
+Open **Insight**, select **Backprop**, and choose a scope and time window.
+The section is linkable as `#/insight?section=backprop`; scope and window stay
+in the URL when switching views. Cohort path filters are local to this view
+and do not filter the separately labeled fault audit.
+
+Each returned top path separates its signed outcome score from unsigned
+responsibility and confidence. Scores use the backend's ground-truth-weighted
+aggregation; older payloads without signed scores display **Unavailable**, not
+a positive score inferred from responsibility. A measured zero remains zero.
+Only the backend's bounded top paths are returned, not a complete graph.
+
+Expand supporting evidence or counterevidence to inspect recorded run/journal
+links and artifact provenance. These are recorded references, not proof that an
+artifact was independently verified. Fault-audit truncation is labeled partial;
+missing attribution and genuinely empty observation windows are distinguished.
+
+This read-only view does not infer a governed rotation decision, remediation
+PR/CI/rollout state, or measured causal improvement. Those statuses are explicitly
+unavailable from this endpoint. A finding's verification state or filing
+threshold is not approval to change or disable a workflow.
 
 These gaps are tracked under the Backprop scopes epic
 ([#7121](https://github.com/Agent-Clubhouse/Goobers/issues/7121)).

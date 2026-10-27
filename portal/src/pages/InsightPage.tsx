@@ -61,6 +61,8 @@ import {
 } from "../routing";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
+import { Tab, TabList } from "../ui/Tabs";
+import { BackpropInsights } from "../components/BackpropInsights";
 
 const INITIAL_DETAIL_ROWS = 5;
 
@@ -76,22 +78,26 @@ export function InsightPage({
   standalone: boolean;
 }) {
   const window = filters?.window ?? "7d";
+  const backprop = filters?.section === "backprop";
   const requestedScope = insightScopeFromRoute(filters);
   const routeFilters = (scope: InsightScope, nextWindow: InsightWindow) =>
-    insightScopeRouteFilters(scope, nextWindow);
+    ({ ...insightScopeRouteFilters(scope, nextWindow), section: filters?.section });
   const setScope = (nextScope: InsightScope) =>
     navigate({ page: "insight", filters: routeFilters(nextScope, window) });
   const setWindow = (nextWindow: InsightWindow) =>
     navigate({ page: "insight", filters: routeFilters(requestedScope, nextWindow) });
   const errorScope = insightScopeApiParameters(requestedScope);
-  const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
+  const query = useInsightStats(
+    client, window, errorScope.gaggle, errorScope.workflow,
+    backprop && requestedScope.kind !== "instance",
+  );
   const errorSignatures = useInsightErrorSignatures(
     client,
     window,
     errorScope.gaggle,
     errorScope.workflow,
     errorScope.stage,
-    query.state.status !== "loading",
+    !backprop && query.state.status !== "loading",
   );
 
   if (query.state.status === "loading") {
@@ -115,6 +121,21 @@ export function InsightPage({
     <>
       <PageHeading title="Insight" className="" description="Run outcomes, usage, and latency." />
 
+      <TabList aria-label="Insight views" className="insight-view-tabs">
+        <Tab
+          aria-controls="insight-operations-panel"
+          aria-selected={!backprop}
+          id="insight-operations-tab"
+          onClick={() => navigate({ page: "insight", filters: { ...filters, section: undefined } })}
+        >Operations</Tab>
+        <Tab
+          aria-controls="insight-backprop-panel"
+          aria-selected={backprop}
+          id="insight-backprop-tab"
+          onClick={() => navigate({ page: "insight", filters: { ...filters, section: "backprop" } })}
+        >Backprop</Tab>
+      </TabList>
+
       <InsightFilters
         label="Insight filters"
         onScopeChange={setScope}
@@ -132,11 +153,21 @@ export function InsightPage({
         />
       )}
 
-      <InsightContent
-        errorSignatures={errorSignatures.state}
-        errorSignaturesRetry={errorSignatures.retry}
-        view={view}
-      />
+      <section
+        aria-labelledby={backprop ? "insight-backprop-tab" : "insight-operations-tab"}
+        id={backprop ? "insight-backprop-panel" : "insight-operations-panel"}
+        role="tabpanel"
+      >
+        {backprop ? (
+          <BackpropInsights stageScoped={requestedScope.kind === "stage"} stats={snapshot.stats} />
+        ) : (
+          <InsightContent
+            errorSignatures={errorSignatures.state}
+            errorSignaturesRetry={errorSignatures.retry}
+            view={view}
+          />
+        )}
+      </section>
     </>
   );
 }

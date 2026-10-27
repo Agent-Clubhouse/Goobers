@@ -46,6 +46,7 @@
     "attributionCohorts[].topContributingPaths[].evidence": "Exact journal-backed links supporting one contributing path occurrence.",
     "attributionCohorts[].topContributingPaths[].nodes": "Ordered path of graph nodes contributing to the cohorted attribution.",
     "attributionCohorts[].topContributingPaths[].share": "Mean attribution share of the repeated path across contributing runs.",
+    "attributionCohorts[].topContributingPaths[].score": "Ground-truth-weighted mean signed attribution score across contributing observations; zero is recorded, omission is unavailable, and the score is not measured causal impact.",
     "attributionCohorts[].topContributingPaths[].evidence[].artifactDigest": "Content digest of the exact artifact or span blob carrying the evidence, when one exists.",
     "attributionCohorts[].topContributingPaths[].evidence[].artifactMediaType": "Recorded media type of the artifact or span blob carrying the evidence, when one exists.",
     "attributionCohorts[].topContributingPaths[].evidence[].artifactPath": "Journal-relative path of the exact artifact or span blob carrying the evidence, when one exists.",
