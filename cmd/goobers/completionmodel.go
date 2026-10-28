@@ -699,6 +699,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},
+	"decide": {
+		{name: "name", takesArg: true, desc: "Stable question name"},
+		{name: "question", takesArg: true, desc: "The yes/no question"},
+		{name: "true", takesArg: true, desc: "What yes means"},
+		{name: "false", takesArg: true, desc: "What no means"},
+		{name: "state-file", takesArg: true, desc: "JSON file the question is about"},
+		{name: "accept", takesArg: true, desc: "Yes at or above this probability"},
+		{name: "reject", takesArg: true, desc: "No at or below this probability"},
+		{name: "optional", desc: "Report unavailable instead of failing when the gate is off"},
+	},
 	"docs-churn": {
 		{name: "repo", takesArg: true, desc: "Git repository/worktree to scan"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the watermark"},

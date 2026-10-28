@@ -806,6 +806,10 @@ func init() {
 			withSynopsis(synopsisByID["report-pr-status"]).
 			withHelp("publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)", reportPRStatusHelp).
 			withExamples("goobers report-pr-status"),
+		stageCommand("decide", apicontract.ActionWorkflowExecution, runDecide).
+			withSynopsis(synopsisByID["decide"]).
+			withHelp("ask the decision model a thresholded yes/no question (a workflow stage)", decideHelp).
+			withExamples("goobers decide --name complete --question \"Does the summary cover the request?\" --state-file handoff.json"),
 		stageCommand("gate-removal-guard", apicontract.ActionWorkflowExecution, runGateRemovalGuard).
 			withSynopsis(synopsisByID["gate-removal-guard"]).
 			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).

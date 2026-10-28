@@ -164,6 +164,7 @@ var inputSchemas = map[string][]Input{
 		stringListsIn("headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
+	"decide":             schema(pathsIn("resultFile")),
 	"gate-removal-guard": schema(stringsIn("base", "configRepo", "configRepoBase", "configRepoDir"), pathsIn("resultFile")),
 	"issue-close-out": schema(
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),

@@ -190,6 +190,7 @@ Workflow-stage and connector commands:
   check-fail-first  enforce fail-first evidence for a new workflow gate (a workflow stage)
   check-issue-staleness route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
   config-checkout   clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+  decide            ask the decision model a thresholded yes/no question (a workflow stage)
   docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
   elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
   file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
@@ -251,6 +252,7 @@ Usage:
   check-fail-first  enforce fail-first evidence for a new workflow gate (a workflow stage)
   check-issue-staleness route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
   config-checkout   clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+  decide            ask the decision model a thresholded yes/no question (a workflow stage)
   docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
   elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
   file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
@@ -910,6 +912,33 @@ of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.
 Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or
 browser failure, 2 = usage/IO error.
+
+### decide
+Usage: goobers decide --name <id> --question <text> --state-file <path> [flags] [path]
+
+Ask the instance's decision model a yes/no question about a JSON state
+document and write a thresholded, deterministic-ish decision to the stage
+result file. Code, not the model, owns facts: use this only for semantic
+judgments, never for structural validity.
+
+Requires decisionGate to be on in the instance config. In shadow mode the
+model is still called and recorded but the reported decision is always
+"uncertain", so a shadowed step never changes a run's outcome.
+
+Result keys: decision (yes|no|uncertain|unavailable), probability, mode,
+fallback, stateDigest. An uncertain or unavailable answer follows
+decisionGate.fallback: fail exits 1; agent and escalate exit 0 so the
+workflow can route to an agent or a human.
+Flags:
+  --name <id>         stable question name (letters, digits, - _ .)
+  --question <text>   the yes/no question
+  --true <text>       what "yes" means (optional)
+  --false <text>      what "no" means (optional)
+  --state-file <path> JSON file the question is about
+  --accept <p>        yes at or above this probability (default from config, else 0.9)
+  --reject <p>        no at or below this probability (default from config, else 0.1)
+  --optional          when the gate is off or unreachable, report "unavailable" and exit 0
+Exit codes: 0 = decision written, 1 = failed, 2 = usage error.
 
 ### diagnostics
 Usage: goobers diagnostics <subcommand> [flags] [path]
