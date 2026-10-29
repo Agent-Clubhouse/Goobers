@@ -632,7 +632,7 @@ func TestManifestsDriftGuardRunsGitDiff(t *testing.T) {
 		t.Errorf("manifests-generate command = %q, want go", generate.command)
 	}
 	if want := []string{
-		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3",
 		"crd:allowDangerousTypes=true", "paths=./api/v1alpha1/...", "output:crd:dir=config/crd/bases",
 	}; !reflect.DeepEqual(generate.args, want) {
 		t.Errorf("manifests-generate args = %q, want %q", generate.args, want)
@@ -656,7 +656,7 @@ func TestDeepcopyDriftGuardRunsAfterPinnedGeneration(t *testing.T) {
 	}
 	generate, diff := got[generateIdx], got[diffIdx]
 	if generate.command != "custom-go" || !reflect.DeepEqual(generate.args, []string{
-		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5", "object", "paths=./api/v1alpha1/...",
+		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3", "object", "paths=./api/v1alpha1/...",
 	}) {
 		t.Fatalf("unexpected generator: %+v", generate)
 	}
