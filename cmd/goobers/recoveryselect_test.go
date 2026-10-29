@@ -39,6 +39,26 @@ func TestSelectIssueRecoveryUsesNewestUnexpiredTerminalMatch(t *testing.T) {
 	}
 }
 
+func TestSelectIssueRecoveryIgnoresUnrelatedStaleRetentionTemp(t *testing.T) {
+	layout := instance.NewLayout(initDemo(t))
+	now := time.Now().UTC()
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+	unrelated := seedRecoverySelection(t, layout, repo, "unrelated", "8", now.Add(-2*time.Hour), now.Add(time.Hour), true)
+	want := seedRecoverySelection(t, layout, repo, "wanted", "7", now.Add(-time.Hour), now.Add(time.Hour), true)
+	temp := filepath.Join(filepath.Dir(unrelated), ".retention.json.tmp-123")
+	if err := os.WriteFile(temp, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := selectIssueRecovery(context.Background(), layout, repo.CanonicalKey(), "7", now)
+	if err != nil || got.RecordPath != want {
+		t.Fatalf("selection with unrelated stale retention temp: %+v %v, want %s", got, err, want)
+	}
+	if _, err := os.Lstat(temp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("selection did not reconcile stale retention temp: %v", err)
+	}
+}
+
 func TestSelectIssueRecoveryRefusesAbandonedSnapshotBeforeReaping(t *testing.T) {
 	layout := instance.NewLayout(initDemo(t))
 	now := time.Now().UTC()

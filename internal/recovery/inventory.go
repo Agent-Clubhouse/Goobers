@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goobers/goobers/internal/platform/durability"
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 // ErrInventoryFull refuses new recovery state without evicting existing
@@ -223,21 +225,74 @@ func reserveSnapshotDirectory(root, name string, limit int) (string, error) {
 }
 
 func validateReservationContents(directory string) error {
-	file, err := os.Open(directory)
+	temps, err := reservationRetentionTemps(directory)
+	if err != nil || len(temps) == 0 {
+		return err
+	}
+	handle, err := platformlock.TryAcquire(filepath.Join(directory, ".publish.lock"))
+	if err != nil {
+		return fmt.Errorf("lock recovery retention reconciliation: %w", err)
+	}
+	defer func() { _ = handle.Release() }()
+	temps, err = reservationRetentionTemps(directory)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = file.Close() }()
-	entries, err := file.Readdirnames(7)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
+	for _, temp := range temps {
+		if err := durability.RemoveFile(filepath.Join(directory, temp)); err != nil {
+			return fmt.Errorf("remove stale recovery retention temporary file: %w", err)
+		}
 	}
+	return durability.SyncDir(directory)
+}
+
+// Caller holds the inventory lock. A retention writer takes that lock before
+// its per-reservation publication lock, so acquiring the latter here cannot
+// race a live writer or invert lock order.
+func reservationRetentionTemps(directory string) ([]string, error) {
+	file, err := os.Open(directory)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	entries, err := file.Readdirnames(MaxInventoryEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > MaxInventoryEntries {
+		return nil, fmt.Errorf("recovery reservation requires reconciliation before retry")
+	}
+	var temps []string
 	for _, entry := range entries {
 		switch entry {
 		case BundleFileName, RecordFileName, retentionFileName, ".publish.lock", BundleFileName + ".lock", RecordFileName + ".lock":
 		default:
-			return fmt.Errorf("recovery reservation requires reconciliation before retry")
+			if !isRetentionTempName(entry) {
+				return nil, fmt.Errorf("recovery reservation requires reconciliation before retry")
+			}
+			info, err := os.Lstat(filepath.Join(directory, entry))
+			if err != nil {
+				return nil, err
+			}
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("recovery retention temporary file is not regular")
+			}
+			temps = append(temps, entry)
 		}
 	}
-	return nil
+	return temps, nil
+}
+
+func isRetentionTempName(name string) bool {
+	const prefix = "." + retentionFileName + ".tmp-"
+	suffix := strings.TrimPrefix(name, prefix)
+	if suffix == name || suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
