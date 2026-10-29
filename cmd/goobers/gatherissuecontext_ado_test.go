@@ -44,10 +44,10 @@ func adoIssueContextServer(t *testing.T, repo providers.RepositoryRef, status, t
 		writeJSONResp(t, w, map[string]any{
 			"id": 945,
 			"fields": map[string]any{
-				"System.WorkItemType":                      "Task",
-				"System.Title":                             "Originating work item",
-				"System.State":                             "Active",
-				"System.Description":                       "Implement the requested behavior.",
+				"System.WorkItemType": "Task",
+				"System.Title":        "Originating work item",
+				"System.State":        "Active",
+				"System.Description":  "Implement the requested behavior.",
 				"Microsoft.VSTS.Common.AcceptanceCriteria": "- Include this body.",
 			},
 		})

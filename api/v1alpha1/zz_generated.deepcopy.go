@@ -367,7 +367,7 @@ func (in *ContextPointer) DeepCopyInto(out *ContextPointer) {
 	if in.Artifact != nil {
 		in, out := &in.Artifact, &out.Artifact
 		*out = new(ArtifactPointer)
-		**out = **in
+		(*in).DeepCopyInto(*out)
 	}
 	if in.External != nil {
 		in, out := &in.External, &out.External
@@ -407,7 +407,9 @@ func (in *ContinuationRequest) DeepCopyInto(out *ContinuationRequest) {
 	if in.Inputs != nil {
 		in, out := &in.Inputs, &out.Inputs
 		*out = make([]ContinuationInput, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	if in.ContextPointers != nil {
 		in, out := &in.ContextPointers, &out.ContextPointers
@@ -1698,7 +1700,7 @@ func (in *OperatorMessageContent) DeepCopyInto(out *OperatorMessageContent) {
 	if in.Artifact != nil {
 		in, out := &in.Artifact, &out.Artifact
 		*out = new(ArtifactPointer)
-		**out = **in
+		(*in).DeepCopyInto(*out)
 	}
 }
 
@@ -2132,7 +2134,9 @@ func (in *RemediationIssueContext) DeepCopyInto(out *RemediationIssueContext) {
 	if in.Issues != nil {
 		in, out := &in.Issues, &out.Issues
 		*out = make([]RemediationIssue, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	if in.Ancestry != nil {
 		in, out := &in.Ancestry, &out.Ancestry
@@ -2177,7 +2181,9 @@ func (in *RemediationPRContext) DeepCopyInto(out *RemediationPRContext) {
 	if in.Comments != nil {
 		in, out := &in.Comments, &out.Comments
 		*out = make([]RemediationThreadComment, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
@@ -2197,12 +2203,16 @@ func (in *RemediationReviewThreads) DeepCopyInto(out *RemediationReviewThreads) 
 	if in.Reviews != nil {
 		in, out := &in.Reviews, &out.Reviews
 		*out = make([]RemediationNativeReview, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	if in.InlineComments != nil {
 		in, out := &in.InlineComments, &out.InlineComments
 		*out = make([]RemediationInlineComment, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
@@ -2591,7 +2601,9 @@ func (in *Verdict) DeepCopyInto(out *Verdict) {
 	if in.Evidence != nil {
 		in, out := &in.Evidence, &out.Evidence
 		*out = make([]ArtifactPointer, len(*in))
-		copy(*out, *in)
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 	if in.Findings != nil {
 		in, out := &in.Findings, &out.Findings

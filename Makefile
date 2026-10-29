@@ -65,7 +65,7 @@ STRESS_SHARD        ?=
 BENCH_WORKCOPY_ARGS ?= -preset small
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
-CONTROLLER_GEN_VERSION ?= v0.16.5
+CONTROLLER_GEN_VERSION ?= v0.17.3
 SETUP_ENVTEST_VERSION  ?= release-0.19
 GOVULNCHECK_VERSION    ?= v1.6.0
 KUBECONFORM_VERSION    ?= v0.7.0
