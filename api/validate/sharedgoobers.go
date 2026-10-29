@@ -6,7 +6,26 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
+
+func gooberFeatureDiagnostics(def wf.Definition, spec apiv1.GooberSpec) []wf.FeatureDiagnostic {
+	diagnostics := wf.CheckGooberFeatureSupport(def, spec, wf.PreviewFeaturesEnabled(def.Annotations))
+	for i := range diagnostics {
+		diagnostic := &diagnostics[i]
+		if diagnostic.Blocking && diagnostic.Feature.Level == wf.SupportPreview {
+			diagnostic.Message = fmt.Sprintf(
+				"DSL feature %q is preview and requires explicit per-Workflow opt-in via metadata.annotations[%q]=%q",
+				diagnostic.Feature.ID, wf.PreviewFeaturesAnnotation, "true",
+			)
+		}
+		if def.Name != "" {
+			diagnostic.Message = fmt.Sprintf("Workflow/%s (gaggle %q, dslVersion %q): %s",
+				def.Name, def.Spec.Gaggle, def.DSLVersion, diagnostic.Message)
+		}
+	}
+	return diagnostics
+}
 
 func missingSkillLocations(gaggle, skill string) string {
 	shared := filepath.ToSlash(filepath.Join("skills", skill))

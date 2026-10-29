@@ -55,9 +55,14 @@ metadata:
 
 A Manifest or Gaggle annotation does not authorize the Workflow. A stable version
 pin does not need this acknowledgement merely for the pin; features that remain
-preview can still require it. The migrator does not silently add consent to
-preview features. See [DSL versioning](../design/dsl-version-lifecycle.md) for lifecycle
-policy.
+preview can still require it. This includes preview declarations on an associated
+Goober, such as an explicit `mcpServers[].required` value in DSL 3.1. Each associated
+Workflow must acknowledge the preview and support the field, even when several
+consumers use the same DSL version. One consumer's acknowledgement does not
+authorize another, and consent does not make a 3.1-only field valid for an older
+consumer. Do not add the deprecated Manifest annotation for these declarations.
+The migrator does not silently add consent to preview features. See
+[DSL versioning](../design/dsl-version-lifecycle.md) for lifecycle policy.
 
 ## What the migration changes
 
