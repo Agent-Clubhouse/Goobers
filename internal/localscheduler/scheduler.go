@@ -475,6 +475,14 @@ func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]i
 	}
 }
 
+// WithCadenceBudgetsDisabled opts out of hourly/daily admission ceilings for
+// every trigger. Explicit zero-budget stops and all other gates still apply.
+func WithCadenceBudgetsDisabled(disabled bool) Option {
+	return func(s *Scheduler) {
+		s.conditions.SetCadenceBudgetsDisabled(disabled)
+	}
+}
+
 // WithOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
 // readiness cap (#353). Optional — nil/unset leaves the cap unenforced, so a
 // workflow that sets MaxOpenPRs without a counter wired simply isn't throttled.

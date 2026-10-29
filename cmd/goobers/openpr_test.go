@@ -103,6 +103,48 @@ func registerADOOpenPRHead(mux *http.ServeMux, repositoryPath, head, headSHA str
 	})
 }
 
+func TestOpenPRDraftInputIsExplicitAndValidatedBeforePublication(t *testing.T) {
+	for _, value := range []string{"true", "false", "not-a-boolean"} {
+		t.Run(value, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "draft-run")
+			t.Setenv("GOOBERS_INPUT_DRAFT", value)
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+			code, _, stderr := runOpenPRArgs(t, root)
+			if code == 0 {
+				data, err := os.ReadFile(filepath.Join(workDir, "pr-result.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var output map[string]string
+				if err := json.Unmarshal(data, &output); err != nil {
+					t.Fatal(err)
+				}
+				head := strings.TrimSpace(runGitOutputT(t, workDir, "rev-parse", "HEAD"))
+				if output["headSha"] != head {
+					t.Fatal("publication evidence does not bind the PR to its checked head", output, head)
+				}
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			if value == "not-a-boolean" {
+				if code == 0 || len(server.prs) != 0 || !strings.Contains(stderr, "draft input must be a boolean") {
+					t.Fatal(code, stderr, server.prs)
+				}
+				return
+			}
+			if code != 0 || len(server.prs) != 1 {
+				t.Fatal(code, stderr, server.prs)
+			}
+			if server.prs[1].draft != (value == "true") {
+				t.Fatal("provider received the wrong draft state")
+			}
+		})
+	}
+}
+
 // TestOpenPRCreatesThenUpdatesOnRepass is #132's core CLI-level acceptance:
 // invoking `goobers open-pr` via the actual CLI entrypoint opens a PR, writes
 // prNumber/pull-request-url to the declared result file (the #132 handoff

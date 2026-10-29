@@ -118,6 +118,9 @@ type Conditions struct {
 	// workflowBudgets's precedence over the workflow's own spec'd
 	// MaxRunsPerDay.
 	dayBudgets map[string]int
+	// disableCadenceBudgets opts out of hourly/daily ceilings, not explicit
+	// zero-budget stops or any other admission gate.
+	disableCadenceBudgets bool
 	// openPRs backs the MaxOpenPRs cap (#353) with a cached count refreshed
 	// off-tick; nil means no counter is wired, so the cap is never enforced
 	// (fail-open). Read under c.mu in Admit, but its own OpenPRCount is a cheap
@@ -170,6 +173,14 @@ func (c *Conditions) SetInstanceLimits(maxParallelRuns int, workflowBudgets map[
 	c.instanceMaxParallel = maxParallelRuns
 	c.workflowBudgets = workflowBudgets
 	c.dayBudgets = dayBudgets
+}
+
+// SetCadenceBudgetsDisabled configures the instance-wide hourly/daily opt-out.
+// Call at setup, before the first admission.
+func (c *Conditions) SetCadenceBudgetsDisabled(disabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disableCadenceBudgets = disabled
 }
 
 // SetOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
@@ -286,12 +297,13 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 }
 
 // admitProviderWorkflow applies every run condition, optionally allowing an
-// explicit manual invocation to pass an already-spent cadence budget. Manual
-// starts are still recorded, so automatic triggers continue to account for
-// them when enforcing their hourly and daily ceilings.
+// explicit manual invocation or instance opt-out to pass an already-spent
+// cadence budget. Starts are still recorded, so re-enabling ceilings accounts
+// for them without resetting history.
 func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider apiv1.Provider, r apiv1.ReadinessConditions, now time.Time, bypassCadenceBudgets bool) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bypassCadenceBudgets = bypassCadenceBudgets || c.disableCadenceBudgets
 
 	// The hourly and daily budgets are wall-clock windows. Strip the
 	// monotonic reading so the recorded start and every cutoff compare by

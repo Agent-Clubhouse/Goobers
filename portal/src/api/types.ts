@@ -69,6 +69,7 @@ export interface TriggerRequest {
   requestId?: string;
   force?: boolean;
   sourceRun?: string;
+  workItemId?: string;
 }
 
 export interface TriggerResponse {

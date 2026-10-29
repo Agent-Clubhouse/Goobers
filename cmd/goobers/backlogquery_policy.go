@@ -6,6 +6,7 @@ import (
 )
 
 type backlogQueryPolicies struct {
+	exactItem      string
 	maxItems       int
 	curation       bool
 	staleness      backlogStalenessPolicy
@@ -45,6 +46,10 @@ func readBacklogQueryPolicies(mode backlogQueryMode) (backlogQueryPolicies, erro
 	}
 	if mode == backlogQueryModeResweep && !p.resweepEnabled {
 		return p, errors.New("--resweep requires a bounded resweepMaxItems input")
+	}
+	p.exactItem, err = exactBacklogWorkItem()
+	if err != nil || p.exactItem != "" && (mode != backlogQueryModeClaim || p.maxItems != 1 || p.curation || p.resweepEnabled) {
+		return p, errors.New("exact work item starts require a single-item claim workflow without curation or re-sweeps")
 	}
 	return p, nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/claimrelease"
 	"github.com/goobers/goobers/internal/sharedclaim"
+	"github.com/goobers/goobers/internal/workitemtarget"
 )
 
 // writeplanes.go implements the daemon write API's claims, trigger, and HITL
@@ -585,6 +586,12 @@ func registerClaimRecoverRoute(router *Router, claims ClaimService, errorLog *lo
 	})
 }
 
+// ExactWorkItemTriggerService explicitly opts into the additive exact-item wire
+// contract. Older service compositions must refuse it rather than discard it.
+type ExactWorkItemTriggerService interface {
+	SupportsExactWorkItems() bool
+}
+
 func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteTriggerIngest, func(w http.ResponseWriter, request *http.Request) {
 		if triggers == nil {
@@ -603,6 +610,17 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 		if strings.TrimSpace(input.Workflow) == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow is required")
 			return
+		}
+		if input.WorkItemID != "" {
+			service, supported := triggers.(ExactWorkItemTriggerService)
+			if !workitemtarget.ValidID(input.WorkItemID) || input.Gaggle == "" || input.Force || input.SourceRun != "" {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workItemId requires an exact numeric item, named gaggle and ordinary manual start")
+				return
+			}
+			if !supported || !service.SupportsExactWorkItems() {
+				writeError(w, http.StatusBadRequest, "exact_work_item_unavailable", "this trigger service does not support exact work item starts")
+				return
+			}
 		}
 		if len(input.RequestID) > MaxTriggerRequestIDBytes {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
@@ -629,6 +647,10 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 		// that the run really does live in that gaggle. Fail closed at every
 		// step.
 		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			if input.WorkItemID != "" {
+				writeError(w, http.StatusForbidden, "run_mismatch", "pod principals cannot select a new work item")
+				return
+			}
 			runID, named := podPrincipalRunID(principal)
 			if !named {
 				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal does not name a run")

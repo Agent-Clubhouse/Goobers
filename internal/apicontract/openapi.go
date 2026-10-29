@@ -412,6 +412,7 @@ func openAPIDiscoverySchemas() map[string]any {
 			"capability":      map[string]any{"type": "string"},
 			"requiredRole":    map[string]any{"type": "string", "enum": []string{"view", "operate"}},
 			"remoteInvocable": map[string]any{"type": "boolean"},
+			"exactWorkItem":   map[string]any{"type": "boolean"},
 			"available":       map[string]any{"type": "boolean"},
 			"code":            map[string]any{"type": "string"},
 			"reason":          map[string]any{"type": "string"},
@@ -565,6 +566,10 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 				"requestId": map[string]any{"type": "string"},
 				"force":     map[string]any{"type": "boolean"},
 				"sourceRun": map[string]any{"type": "string"},
+				"workItemId": map[string]any{
+					"type": "string", "pattern": "^[1-9][0-9]{0,14}$",
+					"description": "Select only this backlog item in the named gaggle's repository. Requires triggerIngest.exactWorkItem capability; incompatible with force, sourceRun and pod-scoped starts. Ordinary eligibility and trust gates still apply.",
+				},
 			},
 		},
 		"TriggerResponse": map[string]any{

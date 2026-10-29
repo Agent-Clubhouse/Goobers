@@ -171,6 +171,7 @@ runner:
   harnessPreflightArgs:
     copilot: [--minimal-preflight]
 runConditions:
+  disableCadenceBudgets: true
   maxParallelRuns: 2
   workflowBudgets:
     implementation: 4
@@ -315,6 +316,13 @@ func TestInstanceSchemaRefusesStructurallyImpossibleInstances(t *testing.T) {
 		document string
 		want     string
 	}{
+		{"non-boolean cadence opt-out", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runConditions:
+  disableCadenceBudgets: unlimited
+`, "disableCadenceBudgets"},
 		{"engine hostPort without port", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
