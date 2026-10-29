@@ -45,6 +45,10 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 		authentication = "none"
 	case DenyAllAuthenticator, *DenyAllAuthenticator:
 		authentication = "disabled"
+	default:
+		if local, ok := config.authenticator.(interface{ AllowsAnonymous() bool }); ok && local.AllowsAnonymous() {
+			authentication = "none"
+		}
 	}
 
 	identity := config.discoveryIdentity
@@ -239,6 +243,8 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 			Reason:       reason,
 			Streaming:    route.Cost == apicontract.CostStream,
 			RecoverySafe: route.RecoverySafe,
+
+			ExactWorkItem: route.ID == apicontract.RouteTriggerIngest && exactWorkItemAvailable(s.config.triggers),
 		})
 	}
 	return apicontract.CapabilityDocument{
@@ -248,6 +254,11 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 		OpenAPISHA256:    s.openAPISHA256,
 		Routes:           routes,
 	}
+}
+
+func exactWorkItemAvailable(service TriggerService) bool {
+	exact, ok := service.(ExactWorkItemTriggerService)
+	return ok && exact.SupportsExactWorkItems()
 }
 
 func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, string, string) {

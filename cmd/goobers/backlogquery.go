@@ -481,6 +481,11 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	maxItems, curationRun := policies.maxItems, policies.curation
 	stalenessPolicy := policies.staleness
 	resweepPolicy, resweepEnabled := policies.resweep, policies.resweepEnabled
+	exactItem, err := exactBacklogWorkItem()
+	if err != nil || exactItem != "" && (mode != backlogQueryModeClaim || maxItems != 1 || curationRun || resweepEnabled) {
+		pln(stderr, "error: exact work item starts require a single-item claim workflow without curation or re-sweeps")
+		return 1
+	}
 	// How many candidates to SCAN is deliberately decoupled from how many to
 	// CLAIM (#532): the old scan window was max(maxItems, 20), so once
 	// maxItems reached 20 (curation's batch size) the two were the same
@@ -551,6 +556,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	}
 
 	scanOpts := backlogScanOptions{
+		exactItem:         exactItem,
 		trustLabel:        trustLabel,
 		requireLabels:     requireLabels,
 		excludeLabels:     excludeLabels,
@@ -569,6 +575,11 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	scan, code := scanBacklogEligibility(ctx, env, scanOpts)
 	if code != 0 {
 		return code
+	}
+	scan.eligible, err = restrictExactBacklogWorkItem(scan.eligible, exactItem)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	eligible := scan.eligible
 	cursorKey := scan.cursorKey
@@ -2473,6 +2484,7 @@ func performBacklogQueryReconciliation(
 }
 
 type backlogScanOptions struct {
+	exactItem         string
 	trustLabel        string
 	requireLabels     []string
 	excludeLabels     []string
@@ -2553,6 +2565,9 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
 		opts.requireLabels, opts.excludeLabels, queryAssignee, opts.ownership,
 	)
+	if opts.exactItem != "" {
+		result.cursorKey += ":work-item:" + opts.exactItem
+	}
 	store, err := openStageStateStore(env.layout)
 	if err != nil {
 		pf(env.stderr, "error: open scheduler state: %v\n", err)
@@ -2560,17 +2575,30 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	}
 	result.state = store
 	exhaustiveScan := opts.fieldOrder.Configured()
-	if !exhaustiveScan {
+	if !exhaustiveScan && opts.exactItem == "" {
 		result.cursor, err = readBacklogScanCursor(ctx, result.state, result.cursorKey)
 		if err != nil {
 			pf(env.stderr, "error: read backlog scan cursor: %v\n", err)
 			return result, 1
 		}
 	}
-	items, window, err := listBacklogScanWindow(
-		ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
-		opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
-	)
+	var items []providers.WorkItem
+	var window backlogScanWindow
+	if opts.exactItem != "" {
+		item, getErr := env.issueProvider.GetWorkItem(ctx, env.backlogRepo, opts.exactItem)
+		err = getErr
+		if err == nil && item.ID != opts.exactItem {
+			err = errors.New("provider returned a different exact work item")
+		}
+		if err == nil {
+			items = []providers.WorkItem{item}
+		}
+	} else {
+		items, window, err = listBacklogScanWindow(
+			ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
+			opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
+		)
+	}
 	if err != nil {
 		return result, failProviderStage(env.stderr, "list work items", err, "claimed-item.json")
 	}
@@ -2667,6 +2695,13 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		if err != nil {
 			pf(env.stderr, "error: %v\n", err)
 			return result, 1
+		}
+		if opts.exactItem != "" {
+			for itemID := range result.observedRecords {
+				if itemID != opts.exactItem {
+					delete(result.observedRecords, itemID)
+				}
+			}
 		}
 		result.remainingRecords = make(map[string]blockedRecord, len(result.observedRecords))
 		for itemID, record := range result.observedRecords {

@@ -266,7 +266,10 @@ func (a *schedulerAdmission) Prepare(ctx context.Context) error {
 	}
 	if applied.Config != nil {
 		rc := applied.Config.RunConditions
-		options = append(options, localscheduler.WithInstanceRunConditions(rc.MaxParallelRuns, rc.WorkflowBudgets, rc.WorkflowDailyBudgets))
+		options = append(options,
+			localscheduler.WithInstanceRunConditions(rc.MaxParallelRuns, rc.WorkflowBudgets, rc.WorkflowDailyBudgets),
+			localscheduler.WithCadenceBudgetsDisabled(rc.DisableCadenceBudgets),
+		)
 	}
 	if counters != nil {
 		options = append(options, localscheduler.WithOpenPRCounter(counters.OpenPRs()))

@@ -43,7 +43,11 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 }
 
 func ordinaryRequest(r httpapi.TriggerRequest) startintent.Request {
-	return startintent.Request{Workflow: r.Workflow, Gaggle: r.Gaggle, SourceRun: r.SourceRun, Force: r.Force, PodScoped: r.PodScoped, PodRunID: r.PodRunID}
+	return startintent.Request{Workflow: r.Workflow, Gaggle: r.Gaggle, SourceRun: r.SourceRun, WorkItemID: r.WorkItemID, Force: r.Force, PodScoped: r.PodScoped, PodRunID: r.PodRunID}
+}
+
+func (s *durableTriggerService) SupportsExactWorkItems() bool {
+	return s.ordinary != nil
 }
 
 // Existing accepted legacy requests remain readable and keep their original
@@ -97,7 +101,7 @@ func (s *durableTriggerService) drainOrdinary(ctx context.Context, record trigge
 	if err != nil {
 		return err
 	}
-	r := httpapi.TriggerRequest{Workflow: e.Target.Workflow, Gaggle: e.Target.Gaggle, SourceRun: e.Request.SourceRun, Force: e.Request.Force, Actor: record.Actor, PodScoped: e.Request.PodScoped, PodRunID: e.Request.PodRunID}
+	r := httpapi.TriggerRequest{Workflow: e.Target.Workflow, Gaggle: e.Target.Gaggle, SourceRun: e.Request.SourceRun, WorkItemID: e.Request.WorkItemID, Force: e.Request.Force, Actor: record.Actor, PodScoped: e.Request.PodScoped, PodRunID: e.Request.PodRunID}
 	if err = s.dispatch.ValidateTriggerAuthority(r); err != nil {
 		if claimErr := s.queue.BeginDispatch(ctx, record.ID); claimErr != nil {
 			return claimErr

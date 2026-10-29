@@ -351,6 +351,11 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
+	draft, err := strconv.ParseBool(providerInput("draft", "false"))
+	if err != nil {
+		pf(stderr, "error: draft input must be a boolean\n")
+		return 1
+	}
 
 	target, err := resolveOpenPRTarget(*configRepo, root)
 	if err != nil {
@@ -550,7 +555,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
+	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base, Draft: draft}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID
 	}
@@ -572,6 +577,10 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	extras := requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr)
+	if extras == nil {
+		extras = make(map[string]string)
+	}
+	extras["headSha"] = inspectedHead
 
 	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, withOpenPRDraft(extras, result.Draft)); err != nil {
 		pf(stderr, "error: %v\n", err)

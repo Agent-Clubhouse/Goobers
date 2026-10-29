@@ -1240,10 +1240,15 @@
       "minLength": 1
     },
     "runConditions": {
-      "description": "Instance-level ceilings. They sit on top of, and never widen, each workflow's own readiness guardrails.",
+      "description": "Instance-level admission policy. Workflow budget overrides replace named cadence ceilings; disabling cadence budgets opts out of hourly/daily ceilings only. All other readiness gates remain enforced.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "disableCadenceBudgets": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt out of hourly and daily run-admission ceilings for every trigger, including the default 10/hour and positive instance workflow budget overrides. Explicit zero workflowBudgets/workflowDailyBudgets entries still stop a workflow. Does not bypass authentication, eligibility, claims, concurrency, readiness, PR limits, provider quotas, resource gates, or run-control deadlines. Starts remain recorded; false or omitted retains existing ceilings."
+        },
         "maxParallelRuns": {
           "type": "integer",
           "minimum": 0,

@@ -1421,6 +1421,75 @@ func TestForcedManualTriggerBypassesCadenceBudgetsButDefaultAndScheduleDoNot(t *
 	}
 }
 
+func TestDisableCadenceBudgetsPreservesDispatchGates(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		entry WorkflowEntry
+		want  string
+	}{
+		{
+			name: "provider authentication",
+			entry: WorkflowEntry{
+				Readiness: apiv1.ReadinessConditions{RequireProviderAuthorization: true},
+				ProviderAuth: &staticProviderAuthGate{status: ProviderAuthStatus{
+					Code: ProviderAuthRejected, Detail: "credential rejected",
+				}},
+			},
+			want: ReasonProviderAuthUnhealthy,
+		},
+		{
+			name:  "disabled workflow",
+			entry: WorkflowEntry{DisabledReason: "spec.enabled=false"},
+			want:  ReasonDisabled,
+		},
+		{
+			name:  "missing capability",
+			entry: WorkflowEntry{RequiredCapabilities: []string{"xcode"}},
+			want:  ReasonMissingCapability,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+			entry := tc.entry
+			entry.Workflow = "wf"
+			entry.Signals = []string{"go"}
+			entry.Starter = starter
+			sched, _ := newTestScheduler(t, []WorkflowEntry{entry},
+				WithCadenceBudgetsDisabled(true), WithRunnerCapabilities([]string{"go@1.26"}))
+			_, err := sched.TriggerSignal(t.Context(), "wf", "go", "", time.Now())
+			var rejected *TriggerRejectedError
+			if !errors.As(err, &rejected) || !strings.HasPrefix(rejected.Reason, tc.want) {
+				t.Fatalf("trigger = %v; want refusal %q", err, tc.want)
+			}
+			sched.Wait()
+			if got := starter.count(); got != 0 {
+				t.Fatalf("refused dispatch started %d runs", got)
+			}
+		})
+	}
+}
+
+func TestDisableCadenceBudgetsAppliesToScheduledDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "wf",
+		Readiness: apiv1.ReadinessConditions{MaxRunsPerHour: 2, MaxRunsPerDay: 2},
+		Schedules: []Schedule{fakeSchedule{d: time.Minute}},
+		Starter:   starter,
+	}}, WithCadenceBudgetsDisabled(true))
+	now := time.Now().Add(2 * time.Minute)
+	history := make([]time.Time, 12)
+	for i := range history {
+		history[i] = now.Add(-time.Duration(len(history)-i) * time.Minute)
+	}
+	sched.conditions.ReconcileBudget(map[string][]time.Time{"wf": history})
+	sched.Tick(t.Context(), now)
+	sched.Wait()
+	if got := starter.count(); got != 1 {
+		t.Fatalf("scheduled starts = %d, want one despite spent hourly/daily budgets", got)
+	}
+}
+
 func TestTriggerUnknownWorkflowErrors(t *testing.T) {
 	sched, _ := newTestScheduler(t, nil)
 	if _, err := sched.Trigger(context.Background(), "nope", time.Now()); err == nil {
