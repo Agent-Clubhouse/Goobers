@@ -528,14 +528,8 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	branchReader, ok := stageProvider.(providers.BranchReconciliationProvider)
-	if !ok {
-		pf(stderr, "error: publication safety: provider cannot verify the remote branch\n")
-		return 1
-	}
-	remoteHead, found, err := branchReader.GetBranch(ctx, repo, head)
-	if err != nil || !found || remoteHead.SHA != inspectedHead {
-		pf(stderr, "error: publication safety: remote branch does not match the inspected commit; push the checked branch before opening its PR\n")
+	if err := verifyOpenPRRemoteHead(ctx, provider, repo, head, inspectedHead); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
@@ -576,11 +570,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	extras := requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr)
-	if extras == nil {
-		extras = make(map[string]string)
-	}
-	extras["headSha"] = inspectedHead
+	extras := withOpenPRHead(requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr), inspectedHead)
 
 	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, withOpenPRDraft(extras, result.Draft)); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -609,6 +599,26 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
+}
+
+func verifyOpenPRRemoteHead(ctx context.Context, provider openPRProvider, repo providers.RepositoryRef, head, inspectedHead string) error {
+	branchReader, ok := provider.(providers.BranchReconciliationProvider)
+	if !ok {
+		return errors.New("publication safety: provider cannot verify the remote branch")
+	}
+	remoteHead, found, err := branchReader.GetBranch(ctx, repo, head)
+	if err != nil || !found || remoteHead.SHA != inspectedHead {
+		return errors.New("publication safety: remote branch does not match the inspected commit; push the checked branch before opening its PR")
+	}
+	return nil
+}
+
+func withOpenPRHead(extras map[string]string, head string) map[string]string {
+	if extras == nil {
+		extras = make(map[string]string)
+	}
+	extras["headSha"] = head
+	return extras
 }
 
 func preferredOpenPRHead(root, runID, workflow string) string {

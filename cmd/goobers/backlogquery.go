@@ -420,7 +420,6 @@ func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogRecon
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
-	repo := env.repo
 	stderr := env.stderr
 	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
@@ -481,11 +480,6 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	maxItems, curationRun := policies.maxItems, policies.curation
 	stalenessPolicy := policies.staleness
 	resweepPolicy, resweepEnabled := policies.resweep, policies.resweepEnabled
-	exactItem, err := exactBacklogWorkItem()
-	if err != nil || exactItem != "" && (mode != backlogQueryModeClaim || maxItems != 1 || curationRun || resweepEnabled) {
-		pln(stderr, "error: exact work item starts require a single-item claim workflow without curation or re-sweeps")
-		return 1
-	}
 	// How many candidates to SCAN is deliberately decoupled from how many to
 	// CLAIM (#532): the old scan window was max(maxItems, 20), so once
 	// maxItems reached 20 (curation's batch size) the two were the same
@@ -550,13 +544,13 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		}
 	}
 
-	prProvider, openIssues, code := backlogPRExtras(ctx, env, repo, claim)
+	prProvider, openIssues, code := backlogPRExtras(ctx, env, env.repo, claim)
 	if code != 0 {
 		return code
 	}
 
 	scanOpts := backlogScanOptions{
-		exactItem:         exactItem,
+		exactItem:         policies.exactItem,
 		trustLabel:        trustLabel,
 		requireLabels:     requireLabels,
 		excludeLabels:     excludeLabels,
@@ -575,11 +569,6 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	scan, code := scanBacklogEligibility(ctx, env, scanOpts)
 	if code != 0 {
 		return code
-	}
-	scan.eligible, err = restrictExactBacklogWorkItem(scan.eligible, exactItem)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
 	}
 	eligible := scan.eligible
 	cursorKey := scan.cursorKey
@@ -2585,14 +2574,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	var items []providers.WorkItem
 	var window backlogScanWindow
 	if opts.exactItem != "" {
-		item, getErr := env.issueProvider.GetWorkItem(ctx, env.backlogRepo, opts.exactItem)
-		err = getErr
-		if err == nil && item.ID != opts.exactItem {
-			err = errors.New("provider returned a different exact work item")
-		}
-		if err == nil {
-			items = []providers.WorkItem{item}
-		}
+		items, err = getExactBacklogWorkItem(ctx, env, opts.exactItem)
 	} else {
 		items, window, err = listBacklogScanWindow(
 			ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
@@ -2691,21 +2673,9 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			result.QuotaRemaining, result.QuotaLimit, backlogEligibilityQuotaFloor*100,
 		)
 	} else {
-		result.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
-		if err != nil {
+		if err := result.observeBlockedRecords(env, opts.exactItem); err != nil {
 			pf(env.stderr, "error: %v\n", err)
 			return result, 1
-		}
-		if opts.exactItem != "" {
-			for itemID := range result.observedRecords {
-				if itemID != opts.exactItem {
-					delete(result.observedRecords, itemID)
-				}
-			}
-		}
-		result.remainingRecords = make(map[string]blockedRecord, len(result.observedRecords))
-		for itemID, record := range result.observedRecords {
-			result.remainingRecords[itemID] = record
 		}
 		_, result.observedSkips, _, warnings = filterBlockedEligibility(
 			ctx,
@@ -2735,7 +2705,32 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		return result, 1
 	}
 	warnBacklogScanCoverage(env, opts, result)
+	result.eligible, err = restrictExactBacklogWorkItem(result.eligible, opts.exactItem)
+	if err != nil {
+		pf(env.stderr, "error: %v\n", err)
+		return result, 1
+	}
 	return result, 0
+}
+
+func (scan *backlogEligibilityScan) observeBlockedRecords(env backlogQueryEnv, exactItem string) error {
+	var err error
+	scan.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
+	if err != nil {
+		return err
+	}
+	if exactItem != "" {
+		for itemID := range scan.observedRecords {
+			if itemID != exactItem {
+				delete(scan.observedRecords, itemID)
+			}
+		}
+	}
+	scan.remainingRecords = make(map[string]blockedRecord, len(scan.observedRecords))
+	for itemID, record := range scan.observedRecords {
+		scan.remainingRecords[itemID] = record
+	}
+	return nil
 }
 
 // warnBacklogScanCoverage emits the invariant #4036 asked for: a cycle that

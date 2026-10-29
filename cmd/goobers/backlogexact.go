@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -20,6 +21,17 @@ func exactBacklogWorkItem() (string, error) {
 		return "", errors.New("invalid exact work item trigger reference")
 	}
 	return id, nil
+}
+
+func getExactBacklogWorkItem(ctx context.Context, env backlogQueryEnv, id string) ([]providers.WorkItem, error) {
+	item, err := env.issueProvider.GetWorkItem(ctx, env.backlogRepo, id)
+	if err != nil {
+		return nil, err
+	}
+	if item.ID != id {
+		return nil, errors.New("provider returned a different exact work item")
+	}
+	return []providers.WorkItem{item}, nil
 }
 
 func restrictExactBacklogWorkItem(items []providers.WorkItem, id string) ([]providers.WorkItem, error) {
