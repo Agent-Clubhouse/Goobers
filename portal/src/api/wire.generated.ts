@@ -141,7 +141,7 @@ export const goWireFixtures = {
     "gaggle": "goobers",
     "workflow": "implement",
     "requestId": "delivery-1",
-    "sourceRun": "source-1"
+    "workItemId": "42"
   },
   "triggerResponse": {
     "acceptanceId": "trigger-0123456789abcdef0123456789abcdef",

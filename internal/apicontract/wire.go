@@ -468,7 +468,7 @@ func newWireFixtures() wireFixtures {
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
 	return withChildWorkflowFixtures(wireFixtures{
-		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", WorkItemID: "42"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
 		CancelRequest:           CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},

@@ -51,6 +51,41 @@ it is not a promise that run admission will succeed. Retrying the same key and
 payload returns the same acceptance identity and the recorded dispatch state.
 `goobers run --no-wait` succeeds on that acceptance.
 
+### Exact backlog-item starts
+
+The local durable trigger service supports an optional `workItemId`:
+
+```json
+{"gaggle":"example","workflow":"default-implement","workItemId":"42","requestId":"delivery-42"}
+```
+
+Send the matching `Idempotency-Key: delivery-42`. First require
+`triggerIngest.exactWorkItem: true` in `/api/v1/capabilities`; an older daemon
+must not be assumed to honor an unknown request field. The capability is absent
+for service compositions without exact-item support.
+
+The named gaggle binds the provider and repository. The item must be a positive
+numeric identifier of at most 15 digits, without leading zeros. Exact starts
+cannot combine with `force`, `sourceRun`, or a pod principal. Reusing the key
+with another item conflicts; exact retries retain the original configuration
+pins and item across restart. Existing requests without `workItemId` are
+unchanged.
+
+The run records the manual trigger reference `work-item:42`. Its workflow must
+use the built-in `backlog-query --claim`, which fetches that item directly,
+applies the ordinary trust, label, open-state, dependency, decomposition and
+claim gates, and refuses another item if the target is missing or ineligible.
+Exact starts require a single-item claim without curation or re-sweeps.
+They never authorize an independent backlog sweep.
+
+An external builder workflow can set `inputs.draft: "true"` on `goobers open-pr`
+to publish only a draft PR. The input is optional (default `false`), validated
+as a boolean before publication, and does not add a merge or issue-close step.
+Its `headSha` scalar output is the exact locally inspected full commit that
+matched the remote branch immediately before publication.
+
+### Delivery timeouts and recovery
+
 `--api-timeout` bounds remote root validation, including any wait for a
 restarting daemon described below, and acceptance (default `30s`, positive
 durations only). It does not limit the run's lifetime. If submission

@@ -1419,8 +1419,8 @@ func resolveDisabledReason(gaggle apiv1.Gaggle, wf *apiv1.Workflow) string {
 }
 
 // SchedulerOptions returns the localscheduler.Option slice reflecting this
-// setup's telemetry state — no telemetry options when it is disabled (issue
-// #129).
+// setup's shared admission and telemetry state — no telemetry options when it
+// is disabled (issue #129).
 // See buildSchedulerSetup's doc comment for why a nil Telemetry must never
 // reach localscheduler.WithTelemetry directly.
 func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
@@ -1428,7 +1428,10 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// polled — see its own doc comment), so unlike OpenPRRefresher it's wired
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
-	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	opts := []localscheduler.Option{
+		localscheduler.WithProviderQuota(s.ProviderQuota),
+		localscheduler.WithCadenceBudgetsDisabled(s.RunConditions.DisableCadenceBudgets),
+	}
 	if s.SourceStarts != nil {
 		opts = append(opts, localscheduler.WithSourceQueue(s.SourceStarts))
 	}

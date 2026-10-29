@@ -420,7 +420,6 @@ func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogRecon
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
-	repo := env.repo
 	stderr := env.stderr
 	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
@@ -545,12 +544,13 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		}
 	}
 
-	prProvider, openIssues, code := backlogPRExtras(ctx, env, repo, claim)
+	prProvider, openIssues, code := backlogPRExtras(ctx, env, env.repo, claim)
 	if code != 0 {
 		return code
 	}
 
 	scanOpts := backlogScanOptions{
+		exactItem:         policies.exactItem,
 		trustLabel:        trustLabel,
 		requireLabels:     requireLabels,
 		excludeLabels:     excludeLabels,
@@ -2473,6 +2473,7 @@ func performBacklogQueryReconciliation(
 }
 
 type backlogScanOptions struct {
+	exactItem         string
 	trustLabel        string
 	requireLabels     []string
 	excludeLabels     []string
@@ -2553,6 +2554,9 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
 		opts.requireLabels, opts.excludeLabels, queryAssignee, opts.ownership,
 	)
+	if opts.exactItem != "" {
+		result.cursorKey += ":work-item:" + opts.exactItem
+	}
 	store, err := openStageStateStore(env.layout)
 	if err != nil {
 		pf(env.stderr, "error: open scheduler state: %v\n", err)
@@ -2560,17 +2564,23 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	}
 	result.state = store
 	exhaustiveScan := opts.fieldOrder.Configured()
-	if !exhaustiveScan {
+	if !exhaustiveScan && opts.exactItem == "" {
 		result.cursor, err = readBacklogScanCursor(ctx, result.state, result.cursorKey)
 		if err != nil {
 			pf(env.stderr, "error: read backlog scan cursor: %v\n", err)
 			return result, 1
 		}
 	}
-	items, window, err := listBacklogScanWindow(
-		ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
-		opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
-	)
+	var items []providers.WorkItem
+	var window backlogScanWindow
+	if opts.exactItem != "" {
+		items, err = getExactBacklogWorkItem(ctx, env, opts.exactItem)
+	} else {
+		items, window, err = listBacklogScanWindow(
+			ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
+			opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
+		)
+	}
 	if err != nil {
 		return result, failProviderStage(env.stderr, "list work items", err, "claimed-item.json")
 	}
@@ -2663,14 +2673,9 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			result.QuotaRemaining, result.QuotaLimit, backlogEligibilityQuotaFloor*100,
 		)
 	} else {
-		result.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
-		if err != nil {
+		if err := result.observeBlockedRecords(env, opts.exactItem); err != nil {
 			pf(env.stderr, "error: %v\n", err)
 			return result, 1
-		}
-		result.remainingRecords = make(map[string]blockedRecord, len(result.observedRecords))
-		for itemID, record := range result.observedRecords {
-			result.remainingRecords[itemID] = record
 		}
 		_, result.observedSkips, _, warnings = filterBlockedEligibility(
 			ctx,
@@ -2700,7 +2705,32 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		return result, 1
 	}
 	warnBacklogScanCoverage(env, opts, result)
+	result.eligible, err = restrictExactBacklogWorkItem(result.eligible, opts.exactItem)
+	if err != nil {
+		pf(env.stderr, "error: %v\n", err)
+		return result, 1
+	}
 	return result, 0
+}
+
+func (scan *backlogEligibilityScan) observeBlockedRecords(env backlogQueryEnv, exactItem string) error {
+	var err error
+	scan.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
+	if err != nil {
+		return err
+	}
+	if exactItem != "" {
+		for itemID := range scan.observedRecords {
+			if itemID != exactItem {
+				delete(scan.observedRecords, itemID)
+			}
+		}
+	}
+	scan.remainingRecords = make(map[string]blockedRecord, len(scan.observedRecords))
+	for itemID, record := range scan.observedRecords {
+		scan.remainingRecords[itemID] = record
+	}
+	return nil
 }
 
 // warnBacklogScanCoverage emits the invariant #4036 asked for: a cycle that

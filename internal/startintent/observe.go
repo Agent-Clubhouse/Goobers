@@ -22,6 +22,9 @@ func VerifyIdentity(id journal.RunIdentity, record triggerqueue.Record) error {
 		return errors.New("startintent: published execution differs from acceptance")
 	}
 	want := journal.Trigger{Kind: journal.TriggerManual, Ref: t.Workflow}
+	if e.Request.WorkItemID != "" {
+		want.Ref = "work-item:" + e.Request.WorkItemID
+	}
 	if e.Request.SourceRun != "" {
 		want = journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + e.Request.SourceRun}
 	}

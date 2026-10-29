@@ -178,7 +178,7 @@ var inputSchemas = map[string][]Input{
 	),
 	"open-pr": schema(
 		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
-		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
+		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "draft", "recordLiveVerification", "runIdFooter"),
 		stringListsIn("actionRoots", "docsRoots", "reviewers"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),

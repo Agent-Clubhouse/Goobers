@@ -625,6 +625,19 @@ runConditions:
     widget-docs-implementation: 2
 ```
 
+For an explicitly unthrottled instance, set
+`runConditions.disableCadenceBudgets: true` in `instance.yaml`. This disables
+hourly and daily admission ceilings for all triggers, including the default
+10/hour and positive per-workflow overrides. False or omitted preserves the
+existing ceilings. Zero entries in `workflowBudgets` or `workflowDailyBudgets`
+still **stop** the named workflow; zero is not an unlimited budget.
+
+This opt-out does not bypass authentication, exact-item eligibility, claims,
+single-writer ownership, concurrency, runner readiness/capabilities, PR/review
+or publication policy, provider quotas, resource gates, or run-control deadlines.
+Starts remain recorded and count again if cadence ceilings are re-enabled.
+It does not disable trigger schedules, retry backoff, or provider polling limits.
+
 Duplicate the first gaggle directory as
 `$GOOBERS_CONFIG_SOURCE/gaggles/widget-docs/`, then:
 

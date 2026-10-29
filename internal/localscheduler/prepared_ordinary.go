@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/workitemtarget"
 )
 
 // PreparedTriggerOptions retains ordinary trigger semantics without letting a
@@ -19,6 +20,7 @@ type PreparedTriggerOptions struct {
 	Force       bool
 	SourceRun   string
 	PullRequest int
+	WorkItemID  string
 }
 
 // TriggerPreparedOrdinary dispatches an archived manual/priority/PR definition
@@ -33,6 +35,9 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 	}
 	if (options.Source != nil && (options.Force || options.SourceRun != "" || options.PullRequest != 0)) || options.PullRequest < 0 || (options.Force && (options.SourceRun != "" || options.PullRequest != 0)) || (options.SourceRun != "" && options.PullRequest != 0) {
 		return "", errors.New("localscheduler: incompatible prepared trigger options")
+	}
+	if options.WorkItemID != "" && (!workitemtarget.ValidID(options.WorkItemID) || options.Source != nil || options.SourceRun != "" || options.Force || options.PullRequest != 0) {
+		return "", errors.New("localscheduler: incompatible exact work item selection")
 	}
 	// Keep current eligibility stable until admission, including bounded PR reads.
 	s.tickMu.Lock()
@@ -64,6 +69,9 @@ func (s *Scheduler) TriggerPreparedOrdinary(admission, execution context.Context
 }
 
 func (s *Scheduler) prepareOrdinaryTrigger(ctx context.Context, entry WorkflowEntry, options PreparedTriggerOptions) (journal.Trigger, string, error) {
+	if options.WorkItemID != "" {
+		return journal.Trigger{Kind: journal.TriggerManual, Ref: "work-item:" + options.WorkItemID}, "exact work item", nil
+	}
 	if options.SourceRun != "" {
 		return journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + options.SourceRun}, "priority re-tick requested by run " + options.SourceRun, nil
 	}

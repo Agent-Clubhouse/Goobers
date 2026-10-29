@@ -1607,6 +1607,10 @@ type EngineHITLConfig struct {
 // RunConditions are instance-level run conditions (§7): max parallel runs and
 // per-workflow run budgets.
 type RunConditions struct {
+	// DisableCadenceBudgets opts out of hourly and daily admission ceilings,
+	// including the default 10/hour. Explicit zero workflow budget overrides
+	// still stop the workflow; all other admission gates remain enforced.
+	DisableCadenceBudgets bool `json:"disableCadenceBudgets,omitempty" yaml:"disableCadenceBudgets,omitempty"`
 	// MaxParallelRuns caps total concurrent runs across every workflow in the
 	// instance (internal/localscheduler.Conditions.instanceMaxParallel).
 	// Zero or omitted means UNLIMITED — bounded only by each workflow's own
