@@ -35,6 +35,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Custom deterministic stage cookbook](custom-stage-cookbook.md)
 - [Daemon readiness and trigger progress](daemon-readiness.md)
 - [Decision-gate A/B harness and reliability report](decision-gate-ab-harness.md)
+- [Using the decision model in a workflow stage](decision-gate-decide-step.md)
 - [Desired concurrency, refill, and pausing work](desired-concurrency-and-pause.md)
 - [Diagnostics bundle](diagnostics-bundle.md)
 - [Move workflows from DSL 2.0 to 3.0](dsl-3-migration.md)
