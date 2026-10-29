@@ -93,12 +93,12 @@ func TestFilterClaimAvailablePullRequestsHonorsLiveOriginRun(t *testing.T) {
 func TestRunBranchOriginRunID(t *testing.T) {
 	const id = "0123456789abcdef0123456789abcdef"
 	for head, want := range map[string]string{
-		"goobernetes/implementation/" + id: id,
-		"goobers/implementation/" + id:     id,
-		"team/ns/implementation/" + id:     id,
-		"implementation/" + id:             "",
-		"feature/x":                        "",
-		"goobers/implementation/short":     "",
+		"goobernetes/implementation/" + id:                             id,
+		"goobers/implementation/" + id:                                 id,
+		"team/ns/implementation/" + id:                                 id,
+		"implementation/" + id:                                         "",
+		"feature/x":                                                    "",
+		"goobers/implementation/short":                                 "",
 		"goobers/implementation/" + "ZZZZ456789abcdef0123456789abcdef": "",
 		"": "",
 	} {

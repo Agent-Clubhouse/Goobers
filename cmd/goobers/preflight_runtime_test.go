@@ -535,15 +535,15 @@ func TestRuntimePreflightIdentityAndPlanAcrossDSLVersions(t *testing.T) {
 func runControlsFixture() (*instance.Config, *instance.ConfigSet, apiv1.RepoRef) {
 	project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
 	return &instance.Config{
-			Repos: []instance.RepoRef{{
-				Provider: "github", Owner: "acme", Name: "web",
-				RunControls: &apiv1.RunControls{MaxRunDuration: "6h"},
-			}},
-			RunConditions: instance.RunConditions{MaxRepasses: 4, StalledRunTimeout: "90m"},
-		}, &instance.ConfigSet{
-			Gaggles:   []apiv1.Gaggle{{Spec: apiv1.GaggleSpec{Project: project, RunControls: &apiv1.RunControls{MaxRepasses: 7}}}},
-			Workflows: []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{RunControls: &apiv1.RunControls{StalledRunTimeout: "2h"}}}},
-		}, project
+		Repos: []instance.RepoRef{{
+			Provider: "github", Owner: "acme", Name: "web",
+			RunControls: &apiv1.RunControls{MaxRunDuration: "6h"},
+		}},
+		RunConditions: instance.RunConditions{MaxRepasses: 4, StalledRunTimeout: "90m"},
+	}, &instance.ConfigSet{
+		Gaggles:   []apiv1.Gaggle{{Spec: apiv1.GaggleSpec{Project: project, RunControls: &apiv1.RunControls{MaxRepasses: 7}}}},
+		Workflows: []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{RunControls: &apiv1.RunControls{StalledRunTimeout: "2h"}}}},
+	}, project
 }
 
 func TestRuntimePreflightResolvesExecutionRunControlPolicy(t *testing.T) {
