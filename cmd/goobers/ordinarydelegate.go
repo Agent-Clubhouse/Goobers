@@ -32,10 +32,10 @@ func (s *durableTriggerService) transferDelegated(ctx context.Context, dir, id, 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return true, err
 	}
-	if req.Priority && req.SourceRun == "" {
+	if (req.Priority && req.SourceRun == "") || (req.WorkItemID != "" && (req.Priority || req.SourceRun != "" || req.DispatchRunID != "")) {
 		return true, startintent.ErrInvalid
 	}
-	request := startintent.Request{Workflow: req.Workflow, Gaggle: req.Gaggle, Force: req.Force, PullRequest: req.PR}
+	request := startintent.Request{Workflow: req.Workflow, Gaggle: req.Gaggle, Force: req.Force, PullRequest: req.PR, WorkItemID: req.WorkItemID}
 	if req.Priority {
 		request.SourceRun = req.SourceRun
 	}

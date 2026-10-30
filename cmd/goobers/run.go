@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/startintent"
 
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 
@@ -53,8 +54,8 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
-	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number> | --work-item <id>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number> | --work-item <id>] [--no-wait] [path]\n" +
 	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
 	"       goobers run cancel [--api <url>] <run-id> [path]\n\n" +
@@ -89,6 +90,14 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"are rejected before dispatch, including inherited limits and --no-wait runs.\n" +
 	"Start `goobers up` for that instance and submit through the daemon instead.\n" +
 	"Targeted --pr runs currently require --no-api from the instance root.\n" +
+	"--work-item selects one numeric work item and requires an explicit gaggle;\n" +
+	"it cannot be combined with --pr or --force. Exact selection retains normal\n" +
+	"eligibility and claim checks and never falls back to another item.\n" +
+	"API targets must advertise exactWorkItem; same-root file delegation requires\n" +
+	"the live daemon's exactWorkItemFile lock capability. Upgrade older daemons.\n" +
+	"Explicit --request-id is not supported for file delegation: that transport\n" +
+	"does not yet bind caller retry keys to immutable targets. Do not retry an\n" +
+	"unknown file submission as a new request; inspect its existing receipt.\n" +
 	"--github-progress publishes the versioned hosted-progress contract to one\n" +
 	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
 	"checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,\n" +
@@ -129,6 +138,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
+	workItem := fs.String("work-item", "", "target one numeric work item (requires an explicit gaggle)")
 	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
 	noAPI := fs.Bool("no-api", false, "explicitly use local execution/file delegation instead of the daemon API")
 	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
@@ -147,6 +157,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	target.PR = *pr
+	target.WorkItemID = *workItem
 	target.Force = *force
 	target.RequestID = *requestID
 	if err := validateRunTargetOptions(args, target); err != nil {
@@ -225,11 +236,12 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 }
 
 type runTarget struct {
-	RequestID string
-	Gaggle    string
-	Workflow  string
-	PR        int
-	Force     bool
+	RequestID  string
+	WorkItemID string
+	Gaggle     string
+	Workflow   string
+	PR         int
+	Force      bool
 }
 
 func (t runTarget) String() string {
@@ -246,11 +258,29 @@ func validateRunTargetOptions(args []string, target runTarget) error {
 	if target.Force && target.PR > 0 {
 		return errors.New("--force cannot be combined with --pr (targeted pull-request runs are signal triggers)")
 	}
+	if flagWasSet(args, "work-item") && target.WorkItemID == "" {
+		return errors.New("--work-item requires a positive numeric work item ID")
+	}
+	if target.WorkItemID != "" {
+		if flagWasSet(args, "pr") || flagWasSet(args, "force") {
+			return errors.New("--work-item cannot be combined with --pr or --force")
+		}
+		if err := target.startRequest().Validate(); err != nil {
+			return fmt.Errorf("--work-item requires a positive numeric ID and an explicit gaggle, without --pr or --force: %w", err)
+		}
+	}
 	return nil
+}
+
+func (t runTarget) startRequest() startintent.Request {
+	return startintent.Request{Workflow: t.Workflow, Gaggle: t.Gaggle, Force: t.Force, PullRequest: t.PR, WorkItemID: t.WorkItemID}
 }
 
 func detachedRunSelector(target runTarget) string {
 	name := target.String()
+	if target.WorkItemID != "" {
+		name += "#work-item-" + target.WorkItemID
+	}
 	if target.PR > 0 {
 		name += "#pr-" + strconv.Itoa(target.PR)
 	}
@@ -668,15 +698,7 @@ func pullRequestPathMatchesRepository(parts []string, owner, name, number string
 // perspective the two paths are otherwise indistinguishable except for which
 // process actually held the scheduler.
 func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait bool, stdout, stderr io.Writer) int {
-	var (
-		requestID string
-		err       error
-	)
-	if target.PR > 0 {
-		requestID, err = writeTargetedTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
-	} else {
-		requestID, err = writeTriggerRequestContextOptions(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.Force)
-	}
+	requestID, err := writeRunTriggerRequest(ctx, l, target)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -734,6 +756,30 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 	return exitForPhase(phase)
 }
 
+func writeRunTriggerRequest(ctx context.Context, l instance.Layout, target runTarget) (string, error) {
+	if target.RequestID != "" {
+		return "", errors.New("--request-id cannot be used with file delegation; immutable caller-key target binding is not supported")
+	}
+	if target.WorkItemID != "" {
+		if err := target.startRequest().Validate(); err != nil {
+			return "", err
+		}
+		running, identity, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+		if err != nil || !running || identity == nil || !identity.ExactWorkItemFile {
+			return "", errors.New("live daemon does not advertise exact-work-item file delegation; upgrade it before submission (no request published)")
+		}
+		createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
+		return writeTriggerRequestPayload(l.SchedulerDir(), triggerRequest{
+			Workflow: target.Workflow, Gaggle: target.Gaggle, WorkItemID: target.WorkItemID,
+			CreatedAt: createdAt, Deadline: deadline,
+		})
+	}
+	if target.PR > 0 {
+		return writeTargetedTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
+	}
+	return writeTriggerRequestContextOptions(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.Force)
+}
+
 // runFlagArgs lets --no-wait appear after the workflow, as documented. The
 // standard flag package otherwise stops parsing at the first positional arg.
 func runFlagArgs(args []string) []string {
@@ -769,6 +815,7 @@ func runFlagArgs(args []string) []string {
 			continue
 		}
 		if arg == "--pr" || arg == "-pr" ||
+			arg == "--work-item" || arg == "-work-item" ||
 			arg == "--api" || arg == "-api" ||
 			arg == "--api-timeout" || arg == "-api-timeout" ||
 			arg == "--request-id" || arg == "-request-id" {
@@ -780,6 +827,7 @@ func runFlagArgs(args []string) []string {
 			continue
 		}
 		if strings.HasPrefix(arg, "--api=") || strings.HasPrefix(arg, "-api=") ||
+			strings.HasPrefix(arg, "--work-item=") || strings.HasPrefix(arg, "-work-item=") ||
 			strings.HasPrefix(arg, "--api-timeout=") || strings.HasPrefix(arg, "-api-timeout=") ||
 			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") {
 			flags = append(flags, arg)
