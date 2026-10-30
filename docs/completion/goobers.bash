@@ -260,6 +260,9 @@ _goobers_completion()
         open-pr)
             flags+=" --config-repo"
             ;;
+        decide)
+            flags+=" --name --question --true --false --state-file --accept --reject --optional"
+            ;;
         gate-removal-guard)
             flags+=" --config-repo"
             ;;
