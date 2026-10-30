@@ -238,6 +238,7 @@ complete -c goobers -n '__fish_seen_subcommand_from run' -l force -d 'Bypass hou
 complete -c goobers -n '__fish_seen_subcommand_from run' -l gaggle -r -d 'Trigger the workflow in this gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l github-progress -d 'Publish live progress to one GitHub Check Run'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l pr -r -d 'Target an exact pull request for merge-review'
+complete -c goobers -n '__fish_seen_subcommand_from run' -l work-item -r -d 'Target one numeric work item in an explicit gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l request-id -r -d 'Retry-safe delivery identity for an API submission'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return on durable API acceptance or local dispatch'

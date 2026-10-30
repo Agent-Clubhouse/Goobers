@@ -49,7 +49,7 @@ var synopsisByID = map[string]string{
 	"service task-stop":      "  goobers service task-stop [path]\n                                stop the per-user Windows Scheduled Task supervisor\n",
 	"service task-status":    "  goobers service task-status [--json] [path]\n                                report per-user Windows Scheduled Task state and identity\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]\n                                serve and open the local operations portal\n",
-	"run":                    "  goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n                                trigger a run manually; --force bypasses cadence budgets\n",
+	"run":                    "  goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number> | --work-item <id>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n                                trigger a run manually; --force bypasses cadence budgets\n",
 	"run abort":              "  goobers run abort [--api <url>] <run-id> [path]  mark a stuck non-terminal run aborted\n",
 	"run cancel":             "  goobers run cancel [--api <url> | --no-api] [--request-id <id>] <run-id> [path]  cancel a live in-flight run via the daemon\n",
 	"approve":                "  goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]  approve a paused or escalated gate\n",
