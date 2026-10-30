@@ -678,6 +678,10 @@ func readPendingTriggerRequests(requestEntries []pendingTriggerCandidate) ([]*pe
 // sweepPendingTriggersWithAdmission adopts existing durable receipts before
 // applying fresh-file rules and transfers new requests before execution.
 // Legacy dispatch markers cannot bypass the queue in the production daemon.
+func unsupportedExactWorkItemDelegation(req triggerRequest, admission delegatedAdmission) bool {
+	return req.WorkItemID != "" && (admission == nil || req.Priority || req.SourceRun != "" || req.DispatchRunID != "")
+}
+
 func sweepPendingTriggersWithAdmission(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions, admission delegatedAdmission) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, exists, err := readDirectory(reqDir)
@@ -733,7 +737,7 @@ func sweepPendingTriggersWithAdmission(ctx context.Context, schedulerDir string,
 		case req.CreatedAt.IsZero():
 			resp.Error = fmt.Sprintf("delegate: trigger request %s has no creation time; refusing to dispatch", requestID)
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
-		case req.WorkItemID != "" && (admission == nil || req.Priority || req.SourceRun != "" || req.DispatchRunID != ""):
+		case unsupportedExactWorkItemDelegation(req, admission):
 			resp.Error = "delegate: exact work item requires ordinary durable admission; refusing legacy dispatch"
 		case admission != nil && req.DispatchRunID != "":
 			resp.Error = "delegate: legacy uncertain dispatch marker requires restart reconciliation; refusing direct replay"

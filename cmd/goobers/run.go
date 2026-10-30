@@ -814,11 +814,7 @@ func runFlagArgs(args []string) []string {
 			}
 			continue
 		}
-		if arg == "--pr" || arg == "-pr" ||
-			arg == "--work-item" || arg == "-work-item" ||
-			arg == "--api" || arg == "-api" ||
-			arg == "--api-timeout" || arg == "-api-timeout" ||
-			arg == "--request-id" || arg == "-request-id" {
+		if runFlagTakesValue(arg) {
 			flags = append(flags, arg)
 			if i+1 < len(args) {
 				i++
@@ -844,6 +840,15 @@ func runFlagArgs(args []string) []string {
 		positionals = append(positionals, arg)
 	}
 	return append(flags, positionals...)
+}
+
+func runFlagTakesValue(arg string) bool {
+	switch arg {
+	case "--pr", "-pr", "--work-item", "-work-item", "--api", "-api",
+		"--api-timeout", "-api-timeout", "--request-id", "-request-id":
+		return true
+	}
+	return false
 }
 
 // runRunAbort marks a stuck non-terminal run as aborted by appending a
