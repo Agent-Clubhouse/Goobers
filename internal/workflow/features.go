@@ -736,6 +736,15 @@ func featuresForV31Gaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 }
 
 func featuresForV31Goober(spec apiv1.GooberSpec) ([]Feature, error) {
+	legacy, requiredDeclared := gooberWithoutMCPRequiredness(spec)
+	features, err := featuresForV30Goober(legacy)
+	if err != nil || !requiredDeclared {
+		return features, err
+	}
+	return append(features, v31MCPRequiredFeature()), nil
+}
+
+func gooberWithoutMCPRequiredness(spec apiv1.GooberSpec) (apiv1.GooberSpec, bool) {
 	legacy := spec
 	legacy.MCPServers = append([]apiv1.MCPServer(nil), spec.MCPServers...)
 	requiredDeclared := false
@@ -745,11 +754,7 @@ func featuresForV31Goober(spec apiv1.GooberSpec) ([]Feature, error) {
 			legacy.MCPServers[i].Required = nil
 		}
 	}
-	features, err := featuresForV30Goober(legacy)
-	if err != nil || !requiredDeclared {
-		return features, err
-	}
-	return append(features, v31MCPRequiredFeature()), nil
+	return legacy, requiredDeclared
 }
 
 func checkV31FeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnostic {
