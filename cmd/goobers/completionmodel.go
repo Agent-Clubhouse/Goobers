@@ -356,6 +356,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
+		{name: "work-item", takesArg: true, desc: "Target one numeric work item in an explicit gaggle"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
 		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},

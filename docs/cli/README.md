@@ -4094,8 +4094,8 @@ $ goobers roots discover --json
 trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number> | --work-item <id>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number> | --work-item <id>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel [--api <url>] <run-id> [path]
@@ -4131,6 +4131,14 @@ Without a live daemon, workflows with an effective runControls.maxRunDuration
 are rejected before dispatch, including inherited limits and --no-wait runs.
 Start `goobers up` for that instance and submit through the daemon instead.
 Targeted --pr runs currently require --no-api from the instance root.
+--work-item selects one numeric work item and requires an explicit gaggle;
+it cannot be combined with --pr or --force. Exact selection retains normal
+eligibility and claim checks and never falls back to another item.
+API targets must advertise exactWorkItem; same-root file delegation requires
+the live daemon's exactWorkItemFile lock capability. Upgrade older daemons.
+Explicit --request-id is not supported for file delegation: that transport
+does not yet bind caller retry keys to immutable targets. Do not retry an
+unknown file submission as a new request; inspect its existing receipt.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
 checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,

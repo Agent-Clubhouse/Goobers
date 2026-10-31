@@ -62,7 +62,13 @@ func runLocalTriggerSubmission(ctx context.Context, layout instance.Layout, targ
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	response, apiErr, err := submitRemoteTrigger(admission, endpoint, httpapi.TriggerRequest{Workflow: target.Workflow, Gaggle: target.Gaggle, Force: target.Force, RequestID: requestID})
+	if target.WorkItemID != "" {
+		if err := requireExactWorkItemAPI(admission, endpoint); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
+	response, apiErr, err := submitRemoteTrigger(admission, endpoint, httpapi.TriggerRequest{Workflow: target.Workflow, Gaggle: target.Gaggle, Force: target.Force, RequestID: requestID, WorkItemID: target.WorkItemID})
 	if err != nil {
 		pf(stderr, "error: trigger acceptance is unknown: %v; retry with --request-id %q and the same workflow/options\n", err, requestID)
 		return 2

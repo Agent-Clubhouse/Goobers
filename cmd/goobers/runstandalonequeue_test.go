@@ -33,6 +33,62 @@ func standaloneQueue(t *testing.T, root string) *triggerqueue.Store {
 	t.Cleanup(func() { _ = queue.Close() })
 	return queue
 }
+
+func TestExactWorkItemStandaloneAndDetachedQueueIdentity(t *testing.T) {
+	for _, mode := range []string{"standalone", "detached"} {
+		t.Run(mode, func(t *testing.T) {
+			root, _ := initRunDurationDemo(t)
+			target := runTarget{Workflow: "default-implement", Gaggle: "example", WorkItemID: "42", RequestID: "exact-retry"}
+			execute := func(target runTarget) (int, string, string) {
+				t.Helper()
+				if mode == "standalone" {
+					return runArgs(t, "run", target.String(), "--work-item="+target.WorkItemID, "--request-id="+target.RequestID, root)
+				}
+				var stdout, stderr bytes.Buffer
+				code := runDetachedWorkerContext(t.Context(), []string{detachedRunSelector(target), root}, &stdout, &stderr)
+				return code, stdout.String(), stderr.String()
+			}
+			for range 2 {
+				if code, stdout, stderr := execute(target); code != 0 || !strings.Contains(stdout, "created run ") {
+					t.Fatal(code, stdout, stderr)
+				}
+			}
+			queue := standaloneQueue(t, root)
+			record, err := queue.ByKey(t.Context(), target.RequestID)
+			if err != nil || record.State != triggerqueue.Dispatched {
+				t.Fatal(record, err)
+			}
+			envelope, err := startintent.Parse(record.Payload)
+			if err != nil || envelope.Request.WorkItemID != "42" || envelope.Request.Gaggle != "example" {
+				t.Fatal(envelope, err)
+			}
+			layout := instance.NewLayout(root)
+			dir, err := layout.FindRunDir(record.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := journal.OpenReadOnly(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := reader.Identity()
+			if err != nil || identity.Trigger.Kind != journal.TriggerManual || identity.Trigger.Ref != "work-item:42" {
+				t.Fatal(identity, err)
+			}
+			if err := startintent.VerifyIdentity(identity, record); err != nil {
+				t.Fatal(err)
+			}
+			target.WorkItemID = "43"
+			if code, _, stderr := execute(target); code != 1 || !strings.Contains(stderr, "another request") {
+				t.Fatal("different issue reused retry key", code, stderr)
+			}
+			dirs, err := os.ReadDir(layout.ForGaggle("example").RunsDir())
+			if err != nil || len(dirs) != 1 {
+				t.Fatal("duplicate execution", len(dirs), err)
+			}
+		})
+	}
+}
 func TestStandaloneQueueCLIReplaysReceiptWithoutExecutingUnrelatedStarts(t *testing.T) {
 	root, _ := initRunDurationDemo(t)
 	code, stdout, stderr := runArgs(t, "run", "--request-id", "first", "default-implement", root)

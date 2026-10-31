@@ -43,6 +43,7 @@ func acquireDaemonLock(
 		Version:               version.Get().String(),
 		LivenessTimeoutMillis: livenessTimeout.Milliseconds(),
 		Behavior:              behavior,
+		ExactWorkItemFile:     true,
 	}
 	return acquireInstanceLockWithIdentity(lockPath, &identity)
 }
