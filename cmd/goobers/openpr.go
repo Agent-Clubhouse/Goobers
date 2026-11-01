@@ -441,15 +441,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if err := checkOpenPRWriteBoundaries(inRepoDir, base); err != nil {
+	if err := checkOpenPRWriteBoundaries(target, inRepoDir, base); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
-	}
-	if target.configRepo != "" {
-		if err := inRepoDir(func() error { return confineDiffToDirectory(base, target.configRepoDirectory) }); err != nil {
-			pf(stderr, "error: config repository write-boundary: %v\n", err)
-			return 1
-		}
 	}
 
 	var tutorHoldout *tutorHoldoutRecord
@@ -772,7 +766,7 @@ func requestOpenPRReviewers(ctx context.Context, provider any, repo providers.Re
 
 // checkOpenPRWriteBoundaries applies opt-in repository boundaries in the PR's
 // target checkout, including a separate config-repository target.
-func checkOpenPRWriteBoundaries(inRepoDir func(func() error) error, base string) error {
+func checkOpenPRWriteBoundaries(target openPRTarget, inRepoDir func(func() error) error, base string) error {
 	if providerInput("confineToConfigRoot", "") == "true" {
 		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
 			return fmt.Errorf("config write-boundary: %w", err)
@@ -786,6 +780,11 @@ func checkOpenPRWriteBoundaries(inRepoDir func(func() error) error, base string)
 	if providerInput("confineToActionRoots", "") == "true" {
 		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
 			return fmt.Errorf("action write-boundary: %w", err)
+		}
+	}
+	if target.configRepo != "" {
+		if err := inRepoDir(func() error { return confineDiffToDirectory(base, target.configRepoDirectory) }); err != nil {
+			return fmt.Errorf("config repository write-boundary: %w", err)
 		}
 	}
 	return nil
