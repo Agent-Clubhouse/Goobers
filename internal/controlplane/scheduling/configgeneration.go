@@ -122,7 +122,7 @@ func (g Generations) RetainedPins(ctx context.Context, layout instance.Layout, a
 }
 
 // Retain captures and verifies an immutable execution configuration.
-func (g Generations) Retain(ctx context.Context, layout instance.Layout, retainer *configgeneration.Retainer) (instance.Layout, string, error) {
+func (g Generations) Retain(ctx context.Context, layout instance.Layout, retainer *configgeneration.Retainer, source *journal.WorkflowSourceProvenance) (instance.Layout, string, error) {
 	before, err := g.Digest(layout.ConfigDir())
 	if err != nil {
 		return layout, "", err
@@ -131,7 +131,7 @@ func (g Generations) Retain(ctx context.Context, layout instance.Layout, retaine
 	if err != nil {
 		return layout, "", err
 	}
-	data, generation, err := configgeneration.CaptureForInstance(ctx, layout.ConfigDir(), owner)
+	data, generation, err := configgeneration.CaptureForInstanceWithWorkflowSource(ctx, layout.ConfigDir(), owner, source)
 	if err != nil {
 		return layout, "", err
 	}
@@ -204,12 +204,12 @@ func FirstGenerationRetainer(retainers []*configgeneration.Retainer) *configgene
 }
 
 // RetainOptional retains the configuration when an owner is configured.
-func (g Generations) RetainOptional(layout instance.Layout, retainers []*configgeneration.Retainer) (instance.Layout, string, error) {
+func (g Generations) RetainOptional(layout instance.Layout, retainers []*configgeneration.Retainer, source *journal.WorkflowSourceProvenance) (instance.Layout, string, error) {
 	retainer := FirstGenerationRetainer(retainers)
 	if retainer == nil {
 		return layout, "", nil
 	}
-	return g.Retain(context.Background(), layout, retainer)
+	return g.Retain(context.Background(), layout, retainer, source)
 }
 
 // PinnedConfig loads retained configuration and returns its lease release function.

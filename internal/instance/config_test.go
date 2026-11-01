@@ -777,6 +777,25 @@ func TestLoadConfigWorkflowSource(t *testing.T) {
 			},
 			wantRef: "main",
 		},
+		{
+			name: "remote git repository selects a subdirectory",
+			sourceYAML: `
+  kind: git
+  url: https://github.com/acme/workflows.git
+  ref: main
+  dir: macmini-octo
+  token:
+    env: WORKFLOW_CONFIG_TOKEN
+`,
+			want: WorkflowSource{
+				Kind:  "git",
+				URL:   "https://github.com/acme/workflows.git",
+				Ref:   "main",
+				Dir:   "macmini-octo",
+				Token: &TokenRef{Env: "WORKFLOW_CONFIG_TOKEN"},
+			},
+			wantRef: "main",
+		},
 	}
 
 	for _, tt := range tests {
@@ -859,6 +878,21 @@ func TestWorkflowSourceValidation(t *testing.T) {
 				Token: &TokenRef{Env: "CONFIG_TOKEN", File: "/run/secrets/config-token"},
 			},
 			wantErr: "remote git token must reference exactly one",
+		},
+		{
+			name:    "git directory escapes repository",
+			source:  WorkflowSource{Kind: "git", Path: "config", Dir: "../secrets"},
+			wantErr: "parent traversal",
+		},
+		{
+			name:    "git directory is absolute",
+			source:  WorkflowSource{Kind: "git", Path: "config", Dir: "/etc"},
+			wantErr: "repository-relative",
+		},
+		{
+			name:    "local directory rejects git directory field",
+			source:  WorkflowSource{Kind: WorkflowSourceKindLocalDir, Path: "config", Dir: "nested"},
+			wantErr: "accepts only path",
 		},
 		{
 			name: "remote git file url",

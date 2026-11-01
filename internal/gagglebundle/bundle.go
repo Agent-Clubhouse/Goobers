@@ -21,6 +21,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretpattern"
 	"github.com/goobers/goobers/internal/version"
@@ -968,7 +969,10 @@ func materialize(configDir, target string, bundle apiv1.GaggleBundle) error {
 // goobers would validate differently from the live tree. The copy is used for
 // validation only; the config swap installs just the staged config dir.
 func stageSharedGoobers(layout instance.Layout, stagingRoot string) error {
-	shared := filepath.Join(filepath.Dir(layout.ConfigDir()), "goobers")
+	shared := configtree.SharedGooberDirectory(layout.ConfigDir())
+	if shared == "" {
+		return nil
+	}
 	info, err := os.Lstat(shared)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil

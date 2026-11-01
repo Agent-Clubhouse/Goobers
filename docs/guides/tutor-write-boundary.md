@@ -199,7 +199,9 @@ required capability: with `--config-repo`, `push-branch` requires
 `configrepo:write` instead of `repo:push`, and `open-pr` requires it instead of
 `provider:pr:write`. Declare only the one the stage uses. Inputs (all
 optional): `configRepoDir` (checkout directory relative to
-the stage workspace, default `config-repo`), `head` (`config-checkout` only:
+the stage workspace, default `config-repo`), `configRepoSourceDir` (the
+repository-relative `workflowSource.dir`, required only when the stage pod
+cannot read instance config), `head` (`config-checkout` only:
 branch name, default the run's stable branch, so `open-pr`'s default head
 matches), `base` (`open-pr`: default `workflowSource.ref`), and `configRepo` /
 `configRepoBase` (`owner/name` and base branch, used **only** where no instance

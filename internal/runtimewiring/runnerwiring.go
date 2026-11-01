@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/providers"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/harness"
@@ -31,7 +32,10 @@ import (
 // runtime (#6611).
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
 	if spec.Gaggle == "" {
-		return filepath.Join(filepath.Dir(configDir), "goobers", gooberName)
+		if shared := configtree.SharedGooberDirectory(configDir); shared != "" {
+			return filepath.Join(shared, gooberName)
+		}
+		return filepath.Join(configDir, "goobers", gooberName)
 	}
 	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
 }

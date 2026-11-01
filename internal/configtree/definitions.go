@@ -8,24 +8,35 @@ import (
 	"path/filepath"
 )
 
+// SharedGooberDirectory returns the sibling shared-goober root only for the
+// recognized nested config/ layout. It returns an empty path for flat or
+// unrelated roots.
+func SharedGooberDirectory(root string) string {
+	absolute, err := filepath.Abs(root)
+	if err != nil || filepath.Base(absolute) != "config" {
+		return ""
+	}
+	info, err := os.Lstat(filepath.Join(absolute, "manifest.yaml"))
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return filepath.Join(root, "..", "goobers")
+}
+
 // WalkDefinitionTrees visits the config tree followed by its optional sibling
-// goobers tree. Keeping the original config root at call sites preserves
-// relative provenance (../goobers/name/goober.yaml) across all source consumers.
-// Each root must be a real directory, not a symlink to unrelated content.
+// goobers tree when root is the recognized nested config/ layout. Keeping the
+// original config root at call sites preserves relative provenance across all
+// source consumers. Each root must be a real directory, not a symlink.
 func WalkDefinitionTrees(root string, walk func(string) error) error {
 	if err := requireDirectory(root, "config root"); err != nil {
-		return err
-	}
-	absolute, err := filepath.Abs(root)
-	if err != nil {
 		return err
 	}
 	if err := walk(root); err != nil {
 		return err
 	}
-	shared := filepath.Join(filepath.Dir(absolute), "goobers")
-	if shared == absolute {
-		return nil // A caller validating the shared tree itself already visited it.
+	shared := SharedGooberDirectory(root)
+	if shared == "" {
+		return nil
 	}
 	if err := requireDirectory(shared, "shared goober root"); errors.Is(err, fs.ErrNotExist) {
 		return nil

@@ -329,10 +329,15 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
+	workflowSourceRevision, err := appliedWorkflowSourceRevision(l, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("read applied workflow source provenance: %w", err)
+	}
 	runtime, err := openSchedulerRuntime(schedulerDefinitionsInput{
-		RecoverAtCapacity:  options.recoverGenerationCapacity,
-		RecoveryGeneration: options.recoverConfigGeneration,
-		Layout:             l, Config: cfg, Definitions: set, Validation: report,
+		RecoverAtCapacity:      options.recoverGenerationCapacity,
+		RecoveryGeneration:     options.recoverConfigGeneration,
+		WorkflowSourceRevision: workflowSourceRevision,
+		Layout:                 l, Config: cfg, Definitions: set, Validation: report,
 		WaitGroup: wg, Telemetry: observation.tel, RollupDB: observation.rollupDB,
 		Watermarks: observation.watermarks, InstanceLog: observation.instanceLog,
 		SharedRegistry: sharedReg, TerminalNotifier: terminalNotifier,
@@ -2042,8 +2047,9 @@ func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, mi
 
 // schedulerDefinitionsInput names the dependencies for this construction boundary.
 type schedulerDefinitionsInput struct {
-	RecoverAtCapacity  bool
-	RecoveryGeneration string
+	RecoverAtCapacity      bool
+	RecoveryGeneration    string
+	WorkflowSourceRevision string
 
 	// Generated local definitions reuse admitted profiles; authenticated probes
 	// belong to the delegated invocation, never instance-wide reconstruction.

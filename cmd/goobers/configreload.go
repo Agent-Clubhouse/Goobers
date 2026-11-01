@@ -90,8 +90,10 @@ type configReloader struct {
 	// rather than a second channel with its own latency.
 	readModel      *readmodel.Store
 	wg             *sync.WaitGroup
-	appliedDigest  string
-	observedDigest string
+	appliedDigest          string
+	observedDigest         string
+	workflowSourceRevision string
+	appliedSourceRevision  string
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher
@@ -263,11 +265,12 @@ func (r *configReloader) poll(now time.Time) error {
 		return r.reject("", err)
 	}
 	r.lastDigestError = ""
-	if digest == r.observedDigest && !r.takeTransientRetry(digest, now) {
+	sourceRevisionChanged := r.workflowSourceRevision != "" && r.workflowSourceRevision != r.appliedSourceRevision
+	if digest == r.observedDigest && !r.takeTransientRetry(digest, now) && !sourceRevisionChanged {
 		return nil
 	}
 	r.observedDigest = digest
-	if digest == r.appliedDigest && !r.retentionRejected {
+	if digest == r.appliedDigest && !r.retentionRejected && !sourceRevisionChanged {
 		return nil
 	}
 
@@ -292,23 +295,24 @@ func (r *configReloader) poll(now time.Time) error {
 		return r.reject(digest, fmt.Errorf("journal legacy runtime migration: %w", err))
 	}
 	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
-		Layout:           r.layout,
-		Config:           r.setup.Config,
-		Definitions:      set,
-		Validation:       report,
-		WaitGroup:        r.wg,
-		RunnerRegistry:   r.setup.RunnerRegistry,
-		Telemetry:        r.setup.Telemetry,
-		RollupDB:         r.setup.RollupDB,
-		Watermarks:       r.setup.Watermarks,
-		InstanceLog:      r.setup.InstanceLog,
-		SharedRegistry:   r.setup.SharedRegistry,
-		WorktreeManagers: r.setup.WorktreesByGaggle,
-		ProviderQuota:    r.setup.ProviderQuota,
-		TerminalNotifier: r.setup.TerminalNotifier,
-		CredentialStores: r.setup.SecretStores,
-		StartupProgress:  nil,
-		Generations:      []*configgeneration.Retainer{r.setup.Generations},
+		Layout:                 r.layout,
+		Config:                 r.setup.Config,
+		WorkflowSourceRevision: r.workflowSourceRevision,
+		Definitions:            set,
+		Validation:             report,
+		WaitGroup:              r.wg,
+		RunnerRegistry:         r.setup.RunnerRegistry,
+		Telemetry:              r.setup.Telemetry,
+		RollupDB:               r.setup.RollupDB,
+		Watermarks:             r.setup.Watermarks,
+		InstanceLog:            r.setup.InstanceLog,
+		SharedRegistry:         r.setup.SharedRegistry,
+		WorktreeManagers:       r.setup.WorktreesByGaggle,
+		ProviderQuota:          r.setup.ProviderQuota,
+		TerminalNotifier:       r.setup.TerminalNotifier,
+		CredentialStores:       r.setup.SecretStores,
+		StartupProgress:        nil,
+		Generations:            []*configgeneration.Retainer{r.setup.Generations},
 	})
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: r.scheduleTransientRetry(digest, err, now)})
@@ -325,7 +329,7 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	publish := func() error {
 		return r.publishOrdinaryDefinitions(definitions, func() error {
-			return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest, definitions.ExecutionGeneration)
+			return r.scheduler.ReloadWithProvenance(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest, definitions.ExecutionGeneration, workflowSourceProvenance(r.setup.Config, r.workflowSourceRevision))
 		})
 	}
 	if err := r.publishChildDefinitions(definitions.Set, publish); err != nil {
@@ -387,6 +391,7 @@ func (r *configReloader) poll(now time.Time) error {
 		log.Printf("config reload: journal workflow digest drift: %v", driftErr)
 	}
 	r.appliedDigest = digest
+	r.appliedSourceRevision = r.workflowSourceRevision
 	r.digests.Set(digest)
 	r.transientRetry = transientReloadRetry{}
 	r.rejectionReason = ""
@@ -398,6 +403,19 @@ func (r *configReloader) poll(now time.Time) error {
 		log.Printf("config reload: record advisory warnings: %v", err)
 	}
 	return nil
+}
+
+func (r *configReloader) SetWorkflowSourceRevision(revision string) {
+	r.mu.Lock()
+	r.workflowSourceRevision = revision
+	r.mu.Unlock()
+}
+
+func (r *configReloader) RestoreWorkflowSourceRevision(revision string) {
+	r.mu.Lock()
+	r.workflowSourceRevision = revision
+	r.appliedSourceRevision = revision
+	r.mu.Unlock()
 }
 
 func (r *configReloader) replaceGaggleHealth(definitions *instance.ConfigSet) error {
@@ -458,6 +476,9 @@ func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	}
 	if newDigest != "" {
 		event.Runner["newDigest"] = newDigest
+	}
+	if source := workflowSourceProvenance(r.setup.Config, r.workflowSourceRevision); source != nil {
+		event.Runner["workflowSource"] = source
 	}
 	if len(r.candidateWarnings) > 0 {
 		event.Runner["candidateWarnings"] = r.candidateWarnings

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func writeFixture(t *testing.T, root, name, body string) {
@@ -74,6 +76,27 @@ func TestCaptureForInstanceCapturesValidatedRoot(t *testing.T) {
 		if !got[name] {
 			t.Fatalf("capture missing %s in validated root archive", name)
 		}
+	}
+}
+
+func TestCaptureRecordsWorkflowSourceProvenance(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "config/manifest.yaml", "version: 1\n")
+	source := &journal.WorkflowSourceProvenance{
+		URL:    "https://github.com/acme/goobers-config.git",
+		Dir:    "macmini-octo",
+		Commit: "0123456789abcdef0123456789abcdef01234567",
+	}
+	data, digest, err := CaptureForInstanceWithWorkflowSource(t.Context(), filepath.Join(root, "config"), "instance-1", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := Decode(data, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.WorkflowSource == nil || *archive.WorkflowSource != *source {
+		t.Fatalf("archive workflow source = %+v, want %+v", archive.WorkflowSource, source)
 	}
 }
 
