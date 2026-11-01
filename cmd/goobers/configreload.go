@@ -88,8 +88,8 @@ type configReloader struct {
 	// (#1929). Replaces the deleted poller's out-of-band publish, so a config
 	// reload reaches clients through the SAME ordered feed as everything else
 	// rather than a second channel with its own latency.
-	readModel              *readmodel.Store
-	wg                     *sync.WaitGroup
+	readModel      *readmodel.Store
+	wg             *sync.WaitGroup
 
 	appliedDigest          string
 	observedDigest         string
