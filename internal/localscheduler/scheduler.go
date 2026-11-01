@@ -1530,7 +1530,7 @@ func (s *Scheduler) reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		runner["workflowSource"] = source
 	}
 	if err := s.appendJournalEvent(journal.Event{
-		Type: journal.EventConfigReloaded,
+		Type:   journal.EventConfigReloaded,
 		Runner: runner,
 	}); err != nil {
 		return fmt.Errorf("localscheduler: journal config reload: %w", err)
