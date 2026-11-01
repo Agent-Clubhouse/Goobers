@@ -88,13 +88,13 @@ type configReloader struct {
 	// (#1929). Replaces the deleted poller's out-of-band publish, so a config
 	// reload reaches clients through the SAME ordered feed as everything else
 	// rather than a second channel with its own latency.
-	readModel               *readmodel.Store
-	wg                      *sync.WaitGroup
+	readModel *readmodel.Store
+	wg        *sync.WaitGroup
 
-	appliedDigest           string
-	observedDigest          string
+	appliedDigest          string
+	observedDigest         string
 	workflowSourceRevision string
-	appliedSourceRevision   string
+	appliedSourceRevision  string
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher

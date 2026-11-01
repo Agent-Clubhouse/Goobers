@@ -364,7 +364,7 @@ func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, 
 func (s *GitSource) resolveDirectoryTree(ctx context.Context, repoArgs []string, revision string) (string, error) {
 	treeSpec := revision + "^{tree}"
 	if s.directory != "." {
-		treeSpec = revision + ":" + s.directory + "^{tree}"
+		treeSpec = revision + ":" + s.directory
 	}
 	output, err := s.gitOutput(
 		ctx,
@@ -374,7 +374,14 @@ func (s *GitSource) resolveDirectoryTree(ctx context.Context, repoArgs []string,
 	if err != nil {
 		return "", fmt.Errorf("git config source: directory %q is missing or is not a tree at revision %s: %w", s.directory, revision, err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	tree := strings.TrimSpace(string(output))
+	if s.directory != "." {
+		objectType, err := s.gitOutput(ctx, "verify configured directory tree", append(repoArgs, "cat-file", "-t", tree)...)
+		if err != nil || strings.TrimSpace(string(objectType)) != "tree" {
+			return "", fmt.Errorf("git config source: directory %q is missing or is not a tree at revision %s", s.directory, revision)
+		}
+	}
+	return tree, nil
 }
 
 // SameDirectoryTree reports whether two commits expose identical configured

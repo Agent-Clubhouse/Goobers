@@ -25,6 +25,7 @@ func writeFixture(t *testing.T, root, name, body string) {
 
 func TestCapturePreservesWholeGenerationAndExcludesInstanceSecrets(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "config/manifest.yaml", "version: 1\n")
 	writeFixture(t, root, "config/gaggles/example/workflows/implement.yaml", "kind: Workflow\n")
 	writeFixture(t, root, "config/gaggles/example/goobers/coder/assets/.rules", "old instructions")
 	writeFixture(t, root, "goobers/shared/instructions.md", "shared old instructions")
@@ -58,6 +59,7 @@ func TestCapturePreservesWholeGenerationAndExcludesInstanceSecrets(t *testing.T)
 
 func TestCaptureForInstanceCapturesValidatedRoot(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "config/manifest.yaml", "version: 1\n")
 	writeFixture(t, root, "config/gaggles/example/workflows/implement.yaml", "kind: Workflow\n")
 	writeFixture(t, root, "goobers/shared/instructions.md", "shared instructions")
 	data, digest, err := CaptureForInstance(t.Context(), filepath.Join(root, "config"), "instance-1")

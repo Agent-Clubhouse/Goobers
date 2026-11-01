@@ -82,12 +82,16 @@ func TestSyncGitWorkflowSourceScopesSubdirectoryAndSkipsSiblingChanges(t *testin
 	runWorkflowSourceSyncTestGit(t, repo, "config", "user.email", "test@example.com")
 	runWorkflowSourceSyncTestGit(t, repo, "config", "user.name", "Test")
 	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "macmini-octo", "manifest.yaml"), "manifest-v1\n")
+	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "macmini-octo", "gaggles", "example", "gaggle.yaml"), "apiVersion: goobers.dev/v1alpha1\nkind: Gaggle\n")
 	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "build-server", "manifest.yaml"), "other-instance\n")
 	runWorkflowSourceSyncTestGit(t, repo, "add", ".")
 	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "initial")
 
 	root := t.TempDir()
 	layout := NewLayout(root)
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo, Dir: "instances/macmini-octo"}
 	first, changed, _, err := commitPreparedWorkflowSource(context.Background(), root, source, "")
 	if err != nil || !changed {
