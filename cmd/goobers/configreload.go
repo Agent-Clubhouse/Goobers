@@ -90,6 +90,7 @@ type configReloader struct {
 	// rather than a second channel with its own latency.
 	readModel      *readmodel.Store
 	wg             *sync.WaitGroup
+
 	appliedDigest          string
 	observedDigest         string
 	workflowSourceRevision string

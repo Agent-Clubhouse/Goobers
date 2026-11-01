@@ -2048,7 +2048,7 @@ func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, mi
 // schedulerDefinitionsInput names the dependencies for this construction boundary.
 type schedulerDefinitionsInput struct {
 	RecoverAtCapacity      bool
-	RecoveryGeneration    string
+	RecoveryGeneration     string
 	WorkflowSourceRevision string
 
 	// Generated local definitions reuse admitted profiles; authenticated probes

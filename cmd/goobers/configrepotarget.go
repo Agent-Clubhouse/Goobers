@@ -38,9 +38,9 @@ const (
 	configRepoSourceDirInput = "configRepoSourceDir"
 	// configRepoDirInput names the config-repo checkout directory, relative to
 	// the stage workspace.
-	configRepoDirInput       = "configRepoDir"
-	defaultConfigRepoDir     = "config-repo"
-	configRepoHost           = "github.com"
+	configRepoDirInput   = "configRepoDir"
+	defaultConfigRepoDir = "config-repo"
+	configRepoHost       = "github.com"
 )
 
 // configRepoTarget is the config repository a config-repo-targeted stage
