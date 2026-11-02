@@ -92,6 +92,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "tls-key", takesArg: true, desc: "TLS private key PEM file"},
 		{name: "allow-origin", takesArg: true, desc: "Exact Temporal Web UI origin"},
 	},
+	"temporal rollout-status": {
+		{name: "timeout", takesArg: true, desc: "Bound on the complete inspection"},
+	},
+	"temporal worker-contract": {
+		{name: "workflow-ir", takesArg: true, desc: "Canonical workflow IR JSON file"},
+		{name: "allow-preview", desc: "Inspect with preview support enabled"},
+	},
 	"gaggle export": {
 		{name: "output", takesArg: true, desc: "Write the bundle to a file"},
 	},

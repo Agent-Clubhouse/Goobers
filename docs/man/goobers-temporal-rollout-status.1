@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TEMPORAL ROLLOUT STATUS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers temporal rollout-status \- inspect native routing and drainage without changing the deployment
+.SH SYNOPSIS
+\fBgoobers temporal rollout-status\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers temporal rollout-status [--timeout 30s] [path]
+
+Read native worker-deployment routing and per-version drainage as JSON. Uses
+the instance engine endpoint, namespace and TLS configuration. The complete
+inspection is bounded by --timeout (maximum 5m) and 128 versions. A routing
+change or incomplete read fails without printing a misleading snapshot.
+
+This does not change routing, identify last-known-good, prove worker readiness,
+or authorize retiring a build. Drainage timestamps may be stale; pinned
+histories, accepted starts and closed-history queries can still need a build.
+.fi
+.SH EXAMPLES
+.nf
+goobers temporal rollout-status --timeout 30s ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

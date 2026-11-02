@@ -11,7 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/temporalcodec"
 )
 
-const temporalHelp = "Usage: goobers temporal codec-server [flags] [path]\n\nServe Temporal Web UI payload decoding over TLS with the instance OIDC view role.\n"
+const temporalHelp = "Usage: goobers temporal <rollout-status|worker-contract|codec-server> [flags]\n\nInspect native rollout evidence, inspect this binary's workflow contracts, or serve OIDC-authenticated payload decoding. Inspection commands never change routing or admit work.\n"
 const temporalCodecHelp = "Usage: goobers temporal codec-server --tls-cert <pem> --tls-key <pem> [--listen 127.0.0.1:8444] [--allow-origin https://temporal.example.com] [path]\n\nRequires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POST requires an OIDC bearer token with view permission. Repeat --allow-origin for each exact Web UI origin. No anonymous mode.\n"
 
 func runTemporal(args []string, stdout, stderr io.Writer) int {

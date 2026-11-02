@@ -1,14 +1,14 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS TEMPORAL" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers temporal \- operate Temporal payload services
+goobers temporal \- inspect Temporal workers and operate payload services
 .SH SYNOPSIS
 \fBgoobers temporal\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers temporal codec-server [flags] [path]
+Usage: goobers temporal <rollout-status|worker-contract|codec-server> [flags]
 
-Serve Temporal Web UI payload decoding over TLS with the instance OIDC view role.
+Inspect native rollout evidence, inspect this binary's workflow contracts, or serve OIDC-authenticated payload decoding. Inspection commands never change routing or admit work.
 .fi
 .SH EXAMPLES
 .nf
