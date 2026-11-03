@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func syntheticInputProfile() Profile {
@@ -158,5 +159,21 @@ func TestExplicitTokenByteBudgetUsesCompactJSONAndOriginalNumbers(t *testing.T) 
 	encoded, err := Serialize(envelopes)
 	if err != nil || len(encoded) > 400000 {
 		t.Fatal("compact token budget or numeric spelling changed", len(encoded), err)
+	}
+}
+
+func TestExplicitTimestampDefaultsBeforeFormatting(t *testing.T) {
+	profile := syntheticInputProfile()
+	profile.Mappings[0].TimestampFormat = "rfc3339_millis"
+	before := time.Now().UTC().Truncate(time.Millisecond)
+	envelopes, err := profile.PrepareInput("synthetic", []byte(`{"displayName":"hello","sequence":18446744073709551615}`))
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := envelopes[0].Time
+	parsed, err := time.Parse("2006-01-02T15:04:05.000Z", stamp)
+	if err != nil || len(stamp) != 24 || parsed.Before(before) || parsed.After(after) {
+		t.Fatal("default timestamp not formatted as UTC milliseconds", stamp, err)
 	}
 }

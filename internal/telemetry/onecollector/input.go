@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -341,6 +342,7 @@ func (p Profile) PrepareInput(name string, raw []byte) ([]Envelope, error) {
 		return nil, errors.New("onecollector: input record limit")
 	}
 	var envelopes []Envelope
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, item := range items {
 		record, err := prepareInputRecord(*config, item)
 		if err != nil {
@@ -352,7 +354,7 @@ func (p Profile) PrepareInput(name string, raw []byte) ([]Envelope, error) {
 			if mapping.Signal != "input" || !mapping.Matches(facts) {
 				continue
 			}
-			envelope, err := mapping.Envelope(facts, "", "")
+			envelope, err := mapping.Envelope(facts, "", timestamp)
 			if err != nil {
 				return nil, err
 			}
