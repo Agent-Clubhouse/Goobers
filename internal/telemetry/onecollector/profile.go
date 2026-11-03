@@ -1,3 +1,4 @@
+// Package onecollector validates operator profiles and sends bounded opt-in telemetry.
 package onecollector
 
 import (
@@ -14,6 +15,7 @@ import (
 	"time"
 )
 
+// MaxProfileBytes caps a protected JSON profile at one MiB.
 const MaxProfileBytes = 1 << 20
 
 // Profile contains operator-owned routing and projections, never built-in destinations.
@@ -28,6 +30,7 @@ type Profile struct {
 	Tools              []Tool    `json:"tools,omitempty"`
 }
 
+// KeyRef identifies one indirect credential source, never an inline secret.
 type KeyRef struct {
 	Env      string `json:"env,omitempty"`
 	File     string `json:"file,omitempty"`
@@ -35,6 +38,7 @@ type KeyRef struct {
 	Store    string `json:"store,omitempty"`
 }
 
+// Mapping selects signal facts for an operator-defined event envelope.
 type Mapping struct {
 	Signal                string              `json:"signal"`
 	Match                 map[string][]string `json:"match,omitempty"`
@@ -51,11 +55,13 @@ type Mapping struct {
 	TimestampFormat       string              `json:"timestamp_format,omitempty"`
 }
 
+// Field projects one source fact or one encoded JSON constant.
 type Field struct {
 	Source   string  `json:"source,omitempty"`
 	Constant *string `json:"constant,omitempty"`
 }
 
+// Projection rewrites selected attribute keys and optional type companions.
 type Projection struct {
 	Source      string            `json:"source"`
 	Prefix      string            `json:"prefix"`
@@ -66,19 +72,21 @@ type Projection struct {
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// LoadProfile reads a bounded profile file and validates its contract.
 func LoadProfile(path string) (*Profile, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, errors.New("onecollector: cannot open profile")
 	}
-	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, MaxProfileBytes+1))
-	if err != nil {
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
 		return nil, errors.New("onecollector: cannot read profile")
 	}
 	return ParseProfile(raw)
 }
 
+// ParseProfile decodes strict JSON and validates the operator profile.
 func ParseProfile(raw []byte) (*Profile, error) {
 	if _, err := DecodeObject(string(raw), MaxProfileBytes); err != nil {
 		return nil, err
@@ -95,6 +103,7 @@ func ParseProfile(raw []byte) (*Profile, error) {
 	return &profile, nil
 }
 
+// Validate checks profile bounds and declarations without resolving credentials.
 func (p Profile) Validate() error {
 	fail := func() error { return errors.New("onecollector: invalid profile contract") }
 	target, err := url.Parse(p.Endpoint)
@@ -184,8 +193,10 @@ func (r KeyRef) valid() bool {
 	return count == 1
 }
 
+// Enabled reports whether the declared environment variable is exactly "1".
 func (p Profile) Enabled() bool { return os.Getenv(p.EnableEnv) == "1" }
 
+// HasSignal reports whether a mapping consumes the given signal.
 func (p Profile) HasSignal(signal string) bool {
 	for _, mapping := range p.Mappings {
 		if mapping.Signal == signal {
@@ -198,6 +209,7 @@ func (p Profile) HasSignal(signal string) bool {
 // Facts uses JSON tokens so int64 values and raw JSON never pass through float64.
 type Facts map[string]json.RawMessage
 
+// JSON encodes a trusted fact without changing numeric tokens or HTML text.
 func JSON(value any) json.RawMessage {
 	raw, err := compactJSON(value)
 	if err != nil {
@@ -206,8 +218,9 @@ func JSON(value any) json.RawMessage {
 	return raw
 }
 
-func (m Mapping) Matches(facts Facts) bool {
-	for selector, allowed := range m.Match {
+// Matches requires every selector to match at least one allowed value.
+func (mapping Mapping) Matches(facts Facts) bool {
+	for selector, allowed := range mapping.Match {
 		raw, found := facts[selector]
 		if !found {
 			return false
@@ -240,9 +253,10 @@ func projectFields(fields map[string]Field, facts Facts) map[string]any {
 	return result
 }
 
-func (m Mapping) Envelope(facts Facts, key, timestamp string) (Envelope, error) {
+// Envelope projects facts and formats an event without sending it.
+func (mapping Mapping) Envelope(facts Facts, key, timestamp string) (Envelope, error) {
 	size := 0
-	for _, fields := range []map[string]Field{m.Fields, m.Extensions} {
+	for _, fields := range []map[string]Field{mapping.Fields, mapping.Extensions} {
 		for name, field := range fields {
 			size += len(name) + 32
 			if field.Constant != nil {
@@ -256,10 +270,10 @@ func (m Mapping) Envelope(facts Facts, key, timestamp string) (Envelope, error) 
 		}
 	}
 	var output any
-	data := projectFields(m.Fields, facts)
+	data := projectFields(mapping.Fields, facts)
 	output = data
-	if m.DataSource != "" {
-		raw, found := facts[m.DataSource]
+	if mapping.DataSource != "" {
+		raw, found := facts[mapping.DataSource]
 		if !found {
 			return Envelope{}, errors.New("onecollector: missing data source")
 		}
@@ -269,7 +283,7 @@ func (m Mapping) Envelope(facts Facts, key, timestamp string) (Envelope, error) 
 		}
 		output = object
 	}
-	for _, projection := range m.Projections {
+	for _, projection := range mapping.Projections {
 		source := projection.Source + "."
 		for selector, value := range facts {
 			if !strings.HasPrefix(selector, source) || strings.HasSuffix(selector, ".otlp_type") {
@@ -316,39 +330,39 @@ func (m Mapping) Envelope(facts Facts, key, timestamp string) (Envelope, error) 
 		}
 		return value, nil
 	}
-	name, err := text(m.EventNameSource, m.EventName)
+	name, err := text(mapping.EventNameSource, mapping.EventName)
 	if err != nil {
 		return Envelope{}, err
 	}
-	version, err := text(m.EnvelopeVersionSource, m.EnvelopeVersion)
+	version, err := text(mapping.EnvelopeVersionSource, mapping.EnvelopeVersion)
 	if err != nil {
 		return Envelope{}, err
 	}
-	timestamp, err = text(m.TimestampSource, timestamp)
+	timestamp, err = text(mapping.TimestampSource, timestamp)
 	if err != nil {
 		return Envelope{}, err
 	}
-	if m.TimestampFormat == "unix_nano" || m.TimestampFormat == "unix_nano_millis" {
+	if mapping.TimestampFormat == "unix_nano" || mapping.TimestampFormat == "unix_nano_millis" {
 		nanos, err := strconv.ParseUint(timestamp, 10, 64)
 		if err != nil {
 			return Envelope{}, errors.New("onecollector: invalid nanosecond timestamp")
 		}
 		instant := time.Unix(int64(nanos/1e9), int64(nanos%1e9)).UTC()
-		if m.TimestampFormat == "unix_nano_millis" {
+		if mapping.TimestampFormat == "unix_nano_millis" {
 			timestamp = instant.Format("2006-01-02T15:04:05.000Z")
 		} else {
 			timestamp = instant.Format(time.RFC3339Nano)
 		}
-	} else if m.TimestampFormat == "rfc3339_millis" {
+	} else if mapping.TimestampFormat == "rfc3339_millis" {
 		instant, err := time.Parse(time.RFC3339Nano, timestamp)
 		if err != nil {
 			return Envelope{}, errors.New("onecollector: invalid RFC3339 timestamp")
 		}
 		timestamp = instant.UTC().Format("2006-01-02T15:04:05.000Z")
-	} else if m.TimestampFormat != "" && m.TimestampFormat != "rfc3339" {
+	} else if mapping.TimestampFormat != "" && mapping.TimestampFormat != "rfc3339" {
 		return Envelope{}, errors.New("onecollector: invalid timestamp format")
 	}
 	return Envelope{Name: name, Time: timestamp, Ver: version, IKey: key,
-		Ext: projectFields(m.Extensions, facts), Data: output, RawDataFields: rawFields(m.Fields), RawExtensionFields: rawFields(m.Extensions),
-		PreserveInput: m.Signal == "input"}, nil
+		Ext: projectFields(mapping.Extensions, facts), Data: output, RawDataFields: rawFields(mapping.Fields), RawExtensionFields: rawFields(mapping.Extensions),
+		PreserveInput: mapping.Signal == "input"}, nil
 }

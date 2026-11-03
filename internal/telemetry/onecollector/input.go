@@ -15,8 +15,10 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
+// MaxInputBytes caps one explicit JSON input at sixteen MiB.
 const MaxInputBytes = 16 << 20
 
+// Input declares profile-owned validation and preparation for explicit payloads.
 type Input struct {
 	Name               string                     `json:"name"`
 	Schema             json.RawMessage            `json:"schema"`
@@ -31,6 +33,7 @@ type Input struct {
 	SerializeFields    []string                   `json:"serialize_fields,omitempty"`
 }
 
+// Tool binds an MCP argument schema to a declared input and validation switch.
 type Tool struct {
 	Name            string          `json:"name"`
 	Description     string          `json:"description"`
@@ -99,6 +102,7 @@ func (p Profile) validateInputs() error {
 	return nil
 }
 
+// NormalizeKey converts a key to an ASCII camel identifier or rejects it.
 func NormalizeKey(key string) (string, error) {
 	first := normalizeKey(key)
 	if !regexp.MustCompile(`^[a-z][A-Za-z0-9]*$`).MatchString(first) {
@@ -374,6 +378,7 @@ func (p Profile) PrepareInput(name string, raw []byte) ([]Envelope, error) {
 	return envelopes, nil
 }
 
+// ToolPayload validates tool arguments and selects an input, payload and validation mode.
 func (p Profile) ToolPayload(name string, raw json.RawMessage) (string, []byte, bool, error) {
 	for _, tool := range p.Tools {
 		if tool.Name != name {

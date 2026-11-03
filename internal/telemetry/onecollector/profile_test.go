@@ -3,6 +3,7 @@ package onecollector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -72,7 +73,7 @@ func TestTransportOptInStatusAndPrivacy(t *testing.T) {
 	record := []Envelope{{Name: "Synthetic.Event", Data: map[string]any{"value": 1}}}
 	for _, value := range []string{"", "true", "0"} {
 		t.Setenv(options.EnableEnv, value)
-		if err := Send(t.Context(), options, record, server.Client().Transport); err != ErrDisabled {
+		if err := Send(t.Context(), options, record, server.Client().Transport); !errors.Is(err, ErrDisabled) {
 			t.Fatal(err)
 		}
 	}

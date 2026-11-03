@@ -13,12 +13,19 @@ import (
 	"time"
 )
 
+// MaxRecords caps the number of records in one request.
 const MaxRecords = 1000
+
+// MaxBatchBytes caps the encoded request body at eight MiB.
 const MaxBatchBytes = 8 << 20
+
+// MaxNativeBytes caps a native record or embedded JSON value at two MiB.
 const MaxNativeBytes = 2 << 20
 
+// ErrDisabled identifies a missing explicit environment opt-in.
 var ErrDisabled = errors.New("onecollector: explicit environment opt-in required")
 
+// DeliveryError reports a failure category and status without destination values.
 type DeliveryError struct {
 	Category string
 	Status   int
@@ -31,6 +38,7 @@ func (e *DeliveryError) Error() string {
 	return "onecollector: " + e.Category + "; delivery uncertain"
 }
 
+// Options holds the resolved settings for one separately enabled route.
 type Options struct {
 	EnableEnv          string
 	Endpoint           string
@@ -38,8 +46,10 @@ type Options struct {
 	InstrumentationKey string
 }
 
+// Enabled requires a declared environment variable with the exact value "1".
 func (o Options) Enabled() bool { return o.EnableEnv != "" && os.Getenv(o.EnableEnv) == "1" }
 
+// Envelope contains a wire record and non-wire content-preservation markers.
 type Envelope struct {
 	PreserveInput      bool            `json:"-"`
 	RawDataFields      map[string]bool `json:"-"`
@@ -52,6 +62,7 @@ type Envelope struct {
 	Data               any             `json:"data"`
 }
 
+// Serialize produces bounded newline-delimited JSON without HTML escaping.
 func Serialize(envelopes []Envelope) ([]byte, error) {
 	if len(envelopes) < 1 || len(envelopes) > MaxRecords {
 		return nil, errors.New("onecollector: batch record limit")
@@ -79,6 +90,7 @@ func Send(ctx context.Context, options Options, envelopes []Envelope, transport 
 	return err
 }
 
+// SendResult sends one bounded batch and returns its HTTP status without retries.
 func SendResult(ctx context.Context, options Options, envelopes []Envelope, transport http.RoundTripper) (int, error) {
 	if !options.Enabled() {
 		return 0, ErrDisabled
@@ -124,7 +136,8 @@ func SendResult(ctx context.Context, options Options, envelopes []Envelope, tran
 		}
 		return 0, &DeliveryError{Category: category}
 	}
-	defer response.Body.Close()
+	// The status decides delivery; response-body cleanup cannot undo acceptance.
+	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return response.StatusCode, &DeliveryError{Category: "http", Status: response.StatusCode}

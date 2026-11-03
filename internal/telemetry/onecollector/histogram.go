@@ -7,6 +7,7 @@ import (
 	"sort"
 )
 
+// Segment represents Count replayed histogram observations of Value.
 type Segment struct {
 	Value float64
 	Count uint64

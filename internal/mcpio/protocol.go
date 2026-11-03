@@ -72,6 +72,7 @@ type DynamicTool struct {
 	InputSchema json.RawMessage
 }
 
+// DynamicResult supplies tool content and its explicit MCP error state.
 type DynamicResult struct {
 	Value   any
 	IsError bool
@@ -95,6 +96,7 @@ func NewServer(tools *Toolset) *Server {
 	return &Server{tools: tools}
 }
 
+// NewDynamicServer serves an operator-defined tool catalog over the bounded transport.
 func NewDynamicServer(name string, tools []DynamicTool, call func(string, json.RawMessage) (any, error)) *Server {
 	server := &Server{dynamicName: name, dynamicCall: call}
 	for _, tool := range tools {

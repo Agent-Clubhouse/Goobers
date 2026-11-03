@@ -19,6 +19,7 @@ func compactJSON(value any) ([]byte, error) {
 	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
 }
 
+// DecodeObject validates bounded JSON and requires an object root.
 func DecodeObject(text string, limit int) (map[string]any, error) {
 	value, err := DecodeJSON(text, limit)
 	if err != nil {
@@ -31,6 +32,7 @@ func DecodeObject(text string, limit int) (map[string]any, error) {
 	return object, nil
 }
 
+// DecodeJSON preserves numeric tokens and rejects duplicate keys or excess nesting.
 func DecodeJSON(text string, limit int) (any, error) {
 	if len(text) > limit || !utf8.ValidString(text) {
 		return nil, errors.New("onecollector: JSON byte limit or UTF-8")

@@ -26,9 +26,10 @@ func collectorPointFacts(base onecollector.Facts, attrs attribute.Set, start, en
 	facts["metric.start_time_unix_nano"] = onecollector.JSON(startNanos)
 	facts["metric.time_unix_nano"] = onecollector.JSON(strconv.FormatInt(end.UnixNano(), 10))
 	facts["metric.kind"] = onecollector.JSON(kind)
-	if temporality == metricdata.DeltaTemporality {
+	switch temporality {
+	case metricdata.DeltaTemporality:
 		facts["metric.temporality"] = onecollector.JSON("delta")
-	} else if temporality == metricdata.CumulativeTemporality {
+	case metricdata.CumulativeTemporality:
 		facts["metric.temporality"] = onecollector.JSON("cumulative")
 	}
 	facts["timestamp"] = onecollector.JSON(end.UTC().Format(time.RFC3339Nano))

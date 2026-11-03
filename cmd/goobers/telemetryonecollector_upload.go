@@ -120,7 +120,7 @@ func runOneCollectorMCPWithInput(args []string, stdin io.Reader, stdout, stderr 
 	}
 	server := mcpio.NewDynamicServer("goobers-onecollector", tools, func(name string, raw json.RawMessage) (any, error) {
 		input, payload, validate, err := profile.ToolPayload(name, raw)
-		result := collectorReceipt{}
+		var result collectorReceipt
 		if err != nil {
 			result = collectorReceipt{Category: "validation", Error: err.Error()}
 		} else {

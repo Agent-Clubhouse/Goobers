@@ -28,6 +28,7 @@ func ConfigureOneCollector(ctx context.Context, cfg *telemetry.Config, source *i
 	return ConfigureOneCollectorProfile(ctx, cfg, *profile, registry, stores)
 }
 
+// ConfigureOneCollectorProfile resolves credentials only for an explicitly enabled profile.
 func ConfigureOneCollectorProfile(ctx context.Context, cfg *telemetry.Config, profile onecollector.Profile, registry *journal.RegistryScrubber, stores credentials.StoreResolver) error {
 	if !profile.Enabled() {
 		return onecollector.ErrDisabled

@@ -11,6 +11,7 @@ type OneCollectorConfig struct {
 	ProfileFile string `json:"profile_file" yaml:"profile_file"`
 }
 
+// Validate requires an absolute path for a configured protected profile.
 func (c *OneCollectorConfig) Validate() error {
 	if c != nil && !filepath.IsAbs(c.ProfileFile) {
 		return errors.New("telemetry.onecollector.profile_file must be an absolute path")
