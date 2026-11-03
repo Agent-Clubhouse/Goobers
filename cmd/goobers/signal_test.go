@@ -49,7 +49,7 @@ func initSignalDemo(t *testing.T) string {
 	root := initDemo(t)
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	if err := os.WriteFile(workflowPath, []byte(signalTriggeredWorkflowYAML), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, signalTriggeredWorkflowYAML)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "goobers")); err != nil {
@@ -135,10 +135,10 @@ func TestSignalMonitorsAllRunsConcurrently(t *testing.T) {
 		"name: default-implement", "name: z-fast")
 	fast = strings.ReplaceAll(fast,
 		"local-ci", "fast")
-	if err := os.WriteFile(filepath.Join(workflowsDir, "a-slow.yaml"), []byte(slow), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workflowsDir, "a-slow.yaml"), []byte(portableWorkflowCommands(t, slow)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workflowsDir, "z-fast.yaml"), []byte(fast), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workflowsDir, "z-fast.yaml"), []byte(portableWorkflowCommands(t, fast)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(workflowsDir, "default-implement.yaml")); err != nil {

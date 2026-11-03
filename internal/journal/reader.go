@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/internal/readprobe"
 )
 
@@ -236,34 +238,37 @@ func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
 // to buffer an unbounded one, whether the oversize came from a hostile daemon
 // or from a run directory that grew an artifact nobody expected.
 func (r *Reader) ArtifactBytesBounded(ref Ref, maxBytes int64) ([]byte, error) {
-	full, err := containedExistingBlobPath(r.dir, ref.Path)
-	if err != nil {
+	if _, err := containedBlobPath(r.dir, ref.Path); err != nil {
 		return nil, err
 	}
-	if maxBytes <= 0 {
-		b, err := os.ReadFile(full)
-		if err != nil {
-			return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
-		}
-		return verifiedBlob(ref, b)
-	}
-	info, err := os.Stat(full)
+	root, err := os.OpenRoot(r.dir)
 	if err != nil {
-		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
+		return nil, fmt.Errorf("journal: open run directory: %w", err)
 	}
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("journal: blob %q is %d bytes, exceeding the %d byte ceiling", ref.Path, info.Size(), maxBytes)
-	}
-	file, err := os.Open(full)
+	defer func() { _ = root.Close() }()
+	file, err := safeopen.OpenRegularInRoot(root, filepath.Clean(ref.Path))
 	if err != nil {
 		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
 	}
 	defer func() { _ = file.Close() }()
-	b, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	var reader io.Reader = file
+	if maxBytes > 0 {
+		info, err := file.Stat()
+		if err != nil {
+			return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
+		}
+		if info.Size() > maxBytes {
+			return nil, fmt.Errorf("journal: blob %q is %d bytes, exceeding the %d byte ceiling", ref.Path, info.Size(), maxBytes)
+		}
+		if maxBytes < math.MaxInt64 {
+			reader = io.LimitReader(file, maxBytes+1)
+		}
+	}
+	b, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
 	}
-	if int64(len(b)) > maxBytes {
+	if maxBytes > 0 && int64(len(b)) > maxBytes {
 		return nil, fmt.Errorf("journal: blob %q exceeds the %d byte ceiling", ref.Path, maxBytes)
 	}
 	return verifiedBlob(ref, b)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func TestStatusRootSurfacesTextJSONAndDaemon(t *testing.T) {
 	}
 	for _, args := range [][]string{{"status", root}, {"status", "--daemon", root}} {
 		_, stdout, _ := runArgs(t, args...)
-		if !strings.Contains(stdout, "Instance root:") || !strings.Contains(stdout, id) || !strings.Contains(stdout, runtimewiring.CanonicalStatusRoot(root)) {
+		if !strings.Contains(stdout, "Instance root:") || !strings.Contains(stdout, id) || !strings.Contains(stdout, strconv.Quote(runtimewiring.CanonicalStatusRoot(root))) {
 			t.Fatalf("missing root identity: %s", stdout)
 		}
 	}

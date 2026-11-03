@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -224,7 +225,7 @@ func TestDeployReferenceAPIBacksWorkerBlobPlane(t *testing.T) {
 		t.Fatalf("api-deployment.yaml args = %v, want at least [up, <instance-root>]", apiContainer.Args)
 	}
 	instanceRoot := apiContainer.Args[len(apiContainer.Args)-1]
-	wantBlobMount := filepath.Join(instanceRoot, "blobstore")
+	wantBlobMount := path.Join(instanceRoot, "blobstore")
 
 	var blobsClaim string
 	volumeClaims := make(map[string]string, len(api.Spec.Template.Spec.Volumes))

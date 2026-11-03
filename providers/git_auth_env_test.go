@@ -11,11 +11,14 @@ import (
 func TestGitAuthEnvironmentsPreserveHardenedShape(t *testing.T) {
 	for _, name := range []string{
 		"GIT_CONFIG_COUNT",
+		"GIT_CONFIG_PARAMETERS",
 		"GIT_CONFIG_KEY_0",
 		"GIT_CONFIG_VALUE_0",
 		"GIT_CONFIG_KEY_9",
 		"GIT_CONFIG_VALUE_9",
 		"GIT_TERMINAL_PROMPT",
+		"GIT_ASKPASS",
+		"SSH_ASKPASS",
 	} {
 		t.Setenv(name, "inherited-"+name)
 	}
@@ -87,7 +90,8 @@ func TestGitAuthEnvironmentsPreserveHardenedShape(t *testing.T) {
 			for _, entry := range env[:len(env)-len(wantSuffix)] {
 				name, _, _ := strings.Cut(entry, "=")
 				upper := strings.ToUpper(name)
-				if upper == "GIT_CONFIG_COUNT" || upper == "GIT_TERMINAL_PROMPT" ||
+				if upper == "GIT_CONFIG_COUNT" || upper == "GIT_CONFIG_PARAMETERS" || upper == "GIT_TERMINAL_PROMPT" ||
+					upper == "GIT_ASKPASS" || upper == "SSH_ASKPASS" ||
 					strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
 					t.Errorf("inherited Git configuration survived: %q", entry)
 				}
@@ -105,6 +109,7 @@ func TestGitAuthEnvironmentsPreserveHardenedShape(t *testing.T) {
 
 func TestGitAuthEnvironmentsWithoutTokenRemainHardened(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'credential.helper=inherited-helper'")
 	t.Setenv("GIT_CONFIG_KEY_0", "credential.helper")
 	t.Setenv("GIT_CONFIG_VALUE_0", "unsafe-helper")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")

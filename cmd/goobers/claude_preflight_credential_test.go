@@ -42,7 +42,11 @@ func TestClaudePreflightRegistryUsesScopedFileCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := runtimewiring.AdapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{}, map[string][]string{"claude-code": {"echo"}}, resolve)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := runtimewiring.AdapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{}, map[string][]string{"claude-code": {executable}}, resolve)
 	if err != nil {
 		t.Fatal(err)
 	}

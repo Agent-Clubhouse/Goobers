@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +168,7 @@ func TestMain(m *testing.M) {
 		return hermeticEphemeralListen
 	}
 
+	isolateGitConfigForTests()
 	disableGitFsyncForTests()
 	disableGitAutoMaintenanceForTests()
 	disableGitLineEndingConversionForTests()
@@ -300,6 +302,28 @@ func disableGitAutoMaintenanceForTests() {
 func disableGitLineEndingConversionForTests() {
 	appendGitConfigForTests("core.autocrlf", "false")
 	appendGitConfigForTests("core.safecrlf", "false")
+}
+
+func isolateGitConfigForTests() {
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(strings.ToUpper(name), "GIT_CONFIG_") {
+			if err := os.Unsetenv(name); err != nil {
+				fmt.Fprintf(os.Stderr, "clear fixture Git configuration %s: %v\n", name, err)
+				os.Exit(1)
+			}
+		}
+	}
+	for name, value := range map[string]string{
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_SYSTEM":   os.DevNull,
+		"GIT_CONFIG_NOSYSTEM": "1",
+	} {
+		if err := os.Setenv(name, value); err != nil {
+			fmt.Fprintf(os.Stderr, "isolate fixture Git configuration %s: %v\n", name, err)
+			os.Exit(1)
+		}
+	}
 }
 
 func appendGitConfigForTests(key, value string) {

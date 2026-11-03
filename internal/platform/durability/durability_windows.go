@@ -14,6 +14,18 @@ import (
 
 const replaceRetryWindow = 2 * time.Second
 
+// ReadFile waits out transient contention on a file published by ReplaceFile.
+func ReadFile(path string) ([]byte, error) {
+	deadline := time.Now().Add(replaceRetryWindow)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil || !transientFileError(err) || time.Now().After(deadline) {
+			return data, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // ReplaceFile atomically replaces destination with source and requests durable metadata.
 func ReplaceFile(source, destination string) error {
 	return movePath(source, destination, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)

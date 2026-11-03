@@ -173,8 +173,12 @@ func TestStampedStageEnvDeliversAnnotationsToTheDaemonsInstanceLog(t *testing.T)
 // run-2's emit route, or by naming run-2 inside the event it sends to its own.
 func TestAnnotationPlaneRefusesAForeignRun(t *testing.T) {
 	daemon := newAnnotationPlane(t, "run-1", "alpha")
-	if _, err := journal.Create(daemon.layout.ForGaggle("alpha").RunsDir(),
-		journal.RunIdentity{RunID: "run-2", Workflow: "implementation", Gaggle: "alpha"}, nil); err != nil {
+	foreignRun, err := journal.Create(daemon.layout.ForGaggle("alpha").RunsDir(),
+		journal.RunIdentity{RunID: "run-2", Workflow: "implementation", Gaggle: "alpha"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := foreignRun.Close(); err != nil {
 		t.Fatal(err)
 	}
 

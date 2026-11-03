@@ -2,6 +2,7 @@ package main
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,7 +50,10 @@ func gitConfigSlots(t *testing.T, cmd *exec.Cmd) map[string]string {
 // gather-pr-context with `fatal: detected dubious ownership in repository at
 // '/workspace'` on the fetch.
 func TestWorkspaceGitCommandsCarryBothConfigSlots(t *testing.T) {
-	const dir = "/workspace"
+	dir, err := filepath.Abs("/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
 	const token = "test-token"
 
 	t.Run("an authenticated command carries the credential and the exemption", func(t *testing.T) {

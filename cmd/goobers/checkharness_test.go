@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -180,9 +181,13 @@ func (r *authProbeFakeRunner) Run(_ context.Context, req harness.ProcessRequest)
 // TestCheckHarnessesRunsAuthProbe is the #284/#271 control: --check-harness
 // probes authentication, so a CLI that passes --version but fails the auth probe
 // (a signed-out / mis-scoped token) fails closed, and a fully-authenticated one
-// passes. Command "echo" is on PATH so LookPath succeeds and the scripted runner
+// passes. The test executable resolves on every platform; the scripted runner
 // governs the result.
 func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	goobers := []apiv1.Goober{{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}}}
 
 	// Signed out: version OK, auth probe fails → check fails, and the probe ran.
@@ -193,7 +198,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	authInvoked := false
 	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
-			Command:       []string{"echo"},
+			Command:       []string{executable},
 			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1, authInvoked: &authInvoked},
 		}, nil
@@ -209,7 +214,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	// Fully authenticated: both succeed → check passes.
 	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
-			Command:       []string{"echo"},
+			Command:       []string{executable},
 			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 0},
 		}, nil

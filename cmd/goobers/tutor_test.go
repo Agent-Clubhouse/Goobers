@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -151,13 +153,18 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 	root := initDemo(t)
 
 	gaggleDir := filepath.Join(root, "config", "gaggles", "example")
+	if runtime.GOOS == "windows" {
+		// The reference workflow tree must fit under Windows' checkout limit.
+		replaceInFile(t, filepath.Join(gaggleDir, "gaggle.yaml"), "spec:\n",
+			"spec:\n  workcopies:\n    root: "+strconv.Quote(filepath.Join(t.TempDir(), "w"))+"\n")
+	}
 	if err := os.RemoveAll(filepath.Join(gaggleDir, "workflows")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(filepath.Join(gaggleDir, "goobers")); err != nil {
 		t.Fatal(err)
 	}
-	writeFixture(t, filepath.Join(gaggleDir, "workflows", "tutor.yaml"), tutorWorkflowYAML)
+	writeFixture(t, filepath.Join(gaggleDir, "workflows", "tutor.yaml"), portableWorkflowCommands(t, tutorWorkflowYAML))
 	for _, g := range []struct {
 		name, role string
 		caps       []string
@@ -524,6 +531,8 @@ func TestTutorNewGateWithoutFailFirstEvidenceAbortsBeforePush(t *testing.T) {
 	if got := tutorStartedStages(events); !slices.Equal(got, []string{
 		"gather-signals", "analyze", "draft-change", "validate-config", "check-fail-first",
 	}) {
+		_, trace, traceErr := runArgs(t, "trace", "--json", runID, root)
+		t.Logf("failed tutor trace: %s\n%s", trace, traceErr)
 		t.Fatalf("started stages = %v, push/open-pr must not run when a new gate lacks fail-first evidence", got)
 	}
 	var failedClosed bool
@@ -562,6 +571,8 @@ func TestTutorNewGateWithFailFirstEvidenceReachesOpenPR(t *testing.T) {
 
 	code, stdout, stderr := runArgs(t, "run", "tutor", root)
 	if code != 0 {
+		_, trace, traceErr := runArgs(t, "trace", "--json", runIDFromRunStdout(t, stdout), root)
+		t.Logf("failed tutor trace: %s\n%s", trace, traceErr)
 		t.Fatalf("goobers run tutor: code = %d, stderr = %q", code, stderr)
 	}
 

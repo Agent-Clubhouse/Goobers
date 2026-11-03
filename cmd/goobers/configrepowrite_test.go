@@ -461,7 +461,7 @@ func TestConfigCheckoutClonesBaseAndCreatesRunBranch(t *testing.T) {
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
 	// Route the canonical https URL at the local bare origin.
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(work, "gitconfig"))
-	if err := os.WriteFile(filepath.Join(work, "gitconfig"), []byte("[url \""+origin+"\"]\n\tinsteadOf = https://github.com/acme/workflows.git\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "gitconfig"), []byte("[url \""+filepath.ToSlash(origin)+"\"]\n\tinsteadOf = https://github.com/acme/workflows.git\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

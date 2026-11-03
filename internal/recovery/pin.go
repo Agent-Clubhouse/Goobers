@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -91,7 +92,8 @@ func recoveryGitIO(ctx context.Context, repository string, stdout io.Writer, std
 	// Recovery callers explicitly select this repository. Stage mounts may
 	// belong to the host UID, so replace ambient ownership exemptions with
 	// this exact resolved path, never '*' or an inherited GIT_CONFIG_* value.
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", trustedPath, "--no-replace-objects", "-c", "core.hooksPath=" + os.DevNull,
+	// Private recovery metadata can exceed MAX_PATH even when the checkout fits.
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", trustedPath, "--no-replace-objects", "-c", "core.longpaths=true", "-c", "core.hooksPath=" + os.DevNull,
 		"-c", "safe.directory=", "-c", "safe.directory=" + trustedPath}, args...)...)
 	// These local object/ref operations need no inherited Git transport or
 	// repository overrides. In particular GIT_DIR must not defeat -C.
@@ -100,7 +102,20 @@ func recoveryGitIO(ctx context.Context, repository string, stdout io.Writer, std
 			command.Env = append(command.Env, entry)
 		}
 	}
-	command.Env = append(command.Env, environment...)
+	for _, entry := range environment {
+		key, value, _ := strings.Cut(entry, "=")
+		if runtime.GOOS == "windows" && strings.EqualFold(key, "GIT_DIR") && filepath.IsAbs(value) &&
+			strings.EqualFold(filepath.VolumeName(trustedPath), filepath.VolumeName(value)) {
+			// Restore changes cwd after creating the snapshot environment.
+			// Rebase per command, not when that reusable environment is built.
+			relative, err := filepath.Rel(trustedPath, value)
+			if err != nil {
+				return fmt.Errorf("relativize recovery Git directory: %w", err)
+			}
+			entry = key + "=" + relative
+		}
+		command.Env = append(command.Env, entry)
+	}
 	command.Stdout = stdout
 	command.Stdin = stdin
 	// These operations are all local (no network transport; GIT_* stripped

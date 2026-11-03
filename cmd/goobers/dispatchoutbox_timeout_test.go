@@ -14,7 +14,7 @@ func TestTimedOutCommandRemainsOutboxEligible(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","printf diagnostic > report.txt; sleep 5"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")
-	t.Setenv(dispatcher.EnvStageTimeout, "50ms")
+	t.Setenv(dispatcher.EnvStageTimeout, "2s")
 	t.Setenv(dispatcher.EnvStageOutbox, `["report.txt"]`)
 	out := runStage(context.Background(), io.Discard, io.Discard)
 	if out.Result.Status != apiv1.ResultFailure || out.Result.Error == nil ||

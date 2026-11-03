@@ -10,7 +10,8 @@ func scopedGitExtraHeaderEnv(remoteURL, header string, registrar SecretRegistrar
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		upper := strings.ToUpper(name)
-		if upper == "GIT_CONFIG_COUNT" || upper == "GIT_TERMINAL_PROMPT" ||
+		if upper == "GIT_CONFIG_COUNT" || upper == "GIT_CONFIG_PARAMETERS" || upper == "GIT_TERMINAL_PROMPT" ||
+			upper == "GIT_ASKPASS" || upper == "SSH_ASKPASS" ||
 			strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
 			continue
 		}

@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -313,6 +315,12 @@ func TestGettingStartedSampleRejectsRemoteMismatchWithoutExternalRequests(t *tes
 	}
 	server.mu.Unlock()
 	if !pushed || !refused || prCount != 0 || !failureRecorded {
+		logGettingStartedCIArtifacts(t, reader, events)
+		for _, event := range events {
+			if event.Error != nil {
+				t.Logf("stage=%s error=%+v", event.Stage, event.Error)
+			}
+		}
 		t.Fatalf("publication failure boundary: pushed=%v refused=%v prs=%d failureRecorded=%v", pushed, refused, prCount, failureRecorded)
 	}
 	if refs := sampleGitOutput(t, "", "--git-dir", remote, "for-each-ref", "--format=%(refname)", "refs/heads/goobers/quickstart/"); refs != "" {
@@ -336,7 +344,15 @@ func TestGettingStartedSampleImplementationLocalCIThroughRealRunner(t *testing.T
 
 			code, stdout, stderr := runArgs(t, "run", "implementation", root)
 			if code != tt.wantCode {
-				t.Fatalf("goobers run implementation: code=%d, want %d; stdout=%q stderr=%q", code, tt.wantCode, stdout, stderr)
+				_, trace, traceErr := runArgs(t, "trace", runIDFromRunStdout(t, stdout), root)
+				if reader, err := journal.OpenRead(filepath.Join(root, "runs", runIDFromRunStdout(t, stdout))); err != nil {
+					t.Logf("read failed local-ci journal: %v", err)
+				} else if events, err := reader.Events(); err != nil {
+					t.Logf("read failed local-ci events: %v", err)
+				} else {
+					logGettingStartedCIArtifacts(t, reader, events)
+				}
+				t.Fatalf("goobers run implementation: code=%d, want %d; stdout=%q stderr=%q trace=%s trace-stderr=%q", code, tt.wantCode, stdout, stderr, trace, traceErr)
 			}
 			if !strings.Contains(stdout, "phase="+string(tt.wantPhase)) {
 				t.Fatalf("implementation run did not reach %s: %q", tt.wantPhase, stdout)
@@ -353,6 +369,19 @@ func TestGettingStartedSampleImplementationLocalCIThroughRealRunner(t *testing.T
 			}
 			assertGettingStartedLocalCI(t, reader, events, tt.wantStatus)
 		})
+	}
+}
+
+func logGettingStartedCIArtifacts(t *testing.T, reader *journal.Reader, events []journal.Event) {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != journal.EventStageFinished || event.Stage != "local-ci" {
+			continue
+		}
+		for _, ref := range event.Artifacts {
+			data, err := reader.ArtifactBytes(ref)
+			t.Logf("local-ci artifact %+v: %s (read error: %v)", ref, data, err)
+		}
 	}
 }
 
@@ -426,6 +455,13 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 	cfg.Runner.EnvPassthrough = append(cfg.Runner.EnvPassthrough, "GOOBERS_TEST_GITHUB_API_URL")
 	if err := instance.WriteConfig(filepath.Join(root, instance.ConfigFileName), cfg); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		// Nested npm scripts prepend ancestor bin directories to PATH.
+		// Keep this fixture below cmd.exe's 8191-character limit.
+		gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+		shortRoot := filepath.Join(t.TempDir(), "w")
+		replaceInFile(t, gagglePath, "spec:\n", "spec:\n  workcopies:\n    root: "+strconv.Quote(shortRoot)+"\n")
 	}
 
 	disposableRoot = t.TempDir()

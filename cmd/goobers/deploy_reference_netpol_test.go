@@ -113,7 +113,7 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 				// The gaggle-namespace template's labels apply to every
 				// instantiated gaggle namespace; this test's concrete
 				// stand-in for one is "gaggle-a" (below).
-				if strings.Contains(path, "/gaggle-namespace/") {
+				if effectiveManifestNamespace(path, "") == "gaggle-a" {
 					var ns corev1.Namespace
 					if err := yaml.Unmarshal(doc, &ns); err != nil {
 						t.Fatalf("parse Namespace in %s: %v", path, err)
@@ -318,6 +318,7 @@ func effectiveManifestNamespace(path, namespace string) string {
 	if namespace != "" {
 		return namespace
 	}
+	path = filepath.ToSlash(path)
 	switch {
 	case strings.Contains(path, "/goobers-system/"):
 		return "goobers-system"
@@ -327,6 +328,22 @@ func effectiveManifestNamespace(path, namespace string) string {
 		return "goobers-temporal"
 	default:
 		return ""
+	}
+}
+
+func TestEffectiveManifestNamespaceUsesNativePaths(t *testing.T) {
+	for directory, want := range map[string]string{
+		"goobers-system":   "goobers-system",
+		"gaggle-namespace": "gaggle-a",
+		"temporal":         "goobers-temporal",
+	} {
+		path := filepath.Join("..", "..", "deploy", "reference", directory, "namespace.yaml")
+		if got := effectiveManifestNamespace(path, ""); got != want {
+			t.Fatalf("%s: namespace = %q, want %q", path, got, want)
+		}
+		if got := effectiveManifestNamespace(path, "explicit"); got != "explicit" {
+			t.Fatalf("%s: explicit namespace = %q", path, got)
+		}
 	}
 }
 

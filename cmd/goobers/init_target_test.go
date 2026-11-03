@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,8 +82,8 @@ func TestInitDefaultPathRefusesLinkedWorktreeWithoutWriting(t *testing.T) {
 		"refusing to initialize",
 		"linked Git worktree",
 		"--allow-ephemeral",
-		`goobers init --allow-ephemeral "` + resolvedLinked + `"`,
-		"goobers/instances",
+		`goobers init --allow-ephemeral ` + strconv.Quote(resolvedLinked),
+		filepath.Join("goobers", "instances"),
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("init stderr = %q, missing %q", stderr, want)

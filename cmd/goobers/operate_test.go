@@ -142,7 +142,7 @@ spec:
         command: ["false"]
       continueOnError: true
 `
-	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, workflow)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,7 +181,7 @@ func testRunNoWaitCompletes(t *testing.T, worker bool) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := strings.Replace(deterministicWorkflowYAML, `command: ["true"]`, `script: echo no-wait-completed`, 1)
-	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, workflow)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

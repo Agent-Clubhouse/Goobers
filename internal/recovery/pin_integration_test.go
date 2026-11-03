@@ -17,7 +17,8 @@ import (
 
 func recoveryTestGit(t *testing.T, repository string, args ...string) string {
 	t.Helper()
-	command := testgit.Command(append([]string{"-C", repository}, args...)...)
+	// Each target is an explicitly selected, disposable fixture repository.
+	command := testgit.Command(append([]string{"-C", repository, "-c", "safe.bareRepository=all"}, args...)...)
 	command.Env = append(command.Env, "GIT_AUTHOR_NAME=Recovery Test", "GIT_AUTHOR_EMAIL=recovery@example.invalid", "GIT_COMMITTER_NAME=Recovery Test", "GIT_COMMITTER_EMAIL=recovery@example.invalid")
 	output, err := command.CombinedOutput()
 	if err != nil {

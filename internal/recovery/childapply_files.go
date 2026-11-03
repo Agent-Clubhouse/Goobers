@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -182,7 +183,10 @@ func childFileValue(root *os.Root, name string) (childTreeEntry, []byte, error) 
 }
 
 func childFileMatches(value childTreeEntry, data []byte, expected childTreeEntry, content []byte) bool {
-	return value.mode == expected.mode && bytes.Equal(data, content)
+	// Windows reports no POSIX execute bits; the index retains that Git mode.
+	sameMode := value.mode == expected.mode ||
+		(runtime.GOOS == "windows" && value.mode == "100644" && expected.mode == "100755")
+	return sameMode && bytes.Equal(data, content)
 }
 
 func checkChildFiles(root *os.Root, changes []childFileChange, retry bool) error {
@@ -301,5 +305,9 @@ func syncChildDirectory(root *os.Root, name string) error {
 		return err
 	}
 	defer func() { _ = dir.Close() }()
+	// Match durability.SyncDir: Windows cannot flush directory handles.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	return dir.Sync()
 }

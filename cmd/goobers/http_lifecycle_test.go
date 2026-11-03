@@ -77,7 +77,7 @@ func startUpOnFreeLoopback(t *testing.T, pickAddress func(*testing.T) string, pr
 		address := pickAddress(t)
 		root := prepare(address)
 		ctx, cancel := context.WithCancel(context.Background())
-		started := &daemonStartedWriter{started: make(chan struct{})}
+		started := newDaemonOutput()
 		stderr := &bytes.Buffer{}
 		done := make(chan int, 1)
 		go func() {
@@ -88,14 +88,21 @@ func startUpOnFreeLoopback(t *testing.T, pickAddress func(*testing.T) string, pr
 			return loopbackDaemon{root: root, address: address, cancel: cancel, done: done, stderr: stderr}
 		case code := <-done:
 			cancel()
-			if attempt < loopbackBindAttempts && strings.Contains(stderr.String(), "address already in use") {
+			collision := strings.Contains(stderr.String(), "address already in use") ||
+				strings.Contains(stderr.String(), "Only one usage of each socket address")
+			if attempt < loopbackBindAttempts && collision {
 				t.Logf("daemon startup attempt %d lost %s to another socket; retrying on a fresh address", attempt, address)
 				continue
 			}
-			t.Fatalf("daemon exited before startup: code = %d, stderr = %q", code, stderr.String())
-		case <-time.After(10 * time.Second):
+			t.Fatalf("daemon exited before startup: code = %d, stdout = %q, stderr = %q", code, started.String(), stderr.String())
+		case <-time.After(suiteRunWaitTimeout):
 			cancel()
-			t.Fatal("timed out waiting for daemon startup")
+			select {
+			case code := <-done:
+				t.Fatalf("timed out waiting for daemon startup: canceled daemon exit = %d, stdout = %q, stderr = %q", code, started.String(), stderr.String())
+			case <-time.After(30 * time.Second):
+				t.Fatalf("timed out waiting for daemon startup and canceled daemon did not stop: stdout = %q", started.String())
+			}
 		}
 	}
 }

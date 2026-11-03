@@ -48,6 +48,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
+	"path/filepath"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -184,6 +186,21 @@ func verifyMaterializedPointer(runsDir string, cp apiv1.ContextPointer, taskID, 
 	case err == nil:
 		return nil
 	case errors.Is(err, fs.ErrNotExist):
+		// Windows also reports a missing path when an ancestor is a file.
+		for parent := filepath.Dir(ref.Path); ; parent = filepath.Dir(parent) {
+			info, statErr := os.Stat(filepath.Join(runsDir, parent))
+			if statErr == nil {
+				if !info.IsDir() {
+					return fmt.Errorf("%w: pointer %q for stage %s has a non-directory staging ancestor %q",
+						errContextStagingUnreadable, cp.Name, taskID, parent)
+				}
+				break
+			}
+			if parent == "." || !errors.Is(statErr, fs.ErrNotExist) {
+				return fmt.Errorf("%w: pointer %q for stage %s: %w",
+					errContextStagingUnreadable, cp.Name, taskID, statErr)
+			}
+		}
 		return fmt.Errorf("%w: pointer %q (digest %s, journal path %s) for stage %s was not found in %s",
 			errContextBlobMissing, cp.Name, ref.Digest, ref.Path, taskID, plane)
 	case errors.Is(err, apiv1.ErrPathEscape), errors.Is(err, apiv1.ErrSymlinkEscape):

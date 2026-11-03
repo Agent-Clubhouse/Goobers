@@ -146,6 +146,10 @@ func preflightVersionFixture(req harness.ProcessRequest, exit int) (harness.Proc
 // harness fails preflight (fail closed), a healthy one passes, and a
 // deterministic-only workflow preflights no harness at all.
 func TestPreflightAgenticHarnesses(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	orig := runtimewiring.HarnessAdapterFor
 	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
@@ -159,7 +163,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 
 	// Unusable harness (its version check exits non-zero) → fail closed.
 	runtimewiring.HarnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
+		return &harness.CopilotAdapter{Command: []string{executable}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
 	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
@@ -174,7 +178,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	var gotEnvironment harness.EnvironmentConfig
 	runtimewiring.HarnessAdapterFor = func(_ apiv1.Harness, environment harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		gotEnvironment = environment
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
+		return &harness.CopilotAdapter{Command: []string{executable}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
 	environment := harness.EnvironmentConfig{
 		ExtraAllowlist: []string{"CLAUDE_CONFIG_DIR"},
@@ -248,6 +252,10 @@ func TestAdapterForConfiguresAuthProbe(t *testing.T) {
 // startup path ran only the version check, so this signed-out harness passed
 // preflight and failed later, mid-run.
 func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	orig := runtimewiring.HarnessAdapterFor
 	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
@@ -261,12 +269,12 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 	// probe actually runs during the startup preflight.
 	runtimewiring.HarnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
-			Command:       []string{"echo"},
+			Command:       []string{executable},
 			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	_, err := runtimewiring.PreflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil)
+	_, err = runtimewiring.PreflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}
@@ -334,9 +342,13 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 		t.Fatal("expected a resolver for the configured agent:model grant")
 	}
 
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := &fileRefPreflightRunner{}
 	adapter := &harness.CopilotAdapter{
-		Command:         []string{"echo"},
+		Command:         []string{executable},
 		AuthCheckArgs:   []string{"auth", "status"},
 		Runner:          runner,
 		ModelCredential: resolve,
@@ -368,6 +380,10 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 //
 // The preflight must ask for the credential PER HARNESS.
 func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	orig := runtimewiring.HarnessAdapterFor
 	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
@@ -378,7 +394,7 @@ func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
 			token, _ = credential(context.Background())
 		}
 		sawCredential = append(sawCredential, token)
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{}}, nil
+		return &harness.CopilotAdapter{Command: []string{executable}, Runner: &harnessFakeRunner{}}, nil
 	}
 
 	goobers := map[string]apiv1.GooberSpec{

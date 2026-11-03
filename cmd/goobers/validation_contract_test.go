@@ -73,7 +73,7 @@ func TestWS001RemainsStrictNeutralInValidateAndLintJSON(t *testing.T) {
 		replaceInFile(t, gagglePath, "your-org", "acme")
 		replaceInFile(t, gagglePath, "your-repo", "widgets")
 	}
-	replaceInFile(t, workflowPath, `command: ["true"]`, `command: ["go", "test", "./..."]`)
+	replaceInFile(t, workflowPath, portableWorkflowCommands(t, `command: ["true"]`), `command: ["go", "test", "./..."]`)
 
 	for _, command := range []string{"validate", "lint"} {
 		t.Run(command, func(t *testing.T) {

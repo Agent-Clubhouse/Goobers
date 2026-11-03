@@ -119,22 +119,21 @@ func TestUpPinsExecutionGenerationAcrossReloadAndRestart(t *testing.T) {
 				}
 			}
 			close(proceed)
-			waitForConfigValue(t, "pinned run completion", func() (journal.RunPhase, bool) {
-				dir, err := l.FindRunDir(runID)
-				if err != nil {
-					return "", false
+			dir, err := l.FindRunDir(runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			phase, err := waitForRunTerminal(t.Context(), filepath.Dir(dir), runID)
+			if err != nil || phase != journal.PhaseCompleted {
+				reader, readErr := journal.OpenRead(dir)
+				if readErr != nil {
+					t.Logf("read completion diagnostics: %v", readErr)
+				} else {
+					events, eventsErr := reader.Events()
+					t.Logf("completion events=%+v err=%v", events, eventsErr)
 				}
-				reader, err := journal.OpenRead(dir)
-				if err != nil {
-					return "", false
-				}
-				phase, err := reader.Phase()
-				if err == nil && phase.IsTerminal() && phase != journal.PhaseCompleted {
-					events, _ := reader.Events()
-					t.Fatalf("run ended %s: %+v", phase, events)
-				}
-				return phase, err == nil && phase == journal.PhaseCompleted
-			})
+				t.Fatalf("pinned run completion: phase=%s err=%v", phase, err)
+			}
 			stop()
 		})
 	}
@@ -145,7 +144,7 @@ func waitGenerationGate(t *testing.T, entered <-chan harness.RunRequest, l insta
 	select {
 	case req := <-entered:
 		return req
-	case <-time.After(20 * time.Second):
+	case <-time.After(suiteRunWaitTimeout):
 		dir, _ := l.FindRunDir(runID)
 		if reader, err := journal.OpenRead(dir); err == nil {
 			events, _ := reader.Events()
@@ -193,7 +192,7 @@ func startGenerationTestDaemon(t *testing.T, root string, options ...string) fun
 		stopped = true
 		cancel()
 		t.Fatalf("startup code=%d stdout=%s stderr=%s", code, output.String(), diagnostics.String())
-	case <-time.After(30 * time.Second):
+	case <-time.After(suiteRunWaitTimeout):
 		t.Fatalf("startup timed out: %s %s", output.String(), diagnostics.String())
 	}
 	return stop

@@ -72,7 +72,7 @@ spec:
 `, trigger, command, next)
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, workflow)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "goobers")); err != nil {

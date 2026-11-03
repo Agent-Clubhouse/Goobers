@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +32,8 @@ func applicationFixture(t *testing.T, action ChildDisposition) (string, ChildApp
 	if err := os.Chmod(filepath.Join(child, "nested/child.bin"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	recoveryTestGit(t, child, "add", "nested/child.bin")
+	recoveryTestGit(t, child, "update-index", "--chmod=+x", "nested/child.bin")
 	childSnapshotWrite(t, child, "ignored.out", "tracked ignored child file")
 	recoveryTestGit(t, child, "add", "--force", "ignored.out")
 	if err := os.Remove(filepath.Join(child, "deleted.txt")); err != nil {
@@ -89,8 +93,12 @@ func TestIntegrationChildApplicationActionsPreserveProtectedState(t *testing.T) 
 			if data, _ := os.ReadFile(filepath.Join(repo, "nested/child.bin")); string(data) != "\x00\xff\x01" {
 				t.Fatal("binary output changed")
 			}
-			if info, err := os.Stat(filepath.Join(repo, "nested/child.bin")); err != nil || info.Mode().Perm()&0111 == 0 {
+			if info, err := os.Stat(filepath.Join(repo, "nested/child.bin")); err != nil ||
+				(runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) {
 				t.Fatal("child executable mode lost")
+			}
+			if mode := recoveryTestGit(t, repo, "ls-files", "--stage", "nested/child.bin"); !strings.HasPrefix(mode, "100755 ") {
+				t.Fatalf("child executable Git mode lost: %s", mode)
 			}
 			if flags := recoveryTestGit(t, repo, "ls-files", "-v", ".gitignore"); flags != "h .gitignore" {
 				t.Fatal("unrelated index flags changed", flags)

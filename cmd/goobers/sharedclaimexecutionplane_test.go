@@ -98,10 +98,12 @@ func TestDispatchExecSharedDeadlineStopsActualStageProcess(t *testing.T) {
 	t.Setenv(dispatcher.EnvAttempt, "1")
 	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
 	t.Setenv(dispatcher.EnvPodToken, "parent-only")
-	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","sleep 10; echo executed-after-expiry"]`)
+	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","echo started; sleep 10; echo executed-after-expiry"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "20s")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// Allow the Windows advisory and post-stage custody work to finish.
+	// The command's ten-second write still detects a failed lease fence.
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	if code := runDispatchExecContext(ctx, &stdout, &stderr); code != 0 {
@@ -113,10 +115,10 @@ func TestDispatchExecSharedDeadlineStopsActualStageProcess(t *testing.T) {
 			t.Fatalf("lease loss became a successful result: %+v", result)
 		}
 	case <-ctx.Done():
-		t.Fatal("lease loss was not surrendered")
+		t.Fatalf("lease loss was not surrendered: %s", stderr.String())
 	}
-	if stdout.Len() != 0 || ctx.Err() != nil {
-		t.Fatalf("process outlived lease fencing: stdout=%s ctx=%v", stdout.String(), ctx.Err())
+	if strings.TrimSpace(stdout.String()) != "started" || ctx.Err() != nil {
+		t.Fatalf("process outlived lease fencing: stdout=%s ctx=%v stderr=%s", stdout.String(), ctx.Err(), stderr.String())
 	}
 }
 

@@ -328,7 +328,7 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	}
 
 	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
-	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reconciled-implement", 1)
+	valid := portableWorkflowCommands(t, strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reconciled-implement", 1))
 	if err := os.WriteFile(workflowPath, []byte(valid), 0o644); err != nil {
 		t.Fatal(err)
 	}

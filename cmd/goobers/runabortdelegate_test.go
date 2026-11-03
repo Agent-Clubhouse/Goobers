@@ -44,7 +44,7 @@ spec:
       goal: run a slow no-op local command so the run stays live long enough
         to abort while it is in flight
       run:
-        command: ["sleep", "5"]
+        command: ["sh", "-c", "sleep 5"]
 `
 
 // initSlowDeterministicDemo is initDeterministicDemo (daemon_test.go), but

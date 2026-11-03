@@ -145,7 +145,7 @@ func initAcceptanceDemo(t *testing.T) string {
 	if err := os.RemoveAll(filepath.Join(gaggleDir, "goobers")); err != nil {
 		t.Fatal(err)
 	}
-	writeFixture(t, filepath.Join(gaggleDir, "workflows", "acceptance.yaml"), acceptanceWorkflowYAML)
+	writeFixture(t, filepath.Join(gaggleDir, "workflows", "acceptance.yaml"), portableWorkflowCommands(t, acceptanceWorkflowYAML))
 	for _, g := range []struct {
 		name, role string
 		caps       []string
@@ -273,7 +273,9 @@ func TestAcceptanceAgenticLoopViaCLI(t *testing.T) {
 
 	code, stdout, stderr := runArgs(t, "run", "acceptance", root)
 	if code != 0 {
-		t.Fatalf("goobers run acceptance: code = %d, stderr = %q", code, stderr)
+		_, trace, traceErr := runArgs(t, "trace", runIDFromRunStdout(t, stdout), root)
+		t.Logf("failed run trace:\n%s\n%s", trace, traceErr)
+		t.Fatalf("goobers run acceptance: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "phase=completed") {
 		t.Fatalf("expected the real runner to complete the agentic loop via the CLI, stdout = %q", stdout)

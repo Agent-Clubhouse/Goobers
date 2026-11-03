@@ -211,14 +211,14 @@ func sweepDelegateRequests[Req, Resp any](
 			continue
 		}
 		requestID := strings.TrimSuffix(entry.Name(), cfg.requestSuffix)
-		data, err := os.ReadFile(path)
+		data, err := durability.ReadFile(path)
 		if err != nil {
 			if !os.IsNotExist(err) {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("%s: read request %s: %w", cfg.errorPrefix, requestID, err))
 			}
 			continue
 		}
-		if err := os.Remove(path); err != nil {
+		if err := durability.RemoveFile(path); err != nil {
 			if !os.IsNotExist(err) {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("%s: consume request %s: %w", cfg.errorPrefix, requestID, err))
 			}

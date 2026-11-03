@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -365,7 +366,7 @@ func TestPodContextMaterializationRefusesAPointerThatEscapesTheStagingRoot(t *te
 			if !errors.Is(gotErr, apiv1.ErrPathEscape) {
 				t.Errorf("error = %v, want it to carry the contract's own ErrPathEscape", gotErr)
 			}
-			for _, want := range []string{"implement.artifact[0]", tc.path, "review"} {
+			for _, want := range []string{"implement.artifact[0]", strconv.Quote(tc.path), "review"} {
 				if !strings.Contains(gotErr.Error(), want) {
 					t.Errorf("error %q does not name %q", gotErr.Error(), want)
 				}

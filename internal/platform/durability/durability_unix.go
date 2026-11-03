@@ -8,6 +8,11 @@ import (
 	"syscall"
 )
 
+// ReadFile reads a published file. Only Windows needs contention retries.
+func ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
 // ReplaceFile atomically replaces destination with source.
 func ReplaceFile(source, destination string) error {
 	return os.Rename(source, destination)

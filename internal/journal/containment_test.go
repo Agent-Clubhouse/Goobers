@@ -2,10 +2,36 @@ package journal
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestContainedExistingBlobPathGeneratedRunID(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "demo", "runs", "8c59ca06644d959d4a419f51e88b3143")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "blob")
+	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reader := &Reader{dir: dir}
+	ref := Ref{Path: "blob", Digest: Digest([]byte("content"))}
+	for _, limit := range []int64{0, -1, 7, math.MaxInt64} {
+		data, err := reader.ArtifactBytesBounded(ref, limit)
+		if err != nil || string(data) != "content" {
+			t.Fatalf("ArtifactBytesBounded(%d) = %q, %v", limit, data, err)
+		}
+	}
+	if _, err := reader.ArtifactBytesBounded(ref, 6); err == nil {
+		t.Fatal("accepted content larger than the byte limit")
+	}
+	if _, err := reader.ArtifactBytes(Ref{Path: ".", Digest: Digest(nil)}); err == nil {
+		t.Fatal("accepted a directory as an artifact")
+	}
+}
 
 // TestCreateRejectsTraversalRunID is #244's table-driven acceptance test for
 // journal.Create: a run id that isn't a single, safe path segment must be

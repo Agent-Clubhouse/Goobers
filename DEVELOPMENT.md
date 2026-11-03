@@ -56,6 +56,38 @@ Use the smallest relevant command while iterating, then run the validation tier
 required by [CONTRIBUTING.md](CONTRIBUTING.md#validation-tier-contract) before
 opening a pull request.
 
+CLI workflow fixtures use the test executable for successful and failing no-op
+stages instead of requiring Unix `true` and `false` commands. Keep new fixtures
+portable with `portableWorkflowCommands`. Windows file-request tests also hold
+real read and delete locks to check that brief contention is retried and a
+request is consumed before it runs.
+
+Run compiled CLI test binaries from `cmd/goobers`, matching `go test`'s working
+directory. Put Go and the C compiler on `PATH`, set `CC` to that compiler, and set
+`CGO_ENABLED=1` for race checks. Tests that invoke Go need it on `PATH` even when
+the test runner itself uses an absolute Go executable path.
+
+Generation restart fixtures use the shared CLI wait budget for startup. A
+restart reconstructs pinned configuration before resuming the interrupted run;
+do not give that work a shorter fixed timeout than the rest of the suite.
+
+CLI tests isolate inherited Git configuration inside the test process. Supply
+test-specific Git settings explicitly rather than relying on a developer's
+global or system configuration.
+
+On Windows, keep Node workflow fixture workspaces short. Nested npm scripts add
+each ancestor's bin directory to `PATH`; exceeding cmd.exe's 8191-character limit
+can make an installed compiler appear missing. Use the supported workcopies root
+setting, while keeping the real npm install, build, and tests.
+
+Recovery Git commands explicitly enable long paths. Their private metadata can
+exceed Windows' normal path limit even when the checkout fits. Keep this setting
+on the command itself; do not rely on global Git configuration. Git also bounds
+`GIT_DIR` itself, so recovery uses a relative Git directory on the same Windows
+volume rather than passing the full metadata path in that environment variable.
+Compute that path for each command's working directory; restore deliberately
+switches to an isolated directory before applying a patch.
+
 ## Binaries
 
 The shipped product binary is `goobers`. It runs the local scheduler and runner

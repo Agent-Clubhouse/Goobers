@@ -468,6 +468,16 @@ func TestUpPreservesUncapturedTerminalOrphanAndKeepsMarkedWorktree(t *testing.T)
 		cancel()
 		select {
 		case <-daemonDone:
+			if t.Failed() {
+				t.Logf("startup cleanup stdout: %s\nstderr: %s", stdout.String(), stderr.String())
+				events, err := journal.ReadInstanceLog(l.SchedulerDir())
+				t.Logf("read startup cleanup journal: %v", err)
+				for _, event := range events {
+					if event.Error != nil {
+						t.Logf("startup cleanup event %s/%s: %+v", event.Type, event.RunID, event.Error)
+					}
+				}
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("runUpContext did not stop during cleanup")
 		}
@@ -481,6 +491,10 @@ func TestUpPreservesUncapturedTerminalOrphanAndKeepsMarkedWorktree(t *testing.T)
 	case <-time.After(30 * time.Second):
 		t.Fatal("runUpContext did not report daemon readiness")
 	}
+	waitForConfigValue(t, "startup terminal worktree cleanup", func() (error, bool) {
+		_, err := os.Stat(active.Path)
+		return err, os.IsNotExist(err)
+	})
 	cancel()
 	select {
 	case code := <-daemonDone:

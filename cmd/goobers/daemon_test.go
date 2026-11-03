@@ -90,7 +90,7 @@ func runFixtureGit(t *testing.T, dir string, args ...string) {
 // default-implement workflow with a deterministic-only one, so daemon/run
 // integration tests need neither a real Copilot CLI installation nor network
 // access — only a local git fixture (via the repoCloneURL test seam,
-// runnerwiring.go) and the `true` binary.
+// runnerwiring.go) and this test executable.
 const deterministicWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "2.0"
@@ -121,7 +121,7 @@ func initDeterministicDemo(t *testing.T) string {
 	root := initDemo(t)
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	if err := os.WriteFile(workflowPath, []byte(deterministicWorkflowYAML), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, deterministicWorkflowYAML)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "goobers")); err != nil {
@@ -252,7 +252,7 @@ credentials:
 	if workflowYAML == deterministicWorkflowYAML {
 		t.Fatal("deterministic workflow fixture did not contain expected terminal task")
 	}
-	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, workflowYAML)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -314,7 +314,7 @@ func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflowYAML := strings.Replace(deterministicWorkflowYAML, "      type: deterministic\n", "      type: deterministic\n      capabilities: [\"repo:push\"]\n", 1)
-	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, workflowYAML)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -400,7 +400,7 @@ spec:
       join: finish
 `
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	if err := os.WriteFile(workflowPath, []byte(parallelWorkflowYAML), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, parallelWorkflowYAML)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1160,7 +1160,7 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 	if scheduleless == deterministicWorkflowYAML {
 		t.Fatal("deterministic workflow fixture did not contain expected schedule trigger")
 	}
-	if err := os.WriteFile(workflowPath, []byte(scheduleless), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, scheduleless)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

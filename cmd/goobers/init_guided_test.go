@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -110,7 +111,7 @@ func TestGuidedInitUnsafeInstancePathShowsOverrideInvocation(t *testing.T) {
 		io.Discard,
 		&stderr,
 	)
-	want := `goobers init --guided --instance-path "` + target + `" --allow-ephemeral`
+	want := `goobers init --guided --instance-path ` + strconv.Quote(target) + ` --allow-ephemeral`
 	if code != 2 || !strings.Contains(stderr.String(), want) {
 		t.Fatalf("unsafe guided code=%d stderr=%q, want %q", code, stderr.String(), want)
 	}

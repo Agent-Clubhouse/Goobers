@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestManualRootBannerIdentifiesTargetAndFailsClosed(t *testing.T) {
 	if err := runtimewiring.PrepareManualRoot(layout, &banner); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(banner.String(), id) || !strings.Contains(banner.String(), runtimewiring.CanonicalStatusRoot(root)) {
+	if !strings.Contains(banner.String(), id) || !strings.Contains(banner.String(), strconv.Quote(runtimewiring.CanonicalStatusRoot(root))) {
 		t.Fatalf("wrong target: %s", banner.String())
 	}
 	if err := runtimewiring.PrepareManualRoot(layout, brokenRootBannerWriter{}); !errors.Is(err, io.ErrClosedPipe) {

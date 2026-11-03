@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func TestFleetJoinTokenFileAndLocalAdminGrant(t *testing.T) {
 		t.Fatalf("enrollment = %+v", enrollment)
 	}
 	id, err := instance.ReadRootIdentity(root)
-	if err != nil || !strings.Contains(stderr.String(), id) || !strings.Contains(stderr.String(), runtimewiring.CanonicalStatusRoot(root)) {
+	if err != nil || !strings.Contains(stderr.String(), id) || !strings.Contains(stderr.String(), strconv.Quote(runtimewiring.CanonicalStatusRoot(root))) {
 		t.Fatalf("enrollment target missing: %q %v", stderr.String(), err)
 	}
 	if strings.Contains(stdout.String(), "secret-grant") || strings.Contains(stderr.String(), "secret-grant") {

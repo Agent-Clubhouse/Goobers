@@ -285,8 +285,8 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 func TestValidateAllowsRepositoryFreeScratchOnlyGaggle(t *testing.T) {
 	withDemoNetworkNoneProbe(t, func(context.Context) error { return nil })
 	root := filepath.Join(t.TempDir(), "demo")
-	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
-		t.Fatalf("init --demo: code=%d stderr=%q", code, stderr)
+	if code, _, stderr := runArgs(t, "init", "--demo", "--insecure", root); code != 0 {
+		t.Fatalf("init --demo --insecure: code=%d stderr=%q", code, stderr)
 	}
 
 	code, stdout, stderr := runArgs(t, "validate", root)
@@ -522,7 +522,7 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 		replaceInFile(t, gagglePath, "your-repo", "widgets")
 	}
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	replaceInFile(t, workflowPath, `        command: ["true"]`, "        command: [\"true\"]\n      expectedOutputs:\n        - artifact")
+	replaceInFile(t, workflowPath, portableWorkflowCommands(t, `        command: ["true"]`), portableWorkflowCommands(t, "        command: [\"true\"]\n      expectedOutputs:\n        - artifact"))
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {

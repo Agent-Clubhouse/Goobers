@@ -20,6 +20,21 @@ type stubAtomicFile struct {
 	shortWrite bool
 }
 
+func TestReadFilePreservesContentsAndErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "request.json")
+	want := []byte("{\"value\":1}\n")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := ReadFile(path)
+	if err != nil || string(data) != string(want) {
+		t.Fatalf("ReadFile = %q, %v", data, err)
+	}
+	if _, err := ReadFile(path + ".missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file error = %v, want not exist", err)
+	}
+}
+
 func (f *stubAtomicFile) Name() string { return f.name }
 
 func (f *stubAtomicFile) Chmod(mode fs.FileMode) error {

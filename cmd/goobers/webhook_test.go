@@ -87,7 +87,7 @@ func TestUpDoesNotBindWebhookListenerWithoutWebhookTriggers(t *testing.T) {
 		"    - type: webhook\n      events: [issues]\n",
 		1,
 	)
-	if err := os.WriteFile(workflowPath, []byte(webhookWorkflow), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, webhookWorkflow)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	rejected := waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 1)
@@ -137,7 +137,7 @@ func TestUpSurfacesWebhookStartupFailure(t *testing.T) {
 		"    - type: webhook\n      events: [issues]\n",
 		1,
 	)
-	if err := os.WriteFile(workflowPath, []byte(webhookWorkflow), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, webhookWorkflow)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -204,7 +204,7 @@ func testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.
 		if webhookWorkflow == deterministicWorkflowYAML {
 			t.Fatal("deterministic workflow fixture did not contain expected schedule trigger")
 		}
-		if err := os.WriteFile(workflowPath, []byte(webhookWorkflow), 0o644); err != nil {
+		if err := os.WriteFile(workflowPath, []byte(portableWorkflowCommands(t, webhookWorkflow)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		configureWebhook(t, root, address, secretEnv)
@@ -243,6 +243,8 @@ func testUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.
 		t.Fatalf("wait for webhook run: %v", err)
 	}
 	if phase != journal.PhaseCompleted {
+		_, trace, traceErr := runArgs(t, "trace", "--json", runID, daemon.root)
+		t.Logf("failed webhook trace: %s\n%s", trace, traceErr)
 		t.Fatalf("webhook run phase = %s, want %s", phase, journal.PhaseCompleted)
 	}
 

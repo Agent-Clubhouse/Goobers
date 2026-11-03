@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -86,12 +87,16 @@ func TestRunDeclaredStageCommandFailureReportsExitCode(t *testing.T) {
 }
 
 func TestRunDeclaredStageScriptPath(t *testing.T) {
+	script, want := "echo from-script", "from-script\n"
+	if runtime.GOOS == "windows" {
+		script, want = "@echo off\r\necho from-script", "from-script\r\n"
+	}
 	t.Setenv(dispatcher.EnvStageCommand, "")
-	t.Setenv(dispatcher.EnvStageScript, "echo from-script")
+	t.Setenv(dispatcher.EnvStageScript, script)
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 
 	result := runDeclaredStage(context.Background(), io.Discard, io.Discard, nil)
-	if result.Status != apiv1.ResultSuccess || result.Outputs["stdout"] != "from-script\n" {
+	if result.Status != apiv1.ResultSuccess || result.Outputs["stdout"] != want {
 		t.Fatalf("result = %+v, want a successful script run", result)
 	}
 }
