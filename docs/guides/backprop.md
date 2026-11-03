@@ -75,6 +75,90 @@ threshold is not approval to change or disable a workflow.
 These gaps are tracked under the Backprop scopes epic
 ([#7121](https://github.com/Agent-Clubhouse/Goobers/issues/7121)).
 
+## Scoped verification evidence
+
+An explicitly opted-in **deterministic** checker adapter can publish scoped
+verification evidence. This integration does not install a prover, check a
+proof itself, or trust an agent's claim that its proof passed. A reviewed
+checker wrapper invokes the independent checker and writes one JSON report
+to stdout; ordinary logging belongs on stderr:
+
+```yaml
+tasks:
+  - name: verify
+    type: deterministic
+    run:
+      command: ["trusted-checker-wrapper"]
+    inputs:
+      verificationReport: "true"
+```
+
+`trusted-checker-wrapper` is a placeholder for an operator-supplied, reviewed
+adapter, not a shipped command. Keep the checker, specification, and execution
+policy outside agent-editable implementation/proof inputs. Independent checker
+execution is tracked in [#8313](https://github.com/Agent-Clubhouse/Goobers/issues/8313);
+model-checking Goobers itself is separate work in
+[#8314](https://github.com/Agent-Clubhouse/Goobers/issues/8314).
+
+The report contract (`goobers.dev/backprop/verification/v1`) is published in
+[`backprop-verification-v1.schema.json`](../../api/schemas/backprop-verification-v1.schema.json)
+and discoverable with `goobers schema backprop-verification-v1`:
+
+| Field | Meaning |
+|---|---|
+| `schema` | The report contract above. |
+| `property` | Bounded stable identifier for the property being checked. |
+| `subject` | SHA-256 content digest of the exact source/binary/input package checked. |
+| `specification` | SHA-256 content digest of the reviewed specification. |
+| `context` | SHA-256 content digest of a manifest pinning stable dependencies, semantics, bounds, and other execution assumptions. Subject-specific proof artifacts belong in `evidence`. |
+| `checker` | Object with `name`, `version`, and SHA-256 executable `digest`. |
+| `assumptions` | Explicit array of assumptions; use `[]` for none. Ordering is significant when comparing repair scopes. |
+| `outcome` | `proven`, `counterexample`, or `inconclusive`. |
+| `evidence` | Up to eight SHA-256 digests of recorded proof/checker/counterexample artifacts. Required for conclusive results. |
+| `reason` | Required explanation for an inconclusive result. |
+| `repairs` | Optional earlier `verification:<journal-sequence>` counterexample ID in the same run; allowed only on a proven result. |
+
+Subject, specification, context, and evidence artifacts must already be
+recorded in this run's journal, in the checker branch or root branch. The
+checker adapter must verify that the bytes it actually checked match these
+identities; Backprop checks recorded provenance, not checker semantics.
+Never set `counterexample` merely because proof search failed. Timeouts,
+unsupported constructs, or incomplete obligations are inconclusive unless a
+violation was independently established. Wrappers must not report `proven`
+for admitted obligations, unapproved assumptions, or a weakened specification.
+
+The executor captures fresh stdout and emits a runner-owned annotation only
+after a successful command result. Nonzero exits, cancellation, executor errors,
+and truncated output cannot become verification evidence. A valid report's
+`inconclusive` or `counterexample` outcome may accompany exit zero: that means
+the adapter completed, not that the property holds. Malformed or oversized
+reports fail the opted-in stage. Reports are limited to 16 KiB, 16 assumptions,
+eight evidence digests, and 128 reports per run; text fields are bounded and
+unknown fields are rejected.
+
+Backprop lists accepted-provenance reports in `attribution.verifications`,
+unresolved provenance in `attribution.unverifiedVerifications`, and malformed
+or excess reports in `attribution.droppedVerifications`. Each accepted report
+links `subjectNodeId` to the graph artifact it checked, identifies the
+checker stage/attempt/branch and stdout source, and records the successful
+stage completion sequence. Reports also appear in stage checkpoints and
+`goobers trace --json`; text traces summarize outcomes and repair links.
+The cohort dashboard and fault auditor do not use these results for scoring.
+
+`repairVerified: true` means a later proven result checked a **changed subject**
+with the same property, specification, context, checker, assumptions, and branch
+as an explicitly referenced, completed counterexample. An unmatched repair
+reference retains the independently reported outcome but has a `repairReason`
+and no verified repair flag. This is scoped repair evidence, not proof of causal
+blame, preservation of every behavior, or improvement on other tasks. It does
+not reproduce the old counterexample on the new subject. Cross-run repair
+matching is not supported.
+
+All results apply only to their pinned subject and scope. They do not prove
+the current checkout or an entire library correct, and must be rerun when bound
+inputs change. They never change credit scores, failure classes, gates,
+permissions, tests/CI requirements, or promotion decisions.
+
 ## Enable Backprop for a workflow
 
 Backprop requires `dslVersion` `"3.0"` or `"3.1"`. Both are **preview** DSL

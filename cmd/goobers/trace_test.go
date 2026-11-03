@@ -24,6 +24,32 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestTraceVerificationShowsScopeAndRepairLimits(t *testing.T) {
+	attribution := creditgraph.Attribution{
+		Verifications: []creditgraph.VerificationRecord{
+			{ID: "verification:4", RepairVerified: true, VerificationReport: creditgraph.VerificationReport{
+				Property: "roundtrip", Subject: "sha256:changed-subject", Outcome: creditgraph.VerificationProven, Repairs: "verification:1",
+			}},
+			{ID: "verification:8", RepairReason: "checker changed", VerificationReport: creditgraph.VerificationReport{
+				Property: "roundtrip", Subject: "sha256:other-subject", Outcome: creditgraph.VerificationProven, Repairs: "verification:1",
+			}},
+		},
+		UnverifiedVerifications: []creditgraph.VerificationRecord{{}},
+		DroppedVerifications:    2,
+	}
+	var output bytes.Buffer
+	printTraceAttributionSummary(&output, traceBackprop{record: &creditgraph.RunRecord{Attribution: attribution}})
+	for _, want := range []string{
+		"2 recorded, 1 unverified, 2 dropped", "not causal blame",
+		"roundtrip: proven (subject sha256:changed-subject)",
+		"scoped repair of verification:1", "repair unverified: checker changed",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("trace missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
 func TestFormatEventShowsLearningEpisodeAndFindingOutcomes(t *testing.T) {
 	injected := formatEvent(journal.Event{
 		Seq:  9,

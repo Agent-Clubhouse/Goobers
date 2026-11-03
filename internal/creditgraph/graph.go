@@ -121,6 +121,11 @@ type Graph struct {
 	// per-attempt or per-run bound.
 	DroppedClaims int `json:"droppedClaims,omitempty"`
 
+	// Verification evidence is independent of graph edges and credit scores.
+	Verifications           []VerificationRecord `json:"verifications,omitempty"`
+	UnverifiedVerifications []VerificationRecord `json:"unverifiedVerifications,omitempty"`
+	DroppedVerifications    int                  `json:"droppedVerifications,omitempty"`
+
 	index    map[string]int
 	children map[string][]int
 }
