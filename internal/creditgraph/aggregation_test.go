@@ -3,7 +3,9 @@ package creditgraph
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"testing"
+	"time"
 )
 
 func TestAggregateAttributionEvidencePreservesSignedScores(t *testing.T) {
@@ -202,6 +204,44 @@ func TestAggregateAttributionEvidencePreservesDistinctPaths(t *testing.T) {
 	}
 }
 
+func TestAggregateAttributionEvidenceGroupsRealProjectedRunsByStructuralPath(t *testing.T) {
+	observedAt := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	observations := []AttributionObservation{
+		attributedObservation(t, "run-a", "implementation", failedStage{
+			stage: "verify", status: "failure", failedTool: true,
+		}, observedAt),
+		attributedObservation(t, "run-b", "implementation", failedStage{
+			stage: "verify", status: "failure", failedTool: true,
+		}, observedAt.Add(time.Minute)),
+	}
+
+	got := AggregateAttributionEvidence(observations)
+	if len(got) != 1 {
+		t.Fatalf("cohorts = %+v, want one cohort", got)
+	}
+	if len(got[0].TopContributingPaths) == 0 {
+		t.Fatal("real projected runs produced no contributing paths")
+	}
+	for _, path := range got[0].TopContributingPaths {
+		if slices.Contains(path.Nodes, "run:run-a") || slices.Contains(path.Nodes, "run:run-b") {
+			t.Fatalf("aggregate path retains run identity: %v", path.Nodes)
+		}
+		if slices.Contains(path.Nodes, "stage:verify#1") {
+			t.Fatalf("aggregate path retains stage occurrence: %v", path.Nodes)
+		}
+		if !slices.Contains(path.Nodes, "run") || !slices.Contains(path.Nodes, "stage:verify") {
+			t.Fatalf("aggregate path = %v, want stable run and verify-stage identity", path.Nodes)
+		}
+		runEvidence := map[string]bool{}
+		for _, link := range path.Evidence {
+			runEvidence[link.RunID] = true
+		}
+		if !runEvidence["run-a"] || !runEvidence["run-b"] {
+			t.Fatalf("path evidence = %+v, want exact links from both runs", path.Evidence)
+		}
+	}
+}
+
 func TestAggregateAttributionEvidenceGroupsByVersionAndWorkload(t *testing.T) {
 	obs := []AttributionObservation{
 		{RunID: "run-1", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
@@ -352,8 +392,8 @@ func TestAggregateAttributionEvidencePrefersConcreteMutationPaths(t *testing.T) 
 		t.Fatalf("cohorts = %+v, want one surfaced concrete path", got)
 	}
 	path := got[0].TopContributingPaths[0]
-	if lastNode(path.Nodes) != "model:root@sha256:span#1" {
-		t.Fatalf("top path = %+v, want span-scoped concrete node ahead of structural stage path", path)
+	if lastNode(path.Nodes) != "model" {
+		t.Fatalf("top path = %+v, want stable model node ahead of structural stage path", path)
 	}
 	if len(path.Evidence) != 1 || path.Evidence[0].ArtifactDigest == "" {
 		t.Fatalf("top path evidence = %+v, want exact artifact-backed evidence", path.Evidence)

@@ -113,7 +113,8 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				if !surfaceContributionPath(contribution) {
 					continue
 				}
-				pathNodes := contributionPath(contribution)
+				rawPathNodes := contributionPath(contribution)
+				pathNodes := aggregateContributionPath(observation.Attribution, contribution)
 				if len(pathNodes) == 0 {
 					continue
 				}
@@ -132,7 +133,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
 					observation,
-					lastNode(pathNodes),
+					lastNode(rawPathNodes),
 					contribution.Stage,
 					detail,
 					"contribution",
@@ -249,10 +250,68 @@ func contributionPath(contribution Contribution) []string {
 	return []string{contribution.NodeID}
 }
 
+func aggregateContributionPath(attribution Attribution, contribution Contribution) []string {
+	path := contributionPath(contribution)
+	if len(path) == 0 {
+		return nil
+	}
+	contributions := make(map[string]Contribution, len(attribution.Contributions))
+	for _, candidate := range attribution.Contributions {
+		contributions[candidate.NodeID] = candidate
+	}
+	stable := make([]string, 0, len(path))
+	for _, nodeID := range path {
+		candidate, ok := contributions[nodeID]
+		if !ok {
+			stable = append(stable, nodeID)
+			continue
+		}
+		stable = append(stable, aggregateNodeIdentity(candidate))
+	}
+	return stable
+}
+
+func aggregateNodeIdentity(contribution Contribution) string {
+	label := strings.TrimSpace(contribution.Label)
+	switch contribution.Kind {
+	case KindOutcome:
+		return string(KindOutcome)
+	case KindRun:
+		return string(KindRun)
+	case KindStage:
+		if label == "" {
+			label = strings.TrimSpace(contribution.Stage)
+		}
+		return labeledNodeIdentity(KindStage, label)
+	case KindSubagent:
+		if label == "" {
+			return contribution.NodeID
+		}
+		return labeledNodeIdentity(KindSubagent, label)
+	case KindModelInvocation:
+		return labeledNodeIdentity("model", label)
+	case KindToolCall:
+		return labeledNodeIdentity("toolcall", label)
+	case KindToolResult:
+		return string(KindToolResult)
+	case KindTool, KindEvidence, KindEvaluator, KindRuntime, KindEnvironment:
+		return labeledNodeIdentity(contribution.Kind, label)
+	default:
+		return contribution.NodeID
+	}
+}
+
+func labeledNodeIdentity(kind NodeKind, label string) string {
+	if label == "" {
+		return string(kind)
+	}
+	return string(kind) + ":" + label
+}
+
 func observationEvidence(observation AttributionObservation, nodeID, stage, detail, source string) []AttributionEvidenceLink {
 	var matches []AttributionEvidenceLink
 	for _, link := range observation.Evidence {
-		if link.Source != source || link.Detail != detail {
+		if link.Source != source || (source != "contribution" && link.Detail != detail) {
 			continue
 		}
 		if strings.TrimSpace(nodeID) != "" && link.NodeID != nodeID {
