@@ -17,14 +17,15 @@ import (
 )
 
 func TestIntegrationVerificationCheckerPublication(t *testing.T) {
-	command := []string{"sh", "-c", "cat report.json"}
-	failureCommand := []string{"sh", "-c", "cat report.json; exit 7"}
+	testdep.RequireEnv(t, "PATH")
+	command := []string{"sh", "-c", `IFS= read -r report < report.json; printf '%s' "$report"`}
+	failureCommand := []string{"sh", "-c", `IFS= read -r report < report.json; printf '%s' "$report"; exit 7`}
 	if runtime.GOOS == "windows" {
 		testdep.Require(t, "powershell.exe")
 		command = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Content -Raw -LiteralPath report.json"}
 		failureCommand = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Content -Raw -LiteralPath report.json; exit 7"}
 	} else {
-		testdep.Require(t, "sh", "cat")
+		testdep.Require(t, "sh")
 	}
 	for _, test := range []struct {
 		name    string
