@@ -9,17 +9,125 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	apimetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry/onecollector"
 )
+
+func TestOneCollectorMetricTemporality(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		kind metric.InstrumentKind
+		want metricdata.Temporality
+	}{
+		{"counter", metric.InstrumentKindCounter, metricdata.DeltaTemporality},
+		{"observable counter", metric.InstrumentKindObservableCounter, metricdata.DeltaTemporality},
+		{"histogram", metric.InstrumentKindHistogram, metricdata.DeltaTemporality},
+		{"up down counter", metric.InstrumentKindUpDownCounter, metricdata.CumulativeTemporality},
+		{"observable up down counter", metric.InstrumentKindObservableUpDownCounter, metricdata.CumulativeTemporality},
+		{"gauge", metric.InstrumentKindGauge, metric.DefaultTemporalitySelector(metric.InstrumentKindGauge)},
+		{"observable gauge", metric.InstrumentKindObservableGauge, metric.DefaultTemporalitySelector(metric.InstrumentKindObservableGauge)},
+		{"unknown", metric.InstrumentKind(255), metric.DefaultTemporalitySelector(metric.InstrumentKind(255))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (collectorMetricExporter{}).Temporality(tt.kind); got != tt.want {
+				t.Fatalf("temporality = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOneCollectorUpDownCountersCumulativeProjection(t *testing.T) {
+	const observableName = "synthetic.observable.active"
+	mapping := syntheticMapping("metric")
+	mapping.Match = map[string][]string{
+		"metric.name":        {MetricWorkActive, observableName},
+		"metric.unit":        {"{span}"},
+		"metric.kind":        {"sum"},
+		"metric.temporality": {"cumulative"},
+	}
+	mapping.Fields["name"] = onecollector.Field{Source: "metric.name"}
+	mapping.Fields["temporality"] = onecollector.Field{Source: "metric.temporality"}
+	mapping.Fields["monotonic"] = onecollector.Field{Source: "metric.monotonic"}
+	var mu sync.Mutex
+	values := make(map[string][]int64)
+	cfg := collectorFixture(t, []onecollector.Mapping{mapping}, func(w http.ResponseWriter, r *http.Request) {
+		decoder := json.NewDecoder(r.Body)
+		for decoder.More() {
+			var envelope struct {
+				Data struct {
+					Name        string `json:"name"`
+					Value       int64  `json:"value"`
+					Temporality string `json:"temporality"`
+					Monotonic   bool   `json:"monotonic"`
+				} `json:"data"`
+			}
+			if err := decoder.Decode(&envelope); err != nil {
+				t.Error(err)
+				break
+			}
+			if envelope.Data.Temporality != "cumulative" || envelope.Data.Monotonic {
+				t.Errorf("invalid up/down counter projection: %+v", envelope.Data)
+			}
+			mu.Lock()
+			values[envelope.Data.Name] = append(values[envelope.Data.Name], envelope.Data.Value)
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	client, err := New(t.Context(), Config{OneCollector: &cfg, NoDefaultExporter: true, MetricExportInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	_, err = client.meterProvider.Meter("synthetic").Int64ObservableUpDownCounter(observableName,
+		apimetric.WithUnit("{span}"),
+		apimetric.WithInt64Callback(func(_ context.Context, observer apimetric.Int64Observer) error {
+			observer.Observe(3)
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span, err := client.StartRun(t.Context(), RunAttributes{Gaggle: "synthetic", WorkflowID: "synthetic", RunID: testRunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := client.Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	span.Complete(OutcomeSuccess, false)
+	if err := client.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(values[MetricWorkActive], []int64{1, 1, 0}) {
+		t.Fatalf("active work = %v, want [1 1 0]", values[MetricWorkActive])
+	}
+	if !slices.Equal(values[observableName], []int64{3, 3, 3}) {
+		t.Fatalf("observable active = %v, want [3 3 3]", values[observableName])
+	}
+}
 
 func TestOneCollectorExplicitDeliveryStatusScrubbingAndNoRetry(t *testing.T) {
 	for _, status := range []int{202, 302, 503} {

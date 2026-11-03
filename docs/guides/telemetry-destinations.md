@@ -82,6 +82,8 @@ Complex attribute values retain serialized OTLP wrappers; companion type keys
 use the final projected key. Other facts include `metric.value`, `metric.unit`,
 `metric.kind`, `metric.temporality`, `metric.monotonic` for sums, decimal-string
 `metric.start_time_unix_nano`/`metric.time_unix_nano`, and resource/scope metadata.
+Monotonic counters and histograms use delta temporality. Up/down counters remain
+cumulative, so active-work totals survive repeated collection.
 
 The in-process queue is limited to 1,024 records and 8 MiB, including in-flight
 reservations. Native trace records are limited to 2 MiB; an oversized span does

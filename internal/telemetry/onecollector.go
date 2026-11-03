@@ -465,8 +465,13 @@ func (c *Client) startOneCollectorFlush(ctx context.Context) func() {
 	}
 }
 
-func (e collectorMetricExporter) Temporality(metric.InstrumentKind) metricdata.Temporality {
-	return metricdata.DeltaTemporality
+func (e collectorMetricExporter) Temporality(kind metric.InstrumentKind) metricdata.Temporality {
+	switch kind {
+	case metric.InstrumentKindCounter, metric.InstrumentKindObservableCounter, metric.InstrumentKindHistogram:
+		return metricdata.DeltaTemporality
+	default:
+		return metric.DefaultTemporalitySelector(kind)
+	}
 }
 func (e collectorMetricExporter) Aggregation(kind metric.InstrumentKind) metric.Aggregation {
 	return metric.DefaultAggregationSelector(kind)
