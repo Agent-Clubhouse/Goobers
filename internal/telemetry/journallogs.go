@@ -233,6 +233,9 @@ func (e journalLogFanoutExporter) Shutdown(ctx context.Context) error {
 // Commit only copies into a bounded queue. It never exports or logs while the
 // caller holds a journal lock. The journal remains authoritative on overload.
 func (c *Client) Commit(event journal.CommittedEvent) {
+	if c != nil && c.oneCollector != nil && c.oneCollector.cfg.Profile.HasSignal("journal") {
+		c.oneCollector.offer(collectorItem{signal: "journal", raw: event.Body, event: event})
+	}
 	if c != nil {
 		for _, destination := range c.journalDestinations {
 			destination.Commit(event)
@@ -250,6 +253,15 @@ func (c *Client) Commit(event journal.CommittedEvent) {
 // JournalLogsEnabled reports whether the client has a live journal Logs queue.
 // Disabled, degraded, nil, and shutting-down clients return false.
 func (c *Client) JournalLogsEnabled() bool {
+	if c != nil && c.oneCollector != nil && c.oneCollector.cfg.Profile.HasSignal("journal") {
+		p := c.oneCollector
+		p.mu.Lock()
+		live := !p.stopping
+		p.mu.Unlock()
+		if live {
+			return true
+		}
+	}
 	if c != nil {
 		for _, destination := range c.journalDestinations {
 			if destination.JournalLogsEnabled() {

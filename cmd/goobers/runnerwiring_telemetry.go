@@ -44,6 +44,13 @@ func buildTelemetryClient(
 	// Carry it on every signal as a resource attribute so operators can correlate
 	// process restarts with the same customer-managed instance and its journals.
 	cfg.JournalInstanceID, cfg.ResourceAttributes = telemetryInstanceIdentities(l.Root)
+	collectorErr := runtimewiring.ConfigureOneCollector(ctx, &cfg, telemetryConfig.OneCollector, registry, stores)
+	if telemetryConfig.Enabled != nil && !*telemetryConfig.Enabled {
+		cfg.SpanExporter = nil
+		cfg.NoDefaultExporter = true
+		client, err := telemetry.New(ctx, cfg)
+		return client, errors.Join(collectorErr, err)
+	}
 	if telemetryConfig.OTLP != nil {
 		if err := runtimewiring.ConfigureOTLP(ctx, &cfg, *telemetryConfig.OTLP, registry, stores); err != nil {
 			return nil, err
@@ -61,5 +68,5 @@ func buildTelemetryClient(
 	// site for the degrade handling.
 	namedErr := runtimewiring.ConfigureNamedTelemetry(ctx, &cfg, telemetryConfig, l.Root, registry, stores, false)
 	client, err := telemetry.New(ctx, cfg)
-	return client, errors.Join(namedErr, err)
+	return client, errors.Join(collectorErr, namedErr, err)
 }

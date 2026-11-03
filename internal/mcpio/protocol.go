@@ -65,11 +65,26 @@ type toolDef struct {
 	InputSchema interface{} `json:"inputSchema"`
 }
 
+// DynamicTool describes an operator-configured tool using the standard transport.
+type DynamicTool struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+type DynamicResult struct {
+	Value   any
+	IsError bool
+}
+
 // Server speaks the MCP stdio JSON-RPC transport: newline-delimited JSON-RPC
 // requests on stdin, newline-delimited responses on stdout. It never buffers
 // more than one message and never talks to anything but Toolset.
 type Server struct {
-	tools *Toolset
+	tools        *Toolset
+	dynamicName  string
+	dynamicTools []toolDef
+	dynamicCall  func(string, json.RawMessage) (any, error)
 	// loggedNegotiation makes the negotiated-version log line once-per-session
 	// rather than once-per-initialize, since a client is free to retry.
 	loggedNegotiation bool
@@ -78,6 +93,14 @@ type Server struct {
 // NewServer builds a Server over an already-constructed Toolset.
 func NewServer(tools *Toolset) *Server {
 	return &Server{tools: tools}
+}
+
+func NewDynamicServer(name string, tools []DynamicTool, call func(string, json.RawMessage) (any, error)) *Server {
+	server := &Server{dynamicName: name, dynamicCall: call}
+	for _, tool := range tools {
+		server.dynamicTools = append(server.dynamicTools, toolDef{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
+	}
+	return server
 }
 
 const maxFrameBytes = 16 * 1024 * 1024
@@ -117,11 +140,17 @@ func (s *Server) handleFrame(line []byte, oversized bool, stderr io.Writer) (rpc
 		err = json.Unmarshal(line, &req)
 	}
 	if err != nil {
+		if s.dynamicCall != nil && !oversized && json.Valid(line) {
+			return rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32600, Message: "invalid JSON-RPC request"}}, true
+		}
 		_, _ = fmt.Fprintf(stderr, "mcpio: invalid JSON-RPC line: %v\n", err)
 		return rpcResponse{
 			JSONRPC: "2.0", ID: json.RawMessage("null"),
 			Error: &rpcError{Code: -32700, Message: "Parse error"},
 		}, true
+	}
+	if s.dynamicCall != nil && (req.JSONRPC != "2.0" || req.Method == "") {
+		return rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32600, Message: "invalid JSON-RPC request"}}, true
 	}
 	return s.handle(req, stderr)
 }
@@ -173,6 +202,9 @@ func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\
 // never get a response on the wire.
 func (s *Server) handle(req rpcRequest, stderr io.Writer) (rpcResponse, bool) {
 	isNotification := len(req.ID) == 0
+	if s.dynamicCall != nil && isNotification {
+		return rpcResponse{}, false
+	}
 	switch req.Method {
 	case "initialize":
 		negotiated, rpcErr := negotiateProtocolVersion(req.Params)
@@ -180,16 +212,28 @@ func (s *Server) handle(req rpcRequest, stderr io.Writer) (rpcResponse, bool) {
 			return s.reply(req, nil, rpcErr), !isNotification
 		}
 		s.logNegotiation(stderr, negotiated)
+		name := "goobers-io"
+		if s.dynamicCall != nil {
+			name = s.dynamicName
+		}
 		return s.reply(req, map[string]interface{}{
 			"protocolVersion": negotiated.agreed,
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
-			"serverInfo":      map[string]interface{}{"name": "goobers-io", "version": "1"},
+			"serverInfo":      map[string]interface{}{"name": name, "version": "1"},
 		}, nil), !isNotification
 	case "notifications/initialized", "notifications/cancelled":
 		return rpcResponse{}, false
 	case "tools/list":
 		return s.reply(req, map[string]interface{}{"tools": s.toolDefs()}, nil), !isNotification
 	case "tools/call":
+		if s.dynamicCall != nil {
+			decoder := json.NewDecoder(strings.NewReader(string(req.Params)))
+			decoder.DisallowUnknownFields()
+			var params toolCallParams
+			if err := decoder.Decode(&params); err != nil || params.Name == "" || len(params.Arguments) == 0 || params.Arguments[0] != '{' {
+				return s.reply(req, nil, &rpcError{Code: -32602, Message: "invalid tools/call params"}), !isNotification
+			}
+		}
 		result, err := s.callTool(req.Params)
 		if err != nil {
 			return s.reply(req, map[string]interface{}{
@@ -199,6 +243,9 @@ func (s *Server) handle(req rpcRequest, stderr io.Writer) (rpcResponse, bool) {
 		}
 		return s.reply(req, result, nil), !isNotification
 	default:
+		if s.dynamicCall != nil && req.Method == "ping" {
+			return s.reply(req, map[string]any{}, nil), !isNotification
+		}
 		if isNotification {
 			return rpcResponse{}, false
 		}
@@ -355,12 +402,31 @@ func (s *Server) reply(req rpcRequest, result interface{}, rpcErr *rpcError) rpc
 type toolCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Meta      json.RawMessage `json:"_meta,omitempty"`
 }
 
 func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 	var params toolCallParams
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, fmt.Errorf("invalid tools/call params: %w", err)
+	}
+	if s.dynamicCall != nil {
+		result, err := s.dynamicCall(params.Name, params.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		isError := false
+		if dynamic, ok := result.(DynamicResult); ok {
+			result = dynamic.Value
+			isError = dynamic.IsError
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			return nil, errors.New("cannot encode configured tool result")
+		}
+		response := textResult(string(data))
+		response["isError"] = isError
+		return response, nil
 	}
 	if isChildWorkflowTool(params.Name) {
 		return s.callChildWorkflowTool(params.Name, params.Arguments)

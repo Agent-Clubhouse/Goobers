@@ -1,0 +1,16 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY ONECOLLECTOR UPLOAD" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry onecollector upload \- validate or upload profile-defined JSON input
+.SH SYNOPSIS
+\fBgoobers telemetry onecollector upload\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry onecollector upload --profile-file PATH --input NAME [--validate-only]
+
+Validate one bounded JSON input from stdin using the protected profile. Validation
+never resolves credentials or sends data. Upload additionally requires the profile's
+environment opt-in; it never retries uncertain delivery.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

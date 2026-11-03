@@ -16,12 +16,14 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
-const telemetryConfigureHelp = "Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]\n\n" +
+const telemetryConfigureHelp = "Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --onecollector-profile-file PATH | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]\n\n" +
 	"Configure the customer-owned Application Insights destination in one atomic\n" +
 	"instance.yaml update. Only the reference is stored; this command never accepts\n" +
 	"or writes an inline connection-string value. The profile defaults to standard,\n" +
 	"and bounded 72-hour replay defaults on. Stop a live daemon before changing its\n" +
-	"configuration. --disable removes only the direct Azure destination.\n\n" +
+	"configuration. --disable removes only the direct Azure destination.\n" +
+	"--onecollector-profile-file stores only an absolute protected-profile reference,\n" +
+	"preserves public telemetry settings, and never resolves secrets or sends data.\n\n" +
 	"Exit codes: 0 = configured, 1 = refused/invalid config, 2 = usage or I/O error.\n"
 
 const telemetryTestHelp = "Usage: goobers telemetry test [--destination NAME] [--json] [--timeout DURATION] [path]\n\n" +
@@ -48,6 +50,7 @@ func runTelemetryConfigure(args []string, stdout, stderr io.Writer) int {
 	envRef := fs.String("connection-string-env", "", "environment variable containing the Application Insights connection string")
 	fileRef := fs.String("connection-string-file", "", "protected file containing the Application Insights connection string")
 	storeRef := fs.String("connection-string-store", "", "declared secret-store reference in STORE/SECRET form")
+	collectorProfile := fs.String("onecollector-profile-file", "", "absolute path to protected OneCollector JSON profile")
 	profileValue := fs.String("profile", string(instance.TelemetryProfileStandard), "collection profile: health, journal, standard, or diagnostic")
 	disable := fs.Bool("disable", false, "remove the direct Azure Monitor destination")
 	asJSON := fs.Bool("json", false, "render the result as JSON")
@@ -62,6 +65,19 @@ func runTelemetryConfigure(args []string, stdout, stderr io.Writer) int {
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
+	}
+	if *collectorProfile != "" {
+		conflicting := *disable || *envRef != "" || *fileRef != "" || *storeRef != ""
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "profile" {
+				conflicting = true
+			}
+		})
+		if conflicting {
+			pf(stderr, "error: OneCollector profile mode cannot be combined with Azure Monitor flags\n")
+			return 2
+		}
+		return configureOneCollectorProfile(*collectorProfile, root, *asJSON, stdout, stderr)
 	}
 
 	references := 0

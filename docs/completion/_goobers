@@ -246,7 +246,8 @@ _goobers_completion()
             ;;
         telemetry)
             case "${words[3]:-}" in
-                configure) flags+=(--connection-string-env --connection-string-file --connection-string-store --profile --disable --json) ;;
+                onecollector) flags+=(--capabilities --json) ;;
+                configure) flags+=(--onecollector-profile-file --connection-string-env --connection-string-file --connection-string-store --profile --disable --json) ;;
                 test) flags+=(--destination --json --timeout) ;;
                 merges) flags+=(--compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild) ;;
                 stats) flags+=(--json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild) ;;
@@ -553,7 +554,11 @@ _goobers_completion()
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
-                candidates=(configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact)
+                candidates=(onecollector configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "onecollector" ]] && (( CURRENT == 4 )); then
+                candidates=(upload mcp)
                 _describe -V 'command' candidates
                 return
             fi
