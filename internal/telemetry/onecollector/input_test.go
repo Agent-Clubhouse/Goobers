@@ -2,6 +2,7 @@ package onecollector
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -175,5 +176,23 @@ func TestExplicitTimestampDefaultsBeforeFormatting(t *testing.T) {
 	parsed, err := time.Parse("2006-01-02T15:04:05.000Z", stamp)
 	if err != nil || len(stamp) != 24 || parsed.Before(before) || parsed.After(after) {
 		t.Fatal("default timestamp not formatted as UTC milliseconds", stamp, err)
+	}
+}
+
+func TestExplicitUniqueStringsUsesLinearBoundedValidation(t *testing.T) {
+	labels := make([]any, 4000)
+	for i := range labels {
+		labels[i] = strconv.Itoa(i)
+	}
+	rules := []string{`uniqueStrings(input.labels)`}
+	if err := evaluateRules(rules, map[string]any{"labels": labels}); err != nil {
+		t.Fatal("valid list exceeds rule cost budget", err)
+	}
+	labels[len(labels)-1] = labels[0]
+	if err := evaluateRules(rules, map[string]any{"labels": labels}); err == nil {
+		t.Fatal("duplicate string accepted")
+	}
+	if err := evaluateRules(rules, map[string]any{"labels": []any{strings.Repeat("x", MaxNativeBytes+1)}}); err == nil {
+		t.Fatal("uniqueness helper byte limit not enforced")
 	}
 }

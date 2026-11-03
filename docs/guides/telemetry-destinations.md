@@ -120,7 +120,9 @@ CEL rules see `input` and exact JSON `tokens` indexed by dotted paths. Helpers
 include `jsonParse(text[, collisionCheck])`, `jsonToken(text, path)`,
 `jsonStringify(value)`, `jsonDepth(value)`, `jsonObjects(value)`,
 `utf16Length(text)`, `signedDecimal(text)`, `unsignedDecimal(text)`,
-`canonicalBase64(text)`, and `validTimestamp(text)`. Signed/unsigned integers
+`canonicalBase64(text)`, `validTimestamp(text)`, and `uniqueStrings(list)`.
+String uniqueness uses a bounded, linear-time lookup rather than nested list scans.
+Signed/unsigned integers
 remain distinct exact CEL values; decimal adaptation is only for validation,
 never publication. Rules have expression-size and execution-cost limits.
 Native mappings can select decoded fields through

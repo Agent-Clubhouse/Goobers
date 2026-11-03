@@ -91,6 +91,35 @@ func valueDepth(value any) int {
 	}
 }
 
+func uniqueStringList(value ref.Val) ref.Val {
+	list, ok := value.(traits.Lister)
+	if !ok {
+		return types.NewErr("invalid uniqueness input")
+	}
+	size, ok := list.Size().(types.Int)
+	if !ok || size < 0 || size > MaxNativeBytes {
+		return types.NewErr("invalid uniqueness input")
+	}
+	seen := map[string]bool{}
+	total := 0
+	iterator := list.Iterator()
+	for iterator.HasNext() == types.True {
+		text, ok := iterator.Next().Value().(string)
+		if !ok {
+			return types.NewErr("uniqueness requires strings")
+		}
+		total += len(text)
+		if total > MaxNativeBytes {
+			return types.NewErr("uniqueness byte limit")
+		}
+		if seen[text] {
+			return types.False
+		}
+		seen[text] = true
+	}
+	return types.True
+}
+
 func ruleEnvironment() (*cel.Env, error) {
 	stringHelper := func(name string, output *cel.Type, call func(string) ref.Val) cel.EnvOption {
 		return cel.Function(name, cel.Overload(name+"_string", []*cel.Type{cel.StringType}, output, cel.UnaryBinding(func(value ref.Val) ref.Val {
@@ -104,6 +133,7 @@ func ruleEnvironment() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.Strings(),
 		cel.Variable("input", cel.DynType), cel.Variable("tokens", cel.MapType(cel.StringType, cel.StringType)),
+		cel.Function("uniqueStrings", cel.Overload("uniqueStrings_list_string", []*cel.Type{cel.ListType(cel.StringType)}, cel.BoolType, cel.UnaryBinding(uniqueStringList))),
 		stringHelper("jsonParse", cel.DynType, func(text string) ref.Val {
 			value, err := DecodeObject(text, MaxNativeBytes)
 			if err != nil {
