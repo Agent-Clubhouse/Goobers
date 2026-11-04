@@ -24,7 +24,7 @@ func TestCaptureSnapshotClassifiesWindowsReservedNamesAndAllowsRepass(t *testing
 		t.Fatalf("git did not select reserved worktree path: %q", selected)
 	}
 	var paths bytes.Buffer
-	excluded, err := writeExistingSnapshotPaths(worktree, []byte(bytes.Join([][]byte{
+	excluded, err := writeExistingSnapshotPaths(worktree, bytes.Join([][]byte{
 		[]byte("NUL"),
 		[]byte("PRN"),
 		[]byte("AUX"),
@@ -32,7 +32,7 @@ func TestCaptureSnapshotClassifiesWindowsReservedNamesAndAllowsRepass(t *testing
 		[]byte("LPT9"),
 		[]byte(filepath.Join("test", "ci", "NUL")),
 		nil,
-	}, []byte{0})), &paths)
+	}, []byte{0}), &paths)
 	if err != nil {
 		t.Fatalf("classify reserved paths: %v", err)
 	}
