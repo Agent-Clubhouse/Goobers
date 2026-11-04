@@ -29,7 +29,7 @@ func TestSnapshotPathBudgetFailsWithoutPartialWrite(t *testing.T) {
 func TestWriteExistingSnapshotPathsNamesInvalidPath(t *testing.T) {
 	const path = "../outside"
 
-	err := writeExistingSnapshotPaths(t.TempDir(), []byte(path+"\x00"), io.Discard)
+	_, err := writeExistingSnapshotPaths(t.TempDir(), []byte(path+"\x00"), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), path) {
 		t.Fatalf("invalid path error = %v; want offending path", err)
 	}

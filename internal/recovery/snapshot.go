@@ -58,7 +58,7 @@ func captureSnapshot(ctx context.Context, repository, runID string, identityTime
 	if err != nil {
 		return "", err
 	}
-	paths, err := snapshotPathsWithPolicy(ctx, repository, directory, policy)
+	paths, excluded, err := snapshotPathsWithPolicy(ctx, repository, directory, policy)
 	if err != nil {
 		return "", err
 	}
@@ -95,6 +95,9 @@ func captureSnapshot(ctx context.Context, repository, runID string, identityTime
 	// durable capture window in the message too, or two distinct windows can
 	// share a snapshot ref while their immutable retention metadata conflicts.
 	message := "Retain recovery state for " + runID + "\n\nCapture identity: " + identityTime.UTC().Format(time.RFC3339Nano)
+	for _, path := range excluded {
+		message += snapshotExclusionAnnotation(path)
+	}
 	environment = append(environment,
 		"GIT_AUTHOR_NAME=Goobers Recovery", "GIT_AUTHOR_EMAIL=recovery@goobers.invalid",
 		"GIT_COMMITTER_NAME=Goobers Recovery", "GIT_COMMITTER_EMAIL=recovery@goobers.invalid",
