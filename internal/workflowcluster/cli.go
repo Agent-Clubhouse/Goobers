@@ -75,9 +75,12 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 // structural point per configured workflow, keyed "<gaggle>/<workflow>".
 func ConfiguredPoints(root string) ([]Point, error) {
 	layout := instance.NewLayout(root)
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
 		return nil, fmt.Errorf("load instance config: %w", err)
+	}
+	if set == nil || report == nil || report.HasErrors() {
+		return nil, errors.New("instance config has validation errors; run `goobers validate`")
 	}
 	points := make([]Point, 0, len(set.Workflows))
 	for _, wf := range set.Workflows {
