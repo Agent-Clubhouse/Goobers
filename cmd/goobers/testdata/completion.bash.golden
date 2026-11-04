@@ -149,7 +149,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
                 validate-child) flags+=" --gaggle --parent --stage --backend --json" ;;
-                clusters) flags+=" --min-cluster-size --seed --stratify --json" ;;
+                clusters) flags+=" --features --since --max-runs --min-samples --min-cluster-size --seed --stratify --json" ;;
             esac
             ;;
         runs)
