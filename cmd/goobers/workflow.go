@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 func workflowCommands() cliCommand {
@@ -23,7 +24,17 @@ func workflowCommands() cliCommand {
 			withSynopsis(workflowValidateChildSynopsis).
 			withHelp("validate a child proposal against its configured parent", workflowValidateChildHelp).
 			withExamples("goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml"),
+		coreSubcommand("workflow clusters", "clusters", apicontract.ActionReadOnlyNavigation, runWorkflowClusters).
+			withSynopsis(workflowClustersSynopsis).
+			withHelp("Labs: cluster configured workflows by structural shape", workflowcluster.CLIHelp).
+			withExamples("goobers workflow clusters", "goobers workflow clusters --min-cluster-size 4 --json"),
 	).withHelp("inspect workflows and validate child proposals", workflowHelp)
+}
+
+const workflowClustersSynopsis = "  goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]\n                                Labs: cluster configured workflows by structural shape\n"
+
+func runWorkflowClusters(args []string, stdout, stderr io.Writer) int {
+	return workflowcluster.RunCLI(args, newCLIFlagSet("workflow clusters", flag.ContinueOnError), stdout, stderr)
 }
 
 func runWorkflow(args []string, stdout, stderr io.Writer) int {
@@ -42,8 +53,9 @@ func runWorkflow(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const workflowHelp = "Usage: goobers workflow <show | validate-child> [flags]\n\n" +
-	"Show a workflow DAG or validate a generated child proposal against its configured parent.\n\n" +
+const workflowHelp = "Usage: goobers workflow <show | validate-child | clusters> [flags]\n\n" +
+	"Show a workflow DAG, validate a generated child proposal against its configured parent,\n" +
+	"or (Labs) cluster configured workflows by structural shape.\n\n" +
 	"Workflow\n\n" +
 	workflowConcept + "\n"
 

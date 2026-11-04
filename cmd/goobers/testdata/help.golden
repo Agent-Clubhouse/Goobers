@@ -25,6 +25,7 @@ Commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow clusters Labs: cluster configured workflows by structural shape
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
 
@@ -73,6 +74,7 @@ Commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow clusters Labs: cluster configured workflows by structural shape
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
 
@@ -118,6 +120,7 @@ Core commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow clusters Labs: cluster configured workflows by structural shape
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
 
@@ -3682,13 +3685,24 @@ List pull requests and issues changed by recorded provider mutations. Use
 Exit codes: 0 = OK, 2 = usage, query, or I/O error.
 
 ### workflow
-Usage: goobers workflow <show | validate-child> [flags]
+Usage: goobers workflow <show | validate-child | clusters> [flags]
 
-Show a workflow DAG or validate a generated child proposal against its configured parent.
+Show a workflow DAG, validate a generated child proposal against its configured parent,
+or (Labs) cluster configured workflows by structural shape.
 
 Workflow
 
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
+
+### workflow clusters
+Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]
+
+Labs (experimental, advisory). Cluster the instance's configured workflows by
+structural shape (node kinds, gates, retries, parallelism, graph topology)
+with HDBSCAN, and report each cluster's medoid, members, stability, and
+distinguishing features. Workflows that fit no dense group are reported as
+noise. Node names and goal text never contribute. Nothing is modified
+(default path ".").
 
 ### workflow show
 Usage: goobers workflow show [--dot] <name> [path]
