@@ -84,12 +84,6 @@ func Serialize(envelopes []Envelope) ([]byte, error) {
 	return body.Bytes(), nil
 }
 
-// Send never retries, follows redirects or includes routing values in errors.
-func Send(ctx context.Context, options Options, envelopes []Envelope, transport http.RoundTripper) error {
-	_, err := SendResult(ctx, options, envelopes, transport)
-	return err
-}
-
 // SendResult sends one bounded batch and returns its HTTP status without retries.
 func SendResult(ctx context.Context, options Options, envelopes []Envelope, transport http.RoundTripper) (int, error) {
 	if !options.Enabled() {

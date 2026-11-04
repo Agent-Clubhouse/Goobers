@@ -73,7 +73,7 @@ func TestTransportOptInStatusAndPrivacy(t *testing.T) {
 	record := []Envelope{{Name: "Synthetic.Event", Data: map[string]any{"value": 1}}}
 	for _, value := range []string{"", "true", "0"} {
 		t.Setenv(options.EnableEnv, value)
-		if err := Send(t.Context(), options, record, server.Client().Transport); !errors.Is(err, ErrDisabled) {
+		if _, err := SendResult(t.Context(), options, record, server.Client().Transport); !errors.Is(err, ErrDisabled) {
 			t.Fatal(err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestTransportOptInStatusAndPrivacy(t *testing.T) {
 		t.Fatal("disabled transport sent data")
 	}
 	t.Setenv(options.EnableEnv, "1")
-	err := Send(t.Context(), options, record, server.Client().Transport)
+	_, err := SendResult(t.Context(), options, record, server.Client().Transport)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 307") || strings.Contains(err.Error(), "synthetic-route") {
 		t.Fatal(err)
 	}
