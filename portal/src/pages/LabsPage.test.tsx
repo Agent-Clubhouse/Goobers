@@ -56,6 +56,17 @@ describe("LabsPage", () => {
     );
   });
 
+  it("distinguishes a pending Portal view from a feature with no surfaces yet", () => {
+    const { unmount } = render(<LabsPage feature="workflow-clustering" />);
+    expect(screen.getByRole("heading", { name: "Where to find it" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Portal view coming soon" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Not available yet" })).not.toBeInTheDocument();
+    unmount();
+
+    render(<LabsPage feature="workflow-gym" />);
+    expect(screen.queryByRole("heading", { name: "Where to find it" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Not available yet" })).toBeInTheDocument();
+  });
   it("falls back to the catalog for an unknown feature", () => {
     render(<LabsPage feature="does-not-exist" />);
 

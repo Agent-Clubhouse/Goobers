@@ -99,10 +99,20 @@ function LabsFeatureDetail({ feature }: { feature: LabsFeature }) {
       </section>
       {feature.availability === "coming-soon" && (
         <section className="content-section">
-          <div className="empty-state">
-            <h2>Not available yet</h2>
-            <p>This feature is still being built. Follow the tracking issues above for progress.</p>
-          </div>
+          {feature.surfaces && feature.surfaces.length > 0 ? (
+            <div className="empty-state">
+              <h2>Portal view coming soon</h2>
+              <p>
+                The Portal view is still being built. Use the surfaces listed above today, and follow the
+                tracking issues for progress.
+              </p>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <h2>Not available yet</h2>
+              <p>This feature is still being built. Follow the tracking issues above for progress.</p>
+            </div>
+          )}
         </section>
       )}
     </>
