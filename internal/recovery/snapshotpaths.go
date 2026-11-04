@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 // Bound path-list storage separately from archive bytes. Exceeding this bound
@@ -62,21 +65,31 @@ func snapshotPathsWithPolicy(ctx context.Context, repository, directory string, 
 func writeExistingSnapshotPaths(repository string, data []byte, destination io.Writer) error {
 	for len(data) > 0 {
 		name, rest, complete := bytes.Cut(data, []byte{0})
-		if !complete || !filepath.IsLocal(string(name)) {
-			return fmt.Errorf("invalid recovery snapshot path list")
+		if !complete {
+			return fmt.Errorf("invalid recovery snapshot path list at %q: missing NUL terminator", name)
 		}
 		data = rest
-		info, err := os.Lstat(filepath.Join(repository, string(name)))
+		selected := string(name)
+		if !repositoryRelativeSnapshotPath(selected) {
+			return fmt.Errorf("invalid recovery snapshot path %q", selected)
+		}
+		if !filepath.IsLocal(selected) || isWindowsReservedSnapshotPath(selected) {
+			// Git can report a path that Windows APIs cannot address, such as
+			// NUL or dir/COM1.txt. It cannot be captured, but must not prevent
+			// recovery from preserving the rest of the worktree.
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(repository, selected))
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("recovery snapshot path disappeared after selection: %q", name)
 		} else if err != nil {
-			return err
+			return fmt.Errorf("inspect recovery snapshot path %q: %w", selected, err)
 		}
 		if info.IsDir() {
-			if _, err := os.Lstat(filepath.Join(repository, string(name), ".git")); err == nil {
+			if _, err := os.Lstat(filepath.Join(repository, selected, ".git")); err == nil {
 				return ErrNestedRecoveryRequired
 			} else if !errors.Is(err, os.ErrNotExist) {
-				return err
+				return fmt.Errorf("inspect recovery snapshot path %q: %w", selected, err)
 			}
 		}
 		if _, err := destination.Write(append(name[:len(name):len(name)], 0)); err != nil {
@@ -84,4 +97,41 @@ func writeExistingSnapshotPaths(repository string, data []byte, destination io.W
 		}
 	}
 	return nil
+}
+
+func repositoryRelativeSnapshotPath(name string) bool {
+	if name == "" || filepath.VolumeName(name) != "" {
+		return false
+	}
+	slashed := filepath.ToSlash(name)
+	cleaned := path.Clean(slashed)
+	return cleaned == slashed &&
+		cleaned != "." &&
+		cleaned != ".." &&
+		!strings.HasPrefix(cleaned, "/") &&
+		!strings.HasPrefix(cleaned, "../")
+}
+
+func isWindowsReservedSnapshotPath(name string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	for _, component := range strings.FieldsFunc(name, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		base, _, _ := strings.Cut(component, ".")
+		base = strings.ToUpper(strings.TrimRight(base, " "))
+		switch base {
+		case "CON", "PRN", "AUX", "NUL", "CLOCK$":
+			return true
+		}
+		runes := []rune(base)
+		if len(runes) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) {
+			switch runes[3] {
+			case '1', '2', '3', '4', '5', '6', '7', '8', '9', '\u00b9', '\u00b2', '\u00b3':
+				return true
+			}
+		}
+	}
+	return false
 }
