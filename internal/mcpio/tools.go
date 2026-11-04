@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/pathutil"
@@ -35,8 +37,11 @@ const maxGrepMatches = 200
 type Toolset struct {
 	cfg            Config
 	childTransport http.RoundTripper
-	schemas        map[string]*handoffcheck.Schema
-	schemaErr      error
+	decide         decideState
+	// resolveDecideGate is a test seam; nil resolves from the process environment.
+	resolveDecideGate func(*decisiongate.Settings, func(decisiongate.Event)) (*decisiongate.Gate, error)
+	schemas           map[string]*handoffcheck.Schema
+	schemaErr         error
 }
 
 // NewToolset builds a Toolset from an already-loaded, already-validated
@@ -45,6 +50,11 @@ func NewToolset(cfg Config) *Toolset {
 	if cfg.ChildWorkflows != nil {
 		access := *cfg.ChildWorkflows
 		cfg.ChildWorkflows = &access
+	}
+	if cfg.Decide != nil {
+		grant := *cfg.Decide
+		grant.Settings.Gate.Thresholds = maps.Clone(grant.Settings.Gate.Thresholds)
+		cfg.Decide = &grant
 	}
 	schemas, err := compilePublicationSchemas(cfg.PublicationSchemas)
 	return &Toolset{cfg: cfg, schemas: schemas, schemaErr: err}

@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/creditgraph"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/handoffcheck"
@@ -198,6 +199,7 @@ type Executor struct {
 	sandboxEnforced bool
 	observer        Observer
 	childAccess     ChildWorkflowAccessProvider
+	decisionGate    *decisiongate.Settings
 	newSandbox      func() (sandbox.Sandbox, error)
 
 	guardedCredentialFiles bool
@@ -656,6 +658,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
 		ChildWorkflows:           childAccess,
+		Decide:                   e.decideAccess(env),
 		UsageSink:                invoke.AgentUsageStream(ctx),
 	}
 	if nestedAdapter != nil {

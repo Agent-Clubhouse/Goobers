@@ -8,7 +8,14 @@ import (
 
 // Only launcher-supplied access expands the built-in server's ordinary tools.
 func goobersIOToolsFor(req RunRequest) []string {
-	return append(append([]string(nil), goobersIOTools...), mcpio.ChildWorkflowToolNames(req.ChildWorkflows, req.Envelope.RunID)...)
+	return append(append(append([]string(nil), goobersIOTools...), mcpio.ChildWorkflowToolNames(req.ChildWorkflows, req.Envelope.RunID)...), mcpio.DecideToolNames(req.Decide)...)
+}
+
+func writeDecidePrompt(b *strings.Builder, req RunRequest) {
+	if len(mcpio.DecideToolNames(req.Decide)) == 0 {
+		return
+	}
+	b.WriteString("A `decide` tool is enabled for this stage: it asks the instance's decision model one yes/no question about a JSON `state` and returns yes, no or uncertain with a probability. Use it only for semantic judgments, never for structure or facts you can check directly. Calls are budgeted. Uncertain is not a no: fall back to your own judgment or escalate. Do not request credentials or endpoints.\n\n")
 }
 
 // prefixedGoobersIOTools produces adapter-specific global allowlist names.
