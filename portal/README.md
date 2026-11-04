@@ -20,7 +20,9 @@ guesses a provider from an ID. Workflow authors can publish `url` alongside
 
 The **Labs** nav area (`#/labs`) is the single home for experimental features.
 To add one, append an entry to `labsFeatures` in `src/labs.ts`, setting its
-maturity, its availability, and the tracking issues labeled `labs`. Each
+maturity, its availability, and the tracking issues labeled `labs`. Features that
+already ship elsewhere list their portal, CLI, and docs `surfaces` so Labs points
+to where they can be used today. Each
 feature's detail page (`#/labs/<id>`) shows a persistent experimental banner.
 Labs features are read-only and advisory: they must not write configuration or
 bypass validation, promotion, or approval gates.

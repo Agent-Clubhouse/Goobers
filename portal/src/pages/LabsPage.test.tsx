@@ -17,8 +17,27 @@ describe("LabsPage", () => {
     expect(screen.getByRole("heading", { name: "Labs" })).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "Workflow clustering" });
     expect(link).toHaveAttribute("href", "#/labs/workflow-clustering");
-    expect(screen.getByText("Concept")).toBeInTheDocument();
-    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    for (const name of ["Backprop", "System One decisions", "Workflow Gym", "R-SZZ review evaluation"]) {
+      expect(screen.getByRole("link", { name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByText("Concept").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Coming soon").length).toBeGreaterThan(0);
+  });
+
+  it("points shipped features at their portal, CLI, and docs surfaces", () => {
+    render(<LabsPage feature="backprop" />);
+
+    expect(screen.getByRole("heading", { name: "Where to find it" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Insights → Backprop" })).toHaveAttribute(
+      "href",
+      "#/insight?section=backprop",
+    );
+    expect(screen.getByText(/goobers telemetry shadow/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Backprop guide" })).toHaveAttribute(
+      "href",
+      "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/backprop.md",
+    );
+    expect(screen.queryByRole("heading", { name: "Not available yet" })).not.toBeInTheDocument();
   });
 
   it("shows the experimental banner, prerequisites, and tracking issues for a feature", () => {

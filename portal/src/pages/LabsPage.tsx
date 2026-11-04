@@ -1,9 +1,11 @@
 import {
   findLabsFeature,
   labsFeatures,
+  labsDocsBaseUrl,
   labsIssueBaseUrl,
   labsMaturityLabel,
   type LabsFeature,
+  type LabsSurface,
 } from "../labs";
 import { routeHash } from "../routing";
 import { PageHeading } from "../ui/Heading";
@@ -66,6 +68,18 @@ function LabsFeatureDetail({ feature }: { feature: LabsFeature }) {
       </p>
       <section className="content-section labs-detail">
         <p>{feature.description}</p>
+        {feature.surfaces && feature.surfaces.length > 0 && (
+          <>
+            <h2>Where to find it</h2>
+            <ul className="labs-surfaces">
+              {feature.surfaces.map((surface) => (
+                <li key={labsSurfaceKey(surface)}>
+                  <LabsSurfaceItem surface={surface} />
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
         <h2>Prerequisites</h2>
         <ul>
           {feature.prerequisites.map((prerequisite) => (
@@ -93,6 +107,43 @@ function LabsFeatureDetail({ feature }: { feature: LabsFeature }) {
       )}
     </>
   );
+}
+
+function labsSurfaceKey(surface: LabsSurface): string {
+  switch (surface.kind) {
+    case "portal":
+      return `portal:${surface.label}`;
+    case "cli":
+      return `cli:${surface.command}`;
+    case "docs":
+      return `docs:${surface.path}`;
+  }
+}
+
+function LabsSurfaceItem({ surface }: { surface: LabsSurface }) {
+  switch (surface.kind) {
+    case "portal":
+      return (
+        <>
+          Portal: <a href={routeHash(surface.route)}>{surface.label}</a>
+        </>
+      );
+    case "cli":
+      return (
+        <>
+          CLI: <code>{surface.command}</code> — {surface.description}
+        </>
+      );
+    case "docs":
+      return (
+        <>
+          Docs:{" "}
+          <a href={`${labsDocsBaseUrl}${surface.path}`} rel="noreferrer" target="_blank">
+            {surface.label}
+          </a>
+        </>
+      );
+  }
 }
 
 function LabsBadges({ feature }: { feature: LabsFeature }) {
