@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 // CLIHelp documents `goobers workflow clusters`.
@@ -84,9 +83,7 @@ func ConfiguredPoints(root string) ([]Point, error) {
 	}
 	points := make([]Point, 0, len(set.Workflows))
 	for _, wf := range set.Workflows {
-		features, err := ExtractDefinition(workflow.Definition{
-			Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
-		})
+		features, err := ExtractDefinition(definitionOf(wf))
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}

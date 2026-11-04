@@ -393,6 +393,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "parent", takesArg: true, valueKind: "workflows", desc: "Configured parent workflow"},
 		{name: "stage", takesArg: true, desc: "Configured parent agentic stage"},
 		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
+		{name: "cluster-model", takesArg: true, valueKind: "file", desc: "Labs: frozen cluster model for advisory novelty"},
 		{name: "json", desc: "Emit structured diagnostics and digests"},
 	},
 	"workflow clusters": {

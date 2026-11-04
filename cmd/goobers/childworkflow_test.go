@@ -201,3 +201,60 @@ func childValidationTree(t *testing.T, root string) map[string][32]byte {
 	}
 	return files
 }
+
+func TestWorkflowValidateChildClusterModelIsAdvisory(t *testing.T) {
+	root, _, proposal := childValidationFixture(t)
+
+	modelRoot := initDemo(t)
+	workflowDir := filepath.Join(modelRoot, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling := strings.Replace(string(raw), "name: default-implement", "name: sibling-implement", 1)
+	if err := os.WriteFile(filepath.Join(workflowDir, "sibling-implement.yaml"), []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, model, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--json", modelRoot)
+	if code != 0 {
+		t.Fatalf("workflow clusters: code=%d stderr=%s", code, stderr)
+	}
+	modelPath := filepath.Join(t.TempDir(), "model.json")
+	if err := os.WriteFile(modelPath, []byte(model), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	withModel := func(path string) childworkflow.ConfiguredReport {
+		t.Helper()
+		args := append([]string{"workflow", "validate-child", "--cluster-model", path}, validateChildArgs(root, proposal)[2:]...)
+		code, stdout, stderr := runArgs(t, args...)
+		if code != 0 {
+			t.Fatalf("validate-child --cluster-model %s: code=%d stdout=%s stderr=%s", path, code, stdout, stderr)
+		}
+		var report childworkflow.ConfiguredReport
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatal(err)
+		}
+		if !report.Valid || report.Novelty == nil {
+			t.Fatalf("report = %+v", report)
+		}
+		return report
+	}
+	scored := withModel(modelPath)
+	if !scored.Novelty.Scored || !strings.HasPrefix(scored.Novelty.ModelID, "sha256:") {
+		t.Fatalf("novelty = %+v", scored.Novelty)
+	}
+	missing := withModel(filepath.Join(t.TempDir(), "missing.json"))
+	if missing.Novelty.Scored || missing.Novelty.Reason != "invalid_model" || len(missing.Warnings) == 0 {
+		t.Fatalf("missing model novelty = %+v warnings=%v", missing.Novelty, missing.Warnings)
+	}
+
+	code, stdout, _ := runArgs(t, "workflow", "validate-child", "--gaggle", "example", "--parent", "default-implement", "--stage", "plan", "--cluster-model", modelPath, proposal, root)
+	if code != 0 || !strings.Contains(stdout, "Novelty (Labs, advisory): ") {
+		t.Fatalf("text report: code=%d stdout=%s", code, stdout)
+	}
+	code, stdout, _ = runArgs(t, validateChildArgs(root, proposal)...)
+	if code != 0 || strings.Contains(stdout, "novelty") {
+		t.Fatalf("report without --cluster-model changed: code=%d stdout=%s", code, stdout)
+	}
+}

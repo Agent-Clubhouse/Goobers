@@ -11,6 +11,10 @@ function __goobers_completion_runs
     command goobers __complete runs 2>/dev/null
 end
 
+function __goobers_completion_file
+    command goobers __complete file 2>/dev/null
+end
+
 function __goobers_completion_escalations
     command goobers __complete escalations 2>/dev/null
 end
@@ -258,6 +262,7 @@ complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_su
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l parent -r -a '(__goobers_completion_workflows)' -d 'Configured parent workflow'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l stage -r -d 'Configured parent agentic stage'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l backend -r -d 'Advisory validation target: runner or engine'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l cluster-model -r -a '(__goobers_completion_file)' -d 'Labs: frozen cluster model for advisory novelty'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l json -d 'Emit structured diagnostics and digests'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l min-cluster-size -r -d 'Smallest group reported as a cluster'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l seed -r -d 'Seed for stability resampling'
