@@ -9,6 +9,14 @@ import (
 )
 
 func removeWindowsReservedCleanupPaths(ctx context.Context, repository string) error {
+	// Gone or repository-less targets were already settled by the cleanup guard;
+	// there is no checkout whose untracked reserved paths could block removal.
+	if _, err := os.Lstat(filepath.Join(repository, ".git")); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect cleanup repository: %w", err)
+	}
 	selected, err := runCleanupGitOutput(ctx, repository, "list untracked cleanup paths", "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return err

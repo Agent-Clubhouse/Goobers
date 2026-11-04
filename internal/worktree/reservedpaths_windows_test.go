@@ -48,3 +48,14 @@ func TestRemoveCleansWindowsReservedPathBeforeRepass(t *testing.T) {
 		t.Fatalf("remove repass worktree: %v", err)
 	}
 }
+
+func TestRemoveWindowsReservedCleanupPathsSkipsSettledTargets(t *testing.T) {
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "gone")
+	if err := removeWindowsReservedCleanupPaths(ctx, missing); err != nil {
+		t.Fatalf("missing target: %v", err)
+	}
+	if err := removeWindowsReservedCleanupPaths(ctx, t.TempDir()); err != nil {
+		t.Fatalf("repository-less target: %v", err)
+	}
+}
