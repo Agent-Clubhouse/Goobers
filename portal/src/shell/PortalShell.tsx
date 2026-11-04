@@ -32,6 +32,7 @@ const areaLabels: Record<PrimaryArea, string> = {
   "work-items": "Work Items",
   insight: "Insight",
   cost: "Cost",
+  labs: "Labs",
 };
 
 interface HeaderIdentity {
@@ -408,6 +409,16 @@ export function PortalShell({
             <Icon name="cost" />
             <span className="nav-label">Cost</span>
           </button>
+          <button
+            aria-current={activeArea === "labs" ? "page" : undefined}
+            aria-label="Labs"
+            className={activeArea === "labs" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "labs" })}
+            type="button"
+          >
+            <Icon name="labs" />
+            <span className="nav-label">Labs</span>
+          </button>
         </nav>
 
         <div className="sidebar-secondary" id="portal-secondary-navigation">
@@ -507,6 +518,12 @@ export function PortalShell({
                 icon="cost"
                 label="Cost"
                 onClick={() => navigateFromMobileMenu({ page: "cost", filters: scopedFilters })}
+              />
+              <MobileDestination
+                active={activeArea === "labs"}
+                icon="labs"
+                label="Labs"
+                onClick={() => navigateFromMobileMenu({ page: "labs" })}
               />
             </nav>
 
