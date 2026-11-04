@@ -379,3 +379,47 @@ func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
 		t.Fatalf("min-cluster-size 1: code = %d, want 2", code)
 	}
 }
+
+func TestWorkflowClustersStratifyReportsConfounds(t *testing.T) {
+	root := initDemo(t)
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling := strings.Replace(string(raw), "name: default-implement", "name: sibling-implement", 1)
+	if err := os.WriteFile(filepath.Join(workflowDir, "sibling-implement.yaml"), []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", "gaggle", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters --stratify: code = %d, stderr = %q", code, stderr)
+	}
+	var out struct {
+		Model struct {
+			Population int
+		}
+		Confounds struct {
+			Evidence   string
+			Strata     []struct{ Key string }
+			Undersized []string
+		}
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout)
+	}
+	if out.Model.Population < 2 || out.Confounds.Evidence != "observational" ||
+		len(out.Confounds.Strata) == 0 || len(out.Confounds.Undersized) == 0 {
+		t.Fatalf("output = %+v", out)
+	}
+
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", "gaggle", root)
+	if code != 0 || !strings.Contains(stdout, "Confounds (stratified by gaggle; evidence: observational)") ||
+		!strings.Contains(stdout, "reported, not pooled") {
+		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, _, _ := runArgs(t, "workflow", "clusters", "--stratify", "model", root); code != 2 {
+		t.Fatalf("stratify model: code = %d, want 2", code)
+	}
+}

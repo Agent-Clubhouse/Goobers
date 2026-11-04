@@ -14,12 +14,14 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]\n\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n\n" +
 	"Labs (experimental, advisory). Cluster the instance's configured workflows by\n" +
 	"structural shape (node kinds, gates, retries, parallelism, graph topology)\n" +
 	"with HDBSCAN, and report each cluster's medoid, members, stability, and\n" +
 	"distinguishing features. Workflows that fit no dense group are reported as\n" +
-	"noise. Node names and goal text never contribute. Nothing is modified\n" +
+	"noise. Node names and goal text never contribute. With --stratify gaggle,\n" +
+	"also test whether clusters merely track gaggle boundaries (a confound);\n" +
+	"that check is observational, not gym-controlled. Nothing is modified\n" +
 	"(default path \".\").\n"
 
 // cliMinClusterSize is smaller than the library default because a single
@@ -32,6 +34,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	fs.Usage = func() { _, _ = io.WriteString(stderr, CLIHelp) }
 	minSize := fs.Int("min-cluster-size", cliMinClusterSize, "smallest group reported as a cluster")
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
+	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -39,7 +42,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if fs.NArg() > 1 || *minSize < 2 {
+	if fs.NArg() > 1 || *minSize < 2 || (*stratify != "" && *stratify != stratifyGaggle) {
 		fs.Usage()
 		return 2
 	}
@@ -58,17 +61,46 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
+	var confounds *ConfoundReport
+	if *stratify != "" {
+		report := ConfoundCheck(model, gaggleStrata(points), ConfoundOptions{Seed: *seed})
+		confounds = &report
+	}
 	if *asJSON {
+		var out any = model
+		if confounds != nil {
+			out = struct {
+				Model     Model           `json:"model"`
+				Confounds *ConfoundReport `json:"confounds"`
+			}{model, confounds}
+		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(model); err != nil {
+		if err := encoder.Encode(out); err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return 2
 		}
 		return 0
 	}
 	writeReport(stdout, model)
+	if confounds != nil {
+		writeConfounds(stdout, *stratify, *confounds)
+	}
 	return 0
+}
+
+// stratifyGaggle is the only --stratify axis the instance config supports;
+// model, harness, and task-cohort axes need run-behavior descriptors.
+const stratifyGaggle = "gaggle"
+
+// gaggleStrata labels each "<gaggle>/<workflow>" point with its gaggle.
+func gaggleStrata(points []Point) Strata {
+	strata := make(Strata, len(points))
+	for _, p := range points {
+		gaggle, _, _ := strings.Cut(p.ID, "/")
+		strata[p.ID] = gaggle
+	}
+	return strata
 }
 
 // ConfiguredPoints loads the instance config under root and returns one
@@ -119,5 +151,25 @@ func writeReport(w io.Writer, m Model) {
 		noise := append([]string(nil), m.Noise...)
 		sort.Strings(noise)
 		p("\nnoise  %s\n", strings.Join(noise, ", "))
+	}
+}
+
+func writeConfounds(w io.Writer, axis string, r ConfoundReport) {
+	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	p("\nConfounds (stratified by %s; evidence: %s)\n", axis, r.Evidence)
+	p("  %s %.2f  p %.3f  (%d permutations, %d tested, %d unlabeled)\n",
+		r.Statistic, r.Association, r.PValue, r.Options.Permutations, r.Tested, r.Unlabeled)
+	if r.Confounded {
+		p("  CONFOUNDED: clusters track %s boundaries\n", axis)
+	} else {
+		p("  not confounded by %s\n", axis)
+	}
+	strata := make([]string, len(r.Strata))
+	for i, s := range r.Strata {
+		strata[i] = fmt.Sprintf("%s=%d", s.Key, s.Size)
+	}
+	p("  strata      %s\n", strings.Join(strata, ", "))
+	if len(r.Undersized) > 0 {
+		p("  undersized  %s (below %d; reported, not pooled)\n", strings.Join(r.Undersized, ", "), r.Options.MinStratumSize)
 	}
 }

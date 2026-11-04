@@ -398,6 +398,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"workflow clusters": {
 		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},
 		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
+		{name: "stratify", takesArg: true, values: []string{"gaggle"}, desc: "Confound axis to test clusters against (gaggle)"},
 		{name: "json", desc: "Emit the fitted model as JSON"},
 	},
 	"runs list": {
