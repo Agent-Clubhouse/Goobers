@@ -5761,7 +5761,7 @@ $ goobers workflow show default-implement --dot
 validate a child proposal against its configured parent
 
 ~~~text
-Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--cluster-model <model.json>] [--json] <proposal.yaml> [path]
 
 Validate one generated child Workflow against an opted-in parent stage in
 the instance's current active config/ tree (default path "."). The parent
@@ -5772,6 +5772,8 @@ This is advisory current-config validation, not durable run admission. It
 does not start or queue work, resolve credentials, invoke a model, or refresh
 workflowSource. --backend selects the validation target (default runner).
 Config digests identify declarative validation inputs, not an execution archive.
+--cluster-model (Labs) adds advisory novelty evidence against a frozen model
+from 'goobers workflow clusters --json'; it never changes validity or exit code.
 --json emits child-workflow-validation/v1 diagnostics and digests.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 ~~~
