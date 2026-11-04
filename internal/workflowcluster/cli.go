@@ -8,17 +8,29 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n\n" +
-	"Labs (experimental, advisory). Cluster the instance's configured workflows by\n" +
-	"structural shape (node kinds, gates, retries, parallelism, graph topology)\n" +
-	"with HDBSCAN, and report each cluster's medoid, members, stability, and\n" +
-	"distinguishing features. Workflows that fit no dense group are reported as\n" +
-	"noise. Node names and goal text never contribute. With --stratify gaggle,\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n\n" +
+	"Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN\n" +
+	"and report each cluster's medoid, members, stability, and distinguishing\n" +
+	"features. Points that fit no dense group are reported as noise.\n\n" +
+	"--features structural (default) clusters configured workflows by structural\n" +
+	"shape (node kinds, gates, retries, parallelism, graph topology).\n\n" +
+	"--features behavior clusters what runs actually did: it reads terminal run\n" +
+	"journals (agent-authored child runs included), derives a behavior\n" +
+	"descriptor per run (stage-visit patterns, attempts and retries, gate,\n" +
+	"escalation and human hits, fan-out, child spawns and dispositions, usage,\n" +
+	"duration, outcome, near misses), and clusters one point per workflow\n" +
+	"EffectiveVersion cohort from each feature's mean and p90. Runs without a\n" +
+	"defined EffectiveVersion are excluded. --since keeps runs started within\n" +
+	"that Go duration, --max-runs bounds the journals read (newest first), and\n" +
+	"cohorts with fewer than --min-samples runs are dropped.\n\n" +
+	"Node names, stage names, and goal text never contribute. Structural and\n" +
+	"behavior features are never mixed in one model. With --stratify gaggle,\n" +
 	"also test whether clusters merely track gaggle boundaries (a confound);\n" +
 	"that check is observational, not gym-controlled. Nothing is modified\n" +
 	"(default path \".\").\n"
@@ -27,10 +39,23 @@ const CLIHelp = "Usage: goobers workflow clusters [--min-cluster-size <n>] [--se
 // instance usually configures tens of workflows, not hundreds.
 const cliMinClusterSize = 3
 
+// Feature sets selectable with --features.
+const (
+	featuresStructural = "structural"
+	featuresBehavior   = "behavior"
+)
+
+// cliMinSamples is the default smallest EffectiveVersion cohort clustered.
+const cliMinSamples = 3
+
 // RunCLI implements `goobers workflow clusters`. fs is the caller's flag set.
 func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = io.WriteString(stderr, CLIHelp) }
+	features := fs.String("features", featuresStructural, "feature set to cluster on (structural or behavior)")
+	since := fs.Duration("since", 0, "behavior: only runs started within this duration")
+	maxRuns := fs.Int("max-runs", DefaultBehaviorMaxRuns, "behavior: most run journals read, newest first")
+	minSamples := fs.Int("min-samples", cliMinSamples, "behavior: smallest EffectiveVersion cohort clustered")
 	minSize := fs.Int("min-cluster-size", cliMinClusterSize, "smallest group reported as a cluster")
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
 	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle)")
@@ -41,7 +66,17 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if fs.NArg() > 1 || *minSize < 2 || (*stratify != "" && *stratify != stratifyGaggle) {
+	behaviorOnly := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "since", "max-runs", "min-samples":
+			behaviorOnly = true
+		}
+	})
+	invalid := fs.NArg() > 1 || *minSize < 2 || (*stratify != "" && *stratify != stratifyGaggle) ||
+		(*features != featuresStructural && *features != featuresBehavior) ||
+		(behaviorOnly && *features != featuresBehavior) || *since < 0 || *maxRuns < 1 || *minSamples < 1
+	if invalid {
 		fs.Usage()
 		return 2
 	}
@@ -50,13 +85,29 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
-	points, err := ConfiguredPoints(root)
+	featureVersion := StructuralFeatureVersion
+	var behavior *behaviorReport
+	var points []Point
+	var err error
+	if *features == featuresBehavior {
+		featureVersion = BehaviorFeatureVersion
+		scanOpts := BehaviorScanOptions{MaxRuns: *maxRuns}
+		if *since > 0 {
+			scanOpts.Since = time.Now().Add(-*since)
+		}
+		behavior, points, err = behaviorPoints(root, scanOpts, *minSamples)
+	} else {
+		points, err = ConfiguredPoints(root)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
-	model, err := Fit(StructuralFeatureVersion, points, Options{MinClusterSize: *minSize, Seed: *seed})
+	model, err := Fit(featureVersion, points, Options{MinClusterSize: *minSize, Seed: *seed})
 	if err != nil {
+		if behavior != nil {
+			writeBehaviorScan(stderr, *behavior)
+		}
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -67,7 +118,14 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	}
 	if *asJSON {
 		var out any = model
-		if confounds != nil {
+		switch {
+		case behavior != nil:
+			out = struct {
+				Model     Model           `json:"model"`
+				Confounds *ConfoundReport `json:"confounds,omitempty"`
+				Behavior  behaviorReport  `json:"behavior"`
+			}{model, confounds, *behavior}
+		case confounds != nil:
 			out = struct {
 				Model     Model           `json:"model"`
 				Confounds *ConfoundReport `json:"confounds"`
@@ -82,10 +140,52 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		return 0
 	}
 	writeReport(stdout, model)
+	if behavior != nil {
+		writeBehaviorScan(stdout, *behavior)
+	}
 	if confounds != nil {
 		writeConfounds(stdout, *stratify, *confounds)
 	}
 	return 0
+}
+
+// behaviorReport is the cohort and scan accounting behind a behavior model.
+type behaviorReport struct {
+	Scan       BehaviorScan      `json:"scan"`
+	MinSamples int               `json:"minSamples"`
+	Cohorts    []BehaviorSummary `json:"cohorts"`
+	// Undersampled counts cohorts dropped for having fewer than MinSamples runs.
+	Undersampled int `json:"undersampled"`
+}
+
+// behaviorPoints scans run journals under root and returns one point per
+// sufficiently sampled EffectiveVersion cohort.
+func behaviorPoints(root string, opts BehaviorScanOptions, minSamples int) (*behaviorReport, []Point, error) {
+	scan, err := ScanBehavior(root, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	cohorts := SummarizeBehavior(scan.Descriptors, minSamples)
+	report := &behaviorReport{
+		MinSamples: minSamples, Cohorts: cohorts,
+		Undersampled: len(SummarizeBehavior(scan.Descriptors, 1)) - len(cohorts),
+	}
+	scan.Descriptors = nil
+	report.Scan = scan
+	points := make([]Point, len(cohorts))
+	for i, c := range cohorts {
+		points[i] = BehaviorPoint(c)
+	}
+	return report, points, nil
+}
+
+func writeBehaviorScan(w io.Writer, r behaviorReport) {
+	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	s := r.Scan
+	p("\nBehavior scan: %d journals, %d cohorts clustered (min %d runs; %d undersampled)\n",
+		s.Candidates, len(r.Cohorts), r.MinSamples, r.Undersampled)
+	p("  excluded  %d non-terminal, %d undefined EffectiveVersion, %d before --since, %d over --max-runs, %d oversized, %d unreadable\n",
+		s.NonTerminal, s.UndefinedProvenance, s.BeforeSince, s.OverLimit, s.Oversized, s.Unreadable)
 }
 
 // stratifyGaggle is the only --stratify axis the instance config supports;
@@ -126,8 +226,12 @@ func ConfiguredPoints(root string) ([]Point, error) {
 
 func writeReport(w io.Writer, m Model) {
 	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
-	p("Labs: experimental, advisory clustering of workflow structure.\n")
-	p("model %s (%d workflows, %d clusters, %d noise)\n", m.ID, m.Population, len(m.Clusters), len(m.Noise))
+	subject, unit := "workflow structure", "workflows"
+	if m.FeatureVersion == BehaviorFeatureVersion {
+		subject, unit = "run behavior", "EffectiveVersion cohorts"
+	}
+	p("Labs: experimental, advisory clustering of %s.\n", subject)
+	p("model %s (%d %s, %d clusters, %d noise)\n", m.ID, m.Population, unit, len(m.Clusters), len(m.Noise))
 	for _, c := range m.Clusters {
 		stable := "stable"
 		if !c.Stable {
