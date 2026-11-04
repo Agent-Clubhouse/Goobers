@@ -1,3 +1,6 @@
+import type { ReactNode } from "react";
+import type { DaemonClient } from "../api/types";
+import { LabsWorkflowClusters } from "../components/LabsWorkflowClusters";
 import {
   findLabsFeature,
   labsFeatures,
@@ -8,10 +11,15 @@ import {
 import { routeHash } from "../routing";
 import { PageHeading } from "../ui/Heading";
 
-export function LabsPage({ feature }: { feature?: string }) {
+// Views for features whose availability is "available", keyed by feature id.
+const labsViews: Record<string, (client: DaemonClient) => ReactNode> = {
+  "workflow-clustering": (client) => <LabsWorkflowClusters client={client} />,
+};
+
+export function LabsPage({ client, feature }: { client: DaemonClient; feature?: string }) {
   const selected = findLabsFeature(feature);
   if (selected) {
-    return <LabsFeatureDetail feature={selected} />;
+    return <LabsFeatureDetail client={client} feature={selected} />;
   }
   return <LabsCatalog unknownFeature={feature} />;
 }
@@ -47,7 +55,8 @@ function LabsCatalog({ unknownFeature }: { unknownFeature?: string }) {
   );
 }
 
-function LabsFeatureDetail({ feature }: { feature: LabsFeature }) {
+function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature: LabsFeature }) {
+  const view = feature.availability === "available" ? labsViews[feature.id] : undefined;
   return (
     <>
       <PageHeading
@@ -64,6 +73,7 @@ function LabsFeatureDetail({ feature }: { feature: LabsFeature }) {
         <strong>Labs: experimental.</strong> This feature is advisory and may change or be removed.
         It never writes configuration or bypasses validation, promotion, or approval gates.
       </p>
+      {view?.(client)}
       <section className="content-section labs-detail">
         <p>{feature.description}</p>
         <h2>Prerequisites</h2>

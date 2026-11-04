@@ -39,6 +39,7 @@ import type {
   TranscriptContent,
   WorkflowDetail,
   QueueEligibilityView,
+  LabsWorkflowClusterView,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -69,6 +70,7 @@ export interface DaemonFixtures {
   telemetryErrors: TelemetryErrorsPage;
   workItems?: WorkItemPage;
   workItemDetails?: Record<string, WorkItemDetail>;
+  labsWorkflowClusters?: LabsWorkflowClusterView;
 }
 
 export interface FixtureStageUsage {
@@ -205,6 +207,13 @@ export class FixtureDaemonClient implements DaemonClient {
   async getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
     required(this.fixtures.workflowDetails, fixtureKey(gaggle, workflow), "workflow");
     return fixture({ gaggle, workflow, asOf: "2026-09-08T00:00:00Z", status: "not-observed", problem: "No queue eligibility observation is included in this fixture." }, options);
+  }
+
+  async getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView> {
+    return fixture(
+      this.fixtures.labsWorkflowClusters ?? { status: "insufficient-data", population: 0, minClusterSize: 3 },
+      options,
+    );
   }
 
   // Emulates the daemon's deterministic run listing so filtered and paginated

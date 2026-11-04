@@ -50,6 +50,7 @@ import (
 
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
+	"github.com/goobers/goobers/internal/workflowcluster"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -1001,7 +1002,7 @@ func (u *upSession) configureAPI() int {
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	u.apiHandlerOpts = daemonReadHandlerOptions(u.l.Root, u.setup)
-	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithGaggleHealth(u.gaggleHealth))
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithGaggleHealth(u.gaggleHealth), httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: u.root}))
 	configReader, err := newConfigAuthoringReader(u.ctx, u.l, u.setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize configuration source reader", err)

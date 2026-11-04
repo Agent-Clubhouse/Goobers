@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const workflowShowFixture = `apiVersion: goobers.dev/v1alpha1
@@ -377,6 +379,45 @@ func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
 	}
 	if code, _, _ := runArgs(t, "workflow", "clusters", "--min-cluster-size", "1", root); code != 2 {
 		t.Fatalf("min-cluster-size 1: code = %d, want 2", code)
+	}
+}
+
+// TestLabsWorkflowClustersViewMatchesConfiguredInstance pins the daemon's
+// Labs cluster read (#8309) to the same configured data the CLI clusters.
+func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
+	root := initDemo(t)
+	source := workflowcluster.ConfiguredSource{Root: root}
+	view, err := source.WorkflowClusters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Population >= view.MinClusterSize || view.Status != workflowcluster.ViewInsufficientData || view.Model != nil {
+		t.Fatalf("demo view = %+v, want insufficient data", view)
+	}
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"sibling-a", "sibling-b", "sibling-c"} {
+		sibling := strings.Replace(string(raw), "name: default-implement", "name: "+name, 1)
+		if err := os.WriteFile(filepath.Join(workflowDir, name+".yaml"), []byte(sibling), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view, err = source.WorkflowClusters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != workflowcluster.ViewClustered || view.Model == nil || view.Confounds == nil || view.Model.Population != view.Population {
+		t.Fatalf("view = %+v, want a clustered model with confounds", view)
+	}
+	assigned := len(view.Model.Noise)
+	for _, c := range view.Model.Clusters {
+		assigned += len(c.Members)
+	}
+	if assigned != view.Population || view.Confounds.Evidence != workflowcluster.EvidenceObservational {
+		t.Fatalf("model = %+v confounds = %+v", view.Model, view.Confounds)
 	}
 }
 
