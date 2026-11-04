@@ -26,6 +26,7 @@ import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { GoobersPage } from "./pages/GoobersPage";
 import { CostPage } from "./pages/CostPage";
+import { LabsPage } from "./pages/LabsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { InstanceDetailPage } from "./pages/InstanceDetailPage";
@@ -468,6 +469,7 @@ function Portal({
               standalone={standalone}
             />
           )}
+          {route.page === "labs" && <LabsPage feature={route.feature} />}
           {route.page === "errors" && (
             <ErrorsPage
               client={client}
