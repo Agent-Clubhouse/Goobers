@@ -109,11 +109,13 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		aggregation.GroundTruth = summarizeGroundTruth(group)
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
+			nodeIdentities := contributionNodeIdentities(observation.Attribution.Contributions)
 			for _, contribution := range observation.Attribution.Contributions {
 				if !surfaceContributionPath(contribution) {
 					continue
 				}
-				pathNodes := contributionPath(contribution)
+				rawPathNodes := contributionPath(contribution)
+				pathNodes := structuralContributionPath(rawPathNodes, nodeIdentities)
 				if len(pathNodes) == 0 {
 					continue
 				}
@@ -132,7 +134,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
 					observation,
-					lastNode(pathNodes),
+					lastNode(rawPathNodes),
 					contribution.Stage,
 					detail,
 					"contribution",
@@ -247,6 +249,72 @@ func contributionPath(contribution Contribution) []string {
 		return nil
 	}
 	return []string{contribution.NodeID}
+}
+
+func contributionNodeIdentities(contributions []Contribution) map[string]string {
+	identities := make(map[string]string, len(contributions))
+	for _, contribution := range contributions {
+		if contribution.NodeID == "" {
+			continue
+		}
+		identities[contribution.NodeID] = structuralNodeIdentity(contribution)
+	}
+	return identities
+}
+
+func structuralContributionPath(path []string, identities map[string]string) []string {
+	structural := make([]string, 0, len(path))
+	for _, nodeID := range path {
+		if identity := identities[nodeID]; identity != "" {
+			structural = append(structural, identity)
+			continue
+		}
+		if strings.HasPrefix(nodeID, "run:") {
+			structural = append(structural, "run")
+			continue
+		}
+		structural = append(structural, nodeID)
+	}
+	return structural
+}
+
+func structuralNodeIdentity(contribution Contribution) string {
+	label := strings.TrimSpace(contribution.Label)
+	switch contribution.Kind {
+	case KindOutcome:
+		return "outcome"
+	case KindRun:
+		return "run"
+	case KindStage:
+		if label == "" {
+			label = strings.TrimSpace(contribution.Stage)
+		}
+		return structuralLabel("stage", label)
+	case KindSubagent:
+		return structuralLabel("subagent", label)
+	case KindModelInvocation:
+		return structuralLabel("model", label)
+	case KindToolCall:
+		return structuralLabel("toolcall", label)
+	case KindToolResult:
+		return "toolresult"
+	case KindTool:
+		return structuralLabel("tool", label)
+	case KindEvidence:
+		return structuralLabel("evidence", label)
+	case KindEvaluator:
+		return structuralLabel("evaluator", label)
+	default:
+		return contribution.NodeID
+	}
+}
+
+func structuralLabel(kind, label string) string {
+	identity := kind
+	if label != "" {
+		identity += ":" + label
+	}
+	return identity
 }
 
 func observationEvidence(observation AttributionObservation, nodeID, stage, detail, source string) []AttributionEvidenceLink {

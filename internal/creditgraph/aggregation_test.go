@@ -3,7 +3,11 @@ package creditgraph
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func TestAggregateAttributionEvidencePreservesSignedScores(t *testing.T) {
@@ -202,6 +206,86 @@ func TestAggregateAttributionEvidencePreservesDistinctPaths(t *testing.T) {
 	}
 }
 
+func TestAggregateAttributionEvidenceGroupsProjectedRunPathsStructurally(t *testing.T) {
+	first := projectedAggregationObservation(t, "run-a", "sha256:span-a")
+	second := projectedAggregationObservation(t, "run-b", "sha256:span-b")
+
+	got := AggregateAttributionEvidence([]AttributionObservation{first, second})
+	if len(got) != 1 || got[0].RunCount != 2 {
+		t.Fatalf("cohorts = %+v, want one two-run cohort", got)
+	}
+	if len(got[0].TopContributingPaths) != 1 {
+		t.Fatalf("top paths = %+v, want one shared structural path", got[0].TopContributingPaths)
+	}
+	path := got[0].TopContributingPaths[0]
+	joined := strings.Join(path.Nodes, "/")
+	if strings.Contains(joined, "run-a") || strings.Contains(joined, "run-b") ||
+		strings.Contains(joined, "span-a") || strings.Contains(joined, "span-b") {
+		t.Fatalf("structural path = %q, want no run or span identity", joined)
+	}
+	if joined != "outcome/run/stage:verify/subagent:root/model:gpt-5" {
+		t.Fatalf("structural path = %q", joined)
+	}
+	if len(path.Evidence) != 2 {
+		t.Fatalf("evidence = %+v, want one exact reference per run", path.Evidence)
+	}
+	if path.Evidence[0].RunID == path.Evidence[1].RunID ||
+		path.Evidence[0].JournalPath == path.Evidence[1].JournalPath ||
+		path.Evidence[0].ArtifactDigest == path.Evidence[1].ArtifactDigest {
+		t.Fatalf("evidence = %+v, want distinct run, journal, and artifact references", path.Evidence)
+	}
+}
+
+func projectedAggregationObservation(t *testing.T, runID, spanDigest string) AttributionObservation {
+	t.Helper()
+	events := []journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted},
+		{Seq: 2, Type: journal.EventStageStarted, Stage: "verify", Attempt: 1},
+		agentEvent("root", "", "verify", "gpt-5", journal.AgentStarted),
+		{
+			Seq: 3, Type: journal.EventSpanRecorded, Stage: "verify", Attempt: 1,
+			Name: "verify.transcript", DataSchema: telemetry.GenAIEventSchema,
+			Ref: &journal.Ref{Path: "spans/" + spanDigest, Digest: spanDigest},
+		},
+		{Seq: 4, Type: journal.EventRunnerAnnotation, Stage: "verify", Runner: map[string]any{
+			SpanProvenanceKeyKind:    SpanProvenanceAnnotation,
+			SpanProvenanceKeyAgentID: "root",
+			SpanProvenanceKeyDigest:  spanDigest,
+		}},
+		{Seq: 5, Type: journal.EventStageFinished, Stage: "verify", Attempt: 1, Status: "success"},
+		{Seq: 6, Type: journal.EventRunFinished, Status: "completed"},
+	}
+	graph, err := Build(Input{
+		RunID: runID, Workflow: "implementation", Events: events,
+		SpanData: map[string][]byte{spanDigest: transcript(
+			`{"role":"assistant","model":"gpt-5","usage":{"input_tokens":10,"output_tokens":3}}`,
+		)},
+	})
+	if err != nil {
+		t.Fatalf("Build(%s): %v", runID, err)
+	}
+	attribution := Attribute(graph)
+	var evidence []AttributionEvidenceLink
+	for _, contribution := range attribution.Contributions {
+		if contribution.Kind != KindModelInvocation {
+			continue
+		}
+		evidence = append(evidence, AttributionEvidenceLink{
+			RunID: runID, NodeID: contribution.NodeID, Stage: contribution.Stage,
+			Detail:          "share=" + formatFloat(contribution.Share) + ", confidence=" + formatFloat(contribution.Confidence),
+			Source:          "contribution",
+			JournalSequence: 3,
+			JournalPath:     "gaggles/example/runs/" + runID + "/events.jsonl",
+			ArtifactPath:    "spans/" + spanDigest,
+			ArtifactDigest:  spanDigest,
+		})
+	}
+	return AttributionObservation{
+		RunID: runID, EffectiveVersion: "v1", Workload: "implementation",
+		Attribution: attribution, Evidence: evidence,
+	}
+}
+
 func TestAggregateAttributionEvidenceGroupsByVersionAndWorkload(t *testing.T) {
 	obs := []AttributionObservation{
 		{RunID: "run-1", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
@@ -352,8 +436,8 @@ func TestAggregateAttributionEvidencePrefersConcreteMutationPaths(t *testing.T) 
 		t.Fatalf("cohorts = %+v, want one surfaced concrete path", got)
 	}
 	path := got[0].TopContributingPaths[0]
-	if lastNode(path.Nodes) != "model:root@sha256:span#1" {
-		t.Fatalf("top path = %+v, want span-scoped concrete node ahead of structural stage path", path)
+	if lastNode(path.Nodes) != "model" {
+		t.Fatalf("top path = %+v, want stable model identity ahead of structural stage path", path)
 	}
 	if len(path.Evidence) != 1 || path.Evidence[0].ArtifactDigest == "" {
 		t.Fatalf("top path evidence = %+v, want exact artifact-backed evidence", path.Evidence)
