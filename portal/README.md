@@ -27,6 +27,11 @@ feature's detail page (`#/labs/<id>`) shows a persistent experimental banner.
 Labs features are read-only and advisory: they must not write configuration or
 bypass validation, promotion, or approval gates.
 
+When a feature becomes `available`, register its view in `labsViews` in
+`src/pages/LabsPage.tsx` so its detail page renders it. The workflow clustering
+view reads `GET /api/v1/labs/workflow-clusters`, which serves the same cluster
+model and gaggle confound check as `goobers workflow clusters --json --stratify gaggle`.
+
 ## Run it
 
 From an instance root, the production portal is one command:

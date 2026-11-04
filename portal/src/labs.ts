@@ -40,17 +40,17 @@ export const labsFeatures: readonly LabsFeature[] = [
     summary:
       "Unsupervised clustering of workflows, including agent-authored child workflows, to see what they converge to.",
     description:
-      "Clusters configured and agent-authored (dynamic) child workflows with HDBSCAN over versioned structural features, " +
-      "and later aggregated run behavior. Stable clusters reveal what self-spawning workflows converge to; proposals that " +
+      "Clusters configured and agent-authored (dynamic) child workflows with HDBSCAN over versioned structural features " +
+      "and journal-derived run behavior. Stable clusters reveal what self-spawning workflows converge to; proposals that " +
       "match no known cluster are flagged as novel; confound checks warn when clusters merely mirror a gaggle. " +
-      "Recurring successful shapes become template candidates. Results are advisory only.",
+      "Recurring successful shapes become template candidates. Results are advisory only. " +
+      "The cluster map below groups the instance's configured workflows by structural shape today; run-behavior descriptors and child proposals join it as they land.",
     maturity: "experimental",
-    availability: "coming-soon",
+    availability: "available",
     prerequisites: [
-      "At least a few configured or agent-authored workflows to cluster",
+      "At least three configured workflows for the cluster map (more give more stable clusters)",
       "Agent-authored child workflows enabled (preview DSL 3.1) for dynamic-workflow analysis",
-      "Retained run journals for behavior clustering",
-    ],
+      "Retained run journals for behavior clustering",    ],
     issues: [8302, 8303, 8304, 8305, 8306, 8307, 8308, 8309, 8310, 8311],
     surfaces: [
       {
