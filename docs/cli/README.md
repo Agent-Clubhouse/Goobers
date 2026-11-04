@@ -28,6 +28,7 @@
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
+| [`goobers workflow clusters`](#goobers-workflow-clusters) | Labs: cluster configured workflows by structural shape |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 | [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
@@ -5686,13 +5687,36 @@ $ goobers work-items --provider=github --kind=pr --id=4398
 inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow <show | validate-child> [flags]
+Usage: goobers workflow <show | validate-child | clusters> [flags]
 
-Show a workflow DAG or validate a generated child proposal against its configured parent.
+Show a workflow DAG, validate a generated child proposal against its configured parent,
+or (Labs) cluster configured workflows by structural shape.
 
 Workflow
 
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
+~~~
+
+## `goobers workflow clusters`
+
+Labs: cluster configured workflows by structural shape
+
+~~~text
+Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]
+
+Labs (experimental, advisory). Cluster the instance's configured workflows by
+structural shape (node kinds, gates, retries, parallelism, graph topology)
+with HDBSCAN, and report each cluster's medoid, members, stability, and
+distinguishing features. Workflows that fit no dense group are reported as
+noise. Node names and goal text never contribute. Nothing is modified
+(default path ".").
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow clusters
+$ goobers workflow clusters --min-cluster-size 4 --json
 ~~~
 
 ## `goobers workflow show`

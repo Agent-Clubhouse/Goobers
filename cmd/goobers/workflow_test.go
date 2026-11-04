@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,5 +332,50 @@ func TestParallelConcurrencyDescribesEachSetting(t *testing.T) {
 		if got := parallelConcurrency(parallels, "fan"); got != tc.want {
 			t.Fatalf("limit %d: got %q, want %q", tc.limit, got, tc.want)
 		}
+	}
+}
+
+func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
+	root := initDemo(t)
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling := strings.Replace(string(raw), "name: default-implement", "name: sibling-implement", 1)
+	if sibling == string(raw) {
+		t.Fatal("workflow fixture metadata name was not replaced")
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "sibling-implement.yaml"), []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters: code = %d, stderr = %q", code, stderr)
+	}
+	var model struct {
+		Version, FeatureVersion string
+		Population              int
+		Clusters                []struct{ Members []string }
+		Noise                   []string
+	}
+	if err := json.Unmarshal([]byte(stdout), &model); err != nil {
+		t.Fatalf("decode model: %v\n%s", err, stdout)
+	}
+	assigned := len(model.Noise)
+	for _, c := range model.Clusters {
+		assigned += len(c.Members)
+	}
+	if model.Version != "workflowcluster.model/v1" || model.Population < 2 || assigned != model.Population {
+		t.Fatalf("model = %+v", model)
+	}
+
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", root)
+	if code != 0 || !strings.Contains(stdout, "Labs: experimental") {
+		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, _, _ := runArgs(t, "workflow", "clusters", "--min-cluster-size", "1", root); code != 2 {
+		t.Fatalf("min-cluster-size 1: code = %d, want 2", code)
 	}
 }

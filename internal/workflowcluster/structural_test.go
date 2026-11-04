@@ -47,8 +47,8 @@ func TestStructuralFeaturesIgnoreNamesOrderAndGoalContent(t *testing.T) {
 	renamed.Spec.Tasks = []apiv1.Task{tasks[2], tasks[0], tasks[1]}
 	other := extract(t, renamed)
 
-	if !reflect.DeepEqual(base.Vector(), other.Vector()) {
-		t.Fatalf("renamed/reordered vector differs:\n%v\n%v", base.Vector(), other.Vector())
+	if !reflect.DeepEqual(base.Numeric, other.Numeric) || !reflect.DeepEqual(base.WL, other.WL) {
+		t.Fatalf("renamed/reordered features differ:\n%v %v\n%v %v", base.Numeric, base.WL, other.Numeric, other.WL)
 	}
 	if !reflect.DeepEqual(base.Categorical, other.Categorical) {
 		t.Fatalf("categorical differs: %v vs %v", base.Categorical, other.Categorical)
@@ -80,8 +80,8 @@ func TestStructuralFeaturesCaptureShape(t *testing.T) {
 	if got := f.Categorical["goobers"]; !reflect.DeepEqual(got, []string{"coder", "reviewer"}) {
 		t.Errorf("goobers = %v", got)
 	}
-	if len(f.WL) != wlBuckets || len(f.Vector()) != len(f.Numeric)+wlBuckets {
-		t.Errorf("vector width = %d, WL width = %d", len(f.Vector()), len(f.WL))
+	if len(f.WL) != wlBuckets {
+		t.Errorf("WL width = %d", len(f.WL))
 	}
 }
 

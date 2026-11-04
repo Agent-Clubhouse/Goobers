@@ -140,23 +140,6 @@ func nodeFeatures(doc ir.Document) map[string]float64 {
 	return numeric
 }
 
-// NumericNames returns the numeric feature names in canonical order.
-func (f StructuralFeatures) NumericNames() []string {
-	return sortedKeys(f.Numeric)
-}
-
-// Vector flattens numeric features (canonical order) followed by the WL
-// histogram into a fixed-width vector. Categorical sets are compared
-// separately (for example with Jaccard distance) rather than one-hot encoded.
-func (f StructuralFeatures) Vector() []float64 {
-	names := f.NumericNames()
-	out := make([]float64, 0, len(names)+len(f.WL))
-	for _, name := range names {
-		out = append(out, f.Numeric[name])
-	}
-	return append(out, f.WL...)
-}
-
 func edgeKind(edge ir.Edge) string {
 	switch {
 	case edge.Condition == "":
