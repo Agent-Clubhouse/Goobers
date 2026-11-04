@@ -395,6 +395,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
 		{name: "json", desc: "Emit structured diagnostics and digests"},
 	},
+	"workflow clusters": {
+		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},
+		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
+		{name: "json", desc: "Emit the fitted model as JSON"},
+	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
