@@ -3,6 +3,8 @@ package creditgraph
 import (
 	"encoding/json"
 	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -442,4 +444,193 @@ func TestAggregateAttributionEvidencePrefersConcreteMutationPaths(t *testing.T) 
 	if len(path.Evidence) != 1 || path.Evidence[0].ArtifactDigest == "" {
 		t.Fatalf("top path evidence = %+v, want exact artifact-backed evidence", path.Evidence)
 	}
+}
+
+type projectedRunSpec struct {
+	runID, spanDigest, runtimeDigest string
+	attributedAgent                  bool
+	transcript                       []string
+}
+
+func buildProjectedRun(t *testing.T, spec projectedRunSpec) (Attribution, []journal.Event) {
+	t.Helper()
+	runtimeSpan, err := json.Marshal(telemetry.SpanRecord{
+		Schema: telemetry.SpanSchema,
+		Attributes: map[string]string{
+			telemetry.AttrHarnessVersion: "copilot-cli/1.0.86",
+			"deployment.environment":     "production",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted},
+		{Seq: 2, Type: journal.EventStageStarted, Stage: "verify", Attempt: 1},
+	}
+	if spec.attributedAgent {
+		events = append(events, agentEvent("root", "", "verify", "gpt-5", journal.AgentStarted))
+	}
+	events = append(events,
+		journal.Event{
+			Seq: 3, Type: journal.EventSpanRecorded, Stage: "verify", Attempt: 1,
+			Name: "verify.transcript", DataSchema: telemetry.GenAIEventSchema,
+			Ref: &journal.Ref{Path: "spans/" + spec.spanDigest, Digest: spec.spanDigest},
+		},
+		journal.Event{
+			Seq: 4, Type: journal.EventSpanRecorded, Stage: "verify", Attempt: 1,
+			Name: "verify.runtime", DataSchema: telemetry.SpanSchema,
+			Ref: &journal.Ref{Path: "spans/" + spec.runtimeDigest, Digest: spec.runtimeDigest},
+		},
+	)
+	if spec.attributedAgent {
+		events = append(events, journal.Event{Seq: 5, Type: journal.EventRunnerAnnotation, Stage: "verify", Runner: map[string]any{
+			SpanProvenanceKeyKind:    SpanProvenanceAnnotation,
+			SpanProvenanceKeyAgentID: "root",
+			SpanProvenanceKeyDigest:  spec.spanDigest,
+		}})
+	}
+	events = append(events,
+		journal.Event{Seq: 6, Type: journal.EventStageFinished, Stage: "verify", Attempt: 1, Status: "success"},
+		journal.Event{Seq: 7, Type: journal.EventRunFinished, Status: "completed"},
+	)
+	graph, err := Build(Input{
+		RunID: spec.runID, Workflow: "implementation", Events: events,
+		SpanData: map[string][]byte{
+			spec.spanDigest:    transcript(spec.transcript...),
+			spec.runtimeDigest: runtimeSpan,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build(%s): %v", spec.runID, err)
+	}
+	return Attribute(graph), events
+}
+
+// structuralKeysByKind returns the cross-run aggregate key of every surfaced
+// contribution in one projected run, grouped by node kind.
+func structuralKeysByKind(attribution Attribution) map[NodeKind][]string {
+	identities := contributionNodeIdentities(attribution.Contributions)
+	keys := map[NodeKind][]string{}
+	for _, contribution := range attribution.Contributions {
+		if !surfaceContributionPath(contribution) {
+			continue
+		}
+		path := structuralContributionPath(contributionPath(contribution), identities)
+		keys[contribution.Kind] = append(keys[contribution.Kind], strings.Join(path, "/"))
+	}
+	for kind := range keys {
+		sort.Strings(keys[kind])
+	}
+	return keys
+}
+
+func TestAggregateStructuralKeysAreStableAcrossProjectedRuns(t *testing.T) {
+	toolTranscript := func(success bool) []string {
+		return []string{
+			`{"role":"assistant","model":"gpt-5","tool_call":{"id":"call-1","name":"bash"}}`,
+			`{"role":"tool","tool_call":{"id":"call-1","success":` + strconv.FormatBool(success) + `}}`,
+		}
+	}
+	first, _ := buildProjectedRun(t, projectedRunSpec{
+		runID: "run-a", spanDigest: "sha256:span-a", runtimeDigest: "sha256:rt-a", transcript: toolTranscript(true),
+	})
+	second, _ := buildProjectedRun(t, projectedRunSpec{
+		runID: "run-b", spanDigest: "sha256:span-b", runtimeDigest: "sha256:rt-b", transcript: toolTranscript(true),
+	})
+	failed, _ := buildProjectedRun(t, projectedRunSpec{
+		runID: "run-c", spanDigest: "sha256:span-c", runtimeDigest: "sha256:rt-c", transcript: toolTranscript(false),
+	})
+	firstKeys, secondKeys, failedKeys := structuralKeysByKind(first), structuralKeysByKind(second), structuralKeysByKind(failed)
+
+	for _, kind := range []NodeKind{KindRuntime, KindEnvironment, KindToolCall, KindToolResult} {
+		if len(firstKeys[kind]) == 0 {
+			t.Fatalf("run-a has no surfaced %s contribution; keys = %v", kind, firstKeys)
+		}
+		if strings.Join(firstKeys[kind], "|") != strings.Join(secondKeys[kind], "|") {
+			t.Errorf("%s keys differ across equivalent runs: %v vs %v", kind, firstKeys[kind], secondKeys[kind])
+		}
+	}
+	for kind, keys := range firstKeys {
+		for _, key := range keys {
+			for _, runSpecific := range []string{"run-a", "span-a", "rt-a", "#1"} {
+				if strings.Contains(key, runSpecific) {
+					t.Errorf("%s key %q retains occurrence identity %q", kind, key, runSpecific)
+				}
+			}
+		}
+	}
+	if got := firstKeys[KindRuntime][0]; !strings.HasSuffix(got, "/runtime:copilot-cli/1.0.86") {
+		t.Errorf("runtime identity = %q, want harness label preserved", got)
+	}
+	if got := firstKeys[KindEnvironment][0]; !strings.HasSuffix(got, "/environment:production") {
+		t.Errorf("environment identity = %q, want deployment label preserved", got)
+	}
+	if !strings.HasSuffix(firstKeys[KindToolResult][0], "toolresult:succeeded") ||
+		!strings.HasSuffix(failedKeys[KindToolResult][0], "toolresult:failed") {
+		t.Errorf("tool result keys = %v / %v, want succeeded and failed kept distinct",
+			firstKeys[KindToolResult], failedKeys[KindToolResult])
+	}
+	if !strings.Contains(firstKeys[KindToolCall][0], "subagent:unknown/stage:verify/") {
+		t.Errorf("tool call key = %q, want unattributed agent without its attempt suffix", firstKeys[KindToolCall][0])
+	}
+}
+
+func TestAggregateAttributionEvidenceWeighsRepeatedOccurrencesOncePerRun(t *testing.T) {
+	model := `{"role":"assistant","model":"gpt-5","usage":{"input_tokens":10,"output_tokens":3}}`
+	repeated, _ := buildProjectedRun(t, projectedRunSpec{
+		runID: "run-a", spanDigest: "sha256:span-a", runtimeDigest: "sha256:rt-a",
+		attributedAgent: true, transcript: []string{model, model, model},
+	})
+	single, _ := buildProjectedRun(t, projectedRunSpec{
+		runID: "run-b", spanDigest: "sha256:span-b", runtimeDigest: "sha256:rt-b",
+		attributedAgent: true, transcript: []string{model},
+	})
+	repeatedShare, repeatedCount, repeatedLinks := modelContributionEvidence(repeated, "run-a")
+	singleShare, _, singleLinks := modelContributionEvidence(single, "run-b")
+	if repeatedCount != 3 {
+		t.Fatalf("repeated run has %d model invocations, want 3", repeatedCount)
+	}
+	got := AggregateAttributionEvidence([]AttributionObservation{
+		{RunID: "run-a", EffectiveVersion: "v1", Workload: "implementation", Attribution: repeated, Evidence: repeatedLinks},
+		{RunID: "run-b", EffectiveVersion: "v1", Workload: "implementation", Attribution: single, Evidence: singleLinks},
+	})
+	if len(got) != 1 {
+		t.Fatalf("cohorts = %+v, want one", got)
+	}
+	var path *ContributingPath
+	for i := range got[0].TopContributingPaths {
+		if lastNode(got[0].TopContributingPaths[i].Nodes) == "model:gpt-5" {
+			path = &got[0].TopContributingPaths[i]
+		}
+	}
+	if path == nil {
+		t.Fatalf("paths = %+v, want a shared model path", got[0].TopContributingPaths)
+	}
+	// Each run counts once: the repeated run's three occurrences are summed
+	// into one run-level share before the two runs are averaged.
+	want := (repeatedShare + singleShare) / 2
+	if math.Abs(path.Share-want) > 1e-9 {
+		t.Fatalf("share = %v, want per-run mean %v (repeated=%v, single=%v)", path.Share, want, repeatedShare, singleShare)
+	}
+	if len(path.Evidence) != 4 {
+		t.Fatalf("evidence = %d links, want every occurrence retained (4)", len(path.Evidence))
+	}
+}
+
+func modelContributionEvidence(attribution Attribution, runID string) (float64, int, []AttributionEvidenceLink) {
+	var total float64
+	var links []AttributionEvidenceLink
+	for _, contribution := range attribution.Contributions {
+		if contribution.Kind != KindModelInvocation {
+			continue
+		}
+		total += contribution.Share
+		links = append(links, AttributionEvidenceLink{
+			RunID: runID, NodeID: contribution.NodeID, Stage: contribution.Stage,
+			Detail: "share=" + formatFloat(contribution.Share) + ", confidence=" + formatFloat(contribution.Confidence),
+			Source: "contribution", JournalPath: "gaggles/example/runs/" + runID + "/events.jsonl",
+		})
+	}
+	return total, len(links), links
 }

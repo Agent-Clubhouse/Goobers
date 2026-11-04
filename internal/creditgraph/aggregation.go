@@ -3,6 +3,7 @@ package creditgraph
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,6 +111,11 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
 			nodeIdentities := contributionNodeIdentities(observation.Attribution.Contributions)
+			// Several occurrences in one run (repeated attempts, invocations, or
+			// tool calls) can share a structural path. Consolidate them first so
+			// each run contributes its weight to a path exactly once.
+			runPaths := map[string]*runPathTotal{}
+			runOrder := make([]string, 0)
 			for _, contribution := range observation.Attribution.Contributions {
 				if !surfaceContributionPath(contribution) {
 					continue
@@ -120,17 +126,18 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 					continue
 				}
 				key := strings.Join(pathNodes, "/")
+				total := runPaths[key]
+				if total == nil {
+					total = &runPathTotal{}
+					runPaths[key] = total
+					runOrder = append(runOrder, key)
+				}
+				total.add(contribution)
 				path := byPath[key]
 				if path == nil {
 					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...), Score: new(float64)}
 					byPath[key] = path
 				}
-				weight := groundTruthWeight(observation.GroundTruth)
-				path.samples++
-				path.weight += weight
-				path.Share += weight * contribution.Share
-				*path.Score += weight * contribution.Score
-				path.Confidence += weight * groundTruthConfidence(contribution.Confidence, observation.GroundTruth)
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
 					observation,
@@ -139,6 +146,16 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 					detail,
 					"contribution",
 				)...)
+			}
+			weight := groundTruthWeight(observation.GroundTruth)
+			for _, key := range runOrder {
+				total := runPaths[key]
+				path := byPath[key]
+				path.samples++
+				path.weight += weight
+				path.Share += weight * total.share
+				*path.Score += weight * total.score
+				path.Confidence += weight * groundTruthConfidence(total.confidence(), observation.GroundTruth)
 			}
 			for _, cause := range observation.Attribution.Causes {
 				for _, evidence := range cause.Evidence {
@@ -291,22 +308,71 @@ func structuralNodeIdentity(contribution Contribution) string {
 		}
 		return structuralLabel("stage", label)
 	case KindSubagent:
-		return structuralLabel("subagent", label)
+		return structuralLabel("subagent", structuralAgentLabel(label))
 	case KindModelInvocation:
 		return structuralLabel("model", label)
 	case KindToolCall:
 		return structuralLabel("toolcall", label)
 	case KindToolResult:
-		return "toolresult"
+		return structuralLabel("toolresult", label)
 	case KindTool:
 		return structuralLabel("tool", label)
 	case KindEvidence:
 		return structuralLabel("evidence", label)
 	case KindEvaluator:
 		return structuralLabel("evaluator", label)
+	case KindRuntime:
+		return structuralLabel("runtime", label)
+	case KindEnvironment:
+		return structuralLabel("environment", label)
 	default:
 		return contribution.NodeID
 	}
+}
+
+// structuralAgentLabel drops the occurrence suffix from the synthetic agent
+// that owns unattributed spans ("unknown/stage:verify#2"), whose label is
+// otherwise derived from a per-attempt stage node ID.
+func structuralAgentLabel(label string) string {
+	if !strings.HasPrefix(label, unknownAgentPrefix) {
+		return label
+	}
+	if hash := strings.LastIndex(label, "#"); hash > len(unknownAgentPrefix) {
+		if _, err := strconv.Atoi(label[hash+1:]); err == nil {
+			return label[:hash]
+		}
+	}
+	return label
+}
+
+const unknownAgentPrefix = "unknown/stage:"
+
+// runPathTotal consolidates one run's contributions that share a structural
+// path. Share and score are additive responsibility mass; confidence is the
+// share-weighted mean, falling back to a plain mean when every share is zero.
+type runPathTotal struct {
+	share, score       float64
+	weightedConfidence float64
+	confidenceSum      float64
+	count              int
+}
+
+func (t *runPathTotal) add(contribution Contribution) {
+	t.share += contribution.Share
+	t.score += contribution.Score
+	t.weightedConfidence += contribution.Share * contribution.Confidence
+	t.confidenceSum += contribution.Confidence
+	t.count++
+}
+
+func (t *runPathTotal) confidence() float64 {
+	if t.share > 0 {
+		return t.weightedConfidence / t.share
+	}
+	if t.count == 0 {
+		return 0
+	}
+	return t.confidenceSum / float64(t.count)
 }
 
 func structuralLabel(kind, label string) string {
