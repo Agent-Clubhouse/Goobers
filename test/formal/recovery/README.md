@@ -162,11 +162,20 @@ traces provide concrete conformance witnesses, **not a proof that the Go
 implementation refines the TLA+ specification**, a disk durability experiment,
 or verification of the full daemon.
 
-For #8312/#8313 integration, pin this reviewed specification/configuration,
-tool hash, bounds, and assumptions as trusted artifacts. The independent
-checker's finite-graph candidate format is a separate adapter boundary; this
-directory does not claim that adapter has verified this model or fabricate a
-`VerificationReport`. Publication requires recording the real subject,
-specification, context, and checker evidence artifacts first. Any successful
-`proven` outcome must be explicitly scoped to this finite model, not to the Go
-implementation, arbitrary application code, or provider effects.
+For #8312/#8313 integration, the checker's `reviewed-native` mode pins and checks
+these actual source/configuration bytes, without translating them to an editable
+finite graph. `TestIntegrationTLCReviewedNative` runs both configurations and a
+timeout through deterministic dispatch, a real disk journal, and Backprop
+projection. It reproduced the counts above and accepted `proven`,
+`counterexample`, and `inconclusive` reports respectively.
+
+See the [checker example](../../../examples/backprop-tlc/README.md) for tool setup,
+the reviewed manifest boundary, and the integration command. The source bytes
+are the report's subject; the exact source/configuration bundle is its
+specification. Changing `TrustCheckpoint` changes that specification and context,
+not the source subject: the negative control is not a repaired Go implementation.
+
+The runner records these artifacts, runtime/tool pins, execution provenance and
+actual checker stdout before publication. A successful `proven` outcome is
+explicitly scoped to this finite model, not to the Go implementation, arbitrary
+application code, or provider effects.

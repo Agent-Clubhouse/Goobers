@@ -1476,6 +1476,21 @@ jobs:
           java-version: "21"
           cache: maven
 
+      - name: Provision pinned TLC integration checker
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar="$RUNNER_TEMP/goobers-tla2tools-1.8.0.jar"
+          curl --fail --location --retry 3 \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar \
+            --output "$jar"
+          printf '%s  %s\n' e20447644bfabd29d6bd0fc2c0eb1473fb301c1a0e4dfe1961938ce5a191edbf "$jar" \
+            | sha256sum --check --status
+          runtime="$RUNNER_TEMP/goobers-tlc-java"
+          cp -RL "$JAVA_HOME" "$runtime"
+          echo "GOOBERS_TEST_TLC_JAR=$jar" >> "$GITHUB_ENV"
+          echo "GOOBERS_TEST_JAVA_HOME=$runtime" >> "$GITHUB_ENV"
+
       # #4615: the .NET and Python reference-gaggle legs. The gaggles declare
       # dotnet@9 and python@3.12; these pins are what lets their tier rows in
       # docs/guides/stack-support.md claim "Shipped, CI-green".
@@ -1751,6 +1766,8 @@ jobs:
         run: |
           set -euo pipefail
           make test-integration-strict 2>&1 | tee integration-tier.log
+          grep -Fq -- '--- PASS: TestIntegrationTLC (' integration-tier.log
+          grep -Fq -- '--- PASS: TestIntegrationTLCReviewedNative (' integration-tier.log
           grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' integration-tier.log
           grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' integration-tier.log
           # #4615: the .NET and Python rows in docs/guides/stack-support.md claim
