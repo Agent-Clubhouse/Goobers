@@ -752,10 +752,12 @@ func shippedWorkflowChecks(tools toolchain, environment []string) []check {
 }
 
 func newShippedWorkflowCheck(tools toolchain, environment []string) check {
+	// JSON preserves the timeout panic and active-test stacks while adding
+	// elapsed events for every completed workflow and scenario.
 	return check{
 		label:   "shipped-workflows",
 		command: tools.goCommand,
-		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
+		args:    []string{"test", "-json", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
 		env:     environment,
 		group:   groupShipped,
 	}
