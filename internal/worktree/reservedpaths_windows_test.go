@@ -58,4 +58,12 @@ func TestRemoveWindowsReservedCleanupPathsSkipsSettledTargets(t *testing.T) {
 	if err := removeWindowsReservedCleanupPaths(ctx, t.TempDir()); err != nil {
 		t.Fatalf("repository-less target: %v", err)
 	}
+	dangling := t.TempDir()
+	gitFile := "gitdir: " + filepath.ToSlash(filepath.Join(t.TempDir(), "missing-admin", "wt1")) + "\n"
+	if err := os.WriteFile(filepath.Join(dangling, ".git"), []byte(gitFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeWindowsReservedCleanupPaths(ctx, dangling); err != nil {
+		t.Fatalf("dangling gitfile target: %v", err)
+	}
 }

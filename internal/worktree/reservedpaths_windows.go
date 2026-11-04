@@ -11,11 +11,16 @@ import (
 func removeWindowsReservedCleanupPaths(ctx context.Context, repository string) error {
 	// Gone or repository-less targets were already settled by the cleanup guard;
 	// there is no checkout whose untracked reserved paths could block removal.
-	if _, err := os.Lstat(filepath.Join(repository, ".git")); err != nil {
+	dotGit := filepath.Join(repository, ".git")
+	info, err := os.Lstat(dotGit)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("inspect cleanup repository: %w", err)
+	}
+	if info.Mode().IsRegular() && danglingCleanupGitFile(repository, dotGit) {
+		return nil
 	}
 	selected, err := runCleanupGitOutput(ctx, repository, "list untracked cleanup paths", "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
@@ -39,6 +44,25 @@ func removeWindowsReservedCleanupPaths(ctx context.Context, repository string) e
 		}
 	}
 	return nil
+}
+
+// danglingCleanupGitFile reports whether a worktree .git file names an admin
+// directory that no longer exists, matching the recovery guard's settled state.
+func danglingCleanupGitFile(repository, dotGit string) bool {
+	content, err := os.ReadFile(dotGit)
+	if err != nil {
+		return false
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(content)), "gitdir:")
+	gitdir = strings.TrimSpace(gitdir)
+	if !ok || gitdir == "" {
+		return false
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(repository, gitdir)
+	}
+	_, err = os.Lstat(gitdir)
+	return os.IsNotExist(err)
 }
 
 func lexicallyLocalCleanupPath(path string) bool {
