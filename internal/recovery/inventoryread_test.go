@@ -136,3 +136,98 @@ func TestReadInventoryRefusesMissingOrWrongSizeArchive(t *testing.T) {
 		}
 	}
 }
+
+func TestReadInventoryReconcilesStaleRetentionTemp(t *testing.T) {
+	root := t.TempDir()
+	record := storageTestRecord()
+	directory := seedInventoryRecord(t, root, record)
+	extended := record
+	extended.RetainUntil = extended.RetainUntil.Add(time.Hour)
+	data, err := Encode(extended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, retentionFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temp := filepath.Join(directory, "."+retentionFileName+".tmp-123")
+	if err := os.WriteFile(temp, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadInventory(context.Background(), root, 1)
+	if err != nil || len(entries) != 1 || entries[0].Record != record {
+		t.Fatalf("inventory with stale retention temp = %+v, %v", entries, err)
+	}
+	if _, err := os.Lstat(temp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale retention temp survived reconciliation: %v", err)
+	}
+	if got, err := ReadRetainedRecord(entries[0].RecordPath); err != nil || got != extended {
+		t.Fatalf("retention floor changed during reconciliation: %+v, %v", got, err)
+	}
+}
+
+func TestReadInventoryDoesNotRaceActiveRetentionWriter(t *testing.T) {
+	root := t.TempDir()
+	directory := seedInventoryRecord(t, root, storageTestRecord())
+	temp := filepath.Join(directory, "."+retentionFileName+".tmp-456")
+	if err := os.WriteFile(temp, []byte("in flight"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := platformlock.TryAcquire(filepath.Join(directory, ".publish.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handle.Release() }()
+
+	if entries, err := ReadInventory(context.Background(), root, 1); !errors.Is(err, platformlock.ErrHeld) || entries != nil {
+		t.Fatalf("active retention writer was bypassed: %+v, %v", entries, err)
+	}
+	if data, err := os.ReadFile(temp); err != nil || string(data) != "in flight" {
+		t.Fatalf("active writer temp changed: %q, %v", data, err)
+	}
+}
+
+func TestReadInventoryRejectsUnknownOrNonRegularRetentionTemp(t *testing.T) {
+	for _, name := range []string{"operator-evidence", "." + retentionFileName + ".tmp-789"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			directory := seedInventoryRecord(t, root, storageTestRecord())
+			path := filepath.Join(directory, name)
+			if name == "operator-evidence" {
+				if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			if entries, err := ReadInventory(context.Background(), root, 1); err == nil || entries != nil {
+				t.Fatalf("unrecognized reservation content accepted: %+v, %v", entries, err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("unrecognized reservation content removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestReadInventoryRejectsSymlinkRetentionTemp(t *testing.T) {
+	root := t.TempDir()
+	directory := seedInventoryRecord(t, root, storageTestRecord())
+	target := filepath.Join(root, "operator-evidence")
+	if err := os.WriteFile(target, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temp := filepath.Join(directory, "."+retentionFileName+".tmp-987")
+	if err := os.Symlink(target, temp); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if entries, err := ReadInventory(context.Background(), root, 1); err == nil || entries != nil {
+		t.Fatalf("symlink retention temp accepted: %+v, %v", entries, err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "preserve" {
+		t.Fatalf("symlink target changed: %q, %v", data, err)
+	}
+}
