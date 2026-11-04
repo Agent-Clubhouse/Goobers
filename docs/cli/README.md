@@ -5702,13 +5702,15 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 Labs: cluster configured workflows by structural shape
 
 ~~~text
-Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]
+Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
 
 Labs (experimental, advisory). Cluster the instance's configured workflows by
 structural shape (node kinds, gates, retries, parallelism, graph topology)
 with HDBSCAN, and report each cluster's medoid, members, stability, and
 distinguishing features. Workflows that fit no dense group are reported as
-noise. Node names and goal text never contribute. Nothing is modified
+noise. Node names and goal text never contribute. With --stratify gaggle,
+also test whether clusters merely track gaggle boundaries (a confound);
+that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
 ~~~
 
@@ -5717,6 +5719,7 @@ noise. Node names and goal text never contribute. Nothing is modified
 ~~~console
 $ goobers workflow clusters
 $ goobers workflow clusters --min-cluster-size 4 --json
+$ goobers workflow clusters --stratify gaggle
 ~~~
 
 ## `goobers workflow show`

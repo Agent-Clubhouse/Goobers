@@ -27,11 +27,11 @@ func workflowCommands() cliCommand {
 		coreSubcommand("workflow clusters", "clusters", apicontract.ActionReadOnlyNavigation, runWorkflowClusters).
 			withSynopsis(workflowClustersSynopsis).
 			withHelp("Labs: cluster configured workflows by structural shape", workflowcluster.CLIHelp).
-			withExamples("goobers workflow clusters", "goobers workflow clusters --min-cluster-size 4 --json"),
+			withExamples("goobers workflow clusters", "goobers workflow clusters --min-cluster-size 4 --json", "goobers workflow clusters --stratify gaggle"),
 	).withHelp("inspect workflows and validate child proposals", workflowHelp)
 }
 
-const workflowClustersSynopsis = "  goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]\n                                Labs: cluster configured workflows by structural shape\n"
+const workflowClustersSynopsis = "  goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n                                Labs: cluster configured workflows by structural shape\n"
 
 func runWorkflowClusters(args []string, stdout, stderr io.Writer) int {
 	return workflowcluster.RunCLI(args, newCLIFlagSet("workflow clusters", flag.ContinueOnError), stdout, stderr)
