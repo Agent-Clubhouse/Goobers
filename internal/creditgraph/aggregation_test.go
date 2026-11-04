@@ -3,6 +3,7 @@ package creditgraph
 import (
 	"encoding/json"
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -199,6 +200,75 @@ func TestAggregateAttributionEvidencePreservesDistinctPaths(t *testing.T) {
 	}
 	if got[0].TopContributingPaths[0].Nodes[0] != "root" {
 		t.Fatalf("first path = %#v, want root-prefixed path", got[0].TopContributingPaths[0].Nodes)
+	}
+}
+
+func TestAggregateAttributionEvidenceGroupsRealProjectedRunPaths(t *testing.T) {
+	project := func(runID, digest string) AttributionObservation {
+		attribution := attributeGraph(t, Input{
+			RunID: runID, Workflow: "implementation",
+			Events: failingStageEvents(digest),
+			SpanData: map[string][]byte{digest: transcript(
+				`{"role":"assistant","model":"gpt-5","usage":{"input_tokens":10,"output_tokens":4}}`,
+			)},
+		})
+		var model Contribution
+		for _, contribution := range attribution.Contributions {
+			if contribution.Kind == KindModelInvocation {
+				model = contribution
+				break
+			}
+		}
+		if model.NodeID == "" {
+			t.Fatalf("run %s attribution has no model contribution: %+v", runID, attribution.Contributions)
+		}
+		detail := "share=" + formatFloat(model.Share) + ", confidence=" + formatFloat(model.Confidence)
+		return AttributionObservation{
+			RunID: runID, Workflow: "implementation", EffectiveVersion: "version", Workload: "item",
+			Attribution: attribution,
+			Evidence: []AttributionEvidenceLink{{
+				RunID: runID, NodeID: model.NodeID, Stage: model.Stage, Detail: detail, Source: "contribution",
+				JournalSequence: 4, JournalPath: "gaggles/goobers/runs/" + runID + "/events.jsonl",
+				ArtifactPath: "spans/" + digest, ArtifactDigest: digest,
+			}},
+		}
+	}
+
+	observations := []AttributionObservation{
+		project("run-a", "sha256:span-a"),
+		project("run-b", "sha256:span-b"),
+	}
+	got := AggregateAttributionEvidence(observations)
+	if len(got) != 1 || len(got[0].TopContributingPaths) != 1 {
+		t.Fatalf("cohorts = %+v, want one cohort with one structural model path", got)
+	}
+	path := got[0].TopContributingPaths[0]
+	wantNodes := []string{"outcome", "run:implementation", "stage:implement", "subagent:root", "model:gpt-5"}
+	if !reflect.DeepEqual(path.Nodes, wantNodes) {
+		t.Fatalf("path nodes = %#v, want %#v", path.Nodes, wantNodes)
+	}
+	if len(path.Evidence) != 2 {
+		t.Fatalf("path evidence = %+v, want exact links from both runs", path.Evidence)
+	}
+	for index, runID := range []string{"run-a", "run-b"} {
+		if path.Evidence[index].RunID != runID ||
+			path.Evidence[index].JournalPath != "gaggles/goobers/runs/"+runID+"/events.jsonl" {
+			t.Fatalf("evidence %d = %+v, want exact %s journal reference", index, path.Evidence[index], runID)
+		}
+	}
+	if path.Evidence[0].ArtifactDigest == path.Evidence[1].ArtifactDigest {
+		t.Fatalf("evidence = %+v, want each run's exact span digest retained", path.Evidence)
+	}
+
+	for observationIndex := range observations {
+		for contributionIndex := range observations[observationIndex].Attribution.Contributions {
+			observations[observationIndex].Attribution.Contributions[contributionIndex].StructuralPath = nil
+		}
+	}
+	retained := AggregateAttributionEvidence(observations)
+	if len(retained) != 1 || len(retained[0].TopContributingPaths) != 1 ||
+		!reflect.DeepEqual(retained[0].TopContributingPaths[0].Nodes, wantNodes) {
+		t.Fatalf("retained-record cohorts = %+v, want the same stable structural path", retained)
 	}
 }
 

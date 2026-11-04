@@ -109,11 +109,16 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		aggregation.GroundTruth = summarizeGroundTruth(group)
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
+			structuralContributions := make(map[string]Contribution, len(observation.Attribution.Contributions))
+			for _, contribution := range observation.Attribution.Contributions {
+				structuralContributions[contribution.NodeID] = contribution
+			}
 			for _, contribution := range observation.Attribution.Contributions {
 				if !surfaceContributionPath(contribution) {
 					continue
 				}
-				pathNodes := contributionPath(contribution)
+				exactPath := contributionPath(contribution)
+				pathNodes := aggregateContributionPath(contribution, observation, structuralContributions)
 				if len(pathNodes) == 0 {
 					continue
 				}
@@ -132,7 +137,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
 					observation,
-					lastNode(pathNodes),
+					lastNode(exactPath),
 					contribution.Stage,
 					detail,
 					"contribution",
@@ -247,6 +252,107 @@ func contributionPath(contribution Contribution) []string {
 		return nil
 	}
 	return []string{contribution.NodeID}
+}
+
+func aggregateContributionPath(
+	contribution Contribution,
+	observation AttributionObservation,
+	structuralContributions map[string]Contribution,
+) []string {
+	if len(contribution.StructuralPath) > 0 {
+		path := contributionPath(Contribution{Path: contribution.StructuralPath})
+		if len(path) > 0 {
+			return path
+		}
+	}
+	path := contributionPath(contribution)
+	own := runNodeID(observation.RunID)
+	for index, nodeID := range path {
+		switch {
+		case nodeID == own:
+			path[index] = string(KindRun) + ":" + observation.Workflow
+		case structuralContributions[nodeID].NodeID != "":
+			path[index] = legacyStructuralNodeID(structuralContributions[nodeID])
+		default:
+			path[index] = legacyStructuralPathNode(nodeID)
+		}
+	}
+	return path
+}
+
+func legacyStructuralNodeID(contribution Contribution) string {
+	switch contribution.Kind {
+	case KindOutcome:
+		return string(KindOutcome)
+	case KindStage:
+		if contribution.Label != "" {
+			return string(KindStage) + ":" + contribution.Label
+		}
+		if contribution.Stage != "" {
+			return string(KindStage) + ":" + contribution.Stage
+		}
+	case KindRun, KindSubagent, KindTool, KindEvidence, KindEvaluator:
+		if contribution.Label == "" {
+			break
+		}
+		return string(contribution.Kind) + ":" + contribution.Label
+	case KindModelInvocation:
+		if contribution.Label == "" {
+			break
+		}
+		return "model:" + contribution.Label
+	case KindToolCall:
+		if contribution.Label == "" {
+			break
+		}
+		return "toolcall:" + contribution.Label
+	case KindToolResult:
+		return "toolresult"
+	case KindRuntime, KindEnvironment:
+		if contribution.Label == "" {
+			break
+		}
+		return string(contribution.Kind) + ":" + contribution.Label
+	}
+	return contribution.NodeID
+}
+
+func legacyStructuralPathNode(nodeID string) string {
+	switch {
+	case strings.HasPrefix(nodeID, string(KindStage)+":"):
+		return trimNumericOccurrence(nodeID)
+	case strings.HasPrefix(nodeID, "evaluator:"):
+		return trimNumericOccurrence(nodeID)
+	case strings.HasPrefix(nodeID, "model:"),
+		strings.HasPrefix(nodeID, "toolcall:"),
+		strings.HasPrefix(nodeID, "toolresult:"):
+		hash := strings.LastIndex(nodeID, "#")
+		at := strings.LastIndex(nodeID, "@")
+		if at >= 0 && hash > at && numeric(nodeID[hash+1:]) {
+			return nodeID[:at] + nodeID[hash:]
+		}
+	}
+	return nodeID
+}
+
+func trimNumericOccurrence(nodeID string) string {
+	hash := strings.LastIndex(nodeID, "#")
+	if hash >= 0 && numeric(nodeID[hash+1:]) {
+		return nodeID[:hash]
+	}
+	return nodeID
+}
+
+func numeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func observationEvidence(observation AttributionObservation, nodeID, stage, detail, source string) []AttributionEvidenceLink {

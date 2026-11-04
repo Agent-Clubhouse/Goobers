@@ -46,17 +46,19 @@ const (
 // what the node is estimated to have contributed, so a tool that succeeded
 // inside a failing run scores positive and the failing stage scores negative.
 type Contribution struct {
-	NodeID      string     `json:"nodeId"`
-	Kind        NodeKind   `json:"kind"`
-	Label       string     `json:"label,omitempty"`
-	Stage       string     `json:"stage,omitempty"`
-	Path        []string   `json:"path,omitempty"`
-	Attempt     int        `json:"attempt,omitempty"`
-	Share       float64    `json:"share"`
-	Score       float64    `json:"score"`
-	Uncertainty float64    `json:"uncertainty"`
-	Confidence  float64    `json:"confidence"`
-	Provenance  Provenance `json:"provenance"`
+	NodeID string   `json:"nodeId"`
+	Kind   NodeKind `json:"kind"`
+	Label  string   `json:"label,omitempty"`
+	Stage  string   `json:"stage,omitempty"`
+	Path   []string `json:"path,omitempty"`
+	// StructuralPath retains node semantics while omitting run-local identity.
+	StructuralPath []string   `json:"structuralPath,omitempty"`
+	Attempt        int        `json:"attempt,omitempty"`
+	Share          float64    `json:"share"`
+	Score          float64    `json:"score"`
+	Uncertainty    float64    `json:"uncertainty"`
+	Confidence     float64    `json:"confidence"`
+	Provenance     Provenance `json:"provenance"`
 }
 
 // CauseFinding is one classified failure cause, with the assumptions it rests
@@ -224,8 +226,9 @@ func Attribute(graph *Graph) Attribution {
 		uncertainty = combine(uncertainty, a.subtreeUncertainty(node.ID))
 		attribution.Contributions = append(attribution.Contributions, Contribution{
 			NodeID: node.ID, Kind: node.Kind, Label: node.Label, Stage: node.Stage,
-			Path:    append([]string(nil), a.bestPath[node.ID]...),
-			Attempt: node.Attempt, Share: round(share), Score: round(share * a.signOf(node)),
+			Path:           append([]string(nil), a.bestPath[node.ID]...),
+			StructuralPath: a.structuralPath(a.bestPath[node.ID]),
+			Attempt:        node.Attempt, Share: round(share), Score: round(share * a.signOf(node)),
 			Uncertainty: round(uncertainty), Confidence: round(1 - uncertainty),
 			Provenance: node.Provenance,
 		})
@@ -233,6 +236,48 @@ func Attribute(graph *Graph) Attribution {
 	attribution.Causes = a.classify(attribution)
 	attachClaims(graph, &attribution)
 	return attribution
+}
+
+func (a *attributor) structuralPath(path []string) []string {
+	structural := make([]string, 0, len(path))
+	for _, nodeID := range path {
+		node, ok := a.graph.Node(nodeID)
+		if !ok {
+			structural = append(structural, nodeID)
+			continue
+		}
+		structural = append(structural, structuralNodeID(node))
+	}
+	return structural
+}
+
+func structuralNodeID(node Node) string {
+	switch node.Kind {
+	case KindOutcome:
+		return string(KindOutcome)
+	case KindRun:
+		return string(KindRun) + ":" + node.Label
+	case KindStage:
+		return string(KindStage) + ":" + node.Label
+	case KindSubagent:
+		return string(KindSubagent) + ":" + node.Label
+	case KindModelInvocation:
+		return "model:" + node.Label
+	case KindToolCall:
+		return "toolcall:" + node.Label
+	case KindToolResult:
+		return "toolresult:" + node.Attributes["success"]
+	case KindTool:
+		return string(KindTool) + ":" + node.Label
+	case KindEvidence:
+		return string(KindEvidence) + ":" + node.Label
+	case KindEvaluator:
+		return string(KindEvaluator) + ":" + node.Label
+	case KindRuntime, KindEnvironment:
+		return string(node.Kind) + ":" + node.Attributes["component"] + ":" + node.Label
+	default:
+		return node.ID
+	}
 }
 
 // propagate splits a node's responsibility mass across its out-edges,
