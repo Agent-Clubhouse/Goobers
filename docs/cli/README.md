@@ -28,7 +28,7 @@
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
-| [`goobers workflow clusters`](#goobers-workflow-clusters) | Labs: cluster configured workflows by structural shape |
+| [`goobers workflow clusters`](#goobers-workflow-clusters) | Labs: cluster workflows by structural shape or run behavior |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 | [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
@@ -5690,7 +5690,7 @@ inspect workflows and validate child proposals
 Usage: goobers workflow <show | validate-child | clusters> [flags]
 
 Show a workflow DAG, validate a generated child proposal against its configured parent,
-or (Labs) cluster configured workflows by structural shape.
+or (Labs) cluster workflows by structural shape or run behavior.
 
 Workflow
 
@@ -5699,16 +5699,30 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 
 ## `goobers workflow clusters`
 
-Labs: cluster configured workflows by structural shape
+Labs: cluster workflows by structural shape or run behavior
 
 ~~~text
-Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
+Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
 
-Labs (experimental, advisory). Cluster the instance's configured workflows by
-structural shape (node kinds, gates, retries, parallelism, graph topology)
-with HDBSCAN, and report each cluster's medoid, members, stability, and
-distinguishing features. Workflows that fit no dense group are reported as
-noise. Node names and goal text never contribute. With --stratify gaggle,
+Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
+and report each cluster's medoid, members, stability, and distinguishing
+features. Points that fit no dense group are reported as noise.
+
+--features structural (default) clusters configured workflows by structural
+shape (node kinds, gates, retries, parallelism, graph topology).
+
+--features behavior clusters what runs actually did: it reads terminal run
+journals (agent-authored child runs included), derives a behavior
+descriptor per run (stage-visit patterns, attempts and retries, gate,
+escalation and human hits, fan-out, child spawns and dispositions, usage,
+duration, outcome, near misses), and clusters one point per workflow
+EffectiveVersion cohort from each feature's mean and p90. Runs without a
+defined EffectiveVersion are excluded. --since keeps runs started within
+that Go duration, --max-runs bounds the journals read (newest first), and
+cohorts with fewer than --min-samples runs are dropped.
+
+Node names, stage names, and goal text never contribute. Structural and
+behavior features are never mixed in one model. With --stratify gaggle,
 also test whether clusters merely track gaggle boundaries (a confound);
 that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
@@ -5720,6 +5734,7 @@ that check is observational, not gym-controlled. Nothing is modified
 $ goobers workflow clusters
 $ goobers workflow clusters --min-cluster-size 4 --json
 $ goobers workflow clusters --stratify gaggle
+$ goobers workflow clusters --features behavior --since 720h --json
 ~~~
 
 ## `goobers workflow show`
