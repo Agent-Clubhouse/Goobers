@@ -3674,13 +3674,15 @@ Workflow
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
 
 ### workflow clusters
-Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--json] [path]
+Usage: goobers workflow clusters [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
 
 Labs (experimental, advisory). Cluster the instance's configured workflows by
 structural shape (node kinds, gates, retries, parallelism, graph topology)
 with HDBSCAN, and report each cluster's medoid, members, stability, and
 distinguishing features. Workflows that fit no dense group are reported as
-noise. Node names and goal text never contribute. Nothing is modified
+noise. Node names and goal text never contribute. With --stratify gaggle,
+also test whether clusters merely track gaggle boundaries (a confound);
+that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
 
 ### workflow show

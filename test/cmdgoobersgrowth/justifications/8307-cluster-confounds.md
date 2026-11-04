@@ -1,0 +1,1 @@
+Labs confound checks (#8307): cmd/goobers grows by one line, the completion entry for the new `workflow clusters --stratify gaggle` flag. The confound statistics, strata derivation, and report rendering live in internal/workflowcluster; the command only forwards the flag.

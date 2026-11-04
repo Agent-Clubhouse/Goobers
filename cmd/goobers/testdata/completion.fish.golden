@@ -261,6 +261,7 @@ complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_su
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l json -d 'Emit structured diagnostics and digests'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l min-cluster-size -r -d 'Smallest group reported as a cluster'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l seed -r -d 'Seed for stability resampling'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l stratify -r -a 'gaggle' -d 'Confound axis to test clusters against (gaggle)'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l json -d 'Emit the fitted model as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
