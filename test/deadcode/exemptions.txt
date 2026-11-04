@@ -284,8 +284,8 @@ github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until h
 
 # #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
 # capture activation before all three approved slices land. Remove on activation.
-github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
-github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests; #6356 still open. expires=2027-01-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes; #6356 still open. expires=2027-01-01
 
 # #4424 defines the gaggle-health contract, persistence and rebuild rules only;
 # the daemon evaluation controller that consumes them is #4425. Remove on wiring.
