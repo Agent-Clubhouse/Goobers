@@ -146,7 +146,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	// git.exe cannot find its libexec helpers on Windows (see the comment at the
 	// construction site, and PR #3461 where every contract failed at `git init`
 	// on windows-latest).
-	wantShippedArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
+	wantShippedArgs := []string{"test", "-json", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
 	if shippedCheck.label != "shipped-workflows" ||
 		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
 		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
