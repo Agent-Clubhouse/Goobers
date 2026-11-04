@@ -43,6 +43,11 @@ Cognitive Services User role).
 The result file contains `decision` (`yes`, `no`, `uncertain` or
 `unavailable`), `probability`, `mode`, `fallback` and `stateDigest`.
 
+The optional `--true` and `--false` flags describe what each answer means.
+Either flag can be supplied independently; omitted, empty, or whitespace-only
+values are not sent as criteria. With neither flag, the question's instructions
+alone define the decision.
+
 - In `shadow` mode the model is called and recorded, but the reported decision
   is always `uncertain`, so the step never changes a run's outcome.
 - `uncertain` follows `decisionGate.fallback`: `fail` exits 1, while `agent`
