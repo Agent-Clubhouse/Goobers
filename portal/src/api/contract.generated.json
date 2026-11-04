@@ -421,6 +421,17 @@
       "recoverySafe": false
     },
     {
+      "id": "labsWorkflowClusters",
+      "method": "GET",
+      "path": "/api/v1/labs/workflow-clusters",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "aggregate",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "events",
       "method": "GET",
       "path": "/api/v1/events",

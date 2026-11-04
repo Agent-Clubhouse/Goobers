@@ -31,10 +31,12 @@ export const labsFeatures: readonly LabsFeature[] = [
     description:
       "Clusters agent-authored (dynamic) child workflow proposals using structural features and aggregated run behavior. " +
       "Recurring successful shapes become template candidates, proposals that match no known cluster are flagged for closer review, " +
-      "and cluster occupancy is tracked across model, harness, and authoring-skill versions. Results are advisory only.",
-    maturity: "concept",
-    availability: "coming-soon",
+      "and cluster occupancy is tracked across model, harness, and authoring-skill versions. Results are advisory only. " +
+      "The cluster map below groups the instance's configured workflows by structural shape today; run-behavior descriptors and child proposals join it as they land.",
+    maturity: "experimental",
+    availability: "available",
     prerequisites: [
+      "At least three configured workflows for the cluster map (more give more stable clusters)",
       "Agent-authored child workflows enabled (preview DSL 3.1)",
       "Retained child workflow proposals and run outcomes in the journal",
       "Enough proposals per task cohort to form stable clusters",
