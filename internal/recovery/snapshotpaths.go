@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 // Bound path-list storage separately from archive bytes. Exceeding this bound
@@ -62,18 +64,28 @@ func snapshotPathsWithPolicy(ctx context.Context, repository, directory string, 
 func writeExistingSnapshotPaths(repository string, data []byte, destination io.Writer) error {
 	for len(data) > 0 {
 		name, rest, complete := bytes.Cut(data, []byte{0})
-		if !complete || !filepath.IsLocal(string(name)) {
-			return fmt.Errorf("invalid recovery snapshot path list")
+		if !complete {
+			return fmt.Errorf("invalid recovery snapshot path list after %q", name)
+		}
+		path := string(name)
+		if !filepath.IsLocal(path) {
+			if runtime.GOOS == "windows" && lexicallyLocalSnapshotPath(path) {
+				// Git can enumerate literal DOS device names created by a
+				// POSIX shell, but native Windows APIs cannot safely capture them.
+				data = rest
+				continue
+			}
+			return fmt.Errorf("invalid recovery snapshot path %q", path)
 		}
 		data = rest
-		info, err := os.Lstat(filepath.Join(repository, string(name)))
+		info, err := os.Lstat(filepath.Join(repository, path))
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("recovery snapshot path disappeared after selection: %q", name)
 		} else if err != nil {
 			return err
 		}
 		if info.IsDir() {
-			if _, err := os.Lstat(filepath.Join(repository, string(name), ".git")); err == nil {
+			if _, err := os.Lstat(filepath.Join(repository, path, ".git")); err == nil {
 				return ErrNestedRecoveryRequired
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -84,4 +96,13 @@ func writeExistingSnapshotPaths(repository string, data []byte, destination io.W
 		}
 	}
 	return nil
+}
+
+func lexicallyLocalSnapshotPath(path string) bool {
+	if path == "" || filepath.VolumeName(path) != "" || strings.Contains(path, ":") ||
+		strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) {
+		return false
+	}
+	clean := filepath.Clean(path)
+	return clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
