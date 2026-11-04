@@ -84,6 +84,7 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
   cost: { path: "/#/cost", heading: "Cost" },
+  labs: { path: "/#/labs", heading: "Labs" },
   "work-items": { path: "/#/work-items", heading: "Work Items" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
