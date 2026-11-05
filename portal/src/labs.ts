@@ -277,8 +277,8 @@ export const labsFeatures: readonly LabsFeature[] = [
       "when unsure, run in shadow first, and are benchmarked against an LLM-judge baseline.",
     maturity: "experimental",
     availability: "available",
-    prerequisites: ["A configured decision model", "Opt-in per stage; off by default"],
-    issues: [6073, 6330, 6334, 8090],
+    prerequisites: ["A configured decision model", "Opt-in per stage; off by default", "For agent stages: decisionGate.agentTool.tasks lists the task"],
+    issues: [6073, 6330, 6334, 8090, 8263, 8264, 8265],
     surfaces: [
       {
         kind: "cli",
@@ -311,6 +311,15 @@ export const labsFeatures: readonly LabsFeature[] = [
           "is safe in shared workflows when the gate is off.",
         code:
           "- name: judge-handoff\n  type: deterministic\n  run:\n    command: [goobers, decide, --name, handoff-complete,\n              --question, \"Does the summary address every requested item?\",\n              --state-file, handoff.json, --accept, \"0.9\", --reject, \"0.1\", --optional]\n  inputs:\n    resultFile: decide.json",
+      },
+      {
+        title: "Let an agent stage ask (opt-in, budgeted)",
+        detail:
+          "Grant the decide tool to specific agent tasks with decisionGate.agentTool. It is denied by default, limited to " +
+          "configured question names, budgeted per stage, and the agent never sees the endpoint or credential. " +
+          "Shadow mode always answers uncertain. Local runner only for now.",
+        code:
+          "decisionGate:\n  mode: shadow\n  agentTool:\n    tasks: [review-handoff]   # specific task ids\n    maxCalls: 5\n  gate:\n    thresholds:\n      handoff-complete: {accept: 0.9, reject: 0.1}",
       },
       {
         title: "Compare against an LLM judge, then enforce",
