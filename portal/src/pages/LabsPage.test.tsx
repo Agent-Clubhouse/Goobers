@@ -71,7 +71,7 @@ describe("LabsPage", () => {
     expect(screen.getByRole("heading", { name: "Labs" })).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "Workflow clustering" });
     expect(link).toHaveAttribute("href", "#/labs/workflow-clustering");
-    for (const name of ["Backprop", "System One decisions", "Workflow Gym", "R-SZZ review evaluation"]) {
+    for (const name of ["Backprop", "System One decisions", "Workflow Gym", "R-SZZ review evaluation", "Fluid UI"]) {
       expect(screen.getByRole("link", { name })).toBeInTheDocument();
     }
     expect(screen.getAllByText("Experimental").length).toBeGreaterThan(0);
@@ -175,6 +175,12 @@ describe("LabsPage", () => {
     expect(screen.getByRole("heading", { name: "Use it in your workflows" })).toBeInTheDocument();
     expect(screen.getByText("goobers workflow clusters --stratify gaggle ./instance")).toBeInTheDocument();
     expect(screen.getByText(/--cluster-model clusters\.json proposal\.yaml/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What's next" })).toBeInTheDocument();
+    expect(screen.getByText("Which shapes actually work")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "#8345" })[0]).toHaveAttribute(
+      "href",
+      "https://github.com/Agent-Clubhouse/Goobers/issues/8345",
+    );
   });
   it("falls back to the catalog for an unknown feature", () => {
     renderLabs(fixtureClient(), "does-not-exist");

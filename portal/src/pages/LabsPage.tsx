@@ -93,6 +93,22 @@ function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature:
         <LabsSteps steps={feature.tryIt} />
         <h2>{feature.availability === "available" ? "Use it in your workflows" : "How it will fit your workflows"}</h2>
         <LabsSteps steps={feature.integrate} />
+        {feature.roadmap && feature.roadmap.length > 0 && (
+          <>
+            <h2>What's next</h2>
+            <ul className="labs-roadmap">
+              {feature.roadmap.map((item) => (
+                <li key={item.issue}>
+                  <strong>{item.title}</strong>{" "}
+                  <a href={`${labsIssueBaseUrl}${item.issue}`} rel="noreferrer" target="_blank">
+                    #{item.issue}
+                  </a>
+                  <p>{item.detail}</p>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
         <h2>How it works</h2>
         <p>{feature.description}</p>
         {feature.surfaces && feature.surfaces.length > 0 && (

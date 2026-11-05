@@ -26,6 +26,15 @@ export interface LabsFeature {
   tryIt: LabsStep[];
   /** How to wire the feature into workflows once it has been tried. */
   integrate: LabsStep[];
+  /** Planned improvements, shown as "What's next" so users can see where the feature is heading. */
+  roadmap?: LabsRoadmapItem[];
+}
+
+export interface LabsRoadmapItem {
+  title: string;
+  /** Why it matters to users, in one or two sentences. */
+  detail: string;
+  issue: number;
 }
 
 export interface LabsStep {
@@ -62,7 +71,7 @@ export const labsFeatures: readonly LabsFeature[] = [
       "At least three configured workflows for the cluster map (more give more stable clusters)",
       "Agent-authored child workflows enabled (preview DSL 3.1) for dynamic-workflow analysis",
       "Retained run journals for behavior clustering",    ],
-    issues: [8302, 8303, 8304, 8305, 8306, 8307, 8308, 8309, 8310, 8311],
+    issues: [8302, 8303, 8304, 8305, 8306, 8307, 8308, 8309, 8310, 8311, 8340, 8341, 8342, 8343, 8344, 8345],
     surfaces: [
       {
         kind: "cli",
@@ -130,6 +139,68 @@ export const labsFeatures: readonly LabsFeature[] = [
         detail:
           "Refit after adding or changing workflows. The model hash changes whenever the feature schema or inputs change, " +
           "so compare hashes to know whether two reports are comparable.",
+      },
+    ],
+    roadmap: [
+      {
+        title: "Which shapes actually work",
+        detail:
+          "Per-cluster success rate, cost, and how often a human had to step in, so you can tell convergence toward a " +
+          "good shape from convergence toward the model's habits.",
+        issue: 8340,
+      },
+      {
+        title: "Convergence over time",
+        detail:
+          "Cluster occupancy across generations and model or harness versions, against a no-selection baseline, so the " +
+          "map shows a trend instead of a snapshot.",
+        issue: 8306,
+      },
+      {
+        title: "Compare like with like",
+        detail:
+          "Cluster within a task cohort (for example PR review vs. deploy) derived from triggers and side effects, never " +
+          "from goal text, so similar-looking workflows for different jobs are not lumped together.",
+        issue: 8341,
+      },
+      {
+        title: "Is it the model, not the workflow?",
+        detail:
+          "Confound checks for model family, harness, skills, and MCP tool set, so clusters that only reflect which " +
+          "model ran are flagged.",
+        issue: 8342,
+      },
+      {
+        title: "Beyond the starter templates",
+        detail:
+          "Mark workflows derived from shipped templates and report clusters that are genuinely new, rather than " +
+          "rediscovering the templates everyone copied.",
+        issue: 8343,
+      },
+      {
+        title: "Better distances at scale",
+        detail:
+          "Feature ablation to show which features drive clusters, less noisy features, and an approximate path for " +
+          "thousands of workflows.",
+        issue: 8344,
+      },
+      {
+        title: "Fleet-wide view (opt-in)",
+        detail:
+          "Instances that opt in publish privacy-safe feature vectors, never workflow text, so a fleet can see what its " +
+          "workflows converge to. Off by default and revocable.",
+        issue: 8345,
+      },
+      {
+        title: "Turn recurring shapes into templates",
+        detail: "Recurring, successful agent-authored shapes become reviewed, reusable templates.",
+        issue: 8310,
+      },
+      {
+        title: "Keep self-improvement diverse",
+        detail:
+          "A quality-diversity archive (MAP-Elites style) so self-improving search does not collapse onto one shape.",
+        issue: 8308,
       },
     ],
   },
@@ -305,6 +376,36 @@ export const labsFeatures: readonly LabsFeature[] = [
         detail:
           "Before changing the merge-review agent's prompt, model, or instructions, you will be able to replay it on " +
           "historical bug-introducing changes and compare its recall and precision with the current reviewer.",
+      },
+    ],
+  },
+  {
+    id: "fluid-ui",
+    name: "Fluid UI",
+    summary:
+      "Describe how you want the Portal to look or behave, and an agent builds it as your own per-user customization.",
+    description:
+      "You write a request such as \"make my run list compact and put failing runs first\". A Goobers agent implements " +
+      "it as a versioned, per-user customization of supported layout, density, panels, and ordering, validates it, and " +
+      "lets you preview, apply, revise, or reset it. Customizations never change other users' experience, global " +
+      "defaults, authorization, or workflow gates. Recurring, well-adopted customizations (ranked by distinct users, " +
+      "not raw requests) become candidates for the standard Portal.",
+    maturity: "concept",
+    availability: "coming-soon",
+    prerequisites: ["Authenticated Portal users", "A per-user customization store"],
+    issues: [8338],
+    tryIt: [
+      {
+        title: "Not implemented yet",
+        detail: "There is nothing to try today. Follow the tracking issue for the first layout and density customizations.",
+      },
+    ],
+    integrate: [
+      {
+        title: "Planned: request, preview, apply",
+        detail:
+          "Enter a request in Labs, follow it in a Feedback tab while an agent builds it, then preview and apply. " +
+          "Undo or reset at any time.",
       },
     ],
   },

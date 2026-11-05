@@ -25,7 +25,8 @@ already ship elsewhere list their portal, CLI, and docs `surfaces` so Labs point
 to where they can be used today. Every entry also has `tryIt` and `integrate`
 steps (with copyable commands or config) that tell users how to try the feature
 and wire it into their workflows; planned features use them to say how to get
-ready. Each
+ready. An optional `roadmap` lists planned improvements with their issues, shown
+as "What's next". Each
 feature's detail page (`#/labs/<id>`) shows a persistent experimental banner.
 Labs features are read-only and advisory: they must not write configuration or
 bypass validation, promotion, or approval gates.
