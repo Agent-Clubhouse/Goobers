@@ -148,6 +148,16 @@ describe("definition routing", () => {
       expect(activeArea(route)).toBe("overview");
     }
   });
+
+  it("round-trips the Labs catalog and feature routes under the Labs area", () => {
+    for (const route of [
+      { page: "labs" as const },
+      { page: "labs" as const, feature: "workflow-clustering" },
+    ]) {
+      expect(parseRoute(routeHash(route))).toEqual(route);
+      expect(activeArea(route)).toBe("labs");
+    }
+  });
 });
 
 describe("Insight routing", () => {

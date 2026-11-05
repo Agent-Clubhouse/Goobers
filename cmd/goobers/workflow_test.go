@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const workflowShowFixture = `apiVersion: goobers.dev/v1alpha1
@@ -167,7 +170,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "Usage: goobers workflow <show | validate-child> [flags]") {
+	if !strings.Contains(stderr, "Usage: goobers workflow <show | validate-child | clusters> [flags]") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 
@@ -175,7 +178,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("workflow help code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "Usage: goobers workflow <show | validate-child> [flags]") {
+	if !strings.Contains(stdout, "Usage: goobers workflow <show | validate-child | clusters> [flags]") {
 		t.Fatalf("workflow help stdout = %q", stdout)
 	}
 
@@ -331,5 +334,133 @@ func TestParallelConcurrencyDescribesEachSetting(t *testing.T) {
 		if got := parallelConcurrency(parallels, "fan"); got != tc.want {
 			t.Fatalf("limit %d: got %q, want %q", tc.limit, got, tc.want)
 		}
+	}
+}
+
+func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
+	root := initDemo(t)
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling := strings.Replace(string(raw), "name: default-implement", "name: sibling-implement", 1)
+	if sibling == string(raw) {
+		t.Fatal("workflow fixture metadata name was not replaced")
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "sibling-implement.yaml"), []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters: code = %d, stderr = %q", code, stderr)
+	}
+	var model struct {
+		Version, FeatureVersion string
+		Population              int
+		Clusters                []struct{ Members []string }
+		Noise                   []string
+	}
+	if err := json.Unmarshal([]byte(stdout), &model); err != nil {
+		t.Fatalf("decode model: %v\n%s", err, stdout)
+	}
+	assigned := len(model.Noise)
+	for _, c := range model.Clusters {
+		assigned += len(c.Members)
+	}
+	if model.Version != "workflowcluster.model/v1" || model.Population < 2 || assigned != model.Population {
+		t.Fatalf("model = %+v", model)
+	}
+
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", root)
+	if code != 0 || !strings.Contains(stdout, "Labs: experimental") {
+		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, _, _ := runArgs(t, "workflow", "clusters", "--min-cluster-size", "1", root); code != 2 {
+		t.Fatalf("min-cluster-size 1: code = %d, want 2", code)
+	}
+}
+
+// TestLabsWorkflowClustersViewMatchesConfiguredInstance pins the daemon's
+// Labs cluster read (#8309) to the same configured data the CLI clusters.
+func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
+	root := initDemo(t)
+	source := workflowcluster.ConfiguredSource{Root: root}
+	view, err := source.WorkflowClusters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Population >= view.MinClusterSize || view.Status != workflowcluster.ViewInsufficientData || view.Model != nil {
+		t.Fatalf("demo view = %+v, want insufficient data", view)
+	}
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"sibling-a", "sibling-b", "sibling-c"} {
+		sibling := strings.Replace(string(raw), "name: default-implement", "name: "+name, 1)
+		if err := os.WriteFile(filepath.Join(workflowDir, name+".yaml"), []byte(sibling), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view, err = source.WorkflowClusters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != workflowcluster.ViewClustered || view.Model == nil || view.Confounds == nil || view.Model.Population != view.Population {
+		t.Fatalf("view = %+v, want a clustered model with confounds", view)
+	}
+	assigned := len(view.Model.Noise)
+	for _, c := range view.Model.Clusters {
+		assigned += len(c.Members)
+	}
+	if assigned != view.Population || view.Confounds.Evidence != workflowcluster.EvidenceObservational {
+		t.Fatalf("model = %+v confounds = %+v", view.Model, view.Confounds)
+	}
+}
+
+func TestWorkflowClustersStratifyReportsConfounds(t *testing.T) {
+	root := initDemo(t)
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling := strings.Replace(string(raw), "name: default-implement", "name: sibling-implement", 1)
+	if err := os.WriteFile(filepath.Join(workflowDir, "sibling-implement.yaml"), []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", "gaggle", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters --stratify: code = %d, stderr = %q", code, stderr)
+	}
+	var out struct {
+		Model struct {
+			Population int
+		}
+		Confounds struct {
+			Evidence   string
+			Strata     []struct{ Key string }
+			Undersized []string
+		}
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout)
+	}
+	if out.Model.Population < 2 || out.Confounds.Evidence != "observational" ||
+		len(out.Confounds.Strata) == 0 || len(out.Confounds.Undersized) == 0 {
+		t.Fatalf("output = %+v", out)
+	}
+
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", "gaggle", root)
+	if code != 0 || !strings.Contains(stdout, "Confounds (stratified by gaggle; evidence: observational)") ||
+		!strings.Contains(stdout, "reported, not pooled") {
+		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if code, _, _ := runArgs(t, "workflow", "clusters", "--stratify", "model", root); code != 2 {
+		t.Fatalf("stratify model: code = %d, want 2", code)
 	}
 }

@@ -393,7 +393,18 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "parent", takesArg: true, valueKind: "workflows", desc: "Configured parent workflow"},
 		{name: "stage", takesArg: true, desc: "Configured parent agentic stage"},
 		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
+		{name: "cluster-model", takesArg: true, valueKind: "file", desc: "Labs: frozen cluster model for advisory novelty"},
 		{name: "json", desc: "Emit structured diagnostics and digests"},
+	},
+	"workflow clusters": {
+		{name: "features", takesArg: true, values: []string{"structural", "behavior"}, desc: "Feature set to cluster (structural or behavior)"},
+		{name: "since", takesArg: true, desc: "Behavior: only runs started within this duration"},
+		{name: "max-runs", takesArg: true, desc: "Behavior: newest run journals to scan"},
+		{name: "min-samples", takesArg: true, desc: "Behavior: runs required per cohort"},
+		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},
+		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
+		{name: "stratify", takesArg: true, values: []string{"gaggle"}, desc: "Confound axis to test clusters against (gaggle)"},
+		{name: "json", desc: "Emit the fitted model as JSON"},
 	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},

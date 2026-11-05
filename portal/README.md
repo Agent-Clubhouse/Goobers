@@ -16,6 +16,20 @@ Work items without a valid HTTP(S) URL remain plain text; the portal never
 guesses a provider from an ID. Workflow authors can publish `url` alongside
 `id` and `title` as described in [the stage contract](../docs/stage-contract.md).
 
+## Labs
+
+The **Labs** nav area (`#/labs`) is the single home for experimental features.
+To add one, append an entry to `labsFeatures` in `src/labs.ts`, setting its
+maturity, its availability, and the tracking issues labeled `labs`. Each
+feature's detail page (`#/labs/<id>`) shows a persistent experimental banner.
+Labs features are read-only and advisory: they must not write configuration or
+bypass validation, promotion, or approval gates.
+
+When a feature becomes `available`, register its view in `labsViews` in
+`src/pages/LabsPage.tsx` so its detail page renders it. The workflow clustering
+view reads `GET /api/v1/labs/workflow-clusters`, which serves the same cluster
+model and gaggle confound check as `goobers workflow clusters --json --stratify gaggle`.
+
 ## Run it
 
 From an instance root, the production portal is one command:

@@ -2216,6 +2216,71 @@ export interface RelatedWorkItem {
   url?: string;
 }
 
+/** One clustered workflow: its id and structural feature values. */
+export interface LabsClusterPoint {
+  id: string;
+  numeric?: Record<string, number>;
+  categorical?: Record<string, string[]>;
+}
+
+export interface LabsClusterAttribution {
+  feature: string;
+  value?: string;
+  effect: number;
+}
+
+export interface LabsWorkflowCluster {
+  id: string;
+  medoid: LabsClusterPoint;
+  members: string[];
+  radius: number;
+  stability: number;
+  stable: boolean;
+  distinguishing?: LabsClusterAttribution[];
+}
+
+export interface LabsClusterModel {
+  version: string;
+  id: string;
+  featureVersion: string;
+  options: { minClusterSize: number; resamples: number; stabilityThreshold: number };
+  population: number;
+  clusters: LabsWorkflowCluster[];
+  noise: string[];
+}
+
+export interface LabsConfoundReport {
+  evidence: "observational" | "gym-controlled";
+  statistic: string;
+  association: number;
+  pValue: number;
+  confounded: boolean;
+  tested: number;
+  unlabeled: number;
+  strata: { key: string; size: number }[];
+  undersized: string[];
+  options: { minStratumSize: number; threshold: number; alpha: number; permutations: number };
+}
+
+/** Labs workflow-cluster read (#8309); mirrors internal/workflowcluster.View. */
+export interface LabsWorkflowClusterView {
+  status: "clustered" | "insufficient-data";
+  population: number;
+  minClusterSize: number;
+  model?: LabsClusterModel;
+  confounds?: LabsConfoundReport;
+  /** 2-D layout of every workflow (classical MDS of the model distances). */
+  map?: LabsClusterMapPoint[];
+}
+
+export interface LabsClusterMapPoint {
+  id: string;
+  x: number;
+  y: number;
+  /** Empty or absent for noise. */
+  cluster?: string;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2231,6 +2296,7 @@ export interface DaemonClient {
   getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
+  getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
