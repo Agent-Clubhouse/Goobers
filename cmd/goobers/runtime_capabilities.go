@@ -150,6 +150,9 @@ func telemetryCLICommand() cliCommand {
 		subcommand("telemetry shadow", "shadow", apicontract.ActionReadOnlyNavigation, runTelemetryShadow).
 			withHelp("compare Backprop shadow-mode findings with actual run outcomes", telemetryShadowHelp).
 			withExamples("goobers telemetry shadow", "goobers telemetry shadow --json --gaggle=goobers"),
+		subcommand("telemetry gaggle", "gaggle", apicontract.ActionReadOnlyNavigation, runTelemetryGaggle).
+			withHelp("report gaggle-wide Backprop credit, recurring findings, trends, and links", telemetryGaggleHelp).
+			withExamples("goobers telemetry gaggle --gaggle=goobers", "goobers telemetry gaggle --gaggle=goobers --json --since=2026-01-01T00:00:00Z"),
 		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),

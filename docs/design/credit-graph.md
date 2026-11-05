@@ -24,7 +24,8 @@ For an operator walkthrough of enabling Backprop, reading attribution and
 fault-audit findings, and verifying fixes, see the
 [Backprop user guide](../guides/backprop.md).
 
-Backprop is opt-in per workflow on DSL 3.0 and 3.1 (preview):
+Backprop is opt-in per workflow, or through gaggle defaults (see
+[Gaggle defaults](#shadow-mode)), on DSL 3.0 and 3.1 (preview):
 
 ```yaml
 dslVersion: "3.0"
@@ -44,7 +45,7 @@ spec:
 
 The legacy `enabled` switch remains supported: `enabled: true` without a mode
 means `active`, and omitting `backprop` or setting `enabled: false` without a
-mode performs no attribution work. When `mode` is set it is authoritative;
+mode performs no attribution work unless the gaggle sets a default. When `mode` is set it is authoritative;
 `enabled: true` is accepted only with `mode: active`; combining it with `off`
 or `shadow` is rejected, because binaries that predate `mode` read only
 `enabled` and would otherwise publish a shadow run's record as active.
@@ -154,14 +155,78 @@ write `attribution.json` and enter the fault audit; earlier shadow runs are
 never backfilled into the active namespace, so promotion does not
 retroactively file findings. Demote by setting `mode: shadow` or `off`.
 
-**Gaggle override.** `gaggle.spec.backprop.mode: off|shadow` observes every
-workflow in the gaggle that does not declare its own mode. Precedence:
-workflow `mode`, then workflow `enabled: true`, then the gaggle override, then
-off. Like a workflow-declared shadow run, an override run writes nothing at
-terminalization; `goobers telemetry shadow` analyzes both kinds from the
-journal on request and compares the findings the
-fault audit would have filed with actual run phases and actual filings. That
-report is read-only and is not read by any gate, filing pass, or default view.
+**Gaggle defaults (#7120).** `gaggle.spec.backprop` sets `mode`
+(`off|shadow|active`), `version` (default `v1`), `granularity`, and
+`groundTruth.sources` for every workflow in the gaggle; `apiv1.ResolveBackprop` is the single resolver.
+Precedence: workflow `mode` (so `mode: off` is the explicit opt-out), then
+workflow `enabled: true`, then the gaggle default, then off. `enabled: false`
+without a mode inherits. A workflow that keeps its own mode still inherits an
+omitted `granularity`, `version`, and `groundTruth`. A workflow's own
+`groundTruth` always wins over the gaggle's, and `sources: []` is the explicit
+opt-out from ground-truth labels.
+
+The two inherited modes take different paths, so neither changes what the
+terminal path reads:
+
+- **Active** is materialized at config load (`instance.ApplyGaggleDefaults`,
+  beside the gaggle CI command and outbox mirror). The resolved config is
+  written into the workflow definition before compile, with `enabled: true`
+  alongside `mode: active` so older readers of `enabled` agree. The
+  definition each run pins therefore records the config it was attributed
+  under, and the runner and engine terminal hooks need no gaggle lookup. Only
+  workflows that can compile Backprop are materialized: `dslVersion` 3.0 or
+  later and the per-workflow preview acknowledgement. Other workflows keep
+  their definition, and read surfaces resolve them as off
+  (`instance.InheritedGaggleBackprop`).
+- **Shadow** stays read-time, as in #7117. It reaches every workflow. Like a
+  workflow-declared shadow run, a run observed through the gaggle default
+  writes nothing at terminalization. `goobers telemetry shadow` analyzes both
+  kinds from the journal on request, reports the source (`workflow` or
+  `gaggle-override`), and compares the findings the fault audit would have
+  filed with actual run phases and actual filings. That report is read-only
+  and is not read by any gate, filing pass, or default view.
+
+Changing a gaggle default from shadow to active promotes only runs that start
+afterwards; a run whose pinned definition predates the change resolves as
+active at read time, so it is no longer shadow-observed, and it has no record.
+Nothing is backfilled.
+
+## Cross-workflow links and gaggle report
+
+`goobers telemetry gaggle --gaggle=<name>` (`readservice.StoredGaggleBackprop`,
+schema `goobers.dev/backprop/gaggle-report/v1`) reads the active records of one
+gaggle's terminal runs over a run-start window (default seven days) and the
+previous window of the same length. It reports per-workflow and per-stage
+credit and blame shares, the top recurring `(workflow, stage, class)` causes
+seen in at least two runs, and per-workflow trends (runs, failure rate, and
+blame share against the previous window). Each window reads at most 500 records
+under the fault audit's scan budget and reports `truncated` (current window)
+or `previousTruncated` (previous window) when either bound is reached. A
+neutral outcome (an escalated run) carries neither credit nor blame, and a
+run whose journal cannot be read is listed in `linkEvidenceUnavailable`
+instead of silently contributing no links.
+
+Each workflow entry also reports its runs' accepted label sources
+(`groundTruthSources`), a `groundTruth` summary over accepted labels only, and
+`ignoredLabelRuns` for runs whose labels their pinned contract refused.
+
+Cross-workflow links follow the credit graph's no-guessed-edges rule (see
+[Why](#why)). An edge
+exists only when two runs recorded the same identifier:
+
+- `shared-external-ref`: both runs recorded a successful reference touch
+  (`journal.Event.IsReferenceTouch`) of the same normative
+  `(provider, kind, id)`. The edge runs from the nearest earlier run of
+  another workflow to the later run, so a handoff chain is a chain rather than
+  a clique. URLs, titles, and content digests are never compared.
+- `continued-from-run`: the later run's identity records `continuedFromRunId`
+  naming an earlier run of a different workflow. A continuation within one
+  workflow is a retry, not a cross-workflow handoff, and is not linked.
+
+There are no timing, similarity, or name-based edges. A workflow's
+`downstreamFailures` counts distinct failed runs of other workflows that such
+an edge places after one of its runs. The report is the gaggle-level input for
+#4664 and #5139; the portal does not consume it yet.
 
 ## Cross-workflow fault audit
 
@@ -284,8 +349,16 @@ change fault-domain classification, finding IDs, or verification state.
 Labels are read-only inputs. Recording one never touches the run journal, the
 attribution record, the run's phase, or any gate verdict.
 
-Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
-workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
+**Accepted sources (#7120).** `backprop.groundTruth.sources` on a workflow or
+its gaggle (workflow wins; see [Gaggle defaults](#shadow-mode)) lists the label
+sources a run accepts; `[]` accepts none and an omitted list accepts every
+supported source. The resolved list is pinned with the run's definition
+(`creditgraph.PinnedGroundTruth`). `RecordLabel` rejects a label whose source
+the run does not accept, and the read path drops such labels before choosing
+the effective label, so a label written outside the CLI cannot weight an
+aggregate either.
+
+Not yet implemented (follow-ups under #7121): deferred signal sources (reverted PR, R-SZZ traced
 bug, reopened issue, main CI breakage), user-provided checker commands, and
 feeding labels into per-run credit propagation (`attribution.json` itself).
 
