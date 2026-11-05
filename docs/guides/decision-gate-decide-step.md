@@ -55,3 +55,14 @@ alone define the decision.
 - When the gate is off the command fails with a clear message. Pass
   `--optional` to report `unavailable` and exit 0 instead, which makes the
   step safe to leave in a shared workflow.
+
+## PR description vs diff (advisory)
+
+`decisiongate.Gate.EvaluateDescription` scores whether a pull request title
+and body agree with its diff. Code computes the facts (changed files, line
+counts and a size bucket) and skips the model for an empty title or diff. The
+model judges one yes/no question behind the `description_matches_diff`
+threshold. The result is `match`, `mismatch` or `unsure`; `unsure` and any error
+leave publishing untouched. It is advisory: a caller may add a review note on
+`mismatch` and must never block on it. The result carries the size bucket and
+probability, not the text, so shadow scores can be compared across diff sizes.
