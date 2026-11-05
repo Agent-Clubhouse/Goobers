@@ -280,6 +280,9 @@ github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until
 github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/creditgraph.SuggestUnknownCauses # Advisory model-assisted ClassUnknown suggestion; unwired until the shadow recorder lands, test-exercised only (#6073).
+github.com/goobers/goobers/internal/creditgraph.assistQuestion # Helper of SuggestUnknownCauses; unwired for the same reason (#6073).
+github.com/goobers/goobers/internal/creditgraph.assistStateOf # Helper of SuggestUnknownCauses; unwired for the same reason (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
 
 # #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
