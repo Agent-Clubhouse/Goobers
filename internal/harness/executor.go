@@ -657,9 +657,8 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Attempt:                  int(env.Attempt),
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
-		ChildWorkflows:           childAccess,
-		Decide:                   e.decideAccess(env),
-		UsageSink:                invoke.AgentUsageStream(ctx),
+		ChildWorkflows:           childAccess, Decide: e.decideAccess(env),
+		UsageSink: invoke.AgentUsageStream(ctx),
 	}
 	if nestedAdapter != nil {
 		if err := validateNestedExecution(req); err != nil {
