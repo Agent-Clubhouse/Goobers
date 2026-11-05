@@ -1768,6 +1768,7 @@ jobs:
           make test-integration-strict 2>&1 | tee integration-tier.log
           grep -Fq -- '--- PASS: TestIntegrationTLC (' integration-tier.log
           grep -Fq -- '--- PASS: TestIntegrationTLCReviewedNative (' integration-tier.log
+          grep -Fq -- '--- PASS: TestIntegrationTLCWorkflow (' integration-tier.log
           grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' integration-tier.log
           grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' integration-tier.log
           # #4615: the .NET and Python rows in docs/guides/stack-support.md claim

@@ -259,30 +259,35 @@ func TestTLCReviewedInputsAndCandidateStaySeparate(t *testing.T) {
 
 func TestTLCRefusesUntrustedInvocationControls(t *testing.T) {
 	base := apiv1.InvocationEnvelope{Inputs: map[string]any{InputTLCManifest: "manifest.json", InputTLCModel: "model.json"}}
-	if err := validateTLCInvocation(base, apiv1.DeterministicRun{}); err != nil {
+	marker := apiv1.DeterministicRun{Command: []string{KindTLC}}
+	if err := validateTLCInvocation(base, marker); err != nil {
 		t.Fatal(err)
 	}
 	for _, run := range []apiv1.DeterministicRun{
+		{},
 		{Command: []string{"fake-checker"}},
-		{Script: "echo proven"},
-		{Env: map[string]string{"JAVA_TOOL_OPTIONS": "-javaagent:untrusted.jar"}},
-		{InjectRunContext: true},
+		{Command: []string{"TLC"}},
+		{Command: []string{"tlc", "-simulate"}},
+		{Command: []string{"tlc", ""}},
+		{Command: []string{KindTLC}, Script: "echo proven"},
+		{Command: []string{KindTLC}, Env: map[string]string{"JAVA_TOOL_OPTIONS": "-javaagent:untrusted.jar"}},
+		{Command: []string{KindTLC}, InjectRunContext: true},
 	} {
 		if err := validateTLCInvocation(base, run); err == nil {
 			t.Fatalf("agent control was accepted: %+v", run)
 		}
 	}
 	base.Capabilities = []string{"repo:push"}
-	if err := validateTLCInvocation(base, apiv1.DeterministicRun{}); err == nil {
+	if err := validateTLCInvocation(base, marker); err == nil {
 		t.Fatal("credential capability was accepted")
 	}
 	base.Capabilities = nil
 	base.Inputs[InputVerificationReport] = true
-	if err := validateTLCInvocation(base, apiv1.DeterministicRun{}); err == nil {
+	if err := validateTLCInvocation(base, marker); err == nil {
 		t.Fatal("agent-authored report path was accepted")
 	}
 	_, err := (&TLCExecutor{Shell: &ShellExecutor{Journal: newFakeRecorder(), ConfigDirectory: "missing"}}).Run(
-		t.Context(), apiv1.InvocationEnvelope{Workspace: "candidate", Inputs: map[string]any{InputTLCManifest: "manifest.json", InputTLCModel: "model.json"}}, apiv1.DeterministicRun{})
+		t.Context(), apiv1.InvocationEnvelope{Workspace: "candidate", Inputs: map[string]any{InputTLCManifest: "manifest.json", InputTLCModel: "model.json"}}, marker)
 	if err == nil {
 		t.Fatal("missing trusted inputs produced a report")
 	}

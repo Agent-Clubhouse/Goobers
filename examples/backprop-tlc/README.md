@@ -19,11 +19,13 @@ both the release and build identity.
 Review the two specification files, then use an existing Python installation:
 
 ```text
-python examples/backprop-tlc/prepare.py --config <runner-config>/verification/example --java-home <absolute-java-runtime> --jar <absolute-tla2tools.jar>
+python examples/backprop-tlc/prepare.py --config <runner-config> --java-home <absolute-java-runtime> --jar <absolute-tla2tools.jar>
 ```
 
 The script only reads installed tools, hashes the full runtime, and writes the
-reviewed spec/config/manifest. It does not install or download anything.
+reviewed spec/config/manifest at the selected runner configuration root. Manifest
+source/config paths are relative to that root, not to the manifest's directory.
+It does not install or download anything.
 `runtimeDigest` is SHA-256 of compact JSON of a sorted array of objects with
 `path` then `digest` fields, containing every regular runtime file. Paths are
 slash-relative to the runtime root; symlinks are rejected. This is the same
@@ -55,26 +57,35 @@ the candidate graph cannot add them.
 ## Workflow opt-in
 
 Use the local **self** runner (remote/pod execution fails closed). Add this
-deterministic task to an enrolled workflow, with no `command` or `script`:
+deterministic task to an enrolled workflow:
 
 ```yaml
 - name: verify-model
   type: deterministic
   run:
-    workspace: repo-readonly
+    command: ["tlc"]
+    workspace: repo
   inputs:
     kind: tlc
-    tlcManifest: verification/example/manifest.json
+    tlcManifest: manifest.json
     tlcModel: examples/backprop-tlc/positive.json
     timeout: 30s
     maxOutputBytes: "1048576"
 ```
 
+[`workflow.yaml`](workflow.yaml) is the complete, schema-validated example used
+by the compiler-to-production-dispatch integration test. Change its `gaggle` to
+your enrolled gaggle. The exact `command: ["tlc"]` is a declarative built-in
+marker satisfying the workflow's command/script admission contract. It is
+**never PATH-resolved or executed**; the runner constructs the actual pinned
+Java/TLC command. Empty commands, other executables, extra arguments, and scripts
+are refused. Keep the existing workflow/engine command guards enabled.
+
 The manifest path is contained in the runner's selected configuration directory,
 not the checkout. The graph path is contained in the candidate workspace.
 Config and candidate roots must be disjoint; runner-owned scratch must be
 outside the candidate root. This kind requires no capabilities and refuses
-credential capabilities, user commands, environment overrides, result files,
+credential capabilities, commands other than the marker, environment overrides, result files,
 and shell-report opt-in. The existing child-process trust refusal, network
 policy, credential-path protection, process-tree cleanup, memory limits,
 environment filtering, and output scrubbing remain enforced by `ShellExecutor`.
@@ -132,7 +143,8 @@ The snippet elides the same required `jar`, `runtime`, `runtimeDigest`, and
 tree and set their exact byte hashes as an **operator review action**; the
 graph-only `prepare.py` helper does not authorize or convert native assets.
 Use only `kind: tlc` and `tlcManifest` in the workflow inputs, plus optional
-timeout/output bounds. **Omit `tlcModel`**: native mode refuses that key even
+timeout/output bounds. Keep `run.command: ["tlc"]`; `run.workspace: scratch`
+is sufficient because no candidate files are read. **Omit `tlcModel`**: native mode refuses that key even
 when its value is empty. Source/config filenames in the manifest are contained
 paths under trusted config, never candidate workspace paths.
 
@@ -179,6 +191,7 @@ absolute root, and `GOOBERS_TEST_TLC_JAR` to the absolute pinned jar path:
 ```text
 GOTOOLCHAIN=go1.26.10 go test ./internal/executor -run '^(TestTLC|TestVerification)' -count=1
 GOTOOLCHAIN=go1.26.10 TESTDEP_STRICT=1 go test -tags=integration ./internal/executor -run '^TestIntegrationTLC(ReviewedNative)?$' -count=1 -v
+GOTOOLCHAIN=go1.26.10 TESTDEP_STRICT=1 go test -tags=integration ./internal/runtimewiring -run '^TestIntegrationTLCWorkflow$' -count=1 -v
 ```
 
 The integration tests declare Java through `testdep.Require`; they never
@@ -190,6 +203,12 @@ runner-owned publication, and acceptance by the Backprop graph:
 | `positive.json` | `proven`: 3 generated / 2 distinct states, 0 queued, depth 2 |
 | `broken.json` | `counterexample`: exit 12, 3 states, trace `0 -> 1 -> 2` |
 | Positive graph, 1 ns execution budget | `inconclusive`: process timeout |
+
+The workflow regression reads `workflow.yaml`, validates its schema, compiles
+the definition, builds the production deterministic-executor registry, and
+executes the compiled task through the engine activity and real TLC. It clears
+PATH after dependency discovery to prove the marker is never PATH-resolved,
+then verifies the resulting disk-journal evidence is accepted by Backprop.
 
 The native integration test reads the actual source and configurations from
 `test/formal/recovery` in this checkout, without a graph translation or duplicate

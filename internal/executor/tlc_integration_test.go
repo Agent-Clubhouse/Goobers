@@ -110,7 +110,7 @@ func TestIntegrationTLC(t *testing.T) {
 			if err := recording.Append(journal.Event{Type: journal.EventStageStarted, Stage: "check", Attempt: 1}); err != nil {
 				t.Fatal(err)
 			}
-			result, err := dispatcher.Run(context.Background(), env, apiv1.DeterministicRun{})
+			result, err := dispatcher.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{KindTLC}, Workspace: apiv1.WorkspaceRepo})
 			if err != nil {
 				t.Fatal(err)
 			}

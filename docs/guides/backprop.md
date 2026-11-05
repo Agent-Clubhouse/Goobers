@@ -91,16 +91,23 @@ tasks:
   - name: verify-model
     type: deterministic
     run:
-      workspace: repo-readonly
+      command: ["tlc"]
+      workspace: repo
     inputs:
       kind: tlc
-      tlcManifest: verification/example/manifest.json
+      tlcManifest: manifest.json
       tlcModel: examples/backprop-tlc/positive.json
       timeout: 30s
 ```
 
 This opt-in path uses the local self runner and existing shell process/trust
-safeguards. It requires no credentials or user command. The manifest lives in
+safeguards. It requires no credentials. The exact `command: ["tlc"]` is a
+declarative built-in marker, never PATH-resolved or executed: the runner builds
+the pinned Java/TLC command. Other commands, arguments, scripts, and environment
+overrides are refused; global command/script admission guards remain unchanged.
+The [complete workflow example](../../examples/backprop-tlc/workflow.yaml) is
+schema-validated, compiled, and dispatched through production registration by
+the integration test. The manifest lives in
 the runner's selected configuration directory, outside the agent-editable
 checkout. Editable graphs contain integer states/edges only: arbitrary candidate
 TLA+, unchecked assumptions, admitted obligations, and module substitutions are
@@ -118,6 +125,7 @@ proof. Model-checking Goobers itself is separate work in
 [#8314](https://github.com/Agent-Clubhouse/Goobers/issues/8314). Its native assets
 can be checked directly with manifest `mode: reviewed-native`, a pinned module,
 source and config under trusted runner config, and **no** `tlcModel` input.
+Keep the same command marker; native mode may use `workspace: scratch`.
 Only closed `Naturals`/`Integers` imports and explicit invariant configuration
 are supported. The requested invariant must be configured; additional invariants
 such as `TypeOK` remain enforced. The report binds the actual native source

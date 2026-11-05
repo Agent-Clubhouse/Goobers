@@ -90,8 +90,13 @@ func (e *TLCExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run
 }
 
 func validateTLCInvocation(env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) error {
-	if len(run.Command) != 0 || run.Script != "" || len(run.Env) != 0 || run.InjectRunContext || len(env.Capabilities) != 0 {
-		return errors.New("tlc: command, script, environment, context injection, and credential capabilities are not supported")
+	// This schema-required marker is declarative, never resolved on PATH.
+	// The actual pinned Java command is constructed from the trusted snapshot.
+	if len(run.Command) != 1 || run.Command[0] != KindTLC {
+		return errors.New(`tlc: command must be exactly ["tlc"]`)
+	}
+	if run.Script != "" || len(run.Env) != 0 || run.InjectRunContext || len(env.Capabilities) != 0 {
+		return errors.New("tlc: script, environment, context injection, and credential capabilities are not supported")
 	}
 	for _, key := range []string{InputVerificationReport, InputResultFile} {
 		if _, exists := env.Inputs[key]; exists {

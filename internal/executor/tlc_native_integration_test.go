@@ -98,7 +98,7 @@ func runTLCNativeIntegration(t *testing.T, root, reviewed, candidate, scratch, t
 	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "check", Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := dispatcher.Run(context.Background(), env, apiv1.DeterministicRun{})
+	result, err := dispatcher.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{KindTLC}, Workspace: apiv1.WorkspaceScratch})
 	if err != nil {
 		t.Fatal(err)
 	}
