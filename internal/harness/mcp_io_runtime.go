@@ -34,6 +34,10 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 		TaskID:               req.Envelope.TaskID,
 		Gaggle:               req.Envelope.Gaggle,
 	}
+	if len(req.PublicationSchemas) > 0 {
+		// The executor resets and journals this log around the invocation.
+		cfg.PublicationReceiptFile = goobersIOPublicationReceiptFile()
+	}
 	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
 	if err != nil {
