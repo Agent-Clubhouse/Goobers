@@ -278,7 +278,6 @@ github.com/goobers/goobers/internal/decider.Score # Unwired decision-model clien
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDeniedDirectory # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
-github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
 
