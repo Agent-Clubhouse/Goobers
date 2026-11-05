@@ -185,10 +185,11 @@ export const labsFeatures: readonly LabsFeature[] = [
         issue: 8344,
       },
       {
-        title: "Fleet-wide view (opt-in)",
+        title: "Fleet convergence across cloud instances",
         detail:
-          "Instances that opt in publish privacy-safe feature vectors, never workflow text, so a fleet can see what its " +
-          "workflows converge to. Off by default and revocable.",
+          "Run convergence over every cloud instance in your fleet: see which workflow shapes the whole fleet settles on, " +
+          "which instances drift from the norm, and where the same shape succeeds on one instance and fails on another. " +
+          "Instances share feature vectors, never workflow text, under a group-granted scope that is off by default and revocable.",
         issue: 8345,
       },
       {
