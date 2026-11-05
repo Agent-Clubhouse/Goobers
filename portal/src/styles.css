@@ -12961,3 +12961,179 @@ select {
 .map-item code {
   color: var(--muted);
 }
+
+/* Labs (#8320): experimental feature catalog and detail pages. */
+.labs-catalog {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.labs-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.labs-card p {
+  color: var(--muted-strong);
+  font-size: var(--font-ui);
+  margin: 8px 0 0;
+}
+
+.labs-card-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.labs-card-heading h2 {
+  font-size: var(--font-section-title);
+  margin: 0;
+}
+
+.labs-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.labs-badge {
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  font-size: var(--font-label);
+  font-weight: 600;
+  padding: 2px 8px;
+  text-transform: uppercase;
+}
+
+.labs-badge-preview {
+  background: var(--active-soft);
+  color: var(--active);
+}
+
+.labs-badge-pending {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.labs-banner,
+.labs-notice {
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: var(--font-ui);
+  margin: 0 0 16px;
+  padding: 10px 14px;
+}
+
+.labs-back {
+  display: inline-block;
+  font-size: var(--font-meta);
+  margin-bottom: 6px;
+}
+
+.labs-detail h2 {
+  font-size: var(--font-section-title);
+  margin: 20px 0 8px;
+}
+
+.labs-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  list-style: none;
+  padding: 0;
+}
+
+/* Labs workflow cluster map (#8309). */
+.labs-clusters-advisory,
+.labs-clusters-meta {
+  color: var(--muted-strong);
+  font-size: var(--font-ui);
+}
+
+.labs-confound {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: var(--font-ui);
+  margin: 0 0 16px;
+  padding: 8px 14px;
+}
+
+.labs-confound p {
+  margin: 4px 0;
+}
+
+.labs-confound-warning {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.labs-cluster-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.labs-cluster h3 {
+  font-size: var(--font-section-title);
+  margin: 0;
+}
+
+.labs-cluster h4 {
+  font-size: var(--font-ui);
+  margin: 12px 0 4px;
+}
+
+.labs-badge-stable {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.labs-cluster-facts {
+  display: grid;
+  font-size: var(--font-ui);
+  gap: 2px 12px;
+  grid-template-columns: max-content 1fr;
+  margin: 10px 0 0;
+}
+
+.labs-cluster-facts dt {
+  color: var(--muted);
+}
+
+.labs-cluster-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.labs-cluster-members,
+.labs-cluster-features {
+  font-size: var(--font-ui);
+  list-style: none;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+}
+
+.labs-effect-up {
+  color: var(--success);
+}
+
+.labs-effect-down {
+  color: var(--danger);
+}

@@ -11,6 +11,10 @@ function __goobers_completion_runs
     command goobers __complete runs 2>/dev/null
 end
 
+function __goobers_completion_file
+    command goobers __complete file 2>/dev/null
+end
+
 function __goobers_completion_escalations
     command goobers __complete escalations 2>/dev/null
 end
@@ -44,7 +48,7 @@ complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (co
 complete -c goobers -n '__fish_seen_subcommand_from temporal; and test (count (commandline -opc)) -eq 2' -f -a 'codec-server'
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
-complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show validate-child'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show validate-child clusters'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (commandline -opc)) -eq 2' -f -a 'list du'
 complete -c goobers -n '__fish_seen_subcommand_from workspace; and test (count (commandline -opc)) -eq 2' -f -a 'reset'
@@ -258,7 +262,16 @@ complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_su
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l parent -r -a '(__goobers_completion_workflows)' -d 'Configured parent workflow'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l stage -r -d 'Configured parent agentic stage'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l backend -r -d 'Advisory validation target: runner or engine'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l cluster-model -r -a '(__goobers_completion_file)' -d 'Labs: frozen cluster model for advisory novelty'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate-child' -l json -d 'Emit structured diagnostics and digests'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l features -r -a 'structural behavior' -d 'Feature set to cluster (structural or behavior)'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l since -r -d 'Behavior: only runs started within this duration'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l max-runs -r -d 'Behavior: newest run journals to scan'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l min-samples -r -d 'Behavior: runs required per cohort'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l min-cluster-size -r -d 'Smallest group reported as a cluster'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l seed -r -d 'Seed for stability resampling'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l stratify -r -a 'gaggle' -d 'Confound axis to test clusters against (gaggle)'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l json -d 'Emit the fitted model as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l phase -r -d 'Filter by phase'
