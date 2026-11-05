@@ -2,8 +2,11 @@ package dispatcher
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var imageCommitTag = regexp.MustCompile(`^([0-9a-f]{40})(-[A-Za-z0-9_.-]+)?$`)
 
 // SkewError is the decision-009 version-skew refusal: the dispatcher launches
 // stage pods only from an image whose tag encodes its own embedded commit
@@ -32,11 +35,12 @@ func (e *SkewError) Error() string {
 // VerifySkew compares the dispatcher's embedded commit sha (and, for
 // release-tagged images, its embedded version) to the image reference's tag —
 // a TAG comparison, never a registry read (decision 009 / DI-6): on the
-// continuous-main channel images are sha-tagged (goobers-base:<40-char-sha>)
-// and tag equality IS commit equality; on a tagged release, tag = version =
-// commit stamp. Everything unverifiable refuses closed with a named
-// diagnostic: no tag, a "latest" tag (#3452), an unstamped dispatcher binary,
-// or a tag that is neither the commit nor the version.
+// continuous-main channel images are sha-tagged, optionally with an identity
+// suffix (goobers-base:<40-char-sha>-<identity>), and commit-part equality IS
+// commit equality; on a tagged release, tag = version = commit stamp.
+// Everything unverifiable refuses closed with a named diagnostic: no tag, a
+// "latest" tag (#3452), an unstamped dispatcher binary, or a tag that is
+// neither the commit form nor the version.
 func VerifySkew(embeddedCommit, embeddedVersion, image string) error {
 	tag := imageTag(image)
 	switch tag {
@@ -46,14 +50,14 @@ func VerifySkew(embeddedCommit, embeddedVersion, image string) error {
 		return &SkewError{Image: image, Reason: `the "latest" tag encodes no commit and is banned on the sha-tag channel (#3452)`}
 	}
 
-	if isCommitSha(tag) {
+	if imageCommit := commitFromImageTag(tag); imageCommit != "" {
 		if !commitStamped(embeddedCommit) {
 			return &SkewError{Image: image, Reason: fmt.Sprintf(
 				"the dispatcher binary itself carries no embedded commit stamp (%q) to compare tag %q against — an unstamped dispatcher cannot verify skew and refuses closed", embeddedCommit, tag)}
 		}
-		if !commitsEqual(embeddedCommit, tag) {
+		if !commitsEqual(embeddedCommit, imageCommit) {
 			return &SkewError{Image: image, Reason: fmt.Sprintf(
-				"image tag sha %q does not equal the dispatcher's embedded commit %q — daemon/dispatcher and image are from different builds (#1061 skew class)", tag, embeddedCommit)}
+				"image tag commit %q does not equal the dispatcher's embedded commit %q — daemon/dispatcher and image are from different builds (#1061 skew class)", imageCommit, embeddedCommit)}
 		}
 		return nil
 	}
@@ -62,7 +66,7 @@ func VerifySkew(embeddedCommit, embeddedVersion, image string) error {
 		return nil
 	}
 	return &SkewError{Image: image, Reason: fmt.Sprintf(
-		"image tag %q is neither a 40-char commit sha equal to the dispatcher's embedded commit nor the dispatcher's release version %q", tag, embeddedVersion)}
+		"image tag %q is neither a 40-char commit sha (optionally followed by an identity suffix) equal to the dispatcher's embedded commit nor the dispatcher's release version %q", tag, embeddedVersion)}
 }
 
 // imageTag extracts the tag from an image reference ("" when absent). A
@@ -80,19 +84,14 @@ func imageTag(image string) string {
 	return ref[colon+1:]
 }
 
-// isCommitSha reports whether tag is a 40-character hex commit sha.
-func isCommitSha(tag string) bool {
-	if len(tag) != 40 {
-		return false
+// commitFromImageTag returns the commit portion of the same
+// <40-hex-commit>(-<identity>)? grammar enforced by k8s preflight.
+func commitFromImageTag(tag string) string {
+	match := imageCommitTag.FindStringSubmatch(tag)
+	if match == nil {
+		return ""
 	}
-	for _, r := range tag {
-		switch {
-		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
-		default:
-			return false
-		}
-	}
-	return true
+	return match[1]
 }
 
 // commitStamped reports whether an embedded commit value is a real stamp
