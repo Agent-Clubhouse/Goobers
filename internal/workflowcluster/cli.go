@@ -94,12 +94,12 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 			snapshotOnly = true
 		}
 	})
-	invalid := fs.NArg() > 1 || *minSize < 2 || (*stratify != "" && *stratify != stratifyGaggle) ||
-		(*features != featuresStructural && *features != featuresBehavior) ||
-		(behaviorOnly && *features != featuresBehavior) || *since < 0 || *maxRuns < 1 || *minSamples < 1 ||
-		(snapshotOnly && !*snapshot) || (*snapshot && (*fleetDir != "" || *asJSON || *stratify != "")) ||
-		(*fleetDir != "" && (fs.NArg() > 0 || *stratify != "" || behaviorOnly))
-	if invalid {
+	parsed := cliArgs{
+		features: *features, stratify: *stratify, fleetDir: *fleetDir, since: *since,
+		maxRuns: *maxRuns, minSamples: *minSamples, minSize: *minSize, nargs: fs.NArg(),
+		asJSON: *asJSON, snapshot: *snapshot, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
+	}
+	if parsed.invalid() {
 		fs.Usage()
 		return 2
 	}
@@ -176,6 +176,23 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		writeConfounds(stdout, *stratify, *confounds)
 	}
 	return 0
+}
+
+// cliArgs holds the parsed flags RunCLI validates together.
+type cliArgs struct {
+	features, stratify, fleetDir                 string
+	since                                        time.Duration
+	maxRuns, minSamples, minSize, nargs          int
+	asJSON, snapshot, behaviorOnly, snapshotOnly bool
+}
+
+// invalid reports flag combinations RunCLI rejects with usage.
+func (a cliArgs) invalid() bool {
+	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && a.stratify != stratifyGaggle) ||
+		(a.features != featuresStructural && a.features != featuresBehavior) ||
+		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
+		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "")) ||
+		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.behaviorOnly))
 }
 
 // behaviorReport is the cohort and scan accounting behind a behavior model.
