@@ -24,6 +24,9 @@ func run() error {
 	minN := flag.Int("min-samples", decisioneval.DefaultMinSamples, "smallest denominator that prints a percentage")
 	repeats := flag.Int("repeats", 3, "runs per item for determinism")
 	flag.Parse()
+	if decisioneval.LiveEnabled(os.Getenv) {
+		fmt.Fprintln(os.Stderr, decisioneval.LiveEnv+" is set, but this command only replays recorded answers; live arms are library-only")
+	}
 	f, err := decisioneval.LoadFixture(*path)
 	if err != nil {
 		return err
