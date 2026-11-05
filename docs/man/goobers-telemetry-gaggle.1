@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY GAGGLE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry gaggle \- report gaggle-wide Backprop credit, recurring findings, trends, and links
+.SH SYNOPSIS
+\fBgoobers telemetry gaggle\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry gaggle --gaggle=name [--json] [--since=RFC3339] [--until=RFC3339] [path]
+
+Summarize one gaggle's active Backprop attribution across its workflows:
+per-workflow and per-stage credit and blame share, the top recurring
+findings, each workflow's trend against the previous window of the same
+length, and cross-workflow links. A link exists only where two runs
+recorded the same identifier (an external reference touched by both, or a
+run continuation); nothing is inferred. The window defaults to the seven
+days before --until (default now). Shadow records are never read. Exit
+codes: 0 = OK, 1 = query error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry gaggle --gaggle=goobers
+goobers telemetry gaggle --gaggle=goobers --json --since=2026-01-01T00:00:00Z
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
