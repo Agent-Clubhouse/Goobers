@@ -2271,6 +2271,34 @@ export interface LabsWorkflowClusterView {
   confounds?: LabsConfoundReport;
   /** 2-D layout of every workflow (classical MDS of the model distances). */
   map?: LabsClusterMapPoint[];
+  trends?: LabsWorkflowTrendReport;
+}
+
+export interface LabsWorkflowTrendReport {
+  modelId: string;
+  featureVersion: string;
+  samples: number;
+  excluded: number;
+  axes: Array<{
+    axis: "model" | "harness" | "authoring-skill";
+    cohorts: Array<{
+      version: string;
+      firstObserved: string;
+      samples: number;
+      occupancy: Array<{ cluster: string; samples: number; share: number; meanFitness: number }>;
+      entropy: number;
+      meanPairwiseDistance: number;
+      meanFitness: number;
+      drift?: {
+        from: string;
+        occupancyDistance: number;
+        entropyDelta: number;
+        pairwiseDistanceDelta: number;
+        fitnessDelta: number;
+        signal: "stable" | "converging" | "diverging" | "mode-collapse" | "mixed";
+      };
+    }>;
+  }>;
 }
 
 export interface LabsClusterMapPoint {

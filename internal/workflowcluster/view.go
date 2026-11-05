@@ -23,6 +23,8 @@ type View struct {
 	Confounds      *ConfoundReport `json:"confounds,omitempty"`
 	// Map places every workflow in two dimensions for the Portal's scatter map.
 	Map []MapPoint `json:"map,omitempty"`
+	// Trends compares retained agent-authored child shapes against Model.
+	Trends *TrendReport `json:"trends,omitempty"`
 }
 
 // ConfiguredSource serves the cluster View of the instance rooted at Root.
@@ -53,5 +55,10 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	view.Model = &model
 	view.Confounds = &confounds
 	view.Map = Project(model, points)
+	trends, err := ScanChildTrends(s.Root, model)
+	if err != nil {
+		return View{}, err
+	}
+	view.Trends = &trends
 	return view, nil
 }

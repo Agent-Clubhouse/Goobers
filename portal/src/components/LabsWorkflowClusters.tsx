@@ -75,6 +75,7 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         <span className="mono">{model.featureVersion}</span>
       </p>
       {view.confounds && <ConfoundSummary report={view.confounds} />}
+      {view.trends && <TrendSummary report={view.trends} />}
       {model.clusters.length > 0 && (view.map ?? []).length > 0 && (
         <LabsClusterMap
           points={view.map ?? []}
@@ -102,6 +103,70 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         </section>
       )}
     </>
+  );
+}
+
+function TrendSummary({ report }: { report: NonNullable<LabsWorkflowClusterView["trends"]> }) {
+  if (report.samples === 0) {
+    return (
+      <div className="empty-state">
+        <h3>No retained child-workflow history</h3>
+        <p>Run agent-authored child workflows to track shape drift across authoring versions.</p>
+      </div>
+    );
+  }
+  return (
+    <section aria-label="Child workflow shape trends" className="labs-cluster-trends">
+      <h3>Agent-authored shape trends</h3>
+      <p>
+        {report.samples} child workflow{report.samples === 1 ? "" : "s"} assigned against frozen model{" "}
+        <span className="mono">{shortModelId(report.modelId)}</span>
+        {report.excluded > 0 ? ` · ${report.excluded} excluded` : ""}. Signals are observational, not
+        null-baseline or selection claims.
+      </p>
+      {report.axes.map((axis) => (
+        <div key={axis.axis}>
+          <h4>By {axis.axis.replace("-", " ")}</h4>
+          {axis.cohorts.length === 0 ? (
+            <p>No complete provenance for this axis.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Samples</th>
+                  <th>Cluster occupancy</th>
+                  <th>Entropy</th>
+                  <th>Shape distance</th>
+                  <th>Fitness</th>
+                  <th>Drift</th>
+                </tr>
+              </thead>
+              <tbody>
+                {axis.cohorts.map((cohort) => (
+                  <tr key={cohort.version}>
+                    <td className="mono">{shortModelId(cohort.version)}</td>
+                    <td>{cohort.samples}</td>
+                    <td>
+                      {cohort.occupancy
+                        .map(
+                          (cluster) =>
+                            `${cluster.cluster} ${(cluster.share * 100).toFixed(0)}% (n=${cluster.samples}, fitness ${cluster.meanFitness.toFixed(2)})`,
+                        )
+                        .join(", ")}
+                    </td>
+                    <td>{cohort.entropy.toFixed(2)}</td>
+                    <td>{cohort.meanPairwiseDistance.toFixed(2)}</td>
+                    <td>{cohort.meanFitness.toFixed(2)}</td>
+                    <td>{cohort.drift?.signal ?? "baseline"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -237,6 +302,16 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       ...view.confounds,
       undersized: view.confounds.undersized ?? [],
       strata: view.confounds.strata ?? [],
+    },
+    trends: view.trends && {
+      ...view.trends,
+      axes: (view.trends.axes ?? []).map((axis) => ({
+        ...axis,
+        cohorts: (axis.cohorts ?? []).map((cohort) => ({
+          ...cohort,
+          occupancy: cohort.occupancy ?? [],
+        })),
+      })),
     },
   };
 }
