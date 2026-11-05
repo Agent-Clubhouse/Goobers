@@ -78,11 +78,14 @@ func TestExcludeStageArtifactsRegistersAndRepeats(t *testing.T) {
 	writeExcludeTestFile(t, filepath.Join(workspace, "claimed-item.json"), "{}\n")
 	writeExcludeTestFile(t, filepath.Join(workspace, "mutations.jsonl"), "{}\n")
 	writeExcludeTestFile(t, filepath.Join(workspace, "nested", "claimed-item.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, "nested", ".goobers", "config.json"), "{}\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, "nested", ".goober-assets", "skill.md"), "fixture\n")
+	writeExcludeTestFile(t, filepath.Join(workspace, "nested", "mutations.jsonl"), "{}\n")
 	writeExcludeTestFile(t, filepath.Join(workspace, "agent-work.txt"), "real work\n")
 
 	others := runExcludeTestGit(t, workspace, "ls-files", "--others", "--exclude-standard")
 	visible := strings.Fields(others)
-	want := []string{"agent-work.txt", "nested/claimed-item.json"}
+	want := []string{"agent-work.txt", "nested/.goober-assets/skill.md", "nested/.goobers/config.json", "nested/claimed-item.json", "nested/mutations.jsonl"}
 	if strings.Join(visible, " ") != strings.Join(want, " ") {
 		t.Fatalf("untracked files = %q, want %q (root-anchored exclusion only)", visible, want)
 	}

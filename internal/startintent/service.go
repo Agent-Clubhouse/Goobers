@@ -20,7 +20,7 @@ type Prepared struct {
 // Service uses the one shared ledger, scheduler and retained generation store.
 // Capture must return a live archive lease before its applied snapshot unlocks.
 type Service struct {
-	Queue        *triggerqueue.Store
+	Queue        triggerqueue.OrdinaryStore
 	Capture      func(context.Context, Request) (Target, func(), error)
 	Build        func(context.Context, Target) (Prepared, error)
 	Scheduler    func() *localscheduler.Scheduler
@@ -141,7 +141,7 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 		return err
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")
-	admitted, err := scheduler.TriggerPreparedOrdinary(admission, execution, prepared.Entry, runID, localscheduler.PreparedTriggerOptions{Force: e.Request.Force, SourceRun: e.Request.SourceRun, PullRequest: e.Request.PullRequest, Source: e.Source}, s.Now())
+	admitted, err := scheduler.TriggerPreparedOrdinary(admission, execution, prepared.Entry, runID, localscheduler.PreparedTriggerOptions{Force: e.Request.Force, SourceRun: e.Request.SourceRun, PullRequest: e.Request.PullRequest, WorkItemID: e.Request.WorkItemID, Source: e.Source}, s.Now())
 	if err != nil {
 		return s.refuseDispatch(admission, record.ID, err)
 	}

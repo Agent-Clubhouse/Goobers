@@ -541,3 +541,42 @@ Large ADO repositories should use large-repo mode. Its single pinned workspace,
 incremental mirror fetch, and heads-and-tags-only partial-clone refspec avoid
 per-stage rematerialization, pull-request ref discovery, and unnecessary blob
 backfill, giving ADO the minimum-traffic checkout shape Goobers supports.
+
+## Native CI polling in stage pods
+
+An ADO stage with `inputs.kind: ci-poll` can use an ephemeral pod. It uses the
+dispatcher's routed organization, project and repository, the selected PR number,
+and the existing `provider:pr:write` credential-plane delivery. It needs no
+instance configuration mount or Azure CLI login in the pod. The worker/image
+pair must support the repository and gaggle backlog stamps; missing identity or
+backlog metadata fails closed.
+
+The broker must state Basic or Bearer for the delivered credential. A
+per-capability scheme takes precedence over the repository's scheme. The pod
+keeps value, scheme and expiry together, refreshes before known expiry and once
+after an ADO authentication rejection, and never sends a known-expired value.
+A temporary broker outage can retain a still-valid value; a broker refusal,
+malformed delivery or scheme change stops the attempt. Restart the attempt to
+adopt a changed scheme. Credentials and their encoded header forms are scrubbed
+before result or evidence publication.
+
+The pod uses the existing native policy and lifecycle executor. Its PR identity
+must match the route; it will not poll another owner/repository through input
+overrides or treat an incomplete policy response as an empty policy set.
+`noVerdict` retains the local parser's semantics. Pod `carryOutputs` and
+enabled failed-check reruns are explicitly refused: the string input transport
+does not preserve arbitrary typed carry values, and ADO does not implement
+pipeline reruns through that interface. Use the configured self runner for a
+workflow requiring supported local-only inputs; ADO rerun support is separate
+work.
+
+Pods do not consult the daemon's in-memory shared quota state. They report a
+rate-limited failure and its reset, while successful-response quota observations
+remain local to the pod. This feature does not add ADO native merge-review verdict
+reading or enable missing-verdict enforcement.
+
+For rollback, restore the CI-poll stage's configured self-runner placement. Unit
+protocol fixtures qualify the adapter and failure behavior; they do not qualify
+live ADO permissions, token delivery, worker/image compatibility or deployment.
+Those require a separately authorized test against the intended organization and
+repository.

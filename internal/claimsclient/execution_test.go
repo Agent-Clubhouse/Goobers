@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/goobers/goobers/internal/sharedclaim"
@@ -98,100 +99,106 @@ func TestExecutionClaimsReleaseAndRenewalEvidence(t *testing.T) {
 }
 
 func TestExecutionFenceDeadlineSurvivesHungSnapshot(t *testing.T) {
-	entry := executionTestClaim(time.Now())
-	entry.SharedDeadline = time.Now().Add(300 * time.Millisecond)
-	entry.ExpiresAt = entry.SharedDeadline
-	first := true
-	blocked, exited := make(chan struct{}), make(chan struct{})
-	ctx, stop, err := StartExecutionFence(t.Context(), "run", func(ctx context.Context) (Listing, error) {
-		if first {
-			first = false
-			return Listing{Entries: []Entry{entry}}, nil
+	synctest.Test(t, func(t *testing.T) {
+		started := time.Now()
+		entry := executionTestClaim(started)
+		entry.SharedDeadline = started.Add(300 * time.Millisecond)
+		entry.ExpiresAt = entry.SharedDeadline
+		first := true
+		blocked, exited := make(chan struct{}), make(chan struct{})
+		ctx, stop, err := StartExecutionFenceWithOptions(t.Context(), "run", func(ctx context.Context) (Listing, error) {
+			if first {
+				first = false
+				return Listing{Entries: []Entry{entry}}, nil
+			}
+			close(blocked)
+			<-ctx.Done()
+			close(exited)
+			return Listing{}, ctx.Err()
+		}, ExecutionFenceOptions{SnapshotTimeout: time.Minute})
+		defer stop()
+		if err != nil {
+			t.Fatal(err)
 		}
-		close(blocked)
+		<-blocked
 		<-ctx.Done()
-		close(exited)
-		return Listing{}, ctx.Err()
-	})
-	defer stop()
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-blocked:
-	case <-time.After(2 * time.Second):
-		t.Fatal("snapshot did not start")
-	}
-	select {
-	case <-ctx.Done():
-		if !errors.Is(context.Cause(ctx), ErrSharedExecutionExpired) {
-			t.Fatal(context.Cause(ctx))
+		if !errors.Is(context.Cause(ctx), ErrSharedExecutionExpired) || time.Since(started) != 300*time.Millisecond {
+			t.Fatalf("observation budget extended lease: elapsed=%s cause=%v", time.Since(started), context.Cause(ctx))
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("hung snapshot extended execution authority")
-	}
-	select {
-	case <-exited:
-	case <-time.After(time.Second):
-		t.Fatal("snapshot cancellation leaked")
-	}
+		<-exited
+	})
 }
 
 func TestExecutionFenceObservesClaimsAcquiredDuringExecution(t *testing.T) {
-	first := true
-	ctx, stop, err := StartExecutionFence(t.Context(), "run", func(context.Context) (Listing, error) {
-		if first {
-			first = false
-			return Listing{}, nil
+	synctest.Test(t, func(t *testing.T) {
+		first := true
+		ctx, stop, err := StartExecutionFence(t.Context(), "run", func(context.Context) (Listing, error) {
+			if first {
+				first = false
+				return Listing{}, nil
+			}
+			entry := executionTestClaim(time.Now().Add(-time.Hour))
+			return Listing{Entries: []Entry{entry}}, nil
+		})
+		defer stop()
+		if err != nil {
+			t.Fatal(err)
 		}
-		entry := executionTestClaim(time.Now().Add(-time.Hour))
-		return Listing{Entries: []Entry{entry}}, nil
-	})
-	defer stop()
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-ctx.Done():
+		<-ctx.Done()
 		if !errors.Is(context.Cause(ctx), ErrSharedExecutionExpired) {
 			t.Fatal(context.Cause(ctx))
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("new claim was never fenced")
-	}
+	})
 }
 
 func TestExecutionFenceStalledReadWithoutKnownClaimFailsClosed(t *testing.T) {
-	first := true
-	unblock, exited := make(chan struct{}), make(chan struct{})
-	ctx, stop, err := StartExecutionFence(t.Context(), "run", func(context.Context) (Listing, error) {
-		if first {
-			first = false
+	for _, timeout := range []time.Duration{0, time.Minute} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				first := true
+				unblock, exited := make(chan struct{}), make(chan struct{})
+				var readStarted time.Time
+				ctx, stop, err := StartExecutionFenceWithOptions(t.Context(), "run", func(context.Context) (Listing, error) {
+					if first {
+						first = false
+						return Listing{}, nil
+					}
+					readStarted = time.Now()
+					// Ignore cancellation to prove the watchdog acts independently.
+					<-unblock
+					close(exited)
+					return Listing{}, nil
+				}, ExecutionFenceOptions{SnapshotTimeout: timeout})
+				defer stop()
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-ctx.Done()
+				synctest.Wait()
+				want := timeout
+				if want == 0 {
+					want = DefaultExecutionSnapshotTimeout
+				}
+				if !errors.Is(context.Cause(ctx), ErrSharedExecutionExpired) || time.Since(readStarted) != want {
+					t.Errorf("watchdog elapsed=%s want=%s cause=%v", time.Since(readStarted), want, context.Cause(ctx))
+				}
+				close(unblock)
+				<-exited
+			})
+		})
+	}
+}
+
+func TestExecutionFenceAllowsHealthyObservationWithinRouteBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, stop, err := StartExecutionFence(t.Context(), "run", func(context.Context) (Listing, error) {
+			// A healthy response beyond the old one-second watchdog must be allowed.
+			time.Sleep(2 * time.Second)
 			return Listing{}, nil
+		})
+		defer stop()
+		if err != nil || ctx.Err() != nil {
+			t.Fatalf("healthy observation was falsely fenced: err=%v cause=%v", err, context.Cause(ctx))
 		}
-		// No known deadline exists yet. Simulate an IO operation that even
-		// ignores cancellation; the executor must still be stopped.
-		<-unblock
-		close(exited)
-		return Listing{}, nil
 	})
-	defer stop()
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-ctx.Done():
-		if !errors.Is(context.Cause(ctx), ErrSharedExecutionExpired) {
-			t.Error(context.Cause(ctx))
-		}
-	case <-time.After(2 * time.Second):
-		t.Error("stalled observation left execution unbounded before first claim was observed")
-	}
-	stop()
-	close(unblock)
-	select {
-	case <-exited:
-	case <-time.After(time.Second):
-		t.Fatal("snapshot reader did not exit")
-	}
 }

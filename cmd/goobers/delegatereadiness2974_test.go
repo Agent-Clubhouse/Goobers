@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,22 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 )
+
+func pollTriggerResponseForTest(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (string, error) {
+	for {
+		response, err := pollTriggerResponseEvent(ctx, schedulerDir, requestID, timeout, false)
+		if err != nil {
+			return "", err
+		}
+		if response.State == triggerResponseQueued {
+			continue
+		}
+		if response.Error != "" {
+			return "", errors.New(response.Error)
+		}
+		return response.RunID, nil
+	}
+}
 
 // TestClientWaitOutlivesTheRequestDeadline is #2974's core ordering property.
 //
@@ -49,7 +66,7 @@ func TestSlowSweepDeliversTheDaemonVerdictInsteadOfATimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	requestID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "acme-web", "implementation")
+	requestID, err := writeTriggerRequestContextOptions(context.Background(), schedulerDir, "acme-web", "implementation", false)
 	if err != nil {
 		t.Fatalf("writeTriggerRequestContext: %v", err)
 	}
@@ -67,10 +84,11 @@ func TestSlowSweepDeliversTheDaemonVerdictInsteadOfATimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = pollTriggerResponse(context.Background(), schedulerDir, requestID, triggerResponseWait())
+	_, err = pollTriggerResponseForTest(context.Background(), schedulerDir, requestID, triggerResponseWait())
 	if err == nil {
 		t.Fatal("poll err = nil, want the daemon's refusal surfaced")
 	}
+
 	if !strings.Contains(err.Error(), "stale trigger request") {
 		t.Fatalf("err = %v, want the daemon's own verdict rather than a client-side timeout", err)
 	}

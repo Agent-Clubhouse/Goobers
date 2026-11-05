@@ -3,6 +3,7 @@ package creditgraph
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ type AttributionEvidenceLink struct {
 type ContributingPath struct {
 	Nodes      []string                  `json:"nodes,omitempty"`
 	Share      float64                   `json:"share"`
+	Score      *float64                  `json:"score,omitempty"`
 	Confidence float64                   `json:"confidence"`
 	Evidence   []AttributionEvidenceLink `json:"evidence,omitempty"`
 	samples    int
@@ -108,33 +110,52 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		aggregation.GroundTruth = summarizeGroundTruth(group)
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
+			nodeIdentities := contributionNodeIdentities(observation.Attribution.Contributions)
+			// Several occurrences in one run (repeated attempts, invocations, or
+			// tool calls) can share a structural path. Consolidate them first so
+			// each run contributes its weight to a path exactly once.
+			runPaths := map[string]*runPathTotal{}
+			runOrder := make([]string, 0)
 			for _, contribution := range observation.Attribution.Contributions {
 				if !surfaceContributionPath(contribution) {
 					continue
 				}
-				pathNodes := contributionPath(contribution)
+				rawPathNodes := contributionPath(contribution)
+				pathNodes := structuralContributionPath(rawPathNodes, nodeIdentities)
 				if len(pathNodes) == 0 {
 					continue
 				}
 				key := strings.Join(pathNodes, "/")
+				total := runPaths[key]
+				if total == nil {
+					total = &runPathTotal{}
+					runPaths[key] = total
+					runOrder = append(runOrder, key)
+				}
+				total.add(contribution)
 				path := byPath[key]
 				if path == nil {
-					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...)}
+					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...), Score: new(float64)}
 					byPath[key] = path
 				}
-				weight := groundTruthWeight(observation.GroundTruth)
-				path.samples++
-				path.weight += weight
-				path.Share += weight * contribution.Share
-				path.Confidence += weight * groundTruthConfidence(contribution.Confidence, observation.GroundTruth)
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
 				path.Evidence = append(path.Evidence, observationEvidence(
 					observation,
-					lastNode(pathNodes),
+					lastNode(rawPathNodes),
 					contribution.Stage,
 					detail,
 					"contribution",
 				)...)
+			}
+			weight := groundTruthWeight(observation.GroundTruth)
+			for _, key := range runOrder {
+				total := runPaths[key]
+				path := byPath[key]
+				path.samples++
+				path.weight += weight
+				path.Share += weight * total.share
+				*path.Score += weight * total.score
+				path.Confidence += weight * groundTruthConfidence(total.confidence(), observation.GroundTruth)
 			}
 			for _, cause := range observation.Attribution.Causes {
 				for _, evidence := range cause.Evidence {
@@ -158,6 +179,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				continue
 			}
 			path.Share /= path.weight
+			*path.Score /= path.weight
 			path.Confidence /= path.weight
 			paths = append(paths, *path)
 		}
@@ -244,6 +266,121 @@ func contributionPath(contribution Contribution) []string {
 		return nil
 	}
 	return []string{contribution.NodeID}
+}
+
+func contributionNodeIdentities(contributions []Contribution) map[string]string {
+	identities := make(map[string]string, len(contributions))
+	for _, contribution := range contributions {
+		if contribution.NodeID == "" {
+			continue
+		}
+		identities[contribution.NodeID] = structuralNodeIdentity(contribution)
+	}
+	return identities
+}
+
+func structuralContributionPath(path []string, identities map[string]string) []string {
+	structural := make([]string, 0, len(path))
+	for _, nodeID := range path {
+		if identity := identities[nodeID]; identity != "" {
+			structural = append(structural, identity)
+			continue
+		}
+		if strings.HasPrefix(nodeID, "run:") {
+			structural = append(structural, "run")
+			continue
+		}
+		structural = append(structural, nodeID)
+	}
+	return structural
+}
+
+func structuralNodeIdentity(contribution Contribution) string {
+	label := strings.TrimSpace(contribution.Label)
+	switch contribution.Kind {
+	case KindOutcome:
+		return "outcome"
+	case KindRun:
+		return "run"
+	case KindStage:
+		if label == "" {
+			label = strings.TrimSpace(contribution.Stage)
+		}
+		return structuralLabel("stage", label)
+	case KindSubagent:
+		return structuralLabel("subagent", structuralAgentLabel(label))
+	case KindModelInvocation:
+		return structuralLabel("model", label)
+	case KindToolCall:
+		return structuralLabel("toolcall", label)
+	case KindToolResult:
+		return structuralLabel("toolresult", label)
+	case KindTool:
+		return structuralLabel("tool", label)
+	case KindEvidence:
+		return structuralLabel("evidence", label)
+	case KindEvaluator:
+		return structuralLabel("evaluator", label)
+	case KindRuntime:
+		return structuralLabel("runtime", label)
+	case KindEnvironment:
+		return structuralLabel("environment", label)
+	default:
+		return contribution.NodeID
+	}
+}
+
+// structuralAgentLabel drops the occurrence suffix from the synthetic agent
+// that owns unattributed spans ("unknown/stage:verify#2"), whose label is
+// otherwise derived from a per-attempt stage node ID.
+func structuralAgentLabel(label string) string {
+	if !strings.HasPrefix(label, unknownAgentPrefix) {
+		return label
+	}
+	if hash := strings.LastIndex(label, "#"); hash > len(unknownAgentPrefix) {
+		if _, err := strconv.Atoi(label[hash+1:]); err == nil {
+			return label[:hash]
+		}
+	}
+	return label
+}
+
+const unknownAgentPrefix = "unknown/stage:"
+
+// runPathTotal consolidates one run's contributions that share a structural
+// path. Share and score are additive responsibility mass; confidence is the
+// share-weighted mean, falling back to a plain mean when every share is zero.
+type runPathTotal struct {
+	share, score       float64
+	weightedConfidence float64
+	confidenceSum      float64
+	count              int
+}
+
+func (t *runPathTotal) add(contribution Contribution) {
+	t.share += contribution.Share
+	t.score += contribution.Score
+	t.weightedConfidence += contribution.Share * contribution.Confidence
+	t.confidenceSum += contribution.Confidence
+	t.count++
+}
+
+func (t *runPathTotal) confidence() float64 {
+	if t.share > 0 {
+		return t.weightedConfidence / t.share
+	}
+	if t.count == 0 {
+		return 0
+	}
+	return t.confidenceSum / float64(t.count)
+}
+
+func structuralLabel(kind, label string) string {
+	identity := kind
+	if label != "" {
+		identity += ":" + label
+	}
+	return identity
 }
 
 func observationEvidence(observation AttributionObservation, nodeID, stage, detail, source string) []AttributionEvidenceLink {

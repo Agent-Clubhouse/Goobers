@@ -292,6 +292,16 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 	return &Authenticator{verifier: verifier, fallback: fallback}, nil
 }
 
+// AllowsAnonymous preserves discovery of the fallback's local-trust posture.
+func (a *Authenticator) AllowsAnonymous() bool {
+	switch a.fallback.(type) {
+	case httpapi.NullAuthenticator, *httpapi.NullAuthenticator:
+		return true
+	default:
+		return false
+	}
+}
+
 // Authenticate verifies pod or shared-key worker bearers. A worker credential
 // carries a distinct identity, never a synthetic run. Unknown credentials with
 // a reserved prefix fail closed instead of reaching human authentication.

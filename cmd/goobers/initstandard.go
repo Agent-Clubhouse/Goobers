@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -170,7 +172,7 @@ func standardDefaultWorkflows(provider string) []string {
 
 func seedInitTemplate(root, template, harness string, demo bool, standard *instance.GuidedOptions, diagnostic io.Writer) (*instance.InitResult, error) {
 	observe := func(root, id string) error {
-		_, err := fmt.Fprintf(diagnostic, "Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id)
+		_, err := fmt.Fprintf(diagnostic, "Instance root: %q; instance ID: %q\n", runtimewiring.CanonicalStatusRoot(root), id)
 		return err
 	}
 	switch {

@@ -4,11 +4,12 @@ package recovery
 
 import (
 	"errors"
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func applicationFixture(t *testing.T, action ChildDisposition) (string, ChildApplyPlan) {

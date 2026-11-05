@@ -18,6 +18,7 @@ type childPodFake struct {
 	fakePodAPI
 	changeUID     bool
 	missingStatus bool
+	liveState     string
 	deletedUID    types.UID
 	finalizedUID  types.UID
 	holdUntilStop bool
@@ -52,6 +53,13 @@ func (f *childPodFake) GetPod(ctx context.Context, ns, name string) (*corev1.Pod
 	}
 	if p.Status.Phase == corev1.PodSucceeded && !f.missingStatus {
 		p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: StageContainerName, ContainerID: "containerd://exact", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}}}
+	}
+	if f.liveState != "" {
+		state := corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+		if f.liveState == "waiting" {
+			state = corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}
+		}
+		p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: StageContainerName, ContainerID: "containerd://exact", State: state}}
 	}
 	return p, nil
 }

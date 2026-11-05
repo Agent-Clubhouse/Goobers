@@ -32,6 +32,9 @@ type Authority struct {
 	ParentWorkflow              string
 	ParentWorkflowDigest        string
 	ParentGooberDigest          string
+	// Execution is the parent run's binding an engine child inherits. It is
+	// pinned into the start envelope at acceptance; nil for runner children.
+	Execution *ExecutionBinding
 }
 
 // AuthorityResolver must verify current grant ownership, active attempt,
@@ -72,7 +75,7 @@ type Submission struct {
 // SubmissionService validates and accepts children; it never runs a workflow.
 // Its queue is the existing durable trigger store, not a second queue/database.
 type SubmissionService struct {
-	Queue     *triggerqueue.Store
+	Queue     ChildQueue
 	Authority AuthorityResolver
 	Now       func() time.Time
 }
@@ -81,8 +84,12 @@ type SubmissionService struct {
 var (
 	ErrAuthorityUnavailable = errors.New("childworkflow: current stage authority unavailable")
 	ErrAuthorityChanged     = errors.New("childworkflow: stage authority changed during operation")
-	ErrProposalExpired      = errors.New("childworkflow: retained proposal has expired")
-	ErrSubmissionInvalid    = errors.New("childworkflow: invalid submission or retained envelope")
+	// ErrAuthorityRetryable marks an authority check that could not be made
+	// (its owner, journal or engine is briefly unreachable), not one that
+	// refused: the same request may succeed when retried.
+	ErrAuthorityRetryable = errors.New("childworkflow: stage authority is temporarily unavailable")
+	ErrProposalExpired    = errors.New("childworkflow: retained proposal has expired")
+	ErrSubmissionInvalid  = errors.New("childworkflow: invalid submission or retained envelope")
 )
 
 // Validate is advisory and writes no custody. It still authenticates the live

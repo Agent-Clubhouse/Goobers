@@ -45,6 +45,10 @@ func registerDiscoveryRoutes(router *Router, config handlerConfig) (*discoverySt
 		authentication = "none"
 	case DenyAllAuthenticator, *DenyAllAuthenticator:
 		authentication = "disabled"
+	default:
+		if local, ok := config.authenticator.(interface{ AllowsAnonymous() bool }); ok && local.AllowsAnonymous() {
+			authentication = "none"
+		}
 	}
 
 	identity := config.discoveryIdentity
@@ -239,6 +243,8 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 			Reason:       reason,
 			Streaming:    route.Cost == apicontract.CostStream,
 			RecoverySafe: route.RecoverySafe,
+
+			ExactWorkItem: route.ID == apicontract.RouteTriggerIngest && exactWorkItemAvailable(s.config.triggers),
 		})
 	}
 	return apicontract.CapabilityDocument{
@@ -250,6 +256,11 @@ func (s *discoveryState) capabilityDocument() apicontract.CapabilityDocument {
 	}
 }
 
+func exactWorkItemAvailable(service TriggerService) bool {
+	exact, ok := service.(ExactWorkItemTriggerService)
+	return ok && exact.SupportsExactWorkItems()
+}
+
 func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, string, string) {
 	var available bool
 	switch id {
@@ -257,6 +268,14 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.instanceReadiness != nil
 	case apicontract.RouteConfigDigest:
 		available = config.configDigest != nil
+	case apicontract.RouteEngineChildAdmit, apicontract.RouteEngineChildLoad, apicontract.RouteEngineChildCancel:
+		available = config.engineChildren != nil
+	case apicontract.RouteEngineChildOrigin, apicontract.RouteEngineChildHandoff, apicontract.RouteEngineChildAuthority, apicontract.RouteEngineChildAuthorityRelease:
+		available = config.engineChildAuthority != nil
+	case apicontract.RouteEngineChildPark, apicontract.RouteEngineChildFinalize, apicontract.RouteEngineChildComplete:
+		available = config.engineChildProtocol != nil
+	case apicontract.RouteConfigSnapshot:
+		available = config.configSnapshots != nil
 	case apicontract.RouteWorkerConfigDivergence:
 		available = config.workerConfigDivergence != nil
 	case apicontract.RouteEvents:
@@ -281,6 +300,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.escalations != nil
 	case apicontract.RouteCancelRun:
 		available = config.cancels != nil
+	case apicontract.RouteJournalTerminalIntervention:
+		_, available = config.journal.(TerminalInterventionService)
 	case apicontract.RouteJournalEmit:
 		available = config.journal != nil
 	case apicontract.RouteJournalRunPhase, apicontract.RouteJournalConflictTouches,

@@ -66,7 +66,7 @@ func TestFleetUsageProductionStartupReachesStrictBackend(t *testing.T) {
 	go func() { _ = server.Serve(listener) }()
 	defer server.Stop()
 	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{Diagnostics: &instance.DiagnosticsConfig{Organization: "synthetic-company", OTLP: &instance.OTLPConfig{Endpoint: listener.Addr().String(), Insecure: true}}}}
-	registry := newInterventionDefinitionRegistry(interventionDefinitionSet{featureDrivers: featureDriverConfiguration([]localscheduler.WorkflowEntry{{Gaggle: "alpha", Workflow: "work", Starter: &runnerFallbackStarter{next: &trackedStarter{}}}})})
+	registry := newInterventionDefinitionRegistry(interventionDefinitionSet{featureDrivers: featureDriverConfiguration([]localscheduler.WorkflowEntry{{Gaggle: "alpha", Workflow: "work", Starter: &trackedStarter{}}})})
 	log := openTestInstanceLog(t)
 	setup := &schedulerSetup{Config: cfg, SharedRegistry: journal.NewRegistryScrubber(), InstanceLog: log, Interventions: registry}
 	now := time.Now().UTC()
@@ -99,19 +99,14 @@ func TestFleetUsageProductionStartupReachesStrictBackend(t *testing.T) {
 	}
 }
 func TestFeatureDriversFollowAdmittedSelectionAndReload(t *testing.T) {
-	local := localscheduler.WorkflowEntry{Gaggle: "alpha", Workflow: "work", Starter: &runnerFallbackStarter{next: &trackedStarter{}}}
+	local := localscheduler.WorkflowEntry{Gaggle: "alpha", Workflow: "work", Starter: &trackedStarter{}}
 	registry := newInterventionDefinitionRegistry(interventionDefinitionSet{featureDrivers: featureDriverConfiguration([]localscheduler.WorkflowEntry{local})})
 	callback := currentFeatureConfiguration(&schedulerSetup{Interventions: registry}, configuredFleetReader{&fleetTestReader{}})
-	if got := callback()["alpha"]; !got["runner.local"] || got["runner.engine"] {
-		t.Fatal(got)
-	}
-	local.Starter = &engineStarter{}
-	registry.Replace(interventionDefinitionSet{featureDrivers: featureDriverConfiguration([]localscheduler.WorkflowEntry{local})})
-	if got := callback()["alpha"]; got["runner.local"] || !got["runner.engine"] {
+	if got := callback()["alpha"]; !got["runner.local"] {
 		t.Fatal(got)
 	}
 	registry.Replace(interventionDefinitionSet{featureDrivers: map[localscheduler.WorkflowIdentity]string{{Gaggle: "alpha", Workflow: "unknown"}: ""}})
-	if got := callback()["alpha"]; got["runner.local"] || got["runner.engine"] {
+	if got := callback()["alpha"]; got["runner.local"] {
 		t.Fatal(got)
 	}
 	if _, known := callback()["alpha"]["runner.local"]; known {

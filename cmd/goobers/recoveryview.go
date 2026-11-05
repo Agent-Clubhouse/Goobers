@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // Watch reloads retention metadata on each redraw, including changes that do
@@ -63,7 +64,7 @@ func loadRecoveryViews(ctx context.Context, layout instance.Layout, now time.Tim
 	// the operator cap reported an over-cap inventory as "unavailable", hiding
 	// the retained state of every run on exactly the instance whose retained
 	// state an operator most needs to see (#5354).
-	entries, unreadable, _, err := observeRecoveryInventory(ctx, layout)
+	entries, unreadable, _, err := runtimewiring.ObserveRecoveryInventory(ctx, layout)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +156,7 @@ func printStatusRecovery(out io.Writer, layout instance.Layout, runs []runSummar
 // Unreadable reservations are counted in used because they hold slots until
 // they are reconciled, matching the health sampler.
 func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (used, limit int, earliest time.Time, err error) {
-	entries, unreadable, limit, err := observeRecoveryInventory(ctx, layout)
+	entries, unreadable, limit, err := runtimewiring.ObserveRecoveryInventory(ctx, layout)
 	if err != nil {
 		return 0, limit, time.Time{}, err
 	}

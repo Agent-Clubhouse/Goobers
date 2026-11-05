@@ -1,0 +1,8 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata: {name: reference}
+spec:
+  displayName: Child qualification
+  project: {provider: github, owner: example, name: qualification, branch: main}
+  backlog: {provider: github, project: example/qualification, labels: [goobers:approved]}
+  isolation: {namespace: gaggle-reference}

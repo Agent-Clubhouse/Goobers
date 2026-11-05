@@ -16,6 +16,7 @@ export type IconName =
   | "goober"
   | "info"
   | "insight"
+  | "labs"
   | "menu"
   | "moon"
   | "next"
@@ -126,6 +127,13 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M5 19V11" />
         <path d="M12 19V5" />
         <path d="M19 19V8" />
+      </>
+    ),
+    labs: (
+      <>
+        <path d="M9 3h6" />
+        <path d="M10 3v6.5L4.8 18.2A1.8 1.8 0 0 0 6.3 21h11.4a1.8 1.8 0 0 0 1.5-2.8L14 9.5V3" />
+        <path d="M7.5 15h9" />
       </>
     ),
     menu: (

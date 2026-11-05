@@ -57,6 +57,7 @@ var names = []string{
 	"check-fail-first",
 	"check-issue-staleness",
 	"config-checkout",
+	"decide",
 	"docs-churn",
 	"elect-lander",
 	"file-issues",

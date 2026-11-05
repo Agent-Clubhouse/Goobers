@@ -204,6 +204,14 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			name: "retryable base sync conflict needs policy remediation",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "base_sync_conflict", Retryable: true},
+			},
+			want: OutcomeFail,
+		},
+		{
 			name: "business failure",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,

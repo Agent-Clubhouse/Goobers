@@ -1,0 +1,11 @@
+Run Codex non-interactively
+Usage: codex exec [OPTIONS] [PROMPT]
+Options:
+  -c, --config <key=value>
+      --disable <FEATURE>
+  -s, --sandbox <SANDBOX_MODE>
+  -C, --cd <DIR>
+      --skip-git-repo-check
+      --ignore-user-config
+      --ignore-rules
+      --json

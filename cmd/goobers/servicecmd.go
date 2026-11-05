@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 	daemonservice "github.com/goobers/goobers/internal/service"
 )
@@ -251,7 +253,7 @@ func runServiceStatus(args []string, stdout, stderr io.Writer) int {
 type serviceLifecycleDisplayError struct{ error }
 
 func prepareServiceRoot(root string, stderr io.Writer) int {
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

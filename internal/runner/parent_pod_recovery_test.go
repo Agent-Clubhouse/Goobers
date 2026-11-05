@@ -5,6 +5,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -13,7 +14,7 @@ func TestParentRecoverySelectsLatestPhysicalOwner(t *testing.T) {
 	for _, mode := range []string{"current", "finished", "replacement", "late-stale", "sibling", "other-stage"} {
 		t.Run(mode, func(t *testing.T) {
 			_, run, frame := childOriginRuntime(t, &childOriginGoober{})
-			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 				t.Fatal(err)
 			}
 			original := *frame.childOrigin
@@ -30,7 +31,7 @@ func TestParentRecoverySelectsLatestPhysicalOwner(t *testing.T) {
 				record()
 			}
 			if mode == "replacement" || mode == "late-stale" {
-				if err := frame.recordTaskStartedWithRecovery(2, journal.AttemptInfra, 0, 0, newStageUsageTotals()); err != nil {
+				if err := frame.recordTaskStartedWithRecovery(2, journal.AttemptInfra, 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -73,17 +74,17 @@ func TestParentRecoverySelectsLatestPhysicalOwner(t *testing.T) {
 
 func TestParentRecoveryPreservesCumulativeCostAndHumanInstructions(t *testing.T) {
 	_, _, frame := childOriginRuntime(t, &childOriginGoober{})
-	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+	if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 		t.Fatal(err)
 	}
-	before := newStageUsageTotals()
-	accumulateStageUsage(before, map[string]float64{telemetry.AttrUsageCostUSD: 2})
+	before := runsemantics.NewStageUsageTotals()
+	runsemantics.AccumulateStageUsage(before, map[string]float64{telemetry.AttrUsageCostUSD: 2})
 	if err := frame.recordTaskStartedWithRecovery(2, journal.AttemptInfra, 1, 1, before); err != nil {
 		t.Fatal(err)
 	}
 	frame.containedRecovery = &containedParentRecovery{Custody: ContainedParentWorkspaceCustody{Origin: frame.childOrigin}, Usage: map[string]float64{telemetry.AttrUsageCostUSD: 3}, InstructionAddendum: "old guidance"}
 	for _, guidance := range []string{"", "new human guidance"} {
-		totals := newStageUsageTotals()
+		totals := runsemantics.NewStageUsageTotals()
 		actual := guidance
 		if err := restoreContainedParentUsage(frame, totals, &actual); err != nil {
 			t.Fatal(err)
@@ -92,8 +93,8 @@ func TestParentRecoveryPreservesCumulativeCostAndHumanInstructions(t *testing.T)
 		if expected == "" {
 			expected = "old guidance"
 		}
-		if totals.costUSD.RatString() != "5" || actual != expected {
-			t.Fatal(totals.costUSD, actual)
+		if totals.CostUSD.RatString() != "5" || actual != expected {
+			t.Fatal(totals.CostUSD, actual)
 		}
 	}
 }

@@ -1,0 +1,34 @@
+# One server, separate databases and owners (design: shared-DB blast radius).
+# Rename goobers_example to goobers_<instance>.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: goobers-instance
+spec:
+  cluster:
+    name: goobers-pg
+  name: goobers_example
+  owner: goobers_owner
+  databaseReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: temporal
+spec:
+  cluster:
+    name: goobers-pg
+  name: temporal
+  owner: temporal_app
+  databaseReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: temporal-visibility
+spec:
+  cluster:
+    name: goobers-pg
+  name: temporal_visibility
+  owner: temporal_app
+  databaseReclaimPolicy: retain

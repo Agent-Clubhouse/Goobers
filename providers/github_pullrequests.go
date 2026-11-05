@@ -814,9 +814,21 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return nil, err
 	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	endpoint, err := p.pullRequestListEndpoint(req, state, updatedSince)
 	if err != nil {
 		return nil, err
+	}
+	prs, err := p.fetchPullRequests(ctx, endpoint, req.Limit, updatedSince)
+	if err != nil {
+		return nil, err
+	}
+	return p.filterPullRequestSummaries(ctx, req, prs)
+}
+
+func (p *GitHubProvider) pullRequestListEndpoint(req ListPullRequestsRequest, state string, updatedSince time.Time) (string, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	if err != nil {
+		return "", err
 	}
 	values := url.Values{"state": []string{state}}
 	if req.Base != "" {
@@ -832,11 +844,12 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			values.Set("page", strconv.Itoa(req.Page))
 		}
 	}
-	endpoint, err = addQuery(endpoint, values)
-	if err != nil {
-		return nil, err
-	}
+	return addQuery(endpoint, values)
+}
 
+func (p *GitHubProvider) fetchPullRequests(
+	ctx context.Context, endpoint string, limit int, updatedSince time.Time,
+) ([]githubPullRequestDetail, error) {
 	var prs []githubPullRequestDetail
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var pageOut []githubPullRequestDetail
@@ -844,7 +857,7 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			return fmt.Errorf("decode pulls page: %w", err)
 		}
 		for _, pr := range pageOut {
-			if req.Limit > 0 && len(prs) >= req.Limit {
+			if limit > 0 && len(prs) >= limit {
 				return errStopPaging
 			}
 			if !updatedSince.IsZero() && pr.UpdatedAt.Before(updatedSince) {
@@ -859,14 +872,19 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			}
 			prs = append(prs, pr)
 		}
-		if req.Limit > 0 && len(prs) >= req.Limit {
+		if limit > 0 && len(prs) >= limit {
 			return errStopPaging
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+	return prs, nil
+}
 
+func (p *GitHubProvider) filterPullRequestSummaries(
+	ctx context.Context, req ListPullRequestsRequest, prs []githubPullRequestDetail,
+) ([]PullRequestSummary, error) {
 	out := make([]PullRequestSummary, 0, len(prs))
 	for _, pr := range prs {
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {

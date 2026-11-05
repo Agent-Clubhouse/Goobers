@@ -48,75 +48,70 @@ An absolute path counts as a different command name. That is why
 `/usr/bin/env` and the absolute `pkill`/`killall` paths have rules of their
 own.
 
-### Precedence with your own settings
+### PreToolUse hook and version compatibility
 
-The deny is additive in both directions:
+On Claude Code 2.1.302 or newer, Goobers also installs a `PreToolUse` hook for
+`Bash` in the fresh per-run `CLAUDE_CONFIG_DIR/settings.json`. It blocks
+`pkill` or `killall` anywhere in command text, including `bash -c`, `eval`,
+`find -exec`, `xargs`, command substitution, and alternate executable paths.
+Commands combining `pgrep` and `kill` are blocked too. Quoted documentation
+containing these words can also be refused by this conservative check.
 
-- **Your settings are kept.** Goobers does not inject or rewrite `--settings`.
-  A `--settings` file or JSON in `runner.harnessCommand` reaches the CLI
-  unchanged. Claude Code takes a single `--settings` value, so injecting a
-  second one would clobber yours or be clobbered by it. `--disallowedTools` is
-  a separate rule source that the CLI combines with every settings layer.
-- **Ours cannot be removed.** A deny from any source beats an allow from any
-  source. A `permissions.allow` entry for `Bash(pkill:*)` in your settings,
-  `--allowedTools Bash` or `bypassPermissions` does not re-enable it.
-- **You can add more.** Put additional `permissions.deny` rules in
-  `--settings`, or pass your own `--disallowedTools` in `runner.harnessCommand`.
-  Repeated `--disallowedTools` occurrences accumulate.
+The hook invokes the Goobers executable directly with an argument vector,
+without a shell or interpreter dependency. It has a ten-second timeout and
+blocks on execution errors. Safe commands return no permission decision, so
+the normal permission policy remains in force. The same settings apply under
+`bypassPermissions`, a tool allowlist, and completion repair.
+[Claude's hook reference](https://code.claude.com/docs/en/hooks) describes
+exec-form hooks, `onFailure`, and `PreToolUse` denial precedence.
 
-Before this was built in, the recommended workaround was this
-`runner.harnessCommand` override:
+Older or unrecognized versions retain the existing `--disallowedTools`
+denies and receive a preflight WARNING recommending an upgrade. They do not
+receive an unsupported hook. Set the goober's
+`harnessOptions.requireHostProcessHook: true` to require the hook: preflight
+and invocation then refuse an older or unknown version. Embedded adapter
+callers must pass the preflight version in `RunRequest.HarnessVersion` and
+supply `SelfBin` when the host executable is not the Goobers CLI.
 
-```yaml
-runner:
-  harnessCommand:
-    claude-code:
-    - claude
-    - --settings
-    - '{"permissions":{"deny":["Bash(pkill:*)","Bash(killall:*)"]}}'
-```
+### Settings that cannot disable protection
 
-You no longer need it. It does no harm, so you can remove it whenever it is
-convenient.
+Unattended runs load only the isolated `user` settings source. Goobers refuses
+`--bare`, `--safe-mode`, `--restricted`, and any `--setting-sources` value
+other than `user`. It also refuses hook-disabling environment switches.
+These checks apply on legacy versions too.
 
-### Check a new Claude Code version
+Safe inline JSON `--settings` remains supported, including additional
+permission denies and allows. Settings files are refused because their
+contents can change after inspection. Inline settings cannot contain `hooks`,
+`disableAllHooks`, `allowManagedHooksOnly`, or `env`; those keys could replace
+or disable protection. Existing settings-file overrides must be converted to
+safe inline JSON. Project/local settings do not override the isolated hook.
 
-An opt-in live test runs a signed-in Claude Code through the adapter on both
-permission shapes. It confirms that the CLI reports the `pkill` as a
-permission denial. The test signals nothing: `pkill` and `killall` are stubs
-on `PATH` that only write marker files. Like production, it copies your real
-Claude Code login into the run, from `~/.claude/.credentials.json` or the
-macOS login Keychain. The always-on unit tests never read it.
+### Validation and limitations
+
+Always-on fixtures cover command wrappers, malformed input, safe commands,
+settings bypasses, both permission modes, and completion repair. The opt-in
+hook probe runs one short model session using harmless PATH stubs and requires
+a positive control, absent forbidden markers, and the CLI's actual hook denial:
 
 ```sh
-GOOBERS_CLAUDE_LIVE_SMOKE=1 go test -tags integration ./internal/harness \
-  -run '^TestIntegrationClaudeDeniesNameBasedKill$' -count=1 -v
+GOOBERS_CLAUDE_LIVE_SMOKE=1 GOOBERS_CLAUDE_LIVE_SELF_BIN=/path/to/goobers \
+  go test -race -timeout 30m -tags integration ./internal/harness \
+  -run '^TestIntegrationClaudeBlocksWrappedNameKillHook$' -count=1 -v
 ```
 
-### What the deny does not cover
-
-This guards against a known mistake. It is not a sandbox. With Claude Code
-2.1.292, these shapes still run:
-
-- any `sh -c` or `bash -c` wrapper, even a literal one such as
-  `bash -c 'pkill -f x'`
-- `eval pkill ...`
-- `xargs -I{}`, as in `pgrep -f x | xargs -I{} kill {}`
-- `find ... -exec pkill ... \;`
-- `$(command -v pkill) ...` and a relative `./pkill`
-- an absolute path other than the ones listed above
-- `kill $(pgrep -f ...)`, or a script file that kills by name
-- Windows name-based kills: `taskkill /IM ...` and PowerShell
-  `Stop-Process -Name`
-
-[#7393](https://github.com/Agent-Clubhouse/Goobers/issues/7393) tracks a stronger guard: a `PreToolUse` hook that matches `pkill` or
-`killall` anywhere in the command text.
-
-Only a sandbox that scopes signals or process IDs closes all of these.
-Goobers' Linux sandbox (bubblewrap) runs the harness in its own PID namespace,
-so host processes are out of reach. Goobers' macOS sandbox restricts file
-writes but does not scope signals, so a sandboxed claude-code stage on macOS
-still depends on this deny ([#7395](https://github.com/Agent-Clubhouse/Goobers/issues/7395)).
+The hook is defense in depth. Script contents, constructed command names,
+direct signal APIs, arbitrary PID kills, and Windows process commands are not
+comprehensively covered. A stage able to modify its own settings is not
+contained by a hook. Older versions' prefix denies additionally miss literal
+shell wrappers. Only OS signal/PID confinement closes the process-safety
+class; runner cleanup must target only process groups it owns. Goobers' Linux
+sandbox uses a PID namespace. Goobers' macOS sandbox denies signals except to
+processes in the same sandbox. A stage can still stop its own children, but
+cannot signal host processes outside its sandbox. This applies to every
+sandboxed harness and deterministic shell stage; the runner's process-group
+teardown runs outside the sandbox and remains available. Unsandboxed stages
+still need the harness-specific mitigations described here.
 
 ## codex
 
@@ -132,10 +127,40 @@ project) are not loaded. A `.rules` deny for `pkill` would have no effect.
 
 ## copilot
 
-Goobers does not add a deny for Copilot CLI stages. The Copilot CLI's own
-system prompt tells the model not to use `pkill`, `killall` or other
-name-based kills. That is an instruction, not something the CLI enforces. A
-`runner.harnessCommand` other than plain `copilot` must satisfy the
-[launcher contract](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/harness-launcher-contract.md), so you cannot add flags
-there the way you can for claude-code. Run Copilot stages that need host
-isolation under the Linux sandbox. [#7394](https://github.com/Agent-Clubhouse/Goobers/issues/7394) tracks an enforced Copilot deny.
+Every Copilot stage carries `--deny-tool` rules for `shell(pkill)` and
+`shell(killall)`, their `/usr/bin` and `/bin` forms, and `/usr/bin/env` wrappers.
+The adapter adds them after configured arguments, including custom launchers,
+tool allowlists, completion repairs, and fallback authentication prompts.
+[Copilot's permission rules](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/allowing-tools)
+keep denies authoritative alongside `--allow-all-tools`. The invocation
+record includes the effective denies.
+
+This is the enforced CLI and control-session mitigation for
+[#7394](https://github.com/Agent-Clubhouse/Goobers/issues/7394). The CLI deny
+arguments and host permission callback apply independently of the model's
+system-prompt instructions.
+
+Controlled SDK sessions also inspect `fullCommandText` before approving a
+shell permission. They refuse a missing command, `pkill` or `killall` anywhere
+in the text, and commands combining `pgrep` with `kill`. That covers literal
+`bash -c`, `eval`, `find -exec`, and `xargs` wrappers. This conservative text
+check may also refuse quoted documentation containing those command names.
+
+An opt-in integration probe executes harmless PATH stubs through the actual
+CLI's tool-authorization RPC without a model turn. It requires a successful
+control command, a native refusal record, and absent forbidden-stub markers:
+
+```sh
+GOOBERS_COPILOT_HOSTSAFETY=1 go test -race -timeout 30m -tags integration \
+  ./internal/harness -run '^TestIntegrationCopilotDeniesNameBasedKill$' -v
+```
+
+Copilot CLI 1.0.98 also refuses bare name-kills inside its shell tool, reporting
+`kill_command_blocked`. Goobers retains its own policy for older versions and
+wrapped commands.
+
+These checks are defense in depth. Non-controlled CLI sessions rely on the
+CLI's permission matcher. Script files, constructed command names, direct
+process-signaling APIs, Windows process commands, and arbitrary PID kills are
+not comprehensively covered. Use OS sandbox confinement for host isolation;
+runner cleanup must target only process groups it owns.

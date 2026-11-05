@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -425,7 +426,7 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 		opts = append(opts, providers.WithMaxRateLimitRetries(0), providers.WithMaxTransientRetries(0))
 	}
 	if cfg.quota != nil {
-		accounting := &providerQuotaAccounting{state: cfg.quota}
+		accounting := &runtimewiring.ProviderQuotaAccounting{State: cfg.quota}
 		opts = append(opts,
 			providers.WithQuotaRequestGate(accounting),
 			providers.WithQuotaObserver(accounting),

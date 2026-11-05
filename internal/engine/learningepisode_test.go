@@ -1,41 +1,5 @@
 package engine
 
-// Replay, determinism and naming coverage for plan item E10 (#3913): the
-// learning-episode injection on the gate retry arm.
-//
-// The parity harness proves the engine and the local runner AGREE. It cannot
-// prove the engine's half is replay-safe, because it walks each side exactly
-// once, in-process, and never replays. That distinction matters more here than
-// for most ports: the injection is a walk decision whose OUTPUT is a
-// content-addressed digest threaded into the next stage's dispatch. Three
-// failure modes follow, none of them visible to parity:
-//
-//   - IMPURITY. If the episode's bytes ever picked up a real clock, a random
-//     source, a map iteration or an activity result, the digest would differ on
-//     replay — and a differing digest means a differing artifact name, pointer
-//     name and envelope, i.e. a nondeterminism panic that wedges the run.
-//   - SEQ SKEW. The artifact and pointer names embed the journal SEQUENCE of
-//     the event being corrected, which the walk derives from its own
-//     accumulated ops (projectedEvents) before any journal exists. If that
-//     derivation drifted from the sequence the writer actually assigns, the
-//     walk would name the episode after an event that is not the one it
-//     corrects — silently, with no test failing anywhere near the change.
-//   - HISTORY SKEW. A worker running this code replays a history recorded
-//     before it. learning.episode.injected is a runner.annotation, the same
-//     event class that had to be added to projectableEventTypes for E2.
-//
-// TestEngineLearningEpisodeNamesTheCorrectedEvent pins the second against a
-// real projected journal. TestEngineLearningEpisodeIsDeterministic covers the
-// first cheaply, in the test environment. TestEngineLearningEpisodeHistoryReplays
-// covers all three against a real dev server — the only place a genuine replay
-// happens — and asserts the digest the replay re-derives is the digest the
-// original walk produced, which is the claim the injected POINTER rests on.
-//
-// e4replay_test.go replays the implementation-lane fixtures #3882 landed. This
-// file is deliberately separate and deliberately DETERMINISTIC: the injection
-// is on the generic retry arm, so it must be provably replay-safe on a fixture
-// with no reviewer, no agentic stage and no cached verdict anywhere in it.
-
 import (
 	"context"
 	"errors"
@@ -47,20 +11,56 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/engineadmission"
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Replay, determinism and naming coverage for plan item E10 (#3913): the
+	// learning-episode injection on the gate retry arm.
+	//
+	// The parity harness proves the engine and the local runner AGREE. It cannot
+	// prove the engine's half is replay-safe, because it walks each side exactly
+	// once, in-process, and never replays. That distinction matters more here than
+	// for most ports: the injection is a walk decision whose OUTPUT is a
+	// content-addressed digest threaded into the next stage's dispatch. Three
+	// failure modes follow, none of them visible to parity:
+	//
+	//   - IMPURITY. If the episode's bytes ever picked up a real clock, a random
+	//     source, a map iteration or an activity result, the digest would differ on
+	//     replay — and a differing digest means a differing artifact name, pointer
+	//     name and envelope, i.e. a nondeterminism panic that wedges the run.
+	//   - SEQ SKEW. The artifact and pointer names embed the journal SEQUENCE of
+	//     the event being corrected, which the walk derives from its own
+	//     accumulated ops (projectedEvents) before any journal exists. If that
+	//     derivation drifted from the sequence the writer actually assigns, the
+	//     walk would name the episode after an event that is not the one it
+	//     corrects — silently, with no test failing anywhere near the change.
+	//   - HISTORY SKEW. A worker running this code replays a history recorded
+	//     before it. learning.episode.injected is a runner.annotation, the same
+	//     event class that had to be added to projectableEventTypes for E2.
+	//
+	// TestEngineLearningEpisodeNamesTheCorrectedEvent pins the second against a
+	// real projected journal. TestEngineLearningEpisodeIsDeterministic covers the
+	// first cheaply, in the test environment. TestEngineLearningEpisodeHistoryReplays
+	// covers all three against a real dev server — the only place a genuine replay
+	// happens — and asserts the digest the replay re-derives is the digest the
+	// original walk produced, which is the claim the injected POINTER rests on.
+	//
+	// e4replay_test.go replays the implementation-lane fixtures #3882 landed. This
+	// file is deliberately separate and deliberately DETERMINISTIC: the injection
+	// is on the generic retry arm, so it must be provably replay-safe on a fixture
+	// with no reviewer, no agentic stage and no cached verdict anywhere in it.
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
-
 	temporalworker "go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -119,7 +119,7 @@ func TestEngineLearningEpisodeNamesTheCorrectedEvent(t *testing.T) {
 	if failed.Seq == 0 {
 		t.Fatalf("no failed implement stage.finished in the projected journal:\n%s", formatEventSeqs(events))
 	}
-	wantName := runner.LearningEpisodeArtifactName("review", failed.Seq)
+	wantName := runsemantics.LearningEpisodeArtifactName("review", failed.Seq)
 	if _, ok := findArtifactRecorded(events, wantName); !ok {
 		// Two different defects reach here and they are not distinguishable
 		// from the artifact's absence alone, which is what left #3955
@@ -139,11 +139,11 @@ func TestEngineLearningEpisodeNamesTheCorrectedEvent(t *testing.T) {
 			wantName, formatEventSeqs(events))
 	}
 	// And the pointer the repass was dispatched with names the same sequence.
-	wantPointer := runner.LearningEpisodePointerName(failed.Seq)
+	wantPointer := runsemantics.LearningEpisodePointerName(failed.Seq)
 	found := false
 	for _, ev := range events {
 		if ev.Type == journal.EventRunnerAnnotation && ev.Name == wantName {
-			if runner.LearningEpisodePointerName(uint64(annotationInt(ev.Runner, "sourceSeq"))) == wantPointer {
+			if runsemantics.LearningEpisodePointerName(uint64(annotationInt(ev.Runner, "sourceSeq"))) == wantPointer {
 				found = true
 			}
 		}
@@ -402,11 +402,11 @@ func projectionEpisodes(t *testing.T, proj JournalProjection) []projectionDigest
 		if i+1 >= len(proj.Ops) || proj.Ops[i+1].Kind != opAppend || proj.Ops[i+1].Event == nil ||
 			proj.Ops[i+1].Event.Name != op.Artifact.Name {
 			t.Fatalf("episode artifact %q is not followed by its %s annotation; the two ops must stay "+
-				"adjacent so a reader can attribute the artifact", op.Artifact.Name, runner.LearningEpisodeInjectedKind)
+				"adjacent so a reader can attribute the artifact", op.Artifact.Name, runsemantics.LearningEpisodeInjectedKind)
 		}
 		ev := proj.Ops[i+1].Event
 		entry.EpisodeID = annotationString(ev.Runner, "episodeId")
-		entry.Pointer = runner.LearningEpisodePointerName(uint64(annotationInt(ev.Runner, "sourceSeq")))
+		entry.Pointer = runsemantics.LearningEpisodePointerName(uint64(annotationInt(ev.Runner, "sourceSeq")))
 		entry.NextAttempt = annotationInt(ev.Runner, "nextAttempt")
 		out = append(out, entry)
 	}
@@ -418,7 +418,12 @@ func projectionEpisodes(t *testing.T, proj JournalProjection) []projectionDigest
 // live state.
 func mustQueryProjection(ctx context.Context, t *testing.T, c client.Client, workflowID string) JournalProjection {
 	t.Helper()
-	proj, err := queryProjection(ctx, c, workflowID)
+	value, err := c.QueryWorkflow(ctx, workflowID, "", JournalQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proj JournalProjection
+	err = value.Get(&proj)
 	if err != nil {
 		t.Fatalf("query journal projection: %v", err)
 	}
@@ -613,7 +618,7 @@ func TestLearningEpisodeTargetAttemptIsVersioned(t *testing.T) {
 	// A nontrivial send-back: the subject is on its first attempt while the
 	// target is about to take its third. The two derivations disagree, which
 	// is what makes each branch identifiable.
-	addressing := runner.LearningEpisodeAddressing{SourceSeq: 19, SourceAttempt: 1, TargetNextAttempt: 3}
+	addressing := runsemantics.LearningEpisodeAddressing{SourceSeq: 19, SourceAttempt: 1, TargetNextAttempt: 3}
 
 	if got := learningEpisodeTargetAttemptFor(workflow.DefaultVersion, addressing); got != 0 {
 		t.Fatalf("DefaultVersion selected targetNextAttempt %d, want 0 — 0 is what makes "+
@@ -687,7 +692,7 @@ func TestLearningEpisodeParallelRouteIsRunnerOnly(t *testing.T) {
 		Name:     "fan",
 		Branches: []apiv1.Branch{{Name: "security", Start: "implement"}},
 	}}
-	err := refuseUnsupportedEngineFeatures("learning-parallel", spec)
+	err := engineadmission.RefuseFeatures("learning-parallel", spec)
 	if err == nil {
 		t.Fatal("the engine accepted a definition declaring spec.parallels.\n" +
 			"internal/runner's retry arm scopes the injected learning.episode pointer to the ACTIVE BRANCH " +

@@ -7,8 +7,58 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
+
+func TestAgenticFactoryReceivesCompilerMaterializedMCPServers(t *testing.T) {
+	for _, tc := range []struct {
+		version      string
+		wantRequired bool
+	}{
+		{version: "3.0"},
+		{version: "3.1", wantRequired: true},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			spec := apiv1.WorkflowSpec{
+				Gaggle: "web", Start: "work", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+				Tasks: []apiv1.Task{{Name: "work", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "work"}},
+			}
+			machine, err := workflow.Compile(
+				workflow.Definition{Name: "work", DSLVersion: tc.version, Spec: spec},
+				workflow.WithPreviewFeatures(true),
+				workflow.WithGoobers(map[string]apiv1.GooberSpec{
+					"coder": {MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}}},
+				}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var captured []apiv1.MCPServer
+			ex := newExecutors(Config{
+				NewAgenticWithMCPServers: func(_ string, servers []apiv1.MCPServer, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+					captured = servers
+					active := true
+					return &guardedAssetGoober{guardActive: &active}, nil
+				},
+			}, nil, nil)
+			if _, err := ex.agentic("coder", machine); err != nil {
+				t.Fatal(err)
+			}
+			if len(captured) != 1 {
+				t.Fatalf("servers = %+v", captured)
+			}
+			if tc.wantRequired {
+				if captured[0].Required == nil || !*captured[0].Required {
+					t.Fatalf("DSL 3.1 required = %v, want true", captured[0].Required)
+				}
+			} else if captured[0].Required != nil {
+				t.Fatalf("DSL 3.0 required = %v, want legacy nil", *captured[0].Required)
+			}
+		})
+	}
+}
 
 type guardedAssetGoober struct {
 	guardActive *bool

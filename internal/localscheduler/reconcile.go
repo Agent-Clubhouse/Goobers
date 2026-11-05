@@ -23,7 +23,7 @@ type WorkflowIdentity struct {
 // from the event log, the durable source of truth; state.json can lag a
 // crash-fsynced run.finished event.
 func ActiveRunCounts(runsDir string) (map[string]int, error) {
-	scoped, _, err := activeRuns([]string{runsDir})
+	scoped, _, err := activeRunsContext(context.Background(), []string{runsDir})
 	counts := map[string]int{}
 	for identity, count := range scoped {
 		counts[identity.Workflow] += count
@@ -44,13 +44,9 @@ func ActiveRunCountsByWorkflowDirsContext(ctx context.Context, runsDirs []string
 	return counts, err
 }
 
-func activeRuns(runsDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
-	return activeRunsContext(context.Background(), runsDirs)
-}
-
-func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
+func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIdentity]int, map[string]ReconciledRun, error) {
 	counts := map[WorkflowIdentity]int{}
-	runs := map[string]reconciledRun{}
+	runs := map[string]ReconciledRun{}
 	for _, runsDir := range runsDirs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -60,8 +56,8 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 			if err != nil {
 				return err
 			}
-			if !run.suspended {
-				counts[run.identity]++
+			if !run.Suspended {
+				counts[run.Identity]++
 			}
 			runs[id.RunID] = run
 			return nil
@@ -73,9 +69,9 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 	return counts, runs, nil
 }
 
-func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
+func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]ReconciledRun, error) {
 	counts := map[WorkflowIdentity]int{}
-	runs := map[string]reconciledRun{}
+	runs := map[string]ReconciledRun{}
 	for _, runDir := range runDirs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -102,8 +98,8 @@ func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowI
 		if err != nil {
 			return nil, nil, err
 		}
-		if !run.suspended {
-			counts[run.identity]++
+		if !run.Suspended {
+			counts[run.Identity]++
 		}
 		runs[id.RunID] = run
 	}
@@ -188,7 +184,7 @@ func visitActiveRunStatesContext(ctx context.Context, runsDir string, visit func
 // Parked parents remain owned for cleanup and same-run continuation, but do
 // not consume runnable capacity. Invalid wait markers conservatively retain
 // capacity; the runner refuses their recovery instead of guessing quiescence.
-func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunIdentity) (reconciledRun, error) {
+func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunIdentity) (ReconciledRun, error) {
 	run := reconciledRunFor(id)
 	if id.Child != nil {
 		return run, nil
@@ -200,6 +196,6 @@ func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunI
 	if err != nil {
 		return run, err
 	}
-	run.suspended = journal.ParkedOnChild(events)
+	run.Suspended = journal.ParkedOnChild(events)
 	return run, ctx.Err()
 }

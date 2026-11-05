@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -31,7 +33,7 @@ func runtimePreflightMCPChecks(ctx context.Context, cfg *instance.Config, goober
 		}
 		goober := goobers[stage.Goober]
 		facts := harness.ConfiguredMCPDiagnostics(goober.MCPServers, goober.Tools)
-		adapter, err := runtimeReadinessAdapterFor(apiv1.Harness(stage.Harness), harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, nil)
+		adapter, err := runtimeReadinessAdapterFor(apiv1.Harness(stage.Harness), runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, nil)
 		if supported, ok := adapter.(*harness.CopilotAdapter); err == nil && ok {
 			supported.SelfBin = self
 			facts = supported.ProbeMCPReadiness(ctx, harness.RunRequest{MCPServers: goober.MCPServers, Tools: goober.Tools,

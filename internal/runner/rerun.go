@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -159,6 +160,12 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
 		}
+		rerunBranch, err := r.rerunWorkspaceBranch(ctx, startIn, events, in.Stage)
+		if err != nil {
+			return Result{}, err
+		}
+		startIn.WorkspaceBranch = rerunBranch
+		startIn.requireExistingWorkspace = rerunBranch != ""
 		if err := jr.Append(journal.Event{
 			Type:                journal.EventStageRerunRequested,
 			Stage:               in.Stage,
@@ -197,7 +204,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		}
 		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
 		ws.lastResult = discardToleratedFailureOutputs(in.Machine, ws.lastStage, ws.lastResult)
-		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+		ws.workspaceBranch = rerunBranch
 		ws.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
 		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
@@ -360,7 +367,7 @@ func pendingRerun(events []journal.Event, machine *workflow.Machine) (*rerunCont
 			return nil, nil, fmt.Errorf("pending rerun target %q is not defined by workflow %q", request.Stage, machine.Def.Name)
 		}
 		for _, event := range events[i+1:] {
-			if (!isGate && event.Type == journal.EventStageFinished && event.Stage == request.Stage && !isInterruptedAttemptMarker(event)) ||
+			if (!isGate && event.Type == journal.EventStageFinished && event.Stage == request.Stage && !runsemantics.IsInterruptedAttemptMarker(event)) ||
 				(isGate && event.Type == journal.EventGateEvaluated && event.Gate == request.Stage) {
 				return nil, nil, nil
 			}
@@ -401,7 +408,7 @@ func pendingRerunRetryUsage(events []journal.Event, stage string) (int32, int32)
 			}
 		}
 		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" &&
-			event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) {
+			event.Runner[runsemantics.RetryFailureClassKey] == string(journal.AttemptInfra) {
 			taggedInfrastructureFailures++
 		}
 	}
@@ -414,7 +421,7 @@ func pendingRerunRetryUsage(events []journal.Event, stage string) (int32, int32)
 func pendingRerunAttempt(events []journal.Event, request journal.Event) int {
 	attempt := request.Attempt
 	for _, event := range events {
-		if event.Stage == request.Stage && isInterruptedAttemptMarker(event) && event.Attempt >= attempt {
+		if event.Stage == request.Stage && runsemantics.IsInterruptedAttemptMarker(event) && event.Attempt >= attempt {
 			attempt = event.Attempt + 1
 		}
 	}

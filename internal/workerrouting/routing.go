@@ -31,6 +31,10 @@ const UnversionedLabel = "__unversioned__"
 // as draining.
 type Routing struct {
 	client.WorkerDeploymentRoutingConfig
+	// Registered holds every build reported by the Worker Deployment. A
+	// registered build may be inactive while Worker Controller waits for its
+	// Deployment to become Available before promoting it.
+	Registered map[string]bool
 	// Draining holds the build IDs whose versions are draining or drained:
 	// they were current or ramping and no longer are, so they receive no new
 	// workflows by design while their pinned workflows finish.
@@ -70,6 +74,9 @@ type Finding struct {
 	// Draining marks a worker whose version was replaced: it receives no new
 	// workflows, which is expected, not a problem.
 	Draining bool
+	// Registered marks a versioned worker build known to the Worker
+	// Deployment, whether inactive, ramping, current, or draining.
+	Registered bool
 }
 
 // Routed reports whether the routing is no problem for the worker: it
@@ -92,6 +99,10 @@ func DescribeRouting(ctx context.Context, c client.Client) (Routing, error) {
 		if summary.Version.DeploymentName != DeploymentName {
 			continue
 		}
+		if routing.Registered == nil {
+			routing.Registered = map[string]bool{}
+		}
+		routing.Registered[summary.Version.BuildID] = true
 		if !summary.CreateTime.IsZero() {
 			if routing.Created == nil {
 				routing.Created = map[string]time.Time{}
@@ -137,11 +148,12 @@ func Check(versioned bool, buildID string, routing Routing, describeErr error) F
 	}
 	plan := planTraffic(routing.WorkerDeploymentRoutingConfig, nil)
 	if plan.shareOf(served) > 0 {
-		return Finding{}
+		return Finding{Registered: versioned}
 	}
 	if versioned && routing.superseded(buildID) {
-		return Finding{Draining: true}
+		return Finding{Draining: true, Registered: true}
 	}
+	registered := versioned && routing.Registered[buildID]
 	if served == plan.current.version && plan.ramp != nil {
 		// The worker cannot see whether the ramped version has workers, so
 		// it offers both ways out; status picks the one that fits.
@@ -150,7 +162,8 @@ func Check(versioned bool, buildID string, routing Routing, describeErr error) F
 			Problem: fmt.Sprintf("worker deployment %q ramps %s of new workflow tasks to %s, so this worker (%s, the current version) receives none. "+
 				"Finish the rollout: %s; or, if %s has no workers, cancel the ramp: %s",
 				DeploymentName, percent(plan.ramp.share), plan.ramp.label(), served.label(), command, plan.ramp.label(), plan.ramp.rampDeleteCommand()),
-			Command: command,
+			Command:    command,
+			Registered: registered,
 		}
 	}
 	command := served.promoteCommand()
@@ -159,14 +172,16 @@ func Check(versioned bool, buildID string, routing Routing, describeErr error) F
 			Problem: fmt.Sprintf("worker deployment %q current version is %s, so this UNVERSIONED worker receives no new workflow tasks "+
 				"(engine.workerVersioning is off). Either set engine.workerVersioning: true, or point the deployment at unversioned workers: %s",
 				DeploymentName, plan.currentDescription(), command),
-			Command: command,
+			Command:    command,
+			Registered: registered,
 		}
 	}
 	return Finding{
 		Problem: fmt.Sprintf("worker deployment %q current version is %s but this worker serves %s, so it receives no new workflow tasks "+
 			"and the engine stalls. Make this build current: %s",
 			DeploymentName, plan.currentDescription(), served.label(), command),
-		Command: command,
+		Command:    command,
+		Registered: registered,
 	}
 }
 

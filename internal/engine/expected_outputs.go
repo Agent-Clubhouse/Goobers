@@ -4,7 +4,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 )
 
@@ -21,5 +21,5 @@ func enforceExpectedOutputs(ctx workflow.Context, dslVersion string, task apiv1.
 	if workflow.GetVersion(ctx, expectedOutputsEnforcementChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 		return result
 	}
-	return runner.EnforceExpectedOutputs(dslVersion, task, result)
+	return runsemantics.EnforceExpectedOutputs(dslVersion, task, result)
 }

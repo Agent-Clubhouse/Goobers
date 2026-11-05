@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/capability"
@@ -161,6 +163,10 @@ func setPodCIPollEnv(t *testing.T, f ciPollFixture) {
 func credentialPlaneStub(t *testing.T, grant []string) string {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/runs/run-ci-poll/journal/emit", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"applied":1,"seq":1}`)
+	})
 	mux.HandleFunc(apicontract.CredentialResolvePath, func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Capabilities []string `json:"capabilities"`
@@ -269,9 +275,9 @@ func TestPodCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) 
 // resolve through.
 func stubPRPoller(t *testing.T, poller executor.PRPoller) {
 	t.Helper()
-	prev := newPRPoller
-	newPRPoller = func(string) executor.PRPoller { return poller }
-	t.Cleanup(func() { newPRPoller = prev })
+	prev := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(string) executor.PRPoller { return poller }
+	t.Cleanup(func() { runtimewiring.NewPRPoller = prev })
 }
 
 // recordingArtifactRecorder is the LOCAL side's artifact sink. It implements
@@ -402,20 +408,11 @@ func (p *recordingPRPoller) PollPullRequest(_ context.Context, req providers.Pul
 
 // --- the rate-limit report (the half of the quota observer a pod can send) --
 
-// TestCIPollPodSurfacesRateLimitedWithReset is C5's own acceptance: a
-// rate-limited poll from a pod carries providers.ErrorCodeRateLimited AND
-// rateLimitReset, because that pair is the ONLY channel by which a pod can
-// tell the daemon's ProviderQuotaState the window is exhausted (the
-// in-process QuotaObserver the self runner wires does not exist in a pod).
-// The reset is on OUTPUTS, not in the message: internal/runner's
-// outputRateLimitReset parses that key on its way to
-// ProviderQuotaState.RecordExhausted, and a reset only a human can read
-// records nothing.
+// A quota wait beyond the timeout preserves reset guidance in the pod result.
 func TestCIPollPodSurfacesRateLimitedWithReset(t *testing.T) {
 	fixture := defaultCIPollFixture()
-	// One retry's worth of budget, so the executor gives up on the rate limit
-	// rather than polling until the fixture's timeout.
-	fixture.inputs[executor.InputPollTimeoutSec] = "1s"
+	// The advertised reset lies beyond the poll budget.
+	fixture.inputs[executor.InputPollTimeoutSec] = "10ms"
 	reset := time.Now().Add(37 * time.Minute).UTC().Truncate(time.Second)
 	rateLimited := fmt.Errorf("poll checks: %w", &providers.RateLimitError{
 		Endpoint: "GET /repos/acme/web/pulls/41", Status: 403, Reset: reset,
@@ -426,8 +423,8 @@ func TestCIPollPodSurfacesRateLimitedWithReset(t *testing.T) {
 	if result.Status != apiv1.ResultFailure || result.Error == nil {
 		t.Fatalf("result = %+v, want a failure envelope", result)
 	}
-	if result.Error.Code != providers.ErrorCodeRateLimited {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, providers.ErrorCodeRateLimited)
+	if result.Error.Code != "poll_timeout" {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, "poll_timeout")
 	}
 	if !result.Error.Retryable {
 		t.Fatal("a rate-limited poll must be retryable; the window rolls over")
@@ -445,34 +442,18 @@ func TestCIPollPodSurfacesRateLimitedWithReset(t *testing.T) {
 	}
 }
 
-// TestCIPollRateLimitCodeIsTheSameOnBothSubstrates is the parity half of the
-// row above. The pod cannot report a rate limit the way the self runner does
-// (an infrastructure-classed ERROR across the invoke seam, plus an in-process
-// quota observation), but it MUST report it under the same NAME — a lane that
-// journaled github_rate_limited locally and something else in a pod would
-// split one operator question across two queries.
-func TestCIPollRateLimitCodeIsTheSameOnBothSubstrates(t *testing.T) {
+// A quota reset outside the poll budget is a timeout on both substrates.
+func TestCIPollQuotaTimeoutIsTheSameOnBothSubstrates(t *testing.T) {
 	fixture := defaultCIPollFixture()
-	fixture.inputs[executor.InputPollTimeoutSec] = "1s"
+	fixture.inputs[executor.InputPollTimeoutSec] = "10ms"
 	rateLimited := fmt.Errorf("poll checks: %w", &providers.RateLimitError{Reset: time.Now().Add(time.Hour)})
-
-	// PREMISE (ungraded): the local side really does classify this as a
-	// retryable, rate-limit-named failure rather than a generic one.
-	_, localErr := runLocalCIPoll(t, fixture, &fakeCIPoller{errs: []error{rateLimited}})
-	if localErr == nil {
-		t.Fatal("local ci-poll returned no error for a rate-limited poll")
+	local, localErr := runLocalCIPoll(t, fixture, &fakeCIPoller{errs: []error{rateLimited}})
+	if localErr != nil || local.Error == nil || local.Error.Code != "poll_timeout" {
+		t.Fatalf("local result=%+v err=%v, want timeout result", local, localErr)
 	}
-	var coded interface{ StageErrorCode() string }
-	if !errors.As(localErr, &coded) {
-		t.Fatalf("local ci-poll error %v carries no stage code", localErr)
-	}
-	if coded.StageErrorCode() != providers.ErrorCodeRateLimited {
-		t.Fatalf("local stage code = %q, want %q", coded.StageErrorCode(), providers.ErrorCodeRateLimited)
-	}
-
 	pod := runPodCIPoll(t, fixture, &fakeCIPoller{errs: []error{rateLimited}})
-	if pod.Error == nil || pod.Error.Code != coded.StageErrorCode() {
-		t.Fatalf("pod error = %+v, want code %q to match the local stage code", pod.Error, coded.StageErrorCode())
+	if pod.Error == nil || pod.Error.Code != local.Error.Code {
+		t.Fatalf("pod error=%+v, want local timeout code %q", pod.Error, local.Error.Code)
 	}
 }
 
@@ -482,11 +463,11 @@ func TestCIPollRateLimitCodeIsTheSameOnBothSubstrates(t *testing.T) {
 // strictly worse than the absence the consumers already skip.
 func TestCIPollPodOmitsRateLimitResetWhenTheProviderSentNone(t *testing.T) {
 	fixture := defaultCIPollFixture()
-	fixture.inputs[executor.InputPollTimeoutSec] = "1s"
+	fixture.inputs[executor.InputPollTimeoutSec] = "10ms"
 	poller := &fakeCIPoller{errs: []error{fmt.Errorf("poll: %w", &providers.RateLimitError{})}}
 
 	result := runPodCIPoll(t, fixture, poller)
-	if result.Error == nil || result.Error.Code != providers.ErrorCodeRateLimited {
+	if result.Error == nil || result.Error.Code != "poll_timeout" {
 		t.Fatalf("result = %+v, want a rate-limited failure", result)
 	}
 	if _, present := result.Outputs[executor.OutputRateLimitReset]; present {
@@ -603,12 +584,12 @@ func TestCIPollPodPollsWithTheResolvedCredential(t *testing.T) {
 	fixture := defaultCIPollFixture()
 	setPodCIPollEnv(t, fixture)
 	var seen string
-	prev := newPRPoller
-	newPRPoller = func(token string) executor.PRPoller {
+	prev := runtimewiring.NewPRPoller
+	runtimewiring.NewPRPoller = func(token string) executor.PRPoller {
 		seen = token
 		return &recordingPRPoller{result: providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}}
 	}
-	t.Cleanup(func() { newPRPoller = prev })
+	t.Cleanup(func() { runtimewiring.NewPRPoller = prev })
 
 	if result := runCIPollStage(context.Background(), io.Discard); result.Status != apiv1.ResultSuccess {
 		t.Fatalf("result = %+v, want success", result)
@@ -665,13 +646,13 @@ func TestRunDeclaredStageNoLongerRefusesCIPoll(t *testing.T) {
 
 // --- providers a pod cannot resolve a poller for ---------------------------
 
-// TestCIPollPodRefusesANonGitHubProvider: ADO and Gitea both resolve part of
-// their poller identity from the instance config directory, which a pod does
+// TestCIPollPodRefusesAnUnsupportedProvider: Gitea resolves part of
+// its poller identity from the instance config directory, which a pod does
 // not have. Refused loudly rather than defaulting to GitHub — a silent
 // default would poll a real api.github.com repository that merely shares the
 // routed owner/name, and report ITS check state as this run's.
-func TestCIPollPodRefusesANonGitHubProvider(t *testing.T) {
-	for _, provider := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+func TestCIPollPodRefusesAnUnsupportedProvider(t *testing.T) {
+	for _, provider := range []providers.ProviderKind{providers.ProviderGitea} {
 		t.Run(string(provider), func(t *testing.T) {
 			fixture := defaultCIPollFixture()
 			poller := &recordingPRPoller{result: providers.PullRequestPollResult{CheckState: providers.CheckStatePassing}}

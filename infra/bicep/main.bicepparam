@@ -17,3 +17,13 @@ param postgresAdminPassword = az.getSecret(
   '<bootstrap-kv>',
   'temporal-postgres-admin-password'
 )
+
+param instanceName = 'goobers'
+
+// Entra administrator for the PostgreSQL server: the identity that runs
+// `goobers-cloud bootstrap` to create roles (HA-P3-21). Replace the placeholders.
+param postgresEntraAdministrator = {
+  objectId: '00000000-0000-0000-0000-000000000000'
+  principalName: '<bootstrap-identity-name>'
+  principalType: 'ServicePrincipal'
+}

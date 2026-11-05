@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
@@ -74,7 +76,7 @@ func isProjectFamilyCapability(c capability.Capability) bool {
 	if isBacklogRoleCapability(c) {
 		return false
 	}
-	for _, credentialed := range credentialedCapabilities {
+	for _, credentialed := range runtimewiring.CredentialedCapabilities {
 		if c == credentialed {
 			return true
 		}
@@ -104,7 +106,7 @@ func appendCrossProviderBacklogUnboundWarnings(
 		if !providerconfig.CrossProviderBacklog(spec.Project.Provider, spec.Backlog.Provider) {
 			continue
 		}
-		granted, err := configuredCredentialGrants(cfg, spec.Project, spec.Backlog)
+		granted, err := runtimewiring.ConfiguredCredentialGrants(cfg, spec.Project, spec.Backlog)
 		if err != nil {
 			continue
 		}

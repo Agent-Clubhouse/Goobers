@@ -340,6 +340,11 @@
     "resultFile": "post-merge-result.json",
     "capabilities": [
       {
+        "capability": "github:pr:review",
+        "consequence": "without the review identity credential, native stale-base verdict withdrawal is skipped with a warning",
+        "optional": true
+      },
+      {
         "capability": "github:pr:write",
         "consequence": "the capability-scoped credential is not injected, so merged pull-request inspection fails at runtime"
       },
@@ -477,6 +482,11 @@
     "command": "reconcile-post-merge",
     "resultFile": "reconcile-post-merge-result.json",
     "capabilities": [
+      {
+        "capability": "github:pr:review",
+        "consequence": "without the review identity credential, native stale-base verdict withdrawal is skipped with a warning",
+        "optional": true
+      },
       {
         "capability": "github:pr:write",
         "consequence": "the capability-scoped credential is not injected, so late merge inspection fails at runtime"

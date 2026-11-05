@@ -76,11 +76,10 @@ func FilterChildCredentialKeys(ctx context.Context, keys []string) []string {
 }
 
 // RefuseUnisolatedChildProcess is called before local environment construction,
-// token materialization or process launch. The current self executor has no
-// credential-isolated filesystem/HOME contract, including stored model logins.
-// A future isolated backend must provide a distinct validated launch path.
+// token materialization or process launch. Only a daemon-admitted trusted-local
+// invocation may use the host executor with a private authentication environment.
 func RefuseUnisolatedChildProcess(ctx context.Context) error {
-	if _, child := ctx.Value(childCeilingKey{}).(ChildCeiling); child {
+	if _, child := ctx.Value(childCeilingKey{}).(ChildCeiling); child && !TrustedLocalProcess(ctx) {
 		return ErrChildAuthenticationIsolation
 	}
 	return nil

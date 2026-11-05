@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/gatenoise"
 )
 
 // FindingKind classifies a candidate finding's detection family (TUT-010).
@@ -552,6 +553,89 @@ type gateAggregate struct {
 // than aggregating in SQL (kept portable across the pure-Go sqlite driver,
 // no JSON1 dependency).
 func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Thresholds) ([]Finding, error) {
+	order, agg, err := db.gateAggregates(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var out []Finding
+	for _, gate := range order {
+		a := agg[gate]
+		verdict := gatenoise.Evaluate(gatenoise.Totals{Total: int64(a.total), NonPass: int64(a.nonPass), Escalated: int64(a.escalated)},
+			th.MinGateEvaluations, th.MaxGateEscalationRate)
+		if verdict.NeverFails {
+			runs, err := db.gateRuns(ctx, req, gate, "", th.MaxFlaggedRuns)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, Finding{
+				Kind:    FindingGateNeverFails,
+				Subject: gate,
+				Metrics: map[string]float64{
+					"totalEvaluations": float64(a.total),
+				},
+				Threshold:   float64(th.MinGateEvaluations),
+				FlaggedRuns: runs,
+			})
+		}
+		if verdict.Churn {
+			runs, err := db.gateRuns(ctx, req, gate, "escalated", th.MaxFlaggedRuns)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, Finding{
+				Kind:    FindingGateRepassChurn,
+				Subject: gate,
+				Metrics: map[string]float64{
+					"escalationRate":   verdict.EscalationRate,
+					"totalEvaluations": float64(a.total),
+					"escalatedCount":   float64(a.escalated),
+				},
+				Threshold:   th.MaxGateEscalationRate,
+				FlaggedRuns: runs,
+			})
+		}
+	}
+	return out, nil
+}
+
+// GateTotal is one gate's complete evaluation counts in a stats window, with
+// example run pointers for each gate-noise kind. It is what a cloud source
+// reports (see internal/cloud/telemetrypg) so the combined gate-noise findings
+// are derived from summed totals exactly as detectGateNoise derives them.
+type GateTotal struct {
+	Gate          string
+	Total         int
+	NonPass       int
+	Escalated     int
+	EvaluatedRuns []JournalPointer // runs that evaluated the gate (never-fails evidence)
+	EscalatedRuns []JournalPointer // runs with an escalated evaluation (churn evidence)
+}
+
+// GateTotals returns every gate's complete counts for req, whether or not any
+// gate-noise threshold is met, with up to maxRuns example runs per kind.
+func (db *DB) GateTotals(ctx context.Context, req StatsRequest, maxRuns int) ([]GateTotal, error) {
+	order, agg, err := db.gateAggregates(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]GateTotal, 0, len(order))
+	for _, gate := range order {
+		a := agg[gate]
+		evaluated, err := db.gateRuns(ctx, req, gate, "", maxRuns)
+		if err != nil {
+			return nil, err
+		}
+		escalated, err := db.gateRuns(ctx, req, gate, "escalated", maxRuns)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, GateTotal{Gate: gate, Total: a.total, NonPass: a.nonPass, Escalated: a.escalated,
+			EvaluatedRuns: evaluated, EscalatedRuns: escalated})
+	}
+	return out, nil
+}
+
+func (db *DB) gateAggregates(ctx context.Context, req StatsRequest) ([]string, map[string]*gateAggregate, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "g.occurred_at", req)
 	query := fmt.Sprintf(`
 		SELECT g.gate, g.verdict, g.runner_json, c.classification
@@ -561,7 +645,7 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 		%s`, where)
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("rollup: detect gate noise: %w", err)
+		return nil, nil, fmt.Errorf("rollup: detect gate noise: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -571,7 +655,7 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 		var gate string
 		var verdict, runnerJSON, classification sql.NullString
 		if err := rows.Scan(&gate, &verdict, &runnerJSON, &classification); err != nil {
-			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
+			return nil, nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
 		}
 		a, ok := agg[gate]
 		if !ok {
@@ -591,51 +675,7 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 			a.escalated++
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	var out []Finding
-	for _, gate := range order {
-		a := agg[gate]
-		if a.total < th.MinGateEvaluations {
-			continue
-		}
-		if a.nonPass == 0 {
-			runs, err := db.gateRuns(ctx, req, gate, "", th.MaxFlaggedRuns)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, Finding{
-				Kind:    FindingGateNeverFails,
-				Subject: gate,
-				Metrics: map[string]float64{
-					"totalEvaluations": float64(a.total),
-				},
-				Threshold:   float64(th.MinGateEvaluations),
-				FlaggedRuns: runs,
-			})
-		}
-		escalationRate := float64(a.escalated) / float64(a.total)
-		if escalationRate >= th.MaxGateEscalationRate {
-			runs, err := db.gateRuns(ctx, req, gate, "escalated", th.MaxFlaggedRuns)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, Finding{
-				Kind:    FindingGateRepassChurn,
-				Subject: gate,
-				Metrics: map[string]float64{
-					"escalationRate":   escalationRate,
-					"totalEvaluations": float64(a.total),
-					"escalatedCount":   float64(a.escalated),
-				},
-				Threshold:   th.MaxGateEscalationRate,
-				FlaggedRuns: runs,
-			})
-		}
-	}
-	return out, nil
+	return order, agg, rows.Err()
 }
 
 // gatePolicyEscalated excludes infrastructure retry exhaustion from repass

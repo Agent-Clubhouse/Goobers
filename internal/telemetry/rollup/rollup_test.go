@@ -43,24 +43,28 @@ func TestContinuationRunsFiltersAndGroupsDirectChildren(t *testing.T) {
 		{"continuation-c", "manual", "source-b", "running"},
 	} {
 		if _, err := db.sql.Exec(`
-			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, trigger_kind, trigger_ref, status, started_at)
-			VALUES (?, 'implement', 1, 'test', ?, ?, ?, ?)`,
-			row.runID, row.triggerKind, row.triggerRef, row.status, formatTime(fixtureStart)); err != nil {
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, trigger_kind, trigger_ref, status, started_at, continued_from_run_id)
+			VALUES (?, 'implement', 1, 'test', ?, ?, ?, ?, ?)`,
+			row.runID, row.triggerKind, row.triggerRef, row.status, formatTime(fixtureStart), row.triggerRef); err != nil {
 			t.Fatalf("insert run %q: %v", row.runID, err)
 		}
 	}
 
-	got, err := db.ContinuationRuns(context.Background(), []string{"source-a", "source-b"})
+	got, err := db.ContinuationRuns(context.Background(), "source-a", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if children := got["source-a"]; len(children) != 2 ||
-		children[0].RunID != "continuation-a" || children[0].Status != "completed" ||
-		children[1].RunID != "continuation-b" || children[1].Status != "failed" {
+	if children := got.Runs; len(children) != 2 ||
+		children[0].ID != "continuation-a" || children[0].Phase != "completed" ||
+		children[1].ID != "continuation-b" || children[1].Phase != "failed" {
 		t.Fatalf("source-a continuations = %#v", children)
 	}
-	if children := got["source-b"]; len(children) != 1 ||
-		children[0].RunID != "continuation-c" || children[0].Status != "running" {
+	got, err = db.ContinuationRuns(context.Background(), "source-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if children := got.Runs; len(children) != 1 ||
+		children[0].ID != "continuation-c" || children[0].Phase != "running" {
 		t.Fatalf("source-b continuations = %#v", children)
 	}
 }

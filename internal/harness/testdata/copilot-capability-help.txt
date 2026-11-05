@@ -1,0 +1,9 @@
+Usage: copilot [OPTIONS] [COMMAND]
+Options:
+      --session-id <id>
+      --allow-all-tools
+      --log-level <level>
+      --log-dir <directory>
+      --no-remote-export
+      --additional-mcp-config <json>
+      --available-tools [<tools>...]

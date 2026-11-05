@@ -1,0 +1,16 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: human
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: approval
+  gates:
+    - name: approval
+      evaluator: human
+      human:
+        approvers: [operator:fixture]
+      branches:
+        pass: ""
+        reject: "@abort"

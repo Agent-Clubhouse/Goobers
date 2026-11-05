@@ -22,15 +22,21 @@ const (
 	ModeEnforce Mode = "enforce"
 )
 
+// newEntraTokenSource is a seam so tests need no Azure identity.
+var newEntraTokenSource = decider.NewEntraTokenSource
+
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Settings is the instance-level opt-in. Secrets are never stored here: the
 // endpoint and key are read from the named environment variables, so this
 // struct is safe to commit as an example.
 type Settings struct {
-	Mode                  Mode   `json:"mode,omitempty" yaml:"mode,omitempty"`
-	BaseURLEnv            string `json:"baseURLEnv,omitempty" yaml:"baseURLEnv,omitempty"`
-	KeyEnv                string `json:"keyEnv,omitempty" yaml:"keyEnv,omitempty"`
+	Mode       Mode   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	BaseURLEnv string `json:"baseURLEnv,omitempty" yaml:"baseURLEnv,omitempty"`
+	KeyEnv     string `json:"keyEnv,omitempty" yaml:"keyEnv,omitempty"`
+	// Auth selects the credential: "key" (default, keyEnv) or "entra" (ambient
+	// Azure identity such as workload or managed identity; no key is stored).
+	Auth                  string `json:"auth,omitempty" yaml:"auth,omitempty"`
 	ModelEnv              string `json:"modelEnv,omitempty" yaml:"modelEnv,omitempty"`
 	PublicationLeakScreen bool   `json:"publicationLeakScreen,omitempty" yaml:"publicationLeakScreen,omitempty"`
 	// Fallback is what a caller does on Uncertain or exhausted retries.
@@ -39,7 +45,56 @@ type Settings struct {
 	// mode. Zero means 1.
 	ShadowSample float64 `json:"shadowSample,omitempty" yaml:"shadowSample,omitempty"`
 	Gate         Config  `json:"gate,omitempty" yaml:"gate,omitempty"`
+	// HandoffSchemas binds legacy producer results to JSON Schemas so shadow
+	// records carry a real inputValid. Inert while the gate is off.
+	HandoffSchemas []HandoffSchemaBinding `json:"handoffSchemas,omitempty" yaml:"handoffSchemas,omitempty"`
 }
+
+// HandoffSchemaBinding validates one producer stage's sole JSON result, for
+// workflows that cannot declare schema-bound artifactSlots (pre-DSL 3.1).
+type HandoffSchemaBinding struct {
+	Workflow string `json:"workflow" yaml:"workflow"`
+	Stage    string `json:"stage" yaml:"stage"`
+	// SchemaPath is a JSON Schema path relative to the config directory.
+	SchemaPath string `json:"schemaPath" yaml:"schemaPath"`
+}
+
+// ResultSchemas indexes the bindings by workflow then stage. It returns nil
+// when the gate is off so an inert block never changes runner behavior.
+func (s *Settings) ResultSchemas() map[string]map[string]string {
+	if s.EffectiveMode() == ModeOff || len(s.HandoffSchemas) == 0 {
+		return nil
+	}
+	out := map[string]map[string]string{}
+	for _, b := range s.HandoffSchemas {
+		if out[b.Workflow] == nil {
+			out[b.Workflow] = map[string]string{}
+		}
+		out[b.Workflow][b.Stage] = b.SchemaPath
+	}
+	return out
+}
+
+func validateHandoffSchemas(bindings []HandoffSchemaBinding) error {
+	seen := map[[2]string]bool{}
+	for i, b := range bindings {
+		if strings.TrimSpace(b.Workflow) == "" || strings.TrimSpace(b.Stage) == "" || strings.TrimSpace(b.SchemaPath) == "" {
+			return fmt.Errorf("decisionGate.handoffSchemas[%d]: workflow, stage and schemaPath are required", i)
+		}
+		key := [2]string{b.Workflow, b.Stage}
+		if seen[key] {
+			return fmt.Errorf("decisionGate.handoffSchemas[%d]: duplicate binding for %s/%s", i, b.Workflow, b.Stage)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// Credential kinds for Settings.Auth.
+const (
+	AuthKey   = "key"
+	AuthEntra = "entra"
+)
 
 // Allowed fallbacks. agent keeps today's behavior.
 const (
@@ -62,6 +117,9 @@ func (s *Settings) Validate() error {
 	if s == nil {
 		return nil
 	}
+	if err := validateHandoffSchemas(s.HandoffSchemas); err != nil {
+		return err
+	}
 	switch s.EffectiveMode() {
 	case ModeOff:
 		return nil
@@ -69,7 +127,19 @@ func (s *Settings) Validate() error {
 	default:
 		return fmt.Errorf("decisionGate.mode %q must be off, shadow or enforce", s.Mode)
 	}
-	for field, v := range map[string]string{"baseURLEnv": s.BaseURLEnv, "keyEnv": s.KeyEnv, "modelEnv": s.ModelEnv} {
+	switch s.Auth {
+	case "", AuthKey, AuthEntra:
+	default:
+		return fmt.Errorf("decisionGate.auth %q must be key or entra", s.Auth)
+	}
+	fields := map[string]string{"baseURLEnv": s.BaseURLEnv, "keyEnv": s.KeyEnv, "modelEnv": s.ModelEnv}
+	if s.Auth == AuthEntra {
+		if s.KeyEnv != "" {
+			return errors.New("decisionGate.keyEnv must be empty when auth is entra")
+		}
+		delete(fields, "keyEnv")
+	}
+	for field, v := range fields {
 		if v == "" {
 			return fmt.Errorf("decisionGate.%s is required when the gate is on", field)
 		}
@@ -100,11 +170,20 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	cli, err := decider.New(decider.Config{
+	dcfg := decider.Config{
 		BaseURL: strings.TrimSpace(getenv(s.BaseURLEnv)),
-		APIKey:  strings.TrimSpace(getenv(s.KeyEnv)),
 		Model:   strings.TrimSpace(getenv(s.ModelEnv)),
-	})
+	}
+	if s.Auth == AuthEntra {
+		ts, err := newEntraTokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("decisionGate: %w", err)
+		}
+		dcfg.TokenSource = ts
+	} else {
+		dcfg.APIKey = strings.TrimSpace(getenv(s.KeyEnv))
+	}
+	cli, err := decider.New(dcfg)
 	if err != nil {
 		return nil, fmt.Errorf("decisionGate: %w", err)
 	}

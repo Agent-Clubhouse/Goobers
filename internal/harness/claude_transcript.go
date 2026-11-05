@@ -94,6 +94,7 @@ type claudeTerminalCapture struct {
 	line       []byte
 	overflowed bool
 	result     []byte
+	usageSink  func(map[string]float64)
 }
 
 func (c *claudeTerminalCapture) Write(p []byte) (int, error) {
@@ -135,13 +136,37 @@ func (c *claudeTerminalCapture) captureResult(line []byte) {
 		return
 	}
 	line = bytes.TrimSpace(line)
-	var event struct {
+	var header struct {
 		Type string `json:"type"`
 	}
-	if len(line) == 0 || json.Unmarshal(line, &event) != nil || event.Type != "result" {
+	if len(line) == 0 || json.Unmarshal(line, &header) != nil || header.Type != "result" {
 		return
 	}
 	c.result = append(c.result[:0], line...)
+	if c.usageSink != nil {
+		var event claudeStreamMessage
+		if json.Unmarshal(line, &event) != nil {
+			return
+		}
+		c.usageSink(claudeResultUsageMetrics(event))
+	}
+}
+
+func claudeResultUsageMetrics(event claudeStreamMessage) map[string]float64 {
+	aggregate := claudeUsageAccumulator{}
+	modelTotals := claudeUsageAccumulator{}
+	for _, usage := range event.ModelUsage {
+		accumulateClaudeUsage(&modelTotals, usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens, nil)
+	}
+	if modelTotals.hasTokens() {
+		accumulateClaudeUsageTotals(&aggregate, modelTotals)
+	} else {
+		accumulateClaudeUsage(&aggregate, event.Usage.InputTokens, event.Usage.OutputTokens,
+			event.Usage.CacheReadInputTokens, event.Usage.CacheCreationInputTokens, nil)
+	}
+	accumulateClaudeUsage(&aggregate, nil, nil, nil, nil, event.TotalCostUSD)
+	return claudeMetrics(aggregate)
 }
 
 func (c *claudeTerminalCapture) Result() []byte {
@@ -248,6 +273,8 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 	var floor []transcriptEvent
 	aggregate := claudeUsageAccumulator{}
 	models := make(map[string]*claudeUsageAccumulator)
+	previousModels := make(map[string]*claudeModelUsage)
+	var previousCost *float64
 	var mcpServersReported bool
 	var mcpServerStatus map[string]string
 	mcpToolUse := newClaudeMCPToolUseTracker()
@@ -312,6 +339,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 					mcpServerStatus[server.Name] = server.Status
 				}
 			}
+			normalizeClaudeResultUsage(&native, &previousCost, previousModels)
 			events, recognized := convertClaudeMessage(native)
 			mcpToolUse.observe(events)
 			if !recognized {
@@ -411,6 +439,46 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 		mcpServerStatus:    mcpServerStatus,
 		mcpToolsUsed:       mcpToolUse.used,
 	}, true
+}
+
+// normalizeClaudeResultUsage converts modelUsage and total_cost_usd session
+// totals, including usage restored by --resume, before canonical event emission
+// and metric accumulation. Top-level usage remains the per-turn fallback.
+func normalizeClaudeResultUsage(native *claudeStreamMessage, previousCost **float64, previousModels map[string]*claudeModelUsage) {
+	if native.Type != "result" {
+		return
+	}
+	native.TotalCostUSD = claudeUsageDelta(native.TotalCostUSD, previousCost)
+	for name, usage := range native.ModelUsage {
+		previous := previousModels[name]
+		if previous == nil {
+			previous = &claudeModelUsage{}
+			previousModels[name] = previous
+		}
+		native.ModelUsage[name] = claudeModelUsage{
+			InputTokens:              claudeUsageDelta(usage.InputTokens, &previous.InputTokens),
+			OutputTokens:             claudeUsageDelta(usage.OutputTokens, &previous.OutputTokens),
+			CacheReadInputTokens:     claudeUsageDelta(usage.CacheReadInputTokens, &previous.CacheReadInputTokens),
+			CacheCreationInputTokens: claudeUsageDelta(usage.CacheCreationInputTokens, &previous.CacheCreationInputTokens),
+			CostUSD:                  claudeUsageDelta(usage.CostUSD, &previous.CostUSD),
+		}
+	}
+}
+
+// claudeUsageDelta preserves omitted fields and counts a decrease as a reset
+// (for example /clear or a resume without saved totals). Startup error envelopes
+// carrying zero therefore contribute no additional usage, never a negative cost.
+func claudeUsageDelta[T int64 | float64](current *T, previous **T) *T {
+	if current == nil {
+		return nil
+	}
+	delta := *current
+	if *previous != nil && *current >= **previous {
+		delta -= **previous
+	}
+	value := *current
+	*previous = &value
+	return &delta
 }
 
 func convertClaudeMessage(native claudeStreamMessage) ([]transcriptEvent, bool) {

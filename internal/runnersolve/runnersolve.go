@@ -215,6 +215,9 @@ type StageRequirement struct {
 	// ControlPlane marks a non-dispatchable gate. Inventory matching must
 	// never borrow a remote runner's protections for local gate execution.
 	ControlPlane bool
+	// RequireResourceMinimums marks placed agentic gates. CPU and memory
+	// omissions warn locally and refuse placement on distributed inventories.
+	RequireResourceMinimums bool
 	// OS is the required operating system ("" = no requirement, D3).
 	OS string
 	// CPU, Memory, and Disk are minimum quantities, verbatim Kubernetes
@@ -441,6 +444,25 @@ func solveStage(inv Inventory, stage StageRequirement, localMode bool) StagePlac
 		inv = inv.ExecutableSubstrate()
 	}
 	placement := StagePlacement{Stage: stage.Stage}
+	if stage.RequireResourceMinimums {
+		var missing []string
+		if stage.CPU == "" {
+			missing = append(missing, "cpu")
+		}
+		if stage.Memory == "" {
+			missing = append(missing, "memory")
+		}
+		if len(missing) > 0 {
+			diagnostic := fmt.Sprintf("stage %q declares runsOn without %s: a placed agentic gate must declare cpu and memory for distributed placement", stage.Stage, strings.Join(missing, " and "))
+			if !localMode {
+				placement.Unsat = &Unsat{Kind: UnsatQuantity, Diagnostic: diagnostic}
+				return placement
+			}
+			placement.Advisories = append(placement.Advisories, Advisory{
+				Stage: stage.Stage, Diagnostic: diagnostic + " (resource minimums are advisory on a local-mode inventory)",
+			})
+		}
+	}
 	restrictions := effectiveRestrictions(stage.Restrictions, inv.Mandates)
 	restrictions = effectiveRestrictions(restrictions, inv.ClassMandates[stage.StageClass])
 	matches := make([]runnerMatch, 0, len(inv.Runners))

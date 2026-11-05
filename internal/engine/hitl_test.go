@@ -203,7 +203,7 @@ func deliver(t *testing.T, env *testsuite.TestWorkflowEnvironment, delay time.Du
 	t.Helper()
 	out := &hitlOutcome{}
 	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow(HITLUpdateName, updateID, out.callbacks(t), intent)
+		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), out.callbacks(t), intent)
 	}, delay)
 	return out
 }
@@ -319,7 +319,7 @@ func deliverWhileExecutingNth(t *testing.T, env *testsuite.TestWorkflowEnvironme
 		probe.activity = info.ActivityType.Name
 		probe.phase = hitlPhaseNow(t, env)
 		for _, d := range deliveries {
-			env.UpdateWorkflow(HITLUpdateName, d.updateID, d.out.callbacks(t), d.intent)
+			env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(d.intent), d.out.callbacks(t), d.intent)
 		}
 	})
 	return probe
@@ -790,8 +790,8 @@ func TestHITLDuplicateIntentIsIdempotent(t *testing.T) {
 	intent.Decision = "pass"
 
 	first := deliver(t, env, time.Minute, "update-1", intent)
-	// A genuine client retry: same request id, different Temporal update id
-	// (the case server-side dedup does not cover).
+	// A genuine client retry. The UpdateID binds the payload, so the retry
+	// carries the same ID and transport deduplication answers it.
 	second := deliver(t, env, 2*time.Minute, "update-2", intent)
 
 	env.ExecuteWorkflow(Run, hitlInputFor(t, hitlTwiceEscalatingSpec()))
@@ -804,8 +804,8 @@ func TestHITLDuplicateIntentIsIdempotent(t *testing.T) {
 	if second.rejected != nil || second.err != nil {
 		t.Fatalf("duplicate delivery refused instead of replayed: rejected=%v err=%v", second.rejected, second.err)
 	}
-	if !second.ack.Duplicate {
-		t.Fatalf("duplicate ack = %+v, want Duplicate=true", second.ack)
+	if second.ack.IntentDigest != first.ack.IntentDigest || second.ack.RequestID != first.ack.RequestID {
+		t.Fatalf("duplicate ack = %+v, want the first acknowledgement %+v", second.ack, first.ack)
 	}
 	if second.ack.ResumeState != first.ack.ResumeState {
 		t.Fatalf("duplicate ack resume state = %q, want the first's %q", second.ack.ResumeState, first.ack.ResumeState)
@@ -877,13 +877,13 @@ func TestHITLIntentWhileExecutingIsRefusedExplicitly(t *testing.T) {
 	// The implement dispatch is held open until the validator has answered, so
 	// the run is provably still executing when it does (#3953).
 	holdUntilValidated(exec, "implement", early)
-	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
+	probe := deliverWhileExecuting(t, env, actInvokeGooberCancelSafe, early)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	if early.out.rejected == nil {
 		t.Fatalf("an intent delivered mid-execution was not rejected (accepted=%t ack=%+v err=%v)",
 			early.out.accepted, early.out.ack, early.out.err)
@@ -923,18 +923,20 @@ func TestHITLDuplicateMidExecutionDeliveriesAreEachRefused(t *testing.T) {
 	intent.Gate = "review"
 	intent.Resolution = HITLResolutionApprove
 	intent.Decision = "pass"
-	// Same request id under two Temporal update ids — a genuine client retry,
-	// the case server-side update dedup does not cover.
+	// The same request id delivered twice with different content, so each
+	// delivery has its own bound UpdateID and reaches the validator.
 	first := newHITLDelivery("update-hammer-1", intent)
-	second := newHITLDelivery("update-hammer-2", intent)
+	reworded := intent
+	reworded.Rationale = "reissued while the run was still executing"
+	second := newHITLDelivery("update-hammer-2", reworded)
 	holdUntilValidated(exec, "implement", first, second)
-	probe := deliverWhileExecuting(t, env, ActInvokeGoober, first, second)
+	probe := deliverWhileExecuting(t, env, actInvokeGooberCancelSafe, first, second)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	for i, out := range []*hitlOutcome{first.out, second.out} {
 		if out.rejected == nil {
 			t.Fatalf("delivery %d was not rejected (ack=%+v err=%v)", i+1, out.ack, out.err)
@@ -977,16 +979,21 @@ func TestHITLRefusedMidExecutionIntentLeavesNoIdempotencyResidue(t *testing.T) {
 
 	early := newHITLDelivery("update-reissued-early", intent)
 	holdUntilValidated(exec, "implement", early)
-	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
+	probe := deliverWhileExecuting(t, env, actInvokeGooberCancelSafe, early)
 	// The operator does what the refusal told them to: re-reads the run and
-	// reissues the same intent once it is holding its terminal open.
-	reissued := deliver(t, env, time.Minute, "update-reissued-late", intent)
+	// reissues under the same request id once it is holding its terminal
+	// open. The note makes it a new bound UpdateID. Any remembered
+	// fingerprint would refuse it as a reused key, so acceptance proves the
+	// refusal left no residue.
+	reissuedIntent := intent
+	reissuedIntent.Rationale = "reissued after re-reading the run"
+	reissued := deliver(t, env, time.Minute, "update-reissued-late", reissuedIntent)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	if early.out.rejected == nil || !strings.Contains(early.out.rejected.Error(), HITLErrRunExecuting) {
 		t.Fatalf("mid-execution delivery = %v, want the %s refusal", early.out.rejected, HITLErrRunExecuting)
 	}
@@ -1044,13 +1051,13 @@ func TestHITLIntentDuringTheFinalTransitionIsRefusedNotQueued(t *testing.T) {
 	// InvokeGoober #1 is implement; #2 is ship, the stage the resolution
 	// resumed the run into and the last thing it does before @complete.
 	holdUntilValidated(exec, "ship", lateDelivery)
-	probe := deliverWhileExecutingNth(t, env, ActInvokeGoober, 2, lateDelivery)
+	probe := deliverWhileExecutingNth(t, env, actInvokeGooberCancelSafe, 2, lateDelivery)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	if err := resolved.refusal(); err != nil {
 		t.Fatalf("the resolving intent was refused: %v", err)
 	}
@@ -1142,7 +1149,7 @@ func TestHITLIntentConcurrentWithCancellationLeavesNoResumeTrace(t *testing.T) {
 	out := &hitlOutcome{}
 	env.RegisterDelayedCallback(func() {
 		env.CancelWorkflow()
-		env.UpdateWorkflow(HITLUpdateName, "update-cancelled", out.callbacks(t), intent)
+		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), out.callbacks(t), intent)
 	}, time.Minute)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
@@ -1357,8 +1364,8 @@ func TestHITLConcurrentIntentsResolveOnce(t *testing.T) {
 	outA := &hitlOutcome{}
 	outB := &hitlOutcome{}
 	env.RegisterDelayedCallback(func() {
-		env.UpdateWorkflow(HITLUpdateName, "update-a", outA.callbacks(t), approve)
-		env.UpdateWorkflow(HITLUpdateName, "update-b", outB.callbacks(t), rerun)
+		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(approve), outA.callbacks(t), approve)
+		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(rerun), outB.callbacks(t), rerun)
 	}, time.Minute)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
@@ -1616,18 +1623,6 @@ func TestHITLRefusesUnresumableTargets(t *testing.T) {
 	}
 }
 
-// TestHITLDelivererRequiresAddressableRun covers the daemon-side client: a run
-// with no workflow is a not-found, distinct from a refusal.
-func TestHITLDelivererRequiresAddressableRun(t *testing.T) {
-	if _, err := NewHITLDeliverer(nil); err == nil {
-		t.Fatal("NewHITLDeliverer accepted a nil Temporal client")
-	}
-	var d *HITLDeliverer
-	if _, err := d.Deliver(t.Context(), HITLIntent{RunID: "run-x", RequestID: "k"}); err == nil {
-		t.Fatal("a nil deliverer accepted an intent")
-	}
-}
-
 // TestHITLRefusalCodeReadsProtocolCode pins that a refusal's stable code
 // survives the round trip a daemon does to map it onto an HTTP status.
 func TestHITLRefusalCodeReadsProtocolCode(t *testing.T) {
@@ -1647,5 +1642,26 @@ func TestHITLRefusalCodeReadsProtocolCode(t *testing.T) {
 	other := temporal.NewNonRetryableApplicationError("journal write failed", "journal_write_failed", nil)
 	if _, _, ok := HITLRefusalCode(other); ok {
 		t.Fatal("a non-protocol application error was reported as a protocol refusal")
+	}
+}
+
+// TestHITLValidatorBindsUpdateIDToPayload refuses any transport identity
+// other than HITLIntentUpdateID, including the request ID alone, so a server
+// replay can never attach one intent's outcome to another's content.
+func TestHITLValidatorBindsUpdateIDToPayload(t *testing.T) {
+	exec := hitlFailingExec()
+	env := hitlEnv(t, exec)
+	intent := baseIntent(HITLResolveEscalation, "req-unbound")
+	intent.Gate, intent.Resolution, intent.Decision = "review", HITLResolutionApprove, "pass"
+	out := &hitlOutcome{}
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow(HITLUpdateName, intent.RequestID, out.callbacks(t), intent)
+	}, time.Minute)
+	env.ExecuteWorkflow(Run, hitlInput(t))
+	if out.rejected == nil || !strings.Contains(out.rejected.Error(), HITLErrInvalidIntent) {
+		t.Fatalf("unbound UpdateID = rejected:%v err:%v ack:%+v, want an invalid-intent refusal", out.rejected, out.err, out.ack)
+	}
+	if got := hitlCountEvents(hitlEvents(hitlProjection(t, env)), journal.EventRunResumed); got != 0 {
+		t.Fatalf("an unbound delivery resumed the run %d times", got)
 	}
 }

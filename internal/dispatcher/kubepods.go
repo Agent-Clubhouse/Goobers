@@ -73,7 +73,7 @@ func (k *kubePodAPI) FinalizePodWithIdentity(ctx context.Context, namespace, nam
 		if lastErr != nil && pod.ResourceVersion == lastVersion {
 			return lastErr
 		}
-		finalizers := slices.DeleteFunc(slices.Clone(pod.Finalizers), func(value string) bool { return value == childCustodyFinalizer })
+		finalizers := slices.DeleteFunc(slices.Clone(pod.Finalizers), func(value string) bool { return value == childCustodyFinalizer || value == parentHandoffFinalizer })
 		if len(finalizers) == len(pod.Finalizers) {
 			return nil
 		}

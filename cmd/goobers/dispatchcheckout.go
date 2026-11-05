@@ -60,10 +60,7 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // plane stated beside an Azure DevOps repository credential, and "" for every
 // other provider. On Azure DevOps it selects the URL-scoped Authorization
 // header every other in-pod ADO git operation sends (checkoutGitAuthEnv).
-func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) error {
-	if isolatedChildWorkspace(ctx) {
-		return nil // verified carrier was materialized before invoking the stage
-	}
+func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) (err error) {
 	mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace))
 	if mode == "" || mode == string(apiv1.WorkspaceScratch) {
 		return nil
@@ -71,6 +68,16 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	wsMode := apiv1.WorkspaceMode(mode)
 	if !wsMode.IsRepoBacked() {
 		return fmt.Errorf("unsupported workspace mode %q", mode)
+	}
+	// Every repo checkout, including a verified child carrier and read-only
+	// checkout, must exclude harness artifacts before a stage can write them.
+	defer func() {
+		if err == nil {
+			err = worktree.EnsureScratchExcluded(ctx, dir)
+		}
+	}()
+	if isolatedChildWorkspace(ctx) {
+		return nil // verified carrier was materialized before invoking the stage
 	}
 
 	ref := apiv1.RepoRef{

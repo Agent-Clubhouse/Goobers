@@ -23,6 +23,8 @@ type DaemonIdentity struct {
 	Version               string          `json:"version"`
 	LivenessTimeoutMillis int64           `json:"livenessTimeoutMillis,omitempty"`
 	Behavior              *DaemonBehavior `json:"behavior,omitempty"`
+	// ExactWorkItemFile opts into workItemId on ordinary delegated requests.
+	ExactWorkItemFile bool `json:"exactWorkItemFile,omitempty"`
 }
 
 // DaemonBehavior records the runtime flags pinned by a daemon lock.
@@ -61,6 +63,7 @@ type State struct {
 	Version               string          `json:"version,omitempty"`
 	LivenessTimeoutMillis int64           `json:"livenessTimeoutMillis,omitempty"`
 	Behavior              *DaemonBehavior `json:"behavior,omitempty"`
+	ExactWorkItemFile     bool            `json:"exactWorkItemFile,omitempty"`
 	HolderKind            HolderKind      `json:"holderKind"`
 	HolderPID             int             `json:"holderPid"`
 }
@@ -130,6 +133,7 @@ func newInstanceLockState(identity *DaemonIdentity, holderKind HolderKind, holde
 		state.Version = identity.Version
 		state.LivenessTimeoutMillis = identity.LivenessTimeoutMillis
 		state.Behavior = identity.Behavior
+		state.ExactWorkItemFile = identity.ExactWorkItemFile
 	}
 	return state
 }
@@ -140,14 +144,13 @@ func writeInstanceLockState(f *os.File, state State) error {
 		return fmt.Errorf("encode lock state: %w", err)
 	}
 	data = append(data, '\n')
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncate lock state: %w", err)
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek lock state: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
+	// Keep the locked file and replace its contents before trimming the old
+	// tail. Truncating first lets concurrent inspectors observe an empty file.
+	if _, err := f.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("write lock state: %w", err)
+	}
+	if err := f.Truncate(int64(len(data))); err != nil {
+		return fmt.Errorf("truncate lock state: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync lock state: %w", err)
@@ -228,10 +231,14 @@ func (s State) DaemonIdentity() (*DaemonIdentity, error) {
 		Version:               s.Version,
 		LivenessTimeoutMillis: s.LivenessTimeoutMillis,
 		Behavior:              s.Behavior,
+		ExactWorkItemFile:     s.ExactWorkItemFile,
 	}, nil
 }
 
 // InspectDaemonLock reports whether a daemon holds the lock and its identity.
+// A held lock with unreadable or empty state is conservatively reported as
+// running with a nil identity; any read/decode error is also returned. Only a
+// valid non-daemon holder record establishes that a held lock is not a daemon.
 func InspectDaemonLock(lockPath string) (running bool, identity *DaemonIdentity, err error) {
 	f, err := os.Open(lockPath)
 	if err != nil {
@@ -247,11 +254,11 @@ func InspectDaemonLock(lockPath string) (running bool, identity *DaemonIdentity,
 		if errors.Is(err, lock.ErrHeld) {
 			state, readErr := ReadStatePath(lockPath)
 			if readErr != nil || state == nil {
-				return false, nil, readErr
+				return true, nil, readErr
 			}
 			identity, readErr := state.DaemonIdentity()
 			if readErr != nil {
-				return false, nil, readErr
+				return true, nil, readErr
 			}
 			return state.HolderKind == HolderDaemon, identity, nil
 		}

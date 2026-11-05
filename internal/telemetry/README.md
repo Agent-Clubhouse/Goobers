@@ -86,6 +86,18 @@ pipeline is configured against:
 | `goobers.queue.depth` | gauge (int64) | `{item}` | current value | `goobers.queue.kind` (`schedule`/`backlog`/`refill`), `goobers.os` |
 | `goobers.queue.oldest_age` | gauge (int64) | `s` | current value | `goobers.queue.kind` (`schedule`/`backlog`/`refill`), `goobers.os` |
 | `goobers.workers.available` | gauge (int64) | `{worker}` | current value | `goobers.os` |
+| `goobers.continuation.claims` | gauge (int64) | `{claim}` | current value | `goobers.os` |
+| `goobers.continuation.oldest_claim_age` | gauge (int64) | `s` | current value | `goobers.os` |
+
+`goobers.continuation.claims` counts parked parent runs whose resume was refused
+for capacity and that now hold the next freed slot ahead of new admissions;
+`goobers.continuation.oldest_claim_age` is how long the longest has waited. Use
+them to explain a workflow refused with `conditions: max-parallel` while a slot
+looks free: a waiting parent may hold it. Claims live in memory for one
+scheduler epoch (expiring after `ContinuationClaimTTL`, 10 minutes, unless the
+parent keeps retrying), so **0 straight after a control-plane failover is
+expected** until the waiting parents retry; it does not mean a claim was lost.
+Both metrics are additive: consumers that ignore unknown metrics are unaffected.
 
 The collector-compatibility fixtures generated from the real OTLP metric
 reader/export path live at `internal/telemetry/testdata/metric_compatibility_fixtures.json`.

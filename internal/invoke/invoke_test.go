@@ -32,6 +32,25 @@ func TestAgentUsageReporter(t *testing.T) {
 	}
 }
 
+func TestAgentUsageStreamIsOptIn(t *testing.T) {
+	finalOnly := WithAgentUsageReporter(context.Background(), func(map[string]float64) {})
+	if AgentUsageStream(finalOnly) != nil {
+		t.Fatal("final usage reporter unexpectedly enabled incremental streaming")
+	}
+	var observed float64
+	streamed := WithAgentUsageStream(finalOnly, func(metrics map[string]float64) {
+		observed = metrics["tokens"]
+	})
+	sink := AgentUsageStream(streamed)
+	if sink == nil {
+		t.Fatal("pod supervisor usage stream is nil")
+	}
+	sink(map[string]float64{"tokens": 7})
+	if observed != 7 {
+		t.Fatalf("observed usage = %v, want 7", observed)
+	}
+}
+
 func TestInfrastructureFailure(t *testing.T) {
 	cause := errors.New("provider unavailable")
 	err := InfrastructureFailure(cause)

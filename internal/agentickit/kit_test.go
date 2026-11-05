@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/usageallowance"
 )
 
 func sampleKit() *Kit {
@@ -18,6 +19,40 @@ func sampleKit() *Kit {
 		Goobers:      map[string]apiv1.GooberSpec{"implementer": {Harness: apiv1.HarnessCopilot}},
 		Instructions: map[string]string{"implementer": "be careful"},
 		Grants:       []Grant{{Goober: "implementer", Capability: "agent:model", Ref: "model-ref"}},
+	}
+}
+
+func TestKitRoundTripPreservesExhaustedUsageAllowance(t *testing.T) {
+	tokens, cost := int64(0), float64(0)
+	kit := sampleKit()
+	kit.UsageAllowance = &usageallowance.Allowance{
+		MaxTokens: &tokens, MaxCostUSD: &cost,
+	}
+	data, digest, err := Marshal(kit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Unmarshal(data, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UsageAllowance == nil || got.UsageAllowance.MaxTokens == nil ||
+		*got.UsageAllowance.MaxTokens != 0 || got.UsageAllowance.MaxCostUSD == nil ||
+		*got.UsageAllowance.MaxCostUSD != 0 {
+		t.Fatalf("usage allowance = %+v", got.UsageAllowance)
+	}
+}
+
+func TestKitRejectsInvalidUsageAllowance(t *testing.T) {
+	negative := int64(-1)
+	kit := sampleKit()
+	kit.UsageAllowance = &usageallowance.Allowance{MaxTokens: &negative}
+	data, digest, err := Marshal(kit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Unmarshal(data, digest); err == nil {
+		t.Fatal("kit accepted an invalid trusted usage allowance")
 	}
 }
 

@@ -54,7 +54,7 @@ func TestCommentIdentityDisagreementWarns(t *testing.T) {
 			}
 			dir := filepath.Join(root, "gaggles", "acme-web", "workflows")
 			files := map[string]string{
-				"comment-watch.yaml": commentIdentityWorkflow("comment-watch", "pr-comment-watch", tt.watchMode, []string{"label-issue"}, []string{"github:issues:write"}),
+				"comment-watch.yaml": commentIdentityWorkflow("comment-watch", "pr-comment-watch", tt.watchMode, []string{"label-issue", "comment-on-issue"}, []string{"github:issues:write"}),
 				"behind-update.yaml": commentIdentityWorkflow("behind-update", "update-behind-pr", tt.healerMode, []string{"clear-remediation", "update-pr-branch"}, []string{"github:pr:write", "github:issues:write"}),
 			}
 			for name, content := range files {

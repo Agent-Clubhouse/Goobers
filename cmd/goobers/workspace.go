@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -57,7 +59,7 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 	layout := instance.NewLayout(root)
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -91,7 +93,7 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: resolve workcopies root: %v\n", err)
 		return 1
 	}
-	cloneURL := repoCloneURL
+	cloneURL := runtimewiring.RepoCloneURL
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL
 	}
@@ -110,17 +112,17 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, owner, project.Name, nil, registry)
+	resolver, grants, err := runtimewiring.BuildCredentials(cfg, stores, owner, project.Name, nil, registry)
 	if err != nil {
 		pf(stderr, "error: configure repository credentials: %v\n", err)
 		return 1
 	}
-	gitEnv, err := buildWorktreeGitEnv(cfg, workcopiesRoot, project, nil, resolver, grants, cloneURL, registry, stores)
+	gitEnv, err := runtimewiring.BuildWorktreeGitEnv(cfg, workcopiesRoot, project, nil, resolver, grants, cloneURL, registry, stores)
 	if err != nil {
 		pf(stderr, "error: configure repository checkout: %v\n", err)
 		return 1
 	}
-	options := []worktree.ManagerOption{worktree.WithPinnedRoot(workcopiesRoot), mutationCleanupGuard(layout.RunsDir())}
+	options := []worktree.ManagerOption{worktree.WithPinnedRoot(workcopiesRoot), runtimewiring.MutationCleanupGuard(layout.RunsDir())}
 	if gitEnv != nil {
 		options = append(options, worktree.WithGitEnvironment(gitEnv))
 	}
@@ -133,7 +135,7 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 	if baseRef == "" {
 		baseRef = "main"
 	}
-	stopTelemetry := startCommandJournalTelemetry(layout, stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(layout, stderr)
 	defer stopTelemetry()
 	resetPath, err := manager.ResetPinned(context.Background(), worktree.PinnedResetOptions{
 		RepoURL: repoURL,
@@ -152,7 +154,7 @@ func pinnedWorkspaceLayout(layout instance.Layout, cfg *instance.Config, set *in
 	resolvedRoot := ""
 	for i := range set.Gaggles {
 		gaggle := &set.Gaggles[i]
-		configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project)
+		configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project)
 		if !ok || !sameConfiguredRepo(configured, project) {
 			continue
 		}

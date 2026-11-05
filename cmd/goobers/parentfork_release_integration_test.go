@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/goobers/goobers/test/testsupport/testdep"
-
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/parallelworkspace"
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // Model the exact crash window after durable archival and source deletion but
@@ -30,7 +30,7 @@ func interruptForkSourceRelease(t *testing.T, r parentArchiveRestorer, run *jour
 	if err != nil {
 		t.Fatal(err)
 	}
-	at, terminal, err := recoveryCaptureWindow(t.Context(), reader, id.StartedAt)
+	at, terminal, err := runtimewiring.RecoveryCaptureWindow(t.Context(), reader, id.StartedAt)
 	if err != nil || !terminal {
 		t.Fatal("terminal capture boundary", err)
 	}
@@ -56,7 +56,7 @@ func interruptForkSourceRelease(t *testing.T, r parentArchiveRestorer, run *jour
 		t.Fatal(err)
 	}
 	for _, record := range results {
-		project, err := recoveryConfiguredProject(r.config, record.RepositoryKey)
+		project, err := runtimewiring.RecoveryConfiguredProject(r.config, record.RepositoryKey)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -124,7 +124,7 @@ func captureForkResultsForCleanup(t *testing.T, r parentArchiveRestorer, run *jo
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := recoveryConfiguredProject(r.config, seed.Record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, seed.Record.RepositoryKey)
 	if err != nil {
 		t.Fatal(err)
 	}

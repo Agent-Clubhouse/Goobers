@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -59,7 +61,7 @@ func runRootsDecommission(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if _, err := fmt.Fprintf(stdout, "Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id); err != nil {
+	if _, err := fmt.Fprintf(stdout, "Instance root: %q; instance ID: %q\n", runtimewiring.CanonicalStatusRoot(root), id); err != nil {
 		pf(stderr, "error: display instance identity: %v\n", err)
 		return 2
 	}

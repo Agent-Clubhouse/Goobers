@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -173,7 +174,7 @@ func TestWorkspaceBranchOutputRebindsEveryLaterStage(t *testing.T) {
 	runID := "rebind-run-1"
 	r, _, observed := newRebindRunner(t, map[string]stubTaskResult{
 		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput: rebindBranch,
+			runsemantics.WorkspaceBranchOutput: rebindBranch,
 		}},
 		runID + ":rework": {status: apiv1.ResultSuccess},
 		runID + ":verify": {status: apiv1.ResultSuccess},
@@ -238,7 +239,7 @@ func TestWorkspaceBranchAfterEmittingStageCheckedItOutItself(t *testing.T) {
 
 	byTask := map[string]stubTaskResult{
 		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput: rebindBranch,
+			runsemantics.WorkspaceBranchOutput: rebindBranch,
 		}},
 		runID + ":rework": {status: apiv1.ResultSuccess},
 		runID + ":verify": {status: apiv1.ResultSuccess},
@@ -331,10 +332,10 @@ func TestWorkspaceBranchIgnoresEmptyEmission(t *testing.T) {
 	runID := "rebind-run-3"
 	r, _, observed := newRebindRunner(t, map[string]stubTaskResult{
 		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput: rebindBranch,
+			runsemantics.WorkspaceBranchOutput: rebindBranch,
 		}},
 		runID + ":rework": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput: "   ",
+			runsemantics.WorkspaceBranchOutput: "   ",
 		}},
 		runID + ":verify": {status: apiv1.ResultSuccess},
 	})
@@ -371,15 +372,15 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 		{
 			name: "newest binding wins",
 			events: []journal.Event{
-				{Type: journal.EventStageFinished, Stage: "select", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/a"}},
-				{Type: journal.EventStageFinished, Stage: "rework", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/b"}},
+				{Type: journal.EventStageFinished, Stage: "select", Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/a"}},
+				{Type: journal.EventStageFinished, Stage: "rework", Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/b"}},
 			},
 			want: "goobers/b",
 		},
 		{
 			name: "later non-emitting stages do not clear it",
 			events: []journal.Event{
-				{Type: journal.EventStageFinished, Stage: "select", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/a"}},
+				{Type: journal.EventStageFinished, Stage: "select", Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/a"}},
 				{Type: journal.EventStageFinished, Stage: "rework"},
 				{Type: journal.EventStageFinished, Stage: "verify", Outputs: map[string]any{"other": "x"}},
 			},
@@ -388,12 +389,12 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 		{
 			name: "synthetic interrupted-attempt markers are skipped",
 			events: []journal.Event{
-				{Type: journal.EventStageFinished, Stage: "select", Outputs: map[string]any{WorkspaceBranchOutput: "goobers/a"}},
+				{Type: journal.EventStageFinished, Stage: "select", Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/a"}},
 				{
 					Type: journal.EventStageFinished, Stage: "rework", AttemptClass: journal.AttemptInfra,
-					Error:   &journal.ErrorDetail{Code: interruptedAttemptErrorCode},
-					Outputs: map[string]any{WorkspaceBranchOutput: "goobers/never"},
-					Runner:  map[string]any{interruptedAttemptMarkerKey: true},
+					Error:   &journal.ErrorDetail{Code: runsemantics.InterruptedAttemptErrorCode},
+					Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/never"},
+					Runner:  map[string]any{runsemantics.InterruptedAttemptMarkerKey: true},
 				},
 			},
 			want: "goobers/a",
@@ -412,11 +413,11 @@ func TestLastWorkspaceBranchRecoversTheNewestBinding(t *testing.T) {
 		events := []journal.Event{
 			{
 				Type: journal.EventStageFinished, Stage: "select", Status: string(apiv1.ResultSuccess),
-				Outputs: map[string]any{WorkspaceBranchOutput: "goobers/a"},
+				Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/a"},
 			},
 			{
 				Type: journal.EventStageFinished, Stage: "rework", Status: string(apiv1.ResultFailure),
-				Outputs: map[string]any{WorkspaceBranchOutput: "goobers/never"},
+				Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: "goobers/never"},
 			},
 		}
 		machine := rebindFixtureMachineWithContinueOnError(t, true)
@@ -464,7 +465,7 @@ func TestWorkspaceBranchSurvivesCrashAndResume(t *testing.T) {
 	if err := jr.Append(journal.Event{
 		Type: journal.EventStageFinished, Stage: "select", Attempt: 1,
 		Status:  string(apiv1.ResultSuccess),
-		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
+		Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: rebindBranch},
 	}); err != nil {
 		t.Fatalf("append stage.finished: %v", err)
 	}
@@ -544,7 +545,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindings(t *testing.T) {
 				task = apiv1.Task{Name: "select", Type: apiv1.TaskAgentic, Goober: "implementer"}
 			}
 			got := rebindWorkspaceBranch(task, apiv1.ResultEnvelope{
-				Outputs: map[string]interface{}{WorkspaceBranchOutput: tt.value},
+				Outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: tt.value},
 			}, providers.DefaultBranchNamespace)
 			if got != "" {
 				t.Errorf("rebindWorkspaceBranch = %q, want \"\" — this emission must not be honored", got)
@@ -555,7 +556,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindings(t *testing.T) {
 	// The legitimate case still works, so the guards above are not vacuous.
 	got := rebindWorkspaceBranch(
 		apiv1.Task{Name: "gather-pr-context", Type: apiv1.TaskDeterministic},
-		apiv1.ResultEnvelope{Outputs: map[string]interface{}{WorkspaceBranchOutput: rebindBranch}},
+		apiv1.ResultEnvelope{Outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: rebindBranch}},
 		providers.DefaultBranchNamespace,
 	)
 	if got != rebindBranch {
@@ -591,7 +592,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
 	events := []journal.Event{{
 		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
 		Status:  string(apiv1.ResultSuccess),
-		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
+		Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: rebindBranch},
 	}}
 	if got := lastWorkspaceBranch(events, machine, providers.DefaultBranchNamespace); got != "" {
 		t.Errorf("lastWorkspaceBranch = %q, want \"\" — an agentic stage's rebinding must not be honored on resume either", got)
@@ -600,7 +601,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
 	// A stage the machine does not know is ignored rather than trusted.
 	stray := []journal.Event{{
 		Type: journal.EventStageFinished, Stage: "does-not-exist",
-		Outputs: map[string]any{WorkspaceBranchOutput: rebindBranch},
+		Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: rebindBranch},
 	}}
 	if got := lastWorkspaceBranch(stray, machine, providers.DefaultBranchNamespace); got != "" {
 		t.Errorf("lastWorkspaceBranch = %q, want \"\" for an unknown stage", got)
@@ -621,7 +622,7 @@ func TestRebindingAMissingBranchFailsLoudly(t *testing.T) {
 		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			// In the run-branch namespace and well-formed, but no such branch
 			// exists on the remote.
-			WorkspaceBranchOutput: "goobers/implementation/never-existed",
+			runsemantics.WorkspaceBranchOutput: "goobers/implementation/never-existed",
 		}},
 		runID + ":rework": {status: apiv1.ResultSuccess},
 		runID + ":verify": {status: apiv1.ResultSuccess},
@@ -648,7 +649,7 @@ func TestWorkspaceBranchRebindingIsJournaledOnce(t *testing.T) {
 	runID := "rebind-run-5399"
 	r, runsDir, observed := newRebindRunner(t, map[string]stubTaskResult{
 		runID + ":select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput: rebindBranch,
+			runsemantics.WorkspaceBranchOutput: rebindBranch,
 		}},
 		runID + ":rework": {status: apiv1.ResultSuccess},
 		runID + ":verify": {status: apiv1.ResultSuccess},
@@ -668,7 +669,7 @@ func TestWorkspaceBranchRebindingIsJournaledOnce(t *testing.T) {
 	var rebound, bound, references []string
 	for _, event := range readRunEvents(t, runsDir, runID) {
 		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == ReboundWorkspaceBranchAnnotation {
-			branch, _ := event.Runner[WorkspaceBranchOutput].(string)
+			branch, _ := event.Runner[runsemantics.WorkspaceBranchOutput].(string)
 			sha, _ := event.Runner[ReboundBranchBoundSHAKey].(string)
 			rebound, bound = append(rebound, branch), append(bound, sha)
 		}

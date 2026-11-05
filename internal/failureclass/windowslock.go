@@ -3,6 +3,8 @@ package failureclass
 import (
 	"regexp"
 	"strings"
+
+	"github.com/goobers/goobers/internal/stringpolicy"
 )
 
 // windowsLockMarkers are distinctive substrings that Git, Node, and native
@@ -39,9 +41,9 @@ var windowsLockAccessDeniedRenamePattern = regexp.MustCompile(`(?:^|:\s+)rename\
 // permission or logic bug. Matching is case-insensitive.
 func IsWindowsSharingViolation(message string) bool {
 	message = strings.ToLower(message)
-	if containsAny(message, windowsLockMarkers) {
+	if stringpolicy.ContainsAny(message, windowsLockMarkers...) {
 		return true
 	}
-	return (strings.Contains(message, "eperm") && containsAny(message, windowsLockErrnoOperations)) ||
+	return (strings.Contains(message, "eperm") && stringpolicy.ContainsAny(message, windowsLockErrnoOperations...)) ||
 		windowsLockAccessDeniedRenamePattern.MatchString(message)
 }

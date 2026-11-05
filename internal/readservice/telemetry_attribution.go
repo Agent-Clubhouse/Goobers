@@ -149,8 +149,15 @@ func storedAttributionObservationsLimit(
 	reads readmodel.Reader,
 	query StoredAttributionQuery,
 	limit int,
+	backends ...journal.ReaderBackend,
 ) ([]creditgraph.AttributionObservation, error) {
-	return scanAttributionObservations(ctx, root, reads, query, limit, storedAttributionObservation)
+	observe := storedAttributionObservation
+	if len(backends) > 0 {
+		observe = func(ctx context.Context, layout instance.Layout, row readmodel.RunRow) (creditgraph.AttributionObservation, bool, error) {
+			return storedAttributionObservationWithBackend(ctx, layout, row, backends[0])
+		}
+	}
+	return scanAttributionObservations(ctx, root, reads, query, limit, observe)
 }
 
 type attributionObserver func(
@@ -523,6 +530,12 @@ func storedAttributionObservation(
 	layout instance.Layout,
 	row readmodel.RunRow,
 ) (creditgraph.AttributionObservation, bool, error) {
+	return storedAttributionObservationWithBackend(ctx, layout, row, fileJournalReader(layout))
+}
+
+// Attribution records and ground-truth labels remain local sidecars. Journal
+// provenance, including events and spans, uses the injected authoritative reader.
+func storedAttributionObservationWithBackend(ctx context.Context, layout instance.Layout, row readmodel.RunRow, backend journal.ReaderBackend) (creditgraph.AttributionObservation, bool, error) {
 	runDir, err := layout.FindRunDir(row.RunID)
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("open attribution run %q: %w", row.RunID, err)
@@ -534,12 +547,14 @@ func storedAttributionObservation(
 	if err != nil {
 		return creditgraph.AttributionObservation{}, false, fmt.Errorf("read attribution record %q: %w", row.RunID, err)
 	}
-	return attributionObservationFromRecord(layout, row, runDir, record)
+	return attributionObservationFromRecord(ctx, backend, layout, row, runDir, record)
 }
 
 // attributionObservationFromRecord rebuilds the audit observation for one
 // run's attribution record from its persisted journal.
 func attributionObservationFromRecord(
+	ctx context.Context,
+	backend journal.ReaderBackend,
 	layout instance.Layout,
 	row readmodel.RunRow,
 	runDir string,
@@ -568,7 +583,7 @@ func attributionObservationFromRecord(
 			observation.GroundTruth = &label
 		}
 	}
-	reader, err := journal.OpenRead(runDir)
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: row.RunID})
 	if err != nil {
 		return attributionProvenanceError(record.Status, observation, "open attribution journal", row.RunID, err)
 	}

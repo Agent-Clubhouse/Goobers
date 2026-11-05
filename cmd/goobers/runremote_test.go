@@ -53,6 +53,94 @@ func TestRemoteDaemonAPIBase(t *testing.T) {
 	}
 }
 
+func TestRunExactWorkItemAPIRequiresAdvertisedSupport(t *testing.T) {
+	for _, mode := range []string{"supported", "missing", "unsupported", "unavailable", "legacy", "malformed", "redirect"} {
+		t.Run(mode, func(t *testing.T) {
+			unsetRunContext(t)
+			t.Setenv(remoteDaemonAPIEnv, "")
+			var posts int
+			var got httpapi.TriggerRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveRemoteRootFixture(w, r) {
+					return
+				}
+				if r.URL.Path == apicontract.CapabilitiesPath {
+					if r.Method != http.MethodGet {
+						t.Errorf("capability probe used %s", r.Method)
+					}
+					switch mode {
+					case "legacy":
+						http.NotFound(w, r)
+					case "malformed":
+						_, _ = io.WriteString(w, "{broken")
+					case "redirect":
+						http.Redirect(w, r, "/should-not-follow", http.StatusFound)
+					default:
+						document := apicontract.CapabilityDocument{}
+						if mode != "missing" {
+							document.Routes = []apicontract.RouteCapability{{
+								ID: apicontract.RouteTriggerIngest, Available: mode != "unavailable",
+								ExactWorkItem: mode != "unsupported",
+							}}
+						}
+						_ = json.NewEncoder(w).Encode(document)
+					}
+					return
+				}
+				if r.Method != http.MethodPost || r.URL.Path != apicontract.TriggerIngestPath {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+					return
+				}
+				posts++
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{AcceptanceID: "trigger-exact", State: "accepted"})
+			}))
+			defer server.Close()
+			for _, flags := range [][]string{
+				{"--work-item", "42", "acme/repair"},
+				{"acme/repair", "--work-item=42"},
+				{"repair", "--gaggle=acme", "-work-item", "42"},
+				{"acme/repair", "-work-item=42"},
+			} {
+				args := append([]string{"run"}, flags...)
+				args = append(args, "--api", server.URL, "--request-id=exact-42", "--no-wait")
+				code, stdout, stderr := runArgs(t, args...)
+				if mode == "supported" {
+					if code != 0 || got.WorkItemID != "42" || got.Gaggle != "acme" || got.Workflow != "repair" || got.RequestID != "exact-42" {
+						t.Fatalf("code=%d request=%+v stdout=%s stderr=%s", code, got, stdout, stderr)
+					}
+				} else if code != 2 || posts != 0 || !strings.Contains(stderr, "no trigger sent") {
+					t.Fatalf("code=%d posts=%d stderr=%s", code, posts, stderr)
+				}
+			}
+		})
+	}
+}
+
+func TestRunExactWorkItemRejectsInvalidFlagsBeforeIO(t *testing.T) {
+	t.Setenv(remoteDaemonAPIEnv, "")
+	for _, args := range [][]string{
+		{"acme/repair", "--work-item="},
+		{"acme/repair", "--work-item", "0"},
+		{"acme/repair", "--work-item", "042"},
+		{"acme/repair", "--work-item", "-1"},
+		{"acme/repair", "--work-item", "42 "},
+		{"acme/repair", "--work-item", "../42"},
+		{"acme/repair", "--work-item", "1000000000000000"},
+		{"repair", "--work-item", "42"},
+		{"acme/repair", "--work-item", "42", "--pr", "1"},
+		{"acme/repair", "--work-item", "42", "--force"},
+		{"acme/repair", "--work-item", "42", "--force=false"},
+	} {
+		code, stdout, stderr := runArgs(t, append([]string{"run"}, args...)...)
+		if code != 2 || !strings.Contains(stderr, "--work-item") || stdout != "" {
+			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, stdout, stderr)
+		}
+	}
+}
+
 func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	unsetRunContext(t)
 	var (

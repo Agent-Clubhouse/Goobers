@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
@@ -135,7 +136,7 @@ func queryStatusParkedBacklog(ctx context.Context, cfg *instance.Config) (status
 	if err != nil {
 		return statusParkedBacklog{}, err
 	}
-	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, nil)
+	resolver, _, err := runtimewiring.BuildCredentials(cfg, stores, "", "", nil, nil)
 	if err != nil {
 		return statusParkedBacklog{}, err
 	}

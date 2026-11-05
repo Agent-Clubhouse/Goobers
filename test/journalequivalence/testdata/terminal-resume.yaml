@@ -1,0 +1,14 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: terminal-resume
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: recover
+  tasks:
+    - name: recover
+      type: deterministic
+      goal: fail once and resume
+      run:
+        command: [fixture]

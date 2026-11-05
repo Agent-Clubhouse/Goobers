@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -31,7 +33,7 @@ func TestRootsDiscoverReportsIdentityAndFreshness(t *testing.T) {
 		t.Fatalf("discovery: %+v", got)
 	}
 	item := got.Roots[0]
-	if item.ID == "" || item.Path != canonicalStatusRoot(root) || item.ReadModelModifiedAt == nil || item.OwningPID != 0 || item.DaemonState != "not-running" {
+	if item.ID == "" || item.Path != runtimewiring.CanonicalStatusRoot(root) || item.ReadModelModifiedAt == nil || item.OwningPID != 0 || item.DaemonState != "not-running" {
 		t.Fatalf("misleading discovery: %+v", item)
 	}
 	code, stdout, stderr = runArgs(t, "roots", "discover", root)

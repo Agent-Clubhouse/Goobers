@@ -120,7 +120,7 @@ func (s *Sources) AcceptDemandWorkers(ctx context.Context, entry localscheduler.
 }
 
 // Untransferred demand keeps its captured definition even before any run exists.
-func retainedScheduleDemandGenerations(ctx context.Context, queue *triggerqueue.Store) (map[string]bool, error) {
+func retainedScheduleDemandGenerations(ctx context.Context, queue triggerqueue.RetentionStore) (map[string]bool, error) {
 	pins := map[string]bool{}
 	var after string
 	for {

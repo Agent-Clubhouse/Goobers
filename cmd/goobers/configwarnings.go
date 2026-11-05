@@ -6,7 +6,8 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strings"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -33,23 +34,6 @@ func validationReportFromError(err error) *validate.Report {
 	return nil
 }
 
-// validationIssueSummary renders a report's error-severity issues as a single
-// line for scopes that must carry them inside a returned error rather than
-// print to a stream they own. Empty when there is nothing at error severity.
-func validationIssueSummary(report *validate.Report) string {
-	if report == nil {
-		return ""
-	}
-	var lines []string
-	for _, issue := range report.Issues {
-		if issue.Severity != validate.Error {
-			continue
-		}
-		lines = append(lines, issue.CLIString())
-	}
-	return strings.Join(lines, "; ")
-}
-
 func printValidationIssues(w io.Writer, report *validate.Report) {
 	if report == nil {
 		return
@@ -71,7 +55,7 @@ func printValidationWarnings(w io.Writer, warnings []validate.CodedWarning) {
 	}
 }
 
-func appendGooberHarnessWarnings(report *validate.Report, warnings []gooberHarnessWarning) ([]validate.CodedWarning, error) {
+func appendGooberHarnessWarnings(report *validate.Report, warnings []runtimewiring.GooberHarnessWarning) ([]validate.CodedWarning, error) {
 	if len(warnings) == 0 {
 		return nil, nil
 	}
@@ -126,7 +110,7 @@ func appendSkillPackageCollisionWarnings(configDir string, report *validate.Repo
 	seen := map[collision]struct{}{}
 	for _, goober := range goobers {
 		for _, skill := range goober.Skills {
-			scoped, shared, ok := skillPackageDirs(configDir, goober.Gaggle, skill)
+			scoped, shared, ok := runtimewiring.SkillPackageDirs(configDir, goober.Gaggle, skill)
 			if !ok || scoped == shared {
 				continue
 			}

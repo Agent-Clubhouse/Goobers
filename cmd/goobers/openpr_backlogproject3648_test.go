@@ -92,7 +92,11 @@ func TestOpenPRStalenessChecksBacklogProjectOnADO(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
 
+	workDir := t.TempDir()
+	head := providers.BranchName("implementation", runID)
+	headSHA := seedOpenPRCheckout(t, workDir, "main", head)
 	mux := http.NewServeMux()
+	registerADOOpenPRHead(mux, "/acme/"+codeProject+"/_apis/git/repositories/web", head, headSHA)
 	// The work item lives ONLY in the backlog project, and it is closed.
 	mux.HandleFunc("/acme/"+backlogProject+"/_apis/wit/workitems/1456", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
@@ -130,9 +134,8 @@ func TestOpenPRStalenessChecksBacklogProjectOnADO(t *testing.T) {
 	}
 	t.Cleanup(func() { newADOProviderForStage = previous })
 
-	workDir := t.TempDir()
 	t.Chdir(workDir)
-	code, stdout, stderr := runArgs(t, "open-pr", root)
+	code, stdout, stderr := runOpenPRArgs(t, root)
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -169,7 +172,11 @@ func TestOpenPRStalenessNotFoundDiagnosticNamesBacklogProject(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
 
+	workDir := t.TempDir()
+	head := providers.BranchName("implementation", runID)
+	headSHA := seedOpenPRCheckout(t, workDir, "main", head)
 	mux := http.NewServeMux()
+	registerADOOpenPRHead(mux, "/acme/"+codeProject+"/_apis/git/repositories/web", head, headSHA)
 	mux.HandleFunc("/acme/"+backlogProject+"/_apis/wit/workitems/1457", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -203,9 +210,8 @@ func TestOpenPRStalenessNotFoundDiagnosticNamesBacklogProject(t *testing.T) {
 	}
 	t.Cleanup(func() { newADOProviderForStage = previous })
 
-	workDir := t.TempDir()
 	t.Chdir(workDir)
-	code, stdout, stderr := runArgs(t, "open-pr", root)
+	code, stdout, stderr := runOpenPRArgs(t, root)
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}

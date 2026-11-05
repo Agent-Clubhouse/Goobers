@@ -351,6 +351,11 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
+	draft, err := strconv.ParseBool(providerInput("draft", "false"))
+	if err != nil {
+		pf(stderr, "error: draft input must be a boolean\n")
+		return 1
+	}
 
 	target, err := resolveOpenPRTarget(*configRepo, root)
 	if err != nil {
@@ -376,6 +381,16 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
 	base := providerInput("base", target.baseDefault)
+
+	var inspectedHead string
+	if err := inRepoDir(func() error {
+		var err error
+		inspectedHead, err = checkPublicationSafety(context.Background(), ".", base, "refs/heads/"+head)
+		return err
+	}); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
@@ -423,47 +438,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Config write-boundary (#104/T4, wired here per #223). Opt-in and no-op by
-	// default, so implementation/work-nomination are unaffected. When the Tutor
-	// workflow sets confineToConfigRoot=true, every file this run's branch changes
-	// (relative to base) must be within the configured config root — else the
-	// cycle is aborted CLOSED before the PR is opened, so a self-improvement run
-	// can never open a PR touching platform code.
-	if providerInput("confineToConfigRoot", "") == "true" {
-		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
-			pf(stderr, "error: config write-boundary: %v\n", err)
-			return 1
-		}
-	}
-
-	// Docs write-boundary (#1016). The docs-updater analog of the config
-	// boundary above: opt-in (confineToDocsRoots=true) and no-op by default, so
-	// every other workflow is unaffected. When set, every file this run's branch
-	// changes must be within at least one declared in-repo docs root (the
-	// ordered WorkflowSpec.docsRoots list, passed through as a comma/newline
-	// `docsRoots` input) — else the cycle aborts CLOSED before the PR opens, so a
-	// docs run can never open a PR touching code. An empty docsRoots list with
-	// the boundary enabled fails closed (configboundary.ErrNoDocsRoots), never
-	// silently allowing the whole tree.
-	if providerInput("confineToDocsRoots", "") == "true" {
-		if err := inRepoDir(func() error { return confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))) }); err != nil {
-			pf(stderr, "error: docs write-boundary: %v\n", err)
-			return 1
-		}
-	}
-
-	// Per-target-action-root write-boundary (TUT-A5/#1217). The Tutor's
-	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
-	// by default. When set, every file this run's branch changes must resolve
-	// into the SAME single declared action root (the comma/newline
-	// `actionRoots` input, e.g. "reference-workflows,skills") — a skill-authoring action
-	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
-	// CLOSED before the PR opens (configboundary.ConfineExclusive).
-	if providerInput("confineToActionRoots", "") == "true" {
-		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
-			pf(stderr, "error: action write-boundary: %v\n", err)
-			return 1
-		}
+	if err := checkOpenPRWriteBoundaries(inRepoDir, base); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 
 	var tutorHoldout *tutorHoldoutRecord
@@ -549,6 +526,13 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	if err := verifyOpenPRRemoteHead(ctx, provider, repo, head, inspectedHead); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	// Persist the mandatory finding before the external mutation. If the
 	// process crashes after GitHub accepts the PR, the prepared record still
 	// survives for a later exact-cohort verification pass. Repasses atomically
@@ -565,13 +549,11 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base}
+	prReq := providers.PullRequestRequest{Repository: repo, Title: title, Body: body, Head: head, Base: base, Draft: draft}
 	if providerInput("runIdFooter", "true") == "true" {
 		prReq.RunID = runID
 	}
 
-	ctx, cancel := providerCommandContext()
-	defer cancel()
 	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
 	if code != 0 {
 		return code
@@ -588,7 +570,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	extras := requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr)
+	extras := withOpenPRHead(requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr), inspectedHead)
 
 	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, withOpenPRDraft(extras, result.Draft)); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -617,6 +599,26 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "pr #%d: %s\n", result.Number, result.URL)
 	return 0
+}
+
+func verifyOpenPRRemoteHead(ctx context.Context, provider openPRProvider, repo providers.RepositoryRef, head, inspectedHead string) error {
+	branchReader, ok := provider.(providers.BranchReconciliationProvider)
+	if !ok {
+		return errors.New("publication safety: provider cannot verify the remote branch")
+	}
+	remoteHead, found, err := branchReader.GetBranch(ctx, repo, head)
+	if err != nil || !found || remoteHead.SHA != inspectedHead {
+		return errors.New("publication safety: remote branch does not match the inspected commit; push the checked branch before opening its PR")
+	}
+	return nil
+}
+
+func withOpenPRHead(extras map[string]string, head string) map[string]string {
+	if extras == nil {
+		extras = make(map[string]string)
+	}
+	extras["headSha"] = head
+	return extras
 }
 
 func preferredOpenPRHead(root, runID, workflow string) string {
@@ -757,4 +759,25 @@ func requestOpenPRReviewers(ctx context.Context, provider any, repo providers.Re
 		return map[string]string{"reviewersRequestError": err.Error()}
 	}
 	return map[string]string{"reviewersRequested": strings.Join(reviewers, ",")}
+}
+
+// checkOpenPRWriteBoundaries applies opt-in repository boundaries in the PR's
+// target checkout, including a separate config-repository target.
+func checkOpenPRWriteBoundaries(inRepoDir func(func() error) error, base string) error {
+	if providerInput("confineToConfigRoot", "") == "true" {
+		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
+			return fmt.Errorf("config write-boundary: %w", err)
+		}
+	}
+	if providerInput("confineToDocsRoots", "") == "true" {
+		if err := inRepoDir(func() error { return confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))) }); err != nil {
+			return fmt.Errorf("docs write-boundary: %w", err)
+		}
+	}
+	if providerInput("confineToActionRoots", "") == "true" {
+		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
+			return fmt.Errorf("action write-boundary: %w", err)
+		}
+	}
+	return nil
 }

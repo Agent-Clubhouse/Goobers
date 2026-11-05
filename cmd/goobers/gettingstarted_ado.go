@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
@@ -29,7 +31,7 @@ func prepareGuidedADORepository(ctx context.Context, root string, gaggle apiv1.G
 	if err != nil {
 		return err
 	}
-	repo, found := configuredRepoForProject(cfg, gaggle.Spec.Project)
+	repo, found := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project)
 	if !found || repo.Provider != "ado" || gaggle.Spec.Backlog.Provider != apiv1.ProviderADO || gaggle.Spec.Backlog.Project == "" {
 		return fmt.Errorf("a configured ADO repository and Azure Boards backlog project are required")
 	}

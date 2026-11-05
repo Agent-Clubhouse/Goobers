@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/providers"
@@ -65,6 +66,10 @@ func (c *remediationDemandCounter) EligibleCount(ctx context.Context) (int, erro
 	if err != nil {
 		return 0, err
 	}
+	prs, _, err = filterLiveOriginPullRequests(ctx, journalclient.NewFileCrossRun(instance.NewLayout(filepath.Dir(c.schedulerDir))), c.gaggle, "", prs)
+	if err != nil {
+		return 0, err
+	}
 	baseTips := map[string]string{}
 	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
 		return pullRequestBehindLiveBase(ctx, provider, c.repo, pr, baseTips)
@@ -88,6 +93,10 @@ func stageClaimAvailablePullRequests(
 	candidates []providers.PullRequestSummary,
 	now time.Time,
 ) ([]providers.PullRequestSummary, error) {
+	candidates, _, err := stageLiveOriginPullRequests(root, currentRunID, candidates)
+	if err != nil {
+		return nil, err
+	}
 	ledger, err := openStageClaimLedger(layoutFor(root))
 	if err != nil {
 		return nil, fmt.Errorf("open claim ledger: %w", err)

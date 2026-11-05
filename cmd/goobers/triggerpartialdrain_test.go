@@ -33,9 +33,9 @@ func TestPendingSweepInterruptedPassResumesNextRecordAcrossReopen(t *testing.T) 
 	path := filepath.Join(t.TempDir(), "queue.db")
 	dispatch := newDaemonTriggerService()
 	probe := &sweepProbeTriggerer{stubTriggerer: &stubTriggerer{}}
-	dispatch.dispatch = probe
+	dispatch.AttachDispatcher(probe)
 	now := time.Now().UTC()
-	dispatch.now = func() time.Time { return now }
+	dispatch.SetClock(func() time.Time { return now })
 	service := acceptedService(t, path, dispatch)
 	var records []triggerqueue.Record
 	for i := range 200 {
@@ -85,7 +85,7 @@ func TestPendingSweepInterruptedPassResumesNextRecordAcrossReopen(t *testing.T) 
 func TestPendingSweepSmallHeldQueueInspectedOncePerPass(t *testing.T) {
 	dispatch := newDaemonTriggerService()
 	probe := &sweepProbeTriggerer{stubTriggerer: &stubTriggerer{}}
-	dispatch.dispatch = probe
+	dispatch.AttachDispatcher(probe)
 	service := acceptedService(t, filepath.Join(t.TempDir(), "queue.db"), dispatch)
 	for i := range 2 {
 		if _, err := service.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "held", RequestID: fmt.Sprint(i), Actor: "operator"}); err != nil {

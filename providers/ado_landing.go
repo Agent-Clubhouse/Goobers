@@ -445,11 +445,9 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 // base and head (CONF-3 #2076, design doc §4: pr.compare ≙ diffs commits
 // API) via ADO's commit-diffs endpoint, whose response already carries the
 // common (merge-base) commit directly — no separate merge-base lookup
-// needed, unlike GitHub's compare endpoint which conflates the two. Single
-// page (adoChangePageSize items): the diffs/commits endpoint's own
-// continuation contract for very large diffs is unconfirmed against a live
-// ADO instance pending CONF-4's fixture corpus, so an oversized diff is
-// truncated rather than guessed at.
+// needed, unlike GitHub's compare endpoint which conflates the two. Changes
+// are paged with $skip/$top, including folders in the offset, until ADO
+// reports allChangesIncluded or an unflagged short page ends the response.
 func (p *ADOProvider) CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error) {
 	if err := requireRepo(repo); err != nil {
 		return CompareResult{}, err
@@ -471,22 +469,40 @@ func (p *ADOProvider) CompareCommits(ctx context.Context, repo RepositoryRef, ba
 	if err != nil {
 		return CompareResult{}, err
 	}
-	var out adoCommitDiffsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return CompareResult{}, err
-	}
-	files := make([]ChangedFile, 0, len(out.Changes))
-	for _, change := range out.Changes {
-		if change.Item.IsFolder {
-			continue
+	result := CompareResult{Integrity: apiintegrity.Unapproved}
+	for skip := 0; ; {
+		pageURL, err := addQuery(endpoint, url.Values{"$skip": []string{strconv.Itoa(skip)}})
+		if err != nil {
+			return CompareResult{}, err
 		}
-		files = append(files, ChangedFile{
-			Path:      strings.TrimPrefix(change.Item.Path, "/"),
-			Status:    adoChangedFileStatus(change.ChangeType),
-			Integrity: apiintegrity.Unapproved,
-		})
+		var out adoCommitDiffsResponse
+		if err := p.do(ctx, http.MethodGet, pageURL, nil, &out); err != nil {
+			return CompareResult{}, err
+		}
+		if skip == 0 {
+			result.MergeBaseSHA = out.CommonCommit
+		} else if out.CommonCommit != result.MergeBaseSHA {
+			return CompareResult{}, fmt.Errorf("ado commit diff merge base changed between pages")
+		}
+		for _, change := range out.Changes {
+			if change.Item.IsFolder {
+				continue
+			}
+			result.Files = append(result.Files, ChangedFile{
+				Path:      strings.TrimPrefix(change.Item.Path, "/"),
+				Status:    adoChangedFileStatus(change.ChangeType),
+				Integrity: apiintegrity.Unapproved,
+			})
+		}
+		if out.AllChangesIncluded != nil && *out.AllChangesIncluded ||
+			out.AllChangesIncluded == nil && len(out.Changes) < adoChangePageSize {
+			return result, nil
+		}
+		if len(out.Changes) == 0 {
+			return CompareResult{}, fmt.Errorf("ado commit diff is incomplete: empty page at offset %d", skip)
+		}
+		skip += len(out.Changes)
 	}
-	return CompareResult{MergeBaseSHA: out.CommonCommit, Files: files, Integrity: apiintegrity.Unapproved}, nil
 }
 
 // adoCompletionOptions selects how ADO's completion job lands a pull
@@ -550,8 +566,9 @@ type adoPolicyConfigurationsResponse struct {
 // CompareCommits): CommonCommit is the merge-base the neutral CompareResult
 // contract needs, computed server-side rather than requiring a second call.
 type adoCommitDiffsResponse struct {
-	CommonCommit string `json:"commonCommit"`
-	Changes      []struct {
+	AllChangesIncluded *bool  `json:"allChangesIncluded"`
+	CommonCommit       string `json:"commonCommit"`
+	Changes            []struct {
 		ChangeType string `json:"changeType"`
 		Item       struct {
 			Path     string `json:"path"`

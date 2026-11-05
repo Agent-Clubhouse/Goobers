@@ -28,7 +28,7 @@ type ciEventFixture struct {
 	// payload is github.event: only the fields the workflows read.
 	payload map[string]any
 	// ci: the event itself starts ci.yml, which runs the full required gate
-	// under the pinned name in its ref's shared concurrency group.
+	// under the pinned name with its ref's shared validation-job groups.
 	ci bool
 	// retarget: the event runs ci-retarget.yml's job, which dispatches
 	// ci.yml against the new merge result.
@@ -73,7 +73,7 @@ func ciEventFixtures() []ciEventFixture {
 //
 // A base retarget changes the merge result, so it must run the complete
 // required gate on GitHub's new merge commit under the pinned required name,
-// in the PR's CI concurrency group, with base-aware checks reading the new
+// in the PR's validation-job groups, with base-aware checks reading the new
 // base. Re-running the old pull_request run would not: a re-run reuses the
 // original event's GITHUB_SHA (the old merge) and payload (the old base).
 func TestCIRetargetValidatesNewMergeNotMetadataEdits(t *testing.T) {
@@ -119,14 +119,12 @@ func TestCIRetargetValidatesNewMergeNotMetadataEdits(t *testing.T) {
 	}
 }
 
-// assertFullGateRun checks that ctx's ci.yml run joins the PR's cancelling
-// concurrency group, runs every required job under the pinned name, and
+// assertFullGateRun checks that ctx's ci.yml jobs join the PR's cancelling
+// groups, run every required job under the pinned name, and
 // checks out wantRef ("" is the event's own commit) in every job it runs.
 func assertFullGateRun(t *testing.T, w ciWorkflow, ctx map[string]any, wantRef string) {
 	t.Helper()
-	if group, want := renderTemplate(t, w.Concurrency.Group, ctx), "ci-CI-refs/pull/1/merge"; group != want {
-		t.Errorf("concurrency group = %q, want the PR's shared group %q so it replaces the stale run", group, want)
-	}
+	assertCIJobCancellationGroups(t, w, ctx, "ci-CI-refs/pull/1/merge")
 	ran := simulateCIJobs(t, w, ctx)
 	for _, id := range append([]string{"required-ci"}, w.Jobs["required-ci"].Needs...) {
 		if !ran[id] {
@@ -338,6 +336,7 @@ func simulateCIJobsWithProfile(t *testing.T, w ciWorkflow, ctx map[string]any, p
 			outputs := map[string]any{}
 			if dep == "scope" && result == "success" {
 				outputs["profile"] = profile
+				outputs["cloud"] = fmt.Sprint(profile == "full")
 			}
 			needs[dep] = map[string]any{"result": result, "outputs": outputs}
 		}
@@ -410,14 +409,14 @@ func TestCIScopeUsesCompleteDiffAndDoesNotSavePartialCaches(t *testing.T) {
 	step := scope.step(t, "Classify validation scope")
 	if step.Run != `go run ./test/cipolicy classify >> "$GITHUB_OUTPUT"` ||
 		step.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" ||
-		step.Env["BASE_SHA"] != "${{ github.event.pull_request.base.sha }}" ||
-		step.Env["HEAD_SHA"] != "${{ github.event.pull_request.head.sha }}" ||
+		step.Env["BASE_SHA"] != "${{ github.event.pull_request.base.sha || github.event.before || github.event.merge_group.base_sha || inputs.base_sha }}" ||
+		step.Env["HEAD_SHA"] != "${{ github.event.pull_request.head.sha || github.sha || github.event.merge_group.head_sha || inputs.head_sha }}" ||
 		step.If != "" || step.ContinueOnError {
 		t.Fatal("scope must invoke the classifier with exact event/base/head inputs")
 	}
 	gate := w.Jobs["required-ci"].step(t, "Verify required gates")
 	if gate.Run != "go run ./test/cipolicy gate" || gate.Env["CI_NEEDS"] != "${{ toJSON(needs) }}" ||
-		gate.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" || gate.If != "" || gate.ContinueOnError {
+		gate.Env["CI_EVENT_NAME"] != "${{ github.event_name }}" || gate.If != "always()" || gate.ContinueOnError {
 		t.Fatal("aggregate must verify every dependency result with the event-aware policy")
 	}
 }
@@ -453,9 +452,9 @@ func renderTemplate(t *testing.T, s string, ctx map[string]any) string {
 // evalExpr evaluates the subset of the GitHub Actions expression language
 // ci.yml uses: literals, context paths, ! && || == != and parentheses, and the
 // functions always, success, failure, cancelled and format.
-func evalExpr(t *testing.T, src string, ctx map[string]any, success bool) any {
+func evalExpr(t *testing.T, src string, ctx map[string]any, success bool, cancelled ...bool) any {
 	t.Helper()
-	p := &exprParser{src: src, ctx: ctx, success: success}
+	p := &exprParser{src: src, ctx: ctx, success: success, cancelled: len(cancelled) > 0 && cancelled[0]}
 	v := p.or()
 	if p.skipSpace(); p.pos != len(p.src) || p.err != nil {
 		t.Fatalf("cannot evaluate %q at offset %d: %v", src, p.pos, p.err)
@@ -464,15 +463,16 @@ func evalExpr(t *testing.T, src string, ctx map[string]any, success bool) any {
 }
 
 type exprParser struct {
-	src     string
-	pos     int
-	ctx     map[string]any
-	success bool
-	err     error
+	src       string
+	pos       int
+	ctx       map[string]any
+	success   bool
+	cancelled bool
+	err       error
 }
 
 func (p *exprParser) skipSpace() {
-	for p.pos < len(p.src) && p.src[p.pos] == ' ' {
+	for p.pos < len(p.src) && strings.ContainsRune(" \t\r\n", rune(p.src[p.pos])) {
 		p.pos++
 	}
 }
@@ -573,8 +573,10 @@ func (p *exprParser) call(fn string) any {
 		return true
 	case "success":
 		return p.success
-	case "failure", "cancelled":
+	case "failure":
 		return false
+	case "cancelled":
+		return p.cancelled
 	case "format":
 		s := toString(args[0])
 		for i, a := range args[1:] {

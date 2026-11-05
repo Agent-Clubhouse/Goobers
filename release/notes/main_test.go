@@ -47,6 +47,10 @@ func TestGenerateGroupsHistoryAndUsesCuratedFile(t *testing.T) {
 		},
 	}
 	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		if filepath.ToSlash(path) != ".github/release-notes/v1.2.0.md" {
 			t.Fatalf("read path = %q", path)
 		}
@@ -180,7 +184,11 @@ func TestGenerateRecognizesBreakingChangeFooters(t *testing.T) {
 				"BREAKING-CHANGE: rename old_key to new_key\x1e",
 		},
 	}
-	readFile := func(string) ([]byte, error) {
+	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		return []byte("A curated overview."), nil
 	}
 
@@ -213,7 +221,11 @@ func TestGenerateFailsWhenCuratedCommitCountDisagreesWithRange(t *testing.T) {
 		command("rev-parse", "--verify", "refs/tags/v0.4.0-beta.2^{commit}"): {output: "release"},
 		command("rev-list", "--count", "v0.4.0-beta.1..v0.4.0-beta.2"):       {output: "59"},
 	}
-	readFile := func(string) ([]byte, error) {
+	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		return []byte("58 commits since v0.4.0-beta.1 (20 fix, 6 refactor, docs/CLI/misc), no BREAKING CHANGE footers."), nil
 	}
 
@@ -240,7 +252,11 @@ func TestGenerateFailsWhenCuratedKindCountDisagreesWithRange(t *testing.T) {
 			output: strings.Repeat("fix: patch\n", 21) + strings.Repeat("refactor: tidy\n", 6) + strings.Repeat("docs: update\n", 32),
 		},
 	}
-	readFile := func(string) ([]byte, error) {
+	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		return []byte("59 commits since v0.4.0-beta.1 (20 fix, 6 refactor, docs/CLI/misc), no BREAKING CHANGE footers."), nil
 	}
 
@@ -271,7 +287,11 @@ func TestGenerateAcceptsCuratedCommitCountMatchingRange(t *testing.T) {
 		},
 		command("log", "--first-parent", "--format="+gitLogFormat, "v1.2.0..v1.3.0"): {output: ""},
 	}
-	readFile := func(string) ([]byte, error) {
+	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		return []byte("5 commits since v1.2.0 (3 fix, 2 docs), no BREAKING CHANGE footers."), nil
 	}
 
@@ -298,7 +318,11 @@ func TestGenerateSkipsCommitCountValidationWithoutAClaim(t *testing.T) {
 		},
 		command("log", "--first-parent", "--format="+gitLogFormat, "v1.1.0..v1.2.0"): {output: ""},
 	}
-	readFile := func(string) ([]byte, error) {
+	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		return []byte("## Highlights\n\n- Ships the new thing.\n"), nil
 	}
 
@@ -329,6 +353,10 @@ func TestGenerateAcceptsPrereleaseTag(t *testing.T) {
 		},
 	}
 	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		if filepath.ToSlash(path) != ".github/release-notes/v1.3.0-beta.2.md" {
 			t.Fatalf("read path = %q", path)
 		}
@@ -358,7 +386,12 @@ func TestRunWritesOutputFile(t *testing.T) {
 	}
 	output := t.TempDir() + "/notes.md"
 	var stdout, stderr bytes.Buffer
-	readFile := func(string) ([]byte, error) { return []byte("A curated overview."), nil }
+	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("A curated overview."), nil
+	}
 	if err := run([]string{"-tag", "v1.0.0", "-output", output}, &stdout, &stderr, git, readFile); err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
@@ -384,6 +417,10 @@ func TestRunCombinesFeatureNotesIntoOutputFile(t *testing.T) {
 	}
 	output := t.TempDir() + "/RELEASE_NOTES.md"
 	readFile := func(path string) ([]byte, error) {
+		if filepath.Base(path) == "release-baselines.json" {
+			return nil, os.ErrNotExist
+		}
+
 		if path == output {
 			return []byte(`# Goobers v1.0.0
 

@@ -64,7 +64,7 @@ func newHandoffDaemonFixtureConfig(t *testing.T, configure func(*instance.Config
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := service.grants.key.VerifyChildWorkflowGrant(access.BearerToken)
+	grant, err := service.grants.Key().VerifyChildWorkflowGrant(access.BearerToken)
 	if err != nil {
 		t.Fatal(err)
 	}

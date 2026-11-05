@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -23,7 +24,7 @@ func (r *Runner) borrowParentJournal(run *journal.Run) (func(), error) {
 	if id.Child != nil {
 		return nil, errors.New("runner: child cannot borrow parent journal ownership")
 	}
-	machine, err := PinnedWorkflowMachine(reader, id)
+	machine, err := runsemantics.PinnedWorkflowMachine(reader, id)
 	if err != nil {
 		// Resume owns diagnostics/terminalization for missing or malformed
 		// historical definitions. Unknown provenance grants no remote writer.

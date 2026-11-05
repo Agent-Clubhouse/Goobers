@@ -60,6 +60,7 @@ func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 		InstanceRoot:          root,
 		Version:               version.Get().String(),
 		LivenessTimeoutMillis: instance.DefaultDaemonLivenessTimeout.Milliseconds(),
+		ExactWorkItemFile:     true,
 	}
 	release, err := AcquireWithIdentity(lockPath, &identityAtAcquire)
 	if err != nil {
@@ -82,6 +83,9 @@ func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 	}
 	if identity.InstanceRoot != root {
 		t.Errorf("instanceRoot = %q, want %q", identity.InstanceRoot, root)
+	}
+	if !identity.ExactWorkItemFile {
+		t.Fatal("exact-item file capability lost through lock state")
 	}
 }
 

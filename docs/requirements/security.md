@@ -377,3 +377,44 @@ by the egress allowlist instead; `SEC-048` above states the split.
 - **SEC-Q6:** **Resolved (V1):** OS-native sandboxing for local agentic stages
   (`SEC-044`) — Seatbelt on macOS and bubblewrap on Linux; containers are deferred.
   See [`ADR 0001`](../adr/0001-agentic-sandbox-mechanism.md).
+
+## Engine publication admission
+
+The built-in publication paths enforce these checks independently of agentic
+review (#7376):
+
+- Every managed checkout, including pod checkouts, excludes root `.goobers`,
+  `.goober-assets`, `.goobers-launcher-session-*`, and `mutations.jsonl` locally.
+  Target repositories need no `.gitignore` change. Nested project fixtures with
+  these names remain ordinary source files.
+- Branch push, remediation push, PR opening, and child-result publication inspect
+  every outgoing commit against the publication base. Adding or modifying a
+  reserved path blocks publication even if a later commit deletes it. Deleting
+  an artifact inherited from the base is allowed. Renames, symlinks, merge
+  parents, and filenames containing whitespace use the same admission rule.
+- Introduced file contents are screened with the shared provider-credential
+  patterns and literal GitHub/Copilot credential environment assignments.
+  Diagnostics identify the affected commit and class, never matching values or
+  file contents. This backstop does not identify every possible secret format.
+  Synthetic credential fixtures should assemble values at runtime instead of
+  storing complete credential-shaped literals.
+- Missing revisions, unreadable Git objects, oversized reads (32 MiB), and
+  inspection timeouts block publication. The normal branch path has a one-minute
+  inspection budget. Pushes name the inspected commit directly and recheck after
+  a retry rebase. PR opening requires the remote branch tip to match the inspected
+  local commit; a local reset without a corresponding remote update cannot pass.
+
+Copilot raw diagnostics live in private attempt-owned temporary directories
+outside the checkout. Sandboxes receive only the exact capture directory as an
+additional writable root. Captures are reclaimed when the invocation finishes;
+startup and each capture reclaim abandoned diagnostic scopes under a shared
+namespace lock. Per-capture leases preserve captures belonging to other live
+processes; lease files live outside the sandbox-writable capture directories.
+Pods use throwaway temporary storage. Startup error text redacts credential environment
+values before it is reported; MCP diagnostics retain only structured readiness
+information. Raw debug logs are never a deliverable.
+
+These checks do not rewrite history or silently remove an author's changes.
+A blocked publication must be repaired before retrying. Direct Git or provider
+operations outside the built-in publication paths remain subject to repository
+controls and credential policy.

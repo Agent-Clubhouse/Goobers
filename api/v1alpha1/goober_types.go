@@ -82,6 +82,10 @@ type MCPServer struct {
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name" yaml:"name"`
+	// Required controls whether failure to register or start this server stops
+	// the stage before the model turn. Omission defaults to required.
+	// +optional
+	Required *bool `json:"required,omitempty" yaml:"required,omitempty"`
 	// Command starts a local stdio MCP server.
 	// +kubebuilder:validation:MinLength=1
 	// +optional

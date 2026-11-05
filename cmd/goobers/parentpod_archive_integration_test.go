@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -52,7 +54,7 @@ func verifyLatestParentCleanupArchive(t *testing.T, reader *journal.Reader, repo
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := prepareRecoveryInventory(restorer.layout.Root)
+	root, err := runtimewiring.PrepareRecoveryInventory(restorer.layout.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func verifyParentArchiveDaemonRestoration(t *testing.T, reader *journal.Reader, 
 			}
 		}
 		if mode == "partial" {
-			project, err := recoveryConfiguredProject(restorer.config, record.RepositoryKey)
+			project, err := runtimewiring.RecoveryConfiguredProject(restorer.config, record.RepositoryKey)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,7 +221,7 @@ func verifyAutomaticParentRetirement(t *testing.T, reader *journal.Reader, resto
 	if err != nil {
 		t.Fatal(err)
 	}
-	at, terminal, err := recoveryCaptureWindow(t.Context(), reader, id.StartedAt)
+	at, terminal, err := runtimewiring.RecoveryCaptureWindow(t.Context(), reader, id.StartedAt)
 	if err != nil || !terminal || !record.CreatedAt.Equal(at) {
 		t.Fatal("retirement missed stable terminal anchor", record.CreatedAt, at, err)
 	}

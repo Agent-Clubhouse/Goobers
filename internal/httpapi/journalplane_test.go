@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
@@ -230,5 +231,57 @@ func TestJournalPlanePathMatchesOnlyTheEmitRoute(t *testing.T) {
 		if got := journalPlanePath(path); got != want {
 			t.Errorf("journalPlanePath(%q) = %t, want %t", path, got, want)
 		}
+	}
+}
+
+func TestJournalBranchOverrideRequiresHostPrincipal(t *testing.T) {
+	service := &fakeJournalService{}
+	authenticator := &fakeAuthenticator{principal: &Principal{Subject: "run:run-1", Issuer: PodPrincipalIssuer}}
+	handler := writePlaneHandler(t, authenticator, RequireRoles(), WithJournalService(service))
+	body := strings.Replace(emitBody("run-1"), `"kind":"append"`, `"branch":2,"kind":"append"`, 1)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", body))
+	if response.Code != http.StatusForbidden || len(service.requests) != 0 {
+		t.Fatalf("workload authored branch override: %d %s", response.Code, response.Body)
+	}
+	host := writePlaneHandler(t, nil, AllowAll, WithJournalService(service))
+	response = httptest.NewRecorder()
+	host.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", body))
+	if response.Code != http.StatusOK || len(service.requests) != 1 || service.requests[0].Ops[0].Branch != 2 {
+		t.Fatalf("host attribution lost: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestWorkloadPrincipalCannotBindChildOrigin(t *testing.T) {
+	for _, principal := range []*Principal{
+		{Subject: "run:run-1", Issuer: PodPrincipalIssuer},
+		{Subject: "run:run-1", Issuer: GeneratedChildPrincipalIssuer, GeneratedChild: &GeneratedChildPrincipal{ContractDigest: journal.Digest(nil)}},
+		{Subject: "run:run-1", Issuer: WorkflowParentPrincipalIssuer, WorkflowParent: &WorkflowParentPrincipal{ContractDigest: journal.Digest(nil)}},
+	} {
+		t.Run(principal.Issuer, func(t *testing.T) {
+			service := &fakeJournalService{}
+			handler := writePlaneHandler(t, &fakeAuthenticator{principal: principal}, RequireRoles(), WithJournalService(service), WithGeneratedChildJournalService(service), WithWorkflowParentJournalService(service))
+			input := livejournal.EmitRequest{RunID: "run-1", Gaggle: "web", Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "forged", ChildStageStart: &livejournal.ChildStageStart{}, Event: &journal.Event{Type: journal.EventStageStarted, Stage: "work", Attempt: 1}}}}
+			body, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", string(body)))
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "child_origin_host_only") || len(service.requests) != 0 {
+				t.Fatalf("binding reached writer: status=%d body=%s", response.Code, response.Body)
+			}
+			input.Ops[0].ChildStageStart = nil
+			input.Ops[0].Event.Runner = map[string]any{journal.ChildWorkflowOccurrenceKey: "forged"}
+			body, err = json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response = httptest.NewRecorder()
+			handler.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", string(body)))
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "child_origin_host_only") || len(service.requests) != 0 {
+				t.Fatalf("raw identity reached writer: status=%d body=%s", response.Code, response.Body)
+			}
+		})
 	}
 }

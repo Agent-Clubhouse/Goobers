@@ -210,6 +210,42 @@ func TestNormalizeErrorSignatureRedactsAnythingUnsafe(t *testing.T) {
 	})
 }
 
+func TestFindingPassesThresholds(t *testing.T) {
+	thresholds := Thresholds{
+		MinSamples: 5, MaxFailureRate: 0.4,
+		MinErrorSignatureCount: 3,
+		MinGateEvaluations:     4, MaxGateEscalationRate: 0.25,
+		MinCreditRuns: 6, MinCreditFailureShare: 0.5,
+	}
+	tests := []struct {
+		name    string
+		finding Finding
+		want    bool
+	}{
+		{"stage passes", Finding{Kind: "stage-failure-rate", Metrics: map[string]float64{"totalAttempts": 5, "failureRate": 0.4}}, true},
+		{"stage sample fails", Finding{Kind: "stage-failure-rate", Metrics: map[string]float64{"totalAttempts": 4, "failureRate": 0.8}}, false},
+		{"stage rate fails", Finding{Kind: "stage-failure-rate", Metrics: map[string]float64{"totalAttempts": 8, "failureRate": 0.3}}, false},
+		{"signature passes", Finding{Kind: "error-signature", Metrics: map[string]float64{"count": 3}}, true},
+		{"signature fails", Finding{Kind: "error-signature", Metrics: map[string]float64{"count": 2}}, false},
+		{"never fails passes", Finding{Kind: "gate-never-fails", Metrics: map[string]float64{"totalEvaluations": 4}}, true},
+		{"never fails fails", Finding{Kind: "gate-never-fails", Metrics: map[string]float64{"totalEvaluations": 3}}, false},
+		{"churn passes", Finding{Kind: "gate-repass-churn", Metrics: map[string]float64{"totalEvaluations": 4, "escalationRate": 0.25}}, true},
+		{"churn evaluations fail", Finding{Kind: "gate-repass-churn", Metrics: map[string]float64{"totalEvaluations": 3, "escalationRate": 0.5}}, false},
+		{"churn rate fails", Finding{Kind: "gate-repass-churn", Metrics: map[string]float64{"totalEvaluations": 8, "escalationRate": 0.2}}, false},
+		{"credit passes", Finding{Kind: "credit-assignment", Metrics: map[string]float64{"runs": 6, "failureShare": 0.5}}, true},
+		{"credit runs fail", Finding{Kind: "credit-assignment", Metrics: map[string]float64{"runs": 5, "failureShare": 0.8}}, false},
+		{"credit share fails", Finding{Kind: "credit-assignment", Metrics: map[string]float64{"runs": 8, "failureShare": 0.4}}, false},
+		{"unknown fails closed", Finding{Kind: "other", Metrics: map[string]float64{}}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := FindingPassesThresholds(test.finding, thresholds); got != test.want {
+				t.Fatalf("FindingPassesThresholds() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 // TestDefectAggregateQueryCarriesOnlyTheClosedParameterSet pins that the
 // client cannot express a path, a projection or a query fragment: the request
 // type has no field for one, and the rendered query is the closed set.

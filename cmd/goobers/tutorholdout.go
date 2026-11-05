@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/harness"
@@ -32,7 +34,7 @@ func tutorConfigVersionsModelCredential(cfg *instance.Config) (func(ctx context.
 	if err != nil {
 		return nil, fmt.Errorf("load secret stores for Tutor version resolution: %w", err)
 	}
-	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
+	resolve, _, err := runtimewiring.AgentModelCredentialResolver(cfg, stores, "")
 	return resolve, err
 }
 
@@ -148,11 +150,11 @@ func prepareTutorHoldout(
 	if err != nil {
 		return nil, err
 	}
-	oldVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), gaggle, targetNames, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, tutorModelCredential)
+	oldVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), gaggle, targetNames, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, tutorModelCredential)
 	if err != nil {
 		return nil, fmt.Errorf("resolve live pre-promotion versions: %w", err)
 	}
-	newVersions, err := tutorConfigVersions(sourceTree, gaggle, targetNames, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, tutorModelCredential)
+	newVersions, err := tutorConfigVersions(sourceTree, gaggle, targetNames, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, tutorModelCredential)
 	if err != nil {
 		return nil, fmt.Errorf("resolve proposed post-promotion versions: %w", err)
 	}
@@ -370,12 +372,12 @@ func tutorConfigVersions(configDir, gaggle string, names []string, environment h
 	if err != nil {
 		return nil, &configReportError{report: report, err: err}
 	}
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, set, goobers)
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
+	machines, gooberDigests, _, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, environment, harnessCommand,
 		// nil: this computes version axes for configs the daemon already
 		// admitted; connector authority lives at the daemon/validate gate.
@@ -669,7 +671,7 @@ func reconcileTutorHoldoutTargets(root string, record *tutorHoldoutRecord) (map[
 		return nil, err
 	}
 	liveVersions, err := tutorConfigVersions(
-		instance.NewLayout(root).ConfigDir(), record.Gaggle, names, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, tutorModelCredential,
+		instance.NewLayout(root).ConfigDir(), record.Gaggle, names, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, tutorModelCredential,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("resolve live reconciled Tutor config: %w", err)

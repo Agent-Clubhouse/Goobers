@@ -1,0 +1,7 @@
+# Add to each gaggle namespace (design §14.2): stage pods may never use the
+# control-plane PriorityClass. Compose with ../../../gaggle-namespace overlays:
+#   components: [../../goobers-cloud/components/stage-priority-guard]
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - resourcequota.yaml

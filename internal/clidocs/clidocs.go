@@ -23,6 +23,7 @@ import (
 // ["run","abort"]). Short is the one-line description; Long is the full `-h`
 // help body (verbatim, as a user sees it); Examples are runnable invocations.
 type Command struct {
+	Binary   string
 	Path     []string
 	Short    string
 	Long     string
@@ -43,21 +44,28 @@ const (
 // Name is the space-joined invocation path below the binary ("run abort").
 func (c Command) Name() string { return strings.Join(c.Path, " ") }
 
+func (c Command) binary() string {
+	if c.Binary == "" {
+		return "goobers"
+	}
+	return c.Binary
+}
+
 // FullName is the complete invocation including the binary ("goobers run abort").
 func (c Command) FullName() string {
 	if len(c.Path) == 0 {
-		return "goobers"
+		return c.binary()
 	}
-	return "goobers " + c.Name()
+	return c.binary() + " " + c.Name()
 }
 
 // Slug is the hyphen-joined file/anchor stem ("goobers-run-abort", or "goobers"
 // for the root). It is the man-page file stem and the Markdown heading anchor.
 func (c Command) Slug() string {
 	if len(c.Path) == 0 {
-		return "goobers"
+		return c.binary()
 	}
-	return "goobers-" + strings.Join(c.Path, "-")
+	return c.binary() + "-" + strings.Join(c.Path, "-")
 }
 
 // ManFile is the man-page file name for the command ("goobers-run-abort.1").
@@ -102,7 +110,7 @@ func ManPage(c Command) string {
 	}
 
 	b.WriteString(".SH SEE ALSO\n")
-	b.WriteString("\\fBgoobers\\fR(1)\n")
+	fmt.Fprintf(&b, "\\fB%s\\fR(1)\n", roffEscapeInline(c.binary()))
 	return b.String()
 }
 
@@ -111,17 +119,18 @@ func ManPage(c Command) string {
 // command's own page.
 func ManIndex(root Command, cmds []Command) string {
 	Sort(cmds)
+	binary := root.binary()
 	var b strings.Builder
 	b.WriteString(".\\\" Generated from the goobers command registry — do not edit by hand.\n")
-	b.WriteString(".TH \"GOOBERS\" \"1\" \"\" \"Goobers\" \"Goobers Manual\"\n")
+	fmt.Fprintf(&b, ".TH \"%s\" \"1\" \"\" \"Goobers\" \"Goobers Manual\"\n", strings.ToUpper(binary))
 	b.WriteString(".SH NAME\n")
 	short := root.Short
 	if short == "" {
 		short = "tier 1-2 local instance CLI"
 	}
-	fmt.Fprintf(&b, "goobers \\- %s\n", roffEscapeInline(short))
+	fmt.Fprintf(&b, "%s \\- %s\n", roffEscapeInline(binary), roffEscapeInline(short))
 	b.WriteString(".SH SYNOPSIS\n")
-	b.WriteString("\\fBgoobers\\fR \\fIcommand\\fR [\\fIoptions\\fR]\n")
+	fmt.Fprintf(&b, "\\fB%s\\fR \\fIcommand\\fR [\\fIoptions\\fR]\n", roffEscapeInline(binary))
 	if strings.TrimSpace(root.Long) != "" {
 		b.WriteString(".SH DESCRIPTION\n")
 		b.WriteString(roffPreformatted(root.Long))
@@ -153,14 +162,19 @@ func writeManGroup(b *strings.Builder, heading string, cmds []Command, group Gro
 // intro, a command table with anchor links, then a section per command.
 func Reference(root Command, cmds []Command) string {
 	Sort(cmds)
+	binary := root.binary()
 	var b strings.Builder
-	b.WriteString("# `goobers` CLI reference\n\n")
-	b.WriteString("<!-- Generated from the command registry (cmd/goobers/runtime_capabilities.go) by `make docs`. Do not edit by hand; edits are overwritten and the CI drift guard will fail. -->\n\n")
+	fmt.Fprintf(&b, "# `%s` CLI reference\n\n", binary)
+	if binary == "goobers" {
+		b.WriteString("<!-- Generated from the command registry (cmd/goobers/runtime_capabilities.go) by `make docs`. Do not edit by hand; edits are overwritten and the CI drift guard will fail. -->\n\n")
+	} else {
+		b.WriteString("<!-- Generated from the command registry by `make docs`. Do not edit by hand; edits are overwritten and the CI drift guard will fail. -->\n\n")
+	}
 	intro := root.Short
 	if intro == "" {
 		intro = "tier 1-2 local instance CLI"
 	}
-	fmt.Fprintf(&b, "`goobers` is the %s. This reference is generated from the CLI command registry, so it always matches the shipped binary.\n\n", intro)
+	fmt.Fprintf(&b, "`%s` is the %s. This reference is generated from the CLI command registry, so it always matches the shipped binary.\n\n", binary, intro)
 
 	writeReferenceGroup(&b, "Core commands", "", cmds, GroupCore)
 	writeReferenceGroup(&b, "Advanced operator commands", "Less-common commands for configuration, maintenance, and diagnostics.", cmds, GroupAdvanced)

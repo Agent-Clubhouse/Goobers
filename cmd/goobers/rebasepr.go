@@ -388,19 +388,6 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 	return 0
 }
 
-// Remediation policy causes (#941/PRR-6): the vocabulary a workflow's
-// `remediate` input names. defaultRemediatePolicy is the shipped, fully
-// liberal default — every cause pr-remediation can detect fires the agentic
-// chain, reproducing today's behavior exactly.
-const (
-	remediateCauseConflict       = "conflict"
-	remediateCauseSubstantive    = "substantive"
-	remediateCauseFailingCI      = "failing-ci"
-	remediateCauseBehindBase     = "behind-base"
-	remediateCauseSiblingOverlap = "sibling-overlap"
-	remediateCauseHumanComment   = "human-comment"
-)
-
 // defaultRemediatePolicy lists every cause name. behind-base is accepted policy
 // vocabulary that this stage cannot yet detect for itself: its detection
 // (gather-pr-context's isBehindBase) is a native bool in the versioned
@@ -970,6 +957,10 @@ func abortRebaseAfterError(dir string, cause error) error {
 // ever updated for the bare flag to compare against, which misreports every
 // push as "stale info" regardless of whether the remote actually moved.
 func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA string, auth gitAuthEnvironmentResolver) error {
+	head, err := checkPublicationSafety(ctx, dir, stageBaseBranch(), "refs/heads/"+branch)
+	if err != nil {
+		return err
+	}
 	url, err := originURL(dir)
 	if err != nil {
 		return err
@@ -981,7 +972,7 @@ func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA st
 	if err != nil {
 		return err
 	}
-	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
+	cmd := workspaceGitAuthEnvCommand(dir, env, "push", "--force-with-lease="+branch+":"+expectedSHA, url, head+":refs/heads/"+branch)
 	if out, err := workspaceGitCombinedOutput(cmd); err != nil {
 		// Same classification as gitPushBranch: a force-push rejected by an
 		// enabled ADO branch policy (TF402455 /

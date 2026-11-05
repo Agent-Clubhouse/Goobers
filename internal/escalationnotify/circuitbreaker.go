@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/terminalreport"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -27,6 +27,8 @@ const InfraFailureStreakThreshold = 2 * FailureStreakThreshold
 // streak is one of the breaker's two counters: the genuine/work streak, or the
 // infrastructure streak counted separately at a higher threshold.
 type streak struct {
+	// infra selects the infrastructure streak, for StreakChargeGuard.
+	infra     bool
 	threshold int
 	load      func(ctx context.Context, repo providers.RepositoryRef, itemID string) (int, error)
 	write     func(repo providers.RepositoryRef, itemID string, count int, runID, stage string) error
@@ -42,26 +44,37 @@ func (p *Policy) workStreak() streak {
 		},
 		write: p.State.WriteFailureStreak,
 		comment: func(ctx context.Context, repo providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
-			return gate.UpsertFailureComment(ctx, p.Poster, repo, itemID, count, stage, runID, runURL, applying)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.WorkFailure, Repository: repo, ItemID: itemID, Count: count, Stage: stage, RunID: runID, RunURL: runURL, Labels: applying})
 		},
 		reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID, runURL string) error {
-			return gate.ResetFailureComment(ctx, p.Poster, repo, itemID, runID, runURL)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.WorkFailure, Repository: repo, ItemID: itemID, RunID: runID, RunURL: runURL, Reset: true})
 		},
 	}
 }
 
 func (p *Policy) infraStreak() streak {
 	return streak{
+		infra:     true,
 		threshold: InfraFailureStreakThreshold,
 		load:      p.State.LoadInfraFailureStreak,
 		write:     p.State.WriteInfraFailureStreak,
 		comment: func(ctx context.Context, repo providers.RepositoryRef, itemID string, count int, stage, runID, runURL string, applying []string) error {
-			return gate.UpsertInfraFailureComment(ctx, p.Poster, repo, itemID, count, InfraFailureStreakThreshold, stage, runID, runURL, applying)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.InfraFailure, Repository: repo, ItemID: itemID, Count: count, Threshold: InfraFailureStreakThreshold, Stage: stage, RunID: runID, RunURL: runURL, Labels: applying})
 		},
 		reset: func(ctx context.Context, repo providers.RepositoryRef, itemID, runID, runURL string) error {
-			return gate.ResetInfraFailureComment(ctx, p.Poster, repo, itemID, runID, runURL)
+			return p.publishReport(ctx, terminalreport.Effect{Kind: terminalreport.InfraFailure, Repository: repo, ItemID: itemID, RunID: runID, RunURL: runURL, Reset: true})
 		},
 	}
+}
+
+func (p *Policy) publishReport(ctx context.Context, e terminalreport.Effect) error {
+	e.Gaggle = p.Gaggle
+	e.Attribution, _ = providers.AttributionFromContext(ctx)
+	apply := func(ctx context.Context, e terminalreport.Effect) error { return e.Apply(ctx, p.Poster) }
+	if p.Reports != nil {
+		return p.Reports.Publish(ctx, e, apply)
+	}
+	return apply(ctx, e)
 }
 
 // applyCircuitBreaker charges a genuine/work terminal to the work streak.
@@ -111,8 +124,38 @@ func (p *Policy) chargeStreak(ctx context.Context, s streak, runID, stage, runUR
 	return errors.Join(errs...)
 }
 
+// StreakChargeGuard is an optional State capability for a controller whose
+// terminal frames can be re-fired (the cloud: a successor leader repeats a frame
+// whose receipt was not written). StreakChargedBy reports whether runID already
+// advanced the item's work or infrastructure streak, in which case the charge is
+// not applied again: the count and its comment and park already reflect that
+// run, and a lost projection self-heals on the item's next terminal, which
+// charges a count at or past the threshold. The daemon never re-fires a
+// terminal, so its State does not implement this and behaves exactly as before.
+//
+// Limits, both inherent to remembering only a bounded set of recent runs per
+// item: a productive completion resets (drops) the streak and with it the
+// memory, so a re-fire of an EARLIER run after that reset, inside the re-fire
+// window, charges once more; and a re-fire of a run that is more than the
+// remembered number of charges old does the same. The window is the discovery
+// window (about an hour) and the memory is sixteen runs, so both need an item to
+// churn through a reset or sixteen terminals while a frame is still being
+// re-fired; the cost is one stray strike, never a double count of a live run.
+type StreakChargeGuard interface {
+	StreakChargedBy(ctx context.Context, infra bool, repo providers.RepositoryRef, itemID, runID string) (bool, error)
+}
+
 func (p *Policy) chargeItem(ctx context.Context, s streak, item Item, runID, stage, runURL string) error {
 	repoRef, itemID := item.Repo, item.ItemID
+	if guard, ok := p.State.(StreakChargeGuard); ok {
+		charged, err := guard.StreakChargedBy(ctx, s.infra, repoRef, itemID, runID)
+		if err != nil {
+			return fmt.Errorf("check failure streak charge on %s#%s: %w", repoRef.Name, itemID, err)
+		}
+		if charged {
+			return nil
+		}
+	}
 	prevCount, loadErr := s.load(ctx, repoRef, itemID)
 	if loadErr != nil {
 		return fmt.Errorf("load failure streak state on %s#%s: %w", repoRef.Name, itemID, loadErr)

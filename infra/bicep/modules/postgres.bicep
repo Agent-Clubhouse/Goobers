@@ -1,33 +1,84 @@
-// Azure Database for PostgreSQL (Flexible Server) — persistence for self-hosted
-// Temporal (DEP-011). Temporal runs in-cluster; this is its managed datastore.
-// The admin password is supplied as a Key Vault reference at deploy time (SEC-010).
+// Azure Database for PostgreSQL flexible server: the goobers-cloud datastore
+// and Temporal persistence (HA-P3-21, design D-6). General Purpose with
+// zone-redundant HA (synchronous standby in another zone, RPO 0), private
+// VNet access only, and Entra authentication. One server hosts
+// goobers_<instance>, temporal and temporal_visibility; separate roles and no
+// cross-database grants isolate them (internal/cloud/pgroles).
+//
+// Roles are not created here: Entra principals for the goobers roles and the
+// temporal_app password role are created by `goobers-cloud bootstrap`
+// (pgroles.Provision) connected as the Entra administrator below.
 @description('Azure region for the server.')
 param location string
 
 @description('PostgreSQL flexible server name (globally unique, lowercase).')
 param name string
 
-@description('Administrator login name.')
+@description('Goobers instance name; the instance database is goobers_<instance> with dashes as underscores.')
+@minLength(1)
+@maxLength(40)
+param instanceName string
+
+@description('Entra administrator used by bootstrap to create roles. principalType is User, Group or ServicePrincipal.')
+param entraAdministrator object
+
+@description('Entra tenant of the administrator and application identities.')
+param tenantId string = subscription().tenantId
+
+@description('Break-glass password administrator login.')
 param administratorLogin string = 'gooberadmin'
 
-@description('Administrator password. Pass via Key Vault reference; never hard-code (SEC-010).')
+@description('Break-glass administrator password. Pass via Key Vault reference; never hard-code (SEC-010).')
 @secure()
 param administratorPassword string
 
-@description('Compute SKU. Defaults to a burstable dev tier.')
-param skuName string = 'Standard_B1ms'
-param skuTier string = 'Burstable'
+@description('Resource ID of the subnet delegated to PostgreSQL flexible server.')
+param delegatedSubnetId string
 
-@description('Storage size in GB.')
-param storageSizeGB int = 32
+@description('Resource ID of the linked private DNS zone (<name>.private.postgres.database.azure.com).')
+param privateDnsZoneId string
 
-@description('PostgreSQL major version.')
+@description('Compute SKU. Zone-redundant HA requires General Purpose or Memory Optimized.')
+param skuName string = 'Standard_D2ds_v5'
+
+@allowed([
+  'GeneralPurpose'
+  'MemoryOptimized'
+])
+param skuTier string = 'GeneralPurpose'
+
+@description('Availability zones of the primary and the synchronous standby.')
+param primaryZone string = '1'
+param standbyZone string = '2'
+
+@description('Storage size in GB; grows automatically.')
+param storageSizeGB int = 128
+
+@description('Point-in-time restore window in days.')
+@minValue(7)
+@maxValue(35)
+param backupRetentionDays int = 35
+
+@description('Geo-redundant backup storage. Cannot be changed after creation.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param geoRedundantBackup string = 'Disabled'
+
+@description('PostgreSQL major version. Role provisioning uses PostgreSQL 16 GRANT ... WITH SET syntax.')
+@allowed([
+  '16'
+  '17'
+])
 param postgresVersion string = '16'
 
 @description('Tags applied to the server.')
 param tags object = {}
 
-resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
+var instanceDatabase = 'goobers_${replace(toLower(instanceName), '-', '_')}'
+
+resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: name
   location: location
   tags: tags
@@ -39,57 +90,84 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' =
     version: postgresVersion
     administratorLogin: administratorLogin
     administratorLoginPassword: administratorPassword
+    // Goobers roles authenticate with Entra workload identity; Temporal has
+    // no Entra token support, so temporal_app keeps a password.
+    authConfig: {
+      activeDirectoryAuth: 'Enabled'
+      passwordAuth: 'Enabled'
+      tenantId: tenantId
+    }
+    availabilityZone: primaryZone
+    highAvailability: {
+      mode: 'ZoneRedundant'
+      standbyAvailabilityZone: standbyZone
+    }
     storage: {
       storageSizeGB: storageSizeGB
+      autoGrow: 'Enabled'
     }
     backup: {
-      backupRetentionDays: 7
-      geoRedundantBackup: 'Disabled'
-    }
-    highAvailability: {
-      mode: 'Disabled'
+      backupRetentionDays: backupRetentionDays
+      geoRedundantBackup: geoRedundantBackup
     }
     network: {
-      publicNetworkAccess: 'Enabled'
+      delegatedSubnetResourceId: delegatedSubnetId
+      privateDnsZoneArmResourceId: privateDnsZoneId
+      publicNetworkAccess: 'Disabled'
     }
   }
 }
 
-// Temporal expects its databases to exist; it manages schema via temporal-sql-tool.
-resource temporalDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = {
+resource administrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
   parent: server
-  name: 'temporal'
+  name: entraAdministrator.objectId
   properties: {
-    charset: 'UTF8'
-    collation: 'en_US.utf8'
+    principalName: entraAdministrator.principalName
+    principalType: entraAdministrator.principalType
+    tenantId: tenantId
   }
 }
 
-resource temporalVisibilityDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = {
+// App traffic uses the built-in PgBouncer on 6432 (transaction mode); the
+// notifier and migrate use 5432 directly.
+resource pgbouncer 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
   parent: server
-  name: 'temporal_visibility'
+  name: 'pgbouncer.enabled'
   properties: {
-    charset: 'UTF8'
-    collation: 'en_US.utf8'
+    value: 'true'
+    source: 'user-override'
   }
+  dependsOn: [
+    administrator
+  ]
 }
 
-// Allow other Azure services (incl. AKS egress via Azure backbone) to reach the server.
-// Tighten to private networking / VNet integration for production (build-time hardening).
-resource allowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-06-01-preview' = {
-  parent: server
-  name: 'AllowAllAzureServices'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
+resource databases 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = [
+  for database in [
+    instanceDatabase
+    'temporal'
+    'temporal_visibility'
+  ]: {
+    parent: server
+    name: database
+    properties: {
+      charset: 'UTF8'
+      collation: 'en_US.utf8'
+    }
+    dependsOn: [
+      pgbouncer
+    ]
   }
-}
+]
 
 @description('Resource ID of the PostgreSQL flexible server.')
 output serverId string = server.id
 
-@description('Fully-qualified domain name Temporal connects to.')
+@description('Private FQDN of the server.')
 output fqdn string = server.properties.fullyQualifiedDomainName
 
-@description('Administrator login name.')
+@description('Instance database name.')
+output instanceDatabase string = instanceDatabase
+
+@description('Break-glass administrator login name.')
 output administratorLogin string = administratorLogin

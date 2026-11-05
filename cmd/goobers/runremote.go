@@ -107,11 +107,18 @@ func runRemoteTrigger(
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if target.WorkItemID != "" {
+		if err := requireExactWorkItemAPI(ctx, endpoint); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
 	response, apiErr, err := submitRemoteTrigger(ctx, endpoint, httpapi.TriggerRequest{
-		Gaggle:    target.Gaggle,
-		Workflow:  target.Workflow,
-		RequestID: requestID,
-		Force:     target.Force,
+		Gaggle:     target.Gaggle,
+		Workflow:   target.Workflow,
+		RequestID:  requestID,
+		Force:      target.Force,
+		WorkItemID: target.WorkItemID,
 	})
 	if err != nil {
 		pf(stderr, "error: trigger acceptance is unknown: %v; retry with --request-id %q and the same workflow/options\n", err, requestID)
@@ -167,6 +174,23 @@ func submitRemoteTrigger(
 		CallPrefix:      "call daemon API " + endpoint,
 		DecodePrefix:    "decode daemon trigger response",
 	})
+}
+
+func requireExactWorkItemAPI(ctx context.Context, endpoint string) error {
+	document, apiErr, err := callDaemonJSON[any, apicontract.CapabilityDocument](daemonJSONCall[any]{
+		Context: ctx, Endpoint: endpoint, RouteID: apicontract.RouteCapabilities,
+		MaxResponseBody: maxRemoteTriggerResponseBody, AcceptJSON: true,
+		BuildPrefix: "build capability request", CallPrefix: "read daemon capabilities",
+		DecodePrefix: "decode daemon capabilities",
+	})
+	if err == nil && apiErr == nil {
+		for _, route := range document.Routes {
+			if route.ID == apicontract.RouteTriggerIngest && route.Available && route.ExactWorkItem {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("daemon does not advertise available exactWorkItem trigger support; upgrade it before submission (no trigger sent)")
 }
 
 // newRemoteTriggerRequestID mints the delivery identity the daemon dedupes on.

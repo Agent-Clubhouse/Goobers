@@ -13,7 +13,7 @@ workflows must not automatically retry a failed step or job.
    enrollment whose implied per-shard budget exceeds the 30m per-shard
    `go test` timeout, so an oversized package must be split rather than
    discovered as a nightly timeout (#4222). Sharded packages have their tests
-   partitioned round-robin into balanced `-run` subsets, and the workflow
+   partitioned by measured duration into balanced `-run` subsets, and the workflow
    schedules one job per shard; the package result records the shard and the
    actual count. A pull request carrying `/stress` can produce the same
    artifact, but untrusted pull-request code never receives issue-write

@@ -28,6 +28,7 @@ const (
 // adoWatchPR is one fake active pull request.
 type adoWatchPR struct {
 	head    string
+	headSHA string
 	labels  map[string]string // label id -> name
 	threads []map[string]any
 	// autoComplete is an armed auto-complete, served on the PR detail and
@@ -50,7 +51,7 @@ func newFakeADOCommentWatch(t *testing.T, repo providers.RepositoryRef) *fakeADO
 }
 
 func (f *fakeADOCommentWatch) addPR(number int, head string, labels ...string) *adoWatchPR {
-	pr := &adoWatchPR{head: head, labels: map[string]string{}}
+	pr := &adoWatchPR{head: head, headSHA: "head-sha", labels: map[string]string{}}
 	for _, name := range labels {
 		f.nextID++
 		pr.labels["label-"+strconv.Itoa(f.nextID)] = name
@@ -136,8 +137,9 @@ func (f *fakeADOCommentWatch) prListJSON() []map[string]any {
 		out = append(out, map[string]any{
 			"pullRequestId": n, "status": "active",
 			"sourceRefName": "refs/heads/" + pr.head, "targetRefName": "refs/heads/main",
-			"createdBy": map[string]string{"id": adoWatchSelfID, "displayName": adoWatchSelfName},
-			"labels":    labels,
+			"lastMergeSourceCommit": map[string]string{"commitId": pr.headSHA},
+			"createdBy":             map[string]string{"id": adoWatchSelfID, "displayName": adoWatchSelfName},
+			"labels":                labels,
 		})
 	}
 	return out
@@ -158,6 +160,24 @@ func (f *fakeADOCommentWatch) servePR(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	switch {
+	case rest[1] == "threads" && r.Method == http.MethodPost:
+		var body struct {
+			Comments []struct {
+				Content string `json:"content"`
+			} `json:"comments"`
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Comments) != 1 || body.Status != "closed" {
+			t.Fatalf("unexpected budget thread: %+v", body)
+		}
+		f.nextID++
+		thread := adoWatchThread(1000+f.nextID, adoWatchComment(1, adoWatchSelfID, body.Comments[0].Content, 59))
+		thread["status"] = "closed"
+		pr.threads = append(pr.threads, thread)
+		writeJSONResp(t, w, thread)
 	case rest[1] == "threads" && r.Method == http.MethodGet:
 		writeJSONResp(t, w, map[string]any{"value": pr.threads})
 	case rest[1] == "labels" && len(rest) == 2 && r.Method == http.MethodGet:

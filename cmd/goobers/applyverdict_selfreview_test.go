@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/stateclient"
 )
 
 // TestApplyVerdictDegradesOnSelfReview402 is #870's acceptance: on a
@@ -169,6 +171,12 @@ func TestApplyVerdictDoesNotDegradeUnconfirmedReview404(t *testing.T) {
 
 func TestApplyAdvisoryVerdictReadOnlyDoesNotPublish(t *testing.T) {
 	root := initDemo(t)
+	open := openStageStateStore
+	openStageStateStore = func(instance.Layout) (stateclient.Store, error) {
+		t.Fatal("local-only advisory must not depend on ledger availability")
+		return nil, nil
+	}
+	t.Cleanup(func() { openStageStateStore = open })
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const selectedNumber = 10
 	server.addIssue(selectedNumber, "Advisory PR")

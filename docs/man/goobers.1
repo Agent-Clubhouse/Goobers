@@ -75,6 +75,9 @@ print build version, commit, and date (--json for structured output)
 \fBgoobers workflow\fR
 inspect workflows and validate child proposals
 .TP
+\fBgoobers workflow clusters\fR
+Labs: cluster workflows by structural shape or run behavior
+.TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .TP
@@ -189,15 +192,6 @@ perform one live S6 kill-matrix cell (pod-kill) against a real cluster
 .TP
 \fBgoobers e2e verify\fR
 verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
-.TP
-\fBgoobers engine-project\fR
-write a completed engine run's journal into the instance (experimental)
-.TP
-\fBgoobers engine-queues\fR
-report which workers poll this instance's engine and dispatch task queues (experimental)
-.TP
-\fBgoobers engine-start\fR
-dispatch one run onto the tier-3 engine via Temporal (experimental)
 .TP
 \fBgoobers escalations resolve\fR
 resolve an escalated run through the daemon's HITL plane
@@ -454,9 +448,6 @@ print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured
 \fBgoobers work-items\fR
 list pull requests and issues changed by Goobers
 .TP
-\fBgoobers worker\fR
-host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
-.TP
 \fBgoobers workspace\fR
 explicitly recover pinned repository workspaces
 .TP
@@ -496,6 +487,9 @@ route a PR to remediation if its linked issue changed since implementation began
 .TP
 \fBgoobers config-checkout\fR
 clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+.TP
+\fBgoobers decide\fR
+ask the decision model a thresholded yes/no question (a workflow stage)
 .TP
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
@@ -658,6 +652,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),
+\fBgoobers-decide\fR(1),
 \fBgoobers-diagnostics\fR(1),
 \fBgoobers-diagnostics-bundle\fR(1),
 \fBgoobers-diagnostics-triage\fR(1),
@@ -668,9 +663,6 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-e2e-kill-inject\fR(1),
 \fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
-\fBgoobers-engine-project\fR(1),
-\fBgoobers-engine-queues\fR(1),
-\fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-resolve\fR(1),
 \fBgoobers-escalations-show\fR(1),
@@ -807,8 +799,8 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-version\fR(1),
 \fBgoobers-versions\fR(1),
 \fBgoobers-work-items\fR(1),
-\fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
+\fBgoobers-workflow-clusters\fR(1),
 \fBgoobers-workflow-show\fR(1),
 \fBgoobers-workflow-validate-child\fR(1),
 \fBgoobers-workspace\fR(1),

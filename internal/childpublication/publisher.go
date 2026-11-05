@@ -72,6 +72,10 @@ type Publisher struct {
 	Queue *triggerqueue.Store
 	Git   GitTransport
 	PRs   PRProvider
+
+	// readGit is an in-process test seam for local inspection, not transport.
+	// A nil reader always uses the bounded production Git adapter.
+	readGit func(context.Context, string, ...string) ([]byte, error)
 }
 
 func (t Target) validate() error {
@@ -101,6 +105,9 @@ func (p Publisher) Push(ctx context.Context, t Target) (BranchReceipt, error) {
 	defer cancel()
 	snapshot, commit, err := recovery.CaptureChildPublication(ctx, t.Workspace, t.Identity.RunID, t.Fork, execution.AcceptedAt)
 	if err != nil {
+		return zero, err
+	}
+	if err = p.checkPublication(ctx, t, commit); err != nil {
 		return zero, err
 	}
 	intent := BranchIntent{Version: 1, RunID: t.Identity.RunID, Lineage: *t.Identity.Child, Stage: t.Stage, Repository: t.Repository, Remote: t.Remote, Base: t.Base, Head: t.Head, Snapshot: snapshot, Commit: commit}
@@ -171,6 +178,11 @@ func (p Publisher) OpenPR(ctx context.Context, t Target, title, body string, dra
 	defer cancel()
 	branch, source, err := p.confirmedPRBranch(ctx, t)
 	if err != nil {
+		return zero, err
+	}
+	// Confirmed branch intents can predate publication admission. Inspect the
+	// retained commit again before preparing or performing any PR effect.
+	if err = p.checkPublication(ctx, t, source.Commit); err != nil {
 		return zero, err
 	}
 	request := providers.PullRequestRequest{Repository: t.Repository, Head: t.Head, Base: t.Base, Title: title, Body: body, Draft: draft, RunID: t.Identity.RunID}

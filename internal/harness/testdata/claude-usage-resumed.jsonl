@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}
+{"type":"result","subtype":"success","result":"repaired completion","total_cost_usd":0.75,"usage":{"input_tokens":40,"output_tokens":10},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":140,"outputTokens":30,"cacheReadInputTokens":35,"cacheCreationInputTokens":12,"costUSD":0.5},"claude-haiku-4-5":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.25}}}

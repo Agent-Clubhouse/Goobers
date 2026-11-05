@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -11,42 +12,36 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
-// coordinatedLedger reuses the freshly opened ledger under the API's existing
-// cross-process lock. Reopening or acquiring another lock here would split the
-// transaction or deadlock the claims plane.
-func (s *daemonClaimService) coordinatedLedger(ledger *localscheduler.ClaimLedger) (*claimsclient.File, error) {
+// coordinatedLedger owns each short claims-lock section. It must be created
+// and called outside any caller-owned claims lock; provider transitions use
+// the separate per-item lock and reopen claims.json before each CAS.
+func (s *daemonClaimService) coordinatedLedger(operation string, request httpapi.ClaimRequest) (*claimsclient.File, error) {
 	return claimsclient.NewFile(claimsclient.FileConfig{
-		LedgerPath: s.ledgerPath(),
-		Shared:     s.shared,
-		Open: func(string, ...localscheduler.LedgerOption) (claimsclient.FileLedger, error) {
-			return ledger, nil
+		LedgerPath: s.ledgerPath(), Shared: s.shared,
+		Options: withClaimJournal(s.log), ProviderReleaseLock: claimProviderReleaseLock(s.layout),
+		Lock: func(name string, fn func() error) error {
+			if strings.HasPrefix(name, "claims.client.") {
+				name = operation
+			}
+			return withClaimLockForRun(s.lockPath(), name, request.Gaggle, request.RunID, fn)
 		},
 	})
 }
 
-// The liveness probe runs before the claims lock is acquired; enumerate the
-// current ledger under that lock so released or reassigned claims cannot be
-// resurrected from the earlier probe snapshot.
-func renewCoordinatedLiveClaims(ctx context.Context, layout instance.Layout, ledger *localscheduler.ClaimLedger, live map[string]bool, lease time.Duration, resolver claimsclient.SharedClaimResolver) ([]localscheduler.ClaimEntry, error) {
-	service := &daemonClaimService{layout: layout, shared: resolver}
+// Probe snapshots are hints only. RenewExpected compares the exact persisted
+// incarnation again under the claims lock and cannot resurrect a release.
+func renewCoordinatedLiveClaims(ctx context.Context, layout instance.Layout, entries []localscheduler.ClaimEntry, live map[string]bool, lease time.Duration, resolver claimsclient.SharedClaimResolver) ([]localscheduler.ClaimEntry, error) {
+	service := newBareDaemonClaimService(layout, nil, resolver)
+	client, err := service.coordinatedLedger(claimLockOperationRenewal, httpapi.ClaimRequest{})
+	if err != nil {
+		return nil, err
+	}
 	var renewed []localscheduler.ClaimEntry
-	for _, entry := range ledger.Snapshot() {
-		if !live[entry.RunID] {
+	for _, entry := range entries {
+		if !live[entry.RunID] || entry.IsPublicationClaim() {
 			continue
 		}
-		var ok bool
-		var err error
-		if entry.SharedDeadline.IsZero() {
-			ok, err = ledger.RenewEntry(entry, lease)
-		} else {
-			request := httpapi.ClaimRequest{Gaggle: entry.Gaggle, Provider: entry.Provider, ItemID: entry.ExternalID, RunID: entry.RunID, Workflow: entry.Workflow}
-			var response httpapi.ClaimResponse
-			response, err = service.renewSharedClaim(ctx, ledger, request, entry, lease)
-			ok = response.Ok
-			if err == nil && !ok {
-				err = fmt.Errorf("shared admission is no longer valid")
-			}
-		}
+		ok, err := client.RenewExpected(ctx, entry, lease)
 		if err != nil {
 			return renewed, fmt.Errorf("renew claim %s for run %s: %w", entry.ItemID, entry.RunID, err)
 		}
@@ -57,24 +52,32 @@ func renewCoordinatedLiveClaims(ctx context.Context, layout instance.Layout, led
 	return renewed, nil
 }
 
-func (s *daemonClaimService) renewSharedClaim(ctx context.Context, ledger *localscheduler.ClaimLedger, request httpapi.ClaimRequest, entry localscheduler.ClaimEntry, lease time.Duration) (httpapi.ClaimResponse, error) {
+func (s *daemonClaimService) renewSharedClaim(ctx context.Context, request httpapi.ClaimRequest, entry localscheduler.ClaimEntry, lease time.Duration) (httpapi.ClaimResponse, error) {
 	if entry.RunID != request.RunID || !entry.ExpiresAt.After(time.Now()) || !entry.SharedDeadline.After(time.Now()) {
 		return httpapi.ClaimResponse{Ok: false, Holder: entry.RunID}, nil
 	}
 	if request.Workflow != "" && request.Workflow != entry.Workflow {
 		return httpapi.ClaimResponse{}, fmt.Errorf("shared renewal does not match the owning workflow")
 	}
-	client, err := s.coordinatedLedger(ledger)
+	client, err := s.coordinatedLedger(claimLockOperationAPIRenew, request)
 	if err != nil {
 		return httpapi.ClaimResponse{}, err
 	}
-	ok, holder, err := client.ClaimScoped(ctx, claimKey(request), request.RunID, entry.Workflow, lease)
+	ok, err := client.RenewExpected(ctx, entry, lease)
 	if err != nil || !ok {
-		return httpapi.ClaimResponse{Ok: ok, Holder: holder}, err
+		return httpapi.ClaimResponse{Ok: ok, Holder: entry.RunID}, err
 	}
-	current, held := ledger.LookupScoped(claimKey(request))
-	if !held || current.RunID != request.RunID {
-		return httpapi.ClaimResponse{}, fmt.Errorf("renewed shared claim is no longer held")
+	return s.currentAdmissionResponse(ctx, client, request)
+}
+
+func (s *daemonClaimService) currentAdmissionResponse(ctx context.Context, client *claimsclient.File, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	listing, err := client.ListNamespace(ctx, request.Gaggle, request.Provider)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
 	}
-	return httpapi.ClaimResponse{Ok: true, ExpiresAt: &current.ExpiresAt}, nil
+	entry, held := listing.Lookup(claimKey(request))
+	if !held || entry.RunID != request.RunID || entry.ReleasePending || entry.SharedAdmissionPending {
+		return httpapi.ClaimResponse{Ok: false, Holder: entry.RunID}, nil
+	}
+	return httpapi.ClaimResponse{Ok: true, ExpiresAt: &entry.ExpiresAt}, nil
 }

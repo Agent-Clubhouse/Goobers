@@ -107,6 +107,12 @@ func (h *publicationHTTP) Do(r *http.Request) (*http.Response, error) {
 func confirmedPublicationBranch(t *testing.T, q *triggerqueue.Store, target Target) string {
 	t.Helper()
 	sha := strings.Repeat("b", 40)
+	confirmPublicationCommit(t, q, target, sha)
+	return sha
+}
+
+func confirmPublicationCommit(t *testing.T, q *triggerqueue.Store, target Target, sha string) {
+	t.Helper()
 	intent, _ := json.Marshal(BranchIntent{Version: 1, RunID: target.Identity.RunID, Lineage: *target.Identity.Child, Stage: target.Stage, Repository: target.Repository, Remote: target.Remote, Base: target.Base, Head: target.Head, Commit: sha})
 	rec, err := q.PrepareChildPublication(t.Context(), target.Child.Identity, "branch", intent)
 	if err != nil {
@@ -119,7 +125,6 @@ func confirmedPublicationBranch(t *testing.T, q *triggerqueue.Store, target Targ
 	if err = q.ConfirmChildPublication(t.Context(), rec, receipt); err != nil {
 		t.Fatal(err)
 	}
-	return sha
 }
 
 func TestPublicationNativeProvidersReconcileLostResponseWithoutDuplicate(t *testing.T) {
@@ -135,7 +140,7 @@ func TestPublicationNativeProvidersReconcileLostResponseWithoutDuplicate(t *test
 			}
 			sha := confirmedPublicationBranch(t, q, target)
 			httpFake := &publicationHTTP{t: t, target: target, ado: ado, lose: true}
-			p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}}
+			p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}, readGit: publicationSafetyFixture(t, "refs/remotes/origin/main", "", "")}
 			if ado {
 				p.PRs = providers.NewADOProvider("acme", "project", "host-token", func(p *providers.ADOProvider) { p.Client = httpFake }, providers.WithADOMaxRateLimitRetries(0))
 			} else {
@@ -180,7 +185,7 @@ func TestPublicationPRRefusesForeignPRAndChangedHead(t *testing.T) {
 			if !foreign {
 				sha = strings.Repeat("c", 40)
 			}
-			p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}, PRs: providers.NewGitHubProvider("token", providers.WithHTTPClient(fake), providers.WithMaxTransientRetries(0))}
+			p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}, PRs: providers.NewGitHubProvider("token", providers.WithHTTPClient(fake), providers.WithMaxTransientRetries(0)), readGit: publicationSafetyFixture(t, "refs/remotes/origin/main", "", "")}
 			if _, err := p.OpenPR(t.Context(), target, "child title", "body", true); err == nil {
 				t.Fatal("foreign effect adopted")
 			}
@@ -210,7 +215,7 @@ func TestPublicationConcurrentPreparedPRAdmitsOneCreate(t *testing.T) {
 	q, target, _ := publicationFixture(t)
 	sha := confirmedPublicationBranch(t, q, target)
 	native := &concurrentPublicationPR{arrived: make(chan struct{}, 2), release: make(chan struct{})}
-	p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}, PRs: native}
+	p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}, PRs: native, readGit: publicationSafetyFixture(t, "refs/remotes/origin/main", "", "")}
 	results := make(chan error, 2)
 	for range 2 {
 		go func() { _, err := p.OpenPR(t.Context(), target, "child title", "same body", true); results <- err }()

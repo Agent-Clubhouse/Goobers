@@ -63,12 +63,30 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/e2e"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 )
+
+var dispatchKubeClient = func() (kubernetes.Interface, error) {
+	if restConfig, err := rest.InClusterConfig(); err == nil {
+		return kubernetes.NewForConfig(restConfig)
+	}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	restConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules,
+		&clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	return kubernetes.NewForConfig(restConfig)
+}
 
 const e2eKillInjectHelp = `Usage: goobers e2e kill-inject --run <run-id> --stage <stage-name>
        --stage-class builtin --namespace <k8s-namespace>

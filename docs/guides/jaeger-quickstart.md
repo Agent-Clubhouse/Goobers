@@ -73,7 +73,7 @@ conflicts with `insecure: true` — it only applies on the encrypted path.
 
 Every path is a shape-only field at load: `goobers validate` never reads
 these files, so a config error (a wrong path, an unparsable PEM) is never a
-reason a config with no telemetry client — `goobers worker --instance`, most
+reason a config with no telemetry client — `goobers-cloud worker --instance`, most
 notably — refuses to start. The files are read only when the daemon actually
 builds its OTLP exporter; if that read or parse fails, the daemon still
 starts with local-only telemetry and records a loud

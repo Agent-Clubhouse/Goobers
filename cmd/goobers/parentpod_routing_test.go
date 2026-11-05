@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 type routingProbe struct{ invokes, reviews int }
@@ -135,7 +136,8 @@ func TestParentRoutingConstructsGuardedHostExecutorOnlyForOrdinaryCalls(t *testi
 	fence := func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
 		return ctx, func() {}, nil
 	}
-	routed, err := bindParentRouting(f.layout.Root, env.Goober, run, factory, true, fence)
+	routed, err := bindParentRouting(f.layout.Root, env.Goober, run, factory, true)
+	routed = runtimewiring.ClaimFencedGoober{Goober: routed, Start: fence}
 	if err != nil || constructed != 0 {
 		t.Fatal("parent constructed local executor", constructed, err)
 	}
@@ -154,7 +156,7 @@ func TestParentRoutingConstructsGuardedHostExecutorOnlyForOrdinaryCalls(t *testi
 	if _, err = routed.Review(t.Context(), plain); !errors.Is(err, harness.ErrGuardedCredentialFiles) || constructed != 1 {
 		t.Fatal("ordinary reviewer lost cached credential guard", constructed, err)
 	}
-	if _, err = bindParentRouting(f.layout.Root, env.Goober, runnerWiringHarnessRecorder{dir: t.TempDir()}, factory, false, nil); !errors.Is(err, harness.ErrGuardedCredentialFiles) || constructed != 2 {
+	if _, err = bindParentRouting(f.layout.Root, env.Goober, runnerWiringHarnessRecorder{dir: t.TempDir()}, factory, false); !errors.Is(err, harness.ErrGuardedCredentialFiles) || constructed != 2 {
 		t.Fatal("ordinary construction lost eager credential guard", constructed, err)
 	}
 }

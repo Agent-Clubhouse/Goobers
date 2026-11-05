@@ -3,8 +3,3 @@ kind: Kustomization
 
 resources:
   - ../goobers-system
-  - mirror-pvc.yaml
-
-patches:
-  - path: daemon.yaml
-  - path: worker-linux.yaml

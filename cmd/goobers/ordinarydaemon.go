@@ -19,12 +19,10 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 	if s.Generations == nil || s.OrdinaryRuntime == nil || triggers == nil {
 		return errors.New("ordinary durable admission unavailable")
 	}
-	triggers.directEngine = directEngineService(layout, triggers.queue, s.Config)
 	catalog := &ordinaryStartCatalog{generation: s.ExecutionGeneration, entries: append([]localscheduler.WorkflowEntry(nil), s.Entries...), store: s.Generations.Store}
 	s.OrdinaryCatalog = catalog
-	engine := s.EngineRuntime
 	build := func(ctx context.Context, target startintent.Target) (startintent.Prepared, error) {
-		return s.OrdinaryRuntime(ctx, target, engine)
+		return s.OrdinaryRuntime(ctx, target)
 	}
 	s.SourceStarts = &startintent.Sources{Queue: triggers.queue, Build: build, Acquire: func(ctx context.Context, target startintent.Target) (func(), error) {
 		_, lease, err := s.Generations.Store.Acquire(ctx, target.ConfigGeneration)
@@ -34,18 +32,22 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 		return func() { _ = lease.Release() }, nil
 	}}
 	triggers.ordinary = &startintent.Service{Queue: triggers.queue, Capture: catalog.capture, Build: build, Scheduler: func() *localscheduler.Scheduler {
-		if triggers.dispatch.schedulerReady != nil && !triggers.dispatch.schedulerReady() {
+		if !triggers.dispatch.SchedulerReady() {
 			return nil
 		}
-		return triggers.dispatch.sched.Load()
+		return triggers.dispatch.Scheduler()
 	}, RunDirectory: func(ctx context.Context, runID string) (string, error) {
 		return acceptedTriggerJournalDir(ctx, layout, runID)
-	}, Now: triggers.dispatch.now}
+	}, Now: triggers.dispatch.Clock()}
 	return nil
 }
 
 func ordinaryRequest(r httpapi.TriggerRequest) startintent.Request {
-	return startintent.Request{Workflow: r.Workflow, Gaggle: r.Gaggle, SourceRun: r.SourceRun, Force: r.Force, PodScoped: r.PodScoped, PodRunID: r.PodRunID}
+	return startintent.Request{Workflow: r.Workflow, Gaggle: r.Gaggle, SourceRun: r.SourceRun, WorkItemID: r.WorkItemID, Force: r.Force, PodScoped: r.PodScoped, PodRunID: r.PodRunID}
+}
+
+func (s *durableTriggerService) SupportsExactWorkItems() bool {
+	return s.ordinary != nil
 }
 
 // Existing accepted legacy requests remain readable and keep their original
@@ -67,7 +69,7 @@ func (s *durableTriggerService) acceptOrdinary(ctx context.Context, r httpapi.Tr
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return httpapi.TriggerResponse{}, true, err
-	} else if err := s.dispatch.validateTriggerTarget(r); err != nil {
+	} else if err := s.dispatch.ValidateTriggerTarget(r); err != nil {
 		return httpapi.TriggerResponse{}, true, err
 	}
 	record, duplicate, err := s.ordinary.Accept(ctx, r.RequestID, r.Actor, ordinaryRequest(r))
@@ -99,17 +101,17 @@ func (s *durableTriggerService) drainOrdinary(ctx context.Context, record trigge
 	if err != nil {
 		return err
 	}
-	r := httpapi.TriggerRequest{Workflow: e.Target.Workflow, Gaggle: e.Target.Gaggle, SourceRun: e.Request.SourceRun, Force: e.Request.Force, Actor: record.Actor, PodScoped: e.Request.PodScoped, PodRunID: e.Request.PodRunID}
-	if err = s.dispatch.validateTriggerAuthority(r); err != nil {
+	r := httpapi.TriggerRequest{Workflow: e.Target.Workflow, Gaggle: e.Target.Gaggle, SourceRun: e.Request.SourceRun, WorkItemID: e.Request.WorkItemID, Force: e.Request.Force, Actor: record.Actor, PodScoped: e.Request.PodScoped, PodRunID: e.Request.PodRunID}
+	if err = s.dispatch.ValidateTriggerAuthority(r); err != nil {
 		if claimErr := s.queue.BeginDispatch(ctx, record.ID); claimErr != nil {
 			return claimErr
 		}
-		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", err.Error(), s.dispatch.now())
+		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", err.Error(), s.dispatch.Now())
 	}
-	if err = s.auditDispatch(record, r); err != nil {
+	if err = s.AuditDispatch(record, r); err != nil {
 		return err
 	}
 	admission, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return s.ordinary.Dispatch(admission, s.dispatch.lifecycleContext(ctx), record)
+	return s.ordinary.Dispatch(admission, s.dispatch.LifecycleContext(ctx), record)
 }

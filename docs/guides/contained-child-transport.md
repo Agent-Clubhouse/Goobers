@@ -1,5 +1,13 @@
 # Contained child worker transport
 
+This guide covers the distributed provider. The preview
+[trusted-local provider](trusted-local-child-workflows.md) executes
+children on a self-only daemon host without Temporal or pods, under the same
+result and custody contract and the local OS account's trust boundary. It is
+selected from instance configuration, never as a fallback for failed distributed
+placement. It is available on macOS/Linux with the existing workflow preview
+annotation; Windows strict custody remains refused.
+
 ## Availability
 
 This is the worker transport foundation for generated child workflows. The daemon
@@ -153,7 +161,7 @@ Use a unique image tag such as `qualification-<commit>`, embed that same value i
 `internal/version.Version` with `go build -ldflags`, and push the image to
 `localhost:45081/goobers:<tag>`. The test retains the production `Always` pull
 policy, signature checks, namespace isolation and exact pod-UID custody checks.
-Provide the repository-pinned Temporal CLI (`v1.8.2`) through
+Provide the repository-pinned Temporal CLI (`v1.9.0`) through
 `GOOBERS_TEMPORAL_CLI`, then run:
 
 ```sh
@@ -217,14 +225,14 @@ tests below.
 Agentic worker kits include only the selected Goober's resolved skill packages
 from the captured configuration. The package bytes share the kit's verified
 content digest. Pods materialize those bytes through the same harness skill
-owner as local execution, using `.claude/skills` or `.agents/skills` for the
+owner as local execution, using `.claude/skills`, `.agents/skills` or `.github/skills` for the
 supported parent adapters. Shared-persona skill precedence is resolved before
 transport. Unselected packages and later edits to the live configuration are
 not sent; pods do not read the instance configuration.
 
 `TestWorkerKitDeliversCapturedSkillsThroughPodExecutor` exercises the actual kit
 writer, blob transport, digest verification, pod executor construction and skill
-materialization for both adapters. This provides the delivery path for configured
+materialization for all three adapters. This provides the delivery path for configured
 skills; it does not itself supply the child-workflow DSL authoring skill or its
 allowed-Goober catalog.
 
@@ -232,7 +240,7 @@ allowed-Goober catalog.
 
 Each opted-in contained parent receives the reserved `goobers-child-workflows`
 skill and its adjacent `catalog.json` through the verified worker kit. Parent
-instructions point to its Claude or Codex skill directory. Existing user skills
+instructions point to its Claude, Codex or Copilot skill directory. Existing user skills
 remain selected normally; a configured package using the reserved name is a
 refusal, never an overwrite.
 
@@ -258,7 +266,7 @@ catalog nor supplying a new workflow changes the signed stage authority.
 
 The daemon coordinates opted-in parent stages through their pinned Linux image
 runners. Configure the existing authenticated worker transport, an eligible
-Claude Code or Codex API-authenticated Goober, a managed repository workspace,
+Claude Code, Codex or Copilot Goober with an explicit model credential, a managed repository workspace,
 and the stage's child-workflow policy. Standalone execution and missing contained
 services remain refused. Ordinary stages retain their existing placement policy.
 
@@ -321,6 +329,93 @@ These journeys cover parent-authored repository child creation and merge,
 cancellation while the child is active, and fsync-enabled daemon process loss
 while the parent waits. Recovery must retain the accepted child and lineage,
 resume the parent, and prove exact physical worker stop, surrender and disposal.
+
+### Copilot parent adapter qualification
+
+Copilot parents use the same contained placement, model-grant credential ceiling,
+verified authoring kit, signed child grants, durable wait and result disposition
+as Claude and Codex. The authoring package lives under
+`.github/skills/goobers-child-workflows`. BYO MCP servers remain refused for
+contained parents. Generated children do not receive the parent's child grant.
+
+A Copilot parent retains only credential grants already authorized for that
+parent stage. Its `agent:model` token is **not attenuated**: it may also carry
+GitHub publication scopes. Capability filtering removes separate provider grants
+but cannot reduce those token scopes. Copilot is therefore supported as a parent,
+not yet as a generated child harness. Generated-child admission and kit delivery
+continue to refuse inseparable Copilot credentials. Verified model-only child
+authentication is tracked in [#7610](https://github.com/Agent-Clubhouse/Goobers/issues/7610).
+
+The Copilot SDK session registers the Goobers stdio server through
+`SessionConfig.MCPServers`; its per-server tool list and session allowlist include
+`validate_child_workflow`, `start_child_workflow`, `get_child_workflow` and
+`resolve_child_workflow` only when launcher-issued access is present. The grant
+stays in private MCP runtime configuration. Copilot returns its completion JSON
+in the final assistant response; a child wait interrupts the invocation and is
+owned by the shared parent coordinator, not by a model polling loop.
+
+`TestCopilotParentControlledProtocol` uses the real SDK framing and permission
+events, real Goobers MCP source/tool handling, and a fixture daemon HTTP endpoint
+to verify all four operations and response completion without a model service.
+`TestCopilotParentSDKPermissionsRequireLauncherGrant` checks that an ordinary
+session cannot acquire those tools. The retained-kit, pod skill delivery and
+placement tests include Copilot. The hermetic
+`TestIntegrationCopilotParentCancellationAndRecovery` exercises shared parent
+transport cancellation and recovery of an uncertain worker, including dirty Git
+state, transcript custody and usage retention. The Kubernetes journeys above
+remain separate from this adapter qualification.
+
+`TestIntegrationCopilotParentSDKAuthoringJourney` runs three fresh sessions
+through the actual Copilot adapter and SDK, using
+`cmd/goobers/testdata/qualification-copilot.cjs` as the headless CLI/model
+substitute. Readiness and model turns share one real stdio mcpio subprocess per
+session. Native permission requests gate every child tool call. The shared
+Claude/Codex journey authors the source, validates and starts it, yields, resolves
+the exact returned result on resumption, yields again, and completes only after
+acknowledgement. The test checks stable source/identity, completed-session usage
+and final response completion. Its daemon HTTP responses and backend merge are simulated;
+it does not prove durable scheduling or physical worker custody. The separate
+cancellation-accounting fix landed in
+[#7656](https://github.com/Agent-Clubhouse/Goobers/pull/7656); this journey checks
+completed-session usage, not that cancellation path.
+
+Run this deterministic test with Node.js installed; it needs no model token,
+Docker daemon, Kubernetes cluster or Temporal service:
+
+```sh
+go test -race -tags=integration -timeout=30m ./internal/harness \
+  -run '^TestIntegrationCopilotParentSDKAuthoringJourney$'
+```
+
+The corresponding contained-pod journeys reuse the Codex qualification harness.
+Install `qualification-copilot.cjs` as executable `/usr/local/bin/copilot` in the
+worker image, with `qualification-claude.cjs` beside it under that exact filename
+(the Copilot fixture imports the shared journey). The host fixture permits only
+version, public help and the exact native authentication preflight; inference must reach the
+worker. With the disposable cluster/image/Temporal settings described above:
+
+```sh
+go test -race -tags=integration ./cmd/goobers -count=1 -timeout=25m -v \
+  -run '^(TestIntegrationCopilotParentAuthorsChildThroughRealWorkers|TestIntegrationCopilotParentCancellationStopsAuthoredChild|TestIntegrationContainedParentSurvivesDaemonProcessLossCopilot)$'
+```
+
+**Qualification GAP:** these Copilot contained-pod journeys are compiled but have
+not been executed against a live disposable cluster. Their merge, active-child
+cancellation and daemon-loss recovery claims require that run. The deterministic
+SDK fixture does not qualify a live Copilot CLI release or model. The
+[trusted-local composition](trusted-local-child-workflows.md) has landed, but
+this SDK-only test does not qualify a Copilot-specific full-daemon journey.
+
+An optional installed-CLI check creates parent and ordinary SDK sessions against
+the built Goobers stdio server, verifies their actual MCP inventories, and closes
+them without sending a model prompt or mutating children:
+
+```sh
+make build
+GOOBERS_COPILOT_MCP_READINESS=1 GOOBERS_TEST_BINARY="$PWD/bin/goobers" \
+  go test -race -tags=integration -timeout=30m ./internal/harness \
+  -run '^TestIntegrationCopilotParentMCPInventory$'
+```
 
 ### Parallel parents with one child per stage
 
@@ -387,7 +482,7 @@ workspace disposition.
 ### Existing Goober tasks in generated children
 
 `TestIntegrationParentComposesExistingGooberThroughRealWorkers` exercises an
-agentic child with each supported parent adapter, Claude and Codex. The parent
+agentic child with the Claude and Codex parent adapters. The parent
 selects an existing Goober from its installed authoring catalog and authors a
 child task using that Goober's admitted capabilities and declared runner. The
 child receives the captured parent tree, writes its result through the real

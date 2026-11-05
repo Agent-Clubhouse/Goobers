@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -15,7 +15,7 @@ const terminalCauseChange = "structured-terminal-cause-v1"
 
 func (r *runJournal) failureTerminalCause(stage, code, message string) {
 	prior := r.terminalCause
-	c := &journal.TerminalCause{Schema: journal.TerminalCauseSchema, Phase: journal.PhaseFailed, Classification: journal.TerminalInfrastructureFailure, SelectorKind: "condition", Code: code, Message: message, CausalEventSeq: uint64(len(r.proj.Ops))}
+	c := &journal.TerminalCause{Schema: journal.TerminalCauseSchema, Phase: journal.PhaseFailed, Classification: journal.TerminalInfrastructureFailure, SelectorKind: "condition", Code: code, Message: message, CausalEventSeq: uint64(len(r.projectionSnapshot().Ops))}
 	if c.Code == "" {
 		c.Code = "run_failed"
 	}
@@ -37,17 +37,24 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 	}
 	// One projection op becomes one journal event. Live journals can contain
 	// additional progress/transcript events; CausalEmitKey resolves that offset.
-	events := make([]journal.Event, 0, len(r.proj.Ops))
+	projection := r.projectionSnapshot()
+	events := make([]journal.Event, 0, len(projection.Ops))
 	artifacts := map[string][]byte{}
 	refs := map[string]journal.Ref{}
-	for i, op := range r.proj.Ops {
+	for i, op := range projection.Ops {
 		if op.Kind == opArtifact && op.Artifact != nil {
-			ref, err := journal.ArtifactRef(op.Artifact.Data)
-			if err != nil {
-				return nil, err
+			var ref journal.Ref
+			if op.Artifact.Ref != nil {
+				ref = *op.Artifact.Ref
+			} else {
+				var err error
+				ref, err = journal.ArtifactRef(op.Artifact.Data)
+				if err != nil {
+					return nil, err
+				}
+				artifacts[ref.Digest] = op.Artifact.Data
 			}
-			refs[op.Artifact.Name] = ref
-			artifacts[ref.Digest] = op.Artifact.Data
+			refs[projectedArtifactKey(op.Artifact.Branch, op.Artifact.Name)] = ref
 		}
 		if op.Event == nil {
 			continue
@@ -56,7 +63,7 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 		e.Schema = journal.EventSchema
 		e.Seq = uint64(i + 1)
 		if e.Type == journal.EventGateEvaluated && e.Name != "" {
-			ref, ok := refs[e.Name]
+			ref, ok := refs[projectedArtifactKey(e.Branch, e.Name)]
 			if !ok {
 				return nil, fmt.Errorf("engine: terminal gate artifact %q missing", e.Name)
 			}
@@ -64,7 +71,7 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 		}
 		events = append(events, e)
 	}
-	c, err := runner.BuildTerminalCause(events, phase, finalState, r.terminalCause, r.machine, r.proj.Identity.RunControls, func(ref journal.Ref) ([]byte, error) {
+	c, err := runsemantics.BuildTerminalCause(events, phase, finalState, r.terminalCause, r.machine, r.proj.Identity.RunControls, func(ref journal.Ref) ([]byte, error) {
 		data, ok := artifacts[ref.Digest]
 		if !ok {
 			return nil, errors.New("engine: terminal verdict artifact missing")
@@ -74,9 +81,9 @@ func (r *runJournal) buildTerminalCause(phase journal.RunPhase, finalState strin
 	if err != nil || c == nil {
 		return c, err
 	}
-	if r.live && c.CausalEventSeq > 0 && c.CausalEventSeq <= uint64(len(r.proj.Ops)) {
+	if r.live && c.CausalEventSeq > 0 && c.CausalEventSeq <= uint64(len(projection.Ops)) {
 		r.assignEmitKeys()
-		c.CausalEmitKey = r.proj.Ops[c.CausalEventSeq-1].EmitKey
+		c.CausalEmitKey = r.projectionSnapshot().Ops[c.CausalEventSeq-1].EmitKey
 	}
 	return c, nil
 }

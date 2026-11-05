@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/childpod"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -110,7 +111,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 	t.Helper()
 	// Custody and scope assertions must survive full-suite contention. These
 	// in-process requests do not test response latency.
-	const planeDeadline = 10 * time.Second
+	const planeDeadline = time.Minute
 	f := newChildKitFixtureConfigured(t, childKitFixtureOptions{isolated: true, queued: options.queued})
 	s := f.writer.service
 
@@ -183,7 +184,8 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		if contract.Identity.Child == nil || *contract.Identity.Child != *f.writer.identity.Child || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
 			return engine.ChildDispatchResult{}, fmt.Errorf("custody changed: %+v", contract)
 		}
-		owned, stop, err := remoteChildExecutionFence(ctx, server.URL, workerToken, contract)
+		owned, stop, err := remoteChildExecutionFenceWithOptions(ctx, server.URL, workerToken, contract,
+			claimsclient.ExecutionFenceOptions{SnapshotTimeout: planeDeadline})
 		if err != nil {
 			return engine.ChildDispatchResult{}, fmt.Errorf("startup execution observer refused worker: %w", err)
 		}
@@ -221,7 +223,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		if err = scoped.Put(ctx, digest, carrier); err != nil {
 			return engine.ChildDispatchResult{}, err
 		}
-		surrendered := dispatcher.SurrenderedResult{RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
+		surrendered := dispatcher.SurrenderedResult{ContractVersion: dispatcher.CurrentSurrenderContract, RecoveryAcknowledged: true, ChildWorkspaceDigest: digest, ObservedUsageReported: true, ObservedUsage: map[string]float64{"tokens.input": 17}, Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Metrics: map[string]float64{"tokens.input": 999}, Artifacts: []apiv1.ArtifactPointer{{Path: ref.Path, Digest: ref.Digest, Size: ref.Size}}}}
 		data, _ := json.Marshal(surrendered)
 		if err = (&dispatcher.SurrenderPutClient{BaseURL: server.URL, Token: workerToken, RetryDeadline: planeDeadline}).Put(ctx, a.RunID, a.Stage, a.PodAttempt, data); err != nil {
 			return engine.ChildDispatchResult{}, err
@@ -234,7 +236,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 		return httpapi.ClaimListResponse{ClaimVisibility: "local", ObservedAt: time.Now()}, nil
 	})
 	opts := s.installChildPodPlane(worker, plane, journals, observe, nil)
-	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.key)), httpapi.WithChildWorkflowService(s.children.HTTPService()))
+	opts = append(opts, httpapi.WithAuthenticator(auth.WithChildWorkflowGrants(s.grants.Key())), httpapi.WithChildWorkflowService(s.children.HTTPService()))
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
 	if err != nil {
 		t.Fatal(err)

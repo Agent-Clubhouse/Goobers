@@ -31,7 +31,7 @@ func TestJitteredExponential(t *testing.T) {
 			got := JitteredExponential(Policy{
 				Base: base,
 				Max:  max,
-				RandInt63n: func(n int64) int64 {
+				randInt64N: func(n int64) int64 {
 					if tt.rand >= n {
 						t.Fatalf("random value %d outside bound %d", tt.rand, n)
 					}
@@ -45,9 +45,131 @@ func TestJitteredExponential(t *testing.T) {
 	}
 }
 
-func TestJitteredExponentialInvalidPolicyReturnsZero(t *testing.T) {
-	if got := JitteredExponential(Policy{}, 0); got != 0 {
-		t.Fatalf("JitteredExponential with empty policy = %s, want 0", got)
+func TestJitteredExponentialNonpositiveBaseUsesMax(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    time.Duration
+		attempt int
+		upper   bool
+		want    time.Duration
+	}{
+		{name: "zero base floor", want: 50 * time.Second},
+		{name: "zero base ceiling", upper: true, want: 100 * time.Second},
+		{name: "negative base floor", base: -time.Second, want: 50 * time.Second},
+		{name: "negative base ceiling", base: -time.Second, upper: true, want: 100 * time.Second},
+		{name: "zero base later attempt", attempt: 3, upper: true, want: 100 * time.Second},
+		{name: "negative base later attempt", base: -time.Second, attempt: 3, want: 50 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := JitteredExponential(Policy{
+				Base: tt.base,
+				Max:  100 * time.Second,
+				randInt64N: func(n int64) int64 {
+					if n <= 0 {
+						t.Fatalf("random bound = %d, want positive", n)
+					}
+					if tt.upper {
+						return n - 1
+					}
+					return 0
+				},
+			}, tt.attempt)
+			if got != tt.want {
+				t.Fatalf("JitteredExponential = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestJitteredExponentialFullJitter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rand int64
+		want time.Duration
+	}{
+		{name: "zero floor"},
+		{name: "ceiling", rand: int64(4 * time.Second), want: 4 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := JitteredExponential(Policy{
+				Base: time.Second, Max: 10 * time.Second, FullJitter: true,
+				randInt64N: func(int64) int64 { return tc.rand },
+			}, 2)
+			if got != tc.want {
+				t.Fatalf("JitteredExponential = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestJitteredExponentialNonpositiveMaxReturnsZero(t *testing.T) {
+	tests := []struct {
+		name string
+		base time.Duration
+		max  time.Duration
+	}{
+		{name: "empty policy"},
+		{name: "zero max", base: time.Second},
+		{name: "negative max", base: time.Second, max: -time.Second},
+		{name: "negative base and max", base: -time.Second, max: -time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := JitteredExponential(Policy{Base: tt.base, Max: tt.max}, 0); got != 0 {
+				t.Fatalf("JitteredExponential = %s, want 0", got)
+			}
+		})
+	}
+}
+
+func TestJitteredExponentialSymmetricJitter(t *testing.T) {
+	const largestDuration = time.Duration(1<<63 - 1)
+	tests := []struct {
+		name    string
+		base    time.Duration
+		max     time.Duration
+		attempt int
+		upper   bool
+		want    time.Duration
+	}{
+		{name: "floor", base: time.Second, max: 30 * time.Second, want: 750 * time.Millisecond},
+		{name: "ceiling", base: time.Second, max: 30 * time.Second, upper: true, want: 1250 * time.Millisecond},
+		{name: "exponential floor", base: time.Second, max: 30 * time.Second, attempt: 4, want: 12 * time.Second},
+		{name: "exponential ceiling", base: time.Second, max: 30 * time.Second, attempt: 4, upper: true, want: 20 * time.Second},
+		{name: "capped floor", base: time.Second, max: 30 * time.Second, attempt: 5, want: 22500 * time.Millisecond},
+		{name: "capped ceiling", base: time.Second, max: 30 * time.Second, attempt: 5, upper: true, want: 30 * time.Second},
+		{name: "jitter crosses cap", base: 28 * time.Second, max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "large attempt", base: time.Second, max: 30 * time.Second, attempt: 100, upper: true, want: 30 * time.Second},
+		{name: "negative attempt", base: time.Second, max: 30 * time.Second, attempt: -1, want: 22500 * time.Millisecond},
+		{name: "duration overflow", base: largestDuration, max: largestDuration, upper: true, want: largestDuration},
+		{name: "sub-quarter precision", base: time.Nanosecond, max: time.Second, upper: true, want: time.Nanosecond},
+		{name: "zero base floor", max: 30 * time.Second, want: 22500 * time.Millisecond},
+		{name: "zero base ceiling", max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "negative base floor", base: -time.Second, max: 30 * time.Second, want: 22500 * time.Millisecond},
+		{name: "negative base ceiling", base: -time.Second, max: 30 * time.Second, upper: true, want: 30 * time.Second},
+		{name: "zero max", base: time.Second},
+		{name: "negative max", base: time.Second, max: -time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := JitteredExponential(Policy{
+				Base: tt.base, Max: tt.max, SymmetricJitter: true,
+				randInt64N: func(n int64) int64 {
+					if n <= 0 {
+						t.Fatalf("random bound = %d, want positive", n)
+					}
+					if tt.upper {
+						return n - 1
+					}
+					return 0
+				},
+			}, tt.attempt)
+			if got != tt.want {
+				t.Fatalf("JitteredExponential = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

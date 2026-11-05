@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -47,28 +49,28 @@ func TestBuildCredentialsBacksADOOnlyCapabilitiesFromTheADORepoOnly(t *testing.T
 	t.Setenv("EXAMPLE_ADO_PAT", "ado-pat")
 	cfg := mixedProviderCredentialConfig()
 
-	_, adoGrants, err := buildCredentials(cfg, nil, adoTestOwner, adoTestName, nil, nil)
+	_, adoGrants, err := runtimewiring.BuildCredentials(cfg, nil, adoTestOwner, adoTestName, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range adoRepoCredentialedCapabilities {
+	for _, c := range runtimewiring.AdoRepoCredentialedCapabilities {
 		if ref, ok := grantRefFor(adoGrants, c); !ok || ref != adoTestRef {
 			t.Fatalf("ADO gaggle %s grant ref = %q (granted %t), want the ADO repository's own %q", c, ref, ok, adoTestRef)
 		}
 	}
 
 	for _, repo := range []struct{ owner, name string }{{"example-gh", "gh-repo"}, {"example-gitea", "gitea-repo"}} {
-		_, grants, err := buildCredentials(cfg, nil, repo.owner, repo.name, nil, nil)
+		_, grants, err := runtimewiring.BuildCredentials(cfg, nil, repo.owner, repo.name, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, c := range adoRepoCredentialedCapabilities {
+		for _, c := range runtimewiring.AdoRepoCredentialedCapabilities {
 			if ref, ok := grantRefFor(grants, c); ok {
 				t.Fatalf("%s/%s gaggle was granted %s from %q; a non-ADO repository credential must not back it", repo.owner, repo.name, c, ref)
 			}
 		}
 		// Every other repository-backed capability is unchanged.
-		for _, c := range credentialedCapabilities {
+		for _, c := range runtimewiring.CredentialedCapabilities {
 			if ref, ok := grantRefFor(grants, c); !ok || ref != repo.owner+"/"+repo.name {
 				t.Fatalf("%s/%s gaggle %s grant ref = %q (granted %t), want its own repository", repo.owner, repo.name, c, ref, ok)
 			}
@@ -82,17 +84,17 @@ func TestBuildCredentialsKeepsExplicitADOOnlyCapabilityEntries(t *testing.T) {
 	t.Setenv("EXAMPLE_ADO_PAT", "ado-pat")
 	t.Setenv("EXAMPLE_ADO_ONLY_PAT", "ado-only-pat")
 	cfg := mixedProviderCredentialConfig()
-	for _, c := range adoRepoCredentialedCapabilities {
+	for _, c := range runtimewiring.AdoRepoCredentialedCapabilities {
 		cfg.Credentials = []instance.CredentialGrant{{
 			Capability: string(c),
 			Token:      instance.TokenRef{Env: "EXAMPLE_ADO_ONLY_PAT"},
 		}}
 		for _, repo := range []struct{ owner, name string }{{adoTestOwner, adoTestName}, {"example-gh", "gh-repo"}} {
-			_, grants, err := buildCredentials(cfg, nil, repo.owner, repo.name, nil, nil)
+			_, grants, err := runtimewiring.BuildCredentials(cfg, nil, repo.owner, repo.name, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := credentialRefName(string(c))
+			want := runtimewiring.CredentialRefName(string(c))
 			if ref, ok := grantRefFor(grants, c); !ok || ref != want {
 				t.Fatalf("%s/%s %s grant ref = %q (granted %t), want the explicit entry %q", repo.owner, repo.name, c, ref, ok, want)
 			}
@@ -102,20 +104,20 @@ func TestBuildCredentialsKeepsExplicitADOOnlyCapabilityEntries(t *testing.T) {
 
 func TestConfiguredCredentialGrantsBackADOOnlyCapabilitiesOnADOOnly(t *testing.T) {
 	cfg := mixedProviderCredentialConfig()
-	ado, err := configuredCredentialGrants(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: adoTestName}, apiv1.BacklogRef{})
+	ado, err := runtimewiring.ConfiguredCredentialGrants(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: adoTestName}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range adoRepoCredentialedCapabilities {
+	for _, c := range runtimewiring.AdoRepoCredentialedCapabilities {
 		if !ado[string(c)] {
 			t.Fatalf("ADO project grants = %v, want %s backed by the repository credential", ado, c)
 		}
 	}
-	gh, err := configuredCredentialGrants(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-gh", Name: "gh-repo"}, apiv1.BacklogRef{})
+	gh, err := runtimewiring.ConfiguredCredentialGrants(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-gh", Name: "gh-repo"}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range adoRepoCredentialedCapabilities {
+	for _, c := range runtimewiring.AdoRepoCredentialedCapabilities {
 		if gh[string(c)] {
 			t.Fatalf("GitHub project grants = %v, want no %s", gh, c)
 		}

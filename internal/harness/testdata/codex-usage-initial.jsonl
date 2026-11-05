@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"thread-recovery"}
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":90,"cached_input_tokens":20,"output_tokens":5}}

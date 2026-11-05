@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
@@ -105,7 +107,7 @@ func legacyUnpinnedClaimRun(directory, runID string) (bool, error) {
 func requireLocalOnlyClaimConfiguration(layout instance.Layout) error {
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		return fmt.Errorf("verify local-only claim configuration: %w (%s)", err, validationIssueSummary(report))
+		return fmt.Errorf("verify local-only claim configuration: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	if set == nil {
 		return fmt.Errorf("local-only claim configuration is unavailable")

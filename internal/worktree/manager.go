@@ -16,9 +16,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gitexclude"
-	"github.com/goobers/goobers/internal/gooberassets"
-	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/publicationpaths"
 )
 
 // Manager owns managed working copies under Root — one mirror clone per
@@ -569,7 +568,7 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 		if err := ensureManagedGitConfig(ctx, dir); err != nil {
 			return "", err
 		}
-		if err := ensureScratchExcluded(ctx, dir); err != nil {
+		if err := EnsureScratchExcluded(ctx, dir); err != nil {
 			return "", err
 		}
 		if err := maintainMirror(ctx, dir); err != nil {
@@ -606,7 +605,7 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 	if err := ensureManagedGitConfig(ctx, dir); err != nil {
 		return "", err
 	}
-	if err := ensureScratchExcluded(ctx, dir); err != nil {
+	if err := EnsureScratchExcluded(ctx, dir); err != nil {
 		return "", err
 	}
 	if err := maintainMirror(ctx, dir); err != nil {
@@ -704,7 +703,7 @@ var managedGitConfig = []struct{ key, value string }{
 // with a plain key/value is idempotent and cheap, so applying it on every
 // WorkingCopy (both the first clone and every later fetch) is safe and lets a
 // mirror created before this policy existed self-heal on its next use — the same
-// rationale ensureScratchExcluded relies on.
+// rationale EnsureScratchExcluded relies on.
 func ensureManagedGitConfig(ctx context.Context, dir string) error {
 	for _, c := range managedGitConfig {
 		if err := runGit(ctx, dir, "config", c.key, c.value); err != nil {
@@ -714,41 +713,15 @@ func ensureManagedGitConfig(ctx context.Context, dir string) error {
 	return nil
 }
 
-// scratchExcludePattern is the harness scratch dir (internal/harness writes
-// <workspace>/.goobers/{prompt.md,result.json,verdict.json,context/}) that must
-// never be committed into a run's PR (#240).
-const scratchExcludePattern = ".goobers/"
-const assetExcludePattern = "/" + gooberassets.WorkspaceDir + "/"
-
-// mutationsExcludePattern is the provider receipt sidecar every goobers
-// subcommand writes in the workspace root (cmd/goobers/mutationsidecar.go). It
-// is harness bookkeeping, never agent-authored work, but it is untracked and
-// unignored in the target repo — so before #5119 it was selected by recovery
-// snapshot capture's `ls-files --others --exclude-standard` and made an
-// otherwise-empty abandoned-preparation patch non-empty, defeating the
-// empty-diff guard and consuming a retention-floored inventory slot. Anchored
-// to the root because that is the only place the harness writes it, and
-// because this file is shared by every worktree of the mirror.
-const mutationsExcludePattern = "/" + mutationsidecar.FileName
-
-// harnessExcludePatterns is what every managed checkout must hide from git.
-func harnessExcludePatterns() []gitexclude.Pattern {
-	return []gitexclude.Pattern{
-		{Line: scratchExcludePattern, Aliases: []string{".goobers"}},
-		{Line: assetExcludePattern},
-		{Line: mutationsExcludePattern},
-	}
-}
-
-// ensureScratchExcluded makes harness-owned workspace paths invisible to git in
-// every worktree branched from this managed mirror, so neither the common
+// EnsureScratchExcluded makes harness-owned workspace paths invisible to git in
+// a checkout or every worktree branched from a managed mirror, so neither the common
 // `git add -A` agent commit pattern nor recovery snapshot capture ever sees
 // scratch files, goober assets, or the mutation sidecar. It appends patterns to
 // the mirror's shared info/exclude, keeping the exclusion local — and, because
 // a git exclude never applies to a tracked path, a repository that legitimately
 // commits one of these names keeps it.
-func ensureScratchExcluded(ctx context.Context, dir string) error {
-	if err := gitexclude.Ensure(ctx, dir, harnessExcludePatterns()...); err != nil {
+func EnsureScratchExcluded(ctx context.Context, dir string) error {
+	if err := gitexclude.Ensure(ctx, dir, publicationpaths.ExcludePatterns()...); err != nil {
 		return fmt.Errorf("worktree: exclude harness paths in %s: %w", dir, err)
 	}
 	return nil

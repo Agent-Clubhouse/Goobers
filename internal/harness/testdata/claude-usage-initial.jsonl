@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}
+{"type":"result","subtype":"success","result":"initial turn","total_cost_usd":0.25,"usage":{"input_tokens":100,"output_tokens":20},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":100,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":10,"costUSD":0.25}}}

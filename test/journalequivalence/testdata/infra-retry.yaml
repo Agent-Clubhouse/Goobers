@@ -1,0 +1,14 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: infra-retry
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: work
+  tasks:
+    - name: work
+      type: deterministic
+      goal: retry transient infrastructure
+      run:
+        command: [fixture]

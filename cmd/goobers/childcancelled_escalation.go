@@ -36,7 +36,7 @@ func (l *queuedChildLauncher) cancelledEscalationInput(ctx context.Context, ref 
 		if cancelled.Before(event.Time) {
 			cancelled = event.Time
 		}
-		refs, _, err := childResultEvidence(rd, events[:i+1])
+		refs, _, err := childworkflow.ResultEvidence(rd, events[:i+1])
 		if err != nil {
 			return input, false, err
 		}

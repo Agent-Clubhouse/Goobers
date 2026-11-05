@@ -7,6 +7,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // Invoked by the same startup/periodic retention sweep and exclusion gate as
@@ -20,10 +21,10 @@ func reapConfiguredRecovery(ctx context.Context, layout instance.Layout, cfg ins
 	if !cfg.EnabledEffective() && !cfg.DryRun {
 		return nil
 	}
-	policy, _ := resolveRecoveryPolicy(layout, &instance.Config{Retention: cfg})
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(layout, &instance.Config{Retention: cfg})
 	limit := policy.MaxSnapshotsEffective()
 	results, err := recovery.ReapRetired(ctx, filepath.Join(layout.Root, "recovery"), limit, !dryRun)
-	err = recoveryInventoryReadError(err, limit)
+	err = runtimewiring.RecoveryInventoryReadError(err, limit)
 	for _, result := range results {
 		switch {
 		case result.Err != nil:
@@ -58,11 +59,11 @@ func reconcileIncompleteRecovery(ctx context.Context, layout instance.Layout, cf
 	if !cfg.EnabledEffective() && !cfg.DryRun {
 		return nil
 	}
-	policy, _ := resolveRecoveryPolicy(layout, &instance.Config{Retention: cfg})
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(layout, &instance.Config{Retention: cfg})
 	limit := policy.MaxSnapshotsEffective()
 	root := filepath.Join(layout.Root, "recovery")
 	results, err := recovery.ReconcileIncompleteReservations(ctx, root, limit, recovery.IncompleteReservationGrace, !operatorDryRun)
-	err = recoveryInventoryReadError(err, limit)
+	err = runtimewiring.RecoveryInventoryReadError(err, limit)
 	for _, result := range results {
 		reportIncompleteRecovery(result, graceActive, stdout, stderr)
 	}
