@@ -98,6 +98,9 @@ const PRQueueEligibility = "pr-queue-eligibility-v1.schema.json"
 // claim log.
 const BackpropClaim = "backprop-claim-v1.schema.json"
 
+// BackpropVerification is one deterministic checker adapter's scoped report.
+const BackpropVerification = "backprop-verification-v1.schema.json"
+
 // InvestigationEvidenceDraft is the semantic-reference evidence input contract.
 const InvestigationEvidenceDraft = "investigation-evidence-draft.schema.json"
 

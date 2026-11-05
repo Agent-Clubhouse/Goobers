@@ -75,6 +75,140 @@ threshold is not approval to change or disable a workflow.
 These gaps are tracked under the Backprop scopes epic
 ([#7121](https://github.com/Agent-Clubhouse/Goobers/issues/7121)).
 
+## Scoped verification evidence
+
+An explicitly opted-in **deterministic** checker adapter can publish scoped
+verification evidence. The shipped `kind: tlc` adapter actually executes a
+pinned independent TLC checker against a bounded finite transition graph or
+an explicitly opted-in, entirely operator-reviewed native TLA+ model.
+It snapshots candidate bytes separately from operator-reviewed specification,
+configuration, and tool/runtime bytes, records execution evidence, and publishes
+a runner-owned report. It neither trusts agent-authored success reports nor
+downloads production tools. See the [complete offline setup and example](../../examples/backprop-tlc/README.md).
+
+```yaml
+tasks:
+  - name: verify-model
+    type: deterministic
+    run:
+      command: ["tlc"]
+      workspace: repo
+    inputs:
+      kind: tlc
+      tlcManifest: manifest.json
+      tlcModel: examples/backprop-tlc/positive.json
+      timeout: 30s
+```
+
+This opt-in path uses the local self runner and existing shell process/trust
+safeguards. It requires no credentials. The exact `command: ["tlc"]` is a
+declarative built-in marker, never PATH-resolved or executed: the runner builds
+the pinned Java/TLC command. Other commands, arguments, scripts, and environment
+overrides are refused; global command/script admission guards remain unchanged.
+The [complete workflow example](../../examples/backprop-tlc/workflow.yaml) is
+schema-validated, compiled, and dispatched through production registration by
+the integration test. The manifest lives in
+the runner's selected configuration directory, outside the agent-editable
+checkout. Editable graphs contain integer states/edges only: arbitrary candidate
+TLA+, unchecked assumptions, admitted obligations, and module substitutions are
+not accepted as candidate inputs. An invariant violation requires TLC's concrete trace and exit 12;
+only completed model checking with an empty state queue can report `proven`.
+Missing/mismatched tools or changed spec/config fail closed; timeout, crash,
+truncation, simulation, and incomplete checks never report proven. Successful
+stage execution means the adapter completed its report, **not** that the outcome
+is proven or that any gate approved the candidate.
+
+The claim is limited to the exact finite graph and reviewed invariant.
+Deadlocks/liveness and Go refinement are not checked; reports explicitly retain
+TLC's 64-bit fingerprint collision caveat. This is not an unbounded program
+proof. Model-checking Goobers itself is separate work in
+[#8314](https://github.com/Agent-Clubhouse/Goobers/issues/8314). Its native assets
+can be checked directly with manifest `mode: reviewed-native`, a pinned module,
+source and config under trusted runner config, and **no** `tlcModel` input.
+Keep the same command marker; native mode may use `workspace: scratch`.
+Only closed `Naturals`/`Integers` imports and explicit invariant configuration
+are supported. The requested invariant must be configured; additional invariants
+such as `TypeOK` remain enforced. The report binds the actual native source
+bytes and finite bounds, never a graph translation or a Go correctness claim.
+See the example's [native-mode boundaries](../../examples/backprop-tlc/README.md#reviewed-native-tla-mode).
+
+The lower-level shell integration remains available for an operator-supplied,
+reviewed adapter. Such a wrapper must itself invoke the independent checker
+and write one JSON report to stdout; ordinary logging belongs on stderr:
+
+```yaml
+tasks:
+  - name: verify
+    type: deterministic
+    run:
+      command: ["trusted-checker-wrapper"]
+    inputs:
+      verificationReport: "true"
+```
+
+`trusted-checker-wrapper` is not a shipped command and that shell opt-in does
+not run an independent checker by itself. Keep its checker, specification,
+and execution policy outside agent-editable implementation/proof inputs.
+
+The report contract (`goobers.dev/backprop/verification/v1`) is published in
+[`backprop-verification-v1.schema.json`](../../api/schemas/backprop-verification-v1.schema.json)
+and discoverable with `goobers schema backprop-verification-v1`:
+
+| Field | Meaning |
+|---|---|
+| `schema` | The report contract above. |
+| `property` | Bounded stable identifier for the property being checked. |
+| `subject` | SHA-256 content digest of the exact source/binary/input package checked. |
+| `specification` | SHA-256 content digest of the reviewed specification. |
+| `context` | SHA-256 content digest of a manifest pinning stable dependencies, semantics, bounds, and other execution assumptions. Subject-specific proof artifacts belong in `evidence`. |
+| `checker` | Object with `name`, `version`, and SHA-256 executable `digest`. |
+| `assumptions` | Explicit array of assumptions; use `[]` for none. Ordering is significant when comparing repair scopes. |
+| `outcome` | `proven`, `counterexample`, or `inconclusive`. |
+| `evidence` | Up to eight SHA-256 digests of recorded proof/checker/counterexample artifacts. Required for conclusive results. |
+| `reason` | Required explanation for an inconclusive result. |
+| `repairs` | Optional earlier `verification:<journal-sequence>` counterexample ID in the same run; allowed only on a proven result. |
+
+Subject, specification, context, and evidence artifacts must already be
+recorded in this run's journal, in the checker branch or root branch. The
+checker adapter must verify that the bytes it actually checked match these
+identities; Backprop checks recorded provenance, not checker semantics.
+Never set `counterexample` merely because proof search failed. Timeouts,
+unsupported constructs, or incomplete obligations are inconclusive unless a
+violation was independently established. Wrappers must not report `proven`
+for admitted obligations, unapproved assumptions, or a weakened specification.
+
+The shell executor captures fresh stdout and emits a runner-owned annotation only
+after a successful command result. Nonzero exits, cancellation, executor errors,
+and truncated output cannot become verification evidence. A valid report's
+`inconclusive` or `counterexample` outcome may accompany exit zero: that means
+the adapter completed, not that the property holds. Malformed or oversized
+reports fail the opted-in stage. Reports are limited to 16 KiB, 16 assumptions,
+eight evidence digests, and 128 reports per run; text fields are bounded and
+unknown fields are rejected.
+
+Backprop lists accepted-provenance reports in `attribution.verifications`,
+unresolved provenance in `attribution.unverifiedVerifications`, and malformed
+or excess reports in `attribution.droppedVerifications`. Each accepted report
+links `subjectNodeId` to the graph artifact it checked, identifies the
+checker stage/attempt/branch and stdout source, and records the successful
+stage completion sequence. Reports also appear in stage checkpoints and
+`goobers trace --json`; text traces summarize outcomes and repair links.
+The cohort dashboard and fault auditor do not use these results for scoring.
+
+`repairVerified: true` means a later proven result checked a **changed subject**
+with the same property, specification, context, checker, assumptions, and branch
+as an explicitly referenced, completed counterexample. An unmatched repair
+reference retains the independently reported outcome but has a `repairReason`
+and no verified repair flag. This is scoped repair evidence, not proof of causal
+blame, preservation of every behavior, or improvement on other tasks. It does
+not reproduce the old counterexample on the new subject. Cross-run repair
+matching is not supported.
+
+All results apply only to their pinned subject and scope. They do not prove
+the current checkout or an entire library correct, and must be rerun when bound
+inputs change. They never change credit scores, failure classes, gates,
+permissions, tests/CI requirements, or promotion decisions.
+
 ## Enable Backprop for a workflow
 
 Backprop requires `dslVersion` `"3.0"` or `"3.1"`. Both are **preview** DSL

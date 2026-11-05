@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/backprop-verification-v1.schema.json",
+  "title": "Scoped Backprop verification report",
+  "description": "A reviewed deterministic checker adapter's result (goobers.dev/backprop/verification/v1). The adapter checks proofs; Backprop checks recorded provenance, not theorem validity. Runtime additionally bounds the encoded report to 16 KiB, checks sanitized text and byte lengths, requires prior artifact provenance, and limits a run to 128 reports. Example digests are placeholders, not actual checker evidence.",
+  "type": "object",
+  "examples": [{
+    "schema": "goobers.dev/backprop/verification/v1",
+    "property": "terminal-replay-stable",
+    "subject": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "specification": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "context": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "checker": {
+      "name": "TLC",
+      "version": "1.8.0",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "assumptions": ["finite-state model only"],
+    "outcome": "proven",
+    "evidence": ["sha256:0000000000000000000000000000000000000000000000000000000000000000"]
+  }],
+  "additionalProperties": false,
+  "required": ["schema", "property", "subject", "specification", "context", "checker", "assumptions", "outcome"],
+  "properties": {
+    "schema": {"const": "goobers.dev/backprop/verification/v1", "description": "Version of the checker report contract."},
+    "property": {"$ref": "#/$defs/reference", "description": "Stable identifier of the scoped property checked."},
+    "subject": {"$ref": "#/$defs/digest", "description": "Recorded exact source, binary, or input package checked."},
+    "specification": {"$ref": "#/$defs/digest", "description": "Recorded reviewed specification checked against."},
+    "context": {"$ref": "#/$defs/digest", "description": "Recorded manifest of stable dependencies, semantics, bounds, and other execution assumptions; subject-specific proof artifacts belong in evidence."},
+    "checker": {
+      "type": "object",
+      "description": "Trusted independent checker identity, not the proof-generation agent.",
+      "additionalProperties": false,
+      "required": ["name", "version", "digest"],
+      "properties": {
+        "name": {"$ref": "#/$defs/reference", "description": "Checker implementation name."},
+        "version": {"$ref": "#/$defs/reference", "description": "Exact checker version."},
+        "digest": {"$ref": "#/$defs/digest", "description": "Content digest of the checker executable."}
+      }
+    },
+    "assumptions": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/text"}, "description": "Explicit assumptions; an empty array means none. Ordering must match for a repair link."},
+    "outcome": {"enum": ["proven", "counterexample", "inconclusive"], "description": "Scoped checker result. Failed proof search alone is inconclusive, not a counterexample."},
+    "evidence": {"type": ["array", "null"], "maxItems": 8, "items": {"$ref": "#/$defs/digest"}, "description": "Previously recorded proof, checker, or counterexample artifacts; conclusive outcomes require at least one."},
+    "reason": {"$ref": "#/$defs/text", "description": "Explanation of an inconclusive outcome."},
+    "repairs": {"$ref": "#/$defs/reference", "description": "Explicit earlier verification record ID in this run. Only proven reports may name a repair; runtime separately checks counterexample identity and scope."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"outcome": {"const": "inconclusive"}}, "required": ["outcome"]},
+      "then": {"required": ["reason"], "properties": {"reason": {"minLength": 1}}},
+      "else": {"required": ["evidence"], "properties": {"evidence": {"type": "array", "minItems": 1}}}
+    },
+    {
+      "if": {"required": ["repairs"]},
+      "then": {"properties": {"outcome": {"const": "proven"}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "A sha256 content digest."},
+    "reference": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^\\S+$", "description": "Bounded printable reference without whitespace; runtime also rejects control and format characters."},
+    "text": {"type": "string", "maxLength": 1024, "description": "Bounded sanitized text; runtime rejects control/format characters and noncanonical whitespace."}
+  }
+}
