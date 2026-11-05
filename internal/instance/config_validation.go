@@ -253,6 +253,9 @@ func (c RunnerConfig) validatePodTmpfsSize() error {
 }
 
 func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool) error {
+	if err := c.OneCollector.Validate(); err != nil {
+		return err
+	}
 	if err := c.validateExporters(stores, telemetryEnabled); err != nil {
 		return err
 	}

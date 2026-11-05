@@ -23,7 +23,8 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <configure|onecollector|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]\n\n" +
+	"onecollector: report support for protected opt-in uploader profiles\n" +
 	"configure: enable or disable customer-owned Application Insights export\n" +
 	"test:    send one secret-safe direct-ingestion connectivity probe\n" +
 	"merges: confirmed PR landings and daily counts by originating instance\n" +

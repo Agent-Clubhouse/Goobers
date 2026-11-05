@@ -56,7 +56,7 @@ func (owned *schedulerObservation) open(ctx context.Context, l instance.Layout, 
 		}
 	}()
 	var telemetryOTLPDegradeErr error
-	if cfg.TelemetryEnabled() {
+	if cfg.TelemetryEnabled() || cfg.Telemetry.OneCollector != nil {
 		reportStartupProgress(options.startupProgress, "opening telemetry state")
 		owned.tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, owned.telemetryExporterHealth, options.telemetryReplayStart)
 		if err != nil {
@@ -73,9 +73,11 @@ func (owned *schedulerObservation) open(ctx context.Context, l instance.Layout, 
 			telemetryOTLPDegradeErr = err
 			err = nil
 		}
-		owned.rollupDB, err = rollup.Open(l.TelemetryDB())
-		if err != nil {
-			return err
+		if cfg.TelemetryEnabled() {
+			owned.rollupDB, err = rollup.Open(l.TelemetryDB())
+			if err != nil {
+				return err
+			}
 		}
 	}
 	// Derived read-model failures are best effort and independent of telemetry.

@@ -117,6 +117,12 @@ func telemetryCLICommand() cliCommand {
 	return groupCommand(
 		"telemetry",
 		runTelemetry,
+		groupCommand("onecollector", runTelemetryOneCollector,
+			subcommand("telemetry onecollector upload", "upload", apicontract.ActionMaintenance, runOneCollectorUpload).withHelp("validate or upload profile-defined JSON input", telemetryOneCollectorUploadHelp),
+			subcommand("telemetry onecollector mcp", "mcp", apicontract.ActionMaintenance, runOneCollectorMCP).withHelp("serve profile-defined uploader tools over MCP stdio", telemetryOneCollectorMCPHelp),
+		).
+			withHelp("report protected OneCollector profile support without sending data", telemetryOneCollectorHelp).
+			withExamples("goobers telemetry onecollector --capabilities --json"),
 		subcommand("telemetry configure", "configure", apicontract.ActionConfigTime, runTelemetryConfigure).
 			withHelp("configure customer-owned Application Insights export from a secret reference", telemetryConfigureHelp).
 			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry configure --connection-string-file C:\\ProgramData\\Goobers\\secrets\\application-insights.txt C:\\ProgramData\\Goobers\\instance"),

@@ -62,7 +62,8 @@ func StartCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 	}
 	azureEnabled := cfg.Telemetry.AzureMonitor != nil && cfg.Telemetry.AzureMonitor.Enabled() && cfg.Telemetry.EffectiveCollectionProfile().IncludesJournal()
 	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.JournalLogsEnabled()
-	if !cfg.TelemetryEnabled() || (!otlpEnabled && !azureEnabled && !cfg.Telemetry.NamedJournalEnabled()) {
+	publicEnabled := cfg.TelemetryEnabled() && (otlpEnabled || azureEnabled || cfg.Telemetry.NamedJournalEnabled())
+	if !publicEnabled && cfg.Telemetry.OneCollector == nil {
 		return noop
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
@@ -77,23 +78,27 @@ func StartCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 		Scrubber: scrubber, JournalRoot: l.Root, JournalLogsOnly: true,
 	}
 	export.JournalInstanceID, _ = l.ReadIdentity()
-	if cfg.Telemetry.OTLP != nil {
+	collectorErr := ConfigureOneCollector(initialize, &export, cfg.Telemetry.OneCollector, registry, stores)
+	if publicEnabled && cfg.Telemetry.OTLP != nil {
 		if err := ConfigureOTLP(initialize, &export, *cfg.Telemetry.OTLP, registry, stores); err != nil {
 			cancel()
 			_, _ = fmt.Fprintf(stderr, "warning: journal telemetry unavailable: %v\n", err)
 			return noop
 		}
 	}
-	if cfg.Telemetry.AzureMonitor != nil {
+	if publicEnabled && cfg.Telemetry.AzureMonitor != nil {
 		if err := ConfigureAzureMonitor(initialize, &export, *cfg.Telemetry.AzureMonitor, cfg.Telemetry.EffectiveCollectionProfile(), l.Root, registry, stores); err != nil {
 			cancel()
 			_, _ = fmt.Fprintf(stderr, "warning: journal telemetry unavailable: %v\n", err)
 			return noop
 		}
 	}
-	namedErr := ConfigureNamedTelemetry(initialize, &export, cfg.Telemetry, l.Root, registry, stores, false)
+	var namedErr error
+	if publicEnabled {
+		namedErr = ConfigureNamedTelemetry(initialize, &export, cfg.Telemetry, l.Root, registry, stores, false)
+	}
 	client, err := telemetry.New(initialize, export)
-	err = errors.Join(namedErr, err)
+	err = errors.Join(collectorErr, namedErr, err)
 	cancel()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "warning: journal telemetry unavailable: %v\n", err)

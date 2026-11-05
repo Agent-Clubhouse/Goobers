@@ -3,6 +3,9 @@ package mcpio
 import "github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 
 func (s *Server) toolDefs() []toolDef {
+	if s.dynamicCall != nil {
+		return s.dynamicTools
+	}
 	definitions := toolDefs()
 	if len(ChildWorkflowToolNames(s.tools.cfg.ChildWorkflows, s.tools.cfg.RunID)) == 0 {
 		return definitions

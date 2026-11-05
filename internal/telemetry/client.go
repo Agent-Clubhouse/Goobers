@@ -47,6 +47,9 @@ type ExporterKind string
 // Config controls tracer/meter setup and exporter selection. ExporterOTLP
 // requires a non-empty, explicitly configured OTLPEndpoint.
 type Config struct {
+	OneCollector *OneCollectorOptions
+	// NoDefaultExporter suppresses developer stdout for an independent uploader-only client.
+	NoDefaultExporter bool
 	// Destinations adds independently bounded named remote transports.
 	Destinations   []NamedDestination
 	ServiceName    string
@@ -145,6 +148,7 @@ var ErrOTLPUnavailable = errors.New("otlp exporter unavailable")
 
 // Client owns the OTel tracer and meter providers for a Goobers process.
 type Client struct {
+	oneCollector        *oneCollectorPipeline
 	namedMetricReaders  []metric.Reader
 	destinationName     string
 	journalDestinations []*Client
@@ -365,13 +369,31 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
 	cfg = prepareNamedDestinations(cfg)
+	var collector *oneCollectorPipeline
+	if cfg.OneCollector != nil && cfg.OneCollector.Options.Enabled() {
+		if err := cfg.OneCollector.Profile.Validate(); err != nil {
+			return nil, err
+		}
+		collector = newOneCollectorPipeline(*cfg.OneCollector, scrubber)
+	}
+	keepCollector := false
+	defer func() {
+		if collector != nil && !keepCollector {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = collector.shutdown(cleanupCtx)
+		}
+	}()
 	if cfg.JournalLogsOnly {
 		client := &Client{
+			oneCollector:   collector,
 			scrubber:       scrubber,
 			tracer:         tracenoop.NewTracerProvider().Tracer(ScopeName),
 			exporterHealth: cfg.ExporterHealth,
 		}
-		return client, client.configureAllJournalLogs(ctx, cfg, res)
+		err := client.configureAllJournalLogs(ctx, cfg, res)
+		keepCollector = true
+		return client, errors.Join(err, client.attachOneCollector(cfg))
 	}
 
 	// otlpDegraded, not err, carries an ErrOTLPUnavailable across the rest of
@@ -397,6 +419,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		sdktrace.WithResource(res),
 		sdktrace.WithIDGenerator(runIDGenerator{}),
 		sdktrace.WithRawSpanLimits(spanLimits),
+	}
+	if collector != nil && collector.cfg.Profile.HasSignal("trace") {
+		options = append(options, sdktrace.WithSpanProcessor(collectorSpanProcessor{collector}))
 	}
 	processors := make([]sdktrace.SpanProcessor, 0, len(exporters))
 	for _, exporter := range exporters {
@@ -426,6 +451,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 			otlpDegraded = err
 		}
 	}
+	if collector != nil && collector.cfg.Profile.HasSignal("metric") {
+		readers = append(readers, metric.NewPeriodicReader(collectorMetricExporter{pipeline: collector}, metric.WithInterval(metricInterval(cfg))))
+	}
 	meterOptions := make([]metric.Option, 0, len(readers)+1)
 	meterOptions = append(meterOptions, metric.WithResource(res))
 	for _, reader := range readers {
@@ -437,6 +465,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	meterProvider := metric.NewMeterProvider(meterOptions...)
 
 	client := &Client{
+		oneCollector:   collector,
 		tracerProvider: tracerProvider,
 		meterProvider:  meterProvider,
 		tracer:         tracerProvider.Tracer(ScopeName),
@@ -460,6 +489,8 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		client.localSpanProcessor = processors[0]
 	}
 	otlpDegraded = errors.Join(otlpDegraded, client.configureAllJournalLogs(ctx, cfg, res))
+	otlpDegraded = errors.Join(otlpDegraded, client.attachOneCollector(cfg))
+	keepCollector = true
 	return client, otlpDegraded
 }
 
@@ -576,6 +607,8 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 // fail the caller (isCollectorUnreachable, #1124); a local-exporter error still
 // propagates.
 func (c *Client) Flush(ctx context.Context) error {
+	joinCollector := c.startOneCollectorFlush(ctx)
+	defer joinCollector()
 	joinDestinations := c.startJournalDestinationCalls(ctx, false)
 	defer joinDestinations()
 	joinMetrics := c.startNamedMetricFlush(ctx)
@@ -628,6 +661,7 @@ func (c *Client) FlushLocal(ctx context.Context) error {
 // are still shut down; only the spurious error is dropped — while a
 // local-exporter error still propagates.
 func (c *Client) Shutdown(ctx context.Context) error {
+	joinCollector := c.startOneCollectorFlush(ctx)
 	if c.unregisterJournal != nil {
 		c.unregisterJournal()
 	}
@@ -671,6 +705,12 @@ func (c *Client) Shutdown(ctx context.Context) error {
 		}
 		cancel()
 	}
+	joinCollector()
+	if c.oneCollector != nil {
+		if err := c.oneCollector.shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -685,6 +725,9 @@ func (c *Client) ExporterHealthSnapshot() ExporterHealthSnapshot {
 
 func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, error) {
 	var exporters []sdktrace.SpanExporter
+	if cfg.NoDefaultExporter && cfg.Exporter == "" && cfg.SpanExporter == nil && cfg.AzureMonitorConnectionString == "" {
+		return nil, nil
+	}
 	if cfg.SpanExporter != nil {
 		exporters = append(exporters, cfg.SpanExporter)
 	}

@@ -1395,6 +1395,15 @@
       "additionalProperties": false,
       "allOf": [{ "if": { "required": ["exporters"], "properties": { "exporters": { "minItems": 1 } } }, "then": { "not": { "anyOf": [{ "required": ["otlp"] }, { "required": ["azureMonitor"] }] } } }],
       "properties": {
+        "onecollector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile_file"],
+          "description": "Separate opt-in uploader. A protected operator profile supplies all routing and mapping; public telemetry destinations and enabled remain unchanged.",
+          "properties": {
+            "profile_file": { "type": "string", "minLength": 1, "description": "Absolute path to the operator-owned JSON profile." }
+          }
+        },
         "exporters": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/telemetryExporter" }, "description": "Named destination list. Replaces the legacy otlp/azureMonitor blocks; no destination is enabled implicitly. Names must be unique." },
         "enabled": {
           "type": "boolean",

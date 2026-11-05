@@ -150,6 +150,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry label`](#goobers-telemetry-label) | record a ground-truth verdict for a Backprop-enrolled run |
 | [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
+| [`goobers telemetry onecollector`](#goobers-telemetry-onecollector) | report protected OneCollector profile support without sending data |
+| [`goobers telemetry onecollector mcp`](#goobers-telemetry-onecollector-mcp) | serve profile-defined uploader tools over MCP stdio |
+| [`goobers telemetry onecollector upload`](#goobers-telemetry-onecollector-upload) | validate or upload profile-defined JSON input |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry shadow`](#goobers-telemetry-shadow) | compare Backprop shadow-mode findings with actual run outcomes |
@@ -4960,8 +4963,9 @@ $ goobers status --agents --json
 configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|onecollector|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
 
+onecollector: report support for protected opt-in uploader profiles
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
 merges: confirmed PR landings and daily counts by originating instance
@@ -5069,13 +5073,15 @@ $ goobers telemetry compact
 configure customer-owned Application Insights export from a secret reference
 
 ~~~text
-Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]
+Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --onecollector-profile-file PATH | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]
 
 Configure the customer-owned Application Insights destination in one atomic
 instance.yaml update. Only the reference is stored; this command never accepts
 or writes an inline connection-string value. The profile defaults to standard,
 and bounded 72-hour replay defaults on. Stop a live daemon before changing its
 configuration. --disable removes only the direct Azure destination.
+--onecollector-profile-file stores only an absolute protected-profile reference,
+preserves public telemetry settings, and never resolves secrets or sends data.
 
 Exit codes: 0 = configured, 1 = refused/invalid config, 2 = usage or I/O error.
 ~~~
@@ -5193,6 +5199,45 @@ Exit codes: 0 = OK; 2 = usage, query, or output error.
 ~~~console
 $ goobers telemetry merges
 $ goobers telemetry merges --json
+~~~
+
+## `goobers telemetry onecollector`
+
+report protected OneCollector profile support without sending data
+
+~~~text
+Usage: goobers telemetry onecollector --capabilities --json
+
+Report protected-profile support without resolving credentials or sending data.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry onecollector --capabilities --json
+~~~
+
+## `goobers telemetry onecollector mcp`
+
+serve profile-defined uploader tools over MCP stdio
+
+~~~text
+Usage: goobers telemetry onecollector mcp --profile-file PATH
+
+Serve only the protected profile's declared tools over bounded newline-delimited
+MCP stdio. Tool discovery and validation never resolve upload credentials.
+~~~
+
+## `goobers telemetry onecollector upload`
+
+validate or upload profile-defined JSON input
+
+~~~text
+Usage: goobers telemetry onecollector upload --profile-file PATH --input NAME [--validate-only]
+
+Validate one bounded JSON input from stdin using the protected profile. Validation
+never resolves credentials or sends data. Upload additionally requires the profile's
+environment opt-in; it never retries uncertain delivery.
 ~~~
 
 ## `goobers telemetry prune`

@@ -16,7 +16,11 @@ same repository when they close. Merged PR references are recorded as closed.
 A snapshot older than 30 days warns that its evidence needs refreshing.
 `-issue-states PATH` selects another reviewed snapshot with the same format.
 
-The snapshot was verified on 2026-09-07. It is cached evidence, not a claim of
+The snapshot was verified on 2026-11-04 (UTC), including the open provider
+reconciliation owner #6356 for the not-yet-wired mutation-receipt helpers.
+Workflow IR and health-contract exemptions cite their open integration owners
+#3600 and #4423 instead of relying on completed implementation children.
+It is cached evidence, not a claim of
 live access on every CI run. There are no network calls or credential
 requirements in the default gate.
 

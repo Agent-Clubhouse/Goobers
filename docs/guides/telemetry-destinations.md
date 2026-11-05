@@ -5,6 +5,137 @@
 Local journals are written once, regardless of the number of remote destinations.
 No destination is configured by default.
 
+## Separate opt-in OneCollector uploader
+
+The compiled Go binary also supports an additive OneCollector HTTP uploader.
+It has no built-in endpoint, routing key, event catalog, or organization schema.
+An operator supplies a protected JSON profile and enables its declared environment
+variable with the exact value `1`. A missing profile or missing opt-in sends
+nothing. This uploader does not change `telemetry.enabled`, legacy destinations,
+named exporters, or the release/signing pipeline.
+
+Check support and install only the profile reference:
+
+```text
+goobers telemetry onecollector --capabilities --json
+goobers telemetry configure --onecollector-profile-file <absolute-profile-path> --json <instance>
+```
+
+The second command validates without resolving credentials or sending data.
+It preserves public telemetry settings, reports `changed: false` for an existing
+identical reference, and refuses to replace a different profile. Restart the
+daemon after changing the profile or its reference. Restrict profile and key-file
+access to the account running Goobers.
+
+This fabricated profile demonstrates journal export:
+
+```json
+{
+  "profile_version": 1,
+  "enable_env": "SYNTHETIC_UPLOAD",
+  "endpoint": "https://collector.example.invalid/ingest",
+  "routing_key": {"env": "SYNTHETIC_ROUTING_KEY"},
+  "instrumentation_key": {"env": "SYNTHETIC_INSTRUMENTATION_KEY"},
+  "mappings": [{
+    "signal": "journal",
+    "event_name": "Synthetic.Journal",
+    "envelope_version": "4.0",
+    "fields": {
+      "body": {"source": "journal.raw_json"},
+      "format": {"constant": "\"synthetic-v1\""}
+    }
+  }]
+}
+```
+
+Keys use indirect `env`, `file`, `keychain`, or `store` references, never inline
+credentials. Instance-backed startup resolves declared stores; standalone explicit
+uploads use environment, file, or keychain references. Credential resolution
+registers both keys with the configured secret scrubber. Diagnostics never
+include destination URLs, credentials, response bodies, or input values.
+
+Mappings select `journal`, `trace`, `metric`, or explicit `input` signals.
+`match` compares every selector against its allowed strings. `fields` and
+`extensions` project source facts or serialized JSON constants. Missing optional
+facts are omitted. `data_source`, `event_name_source`, `timestamp_source`, and
+`envelope_version_source` support validated native inputs; `timestamp_format:
+"unix_nano"` converts unsigned nanoseconds to UTC. `unix_nano_millis` and
+`rfc3339_millis` produce UTC timestamps with exactly three fractional digits,
+truncating smaller units. `rfc3339` preserves the supplied string.
+Metric mappings must explicitly
+select `metric.name`, `metric.unit`, and `metric.kind`, so the operator owns the
+catalog and units.
+
+Journal `journal.raw_json` retains exact committed text, including numeric
+spellings; it is not scrubbed again after the journal writer's boundary.
+`trace.raw_json` uses the client's effective scrubber before conversion.
+Metric scalar integers remain exact. Histogram replay keeps bounded compressed
+segments, validates count/buckets/extrema/sum, then streams one synthetic row per
+observation. `metric.point_id` identifies the original point and decimal-string
+`metric.sample_index` distinguishes replay rows. `metric.integer_value` truncates
+toward zero only within the signed 64-bit range. `nonnegative` is a per-mapping
+policy, not an instrument-name rule.
+
+Attribute `projections` select `attributes`, `resource`, or `scope`, a `prefix`,
+`key_encoding: "hex"`, optional string-only `aliases`, and optional `type_prefix`.
+Complex attribute values retain serialized OTLP wrappers; companion type keys
+use the final projected key. Other facts include `metric.value`, `metric.unit`,
+`metric.kind`, `metric.temporality`, `metric.monotonic` for sums, decimal-string
+`metric.start_time_unix_nano`/`metric.time_unix_nano`, and resource/scope metadata.
+Monotonic counters and histograms use delta temporality. Up/down counters remain
+cumulative, so active-work totals survive repeated collection.
+
+The in-process queue is limited to 1,024 records and 8 MiB, including in-flight
+reservations. Native trace records are limited to 2 MiB; an oversized span does
+not discard neighboring valid spans. Requests contain at most 1,000 records and
+8 MiB. Export has a 10-second budget, never follows redirects, and never retries
+uncertain delivery. Queue drops and failures produce bounded standard diagnostics.
+There is no disk replay; local journals remain authoritative.
+
+### Explicit validation, upload, and MCP
+
+Profiles may also declare `inputs` and `tools`. Each input owns its JSON Schema,
+optional recursive camel-key normalization or collision checking, missing-only
+defaults, blank-string removal, batch `items_path`, record schema, bounded CEL
+rules, and object fields to serialize once. Schema format/content checks are
+enabled; external schema references are forbidden. Strict JSON decoding rejects
+duplicate keys, trailing input, invalid UTF-8, and nesting beyond 32 levels.
+Input is capped at 16 MiB and embedded native JSON at 2 MiB.
+
+```text
+goobers telemetry onecollector upload --profile-file <profile> --input <name> --validate-only
+goobers telemetry onecollector upload --profile-file <profile> --input <name>
+goobers telemetry onecollector mcp --profile-file <profile>
+```
+
+Upload reads one JSON value from stdin. Validation performs the full preparation
+and serialization without reading the opt-in variable, resolving keys, or sending
+data. Receipts report `validated`, `uploaded`, `disabled`, `validation`, `internal`,
+`network`, `timeout`, `cancelled`, or `http`; successful HTTP receipts retain the
+actual response status. Disabled upload exits successfully without sending data.
+Its receipt still reports `success: false`, and MCP reports `isError: true`.
+Explicit inputs are deliberately not scrubbed: validated caller content, including
+embedded JSON strings and exact numeric tokens, is preserved. Do not submit secrets
+that should not reach the configured destination.
+
+CEL rules see `input` and exact JSON `tokens` indexed by dotted paths. Helpers
+include `jsonParse(text[, collisionCheck])`, `jsonToken(text, path)`,
+`jsonStringify(value)`, `jsonDepth(value)`, `jsonObjects(value)`,
+`utf16Length(text)`, `signedDecimal(text)`, `unsignedDecimal(text)`,
+`canonicalBase64(text)`, `validTimestamp(text)`, and `uniqueStrings(list)`.
+String uniqueness uses a bounded, linear-time lookup rather than nested list scans.
+Signed/unsigned integers
+remain distinct exact CEL values; decimal adaptation is only for validation,
+never publication. Rules have expression-size and execution-cost limits.
+Native mappings can select decoded fields through
+`input_json.<record-field>.<path>` without changing the original string.
+
+MCP reuses Goobers' bounded newline-delimited stdio transport. Only the profile's
+tool names, descriptions, argument schemas, selected input, optional payload path,
+and Boolean validation switch are exposed. Discovery does not resolve upload
+credentials. Validation and upload results use standard text content and
+`isError`; malformed tool-call parameters remain JSON-RPC errors.
+
 ## Cloud analytics scope
 
 `goobers-cloud` deliberately does not host the full local `telemetry.db`

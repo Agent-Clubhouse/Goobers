@@ -548,12 +548,25 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
 	"telemetry configure": {
+		{name: "onecollector-profile-file", takesArg: true, desc: "Absolute path to protected OneCollector JSON profile"},
 		{name: "connection-string-env", takesArg: true, desc: "Environment variable containing the Application Insights connection string"},
 		{name: "connection-string-file", takesArg: true, desc: "Protected file containing the Application Insights connection string"},
 		{name: "connection-string-store", takesArg: true, desc: "Declared secret-store reference in STORE/SECRET form"},
 		{name: "profile", takesArg: true, values: []string{"health", "journal", "standard", "diagnostic"}, desc: "Telemetry collection profile"},
 		{name: "disable", desc: "Remove the direct Azure Monitor destination"},
 		{name: "json", desc: "Emit JSON"},
+	},
+	"telemetry onecollector": {
+		{name: "capabilities", desc: "Report protected profile support"},
+		{name: "json", desc: "Emit JSON"},
+	},
+	"telemetry onecollector upload": {
+		{name: "profile-file", takesArg: true, desc: "Protected profile file"},
+		{name: "input", takesArg: true, desc: "Profile input name"},
+		{name: "validate-only", desc: "Validate without resolving secrets or sending data"},
+	},
+	"telemetry onecollector mcp": {
+		{name: "profile-file", takesArg: true, desc: "Protected profile file"},
 	},
 	"telemetry test": {
 		{name: "destination", takesArg: true, desc: "Named Azure destination to probe"},

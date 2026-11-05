@@ -218,7 +218,8 @@ _goobers_completion()
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
-                configure) flags+=" --connection-string-env --connection-string-file --connection-string-store --profile --disable --json" ;;
+                onecollector) flags+=" --capabilities --json" ;;
+                configure) flags+=" --onecollector-profile-file --connection-string-env --connection-string-file --connection-string-store --profile --disable --json" ;;
                 test) flags+=" --destination --json --timeout" ;;
                 merges) flags+=" --compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
                 stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
@@ -462,7 +463,9 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact"
+                candidates="onecollector configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact"
+            elif [[ "${COMP_WORDS[2]:-}" == "onecollector" ]] && (( COMP_CWORD == 3 )); then
+                candidates="upload mcp"
             fi
             ;;
         journal)
