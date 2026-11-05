@@ -242,6 +242,9 @@ type PodExecutorWiring struct {
 	Grants          []credentials.Grant
 	AdapterRegistry *harness.Registry
 	HarnessInfo     HarnessPreflightInfo
+	// Observer is the advisory decision-gate shadow observer; nil when the
+	// instance did not opt in.
+	Observer harness.Observer
 }
 
 // PodAgenticExecutorInput assembles the executor input for a pod stage.
@@ -283,6 +286,7 @@ func PodAgenticExecutorInput(w PodExecutorWiring) AgenticExecutorInput {
 		SandboxPosture:  instance.SandboxPosture(w.Kit.SandboxPosture),
 
 		SecretRegistrar: w.Registry,
+		Observer:        w.Observer,
 
 		AgenticAdapter: NewAgenticAdapter,
 	}
