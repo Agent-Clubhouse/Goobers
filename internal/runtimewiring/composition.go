@@ -192,6 +192,7 @@ func BuildExecutorConfig(input ExecutorCompositionInput) (ExecutorConfig, *workt
 					SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: NewAgenticAdapter,
 					GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg),
 					MCPServers:             servers, MCPServersSet: servers != nil,
+					DecisionGate: cfg.DecisionGate,
 				})
 			}
 			goober, err := ordinary()

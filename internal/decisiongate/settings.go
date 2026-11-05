@@ -45,6 +45,60 @@ type Settings struct {
 	// mode. Zero means 1.
 	ShadowSample float64 `json:"shadowSample,omitempty" yaml:"shadowSample,omitempty"`
 	Gate         Config  `json:"gate,omitempty" yaml:"gate,omitempty"`
+	// AgentTool optionally exposes a budgeted decide tool to named agent tasks.
+	// Absent or with no tasks means no agent stage can call the model.
+	AgentTool *AgentTool `json:"agentTool,omitempty" yaml:"agentTool,omitempty"`
+}
+
+// AgentTool grants the decide MCP tool to specific agent tasks. Denied by
+// default: only tasks listed here ever see the tool.
+type AgentTool struct {
+	// Tasks are the task IDs granted the tool.
+	Tasks []string `json:"tasks,omitempty" yaml:"tasks,omitempty"`
+	// MaxCalls bounds model calls per stage invocation. Zero means 5.
+	MaxCalls int `json:"maxCalls,omitempty" yaml:"maxCalls,omitempty"`
+}
+
+// Agent-tool call budget bounds.
+const (
+	DefaultAgentToolMaxCalls = 5
+	MaxAgentToolMaxCalls     = 50
+)
+
+// Granted reports whether taskID may use the decide tool.
+func (a *AgentTool) Granted(taskID string) bool {
+	if a == nil || taskID == "" {
+		return false
+	}
+	for _, t := range a.Tasks {
+		if t == taskID {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveMaxCalls applies the default budget.
+func (a *AgentTool) EffectiveMaxCalls() int {
+	if a == nil || a.MaxCalls == 0 {
+		return DefaultAgentToolMaxCalls
+	}
+	return a.MaxCalls
+}
+
+func (a *AgentTool) validate() error {
+	if a == nil {
+		return nil
+	}
+	if a.MaxCalls < 0 || a.MaxCalls > MaxAgentToolMaxCalls {
+		return fmt.Errorf("decisionGate.agentTool.maxCalls must be within 0..%d", MaxAgentToolMaxCalls)
+	}
+	for _, t := range a.Tasks {
+		if t == "" || t == "*" {
+			return errors.New("decisionGate.agentTool.tasks must name specific task ids")
+		}
+	}
+	return nil
 }
 
 // Credential kinds for Settings.Auth.
@@ -108,6 +162,9 @@ func (s *Settings) Validate() error {
 	}
 	if s.ShadowSample < 0 || s.ShadowSample > 1 {
 		return errors.New("decisionGate.shadowSample must be within 0..1")
+	}
+	if err := s.AgentTool.validate(); err != nil {
+		return err
 	}
 	return s.Gate.Validate()
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/externaltelemetry/adx"
@@ -580,8 +581,10 @@ type AgenticExecutorInput struct {
 	SecretRegistrar  stageexec.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
 	ChildWorkflows   harness.ChildWorkflowAccessProvider
-	MCPServers       []apiv1.MCPServer
-	MCPServersSet    bool
+	// DecisionGate grants the decide tool to tasks named in agentTool (local runner only).
+	DecisionGate  *decisiongate.Settings
+	MCPServers    []apiv1.MCPServer
+	MCPServersSet bool
 
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
@@ -656,6 +659,7 @@ func BuildAgenticExecutor(input AgenticExecutorInput) (invoke.Goober, error) {
 		harness.WithMCPServers(spec.MCPServers),
 		harness.WithTools(spec.Tools),
 		harness.WithChildWorkflowAccess(input.ChildWorkflows),
+		harness.WithDecisionGate(input.DecisionGate),
 	}
 	if spec.TimeoutSeconds > 0 {
 		opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))

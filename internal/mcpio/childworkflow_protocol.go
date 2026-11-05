@@ -4,6 +4,9 @@ import "github.com/goobers/goobers/internal/apicontract/childworkflowwire"
 
 func (s *Server) toolDefs() []toolDef {
 	definitions := toolDefs()
+	if len(DecideToolNames(s.tools.cfg.Decide)) > 0 {
+		definitions = append(definitions, decideToolDef(s.tools.decideQuestionNames()))
+	}
 	if len(ChildWorkflowToolNames(s.tools.cfg.ChildWorkflows, s.tools.cfg.RunID)) == 0 {
 		return definitions
 	}

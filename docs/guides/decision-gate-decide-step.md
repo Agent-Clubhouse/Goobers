@@ -50,3 +50,39 @@ The result file contains `decision` (`yes`, `no`, `uncertain` or
 - When the gate is off the command fails with a clear message. Pass
   `--optional` to report `unavailable` and exit 0 instead, which makes the
   step safe to leave in a shared workflow.
+
+## Let an agent stage call it
+
+Agent stages can ask the same question through a `decide` MCP tool. It is
+denied by default: a task sees the tool only when it is listed under
+`decisionGate.agentTool.tasks`, and only while the gate is `shadow` or
+`enforce`.
+
+```yaml
+decisionGate:
+  mode: shadow
+  auth: entra
+  baseURLEnv: DECISION_BASE_URL
+  modelEnv: DECISION_MODEL
+  fallback: agent
+  agentTool:
+    tasks: [review-handoff]   # specific task ids; no wildcards
+    maxCalls: 5               # model calls per stage invocation (max 50)
+  gate:
+    thresholds:
+      handoff-complete: {accept: 0.9, reject: 0.1}
+```
+
+- The tool takes `name`, `question`, `state` and optional `true`/`false`
+  text. `name` must be a threshold configured under `gate.thresholds`, so the
+  instance controls which questions exist and where their cut-offs sit.
+- The agent never receives the endpoint or credential. The tool runs in the
+  runner's MCP server and resolves them from that process's environment or
+  ambient identity.
+- Calls past `maxCalls` are refused. With `gate.cacheEntries` set, identical
+  questions about identical state reuse the digest cache and are not re-sent
+  (they still count against the budget).
+- The result is `decision`, `probability`, `mode`, `stateDigest`,
+  `callsRemaining` and, when uncertain, `fallback`. In `shadow` mode the
+  decision is always `uncertain`.
+- This applies to the local runner. Worker pods do not receive the grant.
