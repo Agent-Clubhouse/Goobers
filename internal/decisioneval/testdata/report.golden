@@ -1,0 +1,22 @@
+question: claims_bad_input
+threshold (chosen on 14 tune items): accept=0.70 reject=0.30
+
+[system-one] report-split n=44 positives=22 negatives=22
+  false-pass=1 false-block=0 unsure=2 errors=0
+  recall=95.5% (21/22)
+  precision=100.0% (21/21)
+  false-alarm=0.0% (0/22)
+  unsure=4.5% (2/44)
+  determinism=100.0% (44/44) over 3 runs
+  brier=0.0099 (n=44)
+
+[llm-judge] report-split n=44 positives=22 negatives=22
+  false-pass=3 false-block=2 unsure=0 errors=0
+  recall=86.4% (19/22)
+  precision=90.5% (19/21)
+  false-alarm=9.1% (2/22)
+  unsure=0.0% (0/44)
+  determinism=100.0% (44/44) over 3 runs
+
+agreement(system-one, llm-judge)=90.9% (40/44)
+graduation(shadow->enforce): ready=true: meets sample, false-block and baseline-recall criteria
