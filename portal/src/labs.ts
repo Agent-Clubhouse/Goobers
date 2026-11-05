@@ -22,6 +22,17 @@ export interface LabsFeature {
   issues: number[];
   /** Where the feature can be used today, for features that ship outside Labs. */
   surfaces?: LabsSurface[];
+  /** Steps to try the feature on your own instance, or to prepare for it while it is coming soon. */
+  tryIt: LabsStep[];
+  /** How to wire the feature into workflows once it has been tried. */
+  integrate: LabsStep[];
+}
+
+export interface LabsStep {
+  title: string;
+  detail: string;
+  /** Command or configuration to copy, shown as a code block. */
+  code?: string;
 }
 
 export type LabsSurface =
@@ -69,6 +80,58 @@ export const labsFeatures: readonly LabsFeature[] = [
         description: "Score a child workflow proposal's novelty against a saved cluster model.",
       },
     ],
+    tryIt: [
+      {
+        title: "Look at the cluster map",
+        detail:
+          "The map above clusters this instance's configured workflows by structure. Each cluster lists its members, " +
+          "its most typical workflow (medoid), and the features that set it apart. Workflows that fit no cluster are noise.",
+      },
+      {
+        title: "Run it from the CLI",
+        detail:
+          "Fit the same model in a terminal. Stability below 0.6 (UNSTABLE) means the cluster may not survive resampling, " +
+          "which is common on instances with only a handful of workflows.",
+        code: "goobers workflow clusters ./instance",
+      },
+      {
+        title: "Check the clusters are not just your gaggles",
+        detail:
+          "If cluster membership simply mirrors which gaggle a workflow belongs to, the clusters tell you about " +
+          "organization, not convergence. The confound check reports Cramér's V and a permutation p-value.",
+        code: "goobers workflow clusters --stratify gaggle ./instance",
+      },
+      {
+        title: "Cluster by how runs behave",
+        detail:
+          "Behavior clustering reads retained run journals (stages run, retries, gate outcomes, children spawned) " +
+          "instead of workflow structure. Workflows that look different can behave alike, and the reverse.",
+        code: "goobers workflow clusters --features behavior --since 168h ./instance",
+      },
+    ],
+    integrate: [
+      {
+        title: "Save a reference model",
+        detail: "Fit a model on workflows you trust and keep the JSON next to your instance configuration.",
+        code: "goobers workflow clusters --json ./instance > clusters.json",
+      },
+      {
+        title: "Score dynamic child workflows for novelty",
+        detail:
+          "When an agent proposes a child workflow, validate it against the saved model. The report says which " +
+          "cluster the proposal resembles, or flags it as novel so a human reviews it more closely. Novelty is advisory " +
+          "and never blocks validation.",
+        code:
+          "goobers workflow validate-child --gaggle <gaggle> --parent <workflow> --stage <stage> \\\n" +
+          "  --cluster-model clusters.json proposal.yaml ./instance",
+      },
+      {
+        title: "Refit as workflows change",
+        detail:
+          "Refit after adding or changing workflows. The model hash changes whenever the feature schema or inputs change, " +
+          "so compare hashes to know whether two reports are comparable.",
+      },
+    ],
   },
   {
     id: "backprop",
@@ -95,6 +158,42 @@ export const labsFeatures: readonly LabsFeature[] = [
       },
       { kind: "docs", label: "Backprop guide", path: "docs/guides/backprop.md" },
     ],
+    tryIt: [
+      {
+        title: "Observe a whole gaggle in shadow mode",
+        detail:
+          "Shadow mode changes nothing: it never files findings or affects gates. Set it on a Gaggle to observe all " +
+          "of its workflows without editing them.",
+        code: "kind: Gaggle\nspec:\n  backprop:\n    mode: shadow",
+      },
+      {
+        title: "Let some runs finish, then read the report",
+        detail: "Only runs that start after you enable shadow mode are analyzed. The report shows what Backprop would have attributed.",
+        code: "goobers telemetry shadow ./instance",
+      },
+      {
+        title: "Browse attribution in the Portal",
+        detail: "Insights → Backprop shows cohorts, credit and blame per stage, and fault-audit findings.",
+      },
+    ],
+    integrate: [
+      {
+        title: "Enroll a workflow",
+        detail:
+          "Backprop needs DSL 3.0 or 3.1 with the preview acknowledgement. Run goobers fix --to 3.0 to migrate an older workflow first.",
+        code:
+          'dslVersion: "3.0"\nmetadata:\n  annotations:\n    goobers.dev/allow-preview-features: "true"\nspec:\n  backprop:\n    enabled: true\n    version: v1',
+      },
+      {
+        title: "Validate and confirm",
+        detail: "goobers status prints backprop: active (v1) under each enrolled workflow.",
+        code: "goobers validate ./instance\ngoobers status ./instance",
+      },
+      {
+        title: "Act on findings",
+        detail: "Record fixes against findings and let Backprop verify them on later runs. See the Backprop guide for details.",
+      },
+    ],
   },
   {
     id: "system-one",
@@ -118,6 +217,37 @@ export const labsFeatures: readonly LabsFeature[] = [
       { kind: "docs", label: "Decide step guide", path: "docs/guides/decision-gate-decide-step.md" },
       { kind: "docs", label: "A/B harness guide", path: "docs/guides/decision-gate-ab-harness.md" },
     ],
+    tryIt: [
+      {
+        title: "Turn on the decision gate in shadow mode",
+        detail:
+          "Add decisionGate to the instance config. Endpoint and model names come from environment variables, never inline. " +
+          "In shadow mode the model is called and recorded, but every decision is reported as uncertain.",
+        code:
+          "decisionGate:\n  mode: shadow          # off | shadow | enforce\n  auth: entra           # omit to use a key from keyEnv\n  baseURLEnv: DECISION_BASE_URL\n  modelEnv: DECISION_MODEL\n  fallback: agent       # agent | escalate | fail",
+      },
+      {
+        title: "Ask a question by hand",
+        detail: "Try a yes/no question against a JSON file before putting it in a workflow.",
+        code: 'goobers decide --name handoff-complete --question "Does the summary address every requested item?" --state-file handoff.json',
+      },
+    ],
+    integrate: [
+      {
+        title: "Add a decide stage",
+        detail:
+          "A deterministic stage writes yes, no, uncertain or unavailable to its result file. Pass --optional so the stage " +
+          "is safe in shared workflows when the gate is off.",
+        code:
+          "- name: judge-handoff\n  type: deterministic\n  run:\n    command: [goobers, decide, --name, handoff-complete,\n              --question, \"Does the summary address every requested item?\",\n              --state-file, handoff.json, --accept, \"0.9\", --reject, \"0.1\", --optional]\n  inputs:\n    resultFile: decide.json",
+      },
+      {
+        title: "Compare against an LLM judge, then enforce",
+        detail:
+          "Use the A/B harness to compare the decision model with the LLM-judge baseline. Switch decisionGate.mode to " +
+          "enforce only once its accuracy is acceptable.",
+      },
+    ],
   },
   {
     id: "workflow-gym",
@@ -132,6 +262,21 @@ export const labsFeatures: readonly LabsFeature[] = [
     availability: "coming-soon",
     prerequisites: ["Retained historical runs to replay", "Candidate workflow versions to compare"],
     issues: [3594, 3598],
+    tryIt: [
+      {
+        title: "Not implemented yet",
+        detail:
+          "There is nothing to run today. To get ready, keep run journals retained: replay suites will be built from them.",
+      },
+    ],
+    integrate: [
+      {
+        title: "Planned: gate promotion on a tournament",
+        detail:
+          "A candidate workflow version will run against the same replayed and synthetic tasks as the current version, " +
+          "and will only be promoted to shadow or A/B when it does not regress.",
+      },
+    ],
   },
   {
     id: "rszz-review-eval",
@@ -146,6 +291,22 @@ export const labsFeatures: readonly LabsFeature[] = [
     availability: "coming-soon",
     prerequisites: ["Merged bug fixes linked to bug issues", "Recorded merge-review agent comments"],
     issues: [7112],
+    tryIt: [
+      {
+        title: "Not implemented yet",
+        detail:
+          "There is nothing to run today. To get ready, link bug-fix pull requests to their bug issues: those links are " +
+          "the ground truth R-SZZ traces back to the change that introduced the bug.",
+      },
+    ],
+    integrate: [
+      {
+        title: "Planned: score reviewer changes offline",
+        detail:
+          "Before changing the merge-review agent's prompt, model, or instructions, you will be able to replay it on " +
+          "historical bug-introducing changes and compare its recall and precision with the current reviewer.",
+      },
+    ],
   },
 ];
 export function findLabsFeature(id: string | undefined): LabsFeature | undefined {

@@ -8,6 +8,7 @@ import {
   labsIssueBaseUrl,
   labsMaturityLabel,
   type LabsFeature,
+  type LabsStep,
   type LabsSurface,
 } from "../labs";
 import { routeHash } from "../routing";
@@ -77,6 +78,22 @@ function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature:
       </p>
       {view?.(client)}
       <section className="content-section labs-detail">
+        <p className="labs-status">
+          {feature.availability === "available" ? (
+            <>
+              <strong>Ready to try.</strong> This feature is implemented and works on your instance today.
+            </>
+          ) : (
+            <>
+              <strong>Planned.</strong> This feature is not implemented yet. The steps below describe how you will use it.
+            </>
+          )}
+        </p>
+        <h2>{feature.availability === "available" ? "Try it" : "Get ready"}</h2>
+        <LabsSteps steps={feature.tryIt} />
+        <h2>{feature.availability === "available" ? "Use it in your workflows" : "How it will fit your workflows"}</h2>
+        <LabsSteps steps={feature.integrate} />
+        <h2>How it works</h2>
         <p>{feature.description}</p>
         {feature.surfaces && feature.surfaces.length > 0 && (
           <>
@@ -126,6 +143,24 @@ function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature:
         </section>
       )}
     </>
+  );
+}
+
+function LabsSteps({ steps }: { steps: LabsStep[] }) {
+  return (
+    <ol className="labs-steps">
+      {steps.map((step) => (
+        <li key={step.title}>
+          <strong>{step.title}</strong>
+          <p>{step.detail}</p>
+          {step.code && (
+            <pre className="labs-code">
+              <code>{step.code}</code>
+            </pre>
+          )}
+        </li>
+      ))}
+    </ol>
   );
 }
 

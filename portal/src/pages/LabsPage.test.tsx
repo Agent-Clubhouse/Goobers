@@ -86,7 +86,7 @@ describe("LabsPage", () => {
       "href",
       "#/insight?section=backprop",
     );
-    expect(screen.getByText(/goobers telemetry shadow/)).toBeInTheDocument();
+    expect(screen.getByText(/goobers telemetry shadow \[--gaggle/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Backprop guide" })).toHaveAttribute(
       "href",
       "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/backprop.md",
@@ -162,6 +162,19 @@ describe("LabsPage", () => {
     renderLabs(fixtureClient(), "workflow-gym");
     expect(screen.queryByRole("heading", { name: "Where to find it" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Not available yet" })).toBeInTheDocument();
+    expect(screen.getByText(/This feature is not implemented yet\./)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Get ready" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Try it" })).not.toBeInTheDocument();
+  });
+
+  it("walks users through trying a shipped feature and wiring it into workflows", () => {
+    renderLabs(fixtureClient(), "workflow-clustering");
+
+    expect(screen.getByText(/works on your instance today/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Try it" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Use it in your workflows" })).toBeInTheDocument();
+    expect(screen.getByText("goobers workflow clusters --stratify gaggle ./instance")).toBeInTheDocument();
+    expect(screen.getByText(/--cluster-model clusters\.json proposal\.yaml/)).toBeInTheDocument();
   });
   it("falls back to the catalog for an unknown feature", () => {
     renderLabs(fixtureClient(), "does-not-exist");
