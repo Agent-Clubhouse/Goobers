@@ -78,10 +78,63 @@ These gaps are tracked under the Backprop scopes epic
 ## Scoped verification evidence
 
 An explicitly opted-in **deterministic** checker adapter can publish scoped
-verification evidence. This integration does not install a prover, check a
-proof itself, or trust an agent's claim that its proof passed. A reviewed
-checker wrapper invokes the independent checker and writes one JSON report
-to stdout; ordinary logging belongs on stderr:
+verification evidence. The shipped `kind: tlc` adapter actually executes a
+pinned independent TLC checker against a bounded finite transition graph or
+an explicitly opted-in, entirely operator-reviewed native TLA+ model.
+It snapshots candidate bytes separately from operator-reviewed specification,
+configuration, and tool/runtime bytes, records execution evidence, and publishes
+a runner-owned report. It neither trusts agent-authored success reports nor
+downloads production tools. See the [complete offline setup and example](../../examples/backprop-tlc/README.md).
+
+```yaml
+tasks:
+  - name: verify-model
+    type: deterministic
+    run:
+      command: ["tlc"]
+      workspace: repo
+    inputs:
+      kind: tlc
+      tlcManifest: manifest.json
+      tlcModel: examples/backprop-tlc/positive.json
+      timeout: 30s
+```
+
+This opt-in path uses the local self runner and existing shell process/trust
+safeguards. It requires no credentials. The exact `command: ["tlc"]` is a
+declarative built-in marker, never PATH-resolved or executed: the runner builds
+the pinned Java/TLC command. Other commands, arguments, scripts, and environment
+overrides are refused; global command/script admission guards remain unchanged.
+The [complete workflow example](../../examples/backprop-tlc/workflow.yaml) is
+schema-validated, compiled, and dispatched through production registration by
+the integration test. The manifest lives in
+the runner's selected configuration directory, outside the agent-editable
+checkout. Editable graphs contain integer states/edges only: arbitrary candidate
+TLA+, unchecked assumptions, admitted obligations, and module substitutions are
+not accepted as candidate inputs. An invariant violation requires TLC's concrete trace and exit 12;
+only completed model checking with an empty state queue can report `proven`.
+Missing/mismatched tools or changed spec/config fail closed; timeout, crash,
+truncation, simulation, and incomplete checks never report proven. Successful
+stage execution means the adapter completed its report, **not** that the outcome
+is proven or that any gate approved the candidate.
+
+The claim is limited to the exact finite graph and reviewed invariant.
+Deadlocks/liveness and Go refinement are not checked; reports explicitly retain
+TLC's 64-bit fingerprint collision caveat. This is not an unbounded program
+proof. Model-checking Goobers itself is separate work in
+[#8314](https://github.com/Agent-Clubhouse/Goobers/issues/8314). Its native assets
+can be checked directly with manifest `mode: reviewed-native`, a pinned module,
+source and config under trusted runner config, and **no** `tlcModel` input.
+Keep the same command marker; native mode may use `workspace: scratch`.
+Only closed `Naturals`/`Integers` imports and explicit invariant configuration
+are supported. The requested invariant must be configured; additional invariants
+such as `TypeOK` remain enforced. The report binds the actual native source
+bytes and finite bounds, never a graph translation or a Go correctness claim.
+See the example's [native-mode boundaries](../../examples/backprop-tlc/README.md#reviewed-native-tla-mode).
+
+The lower-level shell integration remains available for an operator-supplied,
+reviewed adapter. Such a wrapper must itself invoke the independent checker
+and write one JSON report to stdout; ordinary logging belongs on stderr:
 
 ```yaml
 tasks:
@@ -93,12 +146,9 @@ tasks:
       verificationReport: "true"
 ```
 
-`trusted-checker-wrapper` is a placeholder for an operator-supplied, reviewed
-adapter, not a shipped command. Keep the checker, specification, and execution
-policy outside agent-editable implementation/proof inputs. Independent checker
-execution is tracked in [#8313](https://github.com/Agent-Clubhouse/Goobers/issues/8313);
-model-checking Goobers itself is separate work in
-[#8314](https://github.com/Agent-Clubhouse/Goobers/issues/8314).
+`trusted-checker-wrapper` is not a shipped command and that shell opt-in does
+not run an independent checker by itself. Keep its checker, specification,
+and execution policy outside agent-editable implementation/proof inputs.
 
 The report contract (`goobers.dev/backprop/verification/v1`) is published in
 [`backprop-verification-v1.schema.json`](../../api/schemas/backprop-verification-v1.schema.json)
@@ -127,7 +177,7 @@ unsupported constructs, or incomplete obligations are inconclusive unless a
 violation was independently established. Wrappers must not report `proven`
 for admitted obligations, unapproved assumptions, or a weakened specification.
 
-The executor captures fresh stdout and emits a runner-owned annotation only
+The shell executor captures fresh stdout and emits a runner-owned annotation only
 after a successful command result. Nonzero exits, cancellation, executor errors,
 and truncated output cannot become verification evidence. A valid report's
 `inconclusive` or `counterexample` outcome may accompany exit zero: that means
