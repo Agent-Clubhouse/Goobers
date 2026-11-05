@@ -21,6 +21,8 @@ type View struct {
 	MinClusterSize int             `json:"minClusterSize"`
 	Model          *Model          `json:"model,omitempty"`
 	Confounds      *ConfoundReport `json:"confounds,omitempty"`
+	// Map places every workflow in two dimensions for the Portal's scatter map.
+	Map []MapPoint `json:"map,omitempty"`
 }
 
 // ConfiguredSource serves the cluster View of the instance rooted at Root.
@@ -50,5 +52,6 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	view.Status = ViewClustered
 	view.Model = &model
 	view.Confounds = &confounds
+	view.Map = Project(model, points)
 	return view, nil
 }

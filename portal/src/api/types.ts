@@ -2269,6 +2269,16 @@ export interface LabsWorkflowClusterView {
   minClusterSize: number;
   model?: LabsClusterModel;
   confounds?: LabsConfoundReport;
+  /** 2-D layout of every workflow (classical MDS of the model distances). */
+  map?: LabsClusterMapPoint[];
+}
+
+export interface LabsClusterMapPoint {
+  id: string;
+  x: number;
+  y: number;
+  /** Empty or absent for noise. */
+  cluster?: string;
 }
 
 export interface DaemonClient {
