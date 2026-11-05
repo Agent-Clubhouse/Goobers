@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // recoveryInventoryWarnings returns the high-water records an operator would
@@ -103,8 +104,8 @@ func TestRecoveryInventoryGateResolvesLimitFromInstanceConfigAtPointOfUse(t *tes
 	if raised.Limit != 100 || raised.State != readservice.RecoveryInventoryHealthy {
 		t.Fatalf("after raising the cap: %+v; want limit 100 and healthy", raised)
 	}
-	if raised.PolicySource != recoveryPolicyFromInstanceConfig {
-		t.Fatalf("PolicySource = %q; want %q", raised.PolicySource, recoveryPolicyFromInstanceConfig)
+	if raised.PolicySource != runtimewiring.RecoveryPolicyFromInstanceConfig {
+		t.Fatalf("PolicySource = %q; want %q", raised.PolicySource, runtimewiring.RecoveryPolicyFromInstanceConfig)
 	}
 
 	// And the other direction: lowering it below the current occupancy must
@@ -287,7 +288,7 @@ func TestServiceHealthRecordCarriesRecoveryInventory(t *testing.T) {
 	sample := &readservice.RecoveryInventoryStatus{
 		State: readservice.RecoveryInventoryWarning, Used: 104, Limit: 128, Unreadable: 2,
 		HighWaterPercent: readservice.RecoveryInventoryHighWaterPercent,
-		InventoryRoot:    "recovery", PolicySource: recoveryPolicyFromInstanceConfig,
+		InventoryRoot:    "recovery", PolicySource: runtimewiring.RecoveryPolicyFromInstanceConfig,
 		EarliestRetainUntil: &deadline,
 	}
 	payload := serviceHealthPayload(observeServiceHealth(t.TempDir(), nil, nil, func() *readservice.RecoveryInventoryStatus { return sample }, time.Unix(1_700_000_000, 0)))

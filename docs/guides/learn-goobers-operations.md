@@ -23,8 +23,9 @@ mutation first.
 
 ## Pause a gaggle or workflow without changing trigger topology
 
-Use `spec.enabled: false` when you need to stop NEW run starts but want to keep the
-existing schedule, backlog, or webhook configuration in place for later reuse.
+Use `spec.enabled: false` when you need to stop NEW run starts but want to keep
+the existing schedule, backlog, or webhook configuration in place for later
+reuse.
 
 ```yaml
 spec:
@@ -34,8 +35,8 @@ spec:
 Set it on either a gaggle or a workflow. Omitted, `null`, or `true` means enabled.
 Disabling does not cancel or rewrite in-flight runs; they finish on their pinned
 definitions. Re-enable by deleting the field or setting it back to `true`. The Portal
-keeps disabled gaggles/workflows visible and clickable, but renders them greyed out so
-operators can spot the paused state quickly.
+keeps disabled gaggles/workflows visible and clickable, but renders them greyed
+out so operators can spot the paused state quickly.
 
 ## Validate the complete operating surface
 
@@ -218,10 +219,129 @@ definition; avoid removing a binary or harness needed to finish it.
 On a cluster with stage pods, upgrade the dispatch worker before the runner
 images. A pod's `goobers` resolves dispatcher-stamped settings that older
 workers do not stamp. An Azure DevOps stage of a named gaggle, for example,
-refuses to run without its gaggle's backlog settings (`GOOBERS_GAGGLE_BACKLOG`,
-#5957). The worker resolves these settings, like the gaggle namespaces and bot
-logins, when it starts, so restart it after adding a Gaggle or changing a
-Gaggle's `backlog` settings.
+refuses to run without its gaggle's backlog settings
+(`GOOBERS_GAGGLE_BACKLOG`, #5957). The worker resolves these settings, like the
+gaggle namespaces and bot logins, when it starts. Restart it after adding a
+Gaggle or changing a Gaggle's `backlog` settings.
+
+### v0.4 → v0.5
+
+Check these operating changes before restarting on v0.5:
+
+#### Copilot CLI minimum
+
+Use **Copilot CLI 1.0.52 or newer**. Goobers appends `--sync-session=off`
+on CLI 1.0.103 and newer, or `--no-remote-export` on older releases, to
+Copilot session invocations; CLIs below 1.0.52 fail harness preflight because they
+cannot honor that flag. Upgrade with `copilot update`, then run
+`goobers validate --check-harness <instance-path>` under the service account.
+Custom forwarding launchers must pass the appended flag through. See
+[the launcher contract](harness-launcher-contract.md#session-export-is-always-disabled)
+and [the v0.5 change](https://github.com/Agent-Clubhouse/Goobers/pull/5992).
+
+#### Temporal worker versioning
+
+`engine.workerVersioning` defaults to `false`: `goobers-cloud worker` polls
+unversioned unless explicitly opted in. An instance already using versioned
+workers, including affected v0.5 betas, must choose a transition path:
+
+- **Keep versioning:** set `engine.workerVersioning: true` before upgrading,
+  then make the new build the Temporal worker deployment's current version
+  after rollout. Keep workers for old builds available until their pinned
+  runs finish.
+- **Drop versioning:** let in-flight engine runs drain on their existing
+  workers, then switch the deployment's current version to unversioned.
+
+Changing the binary alone does not change Temporal's current-version routing.
+A new worker can poll successfully and still receive no tasks. Follow the
+[reference deployment's transition commands](../../deploy/reference/README.md#temporal-worker-versioning-is-opt-in)
+and inspect worker logs and `goobers status` for routing warnings. See
+[the opt-in change](https://github.com/Agent-Clubhouse/Goobers/pull/5993).
+
+#### Duration limits require daemon-backed execution
+
+Without a live daemon, `goobers run` rejects a workflow with an effective
+`runControls.maxRunDuration`, including an inherited limit. Standalone
+execution cannot enforce that watchdog; `--no-wait` does not bypass the
+refusal. Start the daemon, then submit from another terminal:
+
+```sh
+goobers up <instance-path>
+# In another terminal:
+goobers run <workflow> <instance-path>
+```
+
+The run command detects the live daemon and submits through it. See
+[the standalone-run change](https://github.com/Agent-Clubhouse/Goobers/pull/5833).
+
+#### Provider failures can delay startup
+
+During scheduler setup, transient provider identity-verification failures
+(network errors, quota-related 403, 429, or 5xx responses) now make `goobers up`
+wait and retry for up to one hour. Retry warnings report the delay, starting
+at 15 seconds and backing off to five minutes. Permanent authorization or
+configuration failures still fail without this retry loop. A shutdown request
+interrupts the wait cleanly.
+
+A configuration reload rejected by a transient provider failure is retried
+with backoff. The previous valid configuration stays active, and
+`goobers status` reports the rejected candidate and reason. This startup and
+reload behavior does not guarantee retry-until-reset for every later provider
+stage. See [the retry change](https://github.com/Agent-Clubhouse/Goobers/pull/5998).
+
+#### Existing engine HITL opt-ins now take effect
+
+Review any existing `engine.hitl` settings: they survive configuration loading
+and are now honored. With `engine.hitl.enabled: true`, a resumable failed or
+escalated engine run can remain open for operator intervention. Its Temporal
+workflow and scheduler concurrency slot stay occupied during that hold.
+`engine.hitl.window` is retained for the `goobers-cloud` control plane.
+The local `goobers` daemon no longer services engine-run interventions.
+
+### v0.5 → v0.6: plan the DSL 3.x migration
+
+This is a forward-looking migration checklist, using the current **DSL 3.0
+preview** contract. Check the target release's support matrix before rollout;
+binary release versions and workflow `dslVersion` are separate. Keep
+`apiVersion: goobers.dev/v1alpha1` unchanged.
+
+After backing up the Instance, use the target binary to preview the registered
+DSL 2.0 → 3.0 workflow migration, review its diff, then apply it:
+
+```sh
+goobers fix --to 3.0 <instance-path>
+goobers fix --to 3.0 --write <instance-path>
+```
+
+The current starter migration changes one workflow by **+4/-1 lines**: it
+replaces `dslVersion: "2.0"` with `"3.0"`, adds `repoFrom: implement` to
+`push-branch` and `open-pr`, and adds a blank line. Other workflows can produce
+different diffs; inspect each repository handoff instead of copying those
+edges indiscriminately. Migration is explicit, not automatic.
+
+On current main, `fix` does **not** add preview consent. For a deliberate
+preview evaluation, add this annotation to each migrated Workflow's existing
+metadata, preserving its name and other annotations:
+
+```yaml
+metadata:
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+```
+
+A Manifest- or Gaggle-level annotation does not authorize its workflows.
+Validate and inspect the migrated graph before running it:
+
+```sh
+goobers validate <instance-path>
+goobers workflow show <workflow> <instance-path>
+```
+
+Validation currently reports `DVL010` and `3.0 (preview)` after that opt-in;
+without it, loading fails closed. Validate harness and repository access with
+`--check-harness --check-repos`, then prove a bounded manual daemon-backed run
+before restoring autonomous triggers. This checklist does not declare DSL
+3.x stable or promise future migrations beyond the registered 3.0 step.
 
 ## Extend the Instance
 

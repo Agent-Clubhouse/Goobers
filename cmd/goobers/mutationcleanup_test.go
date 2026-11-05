@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -15,7 +17,7 @@ import (
 
 func TestMutationCleanupGuardPersistsReceiptBeforeRemovingWorktree(t *testing.T) {
 	layout := instance.NewLayout(initDeterministicDemo(t))
-	repo, err := repoCloneURL(apiv1.RepoRef{})
+	repo, err := runtimewiring.RepoCloneURL(apiv1.RepoRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +26,7 @@ func TestMutationCleanupGuardPersistsReceiptBeforeRemovingWorktree(t *testing.T)
 		t.Fatal(err)
 	}
 	defer func() { _ = writer.Close() }()
-	manager, err := worktree.NewManager(layout.WorkcopiesDir(), mutationCleanupGuard(layout.RunsDir()))
+	manager, err := worktree.NewManager(layout.WorkcopiesDir(), runtimewiring.MutationCleanupGuard(layout.RunsDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +76,7 @@ func TestMutationCleanupGuardPersistsReceiptBeforeRemovingWorktree(t *testing.T)
 
 func TestPinnedCleanupImportsIntoPreviousOwnersJournal(t *testing.T) {
 	layout := instance.NewLayout(initDeterministicDemo(t))
-	repo, err := repoCloneURL(apiv1.RepoRef{})
+	repo, err := runtimewiring.RepoCloneURL(apiv1.RepoRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +85,7 @@ func TestPinnedCleanupImportsIntoPreviousOwnersJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = writer.Close() }()
-	manager, err := worktree.NewManager(layout.WorkcopiesDir(), mutationCleanupGuard(layout.RunsDir()))
+	manager, err := worktree.NewManager(layout.WorkcopiesDir(), runtimewiring.MutationCleanupGuard(layout.RunsDir()))
 	if err != nil {
 		t.Fatal(err)
 	}

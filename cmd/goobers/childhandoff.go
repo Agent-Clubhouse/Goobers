@@ -276,7 +276,7 @@ func (h *daemonChildHandoff) SuspendChildParent(ctx context.Context, runID strin
 	if err != nil {
 		return nil, err
 	}
-	scheduler := s.childDispatch.sched.Load()
+	scheduler := s.childDispatch.Scheduler()
 	if scheduler == nil {
 		return nil, fmt.Errorf("child wait scheduler is unavailable")
 	}

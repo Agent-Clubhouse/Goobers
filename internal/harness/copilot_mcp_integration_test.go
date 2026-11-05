@@ -161,8 +161,9 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServersAndTools(t *testing.
 		),
 		MCPServers: []apiv1.MCPServer{
 			{
-				Name:    "declared-stdio",
-				Command: os.Args[0],
+				Name:     "declared-stdio",
+				Required: mcpRequiredFlag(false),
+				Command:  os.Args[0],
 				Args: []string{
 					"-test.run=^TestCopilotMCPStdioServerHelper$",
 					stdioMCPMarkerArg,
@@ -180,8 +181,9 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServersAndTools(t *testing.
 				},
 			},
 			{
-				Name: "declared-remote",
-				URL:  declaredRemote.URL,
+				Name:     "declared-remote",
+				Required: mcpRequiredFlag(false),
+				URL:      declaredRemote.URL,
 				CredentialRefs: []apiv1.MCPCredentialRef{{
 					Capability: "github:issues:write",
 					Header:     "Authorization",

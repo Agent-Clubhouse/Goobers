@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -234,6 +235,93 @@ func TestAdmitWithoutBudgetDefaultsToBoundedRate(t *testing.T) {
 	c.mu.Unlock()
 	if got != 10 {
 		t.Fatalf("starts[wf] = %d entries, want exactly 10 — bounded by the default budget, not unbounded", got)
+	}
+}
+
+func TestDisableCadenceBudgetsWithReconciledHistory(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name        string
+		readiness   apiv1.ReadinessConditions
+		hourly      map[string]int
+		daily       map[string]int
+		wantBlocked string
+	}{
+		{name: "default hourly", wantBlocked: ReasonBudget},
+		{name: "workflow hourly", readiness: apiv1.ReadinessConditions{MaxRunsPerHour: 2}, wantBlocked: ReasonBudget},
+		{name: "workflow daily", readiness: apiv1.ReadinessConditions{MaxRunsPerHour: 100, MaxRunsPerDay: 2}, wantBlocked: ReasonDailyBudget},
+		{name: "instance hourly", hourly: map[string]int{"wf": 2}, wantBlocked: ReasonBudget},
+		{name: "instance daily", readiness: apiv1.ReadinessConditions{MaxRunsPerHour: 100}, daily: map[string]int{"wf": 2}, wantBlocked: ReasonDailyBudget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, disabled := range []bool{false, true} {
+				t.Run(map[bool]string{false: "bounded", true: "unthrottled"}[disabled], func(t *testing.T) {
+					c := NewConditions()
+					c.SetInstanceLimits(1, tc.hourly, tc.daily)
+					c.SetCadenceBudgetsDisabled(disabled)
+					history := make([]time.Time, 24)
+					for i := range history {
+						history[i] = now.Add(-time.Duration(len(history)-i) * time.Minute)
+						if i < 12 {
+							history[i] = history[i].Add(-2 * time.Hour)
+						}
+					}
+					c.ReconcileBudget(map[string][]time.Time{"wf": history})
+					for i := 0; i < 12; i++ {
+						ok, reason := c.Admit("wf", tc.readiness, now)
+						if !disabled {
+							if ok || reason != tc.wantBlocked {
+								t.Fatalf("bounded admit = %v, %q; want %q", ok, reason, tc.wantBlocked)
+							}
+							return
+						}
+						if !ok {
+							t.Fatalf("unthrottled admit %d: %s", i, reason)
+						}
+						c.Release("wf")
+					}
+					if got := len(c.starts[WorkflowIdentity{Workflow: "wf"}]); got != 36 {
+						t.Fatalf("recorded starts = %d, want all 24 prior and 12 new admissions", got)
+					}
+					c.SetCadenceBudgetsDisabled(false)
+					if ok, reason := c.Admit("wf", tc.readiness, now); ok || reason != tc.wantBlocked {
+						t.Fatalf("re-enabled ceilings = %v, %q; want %q", ok, reason, tc.wantBlocked)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDisableCadenceBudgetsPreservesOtherConditions(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name  string
+		setup func(*Conditions)
+		want  string
+	}{
+		{"workflow concurrency", func(c *Conditions) { c.Reconcile(map[string]int{"wf": 1}) }, ReasonMaxParallel},
+		{"instance concurrency", func(c *Conditions) {
+			c.SetInstanceLimits(1, nil, nil)
+			c.Reconcile(map[string]int{"other": 1})
+		}, ReasonInstanceMaxParallel},
+		{"hourly stop", func(c *Conditions) { c.SetInstanceLimits(0, map[string]int{"wf": 0}, nil) }, ReasonBudget},
+		{"daily stop", func(c *Conditions) { c.SetInstanceLimits(0, nil, map[string]int{"wf": 0}) }, ReasonDailyBudget},
+		{"provider quota", func(c *Conditions) {
+			quota := NewProviderQuotaState()
+			quota.RecordExhausted(now.Add(time.Hour))
+			c.SetProviderQuota(quota)
+		}, ReasonProviderQuota},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewConditions()
+			c.SetCadenceBudgetsDisabled(true)
+			tc.setup(c)
+			ok, reason := c.Admit("wf", apiv1.ReadinessConditions{}, now)
+			if ok || !strings.HasPrefix(reason, tc.want) {
+				t.Fatalf("admit = %v, %q; want refusal %q", ok, reason, tc.want)
+			}
+		})
 	}
 }
 

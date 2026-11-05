@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -73,6 +74,15 @@ func registerMutationRoutes(router *Router, interventions InterventionService, l
 
 func stageMutationHandler(action string, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
+		// An intervention must answer even when a collaborator panics. This
+		// boundary cannot promise rollback: the idempotency key and journal
+		// remain authoritative when the operator retries after an error.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				errorLog.Printf("%s run intervention panicked: %v\n%s", action, recovered, debug.Stack())
+				writeError(w, http.StatusInternalServerError, "intervention_failed", "run intervention failed; inspect the run journal before retrying with the same Idempotency-Key")
+			}
+		}()
 		if interventions == nil {
 			writeError(w, http.StatusServiceUnavailable, "interventions_unavailable", "run interventions are not available from this server")
 			return

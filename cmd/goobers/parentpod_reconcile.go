@@ -9,6 +9,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/childpod"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
@@ -156,7 +158,7 @@ func (p *parentStagePod) recoveryWorkspace(ctx context.Context, events []journal
 	defer func() { _ = lease.Release() }()
 	set, report, err := loadConfigDirectory(directory)
 	if err != nil {
-		return nil, fmt.Errorf("load parent recovery config: %w (%s)", err, validationIssueSummary(report))
+		return nil, fmt.Errorf("load parent recovery config: %w (%s)", err, runtimewiring.ValidationIssueSummary(report))
 	}
 	for i := range set.Gaggles {
 		gaggle := &set.Gaggles[i]

@@ -2,6 +2,9 @@ package childworkflow
 
 import (
 	"encoding/json"
+	"errors"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -34,6 +37,27 @@ type ChildStartEnvelope struct {
 	PlacementsDigest     string  `json:"placementsDigest"`
 	Backend              Backend `json:"backend"`
 	MaxChildren          int     `json:"maxChildren"`
+	// ExecutionDigest pins the parent's ExecutionBinding. Engine envelopes
+	// require it; runner envelopes omit it and keep their original encoding.
+	ExecutionDigest string `json:"executionDigest,omitempty"`
+}
+
+// ExecutionBinding is where an engine child acts: the parent run's instance,
+// repository and run-branch namespace. It is security-relevant and is never
+// taken from a resolver without matching the digest pinned at acceptance.
+type ExecutionBinding struct {
+	InstanceID      string        `json:"instanceId"`
+	RepoRef         apiv1.RepoRef `json:"repoRef"`
+	BranchNamespace string        `json:"branchNamespace"`
+}
+
+// Digest is the binding's acceptance-time identity.
+func (b ExecutionBinding) Digest() (string, error) {
+	data, err := json.Marshal(b)
+	if err != nil {
+		return "", err
+	}
+	return digest(data), nil
 }
 
 // Identity is the only durable namespace, shared with ordinary queue custody.
@@ -46,8 +70,18 @@ func childStartEnvelope(a Authority, p *Proposal, invocationKey string) (ChildSt
 	if err != nil {
 		return ChildStartEnvelope{}, err
 	}
+	executionDigest := ""
+	if a.Admission.Backend == BackendEngine {
+		if a.Execution == nil {
+			return ChildStartEnvelope{}, errors.New("childworkflow: an engine child requires its parent's execution binding")
+		}
+		if executionDigest, err = a.Execution.Digest(); err != nil {
+			return ChildStartEnvelope{}, err
+		}
+	}
 	return ChildStartEnvelope{
-		Kind: ChildStartKind, Version: 1, Gaggle: a.Origin.Gaggle, ParentRunID: a.Origin.RunID,
+		ExecutionDigest: executionDigest,
+		Kind:            ChildStartKind, Version: 1, Gaggle: a.Origin.Gaggle, ParentRunID: a.Origin.RunID,
 		ParentStage: a.Admission.ParentTask.Name, StageOccurrence: a.Origin.StageOccurrence, InvocationKey: invocationKey,
 		ConfigGeneration: a.ConfigGeneration, ParentWorkflow: a.ParentWorkflow, ParentWorkflowDigest: a.ParentWorkflowDigest, ParentGooberDigest: a.ParentGooberDigest,
 		Workflow: p.Workflow.Name, SourceDigest: p.SourceDigest, CanonicalDigest: p.CanonicalDigest,

@@ -171,6 +171,7 @@ runner:
   harnessPreflightArgs:
     copilot: [--minimal-preflight]
 runConditions:
+  disableCadenceBudgets: true
   maxParallelRuns: 2
   workflowBudgets:
     implementation: 4
@@ -315,6 +316,13 @@ func TestInstanceSchemaRefusesStructurallyImpossibleInstances(t *testing.T) {
 		document string
 		want     string
 	}{
+		{"non-boolean cadence opt-out", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runConditions:
+  disableCadenceBudgets: unlimited
+`, "disableCadenceBudgets"},
 		{"engine hostPort without port", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
@@ -722,5 +730,24 @@ func walkSchemaPatterns(node any, path string, fn func(path, pattern string)) {
 		for i, val := range v {
 			walkSchemaPatterns(val, fmt.Sprintf("%s[%d]", path, i), fn)
 		}
+	}
+}
+
+func TestInstanceSchemaPodSigningKeyFiles(t *testing.T) {
+	schema := compileInstanceSchema(t)
+	for _, test := range []struct {
+		name, api string
+		valid     bool
+	}{
+		{"raw", "  podTokenKeyFile: /run/secrets/key\n", true},
+		{"ring", "  podTokenKeyRingFile: /run/secrets/keyring.json\n", true},
+		{"both", "  podTokenKeyFile: /run/secrets/key\n  podTokenKeyRingFile: /run/secrets/keyring.json\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateInstanceYAML(t, schema, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\napi:\n"+test.api)
+			if (err == nil) != test.valid {
+				t.Fatalf("valid = %v, error = %v", test.valid, err)
+			}
+		})
 	}
 }

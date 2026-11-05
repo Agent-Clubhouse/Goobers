@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -37,7 +38,7 @@ func (r parentArchiveRestorer) releaseForkSource(ctx context.Context, reader *jo
 	if err != nil {
 		return err
 	}
-	project, err := recoveryConfiguredProject(r.config, source.Record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, source.Record.RepositoryKey)
 	if err != nil {
 		return err
 	}
@@ -74,7 +75,7 @@ func (r parentArchiveRestorer) verifyForkArchives(ctx context.Context, reader *j
 	if err != nil {
 		return err
 	}
-	policy, _ := resolveRecoveryPolicy(r.layout, r.config)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(r.layout, r.config)
 	for _, owner := range value.Plan.AllWorkspaces() {
 		found := false
 		for _, candidate := range candidates {
@@ -86,7 +87,7 @@ func (r parentArchiveRestorer) verifyForkArchives(ctx context.Context, reader *j
 			if err != nil {
 				return err
 			}
-			state, err := recovery.LoadRetainedParentState(ctx, repository, filepath.Join(r.layout.Root, "recovery"), recoveryOverflowRoot(r.layout), record, policy.MaxArchiveBytesEffective())
+			state, err := recovery.LoadRetainedParentState(ctx, repository, filepath.Join(r.layout.Root, "recovery"), runtimewiring.RecoveryOverflowRoot(r.layout), record, policy.MaxArchiveBytesEffective())
 			if err != nil {
 				return err
 			}
@@ -108,7 +109,7 @@ func (r parentArchiveRestorer) forkSourceRetained(ctx context.Context, source re
 	if err != nil {
 		return false, err
 	}
-	overflow, unreadable, err := recovery.ReadOverflow(ctx, recoveryOverflowRoot(r.layout))
+	overflow, unreadable, err := recovery.ReadOverflow(ctx, runtimewiring.RecoveryOverflowRoot(r.layout))
 	if err != nil {
 		return false, err
 	}
@@ -138,7 +139,7 @@ func (r parentArchiveRestorer) importArchivedForkSource(ctx context.Context, rec
 	if err != nil {
 		return err
 	}
-	project, err := recoveryConfiguredProject(r.config, source.Record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, source.Record.RepositoryKey)
 	if err != nil {
 		return err
 	}

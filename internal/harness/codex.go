@@ -1,12 +1,12 @@
 package harness
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/safepath"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -122,6 +123,9 @@ func CodexUsesAmbientChatGPT(options map[string]apiextensionsv1.JSON) bool {
 
 // Preflight verifies the Codex CLI and its configured API key.
 func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
+	if err := refuseChildConfigProbe(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: no command configured")
 	}
@@ -165,7 +169,12 @@ func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q --version returned no version", bin)
 	}
 	if hasAPIKey {
-		return PreflightInfo{Version: version}, nil
+		capabilities, err := probeRequiredCLIFlags(ctx, c.runner(), c.Command, "codex", []string{"exec", "--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), codexRequiredPublicOptions)
+		if err != nil {
+			return PreflightInfo{}, err
+		}
+		return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities,
+			readinessCheck("authentication", "harness_credential_present", "unobservable", "API key present; provider authentication and model entitlement were not probed")}}, nil
 	}
 	return PreflightInfo{}, fmt.Errorf("harness: codex: configure an OpenAI API key for agent:model; stored Codex login is not used because workspace-write commands can read CODEX_HOME")
 }
@@ -173,6 +182,9 @@ func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 // PreflightConfig performs the auth check for one resolved goober configuration.
 // The default API-key path intentionally delegates to the historic preflight.
 func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (PreflightInfo, error) {
+	if err := credentials.RefuseUnisolatedChildProcess(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	config, err := normalizeCodexConfig(model, options)
 	if err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: invalid configuration: %w", err)
@@ -192,6 +204,12 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q not found on PATH — install Codex CLI and sign in with ChatGPT before running agentic stages", bin)
 	}
 	env := ambientCodexEnv(c.ExtraEnvAllowlist, c.EnvUnset)
+	if credentials.TrustedLocalProcess(ctx) {
+		env, err = trustedLocalCodexEnvironment(ctx, credentials.TrustedLocalBaseEnvironment(ctx, env), config)
+		if err != nil {
+			return PreflightInfo{}, err
+		}
+	}
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
 	versionResult, err := c.runner().Run(ctx, ProcessRequest{Command: versionCommand, Env: env, MaxTranscriptBytes: maxPreflightDiagnosticBytes})
@@ -201,6 +219,11 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 	version := firstOutputLine(versionResult.Transcript)
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: %q --version returned no version", bin)
+	}
+	required := append(append([]string(nil), codexRequiredPublicOptions...), "--ignore-user-config")
+	capabilities, err := probeRequiredCLIFlags(ctx, c.runner(), c.Command, "codex", []string{"exec", "--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), required)
+	if err != nil {
+		return PreflightInfo{}, err
 	}
 	loginCommand := append(append([]string(nil), baseCommand...), "login", "status")
 	if !config.allowFileBackedCredentials {
@@ -215,7 +238,8 @@ func (c *CodexAdapter) PreflightConfig(ctx context.Context, model string, option
 	if !strings.Contains(strings.ToLower(string(loginResult.Transcript)), "logged in using chatgpt") {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: ambient-chatgpt requires `codex login status` to report ChatGPT authentication; API-key, logged-out, or ambiguous status is refused")
 	}
-	return PreflightInfo{Version: version}, nil
+	return PreflightInfo{Version: version, Checks: []ReadinessCheck{capabilities,
+		readinessCheck("authentication", "harness_chatgpt_login_verified", "supported", "CLI login status reported ChatGPT authentication; model entitlement unverified")}}, nil
 }
 
 func ambientCodexEnv(extra, unset []string) []string {
@@ -313,6 +337,11 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		return Outcome{}, fmt.Errorf("harness: codex: invalid configuration: %w", err)
 	}
 	if options.auth == CodexAuthAmbientChatGPT {
+		if credentials.TrustedLocalProcess(ctx) {
+			if _, err := trustedLocalCodexEnvironment(ctx, nil, options); err != nil {
+				return Outcome{}, err
+			}
+		}
 		if _, err := c.PreflightConfig(ctx, req.Model, req.HarnessOptions); err != nil {
 			return Outcome{}, err
 		}
@@ -336,6 +365,17 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		return Outcome{}, fmt.Errorf("harness: codex: start agent telemetry: %w", err)
 	}
 	defer agentTelemetry.finish(&out, &runErr)
+	transcript := newCodexTranscript(req.MaxTranscriptBytes, req.Model)
+	defer func() {
+		native, err := transcript.finish(out.Metrics, out.TranscriptDroppedBytes)
+		if err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("harness: codex: finalize transcript: %w", err))
+			return
+		}
+		out.Transcript, out.TranscriptSchema = native.data, telemetry.GenAIEventSchema
+		out.TranscriptTruncated, out.TranscriptDroppedBytes = native.truncated, native.droppedBytes
+		runErr = errors.Join(runErr, agentTelemetry.emit(projectAgentEvents(native.data, req)...))
+	}()
 	defer func() {
 		receipts, collected, err := collectGoobersIOReceipts(req, c.SelfBin)
 		out.InputInspectionReceipts = receipts
@@ -348,19 +388,21 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 	runner := withUnobservableMCPSource(c.runner(), req, codexMCPReadinessSource)
 	started := time.Now()
 	result, parsed, processErr := runCodexInvocation(
-		ctx, runner, req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(),
+		ctx, runner, req, argv, env, prompt, req.Timeout, 1, agentTelemetry.activityObserver(), transcript,
 	)
 	out = Outcome{
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
+		MCPServerFailures:      codexMCPServerFailures(req, result.Stderr),
 	}
+	out.Metrics = parsed.metrics
+	out.RenderedPrompt = []byte(prompt)
 	if processErr != nil {
 		runErr = errors.Join(runErr, processErr)
 		return out, runErr
 	}
-	out.Metrics = parsed.metrics
 
 	payload, completionErr := readCompletion(req.Workspace, req.CompletionPath)
 	completionErr = validateCompletion(req, payload, completionErr)
@@ -387,7 +429,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 		recoveryArgv := buildCodexResumeArgv(argv, prepared.execIndex, parsed.threadID)
 		recovery, recoveryParsed, recoveryErr := runCodexInvocation(
-			ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(),
+			ctx, runner, req, recoveryArgv, env, recoveryPrompt, remaining, 2, agentTelemetry.activityObserver(), transcript,
 		)
 		mergeCodexMetrics(parsed.metrics, recoveryParsed.metrics)
 		out.Metrics = parsed.metrics
@@ -531,11 +573,14 @@ func (c *CodexAdapter) invocationEnvCapabilities(auth CodexAuthMode) map[string]
 func (c *CodexAdapter) configureAuthEnvironment(ctx context.Context, env []string, options codexConfig) ([]string, error) {
 	env = dropForeignCodexAPIKey(env)
 	if options.auth == CodexAuthAmbientChatGPT {
+		if credentials.TrustedLocalProcess(ctx) {
+			return trustedLocalCodexEnvironment(ctx, env, options)
+		}
 		// Keep telemetry, repository routing, and every non-model scoped
 		// capability from buildCredentialEnv; only API-key selection is removed.
 		return withAmbientCodexHome(env), nil
 	}
-	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil {
+	if !environmentContainsOpenAIKey(env) && c.ModelCredential != nil && !credentials.TrustedLocalProcess(ctx) {
 		token, err := c.ModelCredential(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("harness: codex: resolve agent:model credential: %w", err)
@@ -559,8 +604,14 @@ func runCodexInvocation(
 	timeout time.Duration,
 	checkpoint int,
 	activity ActivityObserver,
+	transcript *codexTranscript,
 ) (ProcessResult, codexParseResult, error) {
-	stdout := newCodexJSONLCapture(req.MaxTranscriptBytes)
+	// A small retained-output budget must not reject an otherwise valid tool
+	// event before its terminal usage snapshot can be observed.
+	stdout := newCodexJSONLCapture(max(req.MaxTranscriptBytes, DefaultMaxTranscriptBytes))
+	stdout.transcript = transcript
+	stdout.usageSink = req.UsageSink
+	transcript.beginTurn(prompt)
 	result, err := runner.Run(ctx, ProcessRequest{
 		Command:                      argv,
 		Stdin:                        []byte(prompt),
@@ -576,15 +627,12 @@ func runCodexInvocation(
 	if checkpoint == codexInitialCheckpoint {
 		err = observeCodexRequiredMCPStartup(req, result, codexSessionStarted(stdout, result.Transcript), err)
 	}
-	if err != nil {
-		return result, codexParseResult{}, err
-	}
-	parsed, err := stdout.result()
 	if !stdout.hasData() {
-		parsed, err = parseCodexJSONL(result.Transcript)
+		_, _ = stdout.Write(result.Transcript)
 	}
-	if err != nil {
-		return result, codexParseResult{}, err
+	parsed, parseErr := stdout.result()
+	if err = errors.Join(err, parseErr); err != nil {
+		return result, parsed, err
 	}
 	if parsed.failed != "" {
 		return result, parsed, fmt.Errorf("harness: codex: turn failed: %s", parsed.failed)
@@ -647,8 +695,11 @@ type codexParseResult struct {
 }
 
 func mergeCodexMetrics(destination, source map[string]float64) {
+	// exec resume restores the thread's token totals. turn.completed carries
+	// those cumulative totals, so only the increase belongs to the repair.
+	// A failed repair with absent/zero usage must not erase the initial turn.
 	for name, value := range source {
-		destination[name] += value
+		destination[name] += max(0, value-destination[name])
 	}
 }
 
@@ -709,12 +760,14 @@ var codexShellCoreEnvironment = map[string]bool{
 }
 
 type codexJSONLCapture struct {
-	mu      sync.Mutex
-	pending []byte
-	maxLine int
-	parsed  codexParseResult
-	err     error
-	wrote   bool
+	transcript *codexTranscript
+	mu         sync.Mutex
+	pending    []byte
+	maxLine    int
+	parsed     codexParseResult
+	err        error
+	wrote      bool
+	usageSink  func(map[string]float64)
 }
 
 func newCodexJSONLCapture(limit int64) *codexJSONLCapture {
@@ -748,7 +801,7 @@ func (c *codexJSONLCapture) Write(data []byte) (int, error) {
 		raw := bytes.TrimSpace(c.pending[:newline])
 		c.pending = c.pending[newline+1:]
 		if len(raw) > 0 {
-			c.err = parseCodexEvent(raw, &c.parsed)
+			c.err = c.parseEvent(raw)
 			if c.err != nil {
 				break
 			}
@@ -776,39 +829,23 @@ func (c *codexJSONLCapture) result() (codexParseResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.err != nil {
-		return codexParseResult{}, c.err
+		return c.parsed, c.err
 	}
 	if raw := bytes.TrimSpace(c.pending); len(raw) > 0 {
-		if err := parseCodexEvent(raw, &c.parsed); err != nil {
-			return codexParseResult{}, err
+		if err := c.parseEvent(raw); err != nil {
+			return c.parsed, err
 		}
 		c.pending = nil
 	}
 	return c.parsed, nil
 }
 
-func parseCodexJSONL(data []byte) (codexParseResult, error) {
-	result := codexParseResult{metrics: map[string]float64{}}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 64*1024), int(DefaultMaxTranscriptBytes))
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := bytes.TrimSpace(scanner.Bytes())
-		if len(raw) == 0 {
-			continue
-		}
-		if err := parseCodexEvent(raw, &result); err != nil {
-			return codexParseResult{}, fmt.Errorf("harness: codex: parse JSONL event %d: %w", line, err)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return codexParseResult{}, fmt.Errorf("harness: codex: read JSONL events: %w", err)
-	}
-	return result, nil
+func parseCodexEvent(raw []byte, result *codexParseResult) error {
+	_, err := parseCodexEventType(raw, result)
+	return err
 }
 
-func parseCodexEvent(raw []byte, result *codexParseResult) error {
+func parseCodexEventType(raw []byte, result *codexParseResult) (string, error) {
 	var event struct {
 		Type     string `json:"type"`
 		Message  string `json:"message"`
@@ -816,13 +853,10 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		Error    struct {
 			Message string `json:"message"`
 		} `json:"error"`
-		Usage struct {
-			InputTokens  float64 `json:"input_tokens"`
-			OutputTokens float64 `json:"output_tokens"`
-		} `json:"usage"`
+		Usage codexUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
-		return err
+		return "", err
 	}
 	switch event.Type {
 	case "thread.started":
@@ -832,12 +866,25 @@ func parseCodexEvent(raw []byte, result *codexParseResult) error {
 		result.started = true
 	case "turn.completed":
 		result.completed = true
-		result.metrics[telemetry.AttrGenAIUsageInputTokens] += event.Usage.InputTokens
-		result.metrics[telemetry.AttrGenAIUsageOutputTokens] += event.Usage.OutputTokens
+		mergeCodexMetrics(result.metrics, event.Usage.metrics())
 	case "turn.failed":
 		result.failed = event.Error.Message
 	case "error":
 		result.failed = event.Message
+	}
+	return event.Type, nil
+}
+
+func (c *codexJSONLCapture) parseEvent(raw []byte) error {
+	if c.transcript != nil {
+		c.transcript.observe(raw)
+	}
+	eventType, err := parseCodexEventType(raw, &c.parsed)
+	if err != nil {
+		return err
+	}
+	if c.usageSink != nil && eventType == "turn.completed" {
+		c.usageSink(maps.Clone(c.parsed.metrics))
 	}
 	return nil
 }

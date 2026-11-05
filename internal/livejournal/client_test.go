@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -134,8 +138,30 @@ func TestHTTPEmitterDoesNotRetry4xx(t *testing.T) {
 	if _, err := e.Emit(context.Background(), EmitRequest{RunID: "run-1"}); err == nil {
 		t.Fatal("expected an error on a 401 response")
 	}
+
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("server saw %d attempts, want exactly 1 (no retry on a 4xx)", got)
+	}
+}
+
+func TestHTTPEmitterShortCallerDeadlineStillEmitsOnce(t *testing.T) {
+	for _, deadline := range []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second} {
+		t.Run(deadline.String(), func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				attempts.Add(1)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			if _, err := (&HTTPEmitter{BaseURL: srv.URL}).Emit(ctx, EmitRequest{RunID: "run-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Fatalf("attempts = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -152,9 +178,53 @@ func TestHTTPEmitterHonoursRetryDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error once the retry deadline elapsed")
 	}
+
 	if elapsed > time.Second {
 		t.Fatalf("elapsed = %s, want close to the 30ms retry deadline", elapsed)
 	}
+}
+
+func TestHTTPEmitterUsesWholeOperationDeadlineAfterServerBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		started := time.Now()
+		var attempts int
+		client := &http.Client{Transport: emitRoundTripper(func(request *http.Request) (*http.Response, error) {
+			attempts++
+			status, body := http.StatusServiceUnavailable, `{"error":{"code":"request_budget_exceeded","message":"still committing"}}`
+			if time.Since(started) >= 20*time.Second {
+				status, body = http.StatusOK, `{}`
+			}
+			return &http.Response{
+				StatusCode: status,
+				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})}
+		emitter := &HTTPEmitter{
+			BaseURL: "http://journal.test",
+			Client:  client,
+			RetryPolicy: RetryPolicy{
+				BaseDelay: time.Second,
+				MaxDelay:  time.Second,
+			},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := emitter.Emit(ctx, EmitRequest{RunID: "run-1"}); err != nil {
+			t.Fatal(err)
+		}
+		if attempts < 2 || time.Since(started) < 20*time.Second {
+			t.Fatalf("attempts=%d elapsed=%s, want retries beyond the former 15s cutoff", attempts, time.Since(started))
+		}
+	})
+}
+
+type emitRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f emitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 // The regression test #4260 calls for: kill the connection mid-emit (the

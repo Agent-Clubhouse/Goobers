@@ -369,27 +369,6 @@ func TestAssess(t *testing.T) {
 	}
 }
 
-func TestStatusLine(t *testing.T) {
-	stalled := Assess(context.Background(), &fakeDeployment{pollers: []*taskqueuepb.PollerInfo{versionedPoller("v2", time.Second)}}, "q", assessNow)
-	line := stalled.StatusLine()
-	for _, want := range []string{"Warning: engine routing stalled:", "Run: temporal worker deployment set-current-version --deployment-name goobers --build-id v2"} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("status line %q lacks %q", line, want)
-		}
-	}
-	unknown := Unknown("q", "cannot dial", assessNow).StatusLine()
-	if unknown != "Engine routing: unknown (cannot dial)\n" {
-		t.Fatalf("unknown status line = %q", unknown)
-	}
-	healthy := Assess(context.Background(), &fakeDeployment{
-		routing: client.WorkerDeploymentRoutingConfig{CurrentVersion: deployVersion("v2")},
-		pollers: []*taskqueuepb.PollerInfo{versionedPoller("v2", time.Second)},
-	}, "q", assessNow)
-	if line := healthy.StatusLine(); line != "" {
-		t.Fatalf("healthy status line = %q, want silence", line)
-	}
-}
-
 func TestAssessmentJSONShape(t *testing.T) {
 	a := Assess(context.Background(), &fakeDeployment{pollers: []*taskqueuepb.PollerInfo{versionedPoller("v2", time.Second)}}, "goobers-engine", assessNow)
 	raw, err := json.Marshal(a)

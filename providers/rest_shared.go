@@ -152,6 +152,7 @@ type restPRProjection struct {
 
 func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullRequestSummary {
 	return PullRequestSummary{
+		Mergeable:  pr.Mergeable,
 		ID:         strconv.Itoa(pr.Number),
 		Number:     pr.Number,
 		URL:        pr.URL,

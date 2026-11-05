@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -28,12 +29,16 @@ func TestCopilotRunEnforcesNoRemoteExportOnFinalArgv(t *testing.T) {
 		name    string
 		command []string
 		extra   []string
+		version string
 	}{
 		{name: "built-in default", command: []string{"copilot"}},
 		{name: "launcher override without flag", command: []string{"forwarding-launcher", "--profile", "fixture"}},
 		{name: "override already carries flag", command: []string{"copilot", copilotNoRemoteExportFlag}},
 		{name: "extra args already carry flag", command: []string{"copilot"}, extra: []string{"--allow-all-tools", copilotNoRemoteExportFlag}},
 		{name: "operator requests export", command: []string{"copilot", "--remote-export"}},
+		{name: "modern CLI replaces legacy override", command: []string{"copilot", copilotNoRemoteExportFlag}, version: "GitHub Copilot CLI 1.0.103."},
+		{name: "modern CLI disables configured sync", command: []string{"copilot", "--sync-session=on"}, extra: []string{"--remote-export"}, version: "1.0.103"},
+		{name: "legacy CLI replaces sync override", command: []string{"copilot", "--sync-session", "on"}, version: "1.0.102-0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := &fakeProcessRunner{
@@ -42,17 +47,22 @@ func TestCopilotRunEnforcesNoRemoteExportOnFinalArgv(t *testing.T) {
 				},
 			}
 			adapter := &CopilotAdapter{Command: tc.command, ExtraArgs: tc.extra, Runner: runner}
-			if _, err := adapter.Run(context.Background(), RunRequest{Workspace: t.TempDir(), CompletionPath: DefaultResultPath}); err != nil {
+			if _, err := adapter.Run(context.Background(), RunRequest{Workspace: t.TempDir(), CompletionPath: DefaultResultPath, HarnessVersion: tc.version}); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			argv := runner.lastReq.Command
-			if got := countArg(argv, copilotNoRemoteExportFlag); got != 1 {
-				t.Fatalf("argv carries %s %d times, want exactly once: %q", copilotNoRemoteExportFlag, got, argv)
+			baseCommand := withoutCopilotSessionExportControls(resolveStdioHarnessCommand(tc.command))
+			if got := argv[len(baseCommand)]; got != copilotPromptArg(defaultPromptFlag, "") {
+				t.Fatalf("export controls shifted the prompt position: %q", argv)
 			}
-			// Appended after any operator-supplied --remote-export, so the
-			// opt-out is the one the CLI honors.
-			if i := slices.Index(argv, "--remote-export"); i >= 0 && i > slices.Index(argv, copilotNoRemoteExportFlag) {
-				t.Fatalf("--remote-export follows the opt-out and would win: %q", argv)
+			flag := copilotSessionExportFlag(tc.version)
+			if got := countArg(argv, flag); got != 1 {
+				t.Fatalf("argv carries %s %d times, want exactly once: %q", flag, got, argv)
+			}
+			for _, arg := range argv {
+				if arg != flag && (arg == copilotNoRemoteExportFlag || arg == "--remote-export" || strings.HasPrefix(arg, "--sync-session")) {
+					t.Fatalf("argv retains incompatible export control %q: %q", arg, argv)
+				}
 			}
 		})
 	}
@@ -61,17 +71,23 @@ func TestCopilotRunEnforcesNoRemoteExportOnFinalArgv(t *testing.T) {
 // TestCopilotPreflightFallbackAuthProbeDisablesRemoteExport covers the sign-in
 // probe, which is itself a real prompt session.
 func TestCopilotPreflightFallbackAuthProbeDisablesRemoteExport(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name      string
 		authCheck []string
+		version   string
 	}{
-		{name: "fallback prompt", authCheck: []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}},
-		{name: "already present", authCheck: []string{"-p", "ok", copilotNoRemoteExportFlag}},
+		{name: "fallback prompt", authCheck: []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}, version: "1.0.83"},
+		{name: "already present", authCheck: []string{"-p", "ok", copilotNoRemoteExportFlag}, version: "1.0.83"},
+		{name: "modern fallback prompt", authCheck: []string{"-p", "ok", copilotNoRemoteExportFlag}, version: "GitHub Copilot CLI 1.0.103."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var authCommand []string
 			runner := &fakeProcessRunner{
-				result: ProcessResult{Transcript: []byte("GitHub Copilot CLI 1.0.83.\n")},
+				result: ProcessResult{Transcript: []byte(tc.version + "\n")},
 				act: func(req ProcessRequest) error {
 					if slices.Contains(req.Command, "-p") {
 						authCommand = slices.Clone(req.Command)
@@ -79,12 +95,120 @@ func TestCopilotPreflightFallbackAuthProbeDisablesRemoteExport(t *testing.T) {
 					return nil
 				},
 			}
-			adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: tc.authCheck, Runner: runner}
+			adapter := &CopilotAdapter{Command: []string{program}, AuthCheckArgs: tc.authCheck, Runner: runner}
 			if _, err := adapter.Preflight(context.Background()); err != nil {
 				t.Fatalf("Preflight: %v", err)
 			}
-			if got := countArg(authCommand, copilotNoRemoteExportFlag); got != 1 {
-				t.Fatalf("auth probe carries %s %d times, want exactly once: %q", copilotNoRemoteExportFlag, got, authCommand)
+			flag := copilotSessionExportFlag(tc.version)
+			if got := countArg(authCommand, flag); got != 1 {
+				t.Fatalf("auth probe carries %s %d times, want exactly once: %q", flag, got, authCommand)
+			}
+		})
+	}
+}
+
+func TestCopilotSessionExportFlag(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    string
+	}{
+		{"", copilotNoRemoteExportFlag},
+		{"wrapper unknown version", copilotNoRemoteExportFlag},
+		{"1.0.52", copilotNoRemoteExportFlag},
+		{"GitHub Copilot CLI 1.0.102-0.", copilotNoRemoteExportFlag},
+		{"1.0.103-0", copilotNoRemoteExportFlag},
+		{"GitHub Copilot CLI 1.0.103.", copilotSyncSessionOffFlag},
+		{"copilot version 1.0.104", copilotSyncSessionOffFlag},
+		{"v2.0.0", copilotSyncSessionOffFlag},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			if got := copilotSessionExportFlag(tc.version); got != tc.want {
+				t.Fatalf("flag = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCopilotSessionExportControlsAreReplaced(t *testing.T) {
+	for _, reported := range []string{"1.0.102", "1.0.103"} {
+		for _, controls := range [][]string{
+			{"--sync-session"},
+			{"--sync-session", "on"},
+			{"--sync-session", "off"},
+			{"--sync-session=on", "--sync-session=off"},
+			{copilotNoRemoteExportFlag, "--remote-export"},
+		} {
+			argv := append([]string{"copilot"}, controls...)
+			argv = append(argv, "--model", "fixture")
+			original := slices.Clone(argv)
+			want := []string{"copilot", "--model", "fixture", copilotSessionExportFlag(reported)}
+			got := withCopilotNoRemoteExport(argv, reported)
+			if !slices.Equal(got, want) || !slices.Equal(argv, original) {
+				t.Fatalf("version %s controls %q: got %q, want %q; original argv now %q", reported, controls, got, want, argv)
+			}
+			if twice := withCopilotNoRemoteExport(got, reported); !slices.Equal(twice, got) {
+				t.Fatalf("not idempotent: %q became %q", got, twice)
+			}
+		}
+	}
+}
+
+func TestCopilotModernExportFlagRejectionIsNotTooOld(t *testing.T) {
+	for _, flag := range []string{"--sync-session", copilotSyncSessionOffFlag} {
+		result := ProcessResult{Stderr: []byte("error: unknown option '" + flag + "'")}
+		if !copilotRemoteExportUnsupported(result) {
+			t.Fatalf("did not detect rejected %s", flag)
+		}
+	}
+	err := copilotRemoteExportUnsupportedError("GitHub Copilot CLI 1.0.103.")
+	if strings.Contains(err.Error(), "too old") || !strings.Contains(err.Error(), copilotSyncSessionOffFlag) {
+		t.Fatalf("misleading error: %v", err)
+	}
+}
+
+func TestCopilotPreflightModernExportFlagRejectionFailsClosed(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stream := range []string{"transcript", "stderr"} {
+		t.Run(stream, func(t *testing.T) {
+			authCalls := 0
+			runner := &fakeProcessRunner{
+				result: ProcessResult{Transcript: []byte("GitHub Copilot CLI 1.0.103.\n")},
+			}
+			runner.act = func(req ProcessRequest) error {
+				if !slices.Contains(req.Command, "-p") {
+					return nil
+				}
+				authCalls++
+				if !slices.Contains(req.Command, copilotSyncSessionOffFlag) {
+					t.Fatalf("modern auth probe lacks export opt-out: %q", req.Command)
+				}
+				runner.result = ProcessResult{ExitCode: 1}
+				rejection := []byte("error: unknown option '--sync-session'\n")
+				if stream == "transcript" {
+					runner.result.Transcript = rejection
+				} else {
+					runner.result.Stderr = rejection
+				}
+				return errors.New("exit status 1")
+			}
+			adapter := &CopilotAdapter{Command: []string{program}, AuthCheckArgs: []string{"-p", "ok"}, Runner: runner}
+			_, err := adapter.Preflight(context.Background())
+			if err == nil {
+				t.Fatal("expected preflight to fail when the CLI rejects the export opt-out")
+			}
+			for _, want := range []string{"1.0.103", copilotSyncSessionOffFlag, "forwarding launcher", "refusing to run"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q should contain %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), "too old") || strings.Contains(err.Error(), "sign in") {
+				t.Fatalf("misleading error: %v", err)
+			}
+			if authCalls != 1 {
+				t.Fatalf("auth probe ran %d times, want one fail-closed attempt", authCalls)
 			}
 		})
 	}
@@ -95,6 +219,10 @@ func TestCopilotPreflightFallbackAuthProbeDisablesRemoteExport(t *testing.T) {
 // CLIs can still export sessions via user configuration, so dropping the flag
 // is not privacy-equivalent) and says to upgrade rather than blame sign-in.
 func TestCopilotPreflightNamesMinimumVersionWhenFlagUnknown(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := &fakeProcessRunner{
 		result: ProcessResult{Transcript: []byte("GitHub Copilot CLI 1.0.51.\n")},
 	}
@@ -108,8 +236,8 @@ func TestCopilotPreflightNamesMinimumVersionWhenFlagUnknown(t *testing.T) {
 		}
 		return nil
 	}
-	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"-p", "ok"}, Runner: runner}
-	_, err := adapter.Preflight(context.Background())
+	adapter := &CopilotAdapter{Command: []string{program}, AuthCheckArgs: []string{"-p", "ok"}, Runner: runner}
+	_, err = adapter.Preflight(context.Background())
 	if err == nil {
 		t.Fatal("expected preflight to fail when the CLI rejects the export opt-out")
 	}

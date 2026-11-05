@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
@@ -163,7 +164,7 @@ type parallelBranchResult struct {
 	lastStage         string
 	lastResult        apiv1.ResultEnvelope
 	pointers          []apiv1.ContextPointer
-	completed         stageOutputs
+	completed         runsemantics.StageOutputs
 	artifacts         int
 	produced          bool
 	failed            bool
@@ -206,7 +207,7 @@ type concurrentParallelResult struct {
 	lastStage         string
 	lastResult        apiv1.ResultEnvelope
 	pointers          []apiv1.ContextPointer
-	completed         stageOutputs
+	completed         runsemantics.StageOutputs
 	parallel          *parallelExec
 	terminalTask      *parallelTaskTerminal
 	terminalGate      *parallelGateTerminal
@@ -271,7 +272,7 @@ func (r *Runner) runConcurrentParallel(
 	basePointers []apiv1.ContextPointer,
 	baseLastStage string,
 	baseLastResult apiv1.ResultEnvelope,
-	baseCompleted stageOutputs,
+	baseCompleted runsemantics.StageOutputs,
 	workspaceBranch string,
 	reg SecretRegistrar,
 	stepBudget *atomic.Int64,
@@ -415,7 +416,7 @@ func (r *Runner) runConcurrentParallel(
 				return concurrentParallelResult{}, fmt.Errorf("runner: reconcile parallel repository: conflicting configured repositories selected by parallel branches")
 			}
 		}
-		mergeBranchOutputs(mergedCompleted, outcome.completed, in.Machine, par.isMap())
+		mergeBranchOutputs(mergedCompleted, outcome.completed, in.Machine, p.Branches[outcome.index], par.isMap())
 		// A map's join subject stays the root's: an item's result is
 		// reachable only through mapResults, never as "the last stage".
 		if outcome.lastStage != "" && !par.isMap() {
@@ -456,14 +457,20 @@ func (r *Runner) runConcurrentParallel(
 }
 
 // mergeBranchOutputs folds one branch's completed-stage outputs into the
-// root's. A map's mapped task is skipped: its results are per item and live
-// only in the per-occurrence store (design §6.3).
-func mergeBranchOutputs(merged, branch stageOutputs, machine *workflow.Machine, isMap bool) {
+// root's. Inherited seed entries belong to the root or siblings and must not
+// overwrite a sibling's new output on a later visit. A map's mapped task is
+// skipped: its results are per item and live only in the per-occurrence store
+// (design §6.3).
+func mergeBranchOutputs(merged, branch runsemantics.StageOutputs, machine *workflow.Machine, owner apiv1.Branch, isMap bool) {
+	scope := apiv1.Parallel{Branches: []apiv1.Branch{owner}}
 	for stage, outputs := range branch {
 		if isMap && isMappedTask(machine, stage) {
 			continue
 		}
-		merged.put(stage, outputs)
+		if !isMap && branchOwningState(machine, scope, stage) != owner.Name {
+			continue
+		}
+		merged.Put(stage, outputs)
 	}
 }
 
@@ -558,7 +565,7 @@ func (r *Runner) runParallelBranch(
 	basePointers []apiv1.ContextPointer,
 	baseLastStage string,
 	baseLastResult apiv1.ResultEnvelope,
-	baseCompleted stageOutputs,
+	baseCompleted runsemantics.StageOutputs,
 	workspaceBranch string,
 	reg SecretRegistrar,
 	history []journal.Event,
@@ -664,9 +671,9 @@ func (r *Runner) runParallelBranch(
 			result.lastStage, result.lastResult = task.Name, stageResult
 			visitedStages[task.Name] = true
 			if stageResult.Status == apiv1.ResultFailure && task.ContinueOnError {
-				result.completed.clear(task.Name)
+				result.completed.Clear(task.Name)
 			} else {
-				result.completed.record(task.Name, stageResult.Outputs, stageResult.Integrity)
+				result.completed.Record(task.Name, stageResult.Outputs, stageResult.Integrity)
 			}
 			workspaceBranch = r.parallelWorkspaceBranchAfterTask(in.Gaggle, task, stageResult, workspaceBranch)
 			handoffScope := parallelHandoffScope{branchJournal, gateEval, visitedStages, in.Machine, branch.start, basePointers}
@@ -701,8 +708,8 @@ func (r *Runner) runParallelBranch(
 					result.failed = true
 					result.status = journal.BranchFailed
 					return result
-				} else if isNonRetryableEscalation(stageResult.Error) {
-					target := taskEscalationTarget(in.Machine, task)
+				} else if runsemantics.IsNonRetryableEscalation(stageResult.Error) {
+					target := runsemantics.TaskEscalationTarget(in.Machine, task)
 					switch target {
 					case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
 						result.failed = true
@@ -744,7 +751,7 @@ func (r *Runner) runParallelBranch(
 				result.err = fmt.Errorf("runner: parallel %q branch %q reached human gate %q", par.spec.Name, branch.name, g.Name)
 				return result
 			}
-			_, knownOutcome, _ := retryFailureClass(g, result.lastResult)
+			_, knownOutcome, _ := runsemantics.RetryFailureClass(g, result.lastResult)
 			replayed := replayGate != nil
 			var gr gate.Result
 			var err, removeErr error
@@ -775,7 +782,7 @@ func (r *Runner) runParallelBranch(
 			if parallelInvocationFailed(err, &result) {
 				return result
 			}
-			retryClass, _, retryable := retryFailureClassForGateResult(g, result.lastResult, gr.Outcome)
+			retryClass, _, retryable := runsemantics.RetryFailureClassForGateResult(g, result.lastResult, gr.Outcome)
 			var retryTarget string
 			var retry bool
 			if replayed && replayGateEvent != nil && hasRetryDecisionAfter(history, *replayGateEvent) {
@@ -1005,7 +1012,7 @@ func parallelBranchTerminal(history []journal.Event, machine *workflow.Machine) 
 				result: result, lastStage: lastStage, lastResult: lastResult,
 			}
 		}
-		if source.Type != journal.EventStageFinished || isInterruptedAttemptMarker(source) {
+		if source.Type != journal.EventStageFinished || runsemantics.IsInterruptedAttemptMarker(source) {
 			continue
 		}
 		task, ok := machine.Task(source.Stage)
@@ -1023,8 +1030,8 @@ func parallelBranchTerminal(history []journal.Event, machine *workflow.Machine) 
 		case apiv1.ResultFailure:
 			if task.ContinueOnError {
 				target = task.Next
-			} else if _, nextIsGate := machine.Gate(task.Next); nextIsGate && isNonRetryableEscalation(result.Error) {
-				target = taskEscalationTarget(machine, task)
+			} else if _, nextIsGate := machine.Gate(task.Next); nextIsGate && runsemantics.IsNonRetryableEscalation(result.Error) {
+				target = runsemantics.TaskEscalationTarget(machine, task)
 				if target == workflow.TerminalComplete {
 					target = workflow.TargetEscalate
 				}
@@ -1086,18 +1093,18 @@ func lastParallelBoundary(events []journal.Event) (journal.Event, bool) {
 	return journal.Event{}, false
 }
 
-func branchStageOutputs(base stageOutputs, history []journal.Event, machine *workflow.Machine) stageOutputs {
+func branchStageOutputs(base runsemantics.StageOutputs, history []journal.Event, machine *workflow.Machine) runsemantics.StageOutputs {
 	out := cloneStageOutputs(base)
 	for stage, produced := range reconstructStageOutputs(history, machine) {
-		out.put(stage, produced)
+		out.Put(stage, produced)
 	}
 	return out
 }
 
-func cloneStageOutputs(in stageOutputs) stageOutputs {
-	out := stageOutputs{}
+func cloneStageOutputs(in runsemantics.StageOutputs) runsemantics.StageOutputs {
+	out := runsemantics.StageOutputs{}
 	for stage, produced := range in {
-		out.put(stage, produced)
+		out.Put(stage, produced)
 	}
 	return out
 }

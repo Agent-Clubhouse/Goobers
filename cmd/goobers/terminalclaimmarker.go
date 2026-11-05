@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -94,7 +96,7 @@ func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, pr
 			// A GitHub backlog for ADO code (topology (b)): the claim marker
 			// lives on the GitHub issue, released with the backlog repository's
 			// credential.
-			return buildTerminalGitHubClaimMarkerRelease(cfg, backlog, credentialBindingOwner(project), project.Name, backlogRoleFor(backlog.Owner, backlog.Name), registrar, stores)
+			return buildTerminalGitHubClaimMarkerRelease(cfg, backlog, runtimewiring.CredentialBindingOwner(project), project.Name, runtimewiring.BacklogRoleFor(backlog.Owner, backlog.Name), registrar, stores)
 		}
 		if backlog.Provider != providers.ProviderADO {
 			return nil, providers.RepositoryRef{}, nil
@@ -112,7 +114,7 @@ func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, pr
 // issue, and (owner, name, backlog) select the credential exactly as the
 // gaggle's stages get it.
 func buildTerminalGitHubClaimMarkerRelease(cfg *instance.Config, repo providers.RepositoryRef, owner, name string, backlog *credentials.BacklogRole, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
-	resolver, grants, err := buildRoleCredentials(cfg, stores, owner, name, backlog, nil, registrar)
+	resolver, grants, err := runtimewiring.BuildRoleCredentials(cfg, stores, owner, name, backlog, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}
@@ -253,11 +255,45 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 	defer cancel()
 	reason := claimHolderReleaseReason(l, runID)
 	for _, entry := range entries {
-		if _, err := release(ctx, providers.ClaimWorkItemRequest{
-			Repository: repo,
-			ID:         claimEntryExternalID(entry),
-			RunID:      runID,
-			Reason:     reason,
+		if entry.ReleasePending {
+			ledger, err := fileClaimLedger(l)
+			if err == nil {
+				_, err = ledger.(claimsclient.ProviderReleaser).ReleaseWithProvider(ctx, entry, reason, func(ctx context.Context) error {
+					_, err := release(ctx, providers.ClaimWorkItemRequest{
+						Repository: repo, ID: claimEntryExternalID(entry), RunID: runID,
+						LedgerAuthorized: true, Reason: reason,
+					})
+					return err
+				})
+			}
+			if err != nil {
+				recordClaimMarkerReleaseError(log, entry, err)
+			}
+			continue
+		}
+		if err := claimProviderReleaseLock(l)(claimsclient.KeyForEntry(entry), func() error {
+			// A bulk release may have reserved or finalized this snapshot while
+			// terminal cleanup waited. Never repeat provider I/O after it can
+			// have admitted a successor, or bypass its durable retry custody.
+			ledger, err := fileClaimLedger(l)
+			if err != nil {
+				return err
+			}
+			current, err := ledger.ForRunAll(ctx, runID)
+			if err != nil {
+				return err
+			}
+			for _, candidate := range current {
+				if claimsclient.KeyForEntry(candidate) != claimsclient.KeyForEntry(entry) ||
+					!candidate.ClaimedAt.Equal(entry.ClaimedAt) || candidate.ReleasePending {
+					continue
+				}
+				_, err := release(ctx, providers.ClaimWorkItemRequest{
+					Repository: repo, ID: claimEntryExternalID(entry), RunID: runID, Reason: reason,
+				})
+				return err
+			}
+			return nil
 		}); err != nil {
 			recordClaimMarkerReleaseError(log, entry, err)
 		}

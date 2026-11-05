@@ -42,7 +42,7 @@ func demandFixture(t *testing.T) (*Sources, localscheduler.WorkflowEntry, *deman
 	}
 	return source, entry, counter, time.Now().UTC().Truncate(time.Hour)
 }
-func finishDemandStarts(t *testing.T, q *triggerqueue.Store, records []triggerqueue.Record) {
+func finishDemandStarts(t *testing.T, q triggerqueue.SchedulerPolicyStore, records []triggerqueue.Record) {
 	t.Helper()
 	for _, r := range records {
 		if err := q.BeginDispatch(t.Context(), r.ID); err != nil {
@@ -263,5 +263,38 @@ func TestDemandScheduleReleasedCapacityWakesRemainingWorkers(t *testing.T) {
 	workerPending(t, source, 1)
 	if counter.calls != 1 {
 		t.Fatal("capacity release repolled sealed observation", counter.calls)
+	}
+}
+
+func TestClaimReadDeadlineRetainsQueuedDemandAcrossRestart(t *testing.T) {
+	source, entry, counter, base := demandFixture(t)
+	counter.err = errors.Join(localscheduler.ErrClaimRead, context.DeadlineExceeded)
+	scheduler := workerScheduler(t, source, entry)
+	if err := scheduler.ReconcileAll(nil, base); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Tick(t.Context(), base.Add(time.Hour))
+	workerPending(t, source, 0)
+	d, release, err := source.LoadDemand(t.Context(), entry)
+	if release != nil {
+		release()
+	}
+	if err != nil || d == nil || d.Count != -1 {
+		t.Fatal(d, err)
+	}
+	counter.err = nil
+	counter.count = 1
+	newer := entry
+	newer.ConfigGeneration = "new"
+	newer.ScheduleDemandCounter = &demandTestCounter{count: 50}
+	restarted := workerScheduler(t, source, newer)
+	if err = restarted.ReconcileAll(nil, base.Add(10*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	restarted.Tick(t.Context(), base.Add(time.Hour+time.Second))
+	records := workerPending(t, source, 1)
+	e, err := Parse(records[0].Payload)
+	if err != nil || e.Target.ConfigGeneration != entry.ConfigGeneration || counter.calls != 2 {
+		t.Fatal(e, counter.calls, err)
 	}
 }

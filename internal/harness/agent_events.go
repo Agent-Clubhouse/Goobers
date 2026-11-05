@@ -109,6 +109,9 @@ func (e *adapterAgentEmitter) finish(out *Outcome, runErr *error) {
 	out.AgentEvents = append(out.AgentEvents, e.events...)
 	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
 	out.AgentTelemetryDetail = partialAgentTelemetryDetail
+	if e.plugin == "copilot" && !copilotUsageObserved(*out) {
+		out.AgentTelemetryDetail += "; " + copilotMissingUsageDiagnostic
+	}
 }
 
 // activityObserver turns subprocess output samples into periodic agent

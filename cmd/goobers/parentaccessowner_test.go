@@ -74,11 +74,11 @@ func newParentAccessFixture(t *testing.T) parentAccessFixture {
 	if err = store.BindContract(t.Context(), digest); err != nil {
 		t.Fatal(err)
 	}
-	token, err := s.grants.key.MintWorkflowParentPod(id.RunID, digest, time.Hour)
+	token, err := s.grants.Key().MintWorkflowParentPod(id.RunID, digest, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth, err := podauth.NewAuthenticator(s.grants.key, httpapi.DenyAllAuthenticator{})
+	auth, err := podauth.NewAuthenticator(s.grants.Key(), httpapi.DenyAllAuthenticator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestParentAccessHTTPRecoveryCustodyAndCleanup(t *testing.T) {
 	if bytes.Contains(f.service.shared.Scrub([]byte(access.BearerToken)), []byte(access.BearerToken)) {
 		t.Fatal("secret not registered")
 	}
-	if _, err := f.service.grants.key.VerifyChildWorkflowGrant(access.BearerToken); err != nil {
+	if _, err := f.service.grants.Key().VerifyChildWorkflowGrant(access.BearerToken); err != nil {
 		t.Fatal(err)
 	}
 	again := request(f.handler, http.MethodPost, path, f.token, body)
@@ -140,7 +140,7 @@ func TestParentAccessHTTPRecoveryCustodyAndCleanup(t *testing.T) {
 			t.Fatal("authored authority accepted", w.Code, w.Body)
 		}
 	}
-	ordinary, err := f.service.grants.key.Mint(f.contract.Identity.RunID, time.Hour)
+	ordinary, err := f.service.grants.Key().Mint(f.contract.Identity.RunID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

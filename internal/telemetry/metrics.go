@@ -89,6 +89,14 @@ const (
 	// MetricWorkersAvailable reports configured scheduler capacity that is not
 	// currently reserved. It is emitted only when capacity is observable.
 	MetricWorkersAvailable = "goobers.workers.available"
+	// MetricContinuationClaims reports parked parent runs holding a
+	// waiting-continuation claim on scheduler capacity (#8186). Claims are in
+	// memory per scheduler epoch, so zero right after a control-plane failover
+	// is expected until the waiting parents retry.
+	MetricContinuationClaims = "goobers.continuation.claims"
+	// MetricContinuationOldestClaimAge reports how long the oldest live
+	// waiting-continuation claim has waited, in seconds.
+	MetricContinuationOldestClaimAge = "goobers.continuation.oldest_claim_age"
 )
 
 const (
@@ -168,33 +176,35 @@ var metricAttributeAllowlist = map[string]struct{}{
 // *instruments disables metric recording, which is what every client built
 // without a metric reader gets.
 type instruments struct {
-	selfPlacements           apimetric.Int64Counter
-	selfRefusals             apimetric.Int64Counter
-	selfDenied               apimetric.Int64Gauge
-	runDuration              apimetric.Float64Histogram
-	runOutcomes              apimetric.Int64Counter
-	stageDuration            apimetric.Float64Histogram
-	stageOutcomes            apimetric.Int64Counter
-	stageRetries             apimetric.Int64Counter
-	gateDecisions            apimetric.Int64Counter
-	escalations              apimetric.Int64Counter
-	redactions               apimetric.Int64Counter
-	journalDrops             apimetric.Int64Counter
-	journalExportDrops       apimetric.Int64Counter
-	activeWork               apimetric.Int64UpDownCounter
-	stageMetrics             apimetric.Float64Histogram
-	worktreeBytes            apimetric.Int64Gauge
-	workcopyBytes            apimetric.Int64Gauge
-	recoverySnapshotFormat   apimetric.Int64Counter
-	recoverySnapshotBytes    apimetric.Float64Histogram
-	recoverySnapshotFallback apimetric.Int64Counter
-	recoveryRestoreFailures  apimetric.Int64Counter
-	storageFreeBytes         apimetric.Int64Gauge
-	storageHealthChanges     apimetric.Int64Counter
-	queueDepth               apimetric.Int64Gauge
-	queueOldestAge           apimetric.Int64Gauge
-	workersAvailable         apimetric.Int64Gauge
-	limiter                  *cardinalityLimiter
+	selfPlacements             apimetric.Int64Counter
+	selfRefusals               apimetric.Int64Counter
+	selfDenied                 apimetric.Int64Gauge
+	runDuration                apimetric.Float64Histogram
+	runOutcomes                apimetric.Int64Counter
+	stageDuration              apimetric.Float64Histogram
+	stageOutcomes              apimetric.Int64Counter
+	stageRetries               apimetric.Int64Counter
+	gateDecisions              apimetric.Int64Counter
+	escalations                apimetric.Int64Counter
+	redactions                 apimetric.Int64Counter
+	journalDrops               apimetric.Int64Counter
+	journalExportDrops         apimetric.Int64Counter
+	activeWork                 apimetric.Int64UpDownCounter
+	stageMetrics               apimetric.Float64Histogram
+	worktreeBytes              apimetric.Int64Gauge
+	workcopyBytes              apimetric.Int64Gauge
+	recoverySnapshotFormat     apimetric.Int64Counter
+	recoverySnapshotBytes      apimetric.Float64Histogram
+	recoverySnapshotFallback   apimetric.Int64Counter
+	recoveryRestoreFailures    apimetric.Int64Counter
+	storageFreeBytes           apimetric.Int64Gauge
+	storageHealthChanges       apimetric.Int64Counter
+	queueDepth                 apimetric.Int64Gauge
+	queueOldestAge             apimetric.Int64Gauge
+	workersAvailable           apimetric.Int64Gauge
+	continuationClaims         apimetric.Int64Gauge
+	continuationOldestClaimAge apimetric.Int64Gauge
+	limiter                    *cardinalityLimiter
 }
 
 func newInstruments(meter apimetric.Meter) (*instruments, error) {
@@ -259,6 +269,10 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst.queueOldestAge, err = newInt64Gauge(meter, MetricQueueOldestAge)
 	record(err)
 	inst.workersAvailable, err = newInt64Gauge(meter, MetricWorkersAvailable)
+	record(err)
+	inst.continuationClaims, err = newInt64Gauge(meter, MetricContinuationClaims)
+	record(err)
+	inst.continuationOldestClaimAge, err = newInt64Gauge(meter, MetricContinuationOldestClaimAge)
 	record(err)
 
 	if len(errs) != 0 {

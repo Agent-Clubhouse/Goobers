@@ -1,0 +1,55 @@
+# Nightly kind database: the production role contract (internal/cloud/pgroles),
+# so the Temporal ladder and the goobers-cloud reference run as the same roles
+# production does. The runner creates the credential Secrets below with random
+# passwords before applying this file (nothing secret is committed).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: temporal-postgres
+  namespace: goobers-temporal
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.6@sha256:30b304a2e300ed80b6d1b740e4369e9b0f25599fb518de78c01fd9f25531791b
+  storage:
+    size: 1Gi
+  # Creates temporal-postgres-superuser: the administrator URL for the instance
+  # database provisioning step (and, later, goobers-cloud bootstrap --admin-url).
+  enableSuperuserAccess: true
+  postgresql:
+    parameters:
+      # CNPG sends CREATE/ALTER ROLE ... PASSWORD '<plaintext>' for the managed
+      # roles; a failing statement must not be logged with its text.
+      log_min_error_statement: panic
+  bootstrap:
+    initdb:
+      database: temporal
+      owner: temporal_app
+      secret:
+        name: temporal-postgres-app
+      postInitSQL:
+        - CREATE DATABASE temporal_visibility OWNER temporal_app
+        # As production (pgroles): only the owner reaches the Temporal databases.
+        # The instance database gets its CONNECT grants in the nightly's flip
+        # point. The maintenance database is left as initdb creates it: CNPG's
+        # pg_rewind connects to it as streaming_replica, which does not exist yet
+        # here and must keep PUBLIC's CONNECT for a failed-over primary to rejoin.
+        - REVOKE ALL ON DATABASE temporal_visibility FROM PUBLIC
+      postInitApplicationSQL:
+        - REVOKE ALL ON DATABASE temporal FROM PUBLIC
+  managed:
+    roles:
+      - name: goobers_owner
+        ensure: present
+        login: true
+        passwordSecret:
+          name: goobers-owner-credentials
+      - name: goobers_api
+        ensure: present
+        login: true
+        passwordSecret:
+          name: goobers-api-credentials
+      - name: goobers_controller
+        ensure: present
+        login: true
+        passwordSecret:
+          name: goobers-controller-credentials

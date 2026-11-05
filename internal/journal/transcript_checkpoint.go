@@ -24,6 +24,12 @@ type TranscriptCheckpointSession interface {
 	RecordFinal(schema string, data []byte) (Ref, error)
 }
 
+// ExpectedTranscriptCheckpointSession adds remote digest and idempotency keys.
+type ExpectedTranscriptCheckpointSession interface {
+	TranscriptCheckpointSession
+	RecordFinalWithExpectedDigest(schema string, data []byte, key, expectedDigest string) (Ref, error)
+}
+
 // OpenTranscriptCheckpoint exposes the local implementation through the same
 // session contract used by recorder transports that do not own the run writer.
 func (r *Run) OpenTranscriptCheckpoint(stage, name string, scrubber Scrubber) (TranscriptCheckpointSession, error) {

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
@@ -456,7 +458,7 @@ func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
 // (repoCredentialedCapabilityNames, which on ADO includes
 // ado:work-items:write), so the probe can tell any of them apart.
 func everyCredentialedCapability() []string {
-	return repoCredentialedCapabilityNames()
+	return runtimewiring.RepoCredentialedCapabilityNames()
 }
 
 // deliverEveryADOStageCapability delivers a distinct value for every

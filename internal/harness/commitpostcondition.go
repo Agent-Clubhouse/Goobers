@@ -13,8 +13,8 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/publicationpaths"
 )
 
 // ErrorCodeUncommittedChanges is the typed failure code for a writable
@@ -171,7 +171,7 @@ func (c *commitPostcondition) violatedBy(ctx context.Context, payload []byte) (s
 	if err != nil || strings.TrimSpace(head) != c.head {
 		return "", false
 	}
-	args := append([]string{"status", "--porcelain=v1", "--untracked-files=normal", "--"}, harnessOwnedPathspecs()...)
+	args := append([]string{"status", "--porcelain=v1", "--untracked-files=normal", "--"}, publicationpaths.WorkPathspecs()...)
 	status, err := postconditionGit(ctx, c.workspace, nil, args...)
 	if err != nil || strings.TrimSpace(status) == "" {
 		return "", false
@@ -192,7 +192,7 @@ func (c *commitPostcondition) captureDiff(ctx context.Context) ([]byte, error) {
 	if _, err := postconditionGit(ctx, c.workspace, env, "read-tree", "HEAD"); err != nil {
 		return nil, err
 	}
-	addArgs := append([]string{"add", "-A", "--"}, harnessOwnedPathspecs()...)
+	addArgs := append([]string{"add", "-A", "--"}, publicationpaths.WorkPathspecs()...)
 	if _, err := postconditionGit(ctx, c.workspace, env, addArgs...); err != nil {
 		return nil, err
 	}
@@ -201,14 +201,6 @@ func (c *commitPostcondition) captureDiff(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(diff), nil
-}
-
-// harnessOwnedPathspecs limits the inspection to the agent's work: the
-// harness's own scratch (completion file, telemetry, context) and materialized
-// goober assets are never part of the stage's deliverable, even in a workspace
-// whose git excludes were not provisioned to hide them.
-func harnessOwnedPathspecs() []string {
-	return []string{".", ":(exclude,top).goobers", ":(exclude,top)" + gooberassets.WorkspaceDir}
 }
 
 // inspect re-checks the final completion and, on a violation, records the

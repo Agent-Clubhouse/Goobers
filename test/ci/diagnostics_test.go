@@ -317,6 +317,8 @@ func TestIgnoreWaitDelayKeepsTheExitVerdict(t *testing.T) {
 // to change the job's verdict (#6912).
 func TestCIJobsRecordFailureDiagnostics(t *testing.T) {
 	t.Parallel()
+	// Keep the action pinned without tying this contract to a particular release.
+	uploadAction := regexp.MustCompile(`^actions/upload-artifact@[0-9a-fA-F]{40}$`)
 	ci := loadCIWorkflow(t)
 	jobs := map[string]ciJob{}
 	for _, name := range ci.Jobs["required-ci"].Needs {
@@ -345,7 +347,7 @@ func TestCIJobsRecordFailureDiagnostics(t *testing.T) {
 			record.Env[diagnosticsJobStatus] != "${{ job.status }}" {
 			t.Errorf("%s: second-to-last step must be the always() diagnose step, got %+v", name, record)
 		}
-		if upload.Name != "Upload CI diagnostics" || !strings.HasPrefix(upload.Uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a") ||
+		if upload.Name != "Upload CI diagnostics" || !uploadAction.MatchString(upload.Uses) ||
 			upload.If != "${{ failure() || cancelled() }}" || !upload.ContinueOnError ||
 			upload.with("name") != "ci-diagnostics-${{ github.job }}-${{ strategy.job-index }}" ||
 			upload.with("path") != "${{ runner.temp }}/"+diagnosticsRootName {

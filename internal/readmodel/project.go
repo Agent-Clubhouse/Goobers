@@ -631,7 +631,7 @@ func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []jou
 
 // ProjectRunFromJournal adds facts that require resolving immutable journal
 // blobs to the otherwise pure event projection.
-func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
+func ProjectRunFromJournal(reader journal.RunReader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
 	projection.Run.Operator.QueueEligibility = projectQueueEligibility(reader, identity, events)
 	projection.Run.Operator.Reliability.Allowances = PinnedReliabilityAllowances(reader, identity)

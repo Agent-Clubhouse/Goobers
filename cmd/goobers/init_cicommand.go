@@ -35,7 +35,7 @@ var ciStackSignals = []ciStackSignal{
 	{stack: "Go", names: []string{"go.mod"}, command: []string{"go", "test", "./..."}, capability: "go@1.26"},
 	{stack: ".NET", suffix: ".sln", command: []string{"dotnet", "test"}, capability: "dotnet@9"},
 	{stack: ".NET", suffix: ".csproj", command: []string{"dotnet", "test"}, capability: "dotnet@9"},
-	{stack: "Node.js", names: []string{"package.json"}, command: []string{"npm", "run", "ci"}, capability: "node@20"},
+	{stack: "Node.js", names: []string{"package.json"}, command: []string{"npm", "run", "ci"}, capability: "node@24"},
 	{stack: "Maven", names: []string{"pom.xml"}, command: []string{"mvn", "-B", "-q", "verify"}, capability: "java@21"},
 	{stack: "Gradle", names: []string{"build.gradle", "build.gradle.kts"}, command: []string{"gradle", "check"}, capability: "java@21"},
 	{stack: "Rust", names: []string{"Cargo.toml"}, command: []string{"cargo", "test"}, capability: "rust"},

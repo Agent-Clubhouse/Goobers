@@ -325,7 +325,7 @@ func TestCopilotAdapterMCPRequiresMaterializedModelCredential(t *testing.T) {
 		Envelope:       testEnvelope(workspace, "agent:model"),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
-		MCPServers:     []apiv1.MCPServer{{Name: "declared", Command: "declared-server"}},
+		MCPServers:     []apiv1.MCPServer{{Name: "declared", Required: mcpRequiredFlag(false), Command: "declared-server"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "external MCP servers require a materialized agent:model credential") {
 		t.Fatalf("Run error = %v, want missing materialized agent:model credential", err)
@@ -418,7 +418,7 @@ func TestCopilotAdapterMCPUsesMaterializedModelAuthenticationWithoutCopyingAmbie
 				Envelope:       testEnvelope(workspace, "agent:model"),
 				Workspace:      workspace,
 				CompletionPath: DefaultResultPath,
-				MCPServers:     []apiv1.MCPServer{{Name: "declared", Command: "declared-server"}},
+				MCPServers:     []apiv1.MCPServer{{Name: "declared", Required: mcpRequiredFlag(false), Command: "declared-server"}},
 				Tools:          []string{"reachability"},
 				Credentials:    mcpTestCredentials(t, "agent:model", modelToken),
 			})
@@ -453,7 +453,7 @@ func TestCopilotAdapterScopesMCPServersToOneInvocation(t *testing.T) {
 		Envelope:       testEnvelope(workspace, "agent:model"),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
-		MCPServers:     []apiv1.MCPServer{{Name: "local-context", Command: "context-server"}},
+		MCPServers:     []apiv1.MCPServer{{Name: "local-context", Required: mcpRequiredFlag(false), Command: "context-server"}},
 		Credentials:    mcpTestCredentials(t, "agent:model", "scoped-model-token"),
 	}
 	if _, err := adapter.Run(context.Background(), req); err != nil {
@@ -523,8 +523,9 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 		scrubber,
 		"",
 		WithMCPServers([]apiv1.MCPServer{{
-			Name: "remote-context",
-			URL:  "https://mcp.example.test/api",
+			Name:     "remote-context",
+			Required: mcpRequiredFlag(false),
+			URL:      "https://mcp.example.test/api",
 			CredentialRefs: []apiv1.MCPCredentialRef{{
 				Kind:   apiv1.MCPCredentialKindBYO,
 				Ref:    "sharepoint",

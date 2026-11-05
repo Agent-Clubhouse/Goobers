@@ -26,7 +26,8 @@ const (
 // AsRateLimitError recovers a typed rate-limit error from err, provider-
 // neutrally (#3647). A give-up *RateLimitError — the shape GitHub's send()
 // returns once its in-request backoff budget is spent — is returned as-is.
-// Every other provider (ADO, Gitea) surfaces an exhausted HTTP 429 as the
+// Other providers surface exhausted quota responses (429, or 403/503
+// with quota guidance) as the
 // generic non-2xx response error instead, which callers used to classify as
 // a plain network failure and therefore retried and notified as if quota had
 // nothing to do with it; those are synthesized into the same typed error
@@ -45,7 +46,7 @@ func AsRateLimitError(err error) (*RateLimitError, bool) {
 		return rl, true
 	}
 	var responseErr *providerResponseError
-	if !errors.As(err, &responseErr) || responseErr.statusCode != http.StatusTooManyRequests {
+	if !errors.As(err, &responseErr) || !rateLimitResponse(responseErr.statusCode, responseErr.retryAfter, responseErr.rateLimitRemaining, responseErr.rateLimitReset) {
 		return nil, false
 	}
 	limit := &RateLimitError{
@@ -66,6 +67,44 @@ func AsRateLimitError(err error) (*RateLimitError, bool) {
 	// specifically, and no other forge distinguishes one from an exhausted
 	// primary quota on a 429.
 	return limit, true
+}
+
+// rateLimitResponse keeps ordinary permission failures and unavailable servers
+// separate from responses that explicitly direct a quota wait.
+func rateLimitResponse(status int, retryAfter, remaining, reset string) bool {
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	if status != http.StatusForbidden && status != http.StatusServiceUnavailable {
+		return false
+	}
+	if strings.TrimSpace(retryAfter) != "" || strings.TrimSpace(remaining) == "0" {
+		return true
+	}
+	// GitHub includes reset headers even on permission-denied responses.
+	// A positive remaining quota must not turn those into endless waits.
+	return strings.TrimSpace(reset) != "" && (status == http.StatusServiceUnavailable || strings.TrimSpace(remaining) == "")
+}
+
+// RetryDelay returns a conservative retry delay from all supplied quota
+// guidance. An exhausted primary reset and Retry-After cannot shorten each
+// other; an unexhausted primary quota does not delay a secondary retry.
+// Missing/stale guidance uses a one-minute fallback, including secondary/abuse
+// limits. Callers add jitter and bound the wait by their own deadline.
+func (e *RateLimitError) RetryDelay(now time.Time) time.Duration {
+	delay := time.Duration(0)
+	// Secondary responses also carry the ordinary primary-quota reset.
+	// When that quota still has capacity, it is not the retry deadline.
+	if !e.Secondary || !e.RemainingKnown || e.Remaining == 0 {
+		delay = e.Reset.Sub(now)
+	}
+	if retryAfter, ok := retryAfterDelay(e.RetryAfterRaw, now); ok && retryAfter > delay {
+		delay = retryAfter
+	}
+	if delay <= 0 {
+		return githubSecondaryFallbackMin
+	}
+	return delay
 }
 
 // parseRemainingHeader parses an X-RateLimit-Remaining value. Absent,

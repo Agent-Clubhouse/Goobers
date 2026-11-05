@@ -57,11 +57,6 @@ func (s *daemonRunJournalService) SubmitOperatorMessage(ctx context.Context, req
 		return httpapi.OperatorMessageSubmissionResponse{Accepted: false, Record: record}, httpapi.NewInterventionError(http.StatusForbidden,
 			operatorMessageDeniedCode, "principal is not authorized to submit operator messages for this run", nil)
 	}
-	if engineDriven, err := s.operatorMessageEngineDriven(request.Gaggle, request.RunID); err != nil {
-		return httpapi.OperatorMessageSubmissionResponse{}, err
-	} else if engineDriven {
-		return s.submitEngineOperatorMessage(ctx, request.Gaggle, request.RunID, message)
-	}
 	message.DeliveryMode = s.selectOperatorMessageDeliveryMode(request.Gaggle, request.RunID, request.TargetAddress, request.DeliveryMode)
 
 	record, accepted, err := s.recordOperatorMessageAccepted(request.Gaggle, request.RunID, message)

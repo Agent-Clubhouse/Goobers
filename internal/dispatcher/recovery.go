@@ -20,6 +20,9 @@ type recoveryGate interface {
 // Both ordinary disposal and restart sweeping use the rendered pod's workspace
 // contract. A retained pod is never reused for a new attempt.
 func (d *Dispatcher) disposePod(ctx context.Context, pod *corev1.Pod, attempt Attempt) error {
+	if slices.Contains(pod.Finalizers, parentHandoffFinalizer) {
+		return d.disposeParentHandoffPod(ctx, pod, attempt)
+	}
 	// Orphan sweeps reconstruct the isolated marker from the retained pod;
 	// otherwise a restart could use ordinary deletion and strand its finalizer.
 	if attempt.ChildExecutionDigest == "" {

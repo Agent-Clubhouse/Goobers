@@ -1,0 +1,76 @@
+# Three instances across zones with quorum synchronous replication: a commit
+# is acknowledged only after one standby has it (ANY 1), and with
+# dataDurability: required the primary blocks rather than degrade to async, so
+# acknowledged writes survive a primary loss (RPO 0, CHAOS-4).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: goobers-pg
+spec:
+  instances: 3
+  # Pinned by digest; bump deliberately (minor upgrades roll the instances).
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.10@sha256:6287f6497c8c7495305900b79b7aa8d0c9515fa9d3614eff81650068f4d9bacf
+  primaryUpdateStrategy: unsupervised
+  enablePDB: true
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: required
+    parameters:
+      max_connections: "200"
+      password_encryption: scram-sha-256
+  storage:
+    size: 20Gi
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  # One instance per zone: a zone loss must never take the primary and its
+  # only synchronous standby together. Clusters without three zones (kind)
+  # need a zone label on the nodes or an overlay that relaxes this.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          cnpg.io/cluster: goobers-pg
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: goobers-pg-backup
+  # Roles match internal/cloud/pgroles. Applications never use a superuser;
+  # table and column grants come from the schema migrations (write-path
+  # inventory), not from here.
+  managed:
+    roles:
+      - name: goobers_owner
+        ensure: present
+        login: true
+        inherit: true
+        comment: goobers-cloud migrate Job; owns the instance database and schema
+        passwordSecret:
+          name: goobers-owner-credentials
+      - name: goobers_api
+        ensure: present
+        login: true
+        inherit: true
+        comment: goobers-cloud api role
+        passwordSecret:
+          name: goobers-api-credentials
+      - name: goobers_controller
+        ensure: present
+        login: true
+        inherit: true
+        comment: goobers-cloud controller role
+        passwordSecret:
+          name: goobers-controller-credentials
+      - name: temporal_app
+        ensure: present
+        login: true
+        inherit: true
+        comment: Temporal persistence and visibility; no grants on goobers databases
+        passwordSecret:
+          name: temporal-app-credentials

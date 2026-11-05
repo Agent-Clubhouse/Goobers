@@ -13,12 +13,6 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-const pullRequestClaimPrefix = claimsclient.PullRequestItemPrefix
-
-func pullRequestClaimKey(number int) string {
-	return pullRequestClaimPrefix + strconv.Itoa(number)
-}
-
 func claimEligiblePullRequestInOrder(
 	root string,
 	repo providers.RepositoryRef,
@@ -108,7 +102,7 @@ func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog,
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
-	return ledger.Locked(claimContext(), claimLockOperationPRRelease, func(tx claimsclient.Ledger) error {
+	return claimsclient.Sequence(claimContext(), ledger, claimLockOperationPRRelease, func(tx claimsclient.Ledger) error {
 		entries, err := tx.ForRunAll(claimContext(), runID)
 		if err != nil {
 			return fmt.Errorf("read this run's claims: %w", err)
@@ -147,6 +141,12 @@ func claimPullRequestInOrder(
 	runID, workflow string,
 	leaseDuration time.Duration,
 ) (*providers.PullRequestSummary, error) {
+	// Recheck immediately before admission, including pinned/direct callers
+	// that bypassed the ordinary remediation candidate filter.
+	candidates, _, err := stageLiveOriginPullRequests(root, runID, candidates)
+	if err != nil {
+		return nil, err
+	}
 	l := layoutFor(root)
 	instanceLog, closeLog, err := claimLedgerJournal(l)
 	if err != nil {
@@ -164,7 +164,7 @@ func claimPullRequestInOrder(
 	defer func() { _ = annotations.Close() }()
 
 	var selected *providers.PullRequestSummary
-	err = ledger.Locked(claimContext(), claimLockOperationPRAcquire, func(tx claimsclient.Ledger) error {
+	err = claimsclient.Sequence(claimContext(), ledger, claimLockOperationPRAcquire, func(tx claimsclient.Ledger) error {
 		for _, candidate := range candidates {
 			// The claim namespace must carry the repository's actual
 			// provider (#3649): hardcoding github let an ADO or Gitea
@@ -202,21 +202,4 @@ func claimPullRequestInOrder(
 		return nil, err
 	}
 	return selected, nil
-}
-
-// pullRequestClaimLedgerKey addresses PR number's lease: scoped to the
-// gaggle's repository-provider namespace, or legacy (unscoped) when the
-// stage runs ungaggled — the split the ledger's Claim/ClaimScoped pair
-// expressed. provider must be the claiming PR's own repository provider
-// (#3649): a hardcoded provider let two repositories on different providers
-// collide on the same PR number within one gaggle.
-func pullRequestClaimLedgerKey(gaggle string, provider providers.ProviderKind, number int) claimsclient.Key {
-	if gaggle == "" {
-		return claimsclient.Key{ExternalID: pullRequestClaimKey(number)}
-	}
-	return claimsclient.Key{
-		Gaggle:     gaggle,
-		Provider:   string(provider),
-		ExternalID: pullRequestClaimKey(number),
-	}
 }

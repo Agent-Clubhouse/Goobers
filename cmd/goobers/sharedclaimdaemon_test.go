@@ -47,35 +47,43 @@ func TestLiveClaimRenewalRequiresProviderAckAndNeverResurrectsRelease(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger, nil, time.Minute, resolver); err != nil || len(renewed) != 0 || store.writes != 1 {
+	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger.Snapshot(), nil, time.Minute, resolver); err != nil || len(renewed) != 0 || store.writes != 1 {
 		t.Fatalf("unprobed holder renewed: %+v %v", renewed, err)
 	}
 	live := map[string]bool{request.RunID: true}
-	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger, live, time.Minute, resolver); err != nil || len(renewed) != 1 || store.writes != 2 {
+	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger.Snapshot(), live, time.Minute, resolver); err != nil || len(renewed) != 1 || store.writes != 2 {
 		t.Fatalf("live renewal: %+v %v", renewed, err)
+	}
+	ledger, err = localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
 	}
 	before, _ := ledger.LookupScoped(claimKey(request))
 	store.failRenew = true
-	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger, live, time.Minute, resolver); err == nil || len(renewed) != 0 {
+	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger.Snapshot(), live, time.Minute, resolver); err == nil || len(renewed) != 0 {
 		t.Fatalf("unacknowledged renewal succeeded: %+v %v", renewed, err)
+	}
+	ledger, err = localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
 	}
 	after, held := ledger.LookupScoped(claimKey(request))
 	if !held || !after.ExpiresAt.Equal(before.ExpiresAt) || !after.SharedDeadline.Equal(before.SharedDeadline) {
 		t.Fatal("failed provider renewal extended local execution authority")
 	}
-	client, err := service.coordinatedLedger(ledger)
+	client, err := service.coordinatedLedger(claimLockOperationAPIRelease, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ReleaseScoped(t.Context(), claimKey(request), request.RunID, claimrelease.Completed.Reason()); err != nil {
 		t.Fatal(err)
 	}
-	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger, live, time.Minute, resolver); err != nil || len(renewed) != 0 || store.writes != 3 {
+	if renewed, err := renewCoordinatedLiveClaims(t.Context(), layout, ledger.Snapshot(), live, time.Minute, resolver); err != nil || len(renewed) != 0 || store.writes != 3 {
 		t.Fatalf("stale probe resurrected released claim: %+v %v", renewed, err)
 	}
 }
 
-func TestHeldLifecycleLedgerRetainsSharedOwnershipUntilReleaseAcknowledged(t *testing.T) {
+func TestLifecycleLedgerRetainsSharedOwnershipUntilReleaseAcknowledged(t *testing.T) {
 	layout, run := newPinnedClaimResolverRun(t, "shared")
 	store := &failingReleaseClaimStore{}
 	resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
@@ -90,7 +98,7 @@ func TestHeldLifecycleLedgerRetainsSharedOwnershipUntilReleaseAcknowledged(t *te
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
 		t.Fatal(err)
 	}
-	ledger, err := heldClaimLedgerWithResolver(layout, resolver)
+	ledger, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}

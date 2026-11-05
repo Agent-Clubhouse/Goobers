@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -110,7 +112,7 @@ func runTelemetryConfigure(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: telemetry configuration is invalid: %v\n", err)
 		return 1
 	}
-	if err := prepareManualRoot(layout, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(layout, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

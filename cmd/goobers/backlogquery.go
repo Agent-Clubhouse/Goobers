@@ -420,7 +420,6 @@ func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogRecon
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
-	repo := env.repo
 	stderr := env.stderr
 	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
@@ -545,12 +544,13 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		}
 	}
 
-	prProvider, openIssues, code := backlogPRExtras(ctx, env, repo, claim)
+	prProvider, openIssues, code := backlogPRExtras(ctx, env, env.repo, claim)
 	if code != 0 {
 		return code
 	}
 
 	scanOpts := backlogScanOptions{
+		exactItem:         policies.exactItem,
 		trustLabel:        trustLabel,
 		requireLabels:     requireLabels,
 		excludeLabels:     excludeLabels,
@@ -1397,19 +1397,20 @@ func (session *backlogClaimSession) reportRevisionMismatch(itemID string, index 
 	return 0
 }
 
-// acquire is the claim transaction: the blocked-record reconcile and the
-// select-then-acquire loop inside one Locked section. On the file backend
-// that is the single claims.lock critical section it has always been; on
-// the plane the daemon serializes each acquire and the blocked-record
-// filter stays a stage-local read until the scheduler-state route lands
-// (finding 002 C2).
+// Reconcile local selection state under the claims lock, then admit each item
+// through the client outside that section. Shared admission performs provider
+// I/O; its durable reservation and final CAS arbitrate selection races just as
+// the HTTP backend's separate requests already do.
 func (session *backlogClaimSession) acquire(ctx context.Context) error {
-	return session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
-		return session.acquireLocked(ctx, tx)
-	})
+	if err := session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
+		return session.prepareClaimsLocked(ctx, tx)
+	}); err != nil {
+		return err
+	}
+	return claimsclient.Sequence(ctx, session.ledger, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error { return session.acquireItems(ctx, tx) })
 }
 
-func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger claimsclient.Ledger) error {
+func (session *backlogClaimSession) prepareClaimsLocked(ctx context.Context, ledger claimsclient.Ledger) error {
 	if !session.claimSetPrepared {
 		var err error
 		session.eligible, session.observedSkips, err = reconcileBlockedEligibilityLocked(
@@ -1438,6 +1439,10 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 		}
 		session.driftBackoffChecked = true
 	}
+	return nil
+}
+
+func (session *backlogClaimSession) acquireItems(ctx context.Context, ledger claimsclient.Ledger) error {
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
@@ -1884,8 +1889,17 @@ func (session *backlogClaimSession) ownTrustedClaimEpoch(ctx context.Context, re
 		if !epoch.Trusted || epoch.RunID != holder {
 			continue
 		}
-		if instanceID == "" || epoch.InstanceID == "" || epoch.InstanceID != instanceID {
+		if instanceID == "" || epoch.InstanceID == "" {
 			return providers.ClaimEpoch{}, false, nil
+		}
+		if epoch.InstanceID != instanceID {
+			matches, matchErr := instance.RootIdentityMatches(session.env.layout.Root, epoch.InstanceID)
+			if matchErr != nil {
+				return providers.ClaimEpoch{}, false, fmt.Errorf("resolve provider claim instance identity: %w", matchErr)
+			}
+			if !matches {
+				return providers.ClaimEpoch{}, false, nil
+			}
 		}
 		return epoch, true, nil
 	}
@@ -1939,7 +1953,7 @@ func (session *backlogClaimSession) rollback(ctx context.Context, item providers
 }
 
 func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem, reason claimrelease.Reason) error {
-	return session.ledger.Locked(ctx, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
+	return claimsclient.Sequence(ctx, session.ledger, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
 		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID, reason)
 	})
 }
@@ -2459,6 +2473,7 @@ func performBacklogQueryReconciliation(
 }
 
 type backlogScanOptions struct {
+	exactItem         string
 	trustLabel        string
 	requireLabels     []string
 	excludeLabels     []string
@@ -2539,6 +2554,9 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
 		opts.requireLabels, opts.excludeLabels, queryAssignee, opts.ownership,
 	)
+	if opts.exactItem != "" {
+		result.cursorKey += ":work-item:" + opts.exactItem
+	}
 	store, err := openStageStateStore(env.layout)
 	if err != nil {
 		pf(env.stderr, "error: open scheduler state: %v\n", err)
@@ -2546,17 +2564,23 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	}
 	result.state = store
 	exhaustiveScan := opts.fieldOrder.Configured()
-	if !exhaustiveScan {
+	if !exhaustiveScan && opts.exactItem == "" {
 		result.cursor, err = readBacklogScanCursor(ctx, result.state, result.cursorKey)
 		if err != nil {
 			pf(env.stderr, "error: read backlog scan cursor: %v\n", err)
 			return result, 1
 		}
 	}
-	items, window, err := listBacklogScanWindow(
-		ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
-		opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
-	)
+	var items []providers.WorkItem
+	var window backlogScanWindow
+	if opts.exactItem != "" {
+		items, err = getExactBacklogWorkItem(ctx, env, opts.exactItem)
+	} else {
+		items, window, err = listBacklogScanWindow(
+			ctx, env.issueProvider, env.backlogRepo, labels, opts.labelFilter.Labels(), queryAssignee,
+			opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
+		)
+	}
 	if err != nil {
 		return result, failProviderStage(env.stderr, "list work items", err, "claimed-item.json")
 	}
@@ -2649,14 +2673,9 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			result.QuotaRemaining, result.QuotaLimit, backlogEligibilityQuotaFloor*100,
 		)
 	} else {
-		result.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
-		if err != nil {
+		if err := result.observeBlockedRecords(env, opts.exactItem); err != nil {
 			pf(env.stderr, "error: %v\n", err)
 			return result, 1
-		}
-		result.remainingRecords = make(map[string]blockedRecord, len(result.observedRecords))
-		for itemID, record := range result.observedRecords {
-			result.remainingRecords[itemID] = record
 		}
 		_, result.observedSkips, _, warnings = filterBlockedEligibility(
 			ctx,
@@ -2686,7 +2705,32 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		return result, 1
 	}
 	warnBacklogScanCoverage(env, opts, result)
+	result.eligible, err = restrictExactBacklogWorkItem(result.eligible, opts.exactItem)
+	if err != nil {
+		pf(env.stderr, "error: %v\n", err)
+		return result, 1
+	}
 	return result, 0
+}
+
+func (scan *backlogEligibilityScan) observeBlockedRecords(env backlogQueryEnv, exactItem string) error {
+	var err error
+	scan.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
+	if err != nil {
+		return err
+	}
+	if exactItem != "" {
+		for itemID := range scan.observedRecords {
+			if itemID != exactItem {
+				delete(scan.observedRecords, itemID)
+			}
+		}
+	}
+	scan.remainingRecords = make(map[string]blockedRecord, len(scan.observedRecords))
+	for itemID, record := range scan.observedRecords {
+		scan.remainingRecords[itemID] = record
+	}
+	return nil
 }
 
 // warnBacklogScanCoverage emits the invariant #4036 asked for: a cycle that
@@ -3596,73 +3640,80 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 	}
 	var released []string
 	var providerErr error
+	var entries []claimsclient.Entry
 	err = ledger.Locked(claimContext(), claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
-		entries, lerr := tx.ForRunAll(claimContext(), runID)
-		if lerr != nil {
-			return fmt.Errorf("read this run's claims: %w", lerr)
-		}
-		if len(entries) == 0 {
-			return nil
-		}
-		// Shared release needs only coordination credentials. Do it before
-		// constructing the legacy issue writer; missing label credentials must
-		// not retain a successfully released shared lease.
+		var err error
+		entries, err = tx.ForRunAll(claimContext(), runID)
+		return err
+	})
+	if err != nil {
+		pf(stderr, "error: read this run's claims: %v\n", err)
+		return 1
+	}
+	err = func() error {
 		var localEntries []claimsclient.Entry
 		for _, entry := range entries {
+			if entry.IsPublicationClaim() {
+				continue
+			}
 			if entry.SharedDeadline.IsZero() {
 				localEntries = append(localEntries, entry)
 				continue
 			}
-			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); err != nil {
+			if err := ledger.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); err != nil {
 				return fmt.Errorf("release shared claim %s: %w", entry.ItemID, err)
 			}
 			released = append(released, entry.ItemID)
 		}
-		entries = localEntries
-		if len(entries) == 0 {
+		if len(localEntries) == 0 {
 			return nil
 		}
-
-		repo, rerr := providerRepo(root)
-		if rerr != nil {
-			return rerr
-		}
-		// Work-item claim markers live in the backlog project on ADO, not the
-		// routed code repo, and on the backlog provider when the backlog lives
-		// on another provider (see backlogRepoRefForStage).
-		backlogRepo := backlogRepoRefForStage(root, repo)
-		stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
-		if err != nil {
-			return err
-		}
-		issueProvider, ok := stageProvider.(backlogIssueProvider)
+		releaser, ok := ledger.(claimsclient.ProviderReleaser)
 		if !ok {
-			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
+			return fmt.Errorf("claim ledger does not support provider cleanup custody")
+		}
+		// Plane clients delegate provider cleanup to the daemon, which owns
+		// both the durable reservation and its separate per-item cleanup lock.
+		var issueProvider backlogIssueProvider
+		var backlogRepo providers.RepositoryRef
+		if _, remote := ledger.(*claimsclient.HTTP); !remote {
+			repo, err := providerRepo(root)
+			if err != nil {
+				return err
+			}
+			backlogRepo = backlogRepoRefForStage(root, repo)
+			stageProvider, err := newProviderForStage(root, providerconfig.BacklogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
+			if err != nil {
+				return err
+			}
+			issueProvider, ok = stageProvider.(backlogIssueProvider)
+			if !ok {
+				return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
+			}
 		}
 		ctx, cancel := providerCommandContext()
 		defer cancel()
-
-		for _, entry := range entries {
-			// End the provider claim epoch while the claim lock still prevents a
-			// new local owner from claiming this item. Keep the ledger entry if
-			// provider cleanup fails so a retry retains the item ID.
-			if _, rerr := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-				Repository:       backlogRepo,
-				ID:               entry.ItemID,
-				RunID:            runID,
-				LedgerAuthorized: true,
-				Reason:           workflowReleaseStepReason,
-			}); rerr != nil {
-				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
-				return providerErr
+		for _, entry := range localEntries {
+			ok, err := releaser.ReleaseWithProvider(ctx, entry, workflowReleaseStepReason, func(ctx context.Context) error {
+				_, err := issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+					Repository: backlogRepo, ID: entry.ItemID, RunID: runID,
+					LedgerAuthorized: true, Reason: workflowReleaseStepReason,
+				})
+				if err != nil {
+					providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, err)
+					return providerErr
+				}
+				return nil
+			})
+			if err != nil {
+				return err
 			}
-			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID, workflowReleaseStepReason); rerr != nil {
-				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
+			if ok {
+				released = append(released, entry.ItemID)
 			}
-			released = append(released, entry.ItemID)
 		}
 		return nil
-	})
+	}()
 	if err != nil {
 		if providerErr != nil {
 			return failProviderStage(stderr, "release backlog claims", providerErr, "")

@@ -396,11 +396,13 @@ func writeTarFile(reader io.Reader, target string, mode os.FileMode) error {
 	return file.Close()
 }
 
-// adapterCommand is an operator-supplied adapter: argv, the parent for its
-// scratch directories, and the extra ambient variables (beyond the shared
-// default-deny allowlist) it may inherit, such as a model API key.
+// adapterCommand is an operator-supplied adapter: argv, the egress-blocking
+// sandbox prefix it runs through, the parent for its scratch directories, and
+// the extra ambient variables (beyond the shared default-deny allowlist) it
+// may inherit, such as a model API key.
 type adapterCommand struct {
 	argv        []string
+	sandbox     []string
 	workDir     string
 	passthrough []string
 }
@@ -449,7 +451,8 @@ func (command adapterCommand) run(ctx context.Context, dir string, input, output
 		}
 	}
 	name := command.argv[0]
-	cmd := exec.CommandContext(ctx, name, command.argv[1:]...)
+	argv := append(append([]string{}, command.sandbox...), command.argv...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdin = bytes.NewReader(data)

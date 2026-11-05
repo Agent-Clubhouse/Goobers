@@ -104,6 +104,8 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
 
+	"goober.spec.mcpServers.required": "DSL 3.1-only surface; registered centrally as goober.spec.mcpServers.required and refused by the 2.0 interpreter",
+
 	// DSL 3.0-only surface (dsl-3.0.md §2/§4, issue #3505): the schemas are
 	// shared across interpreters, so these leaves are parseable here, but the
 	// fields exist only in 3.0 — this frozen interpreter never learns them

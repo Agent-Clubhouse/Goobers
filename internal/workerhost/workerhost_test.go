@@ -86,6 +86,9 @@ func TestNewRequiresTaskQueues(t *testing.T) {
 	if _, err := New(Config{TaskQueues: []string{"a", ""}}); err == nil {
 		t.Fatal("New accepted an empty task queue name")
 	}
+	if _, err := New(Config{TaskQueues: []string{"a"}, MaxConcurrentActivities: -1}); err == nil {
+		t.Fatal("New accepted negative activity concurrency")
+	}
 }
 
 // TestRunServesEveryQueueAndDrains covers the core worker mechanics (#632):
@@ -172,8 +175,64 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 		if w.opts.WorkerStopTimeout != 7*time.Second {
 			t.Errorf("WorkerStopTimeout = %v, want the drain timeout", w.opts.WorkerStopTimeout)
 		}
+		if w.opts.MaxHeartbeatThrottleInterval != 8*time.Second {
+			t.Errorf("queue %q heartbeat throttle = %v, want 8s cancellation cadence", w.queue, w.opts.MaxHeartbeatThrottleInterval)
+		}
+		if w.opts.MaxConcurrentActivityExecutionSize != DefaultMaxConcurrentActivities {
+			t.Errorf("queue %q max concurrent activities = %d, want %d", w.queue, w.opts.MaxConcurrentActivityExecutionSize, DefaultMaxConcurrentActivities)
+		}
 		if len(w.opts.Interceptors) != 1 {
 			t.Errorf("interceptors = %d, want the in-flight tracker", len(w.opts.Interceptors))
+		}
+	}
+}
+
+func TestWorkerOptionsSetConfiguredActivityConcurrency(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}, MaxConcurrentActivities: 7})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := h.workerOptions().MaxConcurrentActivityExecutionSize; got != 7 {
+		t.Fatalf("MaxConcurrentActivityExecutionSize = %d, want 7", got)
+	}
+}
+
+func TestTwoWorkersServeOneQueue(t *testing.T) {
+	firstFleet, secondFleet := &fakeFleet{}, &fakeFleet{}
+	first := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}}, firstFleet)
+	second := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}}, secondFleet)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 2)
+	go func() { done <- first.Run(ctx) }()
+	go func() { done <- second.Run(ctx) }()
+	waitFor(t, func() bool {
+		firstFleet.mu.Lock()
+		defer firstFleet.mu.Unlock()
+		secondFleet.mu.Lock()
+		defer secondFleet.mu.Unlock()
+		return len(firstFleet.workers) == 1 && firstFleet.workers[0].isStarted() &&
+			len(secondFleet.workers) == 1 && secondFleet.workers[0].isStarted()
+	})
+	cancel()
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestWorkerOptionsBoundHeartbeatCancellationLatency(t *testing.T) {
+	for _, config := range []Config{
+		{TaskQueues: []string{"queue"}},
+		{TaskQueues: []string{"queue"}, BuildVersion: "v1"},
+		{TaskQueues: []string{"queue"}, BuildVersion: "v1", Versioning: true},
+	} {
+		h, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := h.workerOptions().MaxHeartbeatThrottleInterval; got != 8*time.Second {
+			t.Fatalf("build=%q versioned=%t heartbeat throttle=%v, want 8s", config.BuildVersion, config.Versioning, got)
 		}
 	}
 }

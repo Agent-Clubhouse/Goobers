@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 const (
@@ -493,7 +495,8 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 		case <-s.cfg.start:
 		}
 	}
-	delay := azureReplayRetryMinimum
+	retryPolicy := retryutil.Policy{Base: azureReplayRetryMinimum, Max: azureReplayRetryMaximum}
+	failedAttempts := 0
 	retrying := false
 	bootstrapRetry := false
 	sweep := time.NewTicker(azureBootstrapSweepInterval)
@@ -510,7 +513,7 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 			// Continuous traffic must not turn an outage into a retry storm.
 			wake = nil
 			periodic = nil
-			timer = time.NewTimer(jitterAzureReplayDelay(delay))
+			timer = time.NewTimer(retryutil.JitteredExponential(retryPolicy, failedAttempts))
 			retry = timer.C
 			select {
 			case <-s.index.ready:
@@ -552,30 +555,15 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 		cancel()
 		if err == nil || errors.Is(err, errAzureReplayYield) {
 			bootstrapRetry = false
-			delay = azureReplayRetryMinimum
+			failedAttempts = 0
 			retrying = false
 			continue
 		}
 		bootstrapRetry = migrationErr != nil
 		retrying = true
-		delay = min(delay*2, azureReplayRetryMaximum)
+		// The first retry has a one-to-two-second window, as before.
+		failedAttempts++
 	}
-}
-
-func jitterAzureReplayDelay(maximum time.Duration) time.Duration {
-	if maximum <= azureReplayRetryMinimum {
-		return azureReplayRetryMinimum
-	}
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return maximum
-	}
-	var value uint64
-	for _, b := range raw {
-		value = value<<8 | uint64(b)
-	}
-	half := maximum / 2
-	return half + time.Duration(value%uint64(maximum-half+1))
 }
 
 func azureReplayID() (string, error) {

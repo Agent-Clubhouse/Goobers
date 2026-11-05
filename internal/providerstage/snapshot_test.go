@@ -54,6 +54,7 @@ type snapshotCommand struct {
 	ResultFileSupport  ResultFileSupport       `json:"resultFileSupport,omitempty"`
 	MutatesClaimLedger bool                    `json:"mutatesClaimLedger,omitempty"`
 	ClaimMutationFlags []string                `json:"claimMutationFlags,omitempty"`
+	ValueFlags         []string                `json:"valueFlags,omitempty"`
 	SinceDSL           string                  `json:"sinceDSL,omitempty"`
 	UntilDSL           string                  `json:"untilDSL,omitempty"`
 	Capabilities       []snapshotCapabilityUse `json:"capabilities"`
@@ -93,6 +94,7 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 			ResultFileSupport:  entry.ResultFileSupport,
 			MutatesClaimLedger: entry.mutatesClaimLedger,
 			ClaimMutationFlags: entry.claimMutationFlags,
+			ValueFlags:         entry.valueFlags,
 			SinceDSL:           entry.sinceDSL,
 			UntilDSL:           entry.untilDSL,
 			Capabilities:       uses,
@@ -212,6 +214,7 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 		for name, entry := range commands {
 			entry.Capabilities = append([]CapabilityUse(nil), entry.Capabilities...)
 			entry.claimMutationFlags = append([]string(nil), entry.claimMutationFlags...)
+			entry.valueFlags = append([]string(nil), entry.valueFlags...)
 			out[name] = entry
 		}
 		return out
@@ -223,6 +226,11 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 	}{
 		{"command removed", func(table map[string]Command) {
 			delete(table, "backlog-dedupe")
+		}},
+		{"value flag added", func(table map[string]Command) {
+			entry := table["backlog-query"]
+			entry.valueFlags = []string{"label"}
+			table["backlog-query"] = entry
 		}},
 		{"command added", func(table map[string]Command) {
 			table["invented-command"] = Command{Capabilities: []CapabilityUse{required(capability.RepoRead, "test-only")}}

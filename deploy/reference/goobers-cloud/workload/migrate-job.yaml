@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: goobers-cloud-migrate
+  labels:
+    app.kubernetes.io/name: goobers-cloud-migrate
+    goobers.dev/role: migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-cloud-migrate
+        app.kubernetes.io/component: migrate
+        goobers.dev/role: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: goobers-migrate
+      automountServiceAccountToken: false
+      priorityClassName: goobers-control-plane
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: goobers
+          command: ["/usr/local/bin/goobers-cloud"]
+          args: ["migrate", "apply"]
+          env:
+            - name: GOOBERS_DATABASE_DIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  # goobers_owner: the only workload holding the DDL role.
+                  name: goobers-cloud-db-owner
+                  key: direct-url
+            - name: GOOBERS_DATABASE_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: database-auth
+            - name: GOOBERS_MIGRATION_BACKUP_REF
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud-migration
+                  key: backup-ref
+            - name: GOOBERS_INSTANCE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: goobers-cloud
+                  key: instance-id
+            - name: GOOBERS_REPLICA_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

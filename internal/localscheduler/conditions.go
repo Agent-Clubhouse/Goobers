@@ -118,6 +118,9 @@ type Conditions struct {
 	// workflowBudgets's precedence over the workflow's own spec'd
 	// MaxRunsPerDay.
 	dayBudgets map[string]int
+	// disableCadenceBudgets opts out of hourly/daily ceilings, not explicit
+	// zero-budget stops or any other admission gate.
+	disableCadenceBudgets bool
 	// openPRs backs the MaxOpenPRs cap (#353) with a cached count refreshed
 	// off-tick; nil means no counter is wired, so the cap is never enforced
 	// (fail-open). Read under c.mu in Admit, but its own OpenPRCount is a cheap
@@ -140,6 +143,13 @@ type Conditions struct {
 	// UnderPressure reads a periodically-sampled cached tier — no stat call
 	// per admission.
 	disk DiskGate
+	// claims are parked parents whose resume was refused for capacity
+	// (#8174): each holds one slot of its workflow and of the instance
+	// against new admissions until it resumes, its admission ends, or it
+	// expires (ContinuationClaimTTL). Empty, every decision is unchanged.
+	claims map[string]continuationClaim
+	// clock is the claim clock; nil uses time.Now (tests inject one).
+	clock func() time.Time
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -163,6 +173,14 @@ func (c *Conditions) SetInstanceLimits(maxParallelRuns int, workflowBudgets map[
 	c.instanceMaxParallel = maxParallelRuns
 	c.workflowBudgets = workflowBudgets
 	c.dayBudgets = dayBudgets
+}
+
+// SetCadenceBudgetsDisabled configures the instance-wide hourly/daily opt-out.
+// Call at setup, before the first admission.
+func (c *Conditions) SetCadenceBudgetsDisabled(disabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disableCadenceBudgets = disabled
 }
 
 // SetOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
@@ -279,12 +297,13 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 }
 
 // admitProviderWorkflow applies every run condition, optionally allowing an
-// explicit manual invocation to pass an already-spent cadence budget. Manual
-// starts are still recorded, so automatic triggers continue to account for
-// them when enforcing their hourly and daily ceilings.
+// explicit manual invocation or instance opt-out to pass an already-spent
+// cadence budget. Starts are still recorded, so re-enabling ceilings accounts
+// for them without resetting history.
 func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider apiv1.Provider, r apiv1.ReadinessConditions, now time.Time, bypassCadenceBudgets bool) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	bypassCadenceBudgets = bypassCadenceBudgets || c.disableCadenceBudgets
 
 	// The hourly and daily budgets are wall-clock windows. Strip the
 	// monotonic reading so the recorded start and every cutoff compare by
@@ -307,7 +326,11 @@ func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider a
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1 // spec default (ReadinessConditions.MaxConcurrentRuns)
 	}
-	if c.active[identity] >= int(maxConcurrent) {
+	// A parked parent waiting to resume holds its slot against every new
+	// admission (#8174), reported as the capacity it is.
+	c.pruneClaimsLocked(c.clockNow())
+	heldWorkflow, heldInstance := c.heldByClaimsLocked(identity, "")
+	if c.active[identity]+heldWorkflow >= int(maxConcurrent) {
 		return false, ReasonMaxParallel
 	}
 
@@ -388,7 +411,7 @@ func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider a
 	}
 	// Check the shared pool after every workflow-specific readiness condition,
 	// so a pool refusal means this workflow was otherwise dispatchable.
-	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
+	if c.instanceMaxParallel > 0 && c.totalActive+heldInstance >= c.instanceMaxParallel {
 		return false, ReasonInstanceMaxParallel
 	}
 	// Last, and only for new starts: the container-wide memory check (#3949).
@@ -435,18 +458,28 @@ func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider a
 // ReserveContinuation reacquires concurrency capacity for an existing run.
 // Resuming a run is not a new start, so it does not consume rolling run
 // budgets or re-evaluate start-only provider and open-PR gates.
+//
+// A run that is not a waiting parked parent yields to every waiting one
+// (#8174).
 func (c *Conditions) ReserveContinuation(identity WorkflowIdentity, r apiv1.ReadinessConditions) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.pruneClaimsLocked(c.clockNow())
+	return c.reserveContinuationLocked(identity, r, "")
+}
 
+// reserveContinuationLocked is ReserveContinuation for runID, whose own claim
+// (if any) does not hold capacity against it. c.mu is held.
+func (c *Conditions) reserveContinuationLocked(identity WorkflowIdentity, r apiv1.ReadinessConditions, runID string) (ok bool, reason string) {
 	maxConcurrent := r.MaxConcurrentRuns
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
-	if c.active[identity] >= int(maxConcurrent) {
+	heldWorkflow, heldInstance := c.heldByClaimsLocked(identity, runID)
+	if c.active[identity]+heldWorkflow >= int(maxConcurrent) {
 		return false, ReasonMaxParallel
 	}
-	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
+	if c.instanceMaxParallel > 0 && c.totalActive+heldInstance >= c.instanceMaxParallel {
 		return false, ReasonInstanceMaxParallel
 	}
 	c.active[identity]++
@@ -491,7 +524,10 @@ func (c *Conditions) WorkerAvailability() (available int, observable bool) {
 	if c.instanceMaxParallel <= 0 {
 		return 0, false
 	}
-	available = c.instanceMaxParallel - c.totalActive
+	// A waiting parent's claim on the pool is not availability (#8174).
+	c.pruneClaimsLocked(c.clockNow())
+	_, held := c.heldByClaimsLocked(WorkflowIdentity{}, "")
+	available = c.instanceMaxParallel - c.totalActive - held
 	if available < 0 {
 		available = 0
 	}

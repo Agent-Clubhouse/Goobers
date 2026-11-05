@@ -10,21 +10,15 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// reconciledRun separates execution display identity from the budget owner.
+// ReconciledRun separates execution display identity from the budget owner.
 // Ordinary runs use the same workflow for both. A generated child charges its
 // immutable parent's bucket even if its display name collides with the catalog.
-type reconciledRun struct {
-	identity  WorkflowIdentity
-	workflow  string
-	suspended bool
-}
-
-func reconciledRunFor(id journal.RunIdentity) reconciledRun {
+func reconciledRunFor(id journal.RunIdentity) ReconciledRun {
 	identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
 	if id.Child != nil {
 		identity.Workflow = id.Child.ParentWorkflow
 	}
-	return reconciledRun{identity: identity, workflow: id.Workflow}
+	return ReconciledRun{Identity: identity, Workflow: id.Workflow}
 }
 func (a runAdmission) workflowName() string {
 	if a.executionWorkflow != "" {

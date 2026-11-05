@@ -51,7 +51,7 @@ type AgentProgressSummary struct {
 
 // RunAgentProgress projects the current status and ordered progress timeline for all top-level and nested agents in a run.
 func (s *Local) RunAgentProgress(ctx context.Context, runID string) ([]AgentProgressSummary, error) {
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}

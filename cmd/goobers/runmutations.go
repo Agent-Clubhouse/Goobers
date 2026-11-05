@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -17,6 +18,8 @@ import (
 )
 
 const maxInterventionResponseBody = 1 << 20
+
+const interventionClientTimeout = apicontract.InterventionBudget + 5*time.Second
 
 const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]\n\n" +
 	"Approve a paused human gate or an escalated human/reviewer gate. The daemon\n" +
@@ -247,12 +250,24 @@ func callDaemonMutationAPIWithKeyContext[Req, Resp any](
 		IdempotencyKey:  key,
 		Input:           input,
 		MaxResponseBody: maxInterventionResponseBody,
-		ClientTimeout:   remoteTriggerTimeout,
+		ClientTimeout:   daemonMutationClientTimeout(routeID),
 		EncodePrefix:    fmt.Sprintf("encode %s request", routeID),
 		BuildPrefix:     fmt.Sprintf("build %s request", routeID),
 		CallPrefix:      "call live daemon API",
 		DecodePrefix:    fmt.Sprintf("decode daemon %s result", routeID),
 	})
+}
+
+func daemonMutationClientTimeout(routeID apicontract.RouteID) time.Duration {
+	switch routeID {
+	case apicontract.RouteApproveStage,
+		apicontract.RouteOverrideStage,
+		apicontract.RouteRerunStage,
+		apicontract.RouteResolveEscalation:
+		return interventionClientTimeout
+	default:
+		return remoteTriggerTimeout
+	}
 }
 
 func newInterventionIdempotencyKey() (string, error) {

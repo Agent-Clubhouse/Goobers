@@ -224,8 +224,11 @@ func TestGroundTruthLabelsWeightCohortPathScores(t *testing.T) {
 	}
 
 	mixed := labeledCohort([]float64{0.2, 0.8}, []LabelOutcome{LabelCorrect, LabelIncorrect})
+	mixed[0].Attribution.Contributions[0].Score = -0.4
+	mixed[1].Attribution.Contributions[0].Score = 0.8
 	path := topPath(t, mixed)
 	assertNear(t, "mixed share", path.Share, (2*0.2+0.5*0.8)/2.5)
+	assertNear(t, "mixed signed score", *path.Score, (2*-0.4+0.5*0.8)/2.5)
 	assertNear(t, "mixed confidence", path.Confidence, (2*0.8+0.5*0.3)/2.5)
 	reversed := topPath(t, []AttributionObservation{mixed[1], mixed[0]})
 	if reversed.Share != path.Share || reversed.Confidence != path.Confidence {

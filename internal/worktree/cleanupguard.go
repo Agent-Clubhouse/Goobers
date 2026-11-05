@@ -221,7 +221,14 @@ func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget
 }
 
 func (m *Manager) prepareCleanupTargetWithReceipts(ctx context.Context, target CleanupTarget) (bool, error) {
-	return m.runCleanupGuards(ctx, target, true)
+	receipts, err := m.runCleanupGuards(ctx, target, true)
+	if err != nil {
+		return false, err
+	}
+	if err := removeWindowsReservedCleanupPaths(ctx, target.Path); err != nil {
+		return false, fmt.Errorf("%w: remove classified Windows reserved paths from %s: %w", ErrCleanupDeferred, target.WorktreeID, err)
+	}
+	return receipts, nil
 }
 
 func (m *Manager) runCleanupGuards(ctx context.Context, target CleanupTarget, includeReceipts bool) (bool, error) {

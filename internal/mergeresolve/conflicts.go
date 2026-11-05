@@ -2,11 +2,14 @@ package mergeresolve
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // Git runs one git subcommand in the working tree being resolved and returns
@@ -136,6 +139,11 @@ func HasStandardTextMergeAttributes(git Git, path string) (bool, error) {
 	return true, nil
 }
 
+type conflictResolution struct {
+	path string
+	data []byte
+}
+
 // ResolveAdjacentLineConflicts resolves every unmerged path in the working
 // tree at dir that is an adjacent-line insertion on both sides, writing the
 // merged content and staging it. It inspects Git's three index stages rather
@@ -151,11 +159,7 @@ func ResolveAdjacentLineConflicts(dir string, git Git) (Status, error) {
 		return StatusAbsent, nil
 	}
 
-	type resolution struct {
-		path string
-		data []byte
-	}
-	resolutions := make([]resolution, 0, len(files))
+	resolutions := make([]conflictResolution, 0, len(files))
 	for _, file := range files {
 		ancestor, hasAncestor := file.Stages[1]
 		upstream, hasUpstream := file.Stages[2]
@@ -189,48 +193,52 @@ func ResolveAdjacentLineConflicts(dir string, git Git) (Status, error) {
 		if !ok {
 			return StatusUnsafe, nil
 		}
-		resolutions = append(resolutions, resolution{path: file.Path, data: merged})
+		resolutions = append(resolutions, conflictResolution{path: file.Path, data: merged})
 	}
+	return writeResolvedConflicts(dir, git, resolutions, durability.WriteFileAtomic)
+}
 
+func writeResolvedConflicts(dir string, git Git, resolutions []conflictResolution, write func(string, []byte, os.FileMode, ...durability.Option) error) (Status, error) {
 	type original struct {
 		path string
 		data []byte
 		mode os.FileMode
 	}
 	var written []original
-	rollback := func() {
+	rollback := func(cause error) error {
 		for _, orig := range written {
-			_ = writeFileAtomic(orig.path, orig.data, orig.mode)
+			if err := write(orig.path, orig.data, orig.mode); err != nil {
+				cause = errors.Join(cause, fmt.Errorf("restore conflict path %q: %w", orig.path, err))
+			}
 		}
+		return cause
 	}
 	paths := make([]string, 0, len(resolutions))
 	for _, res := range resolutions {
 		path, err := worktreePath(dir, res.path)
 		if err != nil {
-			rollback()
-			return StatusUnsafe, err
+			return StatusUnsafe, rollback(err)
 		}
 		info, err := os.Stat(path)
 		if err != nil {
-			rollback()
-			return StatusUnsafe, fmt.Errorf("stat conflict path %q: %w", res.path, err)
+			return StatusUnsafe, rollback(fmt.Errorf("stat conflict path %q: %w", res.path, err))
 		}
 		before, err := os.ReadFile(path)
 		if err != nil {
-			rollback()
-			return StatusUnsafe, fmt.Errorf("read conflict path %q: %w", res.path, err)
+			return StatusUnsafe, rollback(fmt.Errorf("read conflict path %q: %w", res.path, err))
 		}
-		if err := writeFileAtomic(path, res.data, info.Mode().Perm()); err != nil {
-			rollback()
-			return StatusUnsafe, fmt.Errorf("write conflict path %q: %w", res.path, err)
-		}
+		// A durable write can publish the rename and then fail to sync its
+		// parent directory. Include this path before writing so rollback also
+		// restores that visible-but-unconfirmed replacement.
 		written = append(written, original{path: path, data: before, mode: info.Mode().Perm()})
+		if err := write(path, res.data, info.Mode().Perm()); err != nil {
+			return StatusUnsafe, rollback(fmt.Errorf("write conflict path %q: %w", res.path, err))
+		}
 		paths = append(paths, res.path)
 	}
 	addArgs := append([]string{"--literal-pathspecs", "add", "--"}, paths...)
 	if _, err := git(addArgs...); err != nil {
-		rollback()
-		return StatusUnsafe, fmt.Errorf("stage resolved paths: %w", err)
+		return StatusUnsafe, rollback(fmt.Errorf("stage resolved paths: %w", err))
 	}
 	remaining, err := UnmergedFiles(git)
 	if err != nil {
@@ -252,31 +260,4 @@ func worktreePath(dir, name string) (string, error) {
 		return "", fmt.Errorf("unsafe conflict path %q", name)
 	}
 	return filepath.Join(dir, clean), nil
-}
-
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".goobers-resolve-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(name)
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(name)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	return nil
 }

@@ -10,6 +10,7 @@ import { configurationWarningKey } from "../configurationWarnings";
 import { instanceWarnings, workflowWarnings } from "../prototypeFixtures";
 import styles from "../styles.css?inline";
 import tokens from "../tokens.css?inline";
+import { resolveComputedColor } from "../test/computedColor";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { ConfigurationWarnings } from "./ConfigurationWarnings";
 
@@ -52,19 +53,6 @@ const workflowWarning: ValidationWarning = {
     "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through",
 };
 
-function resolveComputedColor(element: Element, property: "background" | "color"): string {
-  const computed = window.getComputedStyle(element).getPropertyValue(property).trim();
-  const customProperty = computed.match(/^var\((--[\w-]+)\)$/)?.[1];
-  const resolved = customProperty
-    ? window.getComputedStyle(document.documentElement).getPropertyValue(customProperty).trim()
-    : computed;
-
-  if (!/^#[\da-f]{6}$/i.test(resolved)) {
-    throw new Error(`Expected ${property} to resolve to a six-digit hex color, received "${resolved}".`);
-  }
-  return resolved;
-}
-
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (color: string) => {
     const channels = color
@@ -89,7 +77,7 @@ function expectWarningCodeContrast(warning: HTMLElement) {
     throw new Error("Expected warning code.");
   }
   const foreground = resolveComputedColor(code, "color");
-  const background = resolveComputedColor(code, "background");
+  const background = resolveComputedColor(code, "background-color");
   expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
 }
 

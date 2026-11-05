@@ -1,10 +1,10 @@
 package runner
 
 import (
-	"encoding/json"
 	"errors"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workspaceauthority"
 )
 
 // ParentRetirementCandidate identifies a host-owned physical workstream.
@@ -38,15 +38,15 @@ func ParentRetirementCandidates(reader *journal.Reader) ([]ParentRetirementCandi
 	}
 	var result []ParentRetirementCandidate
 	for _, branch := range branches {
-		state, err := readParentWorkspaceState(events, id.RunID, branch.name)
+		state, err := readParentWorkspaceState(events, id.RunID, branch.Name)
 		if err != nil {
 			return nil, err
 		}
-		value := state.archive
-		if state.retiredAt == 0 {
-			value = state.archiveValue(journal.Ref{})
+		value := state.Archive
+		if state.RetiredAt == 0 {
+			value = state.ArchiveValue(journal.Ref{})
 		}
-		result = append(result, ParentRetirementCandidate{Workspace: value, Branch: branch.index, RetirementSeq: state.retiredAt})
+		result = append(result, ParentRetirementCandidate{Workspace: value, Branch: branch.Index, RetirementSeq: state.RetiredAt})
 	}
 	return result, nil
 }
@@ -73,26 +73,11 @@ func heldParentBranches(events []journal.Event) ([]parentArchiveBranch, error) {
 			return nil, errors.New("parent retirement branch limit exceeded")
 		}
 		seen[name] = event.Branch
-		result = append(result, parentArchiveBranch{name: name, index: event.Branch})
+		result = append(result, parentArchiveBranch{Name: name, Index: event.Branch})
 	}
 	return result, nil
 }
 
 func parentEventCustody(event journal.Event) (ContainedParentWorkspaceCustody, bool, error) {
-	var custody ContainedParentWorkspaceCustody
-	if event.Type != journal.EventRunnerAnnotation {
-		return custody, false, nil
-	}
-	if event.Runner["kind"] == ParentForkReadyKind || event.Runner["kind"] == ParentForkRootReadyKind {
-		fork, err := decodeParentForkCustody(event)
-		return ContainedParentWorkspaceCustody{Version: 1, Workspace: fork.Workspace}, true, err
-	}
-	if event.Runner["kind"] != ContainedParentWorkspaceKind {
-		return custody, false, nil
-	}
-	data, err := json.Marshal(event.Runner["custody"])
-	if err != nil || len(data) > 8192 || json.Unmarshal(data, &custody) != nil || custody.Version != 1 || custody.Origin == nil || custody.Workspace.Branch == "" {
-		return custody, true, errors.New("invalid parent retirement custody")
-	}
-	return custody, true, nil
+	return workspaceauthority.ParentEventCustody(event)
 }

@@ -36,6 +36,14 @@ func (s *Local) definitionReloadSnapshot() *DefinitionReloadStatus {
 	return &copy
 }
 
+// DefinitionReload returns the current bounded config reconciliation snapshot.
+func (s *Local) DefinitionReload() *DefinitionReloadStatus {
+	if s == nil {
+		return nil
+	}
+	return s.definitionReloadSnapshot()
+}
+
 func cloneReloadWarnings(warnings []validate.CodedWarning) []validate.CodedWarning {
 	result := slices.Clone(warnings)
 	for i := range result {

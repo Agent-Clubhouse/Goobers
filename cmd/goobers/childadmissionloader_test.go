@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/configgeneration"
@@ -46,8 +48,8 @@ func newPinnedChildFixture(t *testing.T, editConfig ...func(string)) pinnedChild
 	}
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
-	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(layout.ConfigDir(), set, goobers)
+	goobers := runtimewiring.GoobersByName(set)
+	instructions, err := runtimewiring.LoadGooberInstructions(layout.ConfigDir(), set, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +101,7 @@ func TestPinnedChildLoaderUsesArchiveAndAppliedAuthority(t *testing.T) {
 	if first.ParentWorkflow != f.parent.Workflow || first.ConfigGeneration != f.parent.ConfigGeneration || first.ParentWorkflowDigest != f.parent.WorkflowDigest || first.ParentGooberDigest != f.parent.GooberDigest || !reflect.DeepEqual(first.Admission.ParentTask, f.stage) {
 		t.Fatalf("parent pins changed: %+v", first)
 	}
+
 	// Invalid pending disk edits cannot become applied authority. The old
 	// immutable snapshot and retained archive still admit exactly the same grant.
 	if err := os.WriteFile(f.sourcePath, []byte("invalid: ["), 0644); err != nil {
@@ -124,6 +127,28 @@ func TestPinnedChildLoaderUsesArchiveAndAppliedAuthority(t *testing.T) {
 	second.Admission.Config.Runner.HarnessCommand = map[string][]string{"copilot": {"not-a-real-harness"}}
 	if !reflect.DeepEqual(first, f.load(t)) {
 		t.Fatal("caller mutation changed trusted snapshot")
+	}
+}
+
+func TestPinnedChildLoaderAcceptsLegacyIdentityAfterUpgrade(t *testing.T) {
+	f := newPinnedChildFixture(t)
+	legacy := f.parent.InstanceID
+	canonical := strings.Repeat("f", 32)
+	if canonical == legacy {
+		canonical = strings.Repeat("e", 32)
+	}
+	if err := os.WriteFile(filepath.Join(f.layout.Root, "instance-id"), []byte(legacy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.layout.Root, instance.RootIdentityFileName), []byte(canonical+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.layout.EnsureIdentity(t.Context()); err != nil || got != canonical {
+		t.Fatalf("upgrade identity = %q, %v; want %q", got, err, canonical)
+	}
+	authority := f.load(t)
+	if authority.ParentWorkflow != f.parent.Workflow {
+		t.Fatalf("legacy parent was not recognized after upgrade: %+v", authority)
 	}
 }
 

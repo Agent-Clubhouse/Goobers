@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -163,7 +165,7 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	}
 	reg, scrub := journal.DefaultScrubber()
 	reg.Register(secret)
-	stopTelemetry := startCommandJournalTelemetry(l, stderr)
+	stopTelemetry := runtimewiring.StartCommandJournalTelemetry(l, stderr)
 	defer stopTelemetry()
 	run, _, err := journal.Recover(runDir, journal.WithScrubber(scrub))
 	if err != nil {

@@ -1,0 +1,149 @@
+apiVersion: temporal.io/v1alpha1
+kind: WorkerDeployment
+metadata:
+  name: goobers
+  namespace: goobers-cloud
+  labels:
+    app.kubernetes.io/name: goobers-worker
+    app.kubernetes.io/component: worker
+    goobers.dev/role: worker
+spec:
+  deploymentLabels:
+    app.kubernetes.io/name: goobers-worker
+    app.kubernetes.io/component: worker
+    goobers.dev/role: worker
+  deployment:
+    replicas: 2
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: goobers-worker
+          app.kubernetes.io/component: worker
+          goobers.dev/role: worker
+      spec:
+        priorityClassName: goobers-control-plane
+        serviceAccountName: goobers-worker
+        terminationGracePeriodSeconds: 360
+        nodeSelector:
+          kubernetes.io/os: linux
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          fsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: goobers
+            command:
+              - goobers-cloud
+            args:
+              - worker
+              - --task-queue
+              - goobers-engine
+              - --work-root
+              - /var/lib/goobers-worker
+              - --health-addr
+              - :8081
+              - --max-concurrent-activities
+              - "4"
+              - --config-endpoint
+              - https://goobers-control.goobers-cloud.svc:8080
+              - --config-keyring-file
+              - /var/run/secrets/goobers/keyring.json
+              - --blob-endpoint
+              - https://goobers-control.goobers-cloud.svc:8080
+              - --daemon-api
+              - https://goobers-control.goobers-cloud.svc:8080
+              - --dispatch-namespace
+              - enabled
+            env:
+              - name: SSL_CERT_FILE
+                value: /etc/goobers/ca/ca.crt
+              - name: GOOBERS_TEMPORAL_HOSTPORT
+                value: temporal-frontend.goobers-temporal:7233
+              - name: POD_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+            ports:
+              - name: health
+                containerPort: 8081
+            startupProbe:
+              httpGet:
+                path: /healthz
+                port: health
+              periodSeconds: 10
+              timeoutSeconds: 2
+              failureThreshold: 180
+            readinessProbe:
+              httpGet:
+                path: /readyz
+                port: health
+              periodSeconds: 10
+              timeoutSeconds: 2
+              failureThreshold: 3
+            livenessProbe:
+              httpGet:
+                path: /healthz
+                port: health
+              periodSeconds: 15
+              timeoutSeconds: 2
+              failureThreshold: 3
+            volumeMounts:
+              - name: control-ca
+                mountPath: /etc/goobers/ca
+                readOnly: true
+              - name: workspaces
+                mountPath: /var/lib/goobers-worker
+              - name: config-key
+                mountPath: /var/run/secrets/goobers
+                readOnly: true
+              - name: harness-home
+                mountPath: /home/nonroot
+              - name: tmp
+                mountPath: /tmp
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: "1"
+                memory: 2Gi
+        volumes:
+          - name: control-ca
+            configMap:
+              name: goobers-cloud-control-ca
+          - name: workspaces
+            emptyDir: {}
+          - name: config-key
+            secret:
+              secretName: goobers-cloud-pod-key
+          - name: harness-home
+            emptyDir: {}
+          - name: tmp
+            emptyDir:
+              sizeLimit: 1Gi
+  drainingDeployment:
+    replicas: 2
+  rollout:
+    strategy: AllAtOnce
+  sunset:
+    scaledownDelay: 0s
+    deleteDelay: 24h
+  workerOptions:
+    connectionRef:
+      name: goobers-temporal
+    temporalNamespace: default
+    # CHANGE-ME for every image or workflow-code release, whether or not that
+    # release is replay-qualified. Release tooling must inject a distinct,
+    # immutable release version or version+workflow-source hash.
+    unsafeCustomBuildID: CHANGE-ME-release-version

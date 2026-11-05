@@ -125,17 +125,18 @@ const (
 // YAML via json-tagged structs (sigs.k8s.io/yaml, already a repo dependency),
 // so this mirror decodes with the same library against the same tags.
 type runIdentity struct {
-	InstanceID      string            `json:"instanceId,omitempty"`
-	Schema          string            `json:"schema"`
-	RunID           string            `json:"runId"`
-	Workflow        string            `json:"workflow"`
-	WorkflowVersion int               `json:"workflowVersion"`
-	WorkflowDigest  string            `json:"workflowDigest,omitempty"`
-	GooberDigest    string            `json:"gooberDigest,omitempty"`
-	Gaggle          string            `json:"gaggle"`
-	Trigger         journalTrigger    `json:"trigger"`
-	Inputs          []journalInputRef `json:"inputs,omitempty"`
-	StartedAt       time.Time         `json:"startedAt"`
+	ContinuedFromRunID string            `json:"continuedFromRunId,omitempty"`
+	InstanceID         string            `json:"instanceId,omitempty"`
+	Schema             string            `json:"schema"`
+	RunID              string            `json:"runId"`
+	Workflow           string            `json:"workflow"`
+	WorkflowVersion    int               `json:"workflowVersion"`
+	WorkflowDigest     string            `json:"workflowDigest,omitempty"`
+	GooberDigest       string            `json:"gooberDigest,omitempty"`
+	Gaggle             string            `json:"gaggle"`
+	Trigger            journalTrigger    `json:"trigger"`
+	Inputs             []journalInputRef `json:"inputs,omitempty"`
+	StartedAt          time.Time         `json:"startedAt"`
 }
 
 // journalTrigger mirrors internal/journal.Trigger.

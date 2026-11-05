@@ -5,29 +5,23 @@ import (
 	"errors"
 	"reflect"
 
+	"github.com/goobers/goobers/internal/workspaceauthority"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// ParentContributionKind is a host-only receipt for a verified imported tree.
-const ParentContributionKind = "isolated.parent.contribution"
+// ParentContributionKind uses the shared workspaceauthority.ParentContributionKind contract.
+const ParentContributionKind = workspaceauthority.ParentContributionKind
 
-// ParentContributionRetiredKind records a durable retirement authorization,
-// after archive verification and before checkout removal. Cleanup is idempotent;
-// the referenced output remains readable under ordinary journal retention.
-const ParentContributionRetiredKind = "isolated.parent.contribution.retired"
+// ParentContributionRetiredKind uses the shared workspaceauthority.ParentContributionRetiredKind contract.
+const ParentContributionRetiredKind = workspaceauthority.ParentContributionRetiredKind
 
-const maxParentContributionBytes = 24 << 20
+const maxParentContributionBytes = workspaceauthority.MaxParentContributionBytes
 
-type parentContribution struct {
-	Version        int                             `json:"version"`
-	ContractDigest string                          `json:"contractDigest"`
-	Custody        ContainedParentWorkspaceCustody `json:"custody"`
-	Output         journal.Ref                     `json:"output"`
-}
+type parentContribution = workspaceauthority.ParentContribution
 
 // RecordParentContribution is called only after stopped pod output has been
 // verified and imported. It binds the exact artifact ref to the held checkout.
@@ -113,12 +107,7 @@ func parentContributionReplay(events []journal.Event, record parentContribution)
 }
 
 func decodeParentContribution(event journal.Event) (parentContribution, error) {
-	var result parentContribution
-	raw, err := json.Marshal(event.Runner["contribution"])
-	if err != nil || len(raw) > 8192 || json.Unmarshal(raw, &result) != nil || result.Version != 1 || !blobstore.ValidDigest(result.ContractDigest) || result.ContractDigest != event.Runner["contractDigest"] || result.Custody.Version != 1 || result.Custody.Origin == nil || result.Output.Path == "" || result.Output.Size <= 0 || result.Output.Size > maxParentContributionBytes {
-		return result, errors.New("invalid parent contribution receipt")
-	}
-	return result, nil
+	return workspaceauthority.DecodeParentContribution(event)
 }
 
 // ParentWorkspaceCustody requires a host-held checkout before dispatch. It does
@@ -148,55 +137,7 @@ func ParentWorkspaceCustody(rec OwnedJournalRecorder, env apiv1.InvocationEnvelo
 	return custody, err
 }
 
-// ParentCleanupWorkspace resolves the exact current source authority for either
-// a returned contained workspace or a host-created fork. Content is always
-// captured from the live checkout, never from the source artifact.
+// ParentCleanupWorkspace uses the shared workspaceauthority.ParentCleanupWorkspace contract.
 func ParentCleanupWorkspace(reader *journal.Reader, target worktree.CleanupTarget) (ParentWorkspaceArchive, bool, error) {
-	var empty ParentWorkspaceArchive
-	id, err := reader.Identity()
-	if err != nil || id.RunID != target.OwnerRunID || id.Child != nil {
-		return empty, false, errors.Join(errors.New("parent cleanup owner mismatch"), err)
-	}
-	events, err := reader.Events()
-	if err != nil {
-		return empty, false, err
-	}
-	pending, err := spec.PendingJoins(reader)
-	if err != nil {
-		return empty, false, err
-	}
-	if len(pending) != 0 {
-		return empty, false, ErrParentReturnPending
-	}
-	if err := refusePendingForkCleanup(reader, events, target); err != nil {
-		return empty, false, err
-	}
-	var branch string
-	for _, event := range events {
-		value, relevant, err := parentEventCustody(event)
-		if err != nil {
-			return empty, false, err
-		}
-		if relevant && value.Workspace.WorkspaceID == target.WorktreeID {
-			if value.Workspace.OwnerRunID != id.RunID {
-				return empty, false, errors.New("parent cleanup workspace owner changed")
-			}
-			branch = value.Workspace.Branch
-		}
-	}
-	if branch == "" {
-		return empty, false, nil
-	}
-	state, err := readParentWorkspaceState(events, id.RunID, branch)
-	if err != nil {
-		return empty, false, err
-	}
-	if state.returnedAt == 0 || state.retiredAt != 0 {
-		return empty, false, errors.New("parent cleanup has no current acknowledged workspace")
-	}
-	owner := state.hold.Workspace
-	if target.Pinned || owner.WorkspaceID != target.WorktreeID || owner.RepositoryDigest != target.RepositoryDigest || owner.StartRef != target.StartRef {
-		return empty, false, errors.New("parent cleanup checkout identity changed")
-	}
-	return state.archiveValue(journal.Ref{}), true, nil
+	return workspaceauthority.ParentCleanupWorkspace(reader, target)
 }

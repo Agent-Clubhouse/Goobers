@@ -1,27 +1,27 @@
 package engine
 
-// placementprovenance_test.go covers plan item E3's engine half (#3875): the
-// per-attempt runner.placement event dispatchWithRetry journals from what the
-// dispatch reported back.
-//
-// The runner-vs-engine agreement is the parity harness's row
-// (parity_row_placement_provenance_test.go). These are the properties that row
-// cannot reach: the POD arm's provenance (the parity harness has no pod), the
-// zero-declaration gate, and the replay contract for histories recorded before
-// the result field existed.
-
 import (
 	"encoding/json"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// placementprovenance_test.go covers plan item E3's engine half (#3875): the
+	// per-attempt runner.placement event dispatchWithRetry journals from what the
+	// dispatch reported back.
+	//
+	// The runner-vs-engine agreement is the parity harness's row
+	// (parity_row_placement_provenance_test.go). These are the properties that row
+	// cannot reach: the POD arm's provenance (the parity harness has no pod), the
+	// zero-declaration gate, and the replay contract for histories recorded before
+	// the result field existed.
 	corev1 "k8s.io/api/core/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runner"
 )
 
 // projectedPlacements decodes every runner.placement event out of a run's
@@ -92,7 +92,7 @@ func TestPodAttemptJournalsDispatcherPlacementProvenance(t *testing.T) {
 // is reported by the dispatcher that created it, and a dispatch only happens on
 // an instance that declared a runners inventory in the first place.
 func TestPodPlacementProvenanceIsNotGatedOnWorkerEnvironment(t *testing.T) {
-	for _, envVar := range []string{runner.EnvPlacementNode, runner.EnvPlacementPod, runner.EnvPlacementImage} {
+	for _, envVar := range []string{runsemantics.EnvPlacementNode, runsemantics.EnvPlacementPod, runsemantics.EnvPlacementImage} {
 		t.Setenv(envVar, "")
 	}
 	spec := apiv1.WorkflowSpec{
@@ -124,7 +124,7 @@ func TestPodPlacementProvenanceIsNotGatedOnWorkerEnvironment(t *testing.T) {
 // has had this gate since placement provenance landed; the engine must not be
 // the path that quietly breaks it.
 func TestEnginePlacementProvenanceRespectsZeroDeclaration(t *testing.T) {
-	for _, envVar := range []string{runner.EnvPlacementNode, runner.EnvPlacementPod, runner.EnvPlacementImage} {
+	for _, envVar := range []string{runsemantics.EnvPlacementNode, runsemantics.EnvPlacementPod, runsemantics.EnvPlacementImage} {
 		t.Setenv(envVar, "")
 	}
 	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
@@ -141,9 +141,9 @@ func TestEnginePlacementProvenanceRespectsZeroDeclaration(t *testing.T) {
 // in-process arm journals what runner.SelfPlacement observes — the SAME payload
 // the local runner writes, from the same producer.
 func TestDeclaredSelfPlacementIsJournaledByTheInProcessArm(t *testing.T) {
-	t.Setenv(runner.EnvPlacementNode, "node-a")
-	t.Setenv(runner.EnvPlacementPod, "goobers-worker-0")
-	t.Setenv(runner.EnvPlacementImage, "ghcr.io/example/worker:v3")
+	t.Setenv(runsemantics.EnvPlacementNode, "node-a")
+	t.Setenv(runsemantics.EnvPlacementPod, "goobers-worker-0")
+	t.Setenv(runsemantics.EnvPlacementImage, "ghcr.io/example/worker:v3")
 
 	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
 	proj := executeForProjection(t, projectionInput("placement-declared", spec), &Activities{
@@ -154,7 +154,7 @@ func TestDeclaredSelfPlacementIsJournaledByTheInProcessArm(t *testing.T) {
 	if !ok {
 		t.Fatal("a declared install journaled no placement for the in-process arm")
 	}
-	want := runner.SelfPlacement()
+	want := runsemantics.SelfPlacement()
 	if got.Runner != want.Runner || got.Node != want.Node || got.Pod != want.Pod || got.Image != want.Image || got.OS != want.OS || got.Host != want.Host {
 		t.Fatalf("self placement = %+v, want runner.SelfPlacement() = %+v — the two runners must journal one payload from one producer", got, want)
 	}

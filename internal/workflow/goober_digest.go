@@ -48,6 +48,7 @@ func ComputeGooberDigest(
 		if !ok {
 			return "", fmt.Errorf("participating goober %q is not defined", name)
 		}
+		spec = MaterializeGooberForDefinition(def, spec)
 		content, ok := instructions[name]
 		if !ok {
 			return "", fmt.Errorf("participating goober %q has no resolved instructions", name)

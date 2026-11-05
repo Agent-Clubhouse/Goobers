@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -13,5 +15,5 @@ func prepareDaemonStartupRoot(layout instance.Layout, stderr io.Writer) error {
 	if err := instance.RecoverConfigTransaction(layout); err != nil {
 		return fmt.Errorf("recover configuration: %w", err)
 	}
-	return prepareManualRoot(layout, stderr)
+	return runtimewiring.PrepareManualRoot(layout, stderr)
 }

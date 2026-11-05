@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -65,10 +66,10 @@ func renewTerminalRecovery(layout instance.Layout, manager *worktree.Manager, ru
 	// entries fails as "inventory is full", which pins the run's active
 	// marker and so inflates the next restart's crash-resume candidate set
 	// (#5199).
-	log := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}
+	log := runtimewiring.RecoveryCleanupJournal{Directory: layout.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()}
 	root := filepath.Join(layout.Root, "recovery")
-	recoveryCfg, origin := resolveRecoveryPolicy(layout, nil)
-	journalRecoveryPolicyFallback(log, origin, recoveryCfg, root)
+	recoveryCfg, origin := runtimewiring.ResolveRecoveryPolicy(layout, nil)
+	runtimewiring.JournalRecoveryPolicyFallback(log, origin, recoveryCfg, root)
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
 	if err != nil {
 		return err
@@ -99,7 +100,7 @@ func renewTerminalRecovery(layout instance.Layout, manager *worktree.Manager, ru
 	if journal.PhaseFromEvents(events) == journal.PhaseRunning {
 		return nil
 	}
-	finishedAt, err := recoveryWindowTime(events, identity.StartedAt)
+	finishedAt, err := runtimewiring.RecoveryWindowTime(events, identity.StartedAt)
 	if err != nil {
 		return err
 	}
@@ -136,8 +137,8 @@ func renewTerminalRecovery(layout instance.Layout, manager *worktree.Manager, ru
 // is instance-wide, so a root it cannot read must not start deferring every
 // run's terminal finalization: the failure is journaled and the run's
 // overflow records, if any, keep their capture-time deadline.
-func terminalOverflowEntries(ctx context.Context, layout instance.Layout, log recoveryCleanupJournal, runID string) []recovery.InventoryEntry {
-	overflow, err := recovery.ReadOverflowForRun(ctx, recoveryOverflowRoot(layout), runID)
+func terminalOverflowEntries(ctx context.Context, layout instance.Layout, log runtimewiring.RecoveryCleanupJournal, runID string) []recovery.InventoryEntry {
+	overflow, err := recovery.ReadOverflowForRun(ctx, runtimewiring.RecoveryOverflowRoot(layout), runID)
 	if err != nil {
 		recovery.JournalOverflowRenewalSkipped(log, runID, "", fmt.Sprintf("overflow tier unreadable: %v", err))
 		return nil
@@ -158,7 +159,7 @@ func terminalOverflowEntries(ctx context.Context, layout instance.Layout, log re
 // keeps its capture-time deadline — exactly its pre-#5403 behaviour — and the
 // skip is journaled so the unrenewed deadline is explicable. Only a failure to
 // write or journal a verified extension is returned.
-func renewTerminalOverflow(ctx context.Context, layout instance.Layout, manager *worktree.Manager, log recoveryCleanupJournal, entries []recovery.InventoryEntry, deadline time.Time) error {
+func renewTerminalOverflow(ctx context.Context, layout instance.Layout, manager *worktree.Manager, log runtimewiring.RecoveryCleanupJournal, entries []recovery.InventoryEntry, deadline time.Time) error {
 	cfg, cfgErr := instance.LoadConfig(layout.ConfigFile())
 	return recovery.RenewOverflowEntries(entries, deadline, func(entry recovery.InventoryEntry) (*recovery.Record, string, error) {
 		switch {
@@ -175,7 +176,7 @@ func renewTerminalOverflow(ctx context.Context, layout instance.Layout, manager 
 // still pins it, under the same per-repository lock promotion holds; see
 // recovery.RenewOverflowInRepositories for what a nil record means.
 func renewOverflowEntry(ctx context.Context, cfg *instance.Config, manager *worktree.Manager, entry recovery.InventoryEntry, deadline time.Time) (renewed *recovery.Record, skipped string, err error) {
-	url, err := recoveryRetentionCloneURL(cfg, entry.Record.RepositoryKey)
+	url, err := runtimewiring.RecoveryRetentionCloneURL(cfg, entry.Record.RepositoryKey)
 	if err != nil {
 		return nil, fmt.Sprintf("recovery repository unresolved: %v", err), nil
 	}

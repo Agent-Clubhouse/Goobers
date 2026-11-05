@@ -10,10 +10,11 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key, issue string, body io.Reader) error {
-	deadline, err := authorizeRecoveryDelivery(ctx, s.layout, runID, key, issue, time.Now().UTC())
+	deadline, err := withAuthorizedRecoveryDelivery(ctx, s.layout, runID, key, issue, time.Now().UTC(), true, nil)
 	if err != nil {
 		return err
 	}
@@ -42,17 +43,17 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 	if err != nil {
 		return err
 	}
-	url, err := recoveryRetentionCloneURL(cfg, key)
+	url, err := runtimewiring.RecoveryRetentionCloneURL(cfg, key)
 	if err != nil {
 		return err
 	}
-	root, err := prepareRecoveryInventory(s.layout.Root)
+	root, err := runtimewiring.PrepareRecoveryInventory(s.layout.Root)
 	if err != nil {
 		return err
 	}
-	recoveryCfg, origin := resolveRecoveryPolicy(s.layout, cfg)
-	journalRecoveryPolicyFallback(
-		recoveryCleanupJournal{directory: s.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()},
+	recoveryCfg, origin := runtimewiring.ResolveRecoveryPolicy(s.layout, cfg)
+	runtimewiring.JournalRecoveryPolicyFallback(
+		runtimewiring.RecoveryCleanupJournal{Directory: s.layout.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()},
 		origin, recoveryCfg, root,
 	)
 	retainWindow, err := recoveryCfg.RetainWindowEffective()
@@ -68,7 +69,7 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 			IdentityTime: identity.StartedAt, RetainUntil: identity.StartedAt.Add(retainWindow),
 			InventoryRoot: root, CleanupRoots: []string{manager.Root},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
-			EvictFull: recoveryEvictFunc(s.layout, cfg, manager, key),
+			EvictFull: runtimewiring.RecoveryEvictFunc(s.layout, cfg, manager, key),
 			EnsureBase: func(ctx context.Context, repository, sha, ref string) error {
 				return manager.FetchRecoveryBase(ctx, url, repository, sha, ref)
 			},
@@ -95,8 +96,8 @@ func (a recoveryPublicationAck) Append(event journal.Event) error {
 	if err != nil {
 		return err
 	}
-	_, err = withAuthorizedRecoveryDelivery(a.ctx, a.service.layout, a.runID, a.key, a.issue, time.Now().UTC(), func() error {
-		return (recoveryCleanupJournal{directory: a.service.layout.SchedulerDir(), scrubber: journal.NewRegistryScrubber()}).Append(event)
+	_, err = withAuthorizedRecoveryDelivery(a.ctx, a.service.layout, a.runID, a.key, a.issue, time.Now().UTC(), true, func() error {
+		return (runtimewiring.RecoveryCleanupJournal{Directory: a.service.layout.SchedulerDir(), Scrubber: journal.NewRegistryScrubber()}).Append(event)
 	})
 	return err
 }
@@ -117,7 +118,7 @@ func (a recoveryPublicationAck) withCurrentRetention(event journal.Event) (journ
 	if err != nil {
 		return journal.Event{}, err
 	}
-	captureAt, err := recoveryCaptureTime(a.ctx, reader, identity.StartedAt)
+	captureAt, err := runtimewiring.RecoveryCaptureTime(a.ctx, reader, identity.StartedAt)
 	if err != nil {
 		return journal.Event{}, err
 	}

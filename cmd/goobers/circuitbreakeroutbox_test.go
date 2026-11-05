@@ -30,7 +30,13 @@ type circuitBreakerFakeCommenter struct {
 }
 
 func (f *circuitBreakerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
-	return append([]providers.Comment(nil), f.comments...), nil
+	comments := append([]providers.Comment(nil), f.comments...)
+	for i := range comments {
+		if comments[i].Author == "" {
+			comments[i].Author = "report-bot"
+		}
+	}
+	return comments, nil
 }
 
 func (f *circuitBreakerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
@@ -379,4 +385,8 @@ func TestComposeTerminalNotifierSuccessReturnsNil(t *testing.T) {
 	if !slices.Equal(order, []string{"breaker", "notify"}) {
 		t.Fatalf("hook order = %v, want [breaker notify]", order)
 	}
+}
+
+func (f *circuitBreakerFakeCommenter) AuthenticatedLogin(context.Context) (string, error) {
+	return "report-bot", nil
 }

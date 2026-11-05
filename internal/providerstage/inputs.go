@@ -164,6 +164,7 @@ var inputSchemas = map[string][]Input{
 		stringListsIn("headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
+	"decide":             schema(pathsIn("resultFile")),
 	"gate-removal-guard": schema(stringsIn("base", "configRepo", "configRepoBase", "configRepoDir"), pathsIn("resultFile")),
 	"issue-close-out": schema(
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
@@ -178,7 +179,7 @@ var inputSchemas = map[string][]Input{
 	),
 	"open-pr": schema(
 		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
-		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
+		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "draft", "recordLiveVerification", "runIdFooter"),
 		stringListsIn("actionRoots", "docsRoots", "reviewers"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),

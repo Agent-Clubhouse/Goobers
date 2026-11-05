@@ -55,6 +55,9 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 	if identity.Version != version.Get().String() {
 		t.Errorf("version = %q, want %q", identity.Version, version.Get().String())
 	}
+	if !identity.ExactWorkItemFile {
+		t.Fatal("daemon did not advertise exact-item file admission")
+	}
 	if identity.LivenessTimeoutMillis != instance.DefaultDaemonLivenessTimeout.Milliseconds() {
 		t.Errorf("liveness timeout = %dms, want %dms", identity.LivenessTimeoutMillis, instance.DefaultDaemonLivenessTimeout.Milliseconds())
 	}

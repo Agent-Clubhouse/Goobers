@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/stringpolicy"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -558,9 +559,9 @@ func componentKeywordDomain(cause CauseFinding) FaultDomain {
 	}
 	text := strings.ToLower(strings.Join(parts, " "))
 	switch {
-	case containsAny(text, "scheduler", "daemon", "worktree", "journal", "claim", "admission", "publication", "shared ci", "recovery"):
+	case stringpolicy.ContainsAny(text, "scheduler", "daemon", "worktree", "journal", "claim", "admission", "publication", "shared ci", "recovery"):
 		return FaultDomainProductRuntime
-	case containsAny(text, "credential", "rate limit", "provider", "model", "network", "filesystem", "antivirus", "operating system", "harness"):
+	case stringpolicy.ContainsAny(text, "credential", "rate limit", "provider", "model", "network", "filesystem", "antivirus", "operating system", "harness"):
 		return FaultDomainExternal
 	default:
 		return FaultDomainUnknown
@@ -780,13 +781,4 @@ func sortEvidence(evidence []AttributionEvidenceLink) {
 		}
 		return evidence[i].RunID < evidence[j].RunID
 	})
-}
-
-func containsAny(value string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(value, needle) {
-			return true
-		}
-	}
-	return false
 }

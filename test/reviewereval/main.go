@@ -8,12 +8,14 @@
 //
 //	go run ./test/reviewereval build -range=A..B -version=v1 -out=dataset.jsonl
 //	go run ./test/reviewereval replay -dataset=dataset.jsonl -variant=baseline \
-//	    -reviewer-cmd="<adapter>" -allow-real-reviewer -max-cases=20 -budget-usd=10 -report=baseline.json
+//	    -reviewer-cmd="<adapter>" -sandbox-cmd="<egress-blocking wrapper>" -allow-real-reviewer \
+//	    -max-cases=20 -budget-usd=10 -report=baseline.json
 //	go run ./test/reviewereval compare -baseline=baseline.json -candidate=candidate.json
 //	go run ./test/reviewereval publish -report=baseline.json -instance=<instance-root>
 //
 // build only reads the repository. replay never posts anywhere: the reviewer
-// runs in a fresh repository with no remote and no forge credentials. compare
+// runs in a fresh repository with no remote and no forge credentials, inside a
+// sandbox verified to block egress to the forge. compare
 // exits 1 when the candidate regresses; -publish records the comparison on an
 // instance so telemetry read surfaces report it.
 package main
@@ -37,14 +39,16 @@ const usage = "usage: reviewereval build|replay|compare|publish [flags]"
 
 // adapterIsolationNote is replay's help on what isolates the adapters from
 // the fix and later history, and what does not.
-const adapterIsolationNote = `Adapters never see the fix or later history through git: they run on a frozen
-two-commit repository with no remotes, with the default-deny environment
-(plus -adapter-env names, never forge credentials), an isolated home, no git
+const adapterIsolationNote = `Adapters never see the fix or later history: they run on a frozen two-commit
+repository with no remotes, with the default-deny environment (plus
+-adapter-env names, never forge credentials), an isolated home, no git
 credential helper, and git limited to local transport (GIT_ALLOW_PROTOCOL=file).
-They are NOT network-isolated: an adapter or its model can still make non-git
-HTTP requests, for example to a forge's web or API endpoints. Use adapters
-that cannot browse, or a host with restricted egress, until
-https://github.com/Agent-Clubhouse/Goobers/issues/7483 adds an egress allowlist.`
+Every adapter also runs through -sandbox-cmd, a command prefix that must block
+egress to the forge (for example a container or network namespace whose egress
+allowlist admits only the model provider). Before any review, replay runs this
+binary's egress probe through the sandbox and refuses to start unless every
+-forbidden-hosts endpoint is unreachable from inside it, so the sandbox must be
+able to run this binary at the same path.`
 
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
@@ -57,6 +61,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	commands := map[string]func(context.Context, []string, io.Writer, io.Writer) int{
 		"build": runBuild, "replay": runReplay, "compare": runCompare, "publish": runPublish,
+		egressProbeCommand: runEgressProbe,
 	}
 	command, ok := commands[args[0]]
 	if !ok {
@@ -171,7 +176,9 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	flags.StringVar(&options.Seed, "seed", "reviewer-eval-v1", "deterministic sampling seed")
 	flags.StringVar(&options.WorkDir, "work-dir", "", "parent for isolated replay repositories (default system temp)")
 	reviewerCmd := flags.String("reviewer-cmd", "", "reviewer adapter command (JSON request on stdin, JSON result on stdout)")
-	allowReal := flags.Bool("allow-real-reviewer", false, "explicitly allow running the reviewer adapter, which may spend money and is not network-isolated (see below)")
+	allowReal := flags.Bool("allow-real-reviewer", false, "explicitly allow running the reviewer adapter, which may spend money")
+	sandboxCmd := flags.String("sandbox-cmd", "", "command prefix every adapter runs through; it must block egress to -forbidden-hosts (required, verified before replay)")
+	forbiddenHosts := flags.String("forbidden-hosts", strings.Join(defaultForbiddenHosts, ","), "comma-separated host:port forge endpoints adapters must not reach")
 	judgeCmd := flags.String("judge-cmd", "", "optional semantic judge adapter command")
 	adapterEnv := flags.String("adapter-env", "", "comma-separated ambient variables adapters may inherit beyond the default allowlist (never forge credentials)")
 	reportPath := flags.String("report", "", "write the JSON report here (default stdout)")
@@ -186,6 +193,11 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		_, _ = fmt.Fprintln(stderr, "reviewereval replay: -dataset, -reviewer-cmd, and -allow-real-reviewer are required; a real review is always opt-in")
 		return 2
 	}
+	sandbox := strings.Fields(*sandboxCmd)
+	if len(sandbox) == 0 {
+		_, _ = fmt.Fprintln(stderr, "reviewereval replay: -sandbox-cmd is required: adapters must run where the forge is unreachable")
+		return 2
+	}
 	passthrough := splitList(*adapterEnv)
 	if err := validatePassthrough(passthrough); err != nil {
 		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)
@@ -196,11 +208,20 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)
 		return 1
 	}
+	self, err := os.Executable()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "reviewereval replay: locate the egress probe: %v\n", err)
+		return 1
+	}
+	if err := verifyEgressBlocked(ctx, sandbox, []string{self, egressProbeCommand}, splitList(*forbiddenHosts), options.WorkDir, passthrough); err != nil {
+		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)
+		return 2
+	}
 	match := matcher{}
 	if *judgeCmd != "" {
-		match.judge = commandJudge{adapterCommand{argv: strings.Fields(*judgeCmd), workDir: options.WorkDir, passthrough: passthrough}}
+		match.judge = commandJudge{adapterCommand{argv: strings.Fields(*judgeCmd), sandbox: sandbox, workDir: options.WorkDir, passthrough: passthrough}}
 	}
-	reviewer := commandReviewer{adapterCommand{argv: strings.Fields(*reviewerCmd), workDir: options.WorkDir, passthrough: passthrough}}
+	reviewer := commandReviewer{adapterCommand{argv: strings.Fields(*reviewerCmd), sandbox: sandbox, workDir: options.WorkDir, passthrough: passthrough}}
 	report, err := replay(ctx, set, gitReader{dir: *repo}, reviewer, match, options)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "reviewereval replay: %v\n", err)

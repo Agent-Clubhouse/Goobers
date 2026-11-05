@@ -1,41 +1,5 @@
 package main
 
-// Cross-stage workspace continuity for mode 3 (#3763), pod side.
-//
-// THE PROBLEM. On the worker, WorktreeWorkspaces.Provision hands each attempt a
-// fresh worktree on the SAME run branch in the SAME mirror clone: the branch ref
-// and the object store are shared, so a commit made by one stage is simply there
-// for the next. Continuity is the local branch ref, and nothing has to carry it.
-//
-// Mode 3 has no shared filesystem. Each attempt gets a fresh pod with a fresh
-// clone and the pod is disposed after surrender (D1/D3 — reuse would be a
-// correctness bug), so a commit made in one pod dies with it. MEASURED (run
-// e1cfcfe2): the pod arm committed e58232a and the next stage reported
-// HEAD=21d228e, the PRE-COMMIT head, and continued from base reporting success.
-// The self arm of the same run carried its commit forward. Every mutating
-// workflow in the product commits in one stage and pushes in a later one, so in
-// mode 3 they all ship nothing and say they succeeded.
-//
-// THE CARRIER. The stage's commits travel as a git bundle through the blob
-// plane — the same claim-check shape the agentic kit already uses for oversized
-// activity arguments, and for the same reason: the payload is too big for the
-// control plane, and content addressing makes substitution detectable rather
-// than merely unlikely. The engine threads only the digest, exactly as it
-// already threads workspaceBranch across stages.
-//
-// The bundle mechanics and the ancestry guard (#3821) live in
-// internal/workspacedelta, shared with the worker's mirror (#3803): this file
-// is the pod's adapter — where the bytes come from (the blob plane), which git
-// environment every call needs (composeGitEnv's safe.directory exemption),
-// and what to do with the guard's verdict on a CHECKOUT (reset --hard, not
-// update-ref).
-//
-// WHY NOT PUSH TO THE RUN BRANCH. It is simpler and it changes observable
-// semantics: commits would become visible on the remote before the gates that
-// guard them run, open-pr could find the branch already present, and
-// pr-remediation's force-push-with-lease would have its lease baseline moved.
-// The run branch stays written by push-branch alone.
-
 import (
 	"bytes"
 	"context"
@@ -47,9 +11,45 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runsemantics"
+
+	// Cross-stage workspace continuity for mode 3 (#3763), pod side.
+	//
+	// THE PROBLEM. On the worker, WorktreeWorkspaces.Provision hands each attempt a
+	// fresh worktree on the SAME run branch in the SAME mirror clone: the branch ref
+	// and the object store are shared, so a commit made by one stage is simply there
+	// for the next. Continuity is the local branch ref, and nothing has to carry it.
+	//
+	// Mode 3 has no shared filesystem. Each attempt gets a fresh pod with a fresh
+	// clone and the pod is disposed after surrender (D1/D3 — reuse would be a
+	// correctness bug), so a commit made in one pod dies with it. MEASURED (run
+	// e1cfcfe2): the pod arm committed e58232a and the next stage reported
+	// HEAD=21d228e, the PRE-COMMIT head, and continued from base reporting success.
+	// The self arm of the same run carried its commit forward. Every mutating
+	// workflow in the product commits in one stage and pushes in a later one, so in
+	// mode 3 they all ship nothing and say they succeeded.
+	//
+	// THE CARRIER. The stage's commits travel as a git bundle through the blob
+	// plane — the same claim-check shape the agentic kit already uses for oversized
+	// activity arguments, and for the same reason: the payload is too big for the
+	// control plane, and content addressing makes substitution detectable rather
+	// than merely unlikely. The engine threads only the digest, exactly as it
+	// already threads workspaceBranch across stages.
+	//
+	// The bundle mechanics and the ancestry guard (#3821) live in
+	// internal/workspacedelta, shared with the worker's mirror (#3803): this file
+	// is the pod's adapter — where the bytes come from (the blob plane), which git
+	// environment every call needs (composeGitEnv's safe.directory exemption),
+	// and what to do with the guard's verdict on a CHECKOUT (reset --hard, not
+	// update-ref).
+	//
+	// WHY NOT PUSH TO THE RUN BRANCH. It is simpler and it changes observable
+	// semantics: commits would become visible on the remote before the gates that
+	// guard them run, open-pr could find the branch already present, and
+	// pr-remediation's force-push-with-lease would have its lease baseline moved.
+	// The run branch stays written by push-branch alone.
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
@@ -355,7 +355,7 @@ func workspaceProvisionFailureCode(err error) string {
 	var diverged *workspacedelta.DivergedError
 	if errors.As(err, &diverged) && strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)) != "" &&
 		diverged.Origin != "" && !strings.EqualFold(diverged.Origin, diverged.Current) {
-		return runner.WorkspaceHeadMovedErrorCode
+		return runsemantics.WorkspaceHeadMovedErrorCode
 	}
 	return telemetry.ErrCodeWorkspaceProvisionFailed
 }

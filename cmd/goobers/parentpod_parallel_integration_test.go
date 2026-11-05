@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/test/testsupport/testdep"
-	"sigs.k8s.io/yaml"
 )
 
 func TestIntegrationParallelParentsAuthorSeparateChildrenThroughRealWorkers(t *testing.T) {

@@ -35,10 +35,12 @@ type adoWorkItemLinkServer struct {
 	posts         int
 	workItemPatch int
 	rejectPatch   bool
+	headSHA       string
 }
 
 func (s *adoWorkItemLinkServer) handler() http.Handler {
 	mux := http.NewServeMux()
+	registerADOOpenPRHead(mux, "/org/project/_apis/git/repositories/repo", "goobers/implementation/run-ado", s.headSHA)
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -113,6 +115,8 @@ func runADOOpenPRStageWithClaimedItem(t *testing.T, server *adoWorkItemLinkServe
 	}
 	recordClaimedItemForRun(t, root, "run-ado", "42", "Claimed work item")
 
+	workDir := t.TempDir()
+	server.headSHA = seedOpenPRCheckout(t, workDir, "main", "goobers/implementation/run-ado")
 	httpServer := httptest.NewServer(server.handler())
 	t.Cleanup(httpServer.Close)
 
@@ -152,7 +156,7 @@ func runADOOpenPRStageWithClaimedItem(t *testing.T, server *adoWorkItemLinkServe
 		WorkflowID:   "implementation",
 		RunID:        "run-ado",
 		Gaggle:       "goobers",
-		Workspace:    t.TempDir(),
+		Workspace:    workDir,
 		Capabilities: names,
 		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "org", Project: "project", Name: "repo"},
 	}, apiv1.DeterministicRun{

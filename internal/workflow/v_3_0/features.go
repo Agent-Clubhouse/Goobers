@@ -35,6 +35,33 @@ type SupportTransition struct {
 	SinceVersion string       `json:"sinceVersion"`
 }
 
+// Runtime identifies an executor that can implement a DSL feature.
+type Runtime string
+
+const (
+	// RuntimeRunner is the in-process local workflow runner.
+	RuntimeRunner Runtime = "runner"
+	// RuntimeEngine is the distributed Temporal workflow engine.
+	RuntimeEngine Runtime = "engine"
+)
+
+// RuntimeSupportLevel describes whether one runtime implements a feature.
+type RuntimeSupportLevel string
+
+const (
+	// RuntimeSupported marks a feature implemented by the runtime.
+	RuntimeSupported RuntimeSupportLevel = "supported"
+	// RuntimeUnsupported marks a feature refused by the runtime.
+	RuntimeUnsupported RuntimeSupportLevel = "unsupported"
+)
+
+// RuntimeSupport records a feature's support on one executor.
+type RuntimeSupport struct {
+	Runtime Runtime             `json:"runtime"`
+	Level   RuntimeSupportLevel `json:"level"`
+	Since   string              `json:"since"`
+}
+
 // Feature records a DSL feature's current support level and complete lifecycle.
 type Feature struct {
 	ID                    FeatureID           `json:"id"`
@@ -44,6 +71,7 @@ type Feature struct {
 	RemovalTargetVersion  string              `json:"removalTargetVersion,omitempty"`
 	LastSupportingVersion string              `json:"lastSupportingVersion,omitempty"`
 	DSLVersions           []DSLFeatureSupport `json:"dslVersions,omitempty"`
+	Runtimes              []RuntimeSupport    `json:"runtimes,omitempty"`
 	History               []SupportTransition `json:"history"`
 }
 
@@ -72,11 +100,15 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 		if strings.TrimSpace(feature.SinceVersion) == "" {
 			return FeatureRegistry{}, fmt.Errorf("DSL feature %q has an empty since-version", feature.ID)
 		}
+		if err := validateRuntimeSupport(feature.Runtimes); err != nil {
+			return FeatureRegistry{}, fmt.Errorf("DSL feature %q: %w", feature.ID, err)
+		}
 		seenVersions := make(map[string]struct{}, len(feature.DSLVersions))
 		for _, version := range feature.DSLVersions {
 			if _, ok := supportmatrix.GetDSL().Lookup(version.Version); !ok {
 				return FeatureRegistry{}, fmt.Errorf("DSL feature %q references unknown DSL version %q", feature.ID, version.Version)
 			}
+
 			switch version.Level {
 			case SupportPreview, SupportGA, SupportDeprecated, SupportRemoved:
 			default:
@@ -111,6 +143,35 @@ func NewFeatureRegistry(features []Feature) (FeatureRegistry, error) {
 	return FeatureRegistry{entries: entries}, nil
 }
 
+func validateRuntimeSupport(rows []RuntimeSupport) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if len(rows) != 2 {
+		return fmt.Errorf("runtime support must declare runner and engine exactly once")
+	}
+	seen := make(map[Runtime]bool, len(rows))
+	for _, row := range rows {
+		if row.Runtime != RuntimeRunner && row.Runtime != RuntimeEngine {
+			return fmt.Errorf("runtime support references unknown runtime %q", row.Runtime)
+		}
+		if seen[row.Runtime] {
+			return fmt.Errorf("runtime support declares %q more than once", row.Runtime)
+		}
+		if row.Level != RuntimeSupported && row.Level != RuntimeUnsupported {
+			return fmt.Errorf("runtime %q has unknown support level %q", row.Runtime, row.Level)
+		}
+		if strings.TrimSpace(row.Since) == "" {
+			return fmt.Errorf("runtime %q has an empty since-version", row.Runtime)
+		}
+		seen[row.Runtime] = true
+	}
+	if !seen[RuntimeRunner] || !seen[RuntimeEngine] {
+		return fmt.Errorf("runtime support must declare runner and engine exactly once")
+	}
+	return nil
+}
+
 // Lookup returns the support metadata for id.
 func (r FeatureRegistry) Lookup(id FeatureID) (Feature, bool) {
 	feature, ok := r.entries[id]
@@ -132,6 +193,7 @@ func (r FeatureRegistry) All() []Feature {
 func cloneFeature(feature Feature) Feature {
 	feature.History = slices.Clone(feature.History)
 	feature.DSLVersions = slices.Clone(feature.DSLVersions)
+	feature.Runtimes = slices.Clone(feature.Runtimes)
 	return feature
 }
 
@@ -917,7 +979,22 @@ func currentFeatures(sinceVersion string) []Feature {
 			}},
 		})
 	}
-	return append(features, v31OnlyArtifactFeatures()...)
+	return withRuntimeSupport(append(features, v31OnlyArtifactFeatures()...))
+}
+
+func withRuntimeSupport(features []Feature) []Feature {
+	for i := range features {
+		engineLevel := RuntimeSupported
+		switch features[i].ID {
+		case featureWorkflowParallels:
+			engineLevel = RuntimeUnsupported
+		}
+		features[i].Runtimes = []RuntimeSupport{
+			{Runtime: RuntimeRunner, Level: RuntimeSupported, Since: features[i].SinceVersion},
+			{Runtime: RuntimeEngine, Level: engineLevel, Since: features[i].SinceVersion},
+		}
+	}
+	return features
 }
 
 const v31ArtifactFeatureSinceVersion = "v0.5.0"
@@ -1386,6 +1463,11 @@ func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
 // FeaturesForGoober returns registry metadata for the DSL features used by
 // spec. VER-2 consumes the returned levels to enforce compatibility policy.
 func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
+	for _, server := range spec.MCPServers {
+		if server.Required != nil {
+			return nil, fmt.Errorf("goober spec.mcpServers.required requires dslVersion %q", "3.1")
+		}
+	}
 	used := featureSet{}
 	used.add(featureGooberGaggle, featureGooberRole, featureGooberInstructions)
 	if spec.DisplayName != "" {

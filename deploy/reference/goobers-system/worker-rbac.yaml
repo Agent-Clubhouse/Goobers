@@ -17,6 +17,12 @@ rules:
   - apiGroups: ["goobers.dev"]
     resources: ["gaggles", "goobers", "workflows", "manifests"]
     verbs: ["get", "list", "watch"]
+  # Rainbow workers read only their controller status. A blocked target at the
+  # three-version cap triggers Temporal AUTO_UPGRADE overrides; workers never
+  # mutate the Kubernetes resource.
+  - apiGroups: ["temporal.io"]
+    resources: ["workerdeployments"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

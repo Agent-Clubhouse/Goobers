@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -29,6 +30,13 @@ type Reader struct {
 type EventRecord struct {
 	Event Event
 	Raw   json.RawMessage
+	// RecordedAt is the store's own clock at commit, where the store has one
+	// (the cloud PostgreSQL journal). It is zero for file journals and for
+	// events stored before the store recorded it; Event.Time is always the
+	// writer's clock. Across a database failover it comes from the new
+	// primary's clock, so successive values may step slightly backwards;
+	// consumers must tolerate that rather than assume monotonic order.
+	RecordedAt time.Time
 }
 
 // ErrNotRunDirectory identifies a directory with neither schema.json nor the

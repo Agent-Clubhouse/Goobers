@@ -91,7 +91,7 @@ func TestPushBranchWithRetrySingleAttemptOnWorkflowPermissionPush(t *testing.T) 
 	runGitT(t, wt.Path, "commit", "-m", "implement")
 
 	var stderr bytes.Buffer
-	pushErr := pushBranchWithRetry(wt.Path, branch, nil, &stderr)
+	pushErr := pushBranchWithRetry(wt.Path, branch, stageBaseBranch(), nil, &stderr)
 	var workflowErr *pushrejection.WorkflowPermissionError
 	if !errors.As(pushErr, &workflowErr) {
 		t.Fatalf("pushBranchWithRetry err = %v, want it to be (or wrap) a pushrejection.WorkflowPermissionError", pushErr)

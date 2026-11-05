@@ -48,13 +48,15 @@ func renderFeatureMatrix() (string, error) {
 	b.WriteString("registry-coverage expansion of surface that has been in live use since ")
 	b.WriteString("before the registry existed, NOT new 2.0 features; the `1.4 -> 2.0` ")
 	b.WriteString("delta below inherits the same caveat.\n\n")
-	b.WriteString("| Feature | DSL version | Feature support | Version support | Since app version |\n")
-	b.WriteString("| --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Feature | DSL version | Feature support | Runner | Engine | Version support | Since app version |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, row := range rows {
-		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s |\n",
 			row.Feature.ID,
 			row.DSLVersion,
 			row.Feature.Level,
+			runtimeSupportLevel(row.Feature, workflow.RuntimeRunner),
+			runtimeSupportLevel(row.Feature, workflow.RuntimeEngine),
 			row.DSLLevel,
 			row.Feature.SinceVersion,
 		)

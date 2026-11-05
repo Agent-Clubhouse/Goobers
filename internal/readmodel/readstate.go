@@ -118,6 +118,14 @@ const (
 	// what tells the two apart, the same way DegradedNoSweepCompleted keeps a
 	// never-completed sweep from reading as an up-to-date LagSeconds of 0.
 	DegradedIntakeCountUnavailable = "intake_count_unavailable"
+	// DegradedNoProjectorPass reports that the model has never recorded a
+	// completed projector pass, so nothing says the projection is being kept
+	// current. It is the PG model's counterpart of DegradedNoSweepCompleted.
+	DegradedNoProjectorPass = "no_projector_pass"
+	// DegradedProjectorStale reports that the last recorded projector pass is
+	// older than the freshness threshold: the projector is down, partitioned or
+	// wedged, and the data is only as fresh as that pass.
+	DegradedProjectorStale = "projector_stale"
 )
 
 // MissingProjectedRuns names the partition a projection gap omits.

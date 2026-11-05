@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ func TestLegacyMarkerRequiresAnOwnedLocalLease(t *testing.T) {
 			layout, _ := newPinnedClaimResolverRun(t, mode)
 			store := &pinnedClaimTestStore{}
 			resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) { return store, nil }}
-			file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+			file, err := fileClaimLedgerWithResolver(layout, resolver)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -55,7 +54,7 @@ func TestSharedRollbackUsesCoordinationWithoutLegacyProvider(t *testing.T) {
 		store:      func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) { return store, nil },
 		visibility: func(context.Context, providers.RepositoryRef) (sharedclaim.Visibility, error) { return labels, nil },
 	}
-	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	file, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +89,7 @@ func TestSharedVisibilityCredentialFailureDoesNotChangeLifecycle(t *testing.T) {
 			return nil, errors.New("issue credential unavailable")
 		},
 	}
-	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	file, err := fileClaimLedgerWithResolver(layout, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}

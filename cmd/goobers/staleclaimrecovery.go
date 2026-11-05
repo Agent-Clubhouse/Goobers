@@ -70,8 +70,7 @@ import (
 //     the same lock for the length of the one-shot), owns it. Then no
 //     intervention service exists to consult and no gate exists to respect:
 //     nil and nil are the TRUTH, not an omission, and are precisely what
-//     newOneShotClaimRecovery's documented nil-gate default and
-//     buildSchedulerSetup's mode-1 setup reap already do on those paths. The
+//     buildSchedulerSetup's local setup reap already does on those paths. The
 //     sweep runs in process, byte-identical to before.
 //
 // A stage is never the process that decides an intervention is inactive.

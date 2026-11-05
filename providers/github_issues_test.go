@@ -1279,7 +1279,7 @@ func TestGitHubLedgerAuthorizedReleaseHonorsExpectedWinner(t *testing.T) {
 		LedgerAuthorized:   true,
 		ExpectedClaimRunID: "historical-run",
 	})
-	if err == nil || !strings.Contains(err.Error(), `not expected run "historical-run"`) {
+	if err == nil || !strings.Contains(err.Error(), `not expected run "historical-run"`) || !errors.Is(err, ErrClaimHeldByAnotherRun) {
 		t.Fatalf("ledger-authorized release error = %v, want expected-winner refusal", err)
 	}
 	winner, claimed, err := claimWinner(context.Background(), p, p.BaseURL, repo, "7")

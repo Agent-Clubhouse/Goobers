@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { activeArea, parseRoute, routeHash } from "./routing";
 
 describe("definition routing", () => {
+  it("round-trips a scoped Backprop Insights deep link", () => {
+    const route = {
+      page: "insight" as const,
+      filters: { gaggle: "core", workflow: "implementation", window: "30d" as const, section: "backprop" as const },
+    };
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(activeArea(route)).toBe("insight");
+  });
+
   it("round-trips gaggle and workflow identities", () => {
     const gaggle = { page: "gaggle" as const, id: "core tools" };
     const workflow = {
@@ -137,6 +146,16 @@ describe("definition routing", () => {
       const route = { page: "instance-detail" as const, detail };
       expect(parseRoute(routeHash(route))).toEqual(route);
       expect(activeArea(route)).toBe("overview");
+    }
+  });
+
+  it("round-trips the Labs catalog and feature routes under the Labs area", () => {
+    for (const route of [
+      { page: "labs" as const },
+      { page: "labs" as const, feature: "workflow-clustering" },
+    ]) {
+      expect(parseRoute(routeHash(route))).toEqual(route);
+      expect(activeArea(route)).toBe("labs");
     }
   });
 });

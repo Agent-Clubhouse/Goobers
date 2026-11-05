@@ -118,6 +118,8 @@ func runDocsUpdaterDryRun(t *testing.T, runID string, agentStatus apiv1.ResultSt
 
 	origin := newDocsDryRunOrigin(t)
 	server := newFakeGitHubServer(t, "fixture", "repository")
+	server.serveGitRemote(origin)
+	restrictPublicationFixtureHTTP(t)
 	t.Setenv("GOOBERS_TEST_GITHUB_API_URL", server.server.URL)
 	t.Setenv(docsDryRunTokenEnv, "docs-dry-run-token")
 

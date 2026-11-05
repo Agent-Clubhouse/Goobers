@@ -22,6 +22,14 @@ func Configure(cmd *exec.Cmd) {
 	configure(cmd)
 }
 
+// StartOptions selects custody that must be established before any user code
+// executes. RequireQuiescence disables Windows Job breakaway; a later stop
+// cannot recover a descendant already allowed to escape. This does not contain
+// brokered Windows launches; StopAndWait reports membership-only evidence.
+type StartOptions struct {
+	RequireQuiescence bool
+}
+
 // Start configures cmd for tree ownership, starts it, and returns a Tree handle
 // for later signalling or killing of the whole descendant tree. It is the spawn
 // path for every caller that will tree-kill on timeout or cancel.
@@ -29,7 +37,7 @@ func Configure(cmd *exec.Cmd) {
 // The returned error is exactly cmd.Start's on unix; on windows it also covers
 // a failure to assign the started process to its Job Object. Callers keep their
 // own error wrapping around this call.
-func Start(cmd *exec.Cmd) (*Tree, error) {
+func Start(cmd *exec.Cmd, options ...StartOptions) (*Tree, error) {
 	Configure(cmd)
 	prepareStart(cmd)
 	if err := cmd.Start(); err != nil {
@@ -41,7 +49,7 @@ func Start(cmd *exec.Cmd) (*Tree, error) {
 	// into its own session, making it look like an escaped orphan — from a real
 	// one, so it never consumes the exit status this caller's Wait needs.
 	trackChild(cmd.Process.Pid)
-	tree, err := newTree(cmd)
+	tree, err := newTree(cmd, options...)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()

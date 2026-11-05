@@ -41,7 +41,7 @@ const (
 	// RoleDaemon is the instance-root owner: `goobers up` / `goobers run`,
 	// the `self` runner in a runners: inventory.
 	RoleDaemon Role = "daemon"
-	// RoleWorker is `goobers worker`, whose --work-root holds the stage
+	// RoleWorker is `goobers-cloud worker`, whose --work-root holds the stage
 	// workspaces it provisions for in-process (mode-2) stage execution.
 	RoleWorker Role = "worker"
 	// RoleStagePod is a dispatcher-created Windows stage pod (mode 3): the
@@ -143,7 +143,7 @@ func GaggleWorkcopiesDirectory(gaggle string, scoped instance.Layout) Directory 
 	}
 }
 
-// WorkerDirectories is `goobers worker`'s set. workcopies and scratch are
+// WorkerDirectories is `goobers-cloud worker`'s set. workcopies and scratch are
 // the two subtrees the worker provisions under its work root (the caller
 // passes the worker's own resolution of them, so the names are never
 // retyped here). tempDir as for DaemonDirectories.

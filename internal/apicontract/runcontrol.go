@@ -12,6 +12,9 @@ type TriggerRequest struct {
 	Gaggle        string `json:"gaggle,omitempty"`
 	Workflow      string `json:"workflow"`
 	RequestID     string `json:"requestId,omitempty"`
+	// WorkItemID pins a manual start to one backlog item in the gaggle's
+	// configured repository. It never grants access or bypasses eligibility.
+	WorkItemID string `json:"workItemId,omitempty"`
 	// Force bypasses only hourly/daily cadence budgets; it is invalid for
 	// priority and pod-scoped triggers.
 	Force bool `json:"force,omitempty"`

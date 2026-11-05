@@ -1,0 +1,15 @@
+# goobers-cloud base (docs/design/control-plane-ha.md §14, HA-P3-20): the P3
+# single-namespace cloud install. `goobers-system` stays the mode-2 base and is
+# untouched. Reference — the customer applies/adapts (see README.md).
+#
+# Two halves so rollout order is expressible everywhere:
+#   prereqs/   Namespace, PriorityClasses, ServiceAccounts, ConfigMaps, NetworkPolicies
+#   workload/  migrate Job (PreSync hook) and the control Deployment/PDB/Service
+# Apply (or Argo-sync) prereqs first; see README.md. Worker Deployments (rainbow,
+# one per build) come from an overlay that uses components/worker-base.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - prereqs
+  - workload

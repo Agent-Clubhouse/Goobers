@@ -9,7 +9,7 @@ import (
 )
 
 // ValidationHelp is the author-facing command's registry help text.
-const ValidationHelp = "Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]\n\n" +
+const ValidationHelp = "Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--cluster-model <model.json>] [--json] <proposal.yaml> [path]\n\n" +
 	"Validate one generated child Workflow against an opted-in parent stage in\n" +
 	"the instance's current active config/ tree (default path \".\"). The parent\n" +
 	"supplies policy; child grants are also bounded by the parent's stage capabilities.\n" +
@@ -18,6 +18,8 @@ const ValidationHelp = "Usage: goobers workflow validate-child --gaggle <name> -
 	"does not start or queue work, resolve credentials, invoke a model, or refresh\n" +
 	"workflowSource. --backend selects the validation target (default runner).\n" +
 	"Config digests identify declarative validation inputs, not an execution archive.\n" +
+	"--cluster-model (Labs) adds advisory novelty evidence against a frozen model\n" +
+	"from 'goobers workflow clusters --json'; it never changes validity or exit code.\n" +
 	"--json emits child-workflow-validation/v1 diagnostics and digests.\n" +
 	"Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.\n"
 
@@ -30,6 +32,7 @@ func RunValidationCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer,
 	parent := fs.String("parent", "", "configured parent workflow (required)")
 	stage := fs.String("stage", "", "configured parent agentic stage (required)")
 	backend := fs.String("backend", string(BackendRunner), "advisory validation target: runner or engine")
+	clusterModel := fs.String("cluster-model", "", "Labs: frozen cluster model for advisory novelty evidence")
 	asJSON := fs.Bool("json", false, "emit structured diagnostics and digests")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -45,7 +48,7 @@ func RunValidationCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer,
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-	report, err := ValidateConfigured(ConfiguredRequest{Root: root, Gaggle: *gaggle, ParentWorkflow: *parent, ParentStage: *stage, ProposalPath: fs.Arg(0), Backend: Backend(*backend)}, admit)
+	report, err := ValidateConfigured(ConfiguredRequest{Root: root, Gaggle: *gaggle, ParentWorkflow: *parent, ParentStage: *stage, ProposalPath: fs.Arg(0), Backend: Backend(*backend), ClusterModelPath: *clusterModel}, admit)
 	code := 0
 	if err != nil {
 		report = configuredRefusal(report, "io", err.Error())
@@ -84,8 +87,13 @@ func renderConfiguredReport(output io.Writer, report ConfiguredReport, asJSON bo
 		}
 	}
 	if report.Valid {
-		_, err := fmt.Fprintf(output, "Source: %s\nCanonical: %s\nConfig inputs: %s\nPolicy: %s\nWorkflow: %s\n", report.SourceDigest, report.CanonicalDigest, report.ConfigDigest, report.PolicyDigest, report.WorkflowDigest)
-		return err
+		if _, err := fmt.Fprintf(output, "Source: %s\nCanonical: %s\nConfig inputs: %s\nPolicy: %s\nWorkflow: %s\n", report.SourceDigest, report.CanonicalDigest, report.ConfigDigest, report.PolicyDigest, report.WorkflowDigest); err != nil {
+			return err
+		}
+		if report.Novelty != nil {
+			_, err := fmt.Fprintf(output, "Novelty (Labs, advisory): %s\n", report.Novelty.Summary())
+			return err
+		}
 	}
 	return nil
 }

@@ -467,10 +467,10 @@ workflow enumeration (`internal/engine/liveness.go`) that yields both a liveness
 own id first and consult the inverse only on `NotFound`, so the common case never costs a visibility
 page. The scan's bounds (10s cache TTL, 100-execution pages, 10-page cap) are the DS6 budget: hitting
 the cap, failing the scan, or resolving ambiguously is reported as *unknown*, never as *settled*, so
-a reconciled slot is never freed under a live workflow. Independently, an engine-enabled daemon
-asserts at boot that no Temporal `Schedule` reconciliation is configured — the embedded scheduler
-stays the trigger source and delegates to the engine, which is what keeps the rewritten shape rare
-and the scan budget honest.
+a reconciled slot is never freed under a live workflow. The former boot-time refusal of Temporal
+`Schedule` reconciliation was removed in #6447; an engine-enabled daemon no longer relies on that
+guard. The `RunScheduled` inverse in `internal/engine/liveness.go` remains for legacy workflow
+histories and is not evidence that Temporal Schedule reconciliation is refused.
 
 **Outage window (DS7).** With one daemon pod on RWO storage, pod loss means, until Kubernetes
 reschedules onto the volume: no new run admission, no claim/release, no trigger or HITL ingestion, no

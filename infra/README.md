@@ -53,9 +53,10 @@ order — PostgreSQL (from Bicep) is up before Temporal's Application syncs. The
 The Temporal DB connection has two instance-specific pieces that are deliberately **not**
 committed; the `BootstrapGitOps` stage supplies them from the provision outputs:
 
-- **Host** — the Bicep `postgresFqdn` output is exported as a stage variable and injected
-  as an Argo **Helm parameter** (`server.config.persistence.{default,visibility}.sql.host`)
-  via `argocd app set`. `temporal/values.yaml` leaves `host` unset; the Temporal
+- **Host** — the Bicep `postgresFqdn` output is exported as a stage variable and injected,
+  with port 5432, as Argo **Helm parameters**
+  (`server.config.persistence.datastores.{default,visibility}.sql.connectAddr`)
+  via `argocd app set`. `temporal/values.yaml` leaves `connectAddr` unset; the Temporal
   `Application` is **manual-sync** so it never reconciles before the host is set.
 - **Password** — pulled from the bootstrap Key Vault and written to the
   `temporal-postgres-credentials` k8s secret the chart consumes via `existingSecret`

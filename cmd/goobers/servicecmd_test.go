@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/selfupdate"
 	daemonservice "github.com/goobers/goobers/internal/service"
@@ -610,7 +612,7 @@ func manualServiceRootHeader(t *testing.T, root string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf("Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id)
+	return fmt.Sprintf("Instance root: %q; instance ID: %q\n", runtimewiring.CanonicalStatusRoot(root), id)
 }
 
 func useFakeDaemonServiceManager(t *testing.T, manager daemonServiceManager) {

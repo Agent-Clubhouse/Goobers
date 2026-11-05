@@ -487,8 +487,8 @@ reports how often R-SZZ agrees with them (`szzCalibration`). The builder runs on
 blame, diff, log, rev-list, rev-parse, show, with no `--output`) and never
 writes to it.
 
-`replay -dataset=FILE -variant=NAME -reviewer-cmd=CMD -allow-real-reviewer
--max-cases=N -budget-usd=X` replays one split (`eval` by default) through a
+`replay -dataset=FILE -variant=NAME -reviewer-cmd=CMD -sandbox-cmd=PREFIX
+-allow-real-reviewer -max-cases=N -budget-usd=X` replays one split (`eval` by default) through a
 reviewer. It samples at most N cases (never more than 200) of that split
 ordered by a seeded hash (`-seed`), so the same dataset and seed always replay
 the same cases; out-of-diff cases are counted, not replayed or scored as
@@ -523,23 +523,28 @@ into a lookup. What is enforced:
 - the `internal/procenv` default-deny environment plus refused credential-like
   `-adapter-env` names;
 - isolated home and configuration directories, and no git credential helper;
-- git limited to local transport.
-
-The residual gap is non-git network access: an adapter or its model can still
-make arbitrary HTTP requests, for example to a forge's web or API endpoints for
-a public repository, because the only enforced local network block
-(`network:none`) would also cut off the model provider. A host-level egress
-allowlist for adapters is tracked in
-[#7483](https://github.com/Agent-Clubhouse/Goobers/issues/7483); until then,
-use adapters whose tools cannot browse, or run replay on a host whose egress is
-already restricted.
+- git limited to local transport;
+- no egress to the forge: every adapter runs through `-sandbox-cmd`, a
+  required command prefix (for example a container or network namespace whose
+  egress allowlist admits only the model provider), and before any review
+  replay runs its own `egress-probe` subcommand through that sandbox with the
+  adapter environment. Replay refuses to start unless the probe ran (it must
+  print its token) and connected to none of `-forbidden-hosts` (by default
+  `github.com:443`, `api.github.com:443`, `codeload.github.com:443`, and
+  `raw.githubusercontent.com:443`; add the forge's endpoints when the
+  repository lives elsewhere). A blanket `network:none` would also cut off the
+  model provider, so the sandbox, not replay, chooses what the model may reach;
+  replay only proves the forge is not on that list. The sandbox must be able
+  to run the reviewereval binary at its host path (build it with
+  `go build ./test/reviewereval` and bind-mount it when the sandbox is a
+  container).
 
 The reviewer receives the request (an opaque case
 ID, base and head SHAs, title, diff, remaining budget) as JSON on stdin, and
 prints the verdict and its cost. Dataset case IDs name the fix commit, so the
 reviewer only ever sees its case's position in the sampled order; the mapping
 back to the fix stays on the scoring side. Nothing is posted to a pull request. A real review is always
-opt-in: replay refuses to run without both flags.
+opt-in: replay refuses to run without both flags and a verified sandbox.
 
 The budget caps reviewer and judge spend together, including spend on failed
 cases. Every reviewer and judge request carries the budget it has left, and

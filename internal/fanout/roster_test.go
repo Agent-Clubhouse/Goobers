@@ -91,6 +91,22 @@ func TestFreezeRosterEmptyIsValid(t *testing.T) {
 	}
 }
 
+func TestFreezeRosterCapsSingleCanonicalItemForTemporalHeadroom(t *testing.T) {
+	document := func(size int) []byte {
+		return roster(`{"identity":"a","item":{"value":"` + strings.Repeat("x", size) + `"}}`)
+	}
+	const itemEnvelope = len(`{"value":""}`)
+	if _, err := FreezeRoster(document(MaxFrozenItemBytes-itemEnvelope), SourceMediaType); err != nil {
+		t.Fatalf("boundary item refused: %v", err)
+	}
+	_, err := FreezeRoster(document(MaxFrozenItemBytes-itemEnvelope+1), SourceMediaType)
+	var invalid *SourceError
+	if !errors.As(err, &invalid) || invalid.Reason != ReasonTooLarge ||
+		invalid.Identity != "a" || !strings.Contains(err.Error(), "canonical item") {
+		t.Fatalf("over-bound item error = %T %v", err, err)
+	}
+}
+
 // Design §14 case 12: duplicate identities fail before map.started.
 func TestFreezeRosterRejectsDuplicateIdentities(t *testing.T) {
 	_, err := FreezeRoster(roster(`{"identity":"unit-a","item":{"x":1}}`, `{"identity":"unit-a","item":{"x":2}}`), SourceMediaType)

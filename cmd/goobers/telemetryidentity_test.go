@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +12,10 @@ import (
 	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/protobuf/encoding/prototext"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 func TestTelemetryInstanceIdentities(t *testing.T) {
@@ -41,21 +42,29 @@ func TestTelemetryInstanceIdentities(t *testing.T) {
 		{"distinct", journalID, rootID, journalID, rootID},
 		{"missing", "", "", "", ""},
 		{"journal-only", journalID, "", journalID, ""},
-		{"root-only", "", rootID, "", rootID},
-		{"invalid-journal", "broken", rootID, "", rootID},
+		{"root-only", "", rootID, rootID, rootID},
+		{"invalid-journal", "broken", rootID, rootID, rootID},
 		{"invalid-root", journalID, "broken", journalID, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			files := map[string]string{"instance-id": tc.journal, instance.RootIdentityFileName: tc.root}
-			count := 0
 			for name, value := range files {
 				if value != "" {
-					count++
 					if err := os.WriteFile(filepath.Join(root, name), []byte(value+"\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
+			}
+			if tc.journal != "" && tc.root != "" && tc.journal != tc.root &&
+				instance.ValidIdentity(tc.journal) && instance.ValidIdentity(tc.root) {
+				if _, err := instance.NewLayout(root).EnsureIdentity(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
 			}
 			id, attrs := telemetryInstanceIdentities(root)
 			got := map[string]string{}
@@ -66,7 +75,7 @@ func TestTelemetryInstanceIdentities(t *testing.T) {
 				t.Fatalf("journal=%q resources=%v", id, got)
 			}
 			entries, err := os.ReadDir(root)
-			if err != nil || len(entries) != count {
+			if err != nil || len(entries) != len(before) {
 				t.Fatalf("identity observation created state: entries=%d error=%v", len(entries), err)
 			}
 			for name, value := range files {
@@ -87,8 +96,26 @@ func testTelemetrySchedulerFirstBoot(t *testing.T) {
 		t.Fatalf("init: %d %s", code, stderr)
 	}
 	layout := instance.NewLayout(root)
-	if _, err := layout.ReadIdentity(); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("fixture must not pre-create the runner identity: %v", err)
+	rootID, err := instance.ReadRootIdentity(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, err := layout.ReadIdentity(); err != nil || id != rootID {
+		t.Fatalf("fresh root identities differ: layout=%q root=%q err=%v", id, rootID, err)
+	}
+	if statusID := inspectStatusRoot(layout, time.Now()).ID; statusID != rootID {
+		t.Fatalf("status identity = %q, want %q", statusID, rootID)
+	}
+	if apiID := readservice.InspectRootIdentity(root).ID; apiID != rootID {
+		t.Fatalf("API identity = %q, want %q", apiID, rootID)
+	}
+	t.Setenv("GOOBERS_RUN_ID", "run-fresh-identity")
+	t.Setenv("GOOBERS_GAGGLE", "demo")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.TaskEnvVar, "publish")
+	t.Setenv(executor.InstanceIDEnvVar, rootID)
+	if attribution, ok := stageAttribution(root); !ok || attribution.InstanceID != rootID {
+		t.Fatalf("provider attribution identity = %q, %v; want %q", attribution.InstanceID, ok, rootID)
 	}
 	collector := &routingCollector{}
 	cfg, err := instance.LoadConfig(layout.ConfigFile())

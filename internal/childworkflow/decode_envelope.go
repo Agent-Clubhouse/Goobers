@@ -26,6 +26,9 @@ func DecodeStartEnvelope(payload []byte) (ChildStartEnvelope, error) {
 	if e.MaxChildren < 1 || e.MaxChildren > 32 || (e.Backend != BackendRunner && e.Backend != BackendEngine) {
 		return e, ErrSubmissionInvalid
 	}
+	if (e.Backend == BackendEngine) != (e.ExecutionDigest != "") || (e.ExecutionDigest != "" && !blobstore.ValidDigest(e.ExecutionDigest)) {
+		return e, ErrSubmissionInvalid
+	}
 	for _, pin := range []string{e.ConfigGeneration, e.ParentWorkflowDigest, e.ParentGooberDigest, e.SourceDigest, e.CanonicalDigest, e.ConfigDigest, e.PolicyDigest, e.WorkflowDigest, e.PlacementsDigest} {
 		if !blobstore.ValidDigest(pin) {
 			return e, ErrSubmissionInvalid

@@ -955,15 +955,8 @@ func TestValidatePlacementCoversPlacedGate(t *testing.T) {
 // consequence (dsl-3.0.md §2 Gates) of declaring a gate placement the daemon's
 // own substrate cannot satisfy: checkpoint 1 is clean (the declared remote
 // runner satisfies it), and checkpoint 3 marks the workflow refused exactly
-// as it would for a task — deliberately, because a DAEMON-scheduled run
-// still drives through internal/runner, whose gate arm has no dispatch seam
-// and will not get one (decision 005: the engine walk becomes the single
-// driver for every trigger kind, so a scheduled run reaches evaluateGate's
-// dispatch arm once the scheduler's Starter delegates to the engine
-// registry; engine-start runs already do). Until then the daemon can
-// neither dispatch the reviewer nor honour its declared placement
-// in-process, and refusing is the only arm that never runs the reviewer
-// outside its declared isolation.
+// as it would for a task. The local daemon cannot dispatch the reviewer or
+// honour its declared placement in-process, so refusal is the only safe arm.
 func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)

@@ -240,6 +240,13 @@ type queueSaturationRecorder interface {
 	RecordSchedulerQueueSaturation(context.Context, []telemetry.QueueSaturationSample, *telemetry.WorkerAvailabilitySample)
 }
 
+// continuationClaimsRecorder is the optional second half of the periodic
+// snapshot: a recorder that also publishes waiting-continuation claims (#8186).
+// It is a separate interface so recorders written before it need no change.
+type continuationClaimsRecorder interface {
+	RecordContinuationClaims(context.Context, telemetry.ContinuationClaimsSample)
+}
+
 type runAdmission struct {
 	identity WorkflowIdentity
 	// executionWorkflow is a generated child name; identity remains its parent budget bucket.
@@ -259,7 +266,9 @@ type Scheduler struct {
 	sourceQueue           SourceQueue
 	workflows             map[WorkflowIdentity]WorkflowEntry
 	conditions            *Conditions
-	log                   *journal.InstanceLog
+	log                   SchedulerJournal
+	state                 SchedulerState
+	runDirs               RunDirReconciler
 	now                   func() time.Time
 	after                 func(d time.Duration) <-chan time.Time
 	telemetry             SpanStarter
@@ -280,10 +289,6 @@ type Scheduler struct {
 	// so it must never itself touch disk or a provider.
 	onPollProgress    func(time.Time)
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
-	// stateOwner is the M5 generation/ownership guard for the shared state
-	// files this scheduler rewrites (stateguard.go): a second daemon against
-	// the same instance root trips ErrStateSeized instead of a data race.
-	stateOwner *stateOwner
 
 	mu          sync.Mutex
 	admissionMu sync.Mutex
@@ -294,7 +299,7 @@ type Scheduler struct {
 	// reconciledRuns identifies the pre-existing runs represented in
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
-	reconciledRuns map[string]reconciledRun
+	reconciledRuns map[string]ReconciledRun
 	// admittedRuns identifies live dispatches and continuations whose shared
 	// condition slot remains reserved until every owner releases it or a
 	// watchdog terminalizes the run.
@@ -470,6 +475,14 @@ func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]i
 	}
 }
 
+// WithCadenceBudgetsDisabled opts out of hourly/daily admission ceilings for
+// every trigger. Explicit zero-budget stops and all other gates still apply.
+func WithCadenceBudgetsDisabled(disabled bool) Option {
+	return func(s *Scheduler) {
+		s.conditions.SetCadenceBudgetsDisabled(disabled)
+	}
+}
+
 // WithOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
 // readiness cap (#353). Optional — nil/unset leaves the cap unenforced, so a
 // workflow that sets MaxOpenPRs without a counter wired simply isn't throttled.
@@ -545,7 +558,7 @@ func WithTargetedPRValidator(validate func(context.Context, WorkflowEntry, int) 
 // New builds a Scheduler over the given workflow entries. Call Reconcile
 // before Run to seed run-condition and trigger state from durable state after
 // a restart; a freshly-created instance can skip it (everything starts empty).
-func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Scheduler {
+func New(entries []WorkflowEntry, log SchedulerJournal, opts ...Option) *Scheduler {
 	s := &Scheduler{
 		workflows:               make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
 		conditions:              NewConditions(),
@@ -554,7 +567,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		after:                   time.After,
 		demandPollTimeout:       demandPollTimeout,
 		triggers:                make(map[WorkflowIdentity]TriggerState),
-		reconciledRuns:          make(map[string]reconciledRun),
+		reconciledRuns:          make(map[string]ReconciledRun),
 		admittedRuns:            make(map[string]runAdmission),
 		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
 		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
@@ -576,10 +589,11 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		refillBackoffJitter:     5 * time.Second,
 		refillRandN:             rand.Int64N,
 		wake:                    make(chan struct{}, 1),
-		stateOwner:              newStateOwner(),
 	}
+	WithSchedulerState(NewFileSchedulerState())(s)
+	WithRunDirReconciler(NewFileRunDirReconciler())(s)
 	s.writeTriggerState = func(schedulerDir string, evaluations map[WorkflowIdentity]time.Time) error {
-		return writeTriggerEvaluations(schedulerDir, s.stateOwner, evaluations)
+		return s.state.WriteTriggerEvaluations(schedulerDir, evaluations)
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -612,28 +626,28 @@ func (s *Scheduler) Reconcile(runsDir string, now time.Time) error {
 
 // ReconcileAll reconciles durable state across all per-gaggle run roots.
 func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
-	active, runs, err := activeRuns(runsDirs)
+	inventory, err := s.runDirs.FromRoots(context.Background(), runsDirs)
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
 	}
-	return s.reconcileDurableState(runsDirs, active, runs, now)
+	return s.reconcileDurableState(runsDirs, inventory.Active, inventory.Runs, now)
 }
 
 // ReconcileRunDirs is the startup recovery variant of ReconcileAll. The caller
 // supplies the non-terminal inventory, so retained terminal history is not
 // opened again before readiness.
 func (s *Scheduler) ReconcileRunDirs(runsDirs, recoveryRunDirs []string, now time.Time) error {
-	active, runs, err := activeRunsFromRunDirs(context.Background(), recoveryRunDirs)
+	inventory, err := s.runDirs.FromRunDirs(context.Background(), recoveryRunDirs)
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
 	}
-	return s.reconcileDurableState(runsDirs, active, runs, now)
+	return s.reconcileDurableState(runsDirs, inventory.Active, inventory.Runs, now)
 }
 
 func (s *Scheduler) reconcileDurableState(
 	runsDirs []string,
 	active map[WorkflowIdentity]int,
-	runs map[string]reconciledRun,
+	runs map[string]ReconciledRun,
 	now time.Time,
 ) error {
 	s.conditions.ReconcileWorkflows(active)
@@ -641,11 +655,11 @@ func (s *Scheduler) reconcileDurableState(
 	s.reconciledRuns = runs
 	s.mu.Unlock()
 
-	outstandingScheduleDemand, err := readScheduleDemandState(s.log.Dir())
+	outstandingScheduleDemand, err := s.state.ReadScheduleDemand(s.log.Dir())
 	if err != nil {
 		return err
 	}
-	events, err := journal.ReadInstanceLog(s.log.Dir())
+	events, err := s.log.ReadAfterSeq(0)
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile trigger history: %w", err)
 	}
@@ -666,7 +680,7 @@ func (s *Scheduler) reconcileDurableState(
 	// destroyed runs/ (the durable run journals). It only ever moves the floor
 	// forward — a reset older than the rolling window is a natural no-op,
 	// since the window has already advanced past it.
-	if resetAt, ok, rerr := ReadRateReset(s.log.Dir()); rerr != nil {
+	if resetAt, ok, rerr := s.readRateReset(); rerr != nil {
 		return fmt.Errorf("localscheduler: read rate-limit reset: %w", rerr)
 	} else if ok && resetAt.After(startsCutoff) {
 		startsCutoff = resetAt
@@ -746,13 +760,13 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	reconciledWorkflow, ok := s.reconciledRuns[runID]
-	if ok && reconciledWorkflow.workflow == workflow {
+	if ok && reconciledWorkflow.Workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
-	if ok && reconciledWorkflow.workflow == workflow && !reconciledWorkflow.suspended {
-		s.conditions.ReleaseWorkflow(reconciledWorkflow.identity)
-		s.wakeForDemand(reconciledWorkflow.identity)
+	if ok && reconciledWorkflow.Workflow == workflow && !reconciledWorkflow.Suspended {
+		s.conditions.ReleaseWorkflow(reconciledWorkflow.Identity)
+		s.wakeForDemand(reconciledWorkflow.Identity)
 	}
 }
 
@@ -768,10 +782,14 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 		delete(s.admittedRuns, runID)
 	}
 	reconciledIdentity, reconciled := s.reconciledRuns[runID]
-	if reconciled && reconciledIdentity.workflow == workflow {
+	if reconciled && reconciledIdentity.Workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
+	if (admitted && admission.workflowName() == workflow) || (reconciled && reconciledIdentity.Workflow == workflow) {
+		// An ended admission can never resume: its claim holds nothing (#8174).
+		s.conditions.ClearContinuationClaim(runID)
+	}
 
 	released := false
 	var releasedIdentity WorkflowIdentity
@@ -780,10 +798,10 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 		s.conditions.ReleaseWorkflow(admission.identity)
 		released = true
 		releasedIdentity = admission.identity
-	case reconciled && reconciledIdentity.workflow == workflow && !reconciledIdentity.suspended:
-		s.conditions.ReleaseWorkflow(reconciledIdentity.identity)
+	case reconciled && reconciledIdentity.Workflow == workflow && !reconciledIdentity.Suspended:
+		s.conditions.ReleaseWorkflow(reconciledIdentity.Identity)
 		released = true
-		releasedIdentity = reconciledIdentity.identity
+		releasedIdentity = reconciledIdentity.Identity
 	}
 	if released {
 		s.wakeForDemand(releasedIdentity)
@@ -808,6 +826,7 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 	}
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
+	s.conditions.ClearContinuationClaim(runID)
 
 	if !admission.suspended {
 		s.conditions.ReleaseWorkflow(admission.identity)
@@ -860,6 +879,7 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 	}
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
+	s.conditions.ClearContinuationClaim(runID)
 
 	if !admission.suspended {
 		s.conditions.ReleaseWorkflow(admission.identity)
@@ -1306,6 +1326,12 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 		workers = &telemetry.WorkerAvailabilitySample{OperatingSystem: runtime.GOOS, Available: available}
 	}
 	recorder.RecordSchedulerQueueSaturation(ctx, samples, workers)
+	if claims, ok := recorder.(continuationClaimsRecorder); ok {
+		stats := s.conditions.ContinuationClaims()
+		claims.RecordContinuationClaims(ctx, telemetry.ContinuationClaimsSample{
+			OperatingSystem: runtime.GOOS, Count: stats.Count, OldestSince: stats.Oldest, ObservedAt: now,
+		})
+	}
 }
 
 func queueSample(kind string, aggregate queueMetricAggregate, observedAt time.Time) telemetry.QueueSaturationSample {
@@ -1408,7 +1434,7 @@ func (s *Scheduler) WorkflowCount() int {
 // dispatch, while subsequent ticks and triggers resolve the replacement entry.
 // The accepted change is journaled before it becomes active; a journal failure
 // leaves the current configuration untouched.
-func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string) error {
+func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string, configGeneration ...string) error {
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
@@ -1464,19 +1490,6 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		}
 	}
 
-	if err := s.appendJournalEvent(journal.Event{
-		Type: journal.EventConfigReloaded,
-		Runner: map[string]any{
-			"oldDigest": oldDigest,
-			"newDigest": newDigest,
-		},
-	}); err != nil {
-		return fmt.Errorf("localscheduler: journal config reload: %w", err)
-	}
-	// Re-record refusals for the accepted configuration: the config.reloaded
-	// event above marks the boundary, so a status reader always sees the
-	// refusals current for the configuration now in force (#2860).
-	s.journalStartupRefusals(entries)
 	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
 	for identity, state := range triggers {
 		evaluations[identity] = state.LastEval
@@ -1490,10 +1503,28 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 			outstandingScheduleDemand[identity] = true
 		}
 	}
-	if err := writeScheduleDemandState(s.log.Dir(), s.stateOwner, outstandingScheduleDemand); err != nil {
+	if err := s.state.WriteScheduleDemand(s.log.Dir(), outstandingScheduleDemand); err != nil {
 		return err
 	}
 
+	generation := ""
+	if len(configGeneration) > 0 {
+		generation = configGeneration[0]
+	}
+	if err := s.appendJournalEvent(journal.Event{
+		Type: journal.EventConfigReloaded,
+		Runner: map[string]any{
+			"oldDigest":        oldDigest,
+			"newDigest":        newDigest,
+			"configGeneration": generation,
+		},
+	}); err != nil {
+		return fmt.Errorf("localscheduler: journal config reload: %w", err)
+	}
+	// Re-record refusals for the accepted configuration: the config.reloaded
+	// event above marks the boundary, so a status reader always sees the
+	// refusals current for the configuration now in force (#2860).
+	s.journalStartupRefusals(entries)
 	s.conditions.SetOpenPRCounter(openPRs)
 	s.workflows = workflows
 	s.triggers = triggers
@@ -1546,9 +1577,10 @@ type demandPoll struct {
 }
 
 type demandSnapshot struct {
-	ready         int
-	oldestReadyAt time.Time
-	observed      bool
+	claimReadFailed bool
+	ready           int
+	oldestReadyAt   time.Time
+	observed        bool
 }
 
 type scheduledDemand struct {
@@ -2029,6 +2061,10 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if snapshot.claimReadFailed {
+		s.deferClaimReadDecision(poll)
+		return
+	}
 	if s.applyQueuedDemand(poll, snapshot) {
 		return
 	}
@@ -2094,14 +2130,14 @@ func (s *Scheduler) clearPendingScheduleDemand(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding bool) bool {
-	state, err := readScheduleDemandState(s.log.Dir())
+	state, err := s.state.ReadScheduleDemand(s.log.Dir())
 	if err == nil {
 		if outstanding {
 			state[identity] = true
 		} else {
 			delete(state, identity)
 		}
-		err = writeScheduleDemandState(s.log.Dir(), s.stateOwner, state)
+		err = s.state.WriteScheduleDemand(s.log.Dir(), state)
 	}
 	if err == nil {
 		return true
@@ -2130,7 +2166,7 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 	defer cancel()
 	snapshot, err := eligibleSnapshot(pollCtx, poll.counter)
 	if err != nil {
-		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err)}
+		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err), claimReadFailed: errors.Is(err, ErrClaimRead)}
 	}
 	s.recordDemandPollSuccess(entry, poll)
 	if snapshot.Count < 0 {

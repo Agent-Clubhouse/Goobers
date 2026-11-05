@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -15,7 +16,7 @@ func TestParallelParentRecoveryPreservesReceiptAndMutationRefusal(t *testing.T) 
 			_, run, frame := childOriginRuntime(t, &childOriginGoober{})
 			writer := &branchJournal{run: run, branch: 1}
 			frame.jr = writer
-			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, newStageUsageTotals()); err != nil {
+			if err := frame.recordTaskStartedWithRecovery(1, "", 0, 0, runsemantics.NewStageUsageTotals()); err != nil {
 				t.Fatal(err)
 			}
 			custody := ContainedParentWorkspaceCustody{Version: 1, Origin: frame.childOrigin, Workspace: worktree.StageCustody{OwnerRunID: frame.in.RunID}}

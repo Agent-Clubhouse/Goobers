@@ -40,7 +40,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -107,6 +106,8 @@ type Options struct {
 	Interval time.Duration
 	// Logger receives degraded conditions. Never nil after New.
 	Logger *slog.Logger
+	// Journal is the authoritative run reader.
+	Journal journal.ReaderBackend
 	// Now is injectable for tests.
 	Now func() time.Time
 }
@@ -519,14 +520,11 @@ func (p *Projector) prepare(ctx context.Context, runID string, runsDirs []string
 	if p.prepareForTest != nil {
 		return p.prepareForTest(ctx, runID)
 	}
-	dir, found, err := p.locate(runID, runsDirs)
-	if err != nil {
-		return Projection{}, false, err
+	backend := p.options.Journal
+	if backend == nil {
+		backend = journal.NewFileReaderBackend(journal.FileReaderBackendConfig{RunsDirs: runsDirs})
 	}
-	if !found {
-		return Projection{}, false, nil
-	}
-	reader, err := journal.OpenRead(dir)
+	reader, err := backend.OpenRun(ctx, journal.RunRef{ID: runID})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Projection{}, false, nil
@@ -552,31 +550,6 @@ func (p *Projector) prepare(ctx context.Context, runID string, runsDirs []string
 		return Projection{}, false, fmt.Errorf("projector: project operator facts for %s: %w", runID, err)
 	}
 	return projection, true, nil
-}
-
-// locate finds a run's directory across the configured roots.
-func (p *Projector) locate(runID string, runsDirs []string) (string, bool, error) {
-	for _, root := range runsDirs {
-		candidate := filepath.Join(root, runID)
-		info, err := os.Stat(candidate)
-		if err == nil {
-			if !info.IsDir() {
-				return "", false, fmt.Errorf("projector: locate journal for %s: %s is not a directory", runID, candidate)
-			}
-			_, err = os.Stat(filepath.Join(candidate, "run.yaml"))
-			if err == nil {
-				return candidate, true, nil
-			}
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return "", false, fmt.Errorf("projector: locate journal for %s: %w", runID, err)
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("projector: locate journal for %s: %w", runID, err)
-		}
-	}
-	return "", false, nil
 }
 
 func (p *Projector) runsDirs(ctx context.Context) ([]string, error) {

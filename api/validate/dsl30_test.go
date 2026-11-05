@@ -358,11 +358,11 @@ func TestValidateGateRunsOnRules(t *testing.T) {
 			t.Fatalf("issues = %+v, want one WF023 naming the non-agentic evaluator", report.Issues)
 		}
 	})
-	t.Run("agentic gate without memory is WF023", func(t *testing.T) {
+	t.Run("agentic gate without memory defers to inventory placement", func(t *testing.T) {
 		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "agentic", "      runsOn:\n        cpu: 1000m\n")))
 		found := issuesWithCode(report, errorGateRunsOn)
-		if len(found) != 1 || !strings.Contains(found[0].Message, `gate "review" declares runsOn without memory:`) {
-			t.Fatalf("issues = %+v, want one WF023 naming the missing quantity", report.Issues)
+		if len(found) != 0 {
+			t.Fatalf("issues = %+v, want no structural error for an omitted resource minimum", report.Issues)
 		}
 	})
 	t.Run("os token on a gate is CAP004", func(t *testing.T) {

@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -72,71 +73,126 @@ func releaseClaimWithProtocol(ctx context.Context, req ClaimWorkItemRequest, hoo
 	if err != nil {
 		return WorkItem{}, WorkItem{}, "", err
 	}
-	if claimed && req.ExpectedClaimRunID != "" && winner != req.ExpectedClaimRunID {
-		return WorkItem{}, WorkItem{}, "", fmt.Errorf("provider claim is held by run %q, not expected run %q", winner, req.ExpectedClaimRunID)
+	if err := authorizeClaimRelease(req, winner, claimed); err != nil {
+		return WorkItem{}, WorkItem{}, "", err
 	}
-	if claimed && winner != req.RunID && !req.LedgerAuthorized {
-		return WorkItem{}, WorkItem{}, "", fmt.Errorf("provider claim is held by run %q", winner)
+	before, releasedRunID, err := releaseClaimBreadcrumb(ctx, req.RunID, winner, claimed, hooks)
+	if err != nil {
+		return WorkItem{}, WorkItem{}, "", err
 	}
-
-	var before WorkItem
-	if hooks.readItemBeforeBreadcrumb {
-		before, err = hooks.getItem(ctx)
+	if req.ExpectedClaimRunID != "" {
+		done, final, err := finishChangedClaimRelease(ctx, before, hooks)
 		if err != nil {
 			return WorkItem{}, WorkItem{}, "", err
 		}
+		if done {
+			return before, final, releasedRunID, nil
+		}
 	}
-	releasedRunID := req.RunID
+	final, err := finishClaimLabelRelease(ctx, req, before, label, hooks)
+	return before, final, releasedRunID, err
+}
+
+// ErrClaimHeldByAnotherRun matches a claim release refused because a run other
+// than the releasing one holds the claim. Retrying cannot change the holder.
+var ErrClaimHeldByAnotherRun = errors.New("provider claim is held by another run")
+
+// ClaimHeldError is a claim release refused because Holder, not the releasing
+// or Expected run, holds the claim. It matches ErrClaimHeldByAnotherRun.
+type ClaimHeldError struct {
+	Holder   string
+	Expected string
+}
+
+func (e *ClaimHeldError) Error() string {
+	if e.Expected != "" {
+		return fmt.Sprintf("provider claim is held by run %q, not expected run %q", e.Holder, e.Expected)
+	}
+	return fmt.Sprintf("provider claim is held by run %q", e.Holder)
+}
+
+// Is reports whether target is ErrClaimHeldByAnotherRun.
+func (e *ClaimHeldError) Is(target error) bool { return target == ErrClaimHeldByAnotherRun }
+
+func authorizeClaimRelease(req ClaimWorkItemRequest, winner string, claimed bool) error {
+	if claimed && req.ExpectedClaimRunID != "" && winner != req.ExpectedClaimRunID {
+		return &ClaimHeldError{Holder: winner, Expected: req.ExpectedClaimRunID}
+	}
+	if claimed && winner != req.RunID && !req.LedgerAuthorized {
+		return &ClaimHeldError{Holder: winner}
+	}
+	return nil
+}
+
+func releaseClaimBreadcrumb(
+	ctx context.Context, runID, winner string, claimed bool, hooks releaseClaimProtocolHooks,
+) (WorkItem, string, error) {
+	var before WorkItem
+	var err error
+	if hooks.readItemBeforeBreadcrumb {
+		before, err = hooks.getItem(ctx)
+		if err != nil {
+			return WorkItem{}, "", err
+		}
+	}
+	releasedRunID := runID
 	if claimed {
 		releasedRunID = winner
 		if err := hooks.postRelease(ctx, winner); err != nil {
-			return WorkItem{}, WorkItem{}, "", err
+			return WorkItem{}, "", err
 		}
 	}
 	if !hooks.readItemBeforeBreadcrumb {
 		before, err = hooks.getItem(ctx)
-		if err != nil {
-			return WorkItem{}, WorkItem{}, "", err
-		}
 	}
-	if req.ExpectedClaimRunID != "" {
-		if current, currentClaimed, err := hooks.winner(ctx); err != nil {
-			return WorkItem{}, WorkItem{}, "", err
-		} else if currentClaimed {
-			final, err := hooks.getItem(ctx)
-			if err != nil {
-				return WorkItem{}, WorkItem{}, "", err
-			}
-			return before, final, releasedRunID, nil
-		} else if current != "" {
-			return WorkItem{}, WorkItem{}, "", fmt.Errorf("provider claim owner changed to run %q after release", current)
-		}
+	return before, releasedRunID, err
+}
+
+func finishChangedClaimRelease(
+	ctx context.Context, before WorkItem, hooks releaseClaimProtocolHooks,
+) (bool, WorkItem, error) {
+	current, currentClaimed, err := hooks.winner(ctx)
+	if err != nil {
+		return false, WorkItem{}, err
 	}
+	if currentClaimed {
+		final, err := hooks.getItem(ctx)
+		return true, final, err
+	}
+	if current != "" {
+		return false, WorkItem{}, fmt.Errorf("provider claim owner changed to run %q after release", current)
+	}
+	return false, WorkItem{}, nil
+}
+
+func finishClaimLabelRelease(
+	ctx context.Context,
+	req ClaimWorkItemRequest,
+	before WorkItem,
+	label string,
+	hooks releaseClaimProtocolHooks,
+) (WorkItem, error) {
 	if !hooks.hasLabel(before, label) {
 		if hooks.finishWithoutLabel != nil {
-			final, err := hooks.finishWithoutLabel(ctx, before)
-			if err != nil {
-				return WorkItem{}, WorkItem{}, "", err
-			}
-			return before, final, releasedRunID, nil
+			return hooks.finishWithoutLabel(ctx, before)
 		}
-		return before, before, releasedRunID, nil
+		return before, nil
 	}
 	final, err := hooks.removeLabel(ctx, label)
 	if err != nil {
-		return WorkItem{}, WorkItem{}, "", err
+		return WorkItem{}, err
 	}
 	if req.ExpectedClaimRunID != "" && hooks.restoreLabel != nil {
 		if _, currentClaimed, err := hooks.winner(ctx); err != nil {
-			return WorkItem{}, WorkItem{}, "", err
+			return WorkItem{}, err
 		} else if currentClaimed {
 			final, err = hooks.restoreLabel(ctx, label)
 			if err != nil {
-				return WorkItem{}, WorkItem{}, "", err
+				return WorkItem{}, err
 			}
 		}
 	}
-	return before, final, releasedRunID, nil
+	return final, nil
 }
 
 type claimRESTWorkItemHooks struct {

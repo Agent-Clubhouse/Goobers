@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/runtimewiring"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
@@ -113,14 +116,20 @@ func TestMain(m *testing.M) {
 		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
 	if baseURL := os.Getenv("GOOBERS_TEST_GITHUB_API_URL"); baseURL != "" {
+		http.DefaultTransport = publicationFixtureTransport{next: http.DefaultTransport}
 		newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
 			return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
 				provider.BaseURL = baseURL
 			})...)
 		}
 	}
-	copilotModelLister = testCopilotModelLister{}
+	runtimewiring.CopilotModelLister = testCopilotModelLister{}
 	detectCopilotAppForInit = func() bool { return false }
+	// Disable disk admission for every in-process daemon fixture, including
+	// callers that do not use initDeterministicDemo (#7484). Zero YAML floors
+	// would resolve back to production defaults, so disable the constructed
+	// gate instead. Storage-policy tests use the real constructor explicitly.
+	newDaemonStorageGate = disabledDaemonStorageGate
 
 	// Keep the daemon suite hermetic against the machine's own memory (#3960).
 	// newDaemonScheduler wires the cgroup-aware admission gate by default, so
@@ -146,8 +155,8 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, harness.EnvironmentConfig, map[string][]string, modelCredentialFor) (harnessPreflightInfo, error) {
-		return harnessPreflightInfo{}, nil
+	runtimewiring.PreflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, harness.EnvironmentConfig, map[string][]string, runtimewiring.ModelCredentialFor) (runtimewiring.HarnessPreflightInfo, error) {
+		return runtimewiring.HarnessPreflightInfo{}, nil
 	}
 
 	baseAPIListenAddress := apiListenAddress

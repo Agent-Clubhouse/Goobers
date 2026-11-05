@@ -93,6 +93,15 @@ const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"rebase-pr and update-behind-pr classify comments by this same rule\n" +
 	"before they clear needs-remediation; give them the same identityMode and\n" +
 	"excludeAuthors.\n\n" +
+	"With DSL 2.1, 3.0 or 3.1, shared mode permits three routing attempts\n" +
+	"per PR head, recorded on the PR; declare label-issue and comment-on-issue.\n" +
+	"Further attempts park it with needs-human and merge-escalated and a\n" +
+	"visible note; feedback remains unaddressed. A new head resets the budget.\n" +
+	"An explicit DSL 2.0 workflow keeps label-only routing without this budget\n" +
+	"or its comment writes. Dedicated mode does not use the shared-mode cap.\n" +
+	"Standalone calls without a DSL pin or stage context use the guarded default.\n" +
+	"Stages must carry their pinned DSL version; a missing or unknown version\n" +
+	"is refused before provider writes.\n\n" +
 	"Remediation responses carry a feedback-ack frontier: the newest\n" +
 	"timestamp in the feedback snapshot the run assessed, to the second. Such\n" +
 	"a response acknowledges only human comments within that second or\n" +
@@ -135,6 +144,7 @@ type prCommentWatchLabeled struct {
 
 type prCommentWatchResult struct {
 	Scanned   int    `json:"scanned"`
+	Parked    int    `json:"parked"`
 	Labeled   int    `json:"labeled"`
 	Unparked  int    `json:"unparked"`
 	Errors    int    `json:"errors"`
@@ -165,9 +175,14 @@ type prCommentWatchSettings struct {
 	// them on fresh human feedback (#6134). Opt-in, because it is a new
 	// mutation the task must declare (policy action disarm-landing).
 	disarmLandings bool
+	routingBudget  bool
 }
 
 func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatchSettings, error) {
+	routingBudget, err := commentWatchRoutingBudgetEnabled()
+	if err != nil {
+		return prCommentWatchSettings{}, err
+	}
 	rawMax := providerInput("maxPullRequests", "20")
 	maxPRs, err := strconv.Atoi(rawMax)
 	if err != nil || maxPRs < 1 {
@@ -191,6 +206,7 @@ func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatch
 	exclude := toLowerSet(splitLabelList(providerInput("excludeLabels", defaultExclude)))
 	return prCommentWatchSettings{
 		maxPRs:         maxPRs,
+		routingBudget:  routingBudget,
 		base:           providerInput("base", providerBaseBranch()),
 		prefixes:       splitLabelList(providerInput("headPrefixes", providerBranchNamespace())),
 		exclude:        exclude,
@@ -318,6 +334,25 @@ func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr provider
 		if disarmed, err = forge.disarm(ctx, pr); err != nil {
 			return fmt.Errorf("disarm the armed landing: %w", err)
 		}
+	}
+	exhausted := false
+	if settings.routingBudget {
+		var err error
+		exhausted, err = reserveCommentWatchRoute(ctx, forge, pr, comments, classifier)
+		if err != nil {
+			return err
+		}
+	}
+	if exhausted {
+		remove := carriedLabels(pr.Labels, map[string]bool{mergeReadyLabel: true, needsRemediationLabel: true})
+		if len(remove) > 0 || !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) || !hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
+			if err := forge.park(ctx, pr, remove); err != nil {
+				return fmt.Errorf("park exhausted comment routing: %w", err)
+			}
+		}
+		result.Parked++
+		pf(stdout, "parked PR #%d: shared-identity routing budget exhausted for head %s; feedback requires human review\n", pr.Number, pr.HeadSHA)
+		return nil
 	}
 	if err := forge.route(ctx, pr, append(append([]string(nil), cleared...), landing...)); err != nil {
 		return fmt.Errorf("label %s: %w", needsRemediationLabel, err)

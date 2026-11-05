@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
 )
@@ -26,7 +27,7 @@ func parallelBranchTimedOut(ws *walkState) bool {
 }
 
 func (r *Runner) recordParallelRunBranch(ws *walkState) error {
-	if ws.branchRecorded || !machineUsesRepo(ws.in.Machine) {
+	if ws.branchRecorded || !runsemantics.MachineUsesRepo(ws.in.Machine) {
 		return nil
 	}
 	if err := r.recordRunBranch(ws.jr, ws.in); err != nil {
@@ -57,7 +58,7 @@ func cancelQueuedParallelBranches(
 	queue []int,
 	next *int,
 	outcomes []*parallelBranchResult,
-	baseCompleted stageOutputs,
+	baseCompleted runsemantics.StageOutputs,
 	branchEvents parallelBranchEventIndex,
 	in StartInput,
 	settle func(parallelBranchResult) error,
@@ -148,7 +149,7 @@ func (r *Runner) prepareTaskResult(
 	}
 	result.Artifacts = normalizeArtifactIntegrity(task.Type, result.Artifacts)
 	*result = r.validateDependencyResult(jr, task.Name, *result, upstream)
-	*result = EnforceExpectedOutputs(in.dslVersion(), task, *result)
+	*result = runsemantics.EnforceExpectedOutputs(in.dslVersion(), task, *result)
 	if result.Status != apiv1.ResultSuccess {
 		result.WorkspaceRevision = nil
 	}
@@ -183,12 +184,12 @@ func taskAttemptClass(attempt, startAttempt int32, firstClass, nextClass journal
 func applyTaskUsageBudget(
 	limits apiv1.Limits,
 	usage *attemptUsageCollector,
-	totals *stageUsageTotals,
+	totals *runsemantics.StageUsageTotals,
 	result *apiv1.ResultEnvelope,
 	dispatchErr *error,
 ) {
 	attemptUsage, usageReported := usage.snapshot()
-	budget := StageUsageBudget{totals: totals}
+	budget := runsemantics.StageUsageBudget{Totals: totals}
 	budget.Apply(limits, attemptUsage, usageReported, result, dispatchErr)
 }
 
@@ -196,7 +197,7 @@ func (r *Runner) settledParallelBranchResult(
 	ctx context.Context,
 	branch branchState,
 	history []journal.Event,
-	baseCompleted stageOutputs,
+	baseCompleted runsemantics.StageOutputs,
 	in StartInput,
 	index int,
 ) (*parallelBranchResult, string, *parallelTaskTerminal, *parallelGateTerminal, error) {
@@ -233,7 +234,7 @@ func initialParallelBranchResult(
 	branch branchState,
 	baseLastStage string,
 	baseLastResult apiv1.ResultEnvelope,
-	baseCompleted stageOutputs,
+	baseCompleted runsemantics.StageOutputs,
 	in StartInput,
 	history []journal.Event,
 ) parallelBranchResult {

@@ -444,8 +444,7 @@ type parityCase struct {
 	EngineWorkspaceDiffs map[string][]byte
 	// RunControls is the run's already-resolved run-control policy, threaded
 	// through the SAME seam production uses on each side: runner.StartInput's
-	// RunControls field and engine.StartSpec's, which Registry.StartInputVersion
-	// pins into RunInput. Deliberately NOT runner.Config.MaxRepasses /
+	// RunControls field and engine.RunInput's RunControls field. Deliberately NOT runner.Config.MaxRepasses /
 	// RunInput.MaxRepasses — both are documented-deprecated compatibility
 	// fields, and a harness that pins policy through them proves nothing about
 	// the path a production run takes.
@@ -453,7 +452,7 @@ type parityCase struct {
 	// BacklogQueryAssignedTo / BacklogQueryRequireLabels are the gaggle's
 	// claim-partition defaults (MIRC-2), threaded through the seam each side
 	// takes in production: runner.Config for the local runner, and
-	// engine.StartSpec — pinned into RunInput by Registry.StartInputVersion —
+	// engine.RunInput — pinned before workflow execution —
 	// for the engine (#3873, plan item E1).
 	BacklogQueryAssignedTo    string
 	BacklogQueryRequireLabels string
@@ -553,6 +552,7 @@ type parityEnvelope struct {
 	Stage            string
 	RunID            string
 	WorkflowID       string
+	DSLVersion       string
 	Goal             string
 	Goober           string
 	// GooberDigest is the kit the run was admitted against, and since #3884
@@ -596,10 +596,9 @@ type parityEnvelope struct {
 	// its stage a different repo.
 	CheckoutCones string
 	// Limits is the stage's execution bound (duration/tokens/cost),
-	// JSON-encoded. R9 refuses maxTokens/maxCostUSD at run start and admits
-	// maxDurationSeconds precisely BECAUSE the engine enforces it through the
-	// stage activity's StartToCloseTimeout — so the two sides passing the same
-	// Limits is the evidence that admission rests on.
+	// JSON-encoded. The engine enforces duration through the activity timeout
+	// and remote token/cost bounds through trusted supervisor usage, so the two
+	// sides passing the same Limits is the evidence that admission rests on.
 	Limits string
 	// ParentPlatformPolicy and NestedAgentPolicy are the runner-authored child
 	// authority for agentic stages, JSON-encoded. They are carried in the
@@ -618,10 +617,11 @@ type parityEnvelope struct {
 // projected fields covers the envelope exactly, so a new envelope field cannot
 // join the exclusion set by being forgotten.
 var parityEnvelopeExcludedFields = map[string]string{
-	"ChildWorkflowOrigin": "local-only durable stage-start authority; child workflows remain explicitly refused by Temporal until its actual committed journal identity is available",
-	"ArtifactPublication": "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
-	"Workspace":           "absolute path minted per attempt by each side's provisioner; never the same string",
-	"Attempt":             "infra retries renumber attempts independently on each side; dispatch order is the slice's",
+	"PreparedReviewerDiff": "engine-to-pod preparation acknowledgement; local records directly without this handoff. ContextPointers remains compared; TestReviewerPreparationCommitsBeforeReviewAndDeduplicatesLostAck and TestPostgresReviewerPreparationCommitsScrubbedEvidenceBeforeReview assert the keyed journal evidence and ordering",
+	"ChildWorkflowOrigin":  "derived from each backend's own committed stage-start sequence, so values differ; TestParityRowChildOriginCommittedBinding compares the journal relation",
+	"ArtifactPublication":  "optional named publication contract includes a backend-specific journal visit cursor; dedicated publication tests check the authority and bindings",
+	"Workspace":            "absolute path minted per attempt by each side's provisioner; never the same string",
+	"Attempt":              "infra retries renumber attempts independently on each side; dispatch order is the slice's",
 }
 
 // String prints EVERY compared field. A projection that compares a field it
@@ -629,11 +629,11 @@ var parityEnvelopeExcludedFields = map[string]string{
 // identical-looking envelopes differ" — so the two must stay in lockstep;
 // TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("configGeneration=%s instanceId=%s stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
+	return fmt.Sprintf("configGeneration=%s instanceId=%s stage=%s runId=%s workflowId=%s dslVersion=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
 		"repoRef=%s workspaceRevision=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s reviewerDeferralAllowed=%t reviewerMechanicalEscalationAllowed=%t",
-		e.ConfigGeneration, e.InstanceID, e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
+		e.ConfigGeneration, e.InstanceID, e.Stage, e.RunID, e.WorkflowID, e.DSLVersion, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
 		e.RepoRef, e.WorkspaceRevision, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
@@ -653,6 +653,7 @@ func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 		RunID:                               env.RunID,
 		InstanceID:                          env.InstanceID,
 		WorkflowID:                          env.WorkflowID,
+		DSLVersion:                          env.DSLVersion,
 		Goal:                                env.Goal,
 		Goober:                              env.Goober,
 		GooberDigest:                        env.GooberDigest,
@@ -998,41 +999,22 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 	return side
 }
 
-// runParityEngineSide walks the same fixture through the engine in Temporal's
-// test environment and projects its history into a journal (#629), exactly as
-// the conformance harness does.
-// parityEngineRunInput builds the engine side's RunInput the way PRODUCTION
-// builds it: register the fixture in a Registry and pin it through
-// StartInputVersion, rather than hand-filling the struct.
-//
-// Going through the registry is the point, not ceremony. StartInputVersion is
-// where preview-feature acknowledgement is pinned, where RunControls is pinned,
-// and where this PR's own R9 refusal lives — a hand-built RunInput routes around
-// all three, so a future parity row for a lane declaring spec.parallels would
-// have WALKED here while production refuses it at start. Building through the
-// registry means the compared engine path is the started path.
+// parityEngineRunInput pins the fixture directly at the worker workflow boundary.
 func parityEngineRunInput(t *testing.T, c parityCase, runID string) RunInput {
 	t.Helper()
-	reg := NewRegistryWithPreviewFeatures(true)
-	version, err := reg.RegisterDefinition(parityDefinition(c))
+	def := parityDefinition(c)
+	machine, err := wf.Compile(def, wf.WithPreviewFeatures(true))
 	if err != nil {
-		t.Fatalf("register fixture for row %s: %v", c.Row, err)
+		t.Fatalf("compile fixture for row %s: %v", c.Row, err)
 	}
-	in, err := reg.StartInputVersion(parityWorkflowName, version, StartSpec{
-		InstanceID:                parityInstanceID,
-		RunID:                     runID,
-		Gaggle:                    c.Spec.Gaggle,
-		RepoRef:                   parityRepoRef,
-		TriggerKind:               string(journal.TriggerManual),
-		BranchNamespace:           parityBranchNamespace,
-		RunControls:               c.RunControls,
-		BacklogQueryAssignedTo:    c.BacklogQueryAssignedTo,
-		BacklogQueryRequireLabels: c.BacklogQueryRequireLabels,
-	})
-	if err != nil {
-		t.Fatalf("pin start input for row %s: %v", c.Row, err)
+	return RunInput{
+		InstanceID: parityInstanceID, RunID: runID, Gaggle: c.Spec.Gaggle,
+		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion,
+		WorkflowDigest: machine.Digest(), Spec: def.Spec, PreviewFeaturesEnabled: boolPointer(true),
+		RepoRef: parityRepoRef, TriggerKind: string(journal.TriggerManual),
+		BranchNamespace: parityBranchNamespace, RunControls: c.RunControls,
+		BacklogQueryAssignedTo: c.BacklogQueryAssignedTo, BacklogQueryRequireLabels: c.BacklogQueryRequireLabels,
 	}
-	return in
 }
 
 func runParityEngineSide(t *testing.T, c parityCase, runID string) paritySide {
@@ -1121,9 +1103,9 @@ func projectEngineJournal(t *testing.T, env *testsuite.TestWorkflowEnvironment) 
 	if err := val.Get(&proj); err != nil {
 		t.Fatalf("decode journal projection: %v", err)
 	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
+		t.Fatalf("write live journal: %v", err)
 	}
 	return readJournalEvents(t, dir)
 }
@@ -1505,7 +1487,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	full := parityEnvelope{
 		ConfigGeneration: "s-configgeneration",
 		InstanceID:       "s-instanceid",
-		Stage:            "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
+		Stage:            "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", DSLVersion: "s-dslversion", Goal: "s-goal", Goober: "s-goober",
 		GooberDigest: "s-gooberdigest",
 		Gaggle:       "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
 		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
@@ -1520,7 +1502,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	rendered := full.String()
 	for _, sentinel := range []string{
 		"s-configgeneration", "s-instanceid",
-		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
+		"s-stage", "s-runid", "s-workflow", "s-dslversion", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
 		"s-pointers", "s-item", "s-reporef", "s-revision", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
@@ -1533,7 +1515,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 29; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 30; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }
@@ -1727,4 +1709,23 @@ func requireStagesDispatched(side paritySide, stages []string) error {
 		}
 	}
 	return nil
+}
+
+// A version mismatch changes stage behavior even when every other envelope
+// field agrees. The parity failure must retain and print both pinned versions.
+func TestParityEnvelopeDetectsDSLVersionDivergence(t *testing.T) {
+	local := projectParityEnvelope(apiv1.InvocationEnvelope{TaskID: "run:watch", RunID: "run", DSLVersion: "2.0"})
+	distributed := projectParityEnvelope(apiv1.InvocationEnvelope{TaskID: "run:watch", RunID: "run", DSLVersion: "2.1"})
+	err := diffParityEnvelopes(parityObservation{
+		Runner: paritySide{Name: "runner", Envelopes: []parityEnvelope{local}},
+		Engine: paritySide{Name: "engine", Envelopes: []parityEnvelope{distributed}},
+	})
+	if err == nil {
+		t.Fatal("different pinned DSL contracts compared equal")
+	}
+	for _, want := range []string{"dslVersion=2.0", "dslVersion=2.1", "dispatch 1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing %q in %v", want, err)
+		}
+	}
 }

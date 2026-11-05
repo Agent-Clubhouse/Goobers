@@ -53,17 +53,6 @@ const (
 	prRetryAuditMarker       = "<!-- pr-retry-audit: "
 )
 
-// operatorRetryRecord is the durable audit of the last operator-driven retry,
-// embedded in the sticky remediation-state comment and the audit comment.
-type operatorRetryRecord struct {
-	Route      string    `json:"route"`
-	Actor      string    `json:"actor"`
-	Reason     string    `json:"reason"`
-	RecordedAt time.Time `json:"recordedAt"`
-	HeadSHA    string    `json:"headSha"`
-	BaseSHA    string    `json:"baseSha"`
-}
-
 type prRetryParams struct {
 	Number int
 	Route  string

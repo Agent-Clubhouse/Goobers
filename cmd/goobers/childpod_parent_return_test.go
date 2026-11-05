@@ -44,7 +44,9 @@ func prepareQueuedParentReturn(t *testing.T, f childKitFixture, endpoint string)
 	fixture := handoffDaemonFixture{host: host, service: s, queue: s.childQueue, run: f.parentRun, env: f.parentEnv, child: f.child}
 	recordDaemonHandoffWait(t, fixture, request)
 	return func() {
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		// A hang guard, not a latency bound: the decision sequence below takes
+		// tens of seconds under -race on a loaded CI shard (#8137).
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 		defer cancel()
 		result, err := host.Wait(ctx, request)
 		if err != nil || result.State != string(triggerqueue.ChildCompleted) || result.ResultRef == "" {
@@ -82,8 +84,11 @@ func prepareQueuedParentReturn(t *testing.T, f childKitFixture, endpoint string)
 			t.Fatal("parent continuation lost applied decision or result", status)
 		}
 		current, err := s.childQueue.CurrentChild(ctx, f.child.Identity.ChildParent, f.child.Identity.StageOccurrence)
-		if err != nil || current.RunID != "" {
-			t.Fatal("applied disposition retained the unfinished child slot", current, err)
+		if err != nil {
+			t.Fatal("read the child slot after the applied disposition", err)
+		}
+		if current.RunID != "" {
+			t.Fatal("applied disposition retained the unfinished child slot", current)
 		}
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -54,7 +56,7 @@ func checkADOBacklogProjects(root, configDir string, cfg *instance.Config, set *
 			continue
 		}
 		project := gaggle.Spec.Backlog.Project
-		repo, found := configuredRepoForProject(cfg, gaggle.Spec.Project)
+		repo, found := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project)
 		var err error
 		switch {
 		case project == "":

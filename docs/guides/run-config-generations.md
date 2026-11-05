@@ -50,6 +50,51 @@ still resume or retry. Process-owned generations remain protected until orderly
 shutdown; restarting releases those process leases, while retained journal and
 external-history ownership still applies.
 
+## Restarting at capacity
+
+When a valid configuration change cannot fit because retained owners protect
+all available space, `goobers up` keeps the daemon available by rebuilding the
+last committed catalog from its verified retained generation. New runs use that
+catalog, and the candidate remains rejected. The daemon prints the rejection
+and the unchanged 64-generation / 256-MiB bounds; health and diagnostics remain
+available. The instance journal records the applied generation, including
+reusing an older generation during a rollback. On upgrade from a daemon that
+did not record it, startup refuses automatic selection: a newer retained run
+may belong to a catalog superseded by a rollback. Legacy reload events can also
+precede a failed activation and are not enough to prove the applied catalog.
+The applied catalog itself remains protected even before it admits a run.
+Journal compaction preserves the latest application event or legacy ambiguity
+barrier by sequence, even when clock rollback gives it an older timestamp.
+
+For an ambiguous legacy root, the startup diagnostic lists retained candidate
+digests, archive modification times, and archive source paths. These times are
+inspection aids, not application authority. Select the intended catalog with:
+
+```sh
+goobers up --recover-config-generation sha256:<digest> <instance>
+```
+
+This verifies retained bytes, archived permissions, and originating instance
+identity before restoring the daemon's applied catalog. It records the explicit
+selection and keeps the live candidate rejected. It does not overwrite source
+files, remove owners, or infer a choice from the newest run. An unknown digest
+or corrupt retained tree refuses startup. Subsequent capacity-exhausted restarts
+can recover the now-recorded catalog automatically.
+
+Inspect `goobers diagnostics bundle <instance>`, restore configuration matching
+a verified retained generation, and run `goobers apply <instance>` (or restart).
+Alternatively, normal retention can reclaim space once owners no longer need
+recovery. Do not delete retained journals, external-owner markers, or leases,
+or raise the limits to force the candidate through. One-shot execution still
+refuses a candidate it cannot retain.
+
+Recovery never relaxes archive or permission checks. If volume ownership
+processing changed archived modes, such as 0755/0644 to 0775/0664, startup
+reports a strict-verification error. Restore the retained tree's archived bytes
+and modes through storage recovery, then retry. Prevent the storage layer from
+rewriting those modes again. An unverifiable retained catalog cannot safely
+serve execution; diagnostic collection from the instance remains available.
+
 ## Operational settings boundary
 
 This pins the applied config-as-code generation, not an entire machine image.

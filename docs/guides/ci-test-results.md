@@ -69,6 +69,22 @@ skipped or retried.
 | `outside-driver-failure` | outside-driver | the job failed and the driver never ran (setup, checkout, or toolchain step) |
 | `post-driver-failure` | outside-driver | every driver run passed, but a later step failed |
 
+CI cancellation is scoped to validation jobs, with a separate group per ref,
+job, and matrix leg. A retarget dispatch shares the pull request's groups.
+The required `make ci` aggregate keeps `always()` and rejects cancelled required
+dependencies. Its verification step also rejects explicit workflow cancellation,
+even if every dependency had already passed; it is never skipped on cancellation. This
+also applies to manual cancellation and retargets that reuse the current head
+SHA, so cancellation cannot satisfy the required check without validation.
+
+An older run can still finish its aggregate, and validation lanes omitted by
+the replacement profile may finish their old work. These jobs hold no
+workflow-wide concurrency slot, so they cannot block replacement validation
+through that slot. GitHub associates each check with its run's commit SHA;
+an old-head failure does not report on a new head. Main-failure escalation also
+finishes independently and verifies current main before filing or closing an
+incident, so a stale completion cannot replace the latest commit's signal.
+
 When a runner is lost, no later step runs at all. A failed job with no
 `CI diagnostics` summary and no artifact therefore means runner loss.
 

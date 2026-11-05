@@ -22,7 +22,6 @@ github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema 
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
 github.com/goobers/goobers/internal/workflow.FeatureRegistry.Lookup # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.All for immutable lookup parity (#2981).
 github.com/goobers/goobers/internal/workflow.FeatureRegistry.All # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.Lookup for immutable lookup parity (#2981).
-github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lookup facade, exercised by coexistence_test.go and test/workflowupgrade/advisor_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow/v_2_0.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_2_0.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
@@ -48,13 +47,6 @@ github.com/goobers/goobers/providers.repoLabel # Repository-reference error rend
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
 github.com/goobers/goobers/internal/workflow/ir.Document.Digest # Deterministic IR content digester retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.Normalize # Deterministic source-to-IR normalization retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.Validate # Structural IR validation retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.cloneGate # Internal clone helper reachable through the retained normalization path for gate nodes in the additive Workflow IR compatibility layer (#4080).
-github.com/goobers/goobers/internal/workflow/ir.cloneDefinition # Persisted-source clone helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go's source-fidelity and immutability coverage.
-github.com/goobers/goobers/internal/workflow/ir.cloneParallel # Internal clone helper reachable through the retained normalization path for parallel nodes in the additive Workflow IR compatibility layer (#4080).
-github.com/goobers/goobers/internal/workflow/ir.cloneTask # Internal clone helper reachable through the retained normalization path for task nodes in the additive Workflow IR compatibility layer (#4080).
-github.com/goobers/goobers/internal/workflow/ir.canonicalizeTriggers # Canonical trigger-ordering helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go's digest and semantic-diff coverage.
 github.com/goobers/goobers/internal/workflow/ir.Document.Capabilities # Effective capability-query API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.Document.Diff # Deterministic semantic-diff API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.Document.ExplainLoss # Source-fidelity loss-reporting API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
@@ -64,22 +56,11 @@ github.com/goobers/goobers/internal/workflow/ir.Document.Inspect # Deterministic
 github.com/goobers/goobers/internal/workflow/ir.Document.MarshalJSON # Explicit-empty-field preservation hook retained for persisted Workflow IR round-tripping in the additive metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.RoundTripLoss # Package-level source-fidelity helper retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.SemanticDiff # Package-level semantic-diff API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.ports # Canonical port-ordering helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.sideEffect # Side-effect classifier retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.taskInputs # Canonical task-input extraction retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.taskSchema # Canonical task-schema builder retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validateSourceDefinition # Persisted-source consistency validator retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validateTriggers # Trigger validation helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validatePorts # Port validation helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validateSchemas # Schema validation helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.NormalizeWithMetadata # Workflow IR generation-provenance entrypoint retained for authoring agents and offline tooling in the additive metadata layer introduced in #4082, exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffCollectionChanges # Collection-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffEdgeChanges # Edge-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffMetadataChanges # Metadata-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffNodeChange # Node-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffNodeChanges # Node-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.canonicalizeFeatureGates # Feature-gate canonicalizer retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.cloneStringMap # Source-metadata clone helper retained for persisted Workflow IR immutability in the additive metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.finalizeDiff # Diff summarizer retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.formatProvenance # Provenance summary helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.hasBehavioralChange # Diff classifier helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
@@ -129,7 +110,18 @@ github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # 
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
+github.com/goobers/goobers/internal/engine.HITLRefusalCode # Test-only workflow protocol refusal classifier retained by engine replay and validation tests. expires=2026-12-01
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
+github.com/goobers/goobers/internal/journal.ConformanceView # Test-only local runner and DSL migration journal invariant; move to a journal test-helper package. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.projectNormative # Test-only implementation of the local journal conformance invariant. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeWorkspaceRevision # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeArtifactRefs # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeOutputs # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeCompleteness # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeSelection # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.encodeMapRoster # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.isContextManifestArtifact # Test-only local journal conformance encoding helper. expires=2026-12-01
+github.com/goobers/goobers/internal/journal.NormativeEvent.String # Test-only local journal conformance diagnostic renderer. expires=2026-12-01
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from _test.go files: cmd/goobers's live-daemon abort-delegation tests (#2270) and the journal-plane adoption tests that shrink the 30s bound instead of waiting it out (#3828).
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
@@ -137,7 +129,6 @@ github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
-github.com/goobers/goobers/internal/temporaltest.ProjectionQuerier.QueryWorkflow # Adapts the test environment to engine's projectionQuerier shape so ProjectCompletedRun* can run hermetically (#2903); used by test/e2e's engine-start/engine-project round trip.
 github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
 github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
 
@@ -293,46 +284,144 @@ github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until h
 
 # #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
 # capture activation before all three approved slices land. Remove on activation.
-github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
-github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests; #6356 still open. expires=2027-01-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes; #6356 still open. expires=2027-01-01
 
 # #4424 defines the gaggle-health contract, persistence and rebuild rules only;
 # the daemon evaluation controller that consumes them is #4425. Remove on wiring.
-github.com/goobers/goobers/internal/gagglehealth.AggregateState # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.EpisodeKey # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
 github.com/goobers/goobers/internal/gagglehealth.ExtendEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.OpenStore # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
 github.com/goobers/goobers/internal/gagglehealth.Rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.RebuildWithRetention # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.ResolvePolicy # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.Append # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.Close # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.Snapshot # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.eventsPath # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.project # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.rebuildAllLocked # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.Store.writeSnapshot # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.ValidateFinding # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.appendEvent # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.applyReplayEvent # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.containsControl # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.containsRootedPath # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.openStore # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.readEvents # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.rebuild # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.rootedPath # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.stateRank # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.truncateJournal # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validDigest # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateFindingClassification # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateFindingEpisode # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateFindingEvidence # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateFindingRepair # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateFindingText # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateIdentifier # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateIdentity # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateRedactedText # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateRepairDisposition # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateReplayEvent # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateStoreGaggle # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
-github.com/goobers/goobers/internal/gagglehealth.validateTransition # Gaggle-health contract (#4424) landed ahead of its first consumer, the daemon-owned evaluation controller (#4425); exercised by internal/gagglehealth tests.
+
+github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.Build # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.CreateEmptyVersion # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.Flip # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.copyBatch # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Builder.prepare # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NewBuilder # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NewVersion # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.copyChangeBatch # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.copyRunBatch # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.lockPointer # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.lockSourceProgress # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.newEpoch # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.resetVersion # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.schemaMetaExists # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.truncateVersion # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.versionDDL # HA-P3-11 PostgreSQL read-model backend; the HA-P3-12 projector (#7865) and cloud read wiring consume it. Remove when #7865 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.connectListener # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.listenLoop # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.publishLoop # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.waitBackoff # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.setListener # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.setPublisher # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Notifier.recordErrorLocked # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.NewNotifier # HA-P3-12 notifier is implemented but remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/readmodelpg.Projector.Feed # HA-P3-12 PostgreSQL projector remains unreachable until cloud host composition lands in #7865. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel/conformance.changeFeedIdentityIsStable # Backend conformance helper is invoked only from tests for #7865/#7884. expires=2026-11-22
+github.com/goobers/goobers/internal/readmodel/conformance.definitionsChangeJoinsOrderedFeed # Backend conformance helper is invoked only from tests for #7865/#7884. expires=2026-11-22
+github.com/goobers/goobers/internal/blobstore.TouchReference # Safe physical blob GC writer qualification (#7843) exposes the shared digest-only reference seam before journal/recovery/child writers adopt it. expires=2026-11-22
+
+# HA-P3-14 (#7814) PostgreSQL recovery, cancel-receipt and terminal-report stores
+# land ahead of the goobers-cloud control role (#7818) that composes them. Remove on wiring.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.Bind # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.Get # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.Publish # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.Reap # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.Renew # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bound.Get # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bound.Publish # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bound.Reap # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bound.Renew # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.keyArgs # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.resolve # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.scan # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.validate # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/recovery.SameIdentity # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bundleAvailable # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.ReleaseBundle # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.Store.RetiredBundles # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bound.ReleaseBundle # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+github.com/goobers/goobers/internal/cloud/recoverypg.bound.RetiredBundles # HA-P3-14 PostgreSQL store (#7814) landed ahead of its first production caller, the goobers-cloud control role (#7818); exercised by the cloudintegration PG16 conformance suites.
+# HA-P3-17 cloud assembly awaits HA-P3-18 role composition.
+github.com/goobers/goobers/internal/enginedecision.Router.query # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.WorkflowID # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.GateState # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.HITLState # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.DecideGate # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.Intend # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+github.com/goobers/goobers/internal/enginedecision.Router.update # Engine HITL decision router (#7760): composed as intervention.Config.EngineDecisions with a Temporal client in the cloud api role (the #7879/#7850 composition PR); the local daemon holds no Temporal client and keeps refusing engine-driven runs. expires=2026-11-20
+
+# HA-P3-27 engine-only admission lands ahead of the control-role wiring (#7850). Remove on wiring.
+
+
+
+
+github.com/goobers/goobers/internal/cloud/migrate.DropInstanceEventPartition # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Ensure # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/migrate.PartitionMaintainer.Run # HA-P3-10 partition maintenance and retention; #7882 wires the periodic job into the control role (#7850). Remove when #7882 lands. expires=2026-11-22
+
+# HA-P3-15 telemetry store awaits controller composition; no package-pattern exemptions supported.
+github.com/goobers/goobers/internal/cloud/telemetrypg.New # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.AdvanceStreamCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.Apply # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.BindFence # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.DefectAggregates # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.LoadStreamCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.TimeToFirstPR # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.advanceCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.applyMilestones # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.checkApplyCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.checkCursor # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.withFence # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.collapseAggregates # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.mergeContributions # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.normalizeGates # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.applyGate # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.Store.gateNoiseFindings # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.effectiveThresholds # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.boundedPointers # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/telemetry/gatenoise.Totals.Add # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.normalizeAggregate # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.normalizeTimestamp # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.nullableTime # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/telemetrypg.telemetryBatchFingerprint # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/telemetryclient.FindingPassesThresholds # HA-P3-15 telemetry store; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+# HA-P3-16 stall sweep awaits controller composition; no package-pattern exemptions supported.
+github.com/goobers/goobers/internal/cloud/stallsweep.NewStallSweeper # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.Sweep # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.beginTermination # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.claim # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.claimTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.due # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.finishTermination # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.processCandidate # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.recordFailure # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.retryTerminating # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.transition # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.withFence # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.report # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.changed # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.StallSweeper.creditedElapsed # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+github.com/goobers/goobers/internal/cloud/stallsweep.recordedClockEvents # HA-P3-16 stall sweep; #7818 (HA-P3-18 composition) wires this surface. Remove when #7818 lands. expires=2026-11-22
+
+# #7818 start-input composition: the config loader fills Candidate.Pins with startpin.Compute and the webhook and trigger planes pin through Configuration.PinFor once the control assembly composes them. Remove on wiring.
+
+# Read-only read-model reader and projector health, consumed by the cloud Reader composition (#7818 R3).
+# #7818 L1b: cloud scheduler entries and source-start intake, awaiting the epoch tick composition.
+github.com/goobers/goobers/internal/cloud/schedentries.Validate # Cloud scheduler entry builder and source-start intake (#7818 L1b) landed ahead of its first caller: the epoch tick composition (L1a/L1c, p3-cloud-reference) builds entries from the applied generation and installs the sources; exercised by internal/cloud/schedentries tests and the cloudintegration PG16 exactly-once suite. Remove when L1a lands. expires=2026-11-30
+# Cloud trigger plane pod containment (#8101), composed with the trigger plane.
+github.com/goobers/goobers/internal/cloud/cloudreader.Contains # Pod-containment verifier for the cloud trigger plane (#8101); composed into cmd/goobers-cloud/controltriggers.go once the trigger plane (#8096) lands. expires=2026-11-30
+
+github.com/goobers/goobers/internal/cloud/terminalawait.IdentifyFromAcceptance # Cloud terminal awaiter (#7818 group D) awaiting its claims-plane and epoch composition; exercised by internal/cloud/terminalawait tests. expires=2026-12-15
+
+# L1c cloud admission path (internal/cloud/schedstart), composed in L1e.
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.pending # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.WorkItem # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.Comments # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.Update # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.UpdateComment # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.PullLabels # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.DeleteBranch # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.ReleaseClaimMarker # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
+
+# Engine child parent capacity plane (#8085 d), composed when L1e hands the control scheduler to childengine as ParentSlots.

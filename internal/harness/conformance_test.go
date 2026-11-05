@@ -12,6 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 )
 
+func mcpRequiredFlag(value bool) *bool { return &value }
+
 // This file is the conformance suite #2776 asks for: every capability
 // dimension that's diverged silently between adapters in the past (tools
 // allowlist #1471, goobers-io #2774, declared mcpServers #1492) gets one
@@ -206,8 +208,9 @@ func TestConformanceMCPServersMaterializeAndAreReachable(t *testing.T) {
 				CompletionPath: DefaultResultPath,
 				Credentials:    creds,
 				MCPServers: []apiv1.MCPServer{{
-					Name:    "context",
-					Command: "context-server",
+					Name:     "context",
+					Required: mcpRequiredFlag(false),
+					Command:  "context-server",
 					CredentialRefs: []apiv1.MCPCredentialRef{
 						{Capability: "contents:read", Env: "CONTEXT_TOKEN"},
 					},
@@ -331,8 +334,8 @@ func TestConformanceModelOptionsRejectedAtAdmission(t *testing.T) {
 // config reaches a run. Both adapters redirect a config-home env var away
 // from whatever's ambient, but — a genuine, previously-undeclared asymmetry
 // this suite surfaces — claude-code does so unconditionally on every run
-// (#2775), while Copilot's redirection only fires when Sandbox != nil or MCP
-// servers are declared (a bare, unsandboxed, MCP-free Copilot run still
+// (#2775), while Copilot's redirection fires for scoped model credentials,
+// Sandbox != nil, or declared MCP servers (a stored-login-only stage still
 // inherits the ambient COPILOT_HOME). isolationUnconditional records which
 // behavior is real per adapter so this test documents current reality
 // precisely instead of asserting a false uniform contract; see the
@@ -393,7 +396,7 @@ var knownGaps = []knownGap{
 	{
 		dimension:     "ambient isolation",
 		adapter:       "copilot-cli",
-		detail:        `COPILOT_HOME redirection only fires when Sandbox != nil or MCP servers are declared — a bare, unsandboxed, MCP-free Copilot run still inherits ambient COPILOT_HOME, unlike claude-code's unconditional CLAUDE_CONFIG_DIR redirect on every run (#2775). Surfaced by this suite (#2776), not fixed here — out of scope for "build a conformance suite"; tracked separately`,
+		detail:        `COPILOT_HOME is isolated for resolved model credentials, enforced sandbox, or declared MCP servers. Unconfined stages with only a stored CLI login retain their ambient home for compatibility, with a preflight warning (#2816); login files are never copied`,
 		trackingIssue: "#2816",
 	},
 	{

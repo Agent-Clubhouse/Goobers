@@ -113,8 +113,8 @@ func TestConformanceViewProjectsMapFields(t *testing.T) {
 	events := testMapEvents()
 	base := ConformanceView(events)
 	mutations := map[string]func([]Event){
-		"roster item":   func(e []Event) { e[0].MapRoster.Items[1].Item = json.RawMessage(`{"shard":"z"}`) },
-		"roster digest": func(e []Event) { e[0].MapRoster.Items[0].Digest = testDigestB },
+		"item digest":          func(e []Event) { e[0].MapRoster.Items[0].Digest = testDigestB },
+		"frozen roster digest": func(e []Event) { e[0].MapRoster.RosterDigest = testDigestA },
 		"roster order": func(e []Event) {
 			e[0].MapRoster.Items[0], e[0].MapRoster.Items[1] = e[0].MapRoster.Items[1], e[0].MapRoster.Items[0]
 		},
@@ -147,6 +147,7 @@ func TestConformanceViewProjectsMapFields(t *testing.T) {
 		"source path":       func(e []Event) { e[0].MapRoster.Source.Path = "artifacts/elsewhere" },
 		"source size":       func(e []Event) { e[0].MapRoster.Source.Size = 1 },
 		"source media type": func(e []Event) { e[0].MapRoster.Source.MediaType = "" },
+		"roster item":       func(e []Event) { e[0].MapRoster.Items[1].Item = json.RawMessage(`{"shard":"z"}`) },
 		"item spelling":     func(e []Event) { e[0].MapRoster.Items[0].Item = json.RawMessage(`{ "shard" : "a" }`) },
 	} {
 		t.Run("excluded "+name, func(t *testing.T) {

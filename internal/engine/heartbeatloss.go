@@ -44,7 +44,7 @@ func isWorkerLoss(err error) bool {
 	if errors.As(err, &timeoutErr) {
 		return timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE || timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT
 	}
-	return hasFailureType(err, failureTypeWorkerLost)
+	return errors.Is(err, errHandoffWorkerLost) || hasFailureType(err, failureTypeWorkerLost)
 }
 
 // hasFailureType reports whether any application error in err's cause chain

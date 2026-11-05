@@ -2,8 +2,8 @@ package engine
 
 // The dual-runner conformance harness (#40/#637): shared workflow fixtures run
 // through BOTH the local runner (the behavioral reference) and this engine
-// (hosted in Temporal's test environment, its journal produced by the
-// history→journal projection, #629), and the two journals are diffed over
+// (hosted in Temporal's test environment with the cloud worker's live journal),
+// and the two journals are diffed over
 // journal.ConformanceView — the single sanctioned comparison surface.
 // Timestamps, durations, infra-retry attempts, and runner.* fields are
 // excluded by the shared view itself, never by ad-hoc harness filtering.
@@ -37,154 +37,6 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
-
-// scriptedCall is one scripted stage dispatch: either a ResultEnvelope or a
-// dispatch error (the only thing the runners' retry loops actually retry).
-type scriptedCall struct {
-	usage  map[string]float64
-	result apiv1.ResultEnvelope
-	err    error
-}
-
-// scriptedExec scripts stage dispatches per stage name and call index, behind
-// both the deterministic and the agentic invoke seams — the same instance
-// shape drives both runners, which is what makes each fixture a genuine
-// same-inputs comparison. The last scripted call for a stage repeats; an
-// unscripted stage succeeds.
-type scriptedExec struct {
-	mu     sync.Mutex
-	script map[string][]scriptedCall
-	calls  map[string]int
-	// verdicts scripts the AGENTIC REVIEWER seam per gate name, added for
-	// #3882's parity rows. Absent means the reviewer is not supposed to run,
-	// and Review says so with an error rather than a zero verdict — which is
-	// what turns "the port dispatched a reviewer it should have
-	// short-circuited" into a loud failure on both lanes instead of a silent
-	// extra model call.
-	verdicts    map[string][]apiv1.Verdict
-	reviewCalls map[string]int
-	// addenda records the instruction addendum each stage's LAST dispatch
-	// carried. It is what lets the #3883 HITL tests prove that an operator's
-	// rerun addendum actually reached the re-dispatched stage's envelope
-	// rather than merely being journaled.
-	addenda map[string]string
-	// held, when set for a stage, is a channel this exec waits on before
-	// answering that stage's dispatch — the seam holdUntilValidated uses to
-	// keep an activity genuinely in flight while a HITL update is validated
-	// (#3953). Read under mu; the wait itself happens outside the lock so a
-	// held stage never blocks another dispatch.
-	held map[string]<-chan struct{}
-}
-
-// holdFor makes the next dispatch of stage wait for release (bounded, so a
-// release that never comes fails the test rather than wedging the package).
-func (s *scriptedExec) holdFor(stage string, release <-chan struct{}) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.held == nil {
-		s.held = map[string]<-chan struct{}{}
-	}
-	s.held[stage] = release
-}
-
-// waitForRelease blocks a dispatch of stage until its hold is released or the
-// bound expires. Consumed once: only the dispatch that is supposed to be in
-// flight is held.
-func (s *scriptedExec) waitForRelease(stage string) {
-	s.mu.Lock()
-	release, ok := s.held[stage]
-	if ok {
-		delete(s.held, stage)
-	}
-	s.mu.Unlock()
-	if !ok {
-		return
-	}
-	select {
-	case <-release:
-	case <-time.After(scriptedHoldBound):
-	}
-}
-
-// scriptedHoldBound bounds a hold so a delivery that is never validated ends
-// the test with its own assertion rather than with a package timeout.
-const scriptedHoldBound = 30 * time.Second
-
-func newScriptedExec(script map[string][]scriptedCall) *scriptedExec {
-	return &scriptedExec{script: script}
-}
-
-func (s *scriptedExec) next(ctx context.Context, taskID string) (apiv1.ResultEnvelope, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	stage := taskID[strings.Index(taskID, ":")+1:]
-	if s.calls == nil {
-		s.calls = map[string]int{}
-	}
-	n := s.calls[stage]
-	s.calls[stage] = n + 1
-	script := s.script[stage]
-	if len(script) == 0 {
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
-	}
-	if n >= len(script) {
-		n = len(script) - 1
-	}
-	call := script[n]
-	if call.usage != nil {
-		invoke.ReportAgentUsage(ctx, call.usage)
-	}
-	return call.result, call.err
-}
-
-func (s *scriptedExec) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	s.waitForRelease(stageOfTaskID(env.TaskID))
-	return s.next(ctx, env.TaskID)
-}
-
-// stageOfTaskID reads the stage or gate name off a dispatch task ID.
-func stageOfTaskID(taskID string) string {
-	return taskID[strings.Index(taskID, ":")+1:]
-}
-
-func (s *scriptedExec) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	s.recordAddendum(env)
-	s.waitForRelease(stageOfTaskID(env.TaskID))
-	return s.next(ctx, env.TaskID)
-}
-
-func (s *scriptedExec) recordAddendum(env apiv1.InvocationEnvelope) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.addenda == nil {
-		s.addenda = map[string]string{}
-	}
-	s.addenda[env.TaskID[strings.Index(env.TaskID, ":")+1:]] = env.InstructionAddendum
-}
-
-// Review answers from the scripted verdicts, keyed by gate name. The last
-// scripted verdict for a gate repeats.
-func (s *scriptedExec) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	gate := env.TaskID[strings.Index(env.TaskID, ":")+1:]
-	script := s.verdicts[gate]
-	if len(script) == 0 {
-		return apiv1.Verdict{}, fmt.Errorf(
-			"scriptedExec: gate %q dispatched a reviewer, but this fixture scripts none — "+
-				"either the fixture is meant to short-circuit the reviewer and no longer does, "+
-				"or it needs a scripted verdict", gate)
-	}
-	if s.reviewCalls == nil {
-		s.reviewCalls = map[string]int{}
-	}
-	n := s.reviewCalls[gate]
-	s.reviewCalls[gate] = n + 1
-	if n >= len(script) {
-		n = len(script) - 1
-	}
-	return script[n], nil
-}
 
 // flakyAutomated wraps a real automated evaluator, failing the first
 // transientFailures calls with an infrastructure-marked error (#765's class).
@@ -228,53 +80,19 @@ type conformanceFixture struct {
 	// (agentic stages) and therefore needs the hermetic git fixture repo on
 	// the local side.
 	usesRepo bool
+	// Optional observers/evaluators exercise the actual gate envelopes on
+	// both runners, including protected host-authored join inputs.
+	automated     invoke.Automated
+	deterministic invoke.Deterministic
+	dslVersion    string
+	goober        invoke.Goober
 }
 
-func detTask(name, next string) apiv1.Task {
-	return apiv1.Task{
-		Name: name, Type: apiv1.TaskDeterministic, Goal: name,
-		Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
-		Next: next,
-	}
-}
-
-func agenticTask(name, next string, capabilities ...string) apiv1.Task {
-	return apiv1.Task{
-		Name: name, Type: apiv1.TaskAgentic, Goober: "coder", Goal: name,
-		Capabilities: capabilities,
-		Next:         next,
-	}
-}
-
-func statusGate(name string, branches map[string]string) apiv1.Gate {
-	return apiv1.Gate{
-		Name: name, Evaluator: apiv1.EvaluatorAutomated,
-		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
-		Branches:  branches,
-	}
-}
-
-// failureClassGate is the OTHER automated evaluator a shipped lane puts over a
-// failed stage: gate.DefaultChecks' "failure-class", which separates a
-// retryable/infrastructure failure (gate.OutcomeInfra) from a real one. It is
-// the only check that can produce an infra outcome, and therefore the only one
-// that reaches retryFailureClassForGateResult's second, journal.AttemptInfra
-// arm — see parity_row_learning_episode_infra_test.go.
 func failureClassGate(name string, branches map[string]string) apiv1.Gate {
 	return apiv1.Gate{
 		Name: name, Evaluator: apiv1.EvaluatorAutomated,
 		Automated: &apiv1.AutomatedGate{Check: "failure-class"},
 		Branches:  branches,
-	}
-}
-
-func fixtureSpec(start string, tasks []apiv1.Task, gates []apiv1.Gate) apiv1.WorkflowSpec {
-	return apiv1.WorkflowSpec{
-		Gaggle:   "web",
-		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-		Start:    start,
-		Tasks:    tasks,
-		Gates:    gates,
 	}
 }
 
@@ -306,6 +124,17 @@ func conformanceFixtures() []conformanceFixture {
 		[]apiv1.Gate{statusGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": "implement"})})
 
 	return []conformanceFixture{
+		{
+			name: "failure-class infra retry recovers",
+			spec: fixtureSpec("implement", []apiv1.Task{detTask("implement", "review")},
+				[]apiv1.Gate{failureClassGate("review", map[string]string{
+					"pass": wf.TerminalComplete, "fail": wf.TargetAbort, "infra": "implement",
+				})}),
+			script: map[string][]scriptedCall{
+				"implement": {failRetryable("worktree_provision_failed", "workspace host unavailable"), succeed(nil)},
+			},
+			maxRepasses: 3,
+		},
 		{
 			// Walking-skeleton class: multi-stage sequence mixing an agentic
 			// stage (capability-carrying invocation) with a deterministic
@@ -499,9 +328,15 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 	runsDir := filepath.Join(instanceRoot, "runs")
 	cfg := runner.Config{
 		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			if fx.deterministic != nil {
+				return fx.deterministic, nil
+			}
 			return exec, nil
 		},
 		NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
+			if fx.goober != nil {
+				return fx.goober, nil
+			}
 			return exec, nil
 		},
 		Automated:   &flakyAutomated{inner: gate.NewAutomatedEvaluator(), transientFailures: fx.gateTransientFailures},
@@ -509,6 +344,9 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 		Worktrees:   wtMgr,
 		RunsDir:     runsDir,
 		ScratchDir:  filepath.Join(instanceRoot, "scratch"),
+	}
+	if fx.automated != nil {
+		cfg.Automated = &flakyAutomated{inner: fx.automated, transientFailures: fx.gateTransientFailures}
 	}
 	if fx.usesRepo {
 		repo := newConformanceFixtureRepo(t)
@@ -519,7 +357,7 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 		t.Fatalf("runner.New: %v", err)
 	}
 	machine, err := wf.Compile(
-		wf.Definition{Name: "conformance", Version: 1, Spec: fx.spec},
+		wf.Definition{Name: "conformance", Version: 1, DSLVersion: fx.dslVersion, Spec: fx.spec},
 		wf.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -539,16 +377,19 @@ func runLocalFixture(t *testing.T, fx conformanceFixture, runID string) []journa
 }
 
 // runEngineFixture executes fx through the engine in the Temporal test
-// environment, projects its history into a scratch runs/ layout (#629), and
-// returns the projected journal's events.
+// environment with a real live journal writer, returning its durable events.
+// It does not depend on the removed local mode-3 host/projection APIs.
 func runEngineFixture(t *testing.T, fx conformanceFixture, runID string) []journal.Event {
 	t.Helper()
 	exec := newScriptedExec(fx.script)
+	writer, runsDir := newLiveWriter(t)
 	in := RunInput{
 		RunID:                  runID,
+		LiveJournal:            true,
 		Gaggle:                 "web",
 		WorkflowName:           "conformance",
 		Version:                1,
+		DSLVersion:             fx.dslVersion,
 		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   fx.spec,
 		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
@@ -558,29 +399,29 @@ func runEngineFixture(t *testing.T, fx conformanceFixture, runID string) []journ
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.SetStartTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	goober, automated := fx.goober, fx.automated
+	if goober == nil {
+		goober = exec
+	}
+	if automated == nil {
+		automated = gate.NewAutomatedEvaluator()
+	}
+	deterministic := fx.deterministic
+	if deterministic == nil {
+		deterministic = exec
+	}
 	env.RegisterActivity(&Activities{
-		Goober:     exec,
-		Det:        exec,
-		Auto:       &flakyAutomated{inner: gate.NewAutomatedEvaluator(), transientFailures: fx.gateTransientFailures},
+		Journal:    writer,
+		Goober:     goober,
+		Det:        deterministic,
+		Auto:       &flakyAutomated{inner: automated, transientFailures: fx.gateTransientFailures},
 		Workspaces: testWorkspaces(t),
 	})
 	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); (err != nil) != fx.wantEngineErr {
 		t.Fatalf("engine workflow error = %v, wantEngineErr = %t", err, fx.wantEngineErr)
 	}
-	val, err := env.QueryWorkflow(JournalQuery)
-	if err != nil {
-		t.Fatalf("query journal projection: %v", err)
-	}
-	var proj JournalProjection
-	if err := val.Get(&proj); err != nil {
-		t.Fatalf("decode journal projection: %v", err)
-	}
-	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
-	if err != nil {
-		t.Fatalf("ProjectRun: %v", err)
-	}
-	return readJournalEvents(t, dir)
+	return readJournalEvents(t, filepath.Join(runsDir, runID))
 }
 
 func readJournalEvents(t *testing.T, dir string) []journal.Event {
@@ -645,7 +486,7 @@ func normativeSeqAt(events []journal.Event, idx int) uint64 {
 }
 
 // TestConformanceDualRunnerJournalParity is the dual-runner harness: every
-// fixture runs through both runners; the projected engine journal must be
+// fixture runs through both runners; the live engine journal must be
 // indistinguishable from the local runner's on the conformance surface.
 func TestConformanceDualRunnerJournalParity(t *testing.T) {
 	for i, fx := range conformanceFixtures() {
