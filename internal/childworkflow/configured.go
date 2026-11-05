@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 // GooberAdmission reuses the host's normal offline harness/model/MCP admission.
@@ -38,6 +39,9 @@ type ConfiguredRequest struct {
 	ParentStage    string
 	ProposalPath   string
 	Backend        Backend
+	// ClusterModelPath optionally names a frozen Labs cluster model used only
+	// for advisory novelty evidence; it never changes Valid or diagnostics.
+	ClusterModelPath string
 }
 
 // ParentSelection identifies a stage within a gaggle-scoped workflow.
@@ -64,6 +68,8 @@ type ConfiguredReport struct {
 	WorkflowDigest  string          `json:"workflowDigest,omitempty"`
 	Diagnostics     []Diagnostic    `json:"diagnostics"`
 	Warnings        []string        `json:"warnings,omitempty"`
+	// Novelty is present only when a cluster model was requested.
+	Novelty *workflowcluster.Novelty `json:"novelty,omitempty"`
 }
 
 // ValidateConfigured loads the existing active config/ tree without fetching or
@@ -136,7 +142,22 @@ func ValidateConfigured(request ConfiguredRequest, admit GooberAdmission) (Confi
 	report.CanonicalDigest = proposal.CanonicalDigest
 	report.PolicyDigest = proposal.PolicyDigest
 	report.WorkflowDigest = proposal.Machine.Digest()
+	if request.ClusterModelPath != "" {
+		report.Novelty = scoreNovelty(&report, request.ClusterModelPath, proposal)
+	}
 	return report, nil
+}
+
+// scoreNovelty is advisory: a missing, edited, or stale model degrades to an
+// unscored result plus a warning and leaves the validation outcome untouched.
+func scoreNovelty(report *ConfiguredReport, path string, proposal *Proposal) *workflowcluster.Novelty {
+	model, err := workflowcluster.LoadModel(path)
+	if err != nil {
+		report.Warnings = append(report.Warnings, "cluster model unavailable; novelty unscored: "+bounded(err.Error()))
+		return &workflowcluster.Novelty{Reason: workflowcluster.UnscoredInvalidModel}
+	}
+	novelty := workflowcluster.ScoreWorkflow(&model, proposal.Workflow)
+	return &novelty
 }
 
 func configuredRefusal(report ConfiguredReport, code, message string) ConfiguredReport {

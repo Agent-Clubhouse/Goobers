@@ -43,7 +43,7 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue", "resume-prepared", "resume-adopted"} {
+	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue", "resume-unrelated-stale-temp", "resume-prepared", "resume-adopted"} {
 		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, false, "main") })
 	}
 	t.Run("record-master", func(t *testing.T) { testRecoveryRestoreCommand(t, "record", false, "master") })
@@ -165,6 +165,7 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "advance base")
 	liveBase := recoveryCLIGit(t, source, "rev-parse", "HEAD")
 	args := []string{"--record", filepath.Join(retained, recovery.RecordFileName), "--repository", destination, "--branch", "operator-recovery", root}
+	var staleTemp string
 	var stdout, stderr bytes.Buffer
 	if code := runRecoveryRestore(args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "retention deadline has expired") {
 		t.Fatalf("unrenewed expired archive was not refused: %d %s", code, stderr.String())
@@ -196,6 +197,9 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 			t.Fatal(err)
 		}
 		seedItemRepositoryForTest(t, layout, record.RunID, "7", identity)
+		if mode == "resume-unrelated-stale-temp" {
+			staleTemp = seedUnrelatedRecoveryWithStaleRetentionTemp(t, layout, source, inventory, identity, record)
+		}
 		args = []string{"--issue", "7", "--repository-key", identity.CanonicalKey(), "--repository", destination, "--branch", "operator-recovery", root}
 		if mode == "http-issue" {
 			serveRecoveryRestoreFixture(t, layout, identity)
@@ -236,6 +240,11 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	}
 	if code := invoke(); code != 0 {
 		t.Fatalf("restore command returned %d: %s", code, stderr.String())
+	}
+	if staleTemp != "" {
+		if _, err := os.Lstat(staleTemp); !os.IsNotExist(err) {
+			t.Fatalf("unrelated stale retention temp survived successful restore: %v", err)
+		}
 	}
 	if resume {
 		assertRecoverySecretAbsent(t, stageToken, stdout.String(), stderr.String(), root, retained)
@@ -301,6 +310,49 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranc
 	if after := recoveryCLIGit(t, destination, "rev-parse", target); after != before {
 		t.Fatal("retry overwrote operator branch")
 	}
+}
+
+func seedUnrelatedRecoveryWithStaleRetentionTemp(t *testing.T, layout instance.Layout, source, inventory string, identity providers.RepositoryRef, template recovery.Record) string {
+	t.Helper()
+	record := template
+	record.RunID = "unrelated-recovery"
+	record.CreatedAt = template.CreatedAt.Add(-time.Hour)
+	var err error
+	record.SnapshotSHA, err = recovery.CaptureSnapshot(t.Context(), source, record.RunID, record.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Ref, err = recovery.RefForSnapshot(record.RunID, record.SnapshotSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.PatchDigest, err = recovery.WriteSnapshotPatch(t.Context(), source, record.BaseSHA, record.SnapshotSHA, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, path, err := recovery.PublishToInventoryWithEviction(t.Context(), source, inventory, []string{source}, record, 128, 1<<20, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.RenewRetention(t.Context(), path, time.Now().UTC().Add(30*24*time.Hour), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: record.RunID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: record.CreatedAt}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	seedItemRepositoryForTest(t, layout, record.RunID, "8", identity)
+	temp := filepath.Join(filepath.Dir(path), ".retention.json.tmp-123")
+	if err := os.WriteFile(temp, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return temp
 }
 
 func assertRecoverySecretAbsent(t *testing.T, secret string, output ...string) {

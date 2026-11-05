@@ -87,6 +87,9 @@ const (
 	// aggregates never cross the boundary.
 	TelemetryDefectAggregatesPath = V1Prefix + "/telemetry/defect-aggregates"
 	EventsPath                    = V1Prefix + "/events"
+	// LabsWorkflowClustersPath is the experimental, advisory cluster map of the
+	// instance's configured workflows (#8309).
+	LabsWorkflowClustersPath = V1Prefix + "/labs/workflow-clusters"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -370,6 +373,7 @@ const (
 	// because what it serves is exactly one lane's fixed evidence set and
 	// widening it is a ruling amendment, not a parameter change.
 	RouteTelemetryDefectAggregates RouteID = "telemetryDefectAggregates"
+	RouteLabsWorkflowClusters      RouteID = "labsWorkflowClusters"
 
 	RouteEvents RouteID = "events"
 
@@ -635,6 +639,7 @@ var v1Routes = []Route{
 	// This route derives four families from rollups and causal-credit data.
 	// Its window, response and cardinality remain bounded server-side.
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
+	{ID: RouteLabsWorkflowClusters, Method: http.MethodGet, Path: LabsWorkflowClustersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
