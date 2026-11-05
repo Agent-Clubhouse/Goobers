@@ -58,6 +58,13 @@ const clustered: LabsWorkflowClusterView = {
     undersized: ["ops"],
     options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
   },
+  map: [
+    { id: "core/implement", x: 0, y: 0, cluster: "c0" },
+    { id: "core/review", x: 0, y: 0, cluster: "c0" },
+    { id: "ops/triage", x: 0.1, y: 0.05, cluster: "c0" },
+    { id: "core/novel", x: 1, y: -0.4 },
+    { id: "ops/odd-one", x: -0.8, y: 0.6 },
+  ],
 };
 
 describe("LabsPage", () => {
@@ -132,6 +139,25 @@ describe("LabsPage", () => {
     );
     expect(screen.getByText(/were not tested: ops\./)).toBeInTheDocument();
     expect(screen.getByText("0123456789ab")).toBeInTheDocument();
+  });
+
+  it("plots every workflow on a scatter map, merging identical shapes and marking medoids", async () => {
+    renderLabs(fixtureClient(clustered), "workflow-clustering");
+
+    const map = await screen.findByRole("img", { name: "Scatter map of 5 workflows in 1 cluster" });
+    const dots = map.querySelectorAll("a.labs-map-dot");
+    expect(dots).toHaveLength(4);
+    const merged = [...dots].find((dot) => dot.textContent?.includes("implement +1"));
+    expect(merged).toHaveAttribute("href", "#/workflow/core/implement");
+    expect(merged?.querySelector("title")?.textContent).toBe(
+      "core/implement, core/review — cluster c0 (medoid)",
+    );
+    expect(merged?.querySelector(".labs-map-medoid")).not.toBeNull();
+    const noise = [...dots].filter((dot) => dot.classList.contains("labs-map-noise"));
+    expect(noise.map((dot) => dot.querySelector("title")?.textContent)).toEqual([
+      "core/novel — noise",
+      "ops/odd-one — noise",
+    ]);
   });
 
   it("explains insufficient data and an all-noise model", async () => {

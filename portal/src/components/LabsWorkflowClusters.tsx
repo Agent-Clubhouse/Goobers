@@ -10,6 +10,7 @@ import { useLiveQuery } from "../liveQuery";
 import { routeHash } from "../routing";
 import { Action } from "../ui/Action";
 import { SectionHeading } from "../ui/Heading";
+import { LabsClusterMap } from "./LabsClusterMap";
 
 // The Labs workflow-cluster view (#8309). It renders only workflow ids,
 // structural feature names, and numbers; descriptors never carry prompt text.
@@ -74,6 +75,13 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         <span className="mono">{model.featureVersion}</span>
       </p>
       {view.confounds && <ConfoundSummary report={view.confounds} />}
+      {model.clusters.length > 0 && (view.map ?? []).length > 0 && (
+        <LabsClusterMap
+          points={view.map ?? []}
+          clusterIds={model.clusters.map((cluster) => cluster.id)}
+          medoids={new Set(model.clusters.map((cluster) => cluster.medoid.id))}
+        />
+      )}
       {model.clusters.length === 0 ? (
         <div className="empty-state">
           <h3>No clusters found</h3>
@@ -224,6 +232,7 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       })),
       noise: view.model.noise ?? [],
     },
+    map: Array.isArray(view.map) ? view.map : [],
     confounds: view.confounds && {
       ...view.confounds,
       undersized: view.confounds.undersized ?? [],
