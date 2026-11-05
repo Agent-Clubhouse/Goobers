@@ -32,7 +32,7 @@ import (
 const pendingTriggersDir = "pending-triggers"
 
 // maxOutstandingTriggerRequestsPerIdentity bounds how many not-yet-dispatched
-// requests for the same (gaggle, workflow, PR, priority, sourceRun) identity
+// requests for the same (gaggle, workflow, PR, work item, priority, sourceRun) identity
 // sweepPendingTriggers will actually dispatch in one pass; the rest are
 // answered immediately as bounded-out, without touching sched.Trigger* or the
 // instance journal (#4323/#4326). This exists because a misbehaving external
@@ -63,17 +63,19 @@ var maxTriggerSweepEntriesPerCycle = 500
 // triggerIdentity groups pending trigger requests that target the same
 // nominal work, for maxOutstandingTriggerRequestsPerIdentity's bound.
 type triggerIdentity struct {
-	Gaggle    string
-	Workflow  string
-	PR        int
-	Priority  bool
-	SourceRun string
+	Gaggle     string
+	Workflow   string
+	PR         int
+	WorkItemID string
+	Priority   bool
+	SourceRun  string
 }
 
 func identityOf(req triggerRequest) triggerIdentity {
 	return triggerIdentity{
 		Gaggle: req.Gaggle, Workflow: req.Workflow, PR: req.PR,
 		Priority: req.Priority, SourceRun: req.SourceRun,
+		WorkItemID: req.WorkItemID,
 	}
 }
 
@@ -86,6 +88,9 @@ func identityLabel(req triggerRequest) string {
 	}
 	if req.PR > 0 {
 		label = fmt.Sprintf("%s (PR #%d)", label, req.PR)
+	}
+	if req.WorkItemID != "" {
+		label += " (work item " + req.WorkItemID + ")"
 	}
 	return label
 }
@@ -147,6 +152,7 @@ type triggerRequest struct {
 	Workflow      string `json:"workflow"`
 	Gaggle        string `json:"gaggle,omitempty"`
 	PR            int    `json:"pr,omitempty"`
+	WorkItemID    string `json:"workItemId,omitempty"`
 	Force         bool   `json:"force,omitempty"`
 	SourceRun     string `json:"sourceRun,omitempty"`
 	Priority      bool   `json:"priority,omitempty"`
@@ -195,10 +201,6 @@ const (
 // use. Before this was atomic, os.CreateTemp minted the request file already
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
-func writeTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string) (requestID string, err error) {
-	return writeTriggerRequestContextOptions(ctx, schedulerDir, gaggle, workflow, false)
-}
-
 func writeTriggerRequestContextOptions(ctx context.Context, schedulerDir, gaggle, workflow string, force bool) (requestID string, err error) {
 	createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
@@ -287,22 +289,6 @@ func triggerDelegateFileProtocol() delegateFileProtocol {
 // timeout — not an indefinite wait — bounds the case where no live daemon is
 // actually picking requests up (e.g. it exited between this process
 // observing up.lock held and writing its request).
-func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (runID string, err error) {
-	for {
-		resp, err := pollTriggerResponseEvent(ctx, schedulerDir, requestID, timeout, false)
-		if err != nil {
-			return "", err
-		}
-		if resp.State == triggerResponseQueued {
-			continue
-		}
-		if resp.Error != "" {
-			return "", errors.New(resp.Error)
-		}
-		return resp.RunID, nil
-	}
-}
-
 func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID string, timeout time.Duration, withdrawOnTimeout bool) (triggerResponse, error) {
 	respPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
 	ackPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+ackSuffix)
@@ -578,6 +564,12 @@ func recoverActiveTriggerRequest(schedulerDir, reqDir, requestID string) (bool, 
 	}
 	var req triggerRequest
 	if err := json.Unmarshal(activeData, &req); err == nil && req.DispatchRunID != "" && req.AcceptanceID == "" {
+		if req.WorkItemID != "" {
+			if err := writeTriggerResponse(reqDir, requestID, triggerResponse{Error: "delegate: exact work item has no durable acceptance identity; refusing legacy recovery"}); err != nil {
+				return false, err
+			}
+			return false, os.Remove(activePath)
+		}
 		root := filepath.Dir(schedulerDir)
 		if _, err := instance.NewLayout(root).FindRunDir(req.DispatchRunID); err == nil {
 			if err := writeTriggerResponse(reqDir, requestID, triggerResponse{RunID: req.DispatchRunID}); err != nil {
@@ -686,6 +678,10 @@ func readPendingTriggerRequests(requestEntries []pendingTriggerCandidate) ([]*pe
 // sweepPendingTriggersWithAdmission adopts existing durable receipts before
 // applying fresh-file rules and transfers new requests before execution.
 // Legacy dispatch markers cannot bypass the queue in the production daemon.
+func unsupportedExactWorkItemDelegation(req triggerRequest, admission delegatedAdmission) bool {
+	return req.WorkItemID != "" && (admission == nil || req.Priority || req.SourceRun != "" || req.DispatchRunID != "")
+}
+
 func sweepPendingTriggersWithAdmission(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time, options triggerSweepOptions, admission delegatedAdmission) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, exists, err := readDirectory(reqDir)
@@ -741,6 +737,8 @@ func sweepPendingTriggersWithAdmission(ctx context.Context, schedulerDir string,
 		case req.CreatedAt.IsZero():
 			resp.Error = fmt.Sprintf("delegate: trigger request %s has no creation time; refusing to dispatch", requestID)
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
+		case unsupportedExactWorkItemDelegation(req, admission):
+			resp.Error = "delegate: exact work item requires ordinary durable admission; refusing legacy dispatch"
 		case admission != nil && req.DispatchRunID != "":
 			resp.Error = "delegate: legacy uncertain dispatch marker requires restart reconciliation; refusing direct replay"
 		case req.Force && (req.PR > 0 || req.Priority):

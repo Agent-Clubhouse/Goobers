@@ -69,6 +69,7 @@ export interface TriggerRequest {
   requestId?: string;
   force?: boolean;
   sourceRun?: string;
+  workItemId?: string;
 }
 
 export interface TriggerResponse {
@@ -597,6 +598,43 @@ export interface RecoveryInventoryStatus {
   policySource?: string;
   error?: string;
   observedAt: string;
+  /**
+   * Oldest slot-holding snapshots of terminal runs, with the exact commands
+   * that inspect, restore or abandon each one. Only on warning/exhausted.
+   */
+  reclaimCandidates?: RecoveryReclaimCandidate[];
+  /** Every actionable snapshot; reclaimCandidates is its oldest prefix. */
+  reclaimCandidatesTotal?: number;
+  /** Retention setting stopping abandoned snapshots from being deleted. */
+  reclaimHold?: RecoveryReclaimHold;
+  /** Lists every retained snapshot per run. */
+  statusCommand?: string;
+}
+
+export interface RecoveryReclaimCandidate {
+  runId: string;
+  phase: string;
+  ref: string;
+  patchDigest: string;
+  repositoryKey: string;
+  createdAt: string;
+  retainUntil: string;
+  /** Already abandoned; waiting for a retention pass to delete it. */
+  abandoned?: boolean;
+  inspectCommand: string;
+  /** Absent once the retention deadline has passed: restore refuses it. */
+  restoreCommand?: string;
+  /** Absent once abandoned. */
+  abandonCommand?: string;
+}
+
+export interface RecoveryReclaimHold {
+  reason: "disabled" | "dry-run" | "grace";
+  /** End of the first-enable grace window, when it has started. */
+  until?: string;
+  /** instance.yaml change that releases the hold. */
+  setting: string;
+  configFile?: string;
 }
 
 export interface TelemetryRetentionStatus {
@@ -1037,6 +1075,10 @@ export interface RunLineage {
     source?: string;
   }>;
   historicalRepassCount: number;
+  historicalRepassCountPartial?: boolean;
+  continuationsTruncated?: boolean;
+  continuationsNextCursor?: string;
+  continuationsIncomplete?: boolean;
 }
 
 export interface LineageRun {
@@ -1693,6 +1735,74 @@ export interface TelemetryStatsResult {
   trendPrevious?: TelemetryTrendBucket;
   /** The instance's published Backprop attribution accuracy eval, when one exists. */
   attributionEval?: AttributionEvalSummary;
+  attributionCohorts?: AttributionCohort[];
+  faultAudit?: AttributionFaultAudit;
+}
+
+export interface AttributionEvidenceLink {
+  runId?: string;
+  nodeId?: string;
+  stage?: string;
+  detail?: string;
+  source?: string;
+  journalSequence?: number;
+  journalPath?: string;
+  artifactPath?: string;
+  artifactDigest?: string;
+  artifactMediaType?: string;
+}
+
+export interface AttributionCohort {
+  effectiveVersion?: string;
+  workload?: string;
+  runCount: number;
+  topContributingPaths?: {
+    nodes?: string[];
+    share: number;
+    score?: number;
+    confidence: number;
+    evidence?: AttributionEvidenceLink[];
+  }[];
+  counterEvidence?: AttributionEvidenceLink[];
+  groundTruth?: {
+    labeledRunCount: number;
+    correctRunCount: number;
+    incorrectRunCount: number;
+  };
+}
+
+export interface AttributionFaultFinding {
+  id: string;
+  signature: string;
+  domain: string;
+  confidence: number;
+  runIds: string[];
+  workflows: string[];
+  effectiveVersions: string[];
+  environments?: string[];
+  nodePaths?: string[][];
+  evidence?: AttributionEvidenceLink[];
+  counterEvidence?: string[];
+  rationale: string;
+  alternativeDomains: string[];
+  recommendedOwner: string;
+  recommendedAction: string;
+  verification: string;
+  fileable: boolean;
+}
+
+export interface AttributionFaultAudit {
+  schema: string;
+  mode: string;
+  since: string;
+  until: string;
+  observationsScanned: number;
+  productReliabilityFindings?: AttributionFaultFinding[];
+  externalFindings?: AttributionFaultFinding[];
+  workflowFindings?: AttributionFaultFinding[];
+  mixedOrUnknownFindings?: AttributionFaultFinding[];
+  suppressed: number;
+  truncated?: boolean;
 }
 
 export interface AttributionEvalSummary {
@@ -2106,6 +2216,71 @@ export interface RelatedWorkItem {
   url?: string;
 }
 
+/** One clustered workflow: its id and structural feature values. */
+export interface LabsClusterPoint {
+  id: string;
+  numeric?: Record<string, number>;
+  categorical?: Record<string, string[]>;
+}
+
+export interface LabsClusterAttribution {
+  feature: string;
+  value?: string;
+  effect: number;
+}
+
+export interface LabsWorkflowCluster {
+  id: string;
+  medoid: LabsClusterPoint;
+  members: string[];
+  radius: number;
+  stability: number;
+  stable: boolean;
+  distinguishing?: LabsClusterAttribution[];
+}
+
+export interface LabsClusterModel {
+  version: string;
+  id: string;
+  featureVersion: string;
+  options: { minClusterSize: number; resamples: number; stabilityThreshold: number };
+  population: number;
+  clusters: LabsWorkflowCluster[];
+  noise: string[];
+}
+
+export interface LabsConfoundReport {
+  evidence: "observational" | "gym-controlled";
+  statistic: string;
+  association: number;
+  pValue: number;
+  confounded: boolean;
+  tested: number;
+  unlabeled: number;
+  strata: { key: string; size: number }[];
+  undersized: string[];
+  options: { minStratumSize: number; threshold: number; alpha: number; permutations: number };
+}
+
+/** Labs workflow-cluster read (#8309); mirrors internal/workflowcluster.View. */
+export interface LabsWorkflowClusterView {
+  status: "clustered" | "insufficient-data";
+  population: number;
+  minClusterSize: number;
+  model?: LabsClusterModel;
+  confounds?: LabsConfoundReport;
+  /** 2-D layout of every workflow (classical MDS of the model distances). */
+  map?: LabsClusterMapPoint[];
+}
+
+export interface LabsClusterMapPoint {
+  id: string;
+  x: number;
+  y: number;
+  /** Empty or absent for noise. */
+  cluster?: string;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2121,8 +2296,9 @@ export interface DaemonClient {
   getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
+  getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
-  getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;

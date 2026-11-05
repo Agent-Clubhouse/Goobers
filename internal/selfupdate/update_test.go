@@ -29,6 +29,7 @@ func (f commandFunc) Run(ctx context.Context, dir string, env []string, name str
 func TestPrepareReleaseAndMain(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	releaseArchive := testTarGz(t, "release")
+	referenceArchive := testReferenceTarGz(t, "candidate")
 	sum := sha256.Sum256(releaseArchive)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +45,8 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 			_, _ = fmt.Fprintf(w, "%x  goobers_v2_linux_amd64.tar.gz\n", sum)
 		case "/repos/acme/goobers/commits/main":
 			_ = json.NewEncoder(w).Encode(map[string]string{"sha": commit})
+		case "/repos/acme/goobers/tarball/release", "/repos/acme/goobers/tarball/" + commit:
+			_, _ = w.Write(referenceArchive)
 		default:
 			http.NotFound(w, r)
 		}
@@ -205,6 +208,7 @@ func TestPreparePrereleaseOptInSelectsNewerRelease(t *testing.T) {
 	current := currentBinary(root, "linux")
 	writeTestExecutable(t, current, "current")
 	releaseArchive := testTarGz(t, "release")
+	referenceArchive := testReferenceTarGz(t, "candidate")
 	sum := sha256.Sum256(releaseArchive)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +225,8 @@ func TestPreparePrereleaseOptInSelectsNewerRelease(t *testing.T) {
 			_, _ = w.Write(releaseArchive)
 		case "/sums":
 			_, _ = fmt.Fprintf(w, "%x  goobers_%s_linux_amd64.tar.gz\n", sum, targetVersion)
+		case "/repos/acme/goobers/tarball/beta3":
+			_, _ = w.Write(referenceArchive)
 		default:
 			http.NotFound(w, r)
 		}
@@ -267,6 +273,7 @@ func TestPreparePrereleaseSkipsNonSemVerReleaseTags(t *testing.T) {
 	current := currentBinary(root, "linux")
 	writeTestExecutable(t, current, "current")
 	releaseArchive := testTarGz(t, "release")
+	referenceArchive := testReferenceTarGz(t, "candidate")
 	sum := sha256.Sum256(releaseArchive)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +294,8 @@ func TestPreparePrereleaseSkipsNonSemVerReleaseTags(t *testing.T) {
 			_, _ = w.Write(releaseArchive)
 		case "/sums":
 			_, _ = fmt.Fprintf(w, "%x  goobers_%s_linux_amd64.tar.gz\n", sum, targetVersion)
+		case "/repos/acme/goobers/tarball/beta3":
+			_, _ = w.Write(referenceArchive)
 		default:
 			http.NotFound(w, r)
 		}
@@ -458,6 +467,84 @@ func releaseManifest(archive []byte) string {
 	return fmt.Sprintf("%x  goobers_v2_linux_amd64.tar.gz\n", sha256.Sum256(archive))
 }
 
+func TestSmokeCheckUsesCandidateCommitReferenceCatalog(t *testing.T) {
+	root, work, stage := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, "reference-workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "reference-workflows", "newer.yaml"), []byte("unsupported: true"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(stage, "goobers")
+	writeTestExecutable(t, binary, "candidate")
+	referenceArchive := testReferenceTarGz(t, "candidate")
+	var requestedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		_, _ = w.Write(referenceArchive)
+	}))
+	defer server.Close()
+
+	var diffReference string
+	runner := commandFunc(func(_ context.Context, _ string, _ []string, _ string, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "version":
+			return []byte(`{"version":"v1.2.3","commit":"abc123"}`), nil
+		case "validate":
+			return nil, nil
+		case "config":
+			diffReference = args[3]
+			if _, err := os.Stat(filepath.Join(diffReference, "candidate.yaml")); err != nil {
+				return nil, fmt.Errorf("candidate catalog unavailable: %w", err)
+			}
+			if _, err := os.Stat(filepath.Join(diffReference, "newer.yaml")); !errors.Is(err, os.ErrNotExist) {
+				return nil, errors.New("workspace reference catalog was used")
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected command %q", args[0])
+		}
+	})
+	_, err := smokeCheck(context.Background(), PrepareOptions{
+		Root: root, WorkDir: work, Owner: "acme", Repository: "goobers",
+		APIBaseURL: server.URL, HTTPClient: server.Client(), Runner: runner,
+	}, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestedPath != "/repos/acme/goobers/tarball/abc123" {
+		t.Fatalf("source archive path = %q, want candidate commit", requestedPath)
+	}
+	if diffReference == filepath.Join(work, "reference-workflows") {
+		t.Fatal("config diff used invoking workspace reference catalog")
+	}
+	if _, err := os.Stat(diffReference); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary candidate catalog was not removed: %v", err)
+	}
+}
+
+func TestSmokeCheckReportsTargetReferenceVersionMismatch(t *testing.T) {
+	root, work, stage := t.TempDir(), t.TempDir(), t.TempDir()
+	binary := filepath.Join(stage, "goobers")
+	writeTestExecutable(t, binary, "candidate")
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	runner := commandFunc(func(_ context.Context, _ string, _ []string, _ string, args ...string) ([]byte, error) {
+		if args[0] == "version" {
+			return []byte(`{"version":"v1.2.3","commit":"abc123"}`), nil
+		}
+		return nil, nil
+	})
+	_, err := smokeCheck(context.Background(), PrepareOptions{
+		Root: root, WorkDir: work, Owner: "acme", Repository: "goobers",
+		APIBaseURL: server.URL, HTTPClient: server.Client(), Runner: runner,
+	}, binary)
+	if err == nil || !strings.Contains(err.Error(), "target/reference-version mismatch") ||
+		!strings.Contains(err.Error(), `candidate commit "abc123"`) {
+		t.Fatalf("smokeCheck() error = %v, want actionable target/reference-version mismatch", err)
+	}
+}
+
 func testPartialTarGz(t *testing.T) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -495,6 +582,25 @@ func testTarGz(t *testing.T, content string) []byte {
 	}
 	return buffer.Bytes()
 }
+
+func testReferenceTarGz(t *testing.T, content string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	name := "acme-goobers-abc123/reference-workflows/candidate.yaml"
+	if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(content))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(tarWriter.Close(), gzipWriter.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
 func writeTestExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

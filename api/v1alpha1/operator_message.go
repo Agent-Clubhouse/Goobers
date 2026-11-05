@@ -34,6 +34,7 @@ type OperatorMessageContent struct {
 }
 
 // OperatorMessageRequest is the durable, provider-neutral operator message.
+// +kubebuilder:object:generate=false
 type OperatorMessageRequest struct {
 	Schema         string                 `json:"schema"`
 	RequestID      string                 `json:"requestId"`
@@ -84,6 +85,7 @@ func (r OperatorMessageRequest) Validate() error {
 }
 
 // OperatorMessageAcknowledgement records an operator's durable acknowledgement.
+// +kubebuilder:object:generate=false
 type OperatorMessageAcknowledgement struct {
 	Schema         string    `json:"schema"`
 	RequestID      string    `json:"requestId"`
@@ -123,6 +125,7 @@ const (
 // OperatorMessageOutcome records a terminal request disposition. Request is
 // populated when a request is rejected before acceptance (for example expiry),
 // preserving enough input to reconstruct that terminal record.
+// +kubebuilder:object:generate=false
 type OperatorMessageOutcome struct {
 	Schema         string                       `json:"schema"`
 	RequestID      string                       `json:"requestId"`
@@ -180,6 +183,7 @@ const (
 )
 
 // OperatorMessageRecord is a replayed request and its latest durable state.
+// +kubebuilder:object:generate=false
 type OperatorMessageRecord struct {
 	Request         OperatorMessageRequest          `json:"request"`
 	State           OperatorMessageState            `json:"state"`

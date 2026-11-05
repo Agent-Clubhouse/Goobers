@@ -98,6 +98,22 @@ func TestMakefileBuildMetadataResolvesFromGit(t *testing.T) {
 	}
 }
 
+func TestCloudDockerBuildStampsVersionMetadata(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), "packaging", "docker", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(data)
+	for variable := range buildMetadataVars {
+		stamp := "-X github.com/goobers/goobers/internal/version." +
+			strings.ToUpper(variable[:1]) + strings.ToLower(variable[1:]) + "=${" + variable + "}"
+		if count := strings.Count(dockerfile, stamp); count < 2 {
+			t.Errorf("Dockerfile has %d %s stamps, want local and cloud binaries", count, variable)
+		}
+	}
+}
+
 // withoutBuildMetadataEnv drops inherited VERSION/COMMIT/DATE so the Makefile's
 // `?=` defaults, not the caller's environment, are what gets evaluated.
 func withoutBuildMetadataEnv(env []string) []string {

@@ -67,11 +67,10 @@ var ErrNotFound = errors.New("blobstore: blob not found")
 // ("sha256:<hex>").
 //
 // Implementations must treat a digest as the complete identity of its bytes:
-// Put of an already-present digest is a no-op, never an overwrite, because
-// two writers racing on the same digest are by construction writing the same
-// content. That is what makes the store safe to share across a fleet with no
-// locking at all — the property flock exists to provide, obtained instead by
-// making the write idempotent.
+// Put of an already-present digest never overwrites its bytes, because two
+// writers racing on the same digest are by construction writing the same
+// content. A shared implementation may still advance storage fencing metadata
+// so physical collection cannot cross an acknowledged Put unchanged.
 type Store interface {
 	// Get returns the blob's bytes, or ErrNotFound.
 	Get(ctx context.Context, digest string) ([]byte, error)
@@ -84,6 +83,26 @@ type Store interface {
 	// Describe names the store for diagnostics and journals. It must not
 	// include credentials.
 	Describe() string
+}
+
+// ReferenceToucher lets a shared store serialize a digest-only reference with
+// physical collection without forcing the caller to download the bytes.
+type ReferenceToucher interface {
+	TouchReference(ctx context.Context, digest string) error
+}
+
+// TouchReference establishes storage authority before a caller commits a
+// digest-only reference. Stores without a specialized operation safely fall
+// back to a verified Get followed by Put.
+func TouchReference(ctx context.Context, store Store, digest string) error {
+	if toucher, ok := store.(ReferenceToucher); ok {
+		return toucher.TouchReference(ctx, digest)
+	}
+	data, err := store.Get(ctx, digest)
+	if err != nil {
+		return err
+	}
+	return store.Put(ctx, digest, data)
 }
 
 // Dir is a Store backed by a directory.

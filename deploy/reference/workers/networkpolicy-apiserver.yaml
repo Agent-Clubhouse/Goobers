@@ -1,0 +1,20 @@
+# CHANGE-ME to the Kubernetes API server address used by the in-cluster
+# kubernetes.default Service. Managed control planes commonly expose it
+# outside pod/namespace selectors, so a portable reference cannot infer it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rainbow-worker-apiserver
+  namespace: goobers-system
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.10/32 # CHANGE-ME
+      ports:
+        - protocol: TCP
+          port: 443

@@ -5,6 +5,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
@@ -29,6 +31,9 @@ const resetRateLimitHelp = "Usage: goobers reset-rate-limit [path]\n\n" +
 	"Takes effect on the next `goobers up`/`goobers run` (stop the daemon\n" +
 	"first if one is running; the reset is applied when the scheduler next\n" +
 	"reconstructs its budget window). Default path \".\".\n" +
+	"Local instances only: the marker is a file under the instance directory,\n" +
+	"so a cloud (goobers-cloud) scheduler never reads it. The cloud refuses a\n" +
+	"reset explicitly and has no equivalent yet (tracked in L1d/L1e).\n" +
 	"Exit codes: 0 = reset written, 2 = usage/IO error.\n"
 
 func runResetRateLimit(args []string, stdout, stderr io.Writer) int {
@@ -48,7 +53,7 @@ func runResetRateLimit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

@@ -93,7 +93,7 @@ func ValidateEndpoint(raw string) error {
 func Open(ctx context.Context, directory, endpoint, dispatchEndpoint string, source func() (string, error), probe ProbeOptions) (blobstore.Store, error) {
 	if directory == "" {
 		if source == nil {
-			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for endpoint mode")
+			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for endpoint mode (or api.podTokenKeyRingFile for cloud)")
 		}
 		return &dispatcher.BlobClient{BaseURL: endpoint, TokenSource: source}, nil
 	}
@@ -106,7 +106,7 @@ func Open(ctx context.Context, directory, endpoint, dispatchEndpoint string, sou
 			return nil, err
 		}
 		if source == nil {
-			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for dispatch preflight")
+			return nil, fmt.Errorf("WORKER_BLOB_AUTH: api.podTokenKeyFile is required for dispatch preflight (or api.podTokenKeyRingFile for cloud)")
 		}
 		remote := &dispatcher.BlobClient{BaseURL: dispatchEndpoint, TokenSource: source}
 		if err := VerifyShared(ctx, local, remote, probe); err != nil {
@@ -168,7 +168,7 @@ func VerifyShared(ctx context.Context, local blobstore.Store, remote probePutter
 		bound.Observe(now, hints)
 		lastErr = err
 		if opts.Log != nil {
-			_, _ = fmt.Fprintf(opts.Log, "INFO goobers worker: blob-plane probe waiting for daemon readiness (attempt %d, %s elapsed, bound %s%s): %v\n",
+			_, _ = fmt.Fprintf(opts.Log, "INFO goobers-cloud worker: blob-plane probe waiting for daemon readiness (attempt %d, %s elapsed, bound %s%s): %v\n",
 				attempts, now.Sub(start).Round(time.Second), bound.Deadline().Sub(start).Round(time.Second), describeHints(hints), err)
 		}
 		return now.Before(bound.Deadline()), err

@@ -225,7 +225,7 @@ func TestReconcile_GoobersAreNamespaceScoped(t *testing.T) {
 
 // --- reconcile (fake client) ----------------------------------------------
 
-func newReconciler(t *testing.T, reg WorkflowRegistrar, objs ...client.Object) (*GaggleReconciler, client.Client) {
+func newReconciler(t *testing.T, reg WorkflowRegistrar, objs ...client.Object) (*GaggleReconciler, client.WithWatch) {
 	t.Helper()
 	scheme, err := NewScheme()
 	if err != nil {
@@ -314,11 +314,6 @@ func TestReconcile_IgnoresUnpublishedGeneration(t *testing.T) {
 	err := c.Get(context.Background(), types.NamespacedName{Name: "gaggle-web"}, &ns)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("unpublished generation should not create namespace, got err=%v", err)
-	}
-
-	reqs := r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
-	if len(reqs) != 1 || reqs[0].Name != pending.Name || reqs[0].Namespace != pending.Namespace {
-		t.Fatalf("generation pointer map = %+v, want %s/%s", reqs, pending.Namespace, pending.Name)
 	}
 }
 

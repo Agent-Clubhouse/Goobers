@@ -15,7 +15,7 @@ import (
 func sourceFixture(t *testing.T) (*Sources, localscheduler.WorkflowEntry) {
 	t.Helper()
 	service := intentService(t)
-	return &Sources{Queue: service.Queue, Acquire: func(context.Context, Target) (func(), error) { return func() {}, nil }}, localscheduler.WorkflowEntry{Gaggle: "own", Workflow: "worker", ConfigGeneration: "generation", WorkflowDigest: "workflow", GooberDigest: "goober"}
+	return &Sources{Queue: service.Queue.(triggerqueue.SchedulerPolicyStore), Acquire: func(context.Context, Target) (func(), error) { return func() {}, nil }}, localscheduler.WorkflowEntry{Gaggle: "own", Workflow: "worker", ConfigGeneration: "generation", WorkflowDigest: "workflow", GooberDigest: "goober"}
 }
 func TestSourceSignalPinsRecipientSetAndNoMatch(t *testing.T) {
 	source, entry := sourceFixture(t)

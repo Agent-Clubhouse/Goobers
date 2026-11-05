@@ -20,6 +20,7 @@ func TestGooberSchemaAcceptsMCPServersWithoutInlineSecrets(t *testing.T) {
 			"mcpServers": [
 				{
 					"name": "local-context",
+					"required": false,
 					"command": "context-server",
 					"args": ["--stdio"],
 					"credentialRefs": [{"capability": "contents:read", "env": "CONTEXT_TOKEN"}]
@@ -62,6 +63,35 @@ func TestGooberSchemaAcceptsMCPServersWithoutInlineSecrets(t *testing.T) {
 				t.Fatal("malformed or inline-secret MCP configuration passed schema validation")
 			}
 		})
+	}
+}
+
+func TestGooberSchemaValidatesMCPServerRequiredBoolean(t *testing.T) {
+	template := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Goober",
+		"metadata": {"name": "coder"},
+		"spec": {
+			"role": "coder",
+			"instructions": "instructions.md",
+			"mcpServers": [{"name": "context", "command": "context-server"__REQUIRED__}]
+		}
+	}`
+	for name, value := range map[string]string{
+		"omitted": "",
+		"true":    `, "required": true`,
+		"false":   `, "required": false`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(strings.Replace(template, "__REQUIRED__", value, 1))
+			if err := newV(t).ValidateJSON("goober.schema.json", raw); err != nil {
+				t.Fatalf("valid required declaration: %v", err)
+			}
+		})
+	}
+	raw := []byte(strings.Replace(template, "__REQUIRED__", `, "required": "sometimes"`, 1))
+	if err := newV(t).ValidateJSON("goober.schema.json", raw); err == nil {
+		t.Fatal("non-boolean MCP required declaration passed schema validation")
 	}
 }
 
@@ -209,6 +239,39 @@ func TestValidateDirAllowsMCPServersForClaudeCode(t *testing.T) {
 	}
 	if issues := joinIssues(report); report.HasErrors() {
 		t.Fatalf("claude-code MCP configuration failed directory validation:\n%s", issues)
+	}
+}
+
+func TestValidateDirRequiresDSL31ForMCPServerRequired(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.WriteString(`
+  mcpServers:
+    - name: optional-context
+      required: false
+      command: context-server
+`)
+	closeErr := f.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	report, err := newV(t).ValidateDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := joinIssues(report); !report.HasErrors() || !strings.Contains(issues, `requires dslVersion "3.1"`) {
+		t.Fatalf("pre-3.1 MCP required field was not rejected:\n%s", issues)
 	}
 }
 

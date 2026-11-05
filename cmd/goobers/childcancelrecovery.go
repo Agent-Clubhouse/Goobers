@@ -40,7 +40,7 @@ func (l *queuedChildLauncher) finishCancelledChild(ctx context.Context, reader *
 		return false, err
 	}
 	if result.Phase != journal.PhaseRunning && l.dispatch != nil {
-		if scheduler := l.dispatch.sched.Load(); scheduler != nil {
+		if scheduler := l.dispatch.Scheduler(); scheduler != nil {
 			scheduler.ReleaseReconciled(id.RunID, id.Workflow)
 		}
 	}

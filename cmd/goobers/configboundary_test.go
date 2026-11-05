@@ -56,6 +56,7 @@ func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
 	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
@@ -64,6 +65,7 @@ func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 		"internal/runner/run.go":                                   "// smuggled platform edit\n",
 	})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, _, stderr := runArgs(t, "open-pr", root)
 	if code != 1 {
@@ -86,6 +88,7 @@ func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
 	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
@@ -94,6 +97,7 @@ func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 		"reference-workflows/gaggles/goobers/goobers/coder/instructions.md": "# tutor guidance\n",
 	})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, stdout, stderr := runArgs(t, "open-pr", root)
 	if code != 0 {
@@ -118,6 +122,7 @@ func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	t.Setenv(executor.InputEnvVar("docsRoots"), "docs,README.md")
 
@@ -126,6 +131,7 @@ func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
 		"internal/runner/run.go": "// smuggled code edit\n",
 	})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, _, stderr := runArgs(t, "open-pr", root)
 	if code != 1 {
@@ -148,6 +154,7 @@ func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	t.Setenv(executor.InputEnvVar("docsRoots"), "docs\nREADME.md")
 
@@ -156,6 +163,7 @@ func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
 		"README.md":     "base\nupdated\n",
 	})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, stdout, stderr := runArgs(t, "open-pr", root)
 	if code != 0 {
@@ -179,11 +187,13 @@ func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	// no docsRoots input
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{"docs/guide.md": "# guide\n"})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, _, stderr := runArgs(t, "open-pr", root)
 	if code != 1 {
@@ -208,6 +218,7 @@ func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
 	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
@@ -215,6 +226,7 @@ func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 		"skills/new-skill/SKILL.md": "# new skill\n",
 	})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, stdout, stderr := runArgs(t, "open-pr", root)
 	if code != 0 {
@@ -240,6 +252,7 @@ func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
 	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
@@ -248,6 +261,7 @@ func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 		"skills/new-skill/SKILL.md":                                "# new skill\n",
 	})
 	t.Chdir(wt)
+	server.setBranchTip("goobers/tutor/run-1", strings.TrimSpace(runGitOutputT(t, wt, "rev-parse", "HEAD")))
 
 	code, _, stderr := runArgs(t, "open-pr", root)
 	if code != 1 {
@@ -266,11 +280,13 @@ func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 
 // TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff: when confinement is
 // requested but the diff can't be computed (CWD is not a git repo), the stage
-// refuses rather than opening the PR unverified.
+// refuses rather than opening the PR unverified. The unconditional publication
+// guard now rejects the missing checkout before the narrower config boundary.
 func TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
+	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
 	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 	t.Chdir(t.TempDir()) // not a git repo
@@ -279,8 +295,8 @@ func TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code = %d, want 1 (fail closed on unverifiable diff); stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "config write-boundary") {
-		t.Fatalf("stderr = %q, want a config write-boundary error", stderr)
+	if !strings.Contains(stderr, "publication safety") {
+		t.Fatalf("stderr = %q, want publication safety to reject the missing checkout", stderr)
 	}
 	server.mu.Lock()
 	n := len(server.prs)

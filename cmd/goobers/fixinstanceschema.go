@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -39,7 +41,7 @@ func runFixInstanceSchema(root string, write bool, stdout, stderr io.Writer) int
 		return 0
 	}
 	if write {
-		if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}

@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -49,7 +50,7 @@ func (d *workspaceBranchDeterministic) Run(_ context.Context, env apiv1.Invocati
 	}
 	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
 	if stage == "select" {
-		result.Outputs = map[string]interface{}{runner.WorkspaceBranchOutput: d.branch}
+		result.Outputs = map[string]interface{}{runsemantics.WorkspaceBranchOutput: d.branch}
 	}
 	return result, nil
 }
@@ -290,10 +291,10 @@ func TestSelectedWorkspaceBranchRejectsInvalidOutput(t *testing.T) {
 		wantErr string
 	}{
 		{name: "absent", outputs: nil},
-		{name: "blank", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "  "}},
-		{name: "selected", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: " goobers/implementation/pr-head "}, want: "goobers/implementation/pr-head"},
-		{name: "non-string", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: 42}, wantErr: "must be a string"},
-		{name: "outside namespace", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"}, wantErr: "outside namespace"},
+		{name: "blank", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: "  "}},
+		{name: "selected", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: " goobers/implementation/pr-head "}, want: "goobers/implementation/pr-head"},
+		{name: "non-string", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: 42}, wantErr: "must be a string"},
+		{name: "outside namespace", outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: "main"}, wantErr: "outside namespace"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -326,7 +327,7 @@ func TestInvalidWorkspaceBranchFailsWorkflow(t *testing.T) {
 	}
 	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"},
+		Outputs: map[string]interface{}{runsemantics.WorkspaceBranchOutput: "main"},
 	}}
 	workspaces := testWorkspaces(t)
 	var ts testsuite.WorkflowTestSuite
@@ -541,8 +542,8 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	if len(captured.ContextPointers) != 1 || captured.ContextPointers[0].Name != "implement.artifact[0]" {
 		t.Errorf("gate context pointers = %+v, want the subject stage's artifact", captured.ContextPointers)
 	}
-	if got := len(workspaces.provisioned()); got != 2 {
-		t.Errorf("workspaces provisioned = %d, want 2 (implement + the reviewer gate)", got)
+	if got := len(workspaces.provisioned()); got != 3 {
+		t.Errorf("workspaces provisioned = %d, want 3 (implement + diff preparation + reviewer)", got)
 	}
 }
 
@@ -594,8 +595,8 @@ func TestRunDeterministicBaseSyncConflictIsBusinessFailure(t *testing.T) {
 	if res.Status != apiv1.ResultFailure || res.Error == nil {
 		t.Fatalf("result = %+v, want a failure envelope with error detail", res)
 	}
-	if res.Error.Code != runner.BaseSyncConflictErrorCode || !res.Error.Retryable {
-		t.Fatalf("error = %+v, want retryable %q (the local runner's #813 code)", res.Error, runner.BaseSyncConflictErrorCode)
+	if res.Error.Code != runsemantics.BaseSyncConflictErrorCode || !res.Error.Retryable {
+		t.Fatalf("error = %+v, want retryable %q (the local runner's #813 code)", res.Error, runsemantics.BaseSyncConflictErrorCode)
 	}
 	if got := det.captured(); len(got) != 0 {
 		t.Fatalf("executor dispatched %d times against a conflicted workspace, want 0", len(got))
@@ -858,6 +859,12 @@ func TestWorkspaceRemovedPerAttempt(t *testing.T) {
 // conformance-relevant field — Workspace being the one runner-specific field,
 // cleared before comparison.
 func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
+	for _, dslVersion := range []string{"2.0", "2.1"} {
+		t.Run(dslVersion, func(t *testing.T) { checkEngineEnvelopeMatchesLocalRunner(t, dslVersion) })
+	}
+}
+
+func checkEngineEnvelopeMatchesLocalRunner(t *testing.T, dslVersion string) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -874,7 +881,7 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 	const runID = "run-envelope-parity"
 	item := &apiv1.BacklogItem{ID: "7", Provider: apiv1.ProviderGitHub, Title: "Audit"}
 	repoRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
-	machine, err := wf.Compile(wf.Definition{Name: "parity", Version: 1, Spec: spec}, wf.WithPreviewFeatures(true))
+	machine, err := wf.Compile(wf.Definition{Name: "parity", Version: 1, DSLVersion: dslVersion, Spec: spec}, wf.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile parity machine: %v", err)
 	}
@@ -921,6 +928,7 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 		RunID:                  runID,
 		Gaggle:                 "web",
 		WorkflowName:           "parity",
+		DSLVersion:             dslVersion,
 		Version:                1,
 		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   spec,
@@ -942,6 +950,9 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 		t.Fatalf("dispatch counts local=%d engine=%d, want 1 each", len(localEnvs), len(engineEnvs))
 	}
 	le, ee := localEnvs[0], engineEnvs[0]
+	if le.DSLVersion != dslVersion || ee.DSLVersion != dslVersion {
+		t.Fatalf("pinned contract lost: local=%q engine=%q want=%q", le.DSLVersion, ee.DSLVersion, dslVersion)
+	}
 	if le.Workspace == "" || ee.Workspace == "" {
 		t.Fatalf("workspaces local=%q engine=%q, want both populated", le.Workspace, ee.Workspace)
 	}

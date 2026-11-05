@@ -1,0 +1,35 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: completed
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: implement
+  tasks:
+    - name: implement
+      type: deterministic
+      goal: produce stable output
+      run:
+        command: [fixture]
+      inputs:
+        fixture: pinned-input
+      retry:
+        maxAttempts: 2
+      next: automated
+  gates:
+    - name: automated
+      evaluator: automated
+      automated:
+        check: fixture
+      branches:
+        pass: review
+        fail: "@abort"
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: ""
+        needs-changes: implement
+        fail: "@abort"

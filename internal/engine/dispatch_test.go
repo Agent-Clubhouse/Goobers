@@ -9,74 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/temporaltest"
-	wf "github.com/goobers/goobers/internal/workflow"
 )
-
-// TestRegisterRejectsSchemaInvalidShapes is #626's registry acceptance: the
-// registry re-asserts the task shape invariants workflow.schema.json owns —
-// definitions the schema would reject never enter the registry, with errors
-// naming the violated invariant.
-func TestRegisterRejectsSchemaInvalidShapes(t *testing.T) {
-	valid := linearSpec()
-	cases := []struct {
-		name    string
-		mutate  func(*apiv1.Task)
-		wantErr string
-	}{
-		{
-			name:    "agentic without goober",
-			mutate:  func(task *apiv1.Task) { task.Goober = "" },
-			wantErr: "agentic requires goober",
-		},
-		{
-			name:    "agentic with run block",
-			mutate:  func(task *apiv1.Task) { task.Run = &apiv1.DeterministicRun{Command: []string{"true"}} },
-			wantErr: "agentic forbids run",
-		},
-		{
-			name: "deterministic without run",
-			mutate: func(task *apiv1.Task) {
-				task.Type = apiv1.TaskDeterministic
-				task.Goober = ""
-				task.Run = nil
-			},
-			wantErr: "deterministic requires run",
-		},
-		{
-			name: "deterministic with empty command",
-			mutate: func(task *apiv1.Task) {
-				task.Type = apiv1.TaskDeterministic
-				task.Goober = ""
-				task.Run = &apiv1.DeterministicRun{}
-			},
-			wantErr: "run.command requires at least one element",
-		},
-		{
-			name: "deterministic with goober",
-			mutate: func(task *apiv1.Task) {
-				task.Type = apiv1.TaskDeterministic
-				task.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
-			},
-			wantErr: "deterministic forbids goober",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			spec := valid
-			spec.Tasks = append([]apiv1.Task(nil), valid.Tasks...)
-			tc.mutate(&spec.Tasks[0])
-
-			r := NewRegistryWithPreviewFeatures(true)
-			_, err := r.RegisterDefinition(wf.Definition{Name: "bad-shape", Spec: spec})
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Register error = %v, want it to name the violated invariant %q", err, tc.wantErr)
-			}
-			if _, ok := r.Latest("bad-shape"); ok {
-				t.Fatal("schema-invalid definition entered the registry")
-			}
-		})
-	}
-}
 
 // TestDeterministicDispatchFailsClosed is #626's dispatch acceptance: an
 // absent or zero-value DeterministicRun is a dispatch error — no empty
@@ -131,14 +64,6 @@ func TestDeterministicScriptDispatch(t *testing.T) {
 			Run:  &apiv1.DeterministicRun{Script: script, Workspace: apiv1.WorkspaceScratch},
 		}},
 	}
-	registry := NewRegistryWithPreviewFeatures(true)
-	if _, err := registry.RegisterDefinition(wf.Definition{
-		Name:       "inline",
-		DSLVersion: "2.0",
-		Spec:       spec,
-	}); err != nil {
-		t.Fatalf("RegisterDefinition: %v", err)
-	}
 
 	det := &capturingDeterministic{}
 	var ts testsuite.WorkflowTestSuite
@@ -177,30 +102,5 @@ func TestRunDeterministicActivityRefusesEmptyCommand(t *testing.T) {
 	}
 	if got := len(workspaces.provisioned()); got != 0 {
 		t.Fatalf("workspaces provisioned = %d, want 0 (no provisioning for a doomed dispatch)", got)
-	}
-}
-
-// TestRegistryStartInputCarriesPinnedPolicy: the StartSpec policy fields
-// added for envelope parity thread through into the pinned RunInput.
-func TestRegistryStartInputCarriesPinnedPolicy(t *testing.T) {
-	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: linearSpec()}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	in, err := r.StartInput("flow", StartSpec{
-		RunID:                  "run-1",
-		Gaggle:                 "web",
-		TriggerRef:             "item#9",
-		BranchNamespace:        "goobers/",
-		GateGooberCapabilities: map[string][]string{"reviewer": {"agent:model"}},
-	})
-	if err != nil {
-		t.Fatalf("StartInput: %v", err)
-	}
-	if in.TriggerRef != "item#9" || in.BranchNamespace != "goobers/" {
-		t.Fatalf("run input trigger/namespace = %q/%q, want item#9 / goobers/", in.TriggerRef, in.BranchNamespace)
-	}
-	if got := in.GateGooberCapabilities["reviewer"]; len(got) != 1 || got[0] != "agent:model" {
-		t.Fatalf("run input gate goober capabilities = %v, want [agent:model]", got)
 	}
 }

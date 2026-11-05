@@ -3,6 +3,8 @@ package recovery
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +21,7 @@ import (
 )
 
 func TestHTTPArchivePublisherRequiresCompleteCustodyAcknowledgement(t *testing.T) {
-	for _, mode := range []string{"valid", "refused", "redirect", "corrupt", "foreign-run"} {
+	for _, mode := range []string{"valid", "refused", "structured-refusal", "redirect", "corrupt", "foreign-run"} {
 		t.Run(mode, func(t *testing.T) {
 			record, path := publicationArchiveFixture(t)
 			if mode == "corrupt" {
@@ -54,6 +56,11 @@ func TestHTTPArchivePublisherRequiresCompleteCustodyAcknowledgement(t *testing.T
 					w.WriteHeader(http.StatusForbidden)
 					return
 				}
+				if mode == "structured-refusal" {
+					w.WriteHeader(http.StatusForbidden)
+					_ = json.NewEncoder(w).Encode(apicontract.ErrorEnvelope{Error: apicontract.APIError{Code: "recovery_refused", Message: "safe public message"}})
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			defer server.Close()
@@ -65,6 +72,12 @@ func TestHTTPArchivePublisherRequiresCompleteCustodyAcknowledgement(t *testing.T
 			server.Close()
 			if (err == nil) != (mode == "valid") {
 				t.Fatalf("publication %s: %v", mode, err)
+			}
+			if mode == "structured-refusal" {
+				var refusal *PublicationRefusal
+				if !errors.As(err, &refusal) || refusal.Code != "recovery_refused" || refusal.StatusCode != http.StatusForbidden {
+					t.Fatalf("structured refusal lost: %T %v", err, err)
+				}
 			}
 			if mode == "foreign-run" && called.Load() != 0 || called.Load() > 1 {
 				t.Fatal("unauthorized or redirected request reached the server")

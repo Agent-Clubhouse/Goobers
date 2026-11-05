@@ -1,0 +1,402 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"go.temporal.io/sdk/client"
+
+	"github.com/goobers/goobers/internal/childworkflow"
+	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/childengine"
+	"github.com/goobers/goobers/internal/cloud/control"
+	"github.com/goobers/goobers/internal/cloud/epoch"
+	"github.com/goobers/goobers/internal/cloud/journalpg"
+	"github.com/goobers/goobers/internal/cloud/lease"
+	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
+	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
+	"github.com/goobers/goobers/internal/cloud/projectorpg"
+	"github.com/goobers/goobers/internal/cloud/sharedclaims"
+	"github.com/goobers/goobers/internal/controlplane/planes"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	sharedauth "github.com/goobers/goobers/internal/podauth"
+	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/version"
+)
+
+const controlHelp = `Usage: goobers-cloud control [DATABASE OPTIONS] [OPTIONS]
+
+Serve API and the single-active, fenced cloud controller. Never executes stages.
+Database options (separate credentials; no role membership):
+  --instance-id ID                          Required instance (or GOOBERS_INSTANCE_ID)
+  --api-database-url URL                    API transaction-pool URL
+  --api-database-url-file FILE              API URL file
+  --api-database-direct-url URL             API direct URL
+  --api-database-direct-url-file FILE       API direct URL file
+  --controller-database-url URL             Controller transaction-pool URL
+  --controller-database-url-file FILE       Controller URL file
+  --controller-database-direct-url URL      Controller direct URL
+  --controller-database-direct-url-file FILE Controller direct URL file
+  --database-auth MODE                      password or entra (default password)
+  --database-max-conns N                    Combined budget (default 16)
+  --database-direct-max-conns N             Direct reservation per role (default 2)
+
+Environment: GOOBERS_API_DATABASE_URL, GOOBERS_API_DATABASE_DIRECT_URL,
+GOOBERS_CONTROLLER_DATABASE_URL, GOOBERS_CONTROLLER_DATABASE_DIRECT_URL.
+Both roles must target goobers_<instance>, with dashes changed to underscores.
+
+Options:
+  --check-assembly              Print compiled plane wiring and exit (offline)
+  --listen ADDRESS              API/probes address (default 127.0.0.1:8080)
+  --tls-cert FILE                API TLS certificate (required off loopback)
+  --tls-key FILE                 API TLS private key
+  --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
+  --self-execution POLICY        Must be deny (default deny)
+  --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
+  --temporal-namespace NAME      Temporal namespace (default default)
+  --task-queue NAME              Remote engine task queue (default goobers)
+  --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
+                                 journal span source and config generations live there
+  --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
+  --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
+                                 optional goobers/ (or GOOBERS_CONFIG_DIR); required
+
+Readiness requires schema compatibility, complete plane/recovery wiring, and a
+live controller lease. SIGTERM stops controller loops and releases authority.
+`
+
+type controlOptions struct {
+	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
+	webhookSecretFile                                                           string
+	objectStoreURL, objectStoreContainer                                        string
+	objectStoreAccountName, objectStoreAccountKeyFile                           string
+	checkAssembly                                                               bool
+}
+
+func (o *controlOptions) flags(f *flag.FlagSet) {
+	f.BoolVar(&o.checkAssembly, "check-assembly", false, "check compiled plane wiring without dependencies")
+	f.StringVar(&o.listen, "listen", "127.0.0.1:8080", "API/probe address")
+	f.StringVar(&o.cert, "tls-cert", "", "TLS certificate")
+	f.StringVar(&o.key, "tls-key", "", "TLS private key")
+	f.StringVar(&o.podKey, "pod-key-file", environmentOr("GOOBERS_POD_KEY_FILE", ""), "signed pod key file")
+	f.StringVar(&o.webhookSecretFile, "github-webhook-secret-file", environmentOr("GOOBERS_GITHUB_WEBHOOK_SECRET_FILE", ""), "GitHub webhook HMAC secret file")
+	f.StringVar(&o.selfExecution, "self-execution", "deny", "must be deny")
+	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
+	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
+	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
+	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
+	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	f.StringVar(&o.objectStoreAccountName, "object-store-account-name", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_NAME"), "Azure storage account for shared-key authentication")
+	f.StringVar(&o.objectStoreAccountKeyFile, "object-store-account-key-file", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_KEY_FILE"), "file containing the Azure storage account key")
+	f.StringVar(&o.configDir, "config-dir", environmentOr("GOOBERS_CONFIG_DIR", ""), "mounted instance config directory")
+}
+func runControlRole(args []string, stdout, stderr io.Writer) int {
+	return runControlConfigured(args, stdout, stderr)
+}
+
+func validateControlOptions(options controlOptions) error {
+	return control.ValidateBoot(options.selfExecution, nil)
+}
+
+// validateControlObjectStore refuses to boot without the object store. The
+// journal's span source and the retained config generations live there, so a
+// control role without it can never compose its planes; refuse at boot instead
+// of at the first lease.
+func validateControlObjectStore(options controlOptions) error {
+	if strings.TrimSpace(options.objectStoreURL) == "" || strings.TrimSpace(options.objectStoreContainer) == "" {
+		return errors.New("--object-store-url (or GOOBERS_OBJECT_STORE_URL) and --object-store-container are required")
+	}
+	return nil
+}
+
+// controlPlanes is the composition seam for independently landing PG backends.
+// No local filesystem implementation or successful no-op recovery is installed.
+type controlPlanes struct {
+	// EngineChildAdmissions serves generated-child custody to engine workers.
+	EngineChildAdmissions httpapi.HandlerOption
+	// EngineChildAuthority binds engine parents' child-workflow grants for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildAuthority httpapi.HandlerOption
+	// EngineChildProtocol parks, finalizes and completes engine children for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildProtocol  httpapi.HandlerOption
+	engineChildren       *childengine.Fenced
+	engineChildAuthority *childengine.FencedAuthority
+	// ChildWorkflows serves the child-workflow routes to engine parents'
+	// stage pods.
+	ChildWorkflows httpapi.HandlerOption
+	// BlobPlane serves the stage blob plane over control's object store, on
+	// every replica, leader or not (#8188).
+	BlobPlane      httpapi.HandlerOption
+	Configuration  control.Configuration
+	Reader         readservice.Reader
+	provider       *controlProvider
+	sharedRegistry *sharedclaims.Registry
+	Claims         httpapi.ClaimService
+	Triggers       httpapi.TriggerService
+	Journal        httpapi.JournalService
+	RunJournal     httpapi.RunJournalService
+	Resolve        acceptance.StartInputResolver
+	Epoch          func(context.Context, *lease.Handle) (control.EpochServices, error)
+	// Admission builds each epoch's scheduler-backed admission of accepted starts
+	// (control.Runtime.Admission).
+	Admission   func(context.Context, control.AdmissionDeps) (control.Admission, error)
+	RunnerHosts []string
+
+	// generations reads retained config generations under the live epoch; the
+	// Configuration constructor owns it and later seams consume it.
+	generations childworkflow.GenerationSource
+	// journalReader and projectorWake connect the journal plane to the
+	// read-model projector: it reads committed history through the former and is
+	// nudged by the latter when an append commits.
+	journalReader journal.ReaderBackend
+	projectorWake chan struct{}
+	// projectorHealth is the projector's progress, shared across lease epochs, for
+	// the read service to report.
+	projectorHealth *projectorpg.Health
+	// claimedItems lists the items a run holds (the claims plane's
+	// ClaimedItems); the run-journal plane answers stranded work from it.
+	claimedItems func(ctx context.Context, runID string) ([]string, error)
+	// appliedSet is the applied generation's configuration, false before the
+	// first apply; the run-journal plane resolves workflow definitions from it.
+	appliedSet func() (*instance.ConfigSet, bool)
+	// journalBackend is the journal plane's PG backend, for the scheduler's
+	// fenced instance log.
+	journalBackend *journalpg.Backend
+	// schedulerGates reports the scheduler gates this controller does not enforce.
+	schedulerGates *gateStatus
+	// schedulerQuota is the ONE provider quota state of the process: the
+	// scheduler gates on it, counters feed it, observations persist it.
+	schedulerQuota *localscheduler.ProviderQuotaState
+	// schedulerComposition is what built Admission, for inspection.
+	schedulerComposition schedulerComposition
+	// closers release resources the constructors opened, in reverse order.
+	closers []func()
+}
+
+// close releases every constructed plane's resources, newest first.
+func (p controlPlanes) close() {
+	for i := len(p.closers) - 1; i >= 0; i-- {
+		p.closers[i]()
+	}
+}
+
+func (p controlPlanes) complete() bool {
+	return len(p.missing()) == 0
+}
+
+// The assembly receives all auth surfaces, including the verifier required by
+// credential refresh and durable revocations. Its backends must fence writes.
+type controlAuth struct {
+	PodKeys, GrantKeys    *sharedauth.SignedKey
+	VerifyCredentialGrant func(context.Context, string) (sharedauth.CredentialGrant, error)
+	RevokeGrant           func(context.Context, string, time.Time) error
+	Revocations           planes.GrantRevocations
+}
+
+var assembleControlPlanes = composeControlPlanes
+
+func serveControl(ctx context.Context, db controlDatabases, o controlOptions, logger *log.Logger) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	instanceID := db.InstanceID
+	manager, err := lease.New(lease.Config{Pool: db.Controller.Pools.Direct, InstanceID: instanceID, Name: lease.ControllerName, Holder: environmentOr("GOOBERS_REPLICA_ID", defaultMigrationHolder())})
+	if err != nil {
+		return err
+	}
+	var activeHost atomic.Pointer[control.Host]
+	liveOwner := func() *lease.Handle {
+		host := activeHost.Load()
+		if host == nil {
+			return nil
+		}
+		return host.Owner()
+	}
+	revocations := &cloudauth.Revocations{Pool: db.API.Pools.Transaction, InstanceID: instanceID}
+	auth, err := cloudauth.New(cloudauth.Config{Mode: "signed", KeyFile: o.podKey, Revocations: revocations, Fallback: httpapi.DenyAllAuthenticator{}})
+	if err != nil {
+		return err
+	}
+	db.Controller.EpochHandle = func() *lease.Handle {
+		host := activeHost.Load()
+		if host == nil {
+			return nil
+		}
+		return host.EpochHandle()
+	}
+	// Dialled before assembly: the child-authority seam reads live engine
+	// executions. Control cannot serve without Temporal either way.
+	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
+	if err != nil {
+		return err
+	}
+	defer temporal.Close()
+	db.Controller.Temporal = temporal
+	dialed := epoch.Temporal(temporal)
+	epochTemporal.Store(&dialed)
+	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
+	if err != nil {
+		return err
+	}
+	defer services.close()
+	if err := control.ValidateBoot(o.selfExecution, services.RunnerHosts); err != nil {
+		return err
+	}
+	if err := services.validate(); err != nil {
+		return err
+	}
+	report := func(err error) { logger.Printf("%v", err) }
+	epochWiring.Report = report
+	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
+		reporter.SetReporter(report)
+	}
+	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Admission: services.Admission, Report: report}
+	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
+		return checkCloudSchema(ctx, db.Controller.Pools.Transaction, version.Get().Version)
+	}, BuildEpoch: runtime.Build, Report: report})
+	if err != nil {
+		return err
+	}
+	activeHost.Store(host)
+	handler, err := controlHandler(db.API, services, auth, host, logger)
+	if err != nil {
+		return err
+	}
+	handler, stopWebhook, err := mountWebhook(ctx, o, db, services.Configuration, handler, logger)
+	if err != nil {
+		return err
+	}
+	defer stopWebhook()
+	var opts []httpapi.ServerOption
+	if o.cert != "" || o.key != "" {
+		opts = append(opts, httpapi.WithTLS(o.cert, o.key))
+	}
+	server, err := httpapi.NewServer(o.listen, handler, logger, opts...)
+	if err != nil {
+		return err
+	}
+	if err := server.Start(); err != nil {
+		return err
+	}
+	logger.Printf("serving %s://%s", server.Scheme(), server.Address())
+	projector, err := projectorService(db.Controller, services, report)
+	if err != nil {
+		return err
+	}
+	return runControlLifetime(ctx, cancel, host, auth, server, report, projector)
+}
+
+func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, host *control.Host, logger *log.Logger) (http.Handler, error) {
+	var handler http.Handler
+	var err error
+	if p.complete() {
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority, p.EngineChildProtocol, p.ChildWorkflows, p.BlobPlane, httpapi.WithLeaseFreeBlobPlane())
+	}
+	if err != nil {
+		return nil, err
+	}
+	handler, err = httpapi.NewControlStatusHandler(auth, func(ctx context.Context) (any, error) {
+		rows, err := db.StartStatusPage(ctx, "", 100)
+		return struct {
+			Ready  bool                     `json:"ready"`
+			Starts []acceptance.StartStatus `json:"uncertainStarts"`
+			// TerminalOutbox is the undelivered terminal-report backlog and its
+			// age, the lag metric of the outbox delivery loop; nil on a standby.
+			TerminalOutbox *terminalOutboxLag `json:"terminalOutbox,omitempty"`
+		}{host.Ready(), rows, currentTerminalOutboxLag()}, err
+	}, handler)
+	if err != nil {
+		return nil, err
+	}
+	return httpapi.WrapWithProbes(handler, func() bool { return true }, func() httpapi.ReadinessStatus {
+		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: mergeReadinessChecks(p.schedulerGates.Checks(), terminalOutboxChecks())}
+	}), nil
+}
+
+// runControlLifetime runs the controller host, key reload and any background
+// services (the read-model projector) until one stops or the server fails.
+func runControlLifetime(ctx context.Context, cancel context.CancelFunc, host *control.Host, auth *cloudauth.Auth, server *httpapi.Server, report func(error), background ...func(context.Context) error) error {
+	total := 2 + len(background)
+	done := make(chan error, total)
+	go func() { done <- host.Run(ctx) }()
+	go func() { done <- auth.RunKeyReload(ctx, report) }()
+	for _, service := range background {
+		go func() { done <- service(ctx) }()
+	}
+	var err error
+	completed := 0
+	select {
+	case <-ctx.Done():
+	case err = <-done:
+		completed++
+	case err = <-server.Errors():
+	}
+	if err == context.Canceled { //nolint:errorlint // Only bare cancellation is benign; joined shutdown failures must survive.
+		err = nil
+	}
+	cancel()
+	shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	err = errors.Join(err, server.Shutdown(shutdown))
+	for completed < total {
+		select {
+		case result := <-done:
+			completed++
+			if result != context.Canceled { //nolint:errorlint // Preserve fatal errors joined with cancellation.
+				err = errors.Join(err, result)
+			}
+		case <-shutdown.Done():
+			return errors.Join(err, shutdown.Err())
+		}
+	}
+	return err
+}
+
+func (p controlPlanes) validate() error {
+	return validateControlAssembly(p)
+}
+
+func (o *controlDatabaseOptions) flags(f *flag.FlagSet) {
+	f.StringVar(&o.apiURL, "api-database-url", "", "API transaction pool URL")
+	f.StringVar(&o.apiFile, "api-database-url-file", "", "API transaction URL file")
+	f.StringVar(&o.apiDirect, "api-database-direct-url", "", "API direct pool URL")
+	f.StringVar(&o.apiDirectFile, "api-database-direct-url-file", "", "API direct URL file")
+	f.StringVar(&o.controllerURL, "controller-database-url", "", "controller transaction pool URL")
+	f.StringVar(&o.controllerFile, "controller-database-url-file", "", "controller transaction URL file")
+	f.StringVar(&o.controllerDirect, "controller-database-direct-url", "", "controller direct pool URL")
+	f.StringVar(&o.controllerDirectFile, "controller-database-direct-url-file", "", "controller direct URL file")
+	f.StringVar(&o.instanceID, "instance-id", environmentOr("GOOBERS_INSTANCE_ID", ""), "required non-placeholder instance identity")
+	f.StringVar(&o.auth, "database-auth", environmentOr("GOOBERS_DATABASE_AUTH", "password"), "password or entra")
+	f.IntVar(&o.max, "database-max-conns", int(cloudpg.DefaultMaxConnections), "total connection budget across both roles")
+	f.IntVar(&o.direct, "database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct connection reservation per role")
+}
+
+// mergeReadinessChecks combines the informational readiness checks of the
+// scheduler gates and the terminal outbox into one map, or nil when neither
+// reports anything.
+func mergeReadinessChecks(sets ...map[string]bool) map[string]bool {
+	var out map[string]bool
+	for _, set := range sets {
+		for name, ok := range set {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[name] = ok
+		}
+	}
+	return out
+}

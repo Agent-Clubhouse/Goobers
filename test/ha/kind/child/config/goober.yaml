@@ -1,0 +1,12 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata: {name: child-parent}
+spec:
+  gaggle: reference
+  role: coder
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  capabilities: [agent:model]
+  tools: [shell]
+  workflows: [kind-child-happy, kind-child-failover]

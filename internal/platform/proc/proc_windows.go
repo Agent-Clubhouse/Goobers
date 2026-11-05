@@ -65,10 +65,12 @@ type Tree struct {
 	// root keeps the root's process object, and so its pid, from being
 	// recycled while kill still walks the recorded parentage below it; its
 	// lifetime bounds which recorded children are real (#6744).
-	root      windows.Handle
-	startTime time.Time
-	job       windows.Handle
-	closed    bool
+	root               windows.Handle
+	startTime          time.Time
+	job                windows.Handle
+	closed             bool
+	strictCustody      bool
+	jobMembershipEmpty bool
 }
 
 // processLifetime is a process's creation time and, once it has exited, its
@@ -125,8 +127,11 @@ func prepareStart(cmd *exec.Cmd) {
 // Start creates the child suspended. Assignment therefore completes before the
 // primary thread runs and can spawn descendants; resumeProcess releases it only
 // after the Job Object owns the process.
-func newTree(cmd *exec.Cmd) (*Tree, error) {
+func newTree(cmd *exec.Cmd, options ...StartOptions) (*Tree, error) {
 	t := &Tree{pid: cmd.Process.Pid}
+	for _, option := range options {
+		t.strictCustody = t.strictCustody || option.RequireQuiescence
+	}
 
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -138,6 +143,9 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 				windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK |
 				windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 		},
+	}
+	if t.strictCustody {
+		info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	}
 	if _, err := windows.SetInformationJobObject(
 		job,

@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 )
 
 const childAttemptAccountingKind = "child.workflow.attempt-accounting"
@@ -22,16 +23,16 @@ type childAttemptAccounting struct {
 	InvalidCost            bool                      `json:"invalidCost,omitempty"`
 }
 
-func (tf *taskFrame) recordTaskStartedWithRecovery(attempt int, class journal.AttemptClass, policy, infra int32, total *stageUsageTotals) error {
+func (tf *taskFrame) recordTaskStartedWithRecovery(attempt int, class journal.AttemptClass, policy, infra int32, total *runsemantics.StageUsageTotals) error {
 	if err := tf.recordTaskStarted(attempt, class); err != nil {
 		return err
 	}
 	if tf.childOrigin == nil {
 		return nil
 	}
-	record := childAttemptAccounting{Origin: *tf.childOrigin, PolicyAttempts: policy, InfrastructureFailures: infra, Usage: maps.Clone(total.metrics), InvalidCost: total.invalidCost}
-	if total.costUSD != nil {
-		record.CostUSD = total.costUSD.RatString()
+	record := childAttemptAccounting{Origin: *tf.childOrigin, PolicyAttempts: policy, InfrastructureFailures: infra, Usage: maps.Clone(total.Metrics), InvalidCost: total.InvalidCost}
+	if total.CostUSD != nil {
+		record.CostUSD = total.CostUSD.RatString()
 	}
 	data, err := json.Marshal(record)
 	if err != nil || len(data) > 4096 {
@@ -120,9 +121,9 @@ func recoverAcceptedWait(reader *journal.Reader, events []journal.Event, request
 	if err != nil {
 		return childWaitRecord{}, started, err
 	}
-	record := childWaitRecord{Version: 1, ParentRunID: request.ParentRunID, Request: request, Workspace: &recovered.Custody.Workspace, Context: recovered.Context, Transcript: recovered.Transcript, InstructionAddendum: recovered.InstructionAddendum, PolicyAttempts: accounting.PolicyAttempts, InfrastructureFailures: accounting.InfrastructureFailures, Usage: usage.metrics, InvalidCost: usage.invalidCost}
-	if usage.costUSD != nil {
-		record.CostUSD = usage.costUSD.RatString()
+	record := childWaitRecord{Version: 1, ParentRunID: request.ParentRunID, Request: request, Workspace: &recovered.Custody.Workspace, Context: recovered.Context, Transcript: recovered.Transcript, InstructionAddendum: recovered.InstructionAddendum, PolicyAttempts: accounting.PolicyAttempts, InfrastructureFailures: accounting.InfrastructureFailures, Usage: usage.Metrics, InvalidCost: usage.InvalidCost}
+	if usage.CostUSD != nil {
+		record.CostUSD = usage.CostUSD.RatString()
 	}
 	return record, started, nil
 }
@@ -141,20 +142,20 @@ func acceptedWaitStart(event journal.Event, request ChildHandoffRequest, previou
 	return previous, nil
 }
 
-func restoreChildAccounting(record childAttemptAccounting, observed map[string]float64) (*stageUsageTotals, error) {
-	usage := newStageUsageTotals()
-	usage.metrics, usage.invalidCost = maps.Clone(record.Usage), record.InvalidCost
-	if usage.metrics == nil {
-		usage.metrics = map[string]float64{}
+func restoreChildAccounting(record childAttemptAccounting, observed map[string]float64) (*runsemantics.StageUsageTotals, error) {
+	usage := runsemantics.NewStageUsageTotals()
+	usage.Metrics, usage.InvalidCost = maps.Clone(record.Usage), record.InvalidCost
+	if usage.Metrics == nil {
+		usage.Metrics = map[string]float64{}
 	}
 	if record.CostUSD != "" {
 		var ok bool
-		usage.costUSD, ok = new(big.Rat).SetString(record.CostUSD)
-		if !ok || usage.costUSD.Sign() < 0 {
+		usage.CostUSD, ok = new(big.Rat).SetString(record.CostUSD)
+		if !ok || usage.CostUSD.Sign() < 0 {
 			return nil, errors.New("invalid retained child cost")
 		}
 	}
-	accumulateStageUsage(usage, observed)
+	runsemantics.AccumulateStageUsage(usage, observed)
 	return usage, nil
 }
 

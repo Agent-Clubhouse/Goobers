@@ -21,8 +21,129 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/providers"
 )
+
+// openPRFixtureGitHubServer is scoped by providerCmdEnv to its test fixture.
+// Only runOpenPRArgs uses it; unrelated provider tests retain their explicit refs.
+var openPRFixtureGitHubServer *fakeGitHubServer
+
+// runOpenPRArgs gives provider-chain tests a real, clean publication candidate.
+// Tests of missing repositories or invalid publication candidates call runArgs
+// directly so this fixture never masks the guard's refusal behavior.
+func runOpenPRArgs(t *testing.T, root string) (int, string, string) {
+	t.Helper()
+	runID, workflow, err := providerRunContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
+	headSHA := seedOpenPRCheckout(t, dir, providerInput("base", providerBaseBranch()), head)
+	if openPRFixtureGitHubServer != nil && os.Getenv(executor.RepoProviderEnvVar) == string(providers.ProviderGitHub) {
+		openPRFixtureGitHubServer.setBranchTip(head, headSHA)
+	}
+	return runArgs(t, "open-pr", root)
+}
+
+// seedOpenPRCheckout initializes only temporary directories and adds absent
+// fixture refs without changing existing commits or branches. The empty commit
+// deliberately leaves result files and other runtime artifacts untracked.
+func seedOpenPRCheckout(t *testing.T, dir, base, head string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(tempRoot, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("open-pr checkout fixture must be inside a temporary directory: %s", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {
+		runGitT(t, dir, "init", "-q", "-b", base)
+		runGitT(t, dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+			"commit", "--allow-empty", "-q", "-m", "publication fixture")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	for _, branch := range []string{base, head} {
+		cmd := testgit.Command("rev-parse", "--verify", "refs/heads/"+branch)
+		cmd.Dir = dir
+		if cmd.Run() != nil {
+			runGitT(t, dir, "branch", branch, "HEAD")
+		}
+	}
+	return strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "refs/heads/"+head))
+}
+
+// registerADOOpenPRHead serves the exact fixture ref and an empty activity
+// history. Neither response derives its SHA from the production guard.
+func registerADOOpenPRHead(mux *http.ServeMux, repositoryPath, head, headSHA string) {
+	mux.HandleFunc(repositoryPath+"/refs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("filter") != "heads/"+head {
+			http.Error(w, "unexpected branch request", http.StatusBadRequest)
+			return
+		}
+		writeFakeJSON(w, map[string]any{"value": []map[string]string{{"name": "refs/heads/" + head, "objectId": headSHA}}})
+	})
+	mux.HandleFunc(repositoryPath+"/pushes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("searchCriteria.refName") != "refs/heads/"+head {
+			http.Error(w, "unexpected branch activity request", http.StatusBadRequest)
+			return
+		}
+		writeFakeJSON(w, map[string]any{"value": []any{}})
+	})
+}
+
+func TestOpenPRDraftInputIsExplicitAndValidatedBeforePublication(t *testing.T) {
+	for _, value := range []string{"true", "false", "not-a-boolean"} {
+		t.Run(value, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "draft-run")
+			t.Setenv("GOOBERS_INPUT_DRAFT", value)
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+			code, _, stderr := runOpenPRArgs(t, root)
+			if code == 0 {
+				data, err := os.ReadFile(filepath.Join(workDir, "pr-result.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var output map[string]string
+				if err := json.Unmarshal(data, &output); err != nil {
+					t.Fatal(err)
+				}
+				head := strings.TrimSpace(runGitOutputT(t, workDir, "rev-parse", "HEAD"))
+				if output["headSha"] != head {
+					t.Fatal("publication evidence does not bind the PR to its checked head", output, head)
+				}
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			if value == "not-a-boolean" {
+				if code == 0 || len(server.prs) != 0 || !strings.Contains(stderr, "draft input must be a boolean") {
+					t.Fatal(code, stderr, server.prs)
+				}
+				return
+			}
+			if code != 0 || len(server.prs) != 1 {
+				t.Fatal(code, stderr, server.prs)
+			}
+			if server.prs[1].draft != (value == "true") {
+				t.Fatal("provider received the wrong draft state")
+			}
+		})
+	}
+}
 
 // TestOpenPRCreatesThenUpdatesOnRepass is #132's core CLI-level acceptance:
 // invoking `goobers open-pr` via the actual CLI entrypoint opens a PR, writes
@@ -38,7 +159,7 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, stdout, stderr := runArgs(t, "open-pr", root)
+	code, stdout, stderr := runOpenPRArgs(t, root)
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -72,7 +193,7 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	// Repass: same run, same stable branch — must update, not duplicate.
 	workDir2 := t.TempDir()
 	t.Chdir(workDir2)
-	code, stdout, stderr = runArgs(t, "open-pr", root)
+	code, stdout, stderr = runOpenPRArgs(t, root)
 	if code != 0 {
 		t.Fatalf("open-pr (repass): code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -139,7 +260,7 @@ func TestOpenPRUsesContinuationIdentityWorkspaceBranch(t *testing.T) {
 	}
 
 	t.Chdir(t.TempDir())
-	if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+	if code, stdout, stderr := runOpenPRArgs(t, root); code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
@@ -174,12 +295,15 @@ func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
+	workDir := t.TempDir()
+	headSHA := seedOpenPRCheckout(t, workDir, "main", "goobers/implementation/run-ado")
 	var posted struct {
 		Title         string `json:"title"`
 		SourceRefName string `json:"sourceRefName"`
 		TargetRefName string `json:"targetRefName"`
 	}
 	mux := http.NewServeMux()
+	registerADOOpenPRHead(mux, "/org/project/_apis/git/repositories/repo", "goobers/implementation/run-ado", headSHA)
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:test-pat"))
 		if got := r.Header.Get("Authorization"); got != wantAuth {
@@ -239,7 +363,6 @@ func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	}
 	shell.InstanceRoot = root
 	shell.SelfBin = wrapper
-	workDir := t.TempDir()
 	result, err := shell.Run(context.Background(), apiv1.InvocationEnvelope{
 		TaskID:       "open-pr",
 		WorkflowID:   "implementation",
@@ -480,7 +603,7 @@ func TestOpenPRGitHubSupportsExplicitItemWithoutADOAuthority(t *testing.T) {
 	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
 	t.Chdir(t.TempDir())
 
-	if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+	if code, stdout, stderr := runOpenPRArgs(t, root); code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
@@ -616,7 +739,7 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 	}
 
 	t.Chdir(t.TempDir())
-	if code, _, stderr := runArgs(t, "open-pr", root); code != 0 {
+	if code, _, stderr := runOpenPRArgs(t, root); code != 0 {
 		t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)
 	}
 
@@ -691,7 +814,7 @@ func TestOpenPRFailsClosedOnMalformedExistingJournal(t *testing.T) {
 	}
 
 	t.Chdir(t.TempDir())
-	code, _, stderr := runArgs(t, "open-pr", root)
+	code, _, stderr := runOpenPRArgs(t, root)
 	if code != 1 {
 		t.Fatalf("code = %d, want 1 for malformed existing journal, stderr = %q", code, stderr)
 	}

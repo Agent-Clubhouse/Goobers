@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 type processProofFixture struct {
@@ -51,5 +53,18 @@ func TestWorkspaceProcessNeverConfusesFallbackKillWithObservedTermination(t *tes
 	done()
 	if err := stop(); err != nil || ordinary.stopped != 0 || ordinary.killed != 1 {
 		t.Fatalf("ordinary behavior changed: %+v %v", ordinary, err)
+	}
+}
+
+func TestWorkspaceProcessRefusesJobMembershipOnlyEvidence(t *testing.T) {
+	ctx, proof := WithWorkspaceQuiescence(t.Context())
+	p := &processProofFixture{failure: proc.ErrQuiescenceJobMembershipOnly}
+	stop, joined := TrackWorkspaceProcess(ctx, p, time.Second)
+	joined()
+	if err := proof.Verify(); !errors.Is(err, ErrWorkspaceNotQuiescent) || !errors.Is(err, proc.ErrQuiescenceJobMembershipOnly) {
+		t.Fatalf("membership-only evidence granted custody: %v", err)
+	}
+	if err := stop(); !errors.Is(err, proc.ErrQuiescenceJobMembershipOnly) || p.stopped != 1 || p.killed != 1 {
+		t.Fatalf("membership result lost on repeat cleanup: %v %+v", err, p)
 	}
 }

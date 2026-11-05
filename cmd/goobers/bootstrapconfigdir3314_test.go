@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 // TestBootstrapConfigDirBreaksTheFirstBootDeadlock is #3314's regression pin.
@@ -46,7 +47,7 @@ func TestBootstrapConfigDirBreaksTheFirstBootDeadlock(t *testing.T) {
 	}
 	// The digest walk is the call that used to fail, so assert it now succeeds
 	// over the bootstrapped root rather than only that the directory exists.
-	if _, err := configDirectoryDigest(l.ConfigDir()); err != nil {
+	if _, err := runtimewiring.ConfigDirectoryDigest(l.ConfigDir()); err != nil {
 		t.Fatalf("configDirectoryDigest over the bootstrapped root: %v — this is the walk that failed startup", err)
 	}
 }

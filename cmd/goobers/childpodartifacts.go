@@ -77,35 +77,66 @@ func copyContainedPodContext(ctx context.Context, reader *journal.Reader, runID 
 	return nil
 }
 
-func adoptContainedPodOutputs(ctx context.Context, recorder runner.ArtifactRecorder, blobs blobstore.Store, out *dispatcher.SurrenderedResult) error {
+func containedOutputPointers(out *dispatcher.SurrenderedResult) ([]*apiv1.ArtifactPointer, error) {
 	if out.Result.Integrity != "" && !out.Result.Integrity.Valid() {
-		return errors.New("child output has invalid integrity")
+		return nil, errors.New("child output has invalid integrity")
 	}
 	out.Result.Integrity = containedOutputIntegrity(out.Result.Integrity)
 	if len(out.Mutations) != 0 || len(out.MutationIssues) != 0 || out.Result.WorkspaceRevision != nil {
-		return errors.New("child surrendered unsupported provider or revision control effects")
+		return nil, errors.New("child surrendered unsupported provider or revision control effects")
 	}
 	if len(out.Result.Artifacts) > 128 {
-		return errors.New("child output exceeds artifact pointer bound")
+		return nil, errors.New("child output exceeds artifact pointer bound")
 	}
+	var pointers []*apiv1.ArtifactPointer
 	for i := range out.Result.Artifacts {
-		if err := adoptContainedPodArtifact(ctx, recorder, blobs, &out.Result.Artifacts[i]); err != nil {
-			return err
-		}
+		pointers = append(pointers, &out.Result.Artifacts[i])
 	}
 	if out.Result.Transcript != nil {
-		if err := adoptContainedPodArtifact(ctx, recorder, blobs, out.Result.Transcript); err != nil {
-			return err
-		}
+		pointers = append(pointers, out.Result.Transcript)
 	}
 	if out.Verdict != nil {
 		if len(out.Verdict.Evidence) > 128 {
-			return errors.New("child verdict exceeds evidence pointer bound")
+			return nil, errors.New("child verdict exceeds evidence pointer bound")
 		}
 		for i := range out.Verdict.Evidence {
-			if err := adoptContainedPodArtifact(ctx, recorder, blobs, &out.Verdict.Evidence[i]); err != nil {
-				return err
-			}
+			pointers = append(pointers, &out.Verdict.Evidence[i])
+		}
+	}
+	return pointers, nil
+}
+
+func adoptContainedPodOutputs(ctx context.Context, recorder runner.ArtifactRecorder, blobs blobstore.Store, out *dispatcher.SurrenderedResult) error {
+	pointers, err := containedOutputPointers(out)
+	if err != nil {
+		return err
+	}
+	for _, pointer := range pointers {
+		if err := adoptContainedPodArtifact(ctx, recorder, blobs, pointer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Local executors already own journal artifacts. Re-adopt their verified bytes
+// through the same provenance boundary as workers; local placement cannot grant
+// trusted source integrity or provider/revision-control authority to output.
+func adoptTrustedLocalOutputs(recorder runner.ArtifactRecorder, reader *journal.Reader, out *dispatcher.SurrenderedResult) error {
+	pointers, err := containedOutputPointers(out)
+	if err != nil {
+		return err
+	}
+	for _, pointer := range pointers {
+		if err := pointer.Validate(); err != nil {
+			return err
+		}
+		data, err := reader.ArtifactBytesBounded(journal.Ref{Path: pointer.Path, Digest: pointer.Digest, Size: pointer.Size}, triggerqueue.MaxChildBlobBytes)
+		if err != nil {
+			return err
+		}
+		if err := adoptContainedArtifactBytes(recorder, pointer, data); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -123,6 +154,10 @@ func adoptContainedPodArtifact(ctx context.Context, recorder runner.ArtifactReco
 	if err != nil {
 		return err
 	}
+	return adoptContainedArtifactBytes(recorder, pointer, data)
+}
+
+func adoptContainedArtifactBytes(recorder runner.ArtifactRecorder, pointer *apiv1.ArtifactPointer, data []byte) error {
 	if int64(len(data)) != pointer.Size {
 		return errors.New("child output size differs from declared pointer")
 	}

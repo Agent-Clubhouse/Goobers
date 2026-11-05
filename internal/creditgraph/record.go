@@ -481,7 +481,7 @@ func spanDigest(nodeID string) string {
 // pinned workflow and an optional gaggle default. The returned config's Mode
 // is the resolved mode.
 func resolvedBackprop(
-	reader *journal.Reader,
+	reader journal.RunReader,
 	identity journal.RunIdentity,
 	override *apiv1.GaggleBackprop,
 ) (apiv1.BackpropConfig, bool, error) {

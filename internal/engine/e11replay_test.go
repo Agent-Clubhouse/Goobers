@@ -42,7 +42,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -195,7 +194,7 @@ func TestE11JournaledBudgetRebuildsFromTheJournal(t *testing.T) {
 func TestE11WalkHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+	temporalClient, stop, err := startReplayClient(ctx, t, testsuite.DevServerOptions{
 		LogLevel: "error",
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
@@ -204,11 +203,10 @@ func TestE11WalkHistoryReplays(t *testing.T) {
 		t.Fatalf("start Temporal dev server: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := server.Stop(); err != nil {
+		if err := stop(); err != nil {
 			t.Errorf("stop Temporal dev server: %v", err)
 		}
 	})
-	temporalClient := server.Client()
 
 	for i, fx := range e11Fixtures() {
 		t.Run(fx.name, func(t *testing.T) {

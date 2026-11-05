@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/retryutil"
 )
 
 func fastRetryPolicy() RetryPolicy {
@@ -13,7 +15,7 @@ func fastRetryPolicy() RetryPolicy {
 
 func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 	attempts := 0
-	err := withRetryPolicy(context.Background(), time.Second, fastRetryPolicy(), func(context.Context) (bool, error) {
+	err := retryutil.Until(context.Background(), time.Second, fastRetryPolicy().Backoff(), func(context.Context) (bool, error) {
 		attempts++
 		if attempts < 3 {
 			return true, errors.New("transient")
@@ -30,7 +32,7 @@ func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 
 func TestWithRetryStopsImmediatelyOnNonRetryableError(t *testing.T) {
 	attempts := 0
-	err := withRetryPolicy(context.Background(), time.Second, fastRetryPolicy(), func(context.Context) (bool, error) {
+	err := retryutil.Until(context.Background(), time.Second, fastRetryPolicy().Backoff(), func(context.Context) (bool, error) {
 		attempts++
 		return false, errors.New("permanent")
 	})
@@ -46,7 +48,7 @@ func TestWithRetryHonoursDeadline(t *testing.T) {
 	deadline := 30 * time.Millisecond
 	attempts := 0
 	start := time.Now()
-	err := withRetryPolicy(context.Background(), deadline, fastRetryPolicy(), func(context.Context) (bool, error) {
+	err := retryutil.Until(context.Background(), deadline, fastRetryPolicy().Backoff(), func(context.Context) (bool, error) {
 		attempts++
 		return true, errors.New("always fails")
 	})
@@ -72,20 +74,11 @@ func TestWithRetryRespectsCallerContextCancellation(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		cancel()
 	}()
-	err := withRetryPolicy(ctx, time.Minute, fastRetryPolicy(), func(context.Context) (bool, error) {
+	err := retryutil.Until(ctx, time.Minute, fastRetryPolicy().Backoff(), func(context.Context) (bool, error) {
 		attempts++
 		return true, errors.New("always fails")
 	})
 	if err == nil {
 		t.Fatal("expected an error once the caller's context was cancelled")
-	}
-}
-
-func TestRetryableStatus(t *testing.T) {
-	cases := map[int]bool{200: false, 400: false, 401: false, 404: false, 409: false, 429: false, 500: true, 502: true, 503: true}
-	for status, want := range cases {
-		if got := retryableStatus(status); got != want {
-			t.Errorf("retryableStatus(%d) = %v, want %v", status, got, want)
-		}
 	}
 }

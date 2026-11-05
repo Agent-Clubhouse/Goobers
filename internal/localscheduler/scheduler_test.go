@@ -57,6 +57,19 @@ func (r *queueTelemetryRecorder) RecordSchedulerQueueSaturation(_ context.Contex
 	r.workers = append(r.workers, &copy)
 }
 
+// claimsTelemetryRecorder is a queueTelemetryRecorder that also takes the
+// optional waiting-continuation claims half of the snapshot (#8186).
+type claimsTelemetryRecorder struct {
+	queueTelemetryRecorder
+	claims []telemetry.ContinuationClaimsSample
+}
+
+func (r *claimsTelemetryRecorder) RecordContinuationClaims(_ context.Context, sample telemetry.ContinuationClaimsSample) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.claims = append(r.claims, sample)
+}
+
 func (r *queueTelemetryRecorder) lastSamples() []telemetry.QueueSaturationSample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1408,6 +1421,75 @@ func TestForcedManualTriggerBypassesCadenceBudgetsButDefaultAndScheduleDoNot(t *
 	}
 }
 
+func TestDisableCadenceBudgetsPreservesDispatchGates(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		entry WorkflowEntry
+		want  string
+	}{
+		{
+			name: "provider authentication",
+			entry: WorkflowEntry{
+				Readiness: apiv1.ReadinessConditions{RequireProviderAuthorization: true},
+				ProviderAuth: &staticProviderAuthGate{status: ProviderAuthStatus{
+					Code: ProviderAuthRejected, Detail: "credential rejected",
+				}},
+			},
+			want: ReasonProviderAuthUnhealthy,
+		},
+		{
+			name:  "disabled workflow",
+			entry: WorkflowEntry{DisabledReason: "spec.enabled=false"},
+			want:  ReasonDisabled,
+		},
+		{
+			name:  "missing capability",
+			entry: WorkflowEntry{RequiredCapabilities: []string{"xcode"}},
+			want:  ReasonMissingCapability,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+			entry := tc.entry
+			entry.Workflow = "wf"
+			entry.Signals = []string{"go"}
+			entry.Starter = starter
+			sched, _ := newTestScheduler(t, []WorkflowEntry{entry},
+				WithCadenceBudgetsDisabled(true), WithRunnerCapabilities([]string{"go@1.26"}))
+			_, err := sched.TriggerSignal(t.Context(), "wf", "go", "", time.Now())
+			var rejected *TriggerRejectedError
+			if !errors.As(err, &rejected) || !strings.HasPrefix(rejected.Reason, tc.want) {
+				t.Fatalf("trigger = %v; want refusal %q", err, tc.want)
+			}
+			sched.Wait()
+			if got := starter.count(); got != 0 {
+				t.Fatalf("refused dispatch started %d runs", got)
+			}
+		})
+	}
+}
+
+func TestDisableCadenceBudgetsAppliesToScheduledDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "wf",
+		Readiness: apiv1.ReadinessConditions{MaxRunsPerHour: 2, MaxRunsPerDay: 2},
+		Schedules: []Schedule{fakeSchedule{d: time.Minute}},
+		Starter:   starter,
+	}}, WithCadenceBudgetsDisabled(true))
+	now := time.Now().Add(2 * time.Minute)
+	history := make([]time.Time, 12)
+	for i := range history {
+		history[i] = now.Add(-time.Duration(len(history)-i) * time.Minute)
+	}
+	sched.conditions.ReconcileBudget(map[string][]time.Time{"wf": history})
+	sched.Tick(t.Context(), now)
+	sched.Wait()
+	if got := starter.count(); got != 1 {
+		t.Fatalf("scheduled starts = %d, want one despite spent hourly/daily budgets", got)
+	}
+}
+
 func TestTriggerUnknownWorkflowErrors(t *testing.T) {
 	sched, _ := newTestScheduler(t, nil)
 	if _, err := sched.Trigger(context.Background(), "nope", time.Now()); err == nil {
@@ -2256,4 +2338,31 @@ func (f *fakeClock) durations() []time.Duration {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]time.Duration(nil), f.requests...)
+}
+
+// The periodic snapshot carries the live waiting-continuation claims next to
+// queue saturation, as a count and the first-claim time of the oldest. A
+// recorder without the optional method is untouched.
+func TestTickRecordsWaitingContinuationClaims(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	recorder := &claimsTelemetryRecorder{}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{Workflow: "w", Starter: &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}}},
+		WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	if len(recorder.claims) != 1 || recorder.claims[0].Count != 0 || !recorder.claims[0].ObservedAt.Equal(base) {
+		t.Fatalf("claims with none waiting = %+v, want one zero sample observed at the tick", recorder.claims)
+	}
+
+	identity := WorkflowIdentity{Workflow: "w"}
+	scheduler.conditions.clock = func() time.Time { return base }
+	scheduler.conditions.mu.Lock()
+	scheduler.conditions.markContinuationWaitingLocked("run-1", identity, 1, base.Add(-4*time.Minute))
+	scheduler.conditions.markContinuationWaitingLocked("run-2", identity, 1, base.Add(-time.Minute))
+	scheduler.conditions.mu.Unlock()
+	scheduler.Tick(context.Background(), base)
+	got := recorder.claims[len(recorder.claims)-1]
+	if got.Count != 2 || !got.OldestSince.Equal(base.Add(-4*time.Minute)) {
+		t.Fatalf("claims with two waiting = %+v, want count 2 and the older claim's time", got)
+	}
 }

@@ -918,4 +918,9 @@ CREATE TABLE IF NOT EXISTS scheduler_ingest_health (
 	last_skip       TEXT NOT NULL DEFAULT ''
 );
 `,
+	// v32: NULL marks pre-upgrade rows without authenticated continuation facts.
+	// Re-ingestion fills even ordinary rows with the empty string.
+	`ALTER TABLE runs ADD COLUMN continued_from_run_id TEXT;
+ CREATE INDEX IF NOT EXISTS idx_runs_continuations
+ ON runs(trigger_kind, trigger_ref, continued_from_run_id, run_id);`,
 }

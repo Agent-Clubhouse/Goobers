@@ -34,32 +34,45 @@ const (
 	declaredCacheWarmJob  = "dependency-cache-warm"
 )
 
+type ciConcurrency struct {
+	Group            string `yaml:"group"`
+	CancelInProgress bool   `yaml:"cancel-in-progress"`
+}
+
 type ciWorkflow struct {
 	On          map[string]yaml.Node `yaml:"on"`
 	Permissions map[string]string    `yaml:"permissions"`
-	Concurrency struct {
-		Group            string `yaml:"group"`
-		CancelInProgress bool   `yaml:"cancel-in-progress"`
-	} `yaml:"concurrency"`
-	Env  map[string]string `yaml:"env"`
-	Jobs map[string]ciJob  `yaml:"jobs"`
+	Concurrency ciConcurrency        `yaml:"concurrency"`
+	Env         map[string]string    `yaml:"env"`
+	Jobs        map[string]ciJob     `yaml:"jobs"`
 }
 
 type ciJob struct {
-	Name            string            `yaml:"name"`
-	RunsOn          string            `yaml:"runs-on"`
-	If              string            `yaml:"if"`
-	ContinueOnError bool              `yaml:"continue-on-error"`
-	Needs           []string          `yaml:"needs"`
-	Steps           []ciStep          `yaml:"steps"`
-	Env             map[string]string `yaml:"env"`
-	Permissions     map[string]string `yaml:"permissions"`
+	Concurrency     ciConcurrency        `yaml:"concurrency"`
+	Name            string               `yaml:"name"`
+	RunsOn          string               `yaml:"runs-on"`
+	If              string               `yaml:"if"`
+	ContinueOnError bool                 `yaml:"continue-on-error"`
+	Needs           []string             `yaml:"needs"`
+	Steps           []ciStep             `yaml:"steps"`
+	Env             map[string]string    `yaml:"env"`
+	Permissions     map[string]string    `yaml:"permissions"`
+	Outputs         map[string]string    `yaml:"outputs"`
+	TimeoutMinutes  int                  `yaml:"timeout-minutes"`
+	Services        map[string]ciService `yaml:"services"`
 	Strategy        struct {
 		FailFast string `yaml:"fail-fast"`
 		Matrix   struct {
 			Shard []string `yaml:"shard"`
 		} `yaml:"matrix"`
 	} `yaml:"strategy"`
+}
+
+type ciService struct {
+	Image   string            `yaml:"image"`
+	Env     map[string]string `yaml:"env"`
+	Ports   []string          `yaml:"ports"`
+	Options string            `yaml:"options"`
 }
 
 type ciStep struct {

@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -168,11 +169,11 @@ func (f *reclaimFixture) terminalDeadline(runID string) time.Time {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	finishedAt, err := recoveryWindowTime(events, identity.StartedAt)
+	finishedAt, err := runtimewiring.RecoveryWindowTime(events, identity.StartedAt)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	policy, _ := resolveRecoveryPolicy(f.layout, f.cfg)
+	policy, _ := runtimewiring.ResolveRecoveryPolicy(f.layout, f.cfg)
 	window, err := policy.RetainWindowEffective()
 	if err != nil {
 		f.t.Fatal(err)

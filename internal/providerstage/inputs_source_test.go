@@ -65,6 +65,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"docchurn.go":                    {command: "docs-churn"},
 	"electlander.go":                 {command: "elect-lander"},
 	"fileissues.go":                  {command: "file-issues"},
+	"decide.go":                      {command: "decide"},
 	"gateremovalguard.go":            {command: "gate-removal-guard"},
 	"gathercifailures.go":            {command: "gather-ci-failures"},
 	"gatherissuecontext.go":          {command: "gather-issue-context"},

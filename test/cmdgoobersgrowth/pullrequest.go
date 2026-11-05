@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"os/exec"
 	"path"
@@ -50,10 +52,21 @@ func checkPullRequest(root, baseRef, headRef string, stdout io.Writer) error {
 		return err
 	}
 	grows := false
-	for _, dimension := range dimensions {
-		delta := after[dimension] - before[dimension]
-		grows = grows || delta > 0
-		_, _ = fmt.Fprintf(stdout, "cmdgoobersgrowth: PR %s %+d (merge-base %d, head %d)\n", dimension, delta, before[dimension], after[dimension])
+	commands := make(map[string]struct{}, len(before)+len(after))
+	for command := range before {
+		commands[command] = struct{}{}
+	}
+	for command := range after {
+		commands[command] = struct{}{}
+	}
+	for _, command := range sortedCommands(commands) {
+		for _, dimension := range dimensions {
+			beforeCount := commandDimension(before, command, dimension)
+			afterCount := commandDimension(after, command, dimension)
+			delta := afterCount - beforeCount
+			grows = grows || delta > 0
+			_, _ = fmt.Fprintf(stdout, "cmdgoobersgrowth: PR %s %s %+d (merge-base %d, head %d)\n", command, dimension, delta, beforeCount, afterCount)
+		}
 	}
 	if !grows {
 		return nil
@@ -63,20 +76,28 @@ func checkPullRequest(root, baseRef, headRef string, stdout io.Writer) error {
 		return err
 	}
 	if reason == "" {
-		return fmt.Errorf("unjustified cmd/goobers growth: add a new %s<issue-or-branch>.md explaining this PR's growth; do not re-pin the shared snapshot", justificationDir)
+		return fmt.Errorf("unjustified cmd/* growth: add a new %s<issue-or-branch>.md explaining this PR's growth; do not re-pin the shared snapshot", justificationDir)
 	}
 	_, _ = fmt.Fprintf(stdout, "cmdgoobersgrowth: reviewed-growth declaration %s\n", reason)
 	return nil
 }
 
+func commandDimension(commands map[string]map[string]int, command, dimension string) int {
+	if counts := commands[command]; counts != nil {
+		return counts[dimension]
+	}
+	return 0
+}
+
 // Count immutable PR objects, never the synthetic merge checkout or a mutable
 // branch tip. A concurrent main addition must not be charged to this PR.
-func revisionCounts(root, ref string) (map[string]int, error) {
-	listing, err := gitOutput(root, "ls-tree", "-r", "-z", ref, "--", "cmd/goobers/")
+func revisionCounts(root, ref string) (map[string]map[string]int, error) {
+	listing, err := gitOutput(root, "ls-tree", "-r", "-z", ref, "--", "cmd/")
 	if err != nil {
 		return nil, err
 	}
-	counts := map[string]int{dimensions[0]: 0, dimensions[1]: 0}
+	counts := make(map[string]map[string]int)
+	mainPackages := make(map[string]bool)
 	for _, entry := range bytes.Split(listing, []byte{0}) {
 		if len(entry) == 0 {
 			continue
@@ -85,7 +106,8 @@ func revisionCounts(root, ref string) (map[string]int, error) {
 		if !ok {
 			return nil, fmt.Errorf("malformed source tree entry")
 		}
-		if path.Dir(name) != "cmd/goobers" || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		command := path.Dir(name)
+		if path.Dir(command) != "cmd" || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		if !strings.HasPrefix(metadata, "100644 blob ") && !strings.HasPrefix(metadata, "100755 blob ") {
@@ -95,12 +117,25 @@ func revisionCounts(root, ref string) (map[string]int, error) {
 		if err != nil {
 			return nil, err
 		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), name, source, parser.PackageClauseOnly)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s at %s: %w", name, ref, err)
+		}
+		mainPackages[command] = mainPackages[command] || parsed.Name.Name == "main"
+		if counts[command] == nil {
+			counts[command] = map[string]int{dimensions[0]: 0, dimensions[1]: 0}
+		}
 		lines := bytes.Count(source, []byte{'\n'})
 		if len(source) > 0 && source[len(source)-1] != '\n' {
 			lines++
 		}
-		counts[dimensions[0]] += lines
-		counts[dimensions[1]]++
+		counts[command][dimensions[0]] += lines
+		counts[command][dimensions[1]]++
+	}
+	for command, main := range mainPackages {
+		if !main {
+			delete(counts, command)
+		}
 	}
 	return counts, nil
 }

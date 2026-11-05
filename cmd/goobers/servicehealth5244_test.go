@@ -278,11 +278,9 @@ func TestServiceHealthBoundedHistoryCannotClaimZeroRestarts(t *testing.T) {
 	if err := log.Append(journal.Event{Type: journal.EventDaemonDirtyRestart}); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 1000; i++ {
-		if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "test-window"}}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	appendInstanceJournalFixture(t, log, 1000, journal.Event{
+		Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "test-window"},
+	})
 	observation := observeServiceHealth(t.TempDir(), nil, log, nil, time.Now())
 	if observation.WindowCoverage != "partial" {
 		t.Fatalf("bounded history claimed %s coverage", observation.WindowCoverage)

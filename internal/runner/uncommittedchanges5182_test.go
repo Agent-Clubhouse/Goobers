@@ -5,19 +5,11 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 )
-
-// The harness produces the failure; the runner decides its retry class. The
-// two spellings must never drift apart.
-func TestUncommittedChangesCodeMatchesHarness(t *testing.T) {
-	if UncommittedChangesCode != harness.ErrorCodeUncommittedChanges {
-		t.Fatalf("runner %q != harness %q", UncommittedChangesCode, harness.ErrorCodeUncommittedChanges)
-	}
-}
 
 // #5182: a writable stage that reported success with its work uncommitted is
 // sent back through its own retry policy instead of reaching the reviewer gate
@@ -41,7 +33,7 @@ func TestRunnerRetriesUncommittedChangesPerPolicy(t *testing.T) {
 		{
 			Status: apiv1.ResultFailure,
 			Error: &apiv1.ErrorInfo{
-				Code:      UncommittedChangesCode,
+				Code:      runsemantics.UncommittedChangesCode,
 				Message:   "UNCOMMITTED_CHANGES: the stage reported success but left its changes uncommitted",
 				Retryable: true,
 			},

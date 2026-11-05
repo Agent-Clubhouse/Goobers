@@ -18,11 +18,9 @@ func TestHotAnnotationReadsCostDoesNotGrowWithInstanceHistory(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for range historySize {
-			if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Reason: strings.Repeat("padding", 256)}); err != nil {
-				t.Fatal(err)
-			}
-		}
+		appendInstanceJournalFixture(t, log, historySize, journal.Event{
+			Type: journal.EventTickSkipped, Reason: strings.Repeat("padding", 256),
+		})
 		if err := log.Close(); err != nil {
 			t.Fatal(err)
 		}

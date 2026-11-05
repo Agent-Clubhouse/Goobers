@@ -362,6 +362,7 @@ func wireContributingPaths(paths []creditgraph.ContributingPath) []telemetryclie
 		wire = append(wire, telemetryclient.ContributingPath{
 			Nodes:      append([]string(nil), path.Nodes...),
 			Share:      path.Share,
+			Score:      path.Score,
 			Confidence: path.Confidence,
 			Evidence:   wireAttributionEvidence(path.Evidence),
 		})

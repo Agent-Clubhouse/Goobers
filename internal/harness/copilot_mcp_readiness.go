@@ -72,6 +72,68 @@ type requiredMCPSession interface {
 	ExecuteTool(context.Context, string) (rpc.ToolResult, error)
 }
 
+func probeRequiredDeclaredMCPSession(ctx context.Context, session requiredMCPSession, req RunRequest, settle time.Duration) error {
+	required := requiredDeclaredMCPServerNames(req)
+	if len(required) == 0 {
+		return nil
+	}
+	initCtx, cancelInit := context.WithTimeout(ctx, requiredMCPProbeTimeout)
+	err := session.InitializeTools(initCtx)
+	cancelInit()
+	if err != nil {
+		return fmt.Errorf("%w: initialize declared MCP servers: %v", errRequiredMCPUnavailable, required)
+	}
+
+	settleCtx, cancelSettle := context.WithTimeout(ctx, requiredMCPSettleBudget(settle))
+	defer cancelSettle()
+	for {
+		servers, err := session.ListMCP(settleCtx)
+		if err != nil {
+			return fmt.Errorf("%w: list declared MCP servers: %v", errRequiredMCPUnavailable, required)
+		}
+		pending := false
+		statusCount := 0
+		if servers != nil {
+			statusCount = len(servers.Servers)
+		}
+		statuses := make(map[string]rpc.MCPServerStatus, statusCount)
+		if servers != nil {
+			for _, server := range servers.Servers {
+				statuses[server.Name] = server.Status
+			}
+		}
+		for _, name := range required {
+			status, found := statuses[name]
+			if found && status == rpc.MCPServerStatusConnected {
+				continue
+			}
+			if found && status == rpc.MCPServerStatusPending ||
+				servers != nil && servers.Host != nil && slices.Contains(servers.Host.PendingConnections, name) {
+				pending = true
+				continue
+			}
+			observed := copilotMCPStatusAbsent
+			if found {
+				observed = string(status)
+			}
+			return fmt.Errorf(
+				"%w: required MCP server %q failed to start or register (status %q)",
+				errRequiredMCPUnavailable, name, observed,
+			)
+		}
+		if !pending {
+			return nil
+		}
+		timer := time.NewTimer(requiredMCPSettlePoll)
+		select {
+		case <-settleCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w: required MCP servers did not finish starting: %v", errRequiredMCPUnavailable, required)
+		case <-timer.C:
+		}
+	}
+}
+
 // probeRequiredMCPSession checks the session that will receive the model
 // prompt. settle bounds only the wait for goobers-io to leave startup; zero
 // selects DefaultRequiredMCPSettleTimeout. The report carries the elapsed

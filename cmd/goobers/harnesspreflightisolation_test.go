@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -45,11 +47,11 @@ func TestDaemonScopesHarnessPreflightFailureToDependentWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	original := preflightHarnesses
-	t.Cleanup(func() { preflightHarnesses = original })
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, harness.EnvironmentConfig, map[string][]string, modelCredentialFor) (harnessPreflightInfo, error) {
+	original := runtimewiring.PreflightHarnesses
+	t.Cleanup(func() { runtimewiring.PreflightHarnesses = original })
+	runtimewiring.PreflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, harness.EnvironmentConfig, map[string][]string, runtimewiring.ModelCredentialFor) (runtimewiring.HarnessPreflightInfo, error) {
 		identity := localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: "default-implement"}
-		return harnessPreflightInfo{}, &harnessPreflightFailures{Refusals: map[localscheduler.WorkflowIdentity]string{
+		return runtimewiring.HarnessPreflightInfo{}, &runtimewiring.HarnessPreflightFailures{Refusals: map[localscheduler.WorkflowIdentity]string{
 			identity: `stage "implement" requires harness "copilot", whose startup preflight failed: signed out; run copilot auth login`,
 		}}
 	}

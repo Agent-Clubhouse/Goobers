@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 const (
@@ -453,7 +454,7 @@ func TestCopilotAdapterDoesNotUseAnotherGoobersGrantWhenStoredAuthIsAllowed(t *t
 		t.Fatalf("Run with stored auth fallback: %v", err)
 	}
 	for _, entry := range runner.lastReq.Env {
-		if entry == "COPILOT_GITHUB_TOKEN=other-goober-token" {
+		if entry == "COPILOT_GITHUB_TOKEN="+"other-goober-token" {
 			t.Fatalf("another goober's grant leaked into subprocess env: %v", runner.lastReq.Env)
 		}
 	}
@@ -664,7 +665,7 @@ func TestCopilotAdapterRepairKeepsStoredAuthRepoPushTokenOutOfSubprocess(t *test
 		t.Fatalf("process calls = %d, want initial call plus repair", len(calls))
 	}
 	for i, call := range calls {
-		if containsEnv(call.Env, "GH_TOKEN=repository-token") {
+		if containsEnv(call.Env, "GH_TOKEN="+"repository-token") {
 			t.Fatalf("call %d exposed repository token to stored-auth Copilot subprocess: %v", i+1, redactedNames(call.Env))
 		}
 	}
@@ -992,12 +993,12 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 	// The credential was injected as an env var, not a CLI arg.
 	foundEnv := false
 	for _, kv := range runner.lastReq.Env {
-		if kv == "GH_TOKEN=push-token-value" {
+		if kv == "GH_TOKEN="+"push-token-value" {
 			foundEnv = true
 		}
 	}
 	if !foundEnv {
-		t.Fatalf("expected GH_TOKEN=push-token-value in subprocess env, got %v", runner.lastReq.Env)
+		t.Fatalf("expected GH_TOKEN="+"push-token-value in subprocess env, got %v", runner.lastReq.Env)
 	}
 	telemetryPrefix := "GOOBERS_TELEMETRY_DIR="
 	foundTelemetryDir := false
@@ -1152,7 +1153,7 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			var creds *credentials.Set
 			if tc.externalMCP {
 				envelope = testEnvelope(workspace, append([]string{"agent:model"}, tc.capabilities...)...)
-				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
+				mcpServers = []apiv1.MCPServer{{Name: "context", Required: mcpRequiredFlag(false), Command: "context-server"}}
 				creds = mcpTestCredentials(t, "agent:model", "model-token")
 			}
 
@@ -1501,7 +1502,14 @@ func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		return runner.lastReq.Command
+		command := slices.Clone(runner.lastReq.Command)
+		logFlag := slices.Index(command, "--log-dir")
+		if logFlag < 0 || logFlag+1 >= len(command) {
+			t.Fatal("missing private log capture")
+		}
+		// Each invocation owns a fresh log directory regardless of tools.
+		command[logFlag+1] = "<private-log-directory>"
+		return command
 	}
 
 	absent := run(nil)
@@ -1623,10 +1631,10 @@ func TestCopilotAdapterRefreshesModelCredentialBeforeRepair(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("process calls = %d, want initial call plus repair", len(calls))
 	}
-	if !containsEnv(calls[0].Env, "COPILOT_GITHUB_TOKEN=initial-installation-token") {
+	if !containsEnv(calls[0].Env, "COPILOT_GITHUB_TOKEN="+"initial-installation-token") {
 		t.Fatalf("initial env did not carry initial token: %v", redactedNames(calls[0].Env))
 	}
-	if !containsEnv(calls[1].Env, "COPILOT_GITHUB_TOKEN=refreshed-installation-token") {
+	if !containsEnv(calls[1].Env, "COPILOT_GITHUB_TOKEN="+"refreshed-installation-token") {
 		t.Fatalf("repair env did not carry refreshed token: %v", redactedNames(calls[1].Env))
 	}
 	if sourceCalls != 2 {
@@ -1697,7 +1705,7 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		Command: []string{copilotPromptArg(defaultPromptFlag, "")},
 		Stdin:   []byte("initial"),
 		Dir:     workspace,
-		Env:     []string{"COPILOT_GITHUB_TOKEN=initial-installation-token"},
+		Env:     []string{"COPILOT_GITHUB_TOKEN=" + "initial-installation-token"},
 		Timeout: time.Second,
 	}
 	if _, err := runner.Run(context.Background(), initialReq); err != nil {
@@ -1721,6 +1729,7 @@ func TestCopilotCompletionRepairRestartsControlledSessionWithRefreshedCredential
 		time.Now(),
 		fmt.Errorf("%w: invalid payload", ErrInvalidCompletion),
 		&adapterAgentEmitter{},
+		nil,
 	)
 	if runErr != nil || completionErr != nil || result.ExitCode != 0 {
 		t.Fatalf("repair result=(%+v, payload %q, runErr %v, completionErr %v), want success", result, repaired, runErr, completionErr)
@@ -1752,6 +1761,7 @@ func TestCopilotCompletionRepairSkipsRefreshWhenBudgetExhausted(t *testing.T) {
 		"",
 		time.Now().Add(-time.Second),
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 0 {
@@ -1792,6 +1802,7 @@ func TestCopilotCompletionRepairBoundsCredentialRefreshByRemainingBudget(t *test
 		"",
 		started,
 		completionErr,
+		nil,
 		nil,
 	)
 	if refreshCalls != 1 {
@@ -1852,8 +1863,9 @@ func TestCopilotAdapterToolAllowlistRejectsConflictingConfiguredArgs(t *testing.
 }
 
 func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("COPILOT_HOME", "")
+	for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+		t.Setenv(name, "")
+	}
 	workspace := t.TempDir()
 	var calls []ProcessRequest
 	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
@@ -1936,8 +1948,9 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", "")
-			t.Setenv("COPILOT_HOME", "")
+			for _, name := range []string{"HOME", "COPILOT_HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+				t.Setenv(name, "")
+			}
 			workspace := t.TempDir()
 			var calls []ProcessRequest
 			runner := &fakeProcessRunner{
@@ -2865,6 +2878,7 @@ func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var usageProbe bool
 	adapter := &CopilotAdapter{
 		Command:            []string{program, "forwarding-launcher"},
@@ -2885,6 +2899,23 @@ func TestCopilotAdapterPreflightVerifiesLauncherUsageOutput(t *testing.T) {
 	}
 	if adapter.usageOutputDisabled() {
 		t.Fatal("verified launcher usage output remained disabled")
+	}
+}
+
+func TestApplyCopilotUsageDocumentReportsSink(t *testing.T) {
+	out := Outcome{Metrics: map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens: 9,
+	}}
+	var observed map[string]float64
+	applyCopilotUsageDocument(&out, filepath.Join(t.TempDir(), "missing.json"), func(metrics map[string]float64) {
+		observed = metrics
+	})
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 9 {
+		t.Fatalf("Copilot usage sink = %v", observed)
+	}
+	out.Metrics[telemetry.AttrGenAIUsageInputTokens] = 99
+	if observed[telemetry.AttrGenAIUsageInputTokens] != 9 {
+		t.Fatal("Copilot usage sink retained a mutable metrics map")
 	}
 }
 
@@ -2925,6 +2956,7 @@ func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
 	}
 	adapter := &CopilotAdapter{
 		Command:                     []string{program, "forwarding-launcher"},
+		ModelCredential:             func(context.Context) (string, error) { return "fixture-model-token", nil },
 		AuthCheckArgs:               []string{"auth", "status"},
 		ExtraEnvAllowlist:           []string{"COPILOT_HOME"},
 		VerifyAdapterManagedSession: true,
@@ -2986,7 +3018,7 @@ func TestCopilotAdapterPreflightCarriesAmbientModelToken(t *testing.T) {
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-headless-xyz" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-headless-xyz" {
 			found = true
 		}
 	}
@@ -3031,7 +3063,7 @@ func TestCopilotAdapterPreflightUsesModelCredentialWhenNoAmbient(t *testing.T) {
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3084,13 +3116,13 @@ func TestCopilotAdapterPreflightModelCredentialWinsOverAmbientEnv(t *testing.T) 
 		t.Fatal("ModelCredential must be consulted even when an ambient env var is set — it is the instance's declared credential")
 	}
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-ambient-env" {
 			t.Fatalf("auth probe env carries the ambient token; the configured credential must win: %v", authProbeEnv)
 		}
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3170,7 +3202,7 @@ func TestCopilotDiscoverModelsUsesModelCredentialWhenNoAmbient(t *testing.T) {
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3202,13 +3234,13 @@ func TestCopilotDiscoverModelsModelCredentialWinsOverAmbientEnv(t *testing.T) {
 		t.Fatal("ModelCredential must be consulted even when an ambient env var is set — it is the instance's declared credential")
 	}
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-ambient-env" {
 			t.Fatalf("discovery env carries the ambient token; the configured credential must win: %v", lister.lastEnv)
 		}
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}
@@ -3273,7 +3305,7 @@ func TestCopilotResolveConfigFileRefOnlyCredentialsSatisfiesDiscovery(t *testing
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+		if kv == "COPILOT_GITHUB_TOKEN="+"pat-from-file-ref" {
 			found = true
 		}
 	}

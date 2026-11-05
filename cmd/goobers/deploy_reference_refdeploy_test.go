@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -197,7 +198,7 @@ func TestDeployReferenceWorkerSetsDispatchNamespace(t *testing.T) {
 	}
 }
 
-// TestDeployReferenceAPIMountsSharedBlobStore is #3839's regression guard:
+// TestDeployReferenceAPIBacksWorkerBlobPlane is #3839's regression guard:
 // the daemon's SpanSource reads a hardcoded <instance-root>/blobstore
 // (internal/instance/instance.go's BlobStoreDir, joined onto the api
 // container's own --instance root arg) and the worker's --blob-store
@@ -206,7 +207,7 @@ func TestDeployReferenceWorkerSetsDispatchNamespace(t *testing.T) {
 // SAME underlying PersistentVolumeClaim, or the daemon's projection reports
 // span_unavailable for every worker-executed stage forever, regardless of
 // how correctly each side is individually wired.
-func TestDeployReferenceAPIMountsSharedBlobStore(t *testing.T) {
+func TestDeployReferenceAPIBacksWorkerBlobPlane(t *testing.T) {
 	apiRaw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "reference", "goobers-system", "api-deployment.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -258,33 +259,22 @@ func TestDeployReferenceAPIMountsSharedBlobStore(t *testing.T) {
 		t.Fatalf("worker-deployment.yaml: got %d containers, want 1", len(worker.Spec.Template.Spec.Containers))
 	}
 	workerContainer := worker.Spec.Template.Spec.Containers[0]
-	var blobStoreArg string
+	var blobEndpointArg string
 	for i, arg := range workerContainer.Args {
-		if arg == "--blob-store" && i+1 < len(workerContainer.Args) {
-			blobStoreArg = workerContainer.Args[i+1]
+		if arg == "--blob-endpoint" && i+1 < len(workerContainer.Args) {
+			blobEndpointArg = workerContainer.Args[i+1]
 		}
 	}
-	if blobStoreArg == "" {
-		t.Fatal("worker-deployment.yaml does not set --blob-store")
+	if blobEndpointArg == "" {
+		t.Fatal("worker-deployment.yaml does not set --blob-endpoint")
 	}
-	workerVolumeClaims := make(map[string]string, len(worker.Spec.Template.Spec.Volumes))
 	for _, volume := range worker.Spec.Template.Spec.Volumes {
 		if volume.PersistentVolumeClaim != nil {
-			workerVolumeClaims[volume.Name] = volume.PersistentVolumeClaim.ClaimName
+			t.Fatalf("worker blob plane retained PVC %q", volume.PersistentVolumeClaim.ClaimName)
 		}
 	}
-	var workerBlobsClaim string
-	for _, mount := range workerContainer.VolumeMounts {
-		if mount.MountPath == blobStoreArg {
-			workerBlobsClaim = workerVolumeClaims[mount.Name]
-		}
-	}
-	if workerBlobsClaim == "" {
-		t.Fatalf("worker-deployment.yaml's --blob-store %q is not mounted from any PersistentVolumeClaim", blobStoreArg)
-	}
-	if workerBlobsClaim != blobsClaim {
-		t.Fatalf("worker --blob-store resolves to PVC %q, but the daemon's BlobStoreDir() (%q) resolves to PVC %q — the daemon cannot read worker-recorded spans (#3839)",
-			workerBlobsClaim, wantBlobMount, blobsClaim)
+	if !strings.Contains(blobEndpointArg, "goobers-api") {
+		t.Fatalf("worker blob endpoint %q does not route to the API-backed store", blobEndpointArg)
 	}
 }
 
@@ -316,8 +306,8 @@ func TestDeployReferenceTemporalNamespaceJobIsIdempotentAndOrdered(t *testing.T)
 	if !regexp.MustCompile(`namespace describe`).MatchString(script) {
 		t.Error("namespace-job.yaml does not describe-before-register — it is not idempotent")
 	}
-	if !regexp.MustCompile(`namespace register`).MatchString(script) {
-		t.Error("namespace-job.yaml never registers the namespace")
+	if !regexp.MustCompile(`namespace create`).MatchString(script) {
+		t.Error("namespace-job.yaml never creates the namespace")
 	}
 
 	var namespaceEnv string

@@ -10,13 +10,11 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 // windowDryRun is the retention pass's combined resolved decision (operator
@@ -37,12 +35,12 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	// writers enforce, or it decides retention against a limit no writer
 	// agrees with. The cap governs the retirement decisions below; it no
 	// longer bounds the read (see the read itself).
-	policy, origin := resolveRecoveryPolicy(layout, setup.Config)
+	policy, origin := runtimewiring.ResolveRecoveryPolicy(layout, setup.Config)
 	// setup.InstanceLog is a typed nil on the retention CLI path, which an
 	// interface-valued nil check cannot see — take the address of a live log
 	// only when there is one.
 	if setup.InstanceLog != nil {
-		journalRecoveryPolicyFallback(setup.InstanceLog, origin, policy, root)
+		runtimewiring.JournalRecoveryPolicyFallback(setup.InstanceLog, origin, policy, root)
 	}
 	// Tolerant, and this is the fix for a hard instance wedge. The sweep is the
 	// ONLY path that reclaims capacity by retention policy, and it read the
@@ -96,7 +94,7 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	// re-scanning after each retirement) is what keeps a superseded
 	// duplicate from ever being retired ahead of the newer entry that
 	// protects its content in the same pass.
-	retained := retainedEvictionRecords(entries)
+	retained := runtimewiring.RetainedEvictionRecords(entries)
 	var entryFailures recoveryEntryFailures
 	for _, entry := range entries {
 		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, retained, operatorEvents, windowDryRun, operatorDryRun, graceActive, stdout, layout.SchedulerDir())
@@ -208,7 +206,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		if err != nil {
 			return err
 		}
-		url, err := recoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
+		url, err := runtimewiring.RecoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
 		if err != nil {
 			return err
 		}
@@ -222,7 +220,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 			// retain floor: it holds nothing worth keeping.
 			justification := ""
 			if !eligible {
-				justification = recoveryContentlessJustification(ctx, record, repositories, retained, operatorEvents, true)
+				justification = runtimewiring.RecoveryContentlessJustification(ctx, record, repositories, retained, operatorEvents, true)
 				eligible = justification != ""
 			}
 			if !eligible {
@@ -230,7 +228,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 				if err != nil || len(landed) == 0 {
 					return err
 				}
-				eligible, err = verifyRecoveryLandingRepositories(ctx, repositories, record, landed, recoveryCfg.MaxArchiveBytesEffective())
+				eligible, err = runtimewiring.VerifyRecoveryLandingRepositories(ctx, repositories, record, landed, recoveryCfg.MaxArchiveBytesEffective())
 				if err != nil || !eligible {
 					return err
 				}
@@ -286,15 +284,15 @@ func recoverySweepLandedHeads(ctx context.Context, setup *schedulerSetup, reader
 	if err != nil || !phase.IsTerminal() {
 		return nil, err
 	}
-	project, err := recoveryConfiguredProject(setup.Config, record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(setup.Config, record.RepositoryKey)
 	if err != nil {
 		return nil, err
 	}
-	route, err := recoveryLandingRoute(project)
+	route, err := runtimewiring.RecoveryLandingRoute(project)
 	if err != nil {
 		return nil, err
 	}
-	return recoveryLandingHeads(ctx, filepath.Dir(runDir), record, route)
+	return runtimewiring.RecoveryLandingHeads(ctx, filepath.Dir(runDir), record, route)
 }
 
 // journalSweepReclamation records the periodic sweep's contentless retirement
@@ -309,28 +307,8 @@ func journalSweepReclamation(schedulerDir string, record recovery.Record, justif
 	}
 	event.Runner["operation"] = "recovery-reclaimed"
 	event.Runner["recoveryReclamationJustification"] = justification
-	log := recoveryCleanupJournal{directory: schedulerDir, scrubber: journal.NewRegistryScrubber()}
+	log := runtimewiring.RecoveryCleanupJournal{Directory: schedulerDir, Scrubber: journal.NewRegistryScrubber()}
 	_ = log.Append(event)
-}
-
-// A receiving commit may exist only in the pinned clone, not the mirror (or
-// vice versa). One complete content proof suffices; an absent object in another
-// managed copy must not hide that proof. Cleanup still checks every owned ref.
-func verifyRecoveryLandingRepositories(ctx context.Context, repositories []string, record recovery.Record, landed []recovery.LandedHead, maxArchiveBytes int64) (bool, error) {
-	var failures error
-	for _, repository := range repositories {
-		for _, head := range landed {
-			verified, err := recovery.VerifyLandedRestoration(ctx, repository, record, head, maxArchiveBytes)
-			if err != nil {
-				failures = errors.Join(failures, err)
-				continue
-			}
-			if verified {
-				return true, nil
-			}
-		}
-	}
-	return false, failures
 }
 
 func recoveryRetentionOwner(runID string, managers []*worktree.Manager, runsByRoot map[string]string) (*worktree.Manager, string, error) {
@@ -381,37 +359,11 @@ func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, 
 			return abandoned, err
 		}
 	}
-	finished, err := recoveryWindowTime(events, identity.StartedAt)
+	finished, err := runtimewiring.RecoveryWindowTime(events, identity.StartedAt)
 	if err != nil {
 		return false, err
 	}
 	// Stage capture may be older than terminal renewal. Never prune in the
 	// terminal window just because renewal has not yet acknowledged its sidecar.
 	return !now.Before(record.RetainUntil) && !now.Before(finished.Add(retainWindow)), nil
-}
-
-func recoveryRetentionCloneURL(cfg *instance.Config, key string) (string, error) {
-	clone := repoCloneURL
-	if clone == nil {
-		clone = runner.DefaultRepoCloneURL
-	}
-	var url string
-	for _, repo := range cfg.Repos {
-		identity := providers.RepositoryRef{Provider: providers.ProviderKind(repo.Provider), URL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
-		if identity.CanonicalKey() != key {
-			continue
-		}
-		if url != "" {
-			return "", fmt.Errorf("ambiguous recovery repository configuration")
-		}
-		var err error
-		url, err = clone(apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name})
-		if err != nil {
-			return "", err
-		}
-	}
-	if url == "" {
-		return "", fmt.Errorf("recovery repository is not configured")
-	}
-	return url, nil
 }

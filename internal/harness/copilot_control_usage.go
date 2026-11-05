@@ -8,21 +8,31 @@ import (
 	"time"
 )
 
+const copilotFinalizeTimeout = 5 * time.Second
+
 // Finish after the last completion/recovery turn and the actual-session MCP
 // check, before reading native captures. Persistent headless sessions otherwise
 // have not emitted their shutdown totals when the ordinary CLI reader runs.
 func finalizeControlledCopilot(ctx context.Context, runner ProcessRunner) error {
 	controlled, ok := runner.(*copilotControlledRunner)
-	if !ok || !controlled.ready {
+	if !ok || !controlled.ready || controlled.finalized {
 		return nil
 	}
 	session, ok := controlled.session.(sdkRequiredMCPSession)
 	if !ok {
 		return nil
 	}
-	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	controlled.finalized = true
+	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), copilotFinalizeTimeout)
 	defer cancel()
+	var abortErr error
+	if ctx.Err() != nil || controlled.runCtx != nil && controlled.runCtx.Err() != nil {
+		abortErr = session.session.Abort(finish)
+	}
 	usage, usageErr := session.session.RPC.Usage.GetMetrics(finish)
+	if usageErr == nil && usage == nil {
+		usageErr = fmt.Errorf("missing session usage response")
+	}
 	_, shutdownErr := session.session.RPC.Shutdown(finish, nil)
 	if usageErr == nil && usage != nil {
 		data, err := json.Marshal(usage)
@@ -43,7 +53,10 @@ func finalizeControlledCopilot(ctx context.Context, runner ProcessRunner) error 
 	// Preserve categorical capture errors without echoing native server details.
 	var result error
 	if usageErr != nil {
-		result = fmt.Errorf("copilot session usage capture failed")
+		result = fmt.Errorf("copilot session usage unknown: final usage capture failed")
+	}
+	if abortErr != nil {
+		result = errors.Join(result, fmt.Errorf("copilot session cancellation unconfirmed: usage may be incomplete"))
 	}
 	if shutdownErr != nil {
 		result = errors.Join(result, fmt.Errorf("copilot session finalization failed"))

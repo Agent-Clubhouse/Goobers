@@ -105,7 +105,7 @@ func TestReviewerLifecycleVersionedRetryAndRepass(t *testing.T) {
 			// start anchors, including the failed attempt and the repass at number 1.
 			var identities []string
 			for pass := 0; pass < 2; pass++ {
-				dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), projection)
+				dir, err := writeTestJournal(t, filepath.Join(t.TempDir(), "runs"), projection)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -130,7 +130,7 @@ func TestReviewerLifecycleVersionedRetryAndRepass(t *testing.T) {
 				}
 			}
 			live := liveEvents(t, runsDir, in.RunID)
-			if divergence, err := DiffLiveJournal(live, projection); err != nil || divergence != "" {
+			if divergence, err := diffTestJournal(t, live, projection); err != nil || divergence != "" {
 				t.Fatalf("live/repair divergence=%q err=%v", divergence, err)
 			}
 			var liveIDs []string

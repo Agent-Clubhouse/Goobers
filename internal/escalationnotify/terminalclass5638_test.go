@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -41,7 +42,7 @@ func writeTerminalJournal(t *testing.T, runsDir, runID string, events ...journal
 
 func retryDecision(class journal.AttemptClass) journal.Event {
 	return journal.Event{Type: journal.EventRunnerAnnotation, Stage: "local-ci", Gate: "local-gate", Runner: map[string]any{
-		"kind": runner.RetryDecisionKind, runner.RetryFailureClassKey: string(class), "failureCode": telemetry.ErrCodeTimeout, "target": "local-ci",
+		"kind": runsemantics.RetryDecisionKind, runsemantics.RetryFailureClassKey: string(class), "failureCode": telemetry.ErrCodeTimeout, "target": "local-ci",
 	}}
 }
 
@@ -71,7 +72,7 @@ func abortedBy(code string, classification journal.TerminalClassification) []jou
 // expiredDuringRetry is #5638's second reproduction as the local runner
 // journals it: the run expired during local-gate's retry of local-ci.
 func expiredDuringRetry(retryClass journal.AttemptClass) []journal.Event {
-	return interruptedRetry(retryClass, abortedBy(runner.RunDurationExceededErrorCode, journal.TerminalPolicyExhaustion)...)
+	return interruptedRetry(retryClass, abortedBy(runsemantics.RunDurationExceededErrorCode, journal.TerminalPolicyExhaustion)...)
 }
 
 func lastComment(poster *fakePoster) string {
@@ -177,14 +178,14 @@ func TestEngineCancelledRunHonorsTheSweepsInterruption(t *testing.T) {
 	cancelled := interruptedRetry(journal.AttemptInfra, journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "run_failed", Message: "run canceled on the engine"}},
 		journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted), TerminalCause: &journal.TerminalCause{
 			Schema: journal.TerminalCauseSchema, Phase: journal.PhaseAborted, Classification: journal.TerminalOperatorAbort,
-			SelectorKind: "condition", Code: runner.RunCanceledErrorCode,
+			SelectorKind: "condition", Code: runsemantics.RunCanceledErrorCode,
 		}})
 	for name, tc := range map[string]struct {
 		interruption string
 		work, infra  int
 	}{
-		"sweep expiry":    {runner.RunDurationExceededErrorCode, 0, 1},
-		"sweep stall":     {runner.RunStalledErrorCode, 0, 1},
+		"sweep expiry":    {runsemantics.RunDurationExceededErrorCode, 0, 1},
+		"sweep stall":     {runsemantics.RunStalledErrorCode, 0, 1},
 		"operator cancel": {"", 1, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -260,11 +261,11 @@ func TestSubstrateTerminalsChargeNeitherStreak(t *testing.T) {
 	dispatchRetry := []journal.Event{
 		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
 		{Type: journal.EventError, Stage: "implement", Error: &journal.ErrorDetail{Code: "executor_error", Message: "clone failed"},
-			Runner: map[string]any{runner.RetryFailureClassKey: string(journal.AttemptInfra)}},
+			Runner: map[string]any{runsemantics.RetryFailureClassKey: string(journal.AttemptInfra)}},
 		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2},
 	}
 	for name, events := range map[string][]journal.Event{
-		"expiry during dispatch retry": append(dispatchRetry, abortedBy(runner.RunDurationExceededErrorCode, journal.TerminalPolicyExhaustion)...),
+		"expiry during dispatch retry": append(dispatchRetry, abortedBy(runsemantics.RunDurationExceededErrorCode, journal.TerminalPolicyExhaustion)...),
 		"terminated engine workflow": {{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted), TerminalCause: &journal.TerminalCause{
 			Schema: journal.TerminalCauseSchema, Phase: journal.PhaseAborted, Classification: journal.TerminalInfrastructureFailure,
 			SelectorKind: "condition", Code: "terminated",

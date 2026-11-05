@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../deploy/reference/goobers-system
+  - smoke-job.yaml
+images:
+  - name: goobers
+    newName: goobers
+    newTag: ha-nightly
+patches:
+  - path: nightly-patch.yaml

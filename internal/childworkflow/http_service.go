@@ -134,6 +134,8 @@ func childHTTPError(status int, code, message string, cause error) error {
 func childOperationError(err error) error {
 	var invalid *ValidationError
 	switch {
+	case errors.Is(err, ErrAuthorityRetryable):
+		return childHTTPError(http.StatusServiceUnavailable, "child_workflow_authority_unavailable", "the stage's child-workflow authority could not be checked; retry", nil)
 	case errors.Is(err, ErrAuthorityUnavailable), errors.Is(err, ErrAuthorityChanged), errors.Is(err, triggerqueue.ErrChildAuthorityChanged):
 		return childHTTPError(http.StatusForbidden, "child_workflow_authority_changed", "the stage no longer holds current child-workflow authority", nil)
 	case errors.As(err, &invalid), errors.Is(err, ErrSubmissionInvalid):

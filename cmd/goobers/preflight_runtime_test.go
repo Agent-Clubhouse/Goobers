@@ -532,6 +532,20 @@ func TestRuntimePreflightIdentityAndPlanAcrossDSLVersions(t *testing.T) {
 	}
 }
 
+func runControlsFixture() (*instance.Config, *instance.ConfigSet, apiv1.RepoRef) {
+	project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
+	return &instance.Config{
+			Repos: []instance.RepoRef{{
+				Provider: "github", Owner: "acme", Name: "web",
+				RunControls: &apiv1.RunControls{MaxRunDuration: "6h"},
+			}},
+			RunConditions: instance.RunConditions{MaxRepasses: 4, StalledRunTimeout: "90m"},
+		}, &instance.ConfigSet{
+			Gaggles:   []apiv1.Gaggle{{Spec: apiv1.GaggleSpec{Project: project, RunControls: &apiv1.RunControls{MaxRepasses: 7}}}},
+			Workflows: []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{RunControls: &apiv1.RunControls{StalledRunTimeout: "2h"}}}},
+		}, project
+}
+
 func TestRuntimePreflightResolvesExecutionRunControlPolicy(t *testing.T) {
 	for _, higherOverrides := range []bool{false, true} {
 		t.Run(map[bool]string{false: "instance-and-repo", true: "all-layers"}[higherOverrides], func(t *testing.T) {
@@ -541,6 +555,7 @@ func TestRuntimePreflightResolvesExecutionRunControlPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			cfg.RunConditions = policyCfg.RunConditions
 			cfg.Repos[0].RunControls = policyCfg.Repos[0].RunControls
 			rewriteRuntimePreflightYAML(t, filepath.Join(root, "instance.yaml"), cfg)

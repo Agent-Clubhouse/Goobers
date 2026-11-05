@@ -55,22 +55,9 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		return nil, err
 	}
 	requestedState := strings.ToLower(strings.TrimSpace(req.State))
-	query, orderBy, err := adoListWorkItemsWIQL(req, requestedState)
+	endpoint, query, orderBy, err := p.adoWorkItemListQuery(project, req, requestedState)
 	if err != nil {
 		return nil, err
-	}
-	endpoint, err := p.workURL(project, "wiql")
-	if err != nil {
-		return nil, err
-	}
-	if req.UpdatedSince != nil {
-		// WIQL compares date literals at day granularity unless the query
-		// opts into time precision, which would drop UpdatedSince's
-		// time-of-day (#6877).
-		endpoint, err = addQuery(endpoint, url.Values{"timePrecision": []string{"true"}})
-		if err != nil {
-			return nil, err
-		}
 	}
 	boundedScan := req.Cursor != "" || req.PageInfo != nil
 	// candidateLimit is what WIQL's $top actually requests — req.Limit,
@@ -90,16 +77,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	// reasoning there would make cmd/goobers/backlogquery.go's strict
 	// per-page candidate-count invariant fail for a caller that never hits
 	// ADO at all.
-	candidateLimit := req.Limit
-	adoNeedsOversizedScan := req.NeedsOversizedCandidateScan() ||
-		requestedState == "open" || requestedState == "closed" ||
-		len(req.Labels) > 0
-	if boundedScan && req.Limit > 0 && adoNeedsOversizedScan {
-		candidateLimit = max(req.Limit, candidateScanCeiling)
-	}
-	if boundedScan && req.MaxCandidates > 0 && (candidateLimit <= 0 || candidateLimit > req.MaxCandidates) {
-		candidateLimit = req.MaxCandidates
-	}
+	candidateLimit := adoWorkItemCandidateLimit(req, requestedState, boundedScan)
 	if boundedScan && candidateLimit > 0 {
 		endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(candidateLimit)}})
 		if err != nil {
@@ -119,36 +97,86 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 	if err != nil {
 		return nil, err
 	}
-	if req.PageInfo != nil {
-		// CandidateCount is how many candidates were actually INSPECTED
-		// this round (lastScanned+1), not how many were fetched (len(refs))
-		// — an early break once Limit real matches are in hand can leave
-		// fetched-but-never-looked-at candidates behind, and counting those
-		// as "consumed" overstates the caller's own scan-budget spend
-		// (cmd/goobers/backlogquery.go's listBacklogScanWindow decrements
-		// its outer limit by CandidateCount), starving later pages of
-		// budget for work this round never actually did.
-		//
-		// HasNext/NextCursor track the MATCH stream, not the candidate
-		// stream (#2067's third acceptance criterion): stopping early
-		// because Limit matches are already in hand leaves fetched-but-
-		// unscanned candidates behind (scannedEverything=false), and even
-		// having scanned every fetched candidate without reaching Limit
-		// matches still leaves more to look at when the fetch itself hit
-		// candidateLimit (fetchWasCapped) — ADO may hold further
-		// candidates beyond what this round asked for.
-		req.PageInfo.CandidateCount = lastScanned + 1
-		req.PageInfo.QueryNarrowed = adoQueryNarrowed(req, requestedState, fellBack)
-		req.PageInfo.QueryNarrowingFallback = fellBack
-		scannedEverything := lastScanned == len(refs)-1
-		fetchWasCapped := candidateLimit > 0 && len(refs) == candidateLimit
-		req.PageInfo.HasNext = boundedScan && candidateLimit > 0 && (!scannedEverything || fetchWasCapped)
-		req.PageInfo.NextCursor = ""
-		if req.PageInfo.HasNext && lastScanned >= 0 {
-			req.PageInfo.NextCursor = strconv.Itoa(refs[lastScanned].ID)
+	updateADOWorkItemPageInfo(req, requestedState, fellBack, boundedScan, candidateLimit, refs, lastScanned)
+	return items, nil
+}
+
+func (p *ADOProvider) adoWorkItemListQuery(
+	project string, req ListWorkItemsRequest, requestedState string,
+) (string, string, string, error) {
+	query, orderBy, err := adoListWorkItemsWIQL(req, requestedState)
+	if err != nil {
+		return "", "", "", err
+	}
+	endpoint, err := p.workURL(project, "wiql")
+	if err != nil {
+		return "", "", "", err
+	}
+	if req.UpdatedSince != nil {
+		// WIQL compares date literals at day granularity unless the query
+		// opts into time precision, which would drop UpdatedSince's
+		// time-of-day (#6877).
+		endpoint, err = addQuery(endpoint, url.Values{"timePrecision": []string{"true"}})
+		if err != nil {
+			return "", "", "", err
 		}
 	}
-	return items, nil
+	return endpoint, query, orderBy, nil
+}
+
+func adoWorkItemCandidateLimit(req ListWorkItemsRequest, requestedState string, boundedScan bool) int {
+	candidateLimit := req.Limit
+	needsOversizedScan := req.NeedsOversizedCandidateScan() ||
+		requestedState == "open" || requestedState == "closed" ||
+		len(req.Labels) > 0
+	if boundedScan && req.Limit > 0 && needsOversizedScan {
+		candidateLimit = max(req.Limit, candidateScanCeiling)
+	}
+	if boundedScan && req.MaxCandidates > 0 && (candidateLimit <= 0 || candidateLimit > req.MaxCandidates) {
+		// The raw-candidate budget cut this page short. Keep the cap on what
+		// WIQL fetches, not only on the matches returned after hydration.
+		candidateLimit = req.MaxCandidates
+	}
+	return candidateLimit
+}
+
+func updateADOWorkItemPageInfo(
+	req ListWorkItemsRequest,
+	requestedState string,
+	fellBack, boundedScan bool,
+	candidateLimit int,
+	refs []adoWorkItemRef,
+	lastScanned int,
+) {
+	if req.PageInfo == nil {
+		return
+	}
+	// CandidateCount is how many candidates were actually INSPECTED
+	// this round (lastScanned+1), not how many were fetched (len(refs))
+	// — an early break once Limit real matches are in hand can leave
+	// fetched-but-never-looked-at candidates behind, and counting those
+	// as "consumed" overstates the caller's own scan-budget spend
+	// (cmd/goobers/backlogquery.go's listBacklogScanWindow decrements
+	// its outer limit by CandidateCount), starving later pages of
+	// budget for work this round never actually did.
+	req.PageInfo.CandidateCount = lastScanned + 1
+	req.PageInfo.QueryNarrowed = adoQueryNarrowed(req, requestedState, fellBack)
+	req.PageInfo.QueryNarrowingFallback = fellBack
+	scannedEverything := lastScanned == len(refs)-1
+	fetchWasCapped := candidateLimit > 0 && len(refs) == candidateLimit
+	// HasNext/NextCursor track the MATCH stream, not the candidate
+	// stream (#2067's third acceptance criterion): stopping early
+	// because Limit matches are already in hand leaves fetched-but-
+	// unscanned candidates behind (scannedEverything=false), and even
+	// having scanned every fetched candidate without reaching Limit
+	// matches still leaves more to look at when the fetch itself hit
+	// candidateLimit (fetchWasCapped) — ADO may hold further
+	// candidates beyond what this round asked for.
+	req.PageInfo.HasNext = boundedScan && candidateLimit > 0 && (!scannedEverything || fetchWasCapped)
+	req.PageInfo.NextCursor = ""
+	if req.PageInfo.HasNext && lastScanned >= 0 {
+		req.PageInfo.NextCursor = strconv.Itoa(refs[lastScanned].ID)
+	}
 }
 
 // adoQueryNarrowedFields are the native fields whose exact string equality
@@ -760,23 +788,10 @@ func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo Repository
 
 // UpdateWorkItem edits Azure Boards fields, assignee, tags, state, and comments.
 func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
+	state, err := p.validateUpdateWorkItemRequest(req)
+	if err != nil {
 		return WorkItem{}, err
 	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOTags(append(append([]string{}, req.AddLabels...), req.RemoveLabels...)); err != nil {
-		return WorkItem{}, err
-	}
-	if req.Milestone != nil {
-		return WorkItem{}, fmt.Errorf("ADO work items do not support numeric milestones; use an Azure Boards iteration")
-	}
-	state := strings.ToLower(strings.TrimSpace(req.State))
-	if state != "" && state != "open" && state != "closed" {
-		return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-	}
-
 	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
@@ -786,75 +801,118 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 			return WorkItem{}, err
 		}
 	}
-	fieldOps := func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
-		var ops []adoPatchOperation
-		if req.Title != nil {
-			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.Title", Value: *req.Title})
-		}
-		if req.Body != nil {
-			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
-			ops = append(ops, adoPatchOperation{Op: "add", Path: "/multilineFieldsFormat/System.Description", Value: adoDescriptionMarkdownFormat})
-		}
-		if req.Assignee != nil {
-			ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
-		}
-		if labelsChanged(req) {
-			ops = append(ops, adoTagPatch(raw, applyADOTagSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
-		}
-		return ops
+	result, err := p.applyADOWorkItemUpdate(ctx, req, current, state)
+	if err != nil {
+		return WorkItem{}, err
 	}
-
-	updated := current
-	mutated := false
-	resolvedOnly := false
-	if state == "closed" && current.State != "closed" {
-		result, closeErr := p.closeADOWorkItem(ctx, adoCloseRequest{
-			repo: req.Repository, id: req.ID, snapshot: &current,
-			expectedRevision: req.ExpectedRevision, extraOps: fieldOps,
-		})
-		if closeErr != nil {
-			return WorkItem{}, closeErr
-		}
-		updated, resolvedOnly = result.updated, result.resolvedOnly
-		if result.patched {
-			mutated = true
-			p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
-		}
-	} else {
-		raw, rawErr := rawADOWorkItem(current)
-		if rawErr != nil {
-			return WorkItem{}, rawErr
-		}
-		patch := append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}, fieldOps(current, raw)...)
-		if state != "" && state != current.State {
-			nativeState, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
-			if stateErr != nil {
-				return WorkItem{}, stateErr
-			}
-			patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: nativeState})
-		}
-		if len(patch) > 1 {
-			updated, err = p.patchADOWorkItem(ctx, req.Repository, req.ID, patch)
-			if err != nil {
-				return WorkItem{}, err
-			}
-			mutated = true
-			p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
-		}
-	}
-
-	if resolvedOnly {
-		p.noteADOResolvedStop(ctx, req.Repository, req.ID, updated.Type, "update")
+	if result.resolvedOnly {
+		p.noteADOResolvedStop(ctx, req.Repository, req.ID, result.updated.Type, "update")
 	}
 	if req.Comment != "" {
 		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			if mutated {
-				return updated, fmt.Errorf("work item update committed; post comment: %w", err)
+			if result.mutated {
+				return result.updated, fmt.Errorf("work item update committed; post comment: %w", err)
 			}
-			return updated, fmt.Errorf("post work item comment: %w", err)
+			return result.updated, fmt.Errorf("post work item comment: %w", err)
 		}
 	}
-	return updated, nil
+	return result.updated, nil
+}
+
+func (p *ADOProvider) validateUpdateWorkItemRequest(req UpdateWorkItemRequest) (string, error) {
+	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
+		return "", err
+	}
+	if err := validateADOWorkItemID(req.ID); err != nil {
+		return "", err
+	}
+	if err := validateADOTags(append(append([]string{}, req.AddLabels...), req.RemoveLabels...)); err != nil {
+		return "", err
+	}
+	if req.Milestone != nil {
+		return "", fmt.Errorf("ADO work items do not support numeric milestones; use an Azure Boards iteration")
+	}
+	state := strings.ToLower(strings.TrimSpace(req.State))
+	if state != "" && state != "open" && state != "closed" {
+		return "", fmt.Errorf("unsupported state %q (want open or closed)", req.State)
+	}
+	return state, nil
+}
+
+func adoUpdateFieldOps(req UpdateWorkItemRequest, raw adoWorkItem) []adoPatchOperation {
+	var ops []adoPatchOperation
+	if req.Title != nil {
+		ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.Title", Value: *req.Title})
+	}
+	if req.Body != nil {
+		ops = append(ops,
+			adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body},
+			adoPatchOperation{Op: "add", Path: "/multilineFieldsFormat/System.Description", Value: adoDescriptionMarkdownFormat},
+		)
+	}
+	if req.Assignee != nil {
+		ops = append(ops, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
+	}
+	if labelsChanged(req) {
+		ops = append(ops, adoTagPatch(raw, applyADOTagSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)))
+	}
+	return ops
+}
+
+type adoWorkItemUpdateResult struct {
+	updated      WorkItem
+	mutated      bool
+	resolvedOnly bool
+}
+
+func (p *ADOProvider) applyADOWorkItemUpdate(
+	ctx context.Context, req UpdateWorkItemRequest, current WorkItem, state string,
+) (adoWorkItemUpdateResult, error) {
+	if state == "closed" && current.State != "closed" {
+		return p.closeForWorkItemUpdate(ctx, req, current)
+	}
+	raw, err := rawADOWorkItem(current)
+	if err != nil {
+		return adoWorkItemUpdateResult{}, err
+	}
+	patch := append([]adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}, adoUpdateFieldOps(req, raw)...)
+	if state != "" && state != current.State {
+		nativeState, err := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
+		if err != nil {
+			return adoWorkItemUpdateResult{}, err
+		}
+		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: nativeState})
+	}
+	if len(patch) == 1 {
+		return adoWorkItemUpdateResult{updated: current}, nil
+	}
+	updated, err := p.patchADOWorkItem(ctx, req.Repository, req.ID, patch)
+	if err != nil {
+		return adoWorkItemUpdateResult{}, err
+	}
+	p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
+	return adoWorkItemUpdateResult{updated: updated, mutated: true}, nil
+}
+
+func (p *ADOProvider) closeForWorkItemUpdate(
+	ctx context.Context, req UpdateWorkItemRequest, current WorkItem,
+) (adoWorkItemUpdateResult, error) {
+	result, err := p.closeADOWorkItem(ctx, adoCloseRequest{
+		repo: req.Repository, id: req.ID, snapshot: &current,
+		expectedRevision: req.ExpectedRevision,
+		extraOps: func(_ WorkItem, raw adoWorkItem) []adoPatchOperation {
+			return adoUpdateFieldOps(req, raw)
+		},
+	})
+	if err != nil {
+		return adoWorkItemUpdateResult{}, err
+	}
+	if result.patched {
+		p.recordMutation(ctx, "issue", req.ID, "update", req.Repository)
+	}
+	return adoWorkItemUpdateResult{
+		updated: result.updated, mutated: result.patched, resolvedOnly: result.resolvedOnly,
+	}, nil
 }
 
 // ClaimWorkItem posts a claim breadcrumb comment, settles concurrent claimers
@@ -1452,14 +1510,15 @@ func (p *ADOProvider) adoWorkItemStateCategories(ctx context.Context, repo Repos
 	p.stateMu.RLock()
 	cached := p.stateCategories[key]
 	p.stateMu.RUnlock()
-	if cached != nil {
-		return cached, nil
+	if cached.fresh(p.now()) {
+		return cached.states, nil
 	}
 
 	endpoint, err := p.workURL(p.project(repo), "workitemtypes", itemType, "states")
 	if err != nil {
 		return nil, err
 	}
+	readStarted := p.now()
 	var response adoWorkItemStatesResponse
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return nil, err
@@ -1467,14 +1526,14 @@ func (p *ADOProvider) adoWorkItemStateCategories(ctx context.Context, repo Repos
 	resolved := response.Value
 	p.stateMu.Lock()
 	if p.stateCategories == nil {
-		p.stateCategories = make(map[string][]adoWorkItemState)
+		p.stateCategories = make(map[string]adoStateCategoryCache)
 	}
-	if cached = p.stateCategories[key]; cached == nil {
-		p.stateCategories[key] = resolved
-		cached = resolved
+	if cached = p.stateCategories[key]; !cached.fresh(p.now()) {
+		cached = adoStateCategoryCache{states: resolved, stored: readStarted}
+		p.stateCategories[key] = cached
 	}
 	p.stateMu.Unlock()
-	return cached, nil
+	return cached.states, nil
 }
 
 // adoWorkItemTypeCategory is the shape of

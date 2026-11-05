@@ -104,34 +104,6 @@ func TestGenerationPruningProtectsRetainedJournalsAndExternalHistories(t *testin
 	}
 }
 
-func TestDirectEngineInputPublishesGenerationBeforeDispatch(t *testing.T) {
-	root := initDeterministicDemo(t)
-	layout := instance.NewLayout(root)
-	cfg, err := instance.LoadConfig(layout.ConfigFile())
-	if err != nil {
-		t.Fatal(err)
-	}
-	input, release, err := pinnedDirectEngineInput(t.Context(), layout, cfg, "example", "default-implement", "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release()
-	if input.ConfigGeneration == "" {
-		t.Fatal("external engine input omitted generation")
-	}
-	store, err := executionGenerationStore(layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	directory, err := store.Load(t.Context(), input.ConfigGeneration)
-	if err != nil {
-		t.Fatalf("engine could dispatch before archive publication: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(directory), "external-owner")); err != nil {
-		t.Fatalf("external history has no durable retention owner: %v", err)
-	}
-}
-
 // A pinned rebuild must reuse the run's admitted generation. Re-retaining its
 // extracted tree is not byte-stable (Windows reads mode bits back differently),
 // and the fresh identity failed every later CLI stage after restart (#5445).

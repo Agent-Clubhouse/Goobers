@@ -4559,12 +4559,28 @@ func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
 	}
 }
 
+// Generated child workflows are ON unless an instance explicitly disables
+// them; a nil config remains disabled because there is no instance posture.
+func TestEngineChildWorkflowsAreOnUnlessDisabled(t *testing.T) {
+	if !(&Config{}).EngineChildWorkflowsEnabled() {
+		t.Fatal("child workflows disabled by default")
+	}
+	if (*Config)(nil).EngineChildWorkflowsEnabled() {
+		t.Fatal("nil config enabled child workflows")
+	}
+	disabled := false
+	if (&Config{Engine: &EngineConfig{ChildWorkflows: &EngineChildWorkflowsConfig{Enabled: &disabled}}}).EngineChildWorkflowsEnabled() {
+		t.Fatal("engine.childWorkflows.enabled=false did not disable child workflows")
+	}
+}
+
 // TestResolveEngineConfigPreservesEveryField pins #6012: resolution starts
 // from a full copy of the authored engine block, so a field that is not
 // env-backed reaches the resolved config without being re-listed in the
 // resolver. The fixture must set every field; the reflection guard fails
 // when a new EngineConfig field is added without extending it.
 func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
+	childWorkflowsEnabled := true
 	authored := EngineConfig{
 		HostPort:         "temporal.internal:7233",
 		Namespace:        "authored-namespace",
@@ -4572,6 +4588,7 @@ func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
 		HITL:             &EngineHITLConfig{Enabled: true, Window: "4h", Actors: []string{"operator"}},
 		TLS:              &temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", ServerName: "temporal-frontend"},
 		WorkerVersioning: true,
+		ChildWorkflows:   &EngineChildWorkflowsConfig{Enabled: &childWorkflowsEnabled},
 	}
 	value := reflect.ValueOf(authored)
 	for i := 0; i < value.NumField(); i++ {
@@ -4700,6 +4717,25 @@ func TestTerminalBranchRetentionDuration(t *testing.T) {
 		}
 		if err := (&Config{Retention: cfg}).Validate(); (err != nil) != tc.bad {
 			t.Fatalf("validate %q: %v", tc.value, err)
+		}
+	}
+}
+
+// Config load defaults child workflows on and preserves an explicit rollback.
+func TestLoadConfigDefaultsEngineChildWorkflowsOn(t *testing.T) {
+	base := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n"
+	for name, tc := range map[string]struct {
+		yaml    string
+		enabled bool
+	}{
+		"explicitly on":  {yaml: base + "  childWorkflows:\n    enabled: true\n", enabled: true},
+		"explicitly off": {yaml: base + "  childWorkflows:\n    enabled: false\n", enabled: false},
+		"empty block":    {yaml: base + "  childWorkflows: {}\n", enabled: true},
+		"absent":         {yaml: base, enabled: true},
+	} {
+		cfg, err := LoadConfig(writeInstanceYAML(t, tc.yaml))
+		if err != nil || cfg.EngineChildWorkflowsEnabled() != tc.enabled {
+			t.Fatalf("%s: LoadConfig = %v (enabled %v, want %v)", name, err, cfg != nil && cfg.EngineChildWorkflowsEnabled(), tc.enabled)
 		}
 	}
 }

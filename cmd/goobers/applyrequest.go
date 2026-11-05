@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 )
 
 // applyrequest.go implements #459's `goobers apply`: a live, one-shot
@@ -42,21 +44,7 @@ type applyRequest struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// applyResponse reports one reconcile attempt's outcome. Applied is true only
-// when the daemon's live definitions actually changed to the newly pulled
-// revision. Rejected carries a config-validation failure message (the
-// daemon kept its last-known-good definitions, matching the same-process
-// hand-edit reload's existing reject semantics); Error is a distinct
-// operational failure (e.g. the git fetch itself failed) that isn't a
-// judgment about the pulled config's validity.
-type applyResponse struct {
-	Applied   bool   `json:"applied"`
-	OldDigest string `json:"oldDigest,omitempty"`
-	NewDigest string `json:"newDigest,omitempty"`
-	Revision  string `json:"revision,omitempty"`
-	Rejected  string `json:"rejected,omitempty"`
-	Error     string `json:"error,omitempty"`
-}
+type applyResponse = scheduling.ApplyResponse
 
 // writeApplyRequest publishes an apply request atomically (hidden temp then
 // rename) so the daemon's sweep never reads a torn request, returning the

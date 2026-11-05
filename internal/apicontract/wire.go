@@ -193,6 +193,20 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 			HighWaterPercent:    readservice.RecoveryInventoryHighWaterPercent,
 			EarliestRetainUntil: &finishedAt, InventoryRoot: "/instances/fixture/recovery",
 			PolicySource: "instance-config", ObservedAt: startedAt,
+			ReclaimCandidates: []readservice.RecoveryReclaimCandidate{{
+				RunID: "run-fixture", Phase: "completed", Ref: "refs/goobers/recovery/run-fixture",
+				PatchDigest: "sha256:" + strings.Repeat("b", 64), RepositoryKey: "github|||team|repo|",
+				CreatedAt: startedAt, RetainUntil: finishedAt,
+				InspectCommand: "goobers trace --summary run-fixture /instances/fixture",
+				RestoreCommand: "goobers recovery-restore --record /instances/fixture/recovery/entry/record.json --repository . --branch recovered/run-fixture /instances/fixture",
+				AbandonCommand: "goobers recovery-abandon --run run-fixture --ref refs/goobers/recovery/run-fixture --confirm-digest sha256:" + strings.Repeat("b", 64) + " /instances/fixture",
+			}},
+			ReclaimCandidatesTotal: 1,
+			ReclaimHold: &readservice.RecoveryReclaimHold{
+				Reason: readservice.RecoveryReclaimHoldGrace, Until: &finishedAt,
+				Setting: "retention.firstEnable: immediate", ConfigFile: "/instances/fixture/instance.yaml",
+			},
+			StatusCommand: "goobers status --all /instances/fixture",
 		},
 	}
 }
@@ -454,7 +468,7 @@ func newWireFixtures() wireFixtures {
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
 	return withChildWorkflowFixtures(wireFixtures{
-		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", WorkItemID: "42"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
 		CancelRequest:           CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},

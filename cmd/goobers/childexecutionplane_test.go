@@ -91,13 +91,16 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 		t.Run(scenario, func(t *testing.T) {
 			var calls atomic.Int32
 			var revoked atomic.Bool
-			var expires time.Time
+			var expired atomic.Bool
+			readBlocked := make(chan struct{})
+			expires := time.Now().Add(time.Hour)
 			observe := childObservationFunc(func(ctx context.Context, req httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
 				calls.Add(1)
 				if req.Scope != httpapi.ClaimListScopeRun || !req.Execution || !req.IncludeHistory || req.Gaggle != "" {
 					return httpapi.ClaimListResponse{}, context.Canceled
 				}
 				if scenario == "stalled-read" && calls.Load() > 1 {
+					close(readBlocked)
 					<-ctx.Done()
 					return httpapi.ClaimListResponse{}, ctx.Err()
 				}
@@ -105,19 +108,24 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 				var entries []httpapi.ClaimEntry
 				if strings.HasPrefix(scenario, "shared") || scenario == "foreign-owner" {
 					mode = "shared"
-					if expires.IsZero() {
-						expires = time.Now().Add(6 * time.Second)
+					deadline := expires
+					if expired.Load() {
+						deadline = time.Now().Add(-time.Minute)
 					}
 					runID := req.RunID
 					if scenario == "foreign-owner" {
 						runID = "foreign"
 					}
-					entries = []httpapi.ClaimEntry{{RunID: runID, Gaggle: "example", Provider: "github", ExternalID: "42", ExpiresAt: expires, SharedDeadline: expires, SharedRevoked: revoked.Load(), SharedOwner: sharedclaim.Owner{Run: runID, Instance: "instance", Token: "lease"}}}
+					entries = []httpapi.ClaimEntry{{RunID: runID, Gaggle: "example", Provider: "github", ExternalID: "42", ExpiresAt: deadline, SharedDeadline: deadline, SharedRevoked: revoked.Load(), SharedOwner: sharedclaim.Owner{Run: runID, Instance: "instance", Token: "lease"}}}
 				}
 				return httpapi.ClaimListResponse{ClaimVisibility: mode, ObservedAt: time.Now(), Entries: entries}, nil
 			})
 			f, contract, token, server := childExecutionHTTPFixture(t, observe)
-			ctx, stop, err := remoteChildExecutionFence(t.Context(), server.URL, token, contract)
+			// This integration test verifies HTTP lineage and authority changes,
+			// not response latency. Exact watchdog/lease expiry timing is covered
+			// under fake time in internal/claimsclient/execution_test.go.
+			ctx, stop, err := remoteChildExecutionFenceWithOptions(t.Context(), server.URL, token, contract,
+				claimsclient.ExecutionFenceOptions{SnapshotTimeout: time.Minute})
 			defer stop()
 			if scenario == "foreign-owner" {
 				if err == nil {
@@ -136,6 +144,19 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 			if scenario == "shared-revoked" {
 				revoked.Store(true)
 			}
+			if scenario == "shared-expiry" {
+				// Publish an expired observation explicitly rather than racing
+				// setup and repeated HTTP reads against a six-second lease.
+				expired.Store(true)
+			}
+			if scenario == "stalled-read" {
+				select {
+				case <-readBlocked:
+				case <-time.After(time.Minute):
+					t.Fatal("execution observation did not enter its blocked read")
+				}
+				stop()
+			}
 			if scenario == "finished-attempt" {
 				if err := f.writer.recorder.(*journal.Run).Append(journal.Event{Type: journal.EventStageFinished, Stage: "check", Attempt: 1, Status: "completed"}); err != nil {
 					t.Fatal(err)
@@ -146,7 +167,7 @@ func TestChildExecutionObserverUsesParentLeaseAndStopsOnCancellation(t *testing.
 				if context.Cause(ctx) == nil {
 					t.Fatal("authority loss had no cause")
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(time.Minute):
 				t.Fatal("child continued after execution authority ended")
 			}
 			if scenario == "shared-expiry" && calls.Load() < 2 {

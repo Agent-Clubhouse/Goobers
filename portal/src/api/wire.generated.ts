@@ -141,7 +141,7 @@ export const goWireFixtures = {
     "gaggle": "goobers",
     "workflow": "implement",
     "requestId": "delivery-1",
-    "sourceRun": "source-1"
+    "workItemId": "42"
   },
   "triggerResponse": {
     "acceptanceId": "trigger-0123456789abcdef0123456789abcdef",
@@ -525,7 +525,29 @@ export const goWireFixtures = {
       "earliestRetainUntil": "2026-07-18T12:36:56Z",
       "inventoryRoot": "/instances/fixture/recovery",
       "policySource": "instance-config",
-      "observedAt": "2026-07-18T12:32:56Z"
+      "observedAt": "2026-07-18T12:32:56Z",
+      "reclaimCandidates": [
+        {
+          "runId": "run-fixture",
+          "phase": "completed",
+          "ref": "refs/goobers/recovery/run-fixture",
+          "patchDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "repositoryKey": "github|||team|repo|",
+          "createdAt": "2026-07-18T12:32:56Z",
+          "retainUntil": "2026-07-18T12:36:56Z",
+          "inspectCommand": "goobers trace --summary run-fixture /instances/fixture",
+          "restoreCommand": "goobers recovery-restore --record /instances/fixture/recovery/entry/record.json --repository . --branch recovered/run-fixture /instances/fixture",
+          "abandonCommand": "goobers recovery-abandon --run run-fixture --ref refs/goobers/recovery/run-fixture --confirm-digest sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /instances/fixture"
+        }
+      ],
+      "reclaimCandidatesTotal": 1,
+      "reclaimHold": {
+        "reason": "grace",
+        "until": "2026-07-18T12:36:56Z",
+        "setting": "retention.firstEnable: immediate",
+        "configFile": "/instances/fixture/instance.yaml"
+      },
+      "statusCommand": "goobers status --all /instances/fixture"
     },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,

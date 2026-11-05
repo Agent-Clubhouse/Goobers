@@ -32,6 +32,13 @@ func WithWorkspaceQuiescence(ctx context.Context) (context.Context, *WorkspaceQu
 	return context.WithValue(ctx, workspaceQuiescenceKey{}, state), state
 }
 
+// RequiresWorkspaceQuiescence lets the process owner establish strict custody
+// before launch; registering after launch is too late to prevent Job breakaway.
+func RequiresWorkspaceQuiescence(ctx context.Context) bool {
+	state, _ := ctx.Value(workspaceQuiescenceKey{}).(*WorkspaceQuiescence)
+	return state != nil
+}
+
 // RegisterWorkspaceWriter is called by an actual process owner after launch.
 // Its completion callback requires stop/join evidence, not context cancellation.
 // Nil means no handoff was requested and preserves ordinary runtime behavior.

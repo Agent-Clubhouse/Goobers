@@ -112,6 +112,13 @@ type DiffReader interface {
 	Head(ctx context.Context) (branch string, baseRef string, err error)
 }
 
+// CommitInspector reports commits made during this workspace's attempt, matching
+// the local runner's HasNewCommits observation. Scratch/read-only workspaces
+// and unconfirmed remote failures do not supply evidence of committed work.
+type CommitInspector interface {
+	HasNewCommits(context.Context) (bool, error)
+}
+
 // WorkspaceProvisioner provisions the fresh, isolated, disposable working copy
 // each stage attempt runs in (ARCHITECTURE.md §5). The engine's activities
 // provision one per attempt and stamp its path into the invocation envelope's

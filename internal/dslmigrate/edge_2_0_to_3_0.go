@@ -109,24 +109,36 @@ func applyV20ToV30(source []byte, root *yaml.Node) (bool, []string, error) {
 
 // migrateGaggleSpec migrates a gaggle document's spec.requiredCapabilities to a
 // gaggle-level spec.runsOn carrying os/capabilities only (dsl-3.0.md §2 "Gaggle
-// level"). NOTE: `goobers fix` today iterates only workflow files, not gaggle
-// files, so this arm is reached only when a gaggle document is passed
-// directly; wiring the fix command to sweep gaggle documents is the follow-up
-// recorded in the PR.
+// level"). The CLI migrates this shared floor after every workflow in the
+// gaggle has successfully reached a 3.x pin.
 func migrateGaggleSpec(spec *yaml.Node, notes *[]string) (bool, error) {
 	if spec == nil {
 		return false, nil
 	}
-	rc, _ := mapValue(spec, "requiredCapabilities")
+	rc, rcIndex := mapValue(spec, "requiredCapabilities")
 	if rc == nil {
 		return false, nil
+	}
+	if rc.Kind != yaml.SequenceNode {
+		return false, fmt.Errorf("gaggle requiredCapabilities must be a sequence")
+	}
+	for _, item := range rc.Content {
+		if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
+			return false, fmt.Errorf("gaggle requiredCapabilities must contain string tokens")
+		}
+	}
+	if existing, _ := mapValue(spec, "runsOn"); existing != nil {
+		return false, fmt.Errorf("gaggle declares both requiredCapabilities and runsOn; combine the placement requirements explicitly before migrating")
 	}
 	osValue, caps, err := splitOSTokens(sequenceValues(rc), "gaggle")
 	if err != nil {
 		return false, err
 	}
+	heading := spec.Content[rcIndex-1].HeadComment
 	removeMapKey(spec, "requiredCapabilities")
 	runsOn := ensureChildMap(spec, "runsOn")
+	_, runsOnIndex := mapValue(spec, "runsOn")
+	spec.Content[runsOnIndex-1].HeadComment = heading
 	if osValue != "" {
 		setScalar(runsOn, "os", osValue, "!!str")
 	}

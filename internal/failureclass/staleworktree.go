@@ -3,6 +3,8 @@ package failureclass
 import (
 	"regexp"
 	"strings"
+
+	"github.com/goobers/goobers/internal/stringpolicy"
 )
 
 var managedWorktreePathPattern = regexp.MustCompile(`(?i)(?:^|[\\/])wt-[0-9a-f]{24}(?:[\\/]|$)`)
@@ -18,5 +20,5 @@ var missingPathMarkers = []string{
 // keeps ordinary missing source files classified as implementation failures.
 func IsStaleManagedWorktreePath(message string) bool {
 	message = strings.ToLower(message)
-	return managedWorktreePathPattern.MatchString(message) && containsAny(message, missingPathMarkers)
+	return managedWorktreePathPattern.MatchString(message) && stringpolicy.ContainsAny(message, missingPathMarkers...)
 }

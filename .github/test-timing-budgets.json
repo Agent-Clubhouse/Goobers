@@ -6,6 +6,13 @@
       "budgetSeconds": 900,
       "baseline": "The Linux whole-tree coverage suite measured 544-715 seconds across 47 admitted PR runs on 2026-09-12 (#5001), with a 676-second median; the 900-second budget is informational headroom over that range, not a pass/fail gate -- see regressionTolerance for the advisory signal.",
       "regressionTolerance": 0.5
+    },
+    "cloud-pg": {
+      "baselineSeconds": 900,
+      "budgetSeconds": 900,
+      "baseline": "HA-P3-24 initial design allowance, not a measured baseline. Report elapsed time from Actions job.started_at through final cleanup; warn above 15 minutes without failing correctness checks. Hosted measurements are retained as artifacts.",
+      "regressionTolerance": 0.5,
+      "alertOnBudget": true
     }
   }
 }

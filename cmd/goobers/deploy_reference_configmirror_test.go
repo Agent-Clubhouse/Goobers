@@ -1,62 +1,44 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/yaml"
 )
 
-func TestDeployReferenceConfigMirrorSeparatesWorkerStorage(t *testing.T) {
-	for _, platform := range []string{"linux"} {
-		t.Run(platform, func(t *testing.T) {
-			const base = "worker-deployment.yaml"
-			read := func(path string) []byte {
-				data, err := os.ReadFile(filepath.Join("../../deploy/reference", path))
-				if err != nil {
-					t.Fatal(err)
-				}
-				data, err = yaml.YAMLToJSON(data)
-				if err != nil {
-					t.Fatal(err)
-				}
-				return data
-			}
-			data, err := strategicpatch.StrategicMergePatch(read("goobers-system/"+base), read("config-mirror/worker-"+platform+".yaml"), appsv1.Deployment{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var deployment appsv1.Deployment
-			if err := json.Unmarshal(data, &deployment); err != nil {
-				t.Fatal(err)
-			}
-			pod := deployment.Spec.Template.Spec
-			foundPrivate, foundMirror := false, false
-			for _, volume := range pod.Volumes {
-				if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == "goobers-journal" {
-					t.Fatal("worker retained daemon journal claim")
-				}
-				if volume.Name == "journal" {
-					foundPrivate = volume.EmptyDir != nil
-				}
-				if volume.Name == "config-mirror" {
-					foundMirror = volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ReadOnly
-				}
-			}
-			if !foundPrivate || !foundMirror {
-				t.Fatal("worker requires private instance and read-only mirror")
-			}
-			seed := pod.InitContainers[0]
-			if len(seed.Args) == 0 || seed.Args[0] != "config-seed" {
-				t.Fatal("init container does not validate a complete config seed")
-			}
-			if err := validateManifestArgs(seed.Args[1:], registeredCommandFlagSet(t, "config-seed"), []string{"mirror", "instance"}, 0); err != nil {
-				t.Fatal(err)
-			}
-		})
+func TestDeployReferenceConfigMirrorAliasesStatelessBase(t *testing.T) {
+	kustomization, err := os.ReadFile("../../deploy/reference/config-mirror/kustomization.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(kustomization), "mirror-pvc") || strings.Contains(string(kustomization), "worker-linux") {
+		t.Fatal("compatibility overlay restores the retired shared config mirror")
+	}
+	raw, err := os.ReadFile(filepath.Join("../../deploy/reference/goobers-system", "worker-deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas < 2 {
+		t.Fatalf("worker replicas = %v, want at least 2", deployment.Spec.Replicas)
+	}
+	privateWorkRoot := false
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			t.Fatalf("worker base retained PVC %q", volume.PersistentVolumeClaim.ClaimName)
+		}
+		if volume.Name == "workspaces" && volume.EmptyDir != nil {
+			privateWorkRoot = true
+		}
+	}
+	if !privateWorkRoot {
+		t.Fatal("worker work root is not backed by emptyDir")
 	}
 }

@@ -32,6 +32,9 @@ func TestInstanceIdentityDurableAndRootScoped(t *testing.T) {
 	if err != nil || other == first {
 		t.Fatalf("independent root identity = %q, %v", other, err)
 	}
+	if _, err := os.Stat(filepath.Join(layout.Root, instanceIdentityFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh root created a second identity file: %v", err)
+	}
 }
 
 func TestInstanceIdentityReadDoesNotCreateState(t *testing.T) {
@@ -104,13 +107,10 @@ func TestInstanceIdentityConcurrentInitializersAgree(t *testing.T) {
 	}
 }
 
-func TestInstanceIdentityReclaimsCrashFileAndSurvivesRename(t *testing.T) {
+func TestInstanceIdentitySurvivesRename(t *testing.T) {
 	parent := t.TempDir()
 	layout := NewLayout(filepath.Join(parent, "before"))
 	if err := os.Mkdir(layout.Root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(layout.Root, ".instance-id.pending"), []byte("interrupted write"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	id, err := layout.EnsureIdentity(context.Background())
@@ -145,5 +145,62 @@ func TestInstanceIdentityLockWaitHonorsCancellation(t *testing.T) {
 	}
 	if _, err := layout.ReadIdentity(); !os.IsNotExist(err) {
 		t.Fatalf("contended initialization created identity: %v", err)
+	}
+}
+
+func TestInstanceIdentityMigratesDistinctLegacyIdentityAsAlias(t *testing.T) {
+	root := t.TempDir()
+	canonical := strings.Repeat("a", 32)
+	legacy := strings.Repeat("b", 32)
+	for name, value := range map[string]string{
+		RootIdentityFileName: canonical,
+		instanceIdentityFile: legacy,
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := NewLayout(root).EnsureIdentity(context.Background())
+	if err != nil || got != canonical {
+		t.Fatalf("EnsureIdentity() = %q, %v; want canonical %q", got, err, canonical)
+	}
+	aliases, err := ReadRootIdentityAliases(root)
+	if err != nil || len(aliases) != 1 || aliases[0] != legacy {
+		t.Fatalf("aliases = %v, %v; want [%q]", aliases, err, legacy)
+	}
+	for _, candidate := range []string{canonical, legacy} {
+		matches, err := RootIdentityMatches(root, candidate)
+		if err != nil || !matches {
+			t.Errorf("RootIdentityMatches(%q) = %v, %v; want true", candidate, matches, err)
+		}
+		resolved, err := ResolveRootIdentity(root, candidate)
+		if err != nil || resolved != canonical {
+			t.Errorf("ResolveRootIdentity(%q) = %q, %v; want %q", candidate, resolved, err, canonical)
+		}
+	}
+	if matches, err := RootIdentityMatches(root, strings.Repeat("d", 32)); err != nil || matches {
+		t.Errorf("foreign RootIdentityMatches = %v, %v; want false, nil", matches, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, instanceIdentityFile))
+	if err != nil || string(data) != legacy+"\n" {
+		t.Fatalf("legacy identity changed: %q, %v", data, err)
+	}
+}
+
+func TestInstanceIdentityAdoptsLoneLegacyIdentity(t *testing.T) {
+	root := t.TempDir()
+	legacy := strings.Repeat("c", 32)
+	if err := os.WriteFile(filepath.Join(root, instanceIdentityFile), []byte(legacy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewLayout(root).EnsureIdentity(context.Background())
+	if err != nil || got != legacy {
+		t.Fatalf("EnsureIdentity() = %q, %v; want %q", got, err, legacy)
+	}
+	if canonical, err := ReadRootIdentity(root); err != nil || canonical != legacy {
+		t.Fatalf("canonical identity = %q, %v; want %q", canonical, err, legacy)
+	}
+	if _, err := ReadRootIdentityAliases(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("equal adopted identity unexpectedly gained aliases: %v", err)
 	}
 }

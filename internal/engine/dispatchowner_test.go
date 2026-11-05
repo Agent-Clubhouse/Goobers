@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -60,7 +62,8 @@ func TestDistinctRunIDStampsItsOwnWorkflowIDOnTheAttempt(t *testing.T) {
 	const workflowID = "legacy-schedule-claim-run"
 	in := runInput("nightly", remotelyPlacedSpec(stage))
 	in.InstanceID = "0123456789abcdef0123456789abcdef"
-	in.RunID = RunID("legacy-schedule-claim")
+	sum := sha256.Sum256([]byte("legacy-schedule-claim"))
+	in.RunID = hex.EncodeToString(sum[:16])
 	in.Placements = remotePlacement(stage)
 
 	hashedRunID := in.RunID

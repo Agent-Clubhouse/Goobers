@@ -14,7 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -356,7 +356,7 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 	} {
 		if err := run.Append(journal.Event{
 			Type: journal.EventStageFinished, Stage: binding.stage, Status: string(apiv1.ResultSuccess),
-			Outputs: map[string]any{runner.WorkspaceBranchOutput: binding.branch},
+			Outputs: map[string]any{runsemantics.WorkspaceBranchOutput: binding.branch},
 		}); err != nil {
 			t.Fatalf("append %s workspace rebinding: %v", binding.stage, err)
 		}

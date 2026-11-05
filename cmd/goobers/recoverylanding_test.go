@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
@@ -18,7 +20,7 @@ func TestRecoveryLandingHeadsUsesTerminalOwningJournal(t *testing.T) {
 			root := t.TempDir()
 			repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}
 			key := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}.CanonicalKey()
-			route, err := recoveryLandingRoute(repo)
+			route, err := runtimewiring.RecoveryLandingRoute(repo)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -69,7 +71,7 @@ func TestRecoveryLandingHeadsUsesTerminalOwningJournal(t *testing.T) {
 			if mode == "split-journals" {
 				create("different-run", false, true)
 			}
-			heads, err := recoveryLandingHeads(t.Context(), root, recovery.Record{RunID: "source-run", RepositoryKey: key}, route)
+			heads, err := runtimewiring.RecoveryLandingHeads(t.Context(), root, recovery.Record{RunID: "source-run", RepositoryKey: key}, route)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +96,7 @@ func TestRecoveryLandingHeadsResumesPastScanBudget(t *testing.T) {
 	root := t.TempDir()
 	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}
 	key := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}.CanonicalKey()
-	route, err := recoveryLandingRoute(repo)
+	route, err := runtimewiring.RecoveryLandingRoute(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +116,7 @@ func TestRecoveryLandingHeadsResumesPastScanBudget(t *testing.T) {
 		}
 	}
 	// Unrelated history (no workspace repository) fills more than one window.
-	const filler = recoveryLandingScanBudget + 40
+	const filler = runtimewiring.RecoveryLandingScanBudget + 40
 	for i := range filler {
 		finished(journal.RunIdentity{RunID: fmt.Sprintf("a-run-%04d", i), Workflow: "other", WorkflowVersion: 1})
 	}
@@ -128,14 +130,14 @@ func TestRecoveryLandingHeadsResumesPastScanBudget(t *testing.T) {
 	)
 	record := recovery.Record{RunID: "source-run", RepositoryKey: key}
 
-	first, err := recoveryLandingHeads(t.Context(), root, record, route)
+	first, err := runtimewiring.RecoveryLandingHeads(t.Context(), root, record, route)
 	if err != nil {
 		t.Fatalf("first pass over %d runs: %v (an over-budget runs directory must not fail the scan)", filler+1, err)
 	}
 	if len(first) != 0 {
 		t.Fatalf("first pass heads=%+v; the receipt lies outside the first window, so the fixture no longer exercises resumption", first)
 	}
-	second, err := recoveryLandingHeads(t.Context(), root, record, route)
+	second, err := runtimewiring.RecoveryLandingHeads(t.Context(), root, record, route)
 	if err != nil {
 		t.Fatal(err)
 	}

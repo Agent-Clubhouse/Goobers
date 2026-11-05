@@ -5,6 +5,8 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -37,34 +39,34 @@ func runtimeCredentialSources(ctx context.Context, cfg *instance.Config, gaggle 
 		}
 		name := owner + "/" + repo.Name
 		ref := ""
-		if repo.Token.Configured() || repo.GitHubAppAuth() || adoRepositoryMintsCredential(repo) {
+		if repo.Token.Configured() || repo.GitHubAppAuth() || runtimewiring.AdoRepositoryMintsCredential(repo) {
 			ref = name
 			sources[ref] = credreadiness.Presence(ctx, ref, repo.Token.CredentialTokenRef(ref), nil)
 			if repo.GitHubAppAuth() {
 				sources[ref] = runtimeDynamicCredential(credreadiness.SourceGitHubApp, ref)
 			}
-			if adoRepositoryMintsCredential(repo) && !repo.Token.Configured() {
+			if runtimewiring.AdoRepositoryMintsCredential(repo) && !repo.Token.Configured() {
 				sources[ref] = runtimeDynamicCredential(credreadiness.SourceUnsupported, ref)
 			}
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: ref})
 	}
-	role := gaggleBacklogRole(gaggle.Project, gaggle.Backlog)
+	role := runtimewiring.GaggleBacklogRole(gaggle.Project, gaggle.Backlog)
 	var overrides []credentials.Grant
 	if cfg.DaemonIdentity != nil {
-		overrides = append(overrides, daemonIdentityOverrides(role)...)
+		overrides = append(overrides, runtimewiring.DaemonIdentityOverrides(role)...)
 		if cfg.DaemonIdentity.Token != nil {
-			sources[daemonIdentityRefName] = credreadiness.Presence(ctx, daemonIdentityRefName, cfg.DaemonIdentity.Token.CredentialTokenRef(daemonIdentityRefName), nil)
+			sources[runtimewiring.DaemonIdentityRefName] = credreadiness.Presence(ctx, runtimewiring.DaemonIdentityRefName, cfg.DaemonIdentity.Token.CredentialTokenRef(runtimewiring.DaemonIdentityRefName), nil)
 		} else {
-			sources[daemonIdentityRefName] = runtimeDynamicCredential(credreadiness.SourceGitHubApp, daemonIdentityRefName)
+			sources[runtimewiring.DaemonIdentityRefName] = runtimeDynamicCredential(credreadiness.SourceGitHubApp, runtimewiring.DaemonIdentityRefName)
 		}
 	}
 	for _, grant := range cfg.Credentials {
-		key, err := credentialGrantStorageKey(grant)
+		key, err := runtimewiring.CredentialGrantStorageKey(grant)
 		if err != nil {
 			return nil, nil, err
 		}
-		ref := credentialRefName(key)
+		ref := runtimewiring.CredentialRefName(key)
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: ref})
 		sources[ref] = credreadiness.Presence(ctx, key, grant.Token.CredentialTokenRef(ref), nil)
 		if grant.GitHubApp != nil {
@@ -75,7 +77,7 @@ func runtimeCredentialSources(ctx context.Context, cfg *instance.Config, gaggle 
 	if gaggle.Project.Provider == apiv1.ProviderADO && gaggle.Project.Project != "" {
 		owner += "/" + gaggle.Project.Project
 	}
-	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, gaggle.Project.Name, role, repoCredentialedCapabilityNames(), overrides))
+	grants := runtimewiring.WithoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, gaggle.Project.Name, role, runtimewiring.RepoCredentialedCapabilityNames(), overrides))
 	var additional []credentials.RepoBinding
 	for _, repo := range gaggle.AdditionalRepos {
 		owner := repo.Owner
@@ -84,7 +86,7 @@ func runtimeCredentialSources(ctx context.Context, cfg *instance.Config, gaggle 
 		}
 		additional = append(additional, credentials.RepoBinding{Owner: owner, Name: repo.Name})
 	}
-	grants = append(grants, credentials.AdditionalReadGrants(referenceReadBindings(cfg.Repos, bindings), additional, string(capability.ContentsRead))...)
+	grants = append(grants, credentials.AdditionalReadGrants(runtimewiring.ReferenceReadBindings(cfg.Repos, bindings), additional, string(capability.ContentsRead))...)
 	return grants, sources, nil
 }
 
@@ -115,7 +117,7 @@ func runtimePreflightReadiness(ctx context.Context, cfg *instance.Config, gaggle
 		}
 		stageGrants := grants
 		if stage.Goober != "" {
-			stageGrants = buildGooberCredentialGrants(stage.Goober, stage.Harness, keys, grants)
+			stageGrants = runtimewiring.BuildGooberCredentialGrants(stage.Goober, stage.Harness, keys, grants)
 		}
 		byCapability := make(map[string]string)
 		for _, grant := range stageGrants {
@@ -140,12 +142,12 @@ func runtimePreflightReadiness(ctx context.Context, cfg *instance.Config, gaggle
 	return credentialChecks, harnessChecks, nil
 }
 
-var runtimeReadinessAdapterFor = adapterFor
+var runtimeReadinessAdapterFor = runtimewiring.AdapterFor
 
 func runtimeHarnessReadiness(ctx context.Context, cfg *instance.Config, stage runtimePreflightStage, spec apiv1.GooberSpec, process runtimeplan.Process, probe bool) runtimePreflightHarness {
 	result := runtimePreflightHarness{Stage: stage.Name, Harness: stage.Harness, Process: process,
 		Source: runtimeplan.Source{Fidelity: "unobservable", Detail: "harness subprocess probes disabled; use --check-readiness; target daemon/worker remains unobservable"}}
-	adapter, err := runtimeReadinessAdapterFor(apiv1.Harness(stage.Harness), harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, nil)
+	adapter, err := runtimeReadinessAdapterFor(apiv1.Harness(stage.Harness), runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, nil)
 	if err != nil {
 		result.Checks = []harness.ReadinessCheck{{Category: "unavailable_tool", Code: "harness_adapter_unsupported", Outcome: "unsupported", Detail: "configured harness adapter unavailable; diagnostic values omitted"}}
 		return result
@@ -155,7 +157,7 @@ func runtimeHarnessReadiness(ctx context.Context, cfg *instance.Config, stage ru
 		return result
 	}
 	result.Source = runtimeplan.Source{Fidelity: "observed", Detail: "bounded read-only reporting-process probes; no target identity attestation"}
-	grant, _ := agentModelGrant(cfg, apiv1.Harness(stage.Harness))
+	grant, _ := runtimewiring.AgentModelGrant(cfg, apiv1.Harness(stage.Harness))
 	result.Readiness = harness.ProbeReadiness(ctx, adapter, spec, grant != nil)
 	return result
 }
@@ -164,12 +166,12 @@ func runtimeHarnessReadiness(ctx context.Context, cfg *instance.Config, stage ru
 // uses strict admission. Only the typed harness-model/options failure gets this
 // diagnostic path; all workflow structural checks and digest code are shared.
 func compileRuntimePreflight(configDir string, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, instructions map[string]string, cfg *instance.Config) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, error) {
-	machines, digests, resolved, _, err := compiledMachinesWithGooberDigestsAndWarnings(configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, true, nil, cfg.ExternalTelemetryConnectorNames())
-	var mismatch *gooberHarnessConfigError
+	machines, digests, resolved, _, err := runtimewiring.CompiledMachinesWithGooberDigestsAndWarnings(configDir, set, goobers, instructions, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, true, nil, cfg.ExternalTelemetryConnectorNames())
+	var mismatch *runtimewiring.GooberHarnessConfigError
 	if !errors.As(err, &mismatch) {
 		return machines, digests, resolved, err
 	}
-	registry, err := buildHarnessRegistry(nil, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, "", "", true, nil, false)
+	registry, err := runtimewiring.BuildHarnessRegistry(nil, runtimewiring.HarnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, "", "", true, nil, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -182,12 +184,12 @@ func compileRuntimePreflight(configDir string, set *instance.ConfigSet, goobers 
 			return nil, nil, nil, errors.New("invalid MCP configuration; diagnostic values omitted")
 		}
 	}
-	machines, err = compileWorkflowMachines(set, goobers, registry.Names(), cfg.ExternalTelemetryConnectorNames())
+	machines, err = runtimewiring.CompileWorkflowMachines(set, goobers, registry.Names(), cfg.ExternalTelemetryConnectorNames())
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	digests, err = computeMachineGooberDigests(machines, goobers, instructions, func(gaggle string, specs map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
-		return loadGooberSkillPackages(configDir, gaggle, specs)
+	digests, err = runtimewiring.ComputeMachineGooberDigests(machines, goobers, instructions, func(gaggle string, specs map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
+		return runtimewiring.LoadGooberSkillPackages(configDir, gaggle, specs)
 	})
 	return machines, digests, goobers, err
 }

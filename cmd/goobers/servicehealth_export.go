@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/diagnostics/history"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -74,7 +75,7 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 	_, cfg.ResourceAttributes = telemetryInstanceIdentities(root)
 	var legacyErr error
 	if otlp.Enabled() {
-		if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
+		if err := runtimewiring.ConfigureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
 			if !setup.Config.Telemetry.NamedAzureEnabled() {
 				return nil, err
 			}
@@ -82,11 +83,11 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 		}
 	}
 	if azureEnabled {
-		if err := configureAzureMonitor(ctx, &cfg, *azure, setup.Config.Telemetry.EffectiveCollectionProfile(), root, setup.SharedRegistry, stores); err != nil {
+		if err := runtimewiring.ConfigureAzureMonitor(ctx, &cfg, *azure, setup.Config.Telemetry.EffectiveCollectionProfile(), root, setup.SharedRegistry, stores); err != nil {
 			return nil, err
 		}
 	}
-	namedErr := configureNamedTelemetry(ctx, &cfg, setup.Config.Telemetry, root, setup.SharedRegistry, stores, true)
+	namedErr := runtimewiring.ConfigureNamedTelemetry(ctx, &cfg, setup.Config.Telemetry, root, setup.SharedRegistry, stores, true)
 	exporter, err := telemetry.NewDiagnosticExporter(cfg)
 	return exporter, errors.Join(legacyErr, namedErr, err)
 }
@@ -221,14 +222,9 @@ func emitFleetHealth(ctx context.Context, root string, store *history.Store, exp
 
 // startDaemonHealth starts while startup is still in progress; its deferred
 // stop joins observers before the read service and instance journal close.
-func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool, engines ...*daemonEngineClient) func() {
+func startDaemonHealth(ctx context.Context, root string, identity *daemonIdentity, setup *schedulerSetup, inventory recoveryInventorySampler, reader fleetHealthReader, ready func() bool) func() {
 	healthCtx, cancel := context.WithCancel(ctx)
-	var engine *daemonEngineClient
-	if len(engines) > 0 {
-		engine = engines[0]
-	}
-	workers := newFleetWorkerHealthObserver(setup, engine)
-	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, workers, ready)
+	health := newFleetHealthSampler(root, identity, setup.Config.Telemetry.Diagnostics, reader, ready)
 	done := startServiceHealth(healthCtx, root, identity, setup, inventory, combinedFleetSampler(root, setup, reader, withBacklogHealth(setup, health)))
 	return func() { cancel(); <-done }
 }

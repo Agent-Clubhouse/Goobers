@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
@@ -45,10 +47,10 @@ func TestADOCredentialSchemesFollowEachCredentialsSource(t *testing.T) {
 	cfg := adoEntraGaggleWithPATOverride(string(capability.ADOWorkItemsWrite))
 	grants := []credentials.Grant{
 		{Capability: string(capability.RepoPush), Ref: adoTestRef},
-		{Capability: string(capability.ADOWorkItemsWrite), Ref: credentialRefName(string(capability.ADOWorkItemsWrite))},
-		{Capability: string(capability.GitHubIssuesWrite), Ref: daemonIdentityRefName},
+		{Capability: string(capability.ADOWorkItemsWrite), Ref: runtimewiring.CredentialRefName(string(capability.ADOWorkItemsWrite))},
+		{Capability: string(capability.GitHubIssuesWrite), Ref: runtimewiring.DaemonIdentityRefName},
 	}
-	got := adoCredentialSchemes(cfg, adoTestProject, grants)
+	got := runtimewiring.AdoCredentialSchemes(cfg, adoTestProject, grants)
 	want := map[string]string{
 		string(capability.RepoPush):          adoauth.SchemeBearer,
 		string(capability.ADOWorkItemsWrite): adoauth.SchemeBasic,
@@ -60,17 +62,17 @@ func TestADOCredentialSchemesFollowEachCredentialsSource(t *testing.T) {
 	// A static daemon identity on an ADO gaggle is a PAT: basic, even on an
 	// Entra repository. A GitHub App daemon identity states none.
 	cfg.DaemonIdentity = &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "EXAMPLE_DAEMON_PAT"}}
-	if got := adoCredentialSchemes(cfg, adoTestProject, grants)[string(capability.GitHubIssuesWrite)]; got != adoauth.SchemeBasic {
+	if got := runtimewiring.AdoCredentialSchemes(cfg, adoTestProject, grants)[string(capability.GitHubIssuesWrite)]; got != adoauth.SchemeBasic {
 		t.Fatalf("static daemon identity scheme = %q, want basic", got)
 	}
 
 	patRepo := &instance.Config{Repos: []instance.RepoRef{adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthPAT}, instance.TokenRef{Env: "EXAMPLE_ADO_PAT"})}}
-	if got := adoCredentialSchemes(patRepo, adoTestProject, grants[:1]); got[string(capability.RepoPush)] != adoauth.SchemeBasic {
+	if got := runtimewiring.AdoCredentialSchemes(patRepo, adoTestProject, grants[:1]); got[string(capability.RepoPush)] != adoauth.SchemeBasic {
 		t.Fatalf("PAT repository schemes = %v, want repo:push basic", got)
 	}
 
 	github := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "app"}}}
-	if got := adoCredentialSchemes(github, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}, grants); got != nil {
+	if got := runtimewiring.AdoCredentialSchemes(github, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"}, grants); got != nil {
 		t.Fatalf("GitHub gaggle schemes = %v, want none", got)
 	}
 }

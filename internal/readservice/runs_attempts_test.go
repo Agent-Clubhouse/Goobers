@@ -75,6 +75,101 @@ func TestStageAttemptsClosesOpenAttemptAtRunTermination(t *testing.T) {
 	}
 }
 
+func TestStageAttemptsClosesSupersededAttemptBeforeRetry(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-claim-retry", machine.Def.Name, "goobers",
+		time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	emit := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	emit(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	emit(journal.Event{
+		Type: journal.EventError, Stage: "implement", Attempt: 1,
+		Error: &journal.ErrorDetail{Code: "provider_ledger_ownership_mismatch"},
+	})
+	emit(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptInfra,
+	})
+	emit(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptInfra, Status: string(apiv1.ResultSuccess),
+	})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := service.StageAttempts(context.Background(), "run-claim-retry", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Attempts) != 2 {
+		t.Fatalf("attempts = %+v, want failed initial attempt and successful retry", list.Attempts)
+	}
+	first, second := list.Attempts[0], list.Attempts[1]
+	if first.Status != string(apiv1.ResultFailure) || first.ErrorCode != "stage_interrupted" ||
+		first.FinishedSeq != second.StartedSeq || first.FinishedAt == nil {
+		t.Fatalf("superseded attempt = %+v, retry = %+v", first, second)
+	}
+	if second.Status != string(apiv1.ResultSuccess) || second.Class != string(journal.AttemptInfra) {
+		t.Fatalf("retry = %+v, want successful infra retry", second)
+	}
+}
+
+func TestStageAttemptsDoesNotCloseConcurrentBranch(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-concurrent-branches", machine.Def.Name, "goobers",
+		time.Date(2026, 10, 22, 13, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	emit := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	emit(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Branch: 1, Attempt: 1})
+	emit(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Branch: 2, Attempt: 1})
+	emit(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Branch: 2, Attempt: 1,
+		Status: string(apiv1.ResultSuccess),
+	})
+
+	list, err := service.StageAttempts(context.Background(), "run-concurrent-branches", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Attempts) != 2 {
+		t.Fatalf("attempts = %+v, want one attempt per branch", list.Attempts)
+	}
+	first, second := list.Attempts[0], list.Attempts[1]
+	if first.branch != 1 || first.Status != "running" || first.FinishedSeq != 0 {
+		t.Fatalf("branch 1 attempt = %+v, want still running", first)
+	}
+	if second.branch != 2 || second.Status != string(apiv1.ResultSuccess) {
+		t.Fatalf("branch 2 attempt = %+v, want successful", second)
+	}
+
+	emit(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Branch: 1, Attempt: 1,
+		Status: string(apiv1.ResultSuccess),
+	})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStageAttemptsDistinguishRepassesFromRetries(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(

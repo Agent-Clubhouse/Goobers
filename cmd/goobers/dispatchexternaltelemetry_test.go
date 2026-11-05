@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/capability"
@@ -72,7 +74,7 @@ func (f externalTelemetryFixture) envelope() apiv1.InvocationEnvelope {
 func runLocalExternalTelemetry(t *testing.T, f externalTelemetryFixture) (apiv1.ResultEnvelope, error) {
 	t.Helper()
 	rec := &externalTelemetryTestRecorder{}
-	stage, err := buildExternalTelemetryExecutor(
+	stage, err := runtimewiring.BuildExternalTelemetryExecutor(
 		externaltelemetry.Configuration{Connectors: []externaltelemetry.ConnectorConfig{f.connector}},
 		rec, nil,
 	)

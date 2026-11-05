@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -102,9 +104,9 @@ func seedHarnessArtifactWorktree(t *testing.T, tracked ...string) (instance.Layo
 		t.Fatal(err)
 	}
 	source, workcopies := t.TempDir(), t.TempDir()
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	writeHarnessArtifact(t, source, ".gitignore", "ignored.out\nnode_modules/\n")
 	recoveryCLIGit(t, source, "add", ".gitignore")

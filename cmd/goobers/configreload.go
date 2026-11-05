@@ -1,36 +1,26 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"log"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
-
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configgeneration"
+	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/configsignal"
-	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 var configReloadInterval = time.Second
@@ -77,6 +67,8 @@ func (l *openPRLoop) stopCurrent() {
 }
 
 type configReloader struct {
+	retentionRejected bool
+
 	watching       bool
 	layout         instance.Layout
 	setup          *schedulerSetup
@@ -103,6 +95,9 @@ type configReloader struct {
 	// digests publishes each applied digest to the config-digest plane, so a
 	// worker polling the daemon sees the tree actually in force (#4153).
 	digests         *configDigestPublisher
+	configSnapshots *configmirror.Plane
+	planeTreeDigest string
+	gaggleHealth    *daemonGaggleHealth
 	lastDigestError string
 	// lastRejectionMessage is set by reject() during the most recent poll
 	// call and cleared at the start of each pollOnce (#459) — it lets an
@@ -209,7 +204,7 @@ func (r *configReloader) pollOnceMode(now time.Time, forceSourceValidation bool)
 	oldDigest = r.appliedDigest
 	r.lastRejectionMessage = ""
 	r.pollDigest.Invalidate() // Explicit apply always reads the current bytes.
-	if forceSourceValidation {
+	if forceSourceValidation || r.retentionRejected {
 		r.observedDigest = ""
 	}
 	if pollErr := r.poll(now); pollErr != nil {
@@ -257,7 +252,7 @@ func (r *configReloader) poll(now time.Time) error {
 	defer r.refreshConfigMirror(context.Background())
 	root := r.layout.ConfigDir()
 	digest, err := r.pollDigest.Digest(now, []string{root, filepath.Join(filepath.Dir(root), "goobers"), filepath.Join(filepath.Dir(root), "skills")}, func(observe func(string)) (string, error) {
-		return configDirectoryDigestObserved(root, "", observe)
+		return runtimewiring.ConfigDirectoryDigestObserved(root, "", observe)
 	})
 	if err != nil {
 		message := err.Error()
@@ -272,7 +267,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return nil
 	}
 	r.observedDigest = digest
-	if digest == r.appliedDigest {
+	if digest == r.appliedDigest && !r.retentionRejected {
 		return nil
 	}
 
@@ -319,7 +314,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return r.reject(digest, &configReportError{report: report, err: r.scheduleTransientRetry(digest, err, now)})
 	}
 
-	stableDigest, err := configDirectoryDigest(r.layout.ConfigDir())
+	stableDigest, err := runtimewiring.ConfigDirectoryDigest(r.layout.ConfigDir())
 	if err != nil {
 		r.observedDigest = r.appliedDigest
 		return r.reject(digest, err)
@@ -328,14 +323,9 @@ func (r *configReloader) poll(now time.Time) error {
 		r.observedDigest = r.appliedDigest
 		return nil
 	}
-	// #3876: buildSchedulerDefinitions built a fresh engine-runtime holder,
-	// and only the boot path has the Temporal client and live-journal writer
-	// to attach one with. Carry the boot attachment across BEFORE the new
-	// entries go live, or every engine lane fails closed from this reload on.
-	definitions.EngineRuntime.adoptFrom(r.setup.EngineRuntime)
 	publish := func() error {
 		return r.publishOrdinaryDefinitions(definitions, func() error {
-			return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest)
+			return r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest, definitions.ExecutionGeneration)
 		})
 	}
 	if err := r.publishChildDefinitions(definitions.Set, publish); err != nil {
@@ -344,7 +334,7 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	superseded := supersededWorkflows(newPinnedDefinitions(r.setup.Config, r.setup.Machines, r.setup.GooberDigests, r.setup.RepoRefs, r.setup.Definitions),
 		newPinnedDefinitions(r.setup.Config, definitions.Machines, definitions.GooberDigests, definitions.RepoRefs, definitions.Set))
-	r.setup.EngineRuntime = definitions.EngineRuntime
+	r.setup.ExecutionGeneration = definitions.ExecutionGeneration
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
 	if r.setup.CredentialPlane != nil {
@@ -368,6 +358,9 @@ func (r *configReloader) poll(now time.Time) error {
 	r.cleanupRetries.Replace(definitions.WorktreesByGaggle, r.setup.LegacyWorktrees)
 	if r.setup.MergedPRCostReconciler != nil {
 		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
+	}
+	if err := r.replaceGaggleHealth(definitions.Set); err != nil {
+		return err
 	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
@@ -397,6 +390,7 @@ func (r *configReloader) poll(now time.Time) error {
 	r.digests.Set(digest)
 	r.transientRetry = transientReloadRetry{}
 	r.rejectionReason = ""
+	r.retentionRejected = false
 	r.candidateWarnings = nil
 	// Advisory persistence cannot turn a successfully applied configuration
 	// into a reload failure. poll's generation check deduplicates this work.
@@ -404,6 +398,13 @@ func (r *configReloader) poll(now time.Time) error {
 		log.Printf("config reload: record advisory warnings: %v", err)
 	}
 	return nil
+}
+
+func (r *configReloader) replaceGaggleHealth(definitions *instance.ConfigSet) error {
+	if r.gaggleHealth == nil {
+		return nil
+	}
+	return r.gaggleHealth.Replace(definitions)
 }
 
 func (r *configReloader) publishReloadStatus(now time.Time) {
@@ -416,6 +417,8 @@ func (r *configReloader) publishReloadStatus(now time.Time) {
 func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloadStatus {
 	state := "current"
 	switch {
+	case r.retentionRejected && r.rejectedDigest == r.observedDigest:
+		state = "rejected"
 	case r.lastDigestError != "":
 		state = "unreadable"
 	case r.appliedDigest != r.observedDigest && r.rejectedDigest == r.observedDigest:
@@ -437,6 +440,9 @@ func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloa
 }
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
+	if errors.Is(reloadErr, configgeneration.ErrCapacity) {
+		r.retentionRejected = true
+	}
 	message := configReloadErrorMessage(reloadErr)
 	r.lastRejectionMessage = message
 	r.rejectionReason = message
@@ -475,206 +481,4 @@ func configReloadErrorMessage(err error) string {
 		parts = append(parts, issue.String())
 	}
 	return strings.Join(parts, "; ")
-}
-
-// configDirectoryDigest fingerprints the config directory so the reloader can
-// tell a real change from a no-op. It tracks YAML definitions, their referenced
-// goober instructions and skill bodies, and every file in a goober assets
-// directory; unrelated config-tree churn remains excluded.
-func configDirectoryDigest(root string) (string, error) {
-	return configDirectoryDigestScoped(root, "")
-}
-
-// configDirectoryDigestForGaggle fingerprints the config surface visible to
-// one gaggle. Sibling gaggle trees are independent hot-reload units and must
-// not invalidate deterministic stages already running under this generation.
-func configDirectoryDigestForGaggle(root, gaggle string) (string, error) {
-	if strings.TrimSpace(gaggle) == "" {
-		return configDirectoryDigest(root)
-	}
-	return configDirectoryDigestScoped(root, gaggle)
-}
-
-func configDirectoryDigestScoped(root, gaggle string) (string, error) {
-	return configDirectoryDigestObserved(root, gaggle, nil)
-}
-
-func configDirectoryDigestObserved(root, gaggle string, observe func(string)) (string, error) {
-	hash := sha256.New()
-	contentPaths := make(map[string]struct{})
-	includePath := func(path string) (bool, error) {
-		if gaggle == "" {
-			return true, nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return false, err
-		}
-		parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
-		return len(parts) < 2 || parts[0] != "gaggles" || parts[1] == gaggle, nil
-	}
-	writeEntry := func(path string, mode fs.FileMode, content []byte) error {
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
-		var size [8]byte
-		binary.BigEndian.PutUint64(size[:], uint64(len(relative)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write([]byte(relative))
-		binary.BigEndian.PutUint64(size[:], uint64(mode))
-		_, _ = hash.Write(size[:])
-		binary.BigEndian.PutUint64(size[:], uint64(len(content)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write(content)
-		return nil
-	}
-	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
-		return filepath.WalkDir(tree, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			included, err := includePath(path)
-			if err != nil {
-				return err
-			}
-			if !included {
-				if entry.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			name := entry.Name()
-			// Handle asset loading/hashing first
-			if gooberassets.IsSourceDir(path) {
-				bundle, err := gooberassets.Load(path)
-				if err != nil {
-					return err
-				}
-				if bundle == nil {
-					return nil
-				}
-				if err := writeEntry(path, 0, []byte(bundle.Fingerprint())); err != nil {
-					return err
-				}
-				if entry.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if entry.IsDir() {
-				// Skip hidden dirs and gaggle skills dirs
-				if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			// Outside asset bundles, only YAML definitions contribute.
-			if strings.HasPrefix(name, ".") {
-				return nil
-			}
-			ext := strings.ToLower(filepath.Ext(path))
-			if ext != ".yaml" && ext != ".yml" {
-				return nil
-			}
-			content, err := os.ReadFile(path)
-			if err != nil {
-				// A config file that vanished between the walk and the read (an
-				// editor's atomic rename, a git checkout) is a transient state, not
-				// a rejectable config. Skip it and let the next poll — with the
-				// read-validate-reread stability check — converge on settled bytes.
-				if errors.Is(err, fs.ErrNotExist) {
-					return nil
-				}
-				return err
-			}
-			if err := writeEntry(path, 0, content); err != nil {
-				return err
-			}
-			references, err := gooberContentReferences(root, path, content)
-			if err != nil {
-				return err
-			}
-			for _, contentPath := range references {
-				contentPaths[contentPath] = struct{}{}
-			}
-			return nil
-		})
-	})
-	if err != nil {
-		return "", fmt.Errorf("digest config directory: %w", err)
-	}
-	paths := make([]string, 0, len(contentPaths))
-	for path := range contentPaths {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		if observe != nil {
-			observe(path)
-		}
-		info, err := os.Stat(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("digest config directory: stat resolved goober content: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("digest config directory: read resolved goober content: %w", err)
-		}
-		if err := writeEntry(path, 0, content); err != nil {
-			return "", fmt.Errorf("digest config directory: %w", err)
-		}
-	}
-	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-type configDigestDocument struct {
-	Kind string `json:"kind"`
-	Spec struct {
-		Instructions string   `json:"instructions"`
-		Gaggle       string   `json:"gaggle"`
-		Skills       []string `json:"skills"`
-	} `json:"spec"`
-}
-
-func gooberContentReferences(configDir, definitionPath string, content []byte) ([]string, error) {
-	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(content), 4096)
-	var paths []string
-	for {
-		var document configDigestDocument
-		err := decoder.Decode(&document)
-		if errors.Is(err, io.EOF) {
-			return paths, nil
-		}
-		if err != nil {
-			// The YAML bytes already move the digest; config validation owns the
-			// diagnostic for malformed documents.
-			return paths, nil
-		}
-		if document.Kind != "Goober" {
-			continue
-		}
-		if document.Spec.Instructions != "" {
-			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
-		}
-		for _, skill := range document.Spec.Skills {
-			_, skillPaths, ok, err := skillPackagePaths(configDir, document.Spec.Gaggle, skill)
-			if err != nil {
-				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
-			}
-			if ok {
-				paths = append(paths, skillPaths...)
-			}
-		}
-	}
 }

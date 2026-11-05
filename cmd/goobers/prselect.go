@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -20,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/runner"
+
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -153,18 +156,10 @@ func runPRSelectCore(
 		pf(stderr, "error: invalid respectAssignee input: %v\n", err)
 		return 1
 	}
-	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
-	if respectAssignee && selfIdentity == "" {
-		identitySource, ok := source.(prSelectSelfIdentitySource)
-		if !ok {
-			pf(stderr, "error: selfIdentity is required for respectAssignee on Azure DevOps\n")
-			return 1
-		}
-		selfIdentity, err = identitySource.resolveSelfIdentity(ctx)
-		if err != nil {
-			pf(stderr, "error: resolve selfIdentity for assignee policy: %v\n", err)
-			return 1
-		}
+	selfIdentity, err := resolvePRSelectSelfIdentity(ctx, source, respectAssignee, strings.TrimSpace(providerInput("selfIdentity", "")))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	now := time.Now().UTC()
 	expectedAuthorLogin, err := source.expectedAuthorLogin(ctx, root)
@@ -179,7 +174,11 @@ func runPRSelectCore(
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := source.pullRequests(ctx, repo, prSelectSourceRequest{
+	selectionRequest := prSelectSourceRequest{
+		excludeLabels:       excludeLabels,
+		requiredOptInLabel:  requiredOptInLabel,
+		respectAssignee:     respectAssignee,
+		selfIdentity:        selfIdentity,
 		base:                base,
 		headPrefixes:        headPrefixes,
 		authorScope:         authorScope,
@@ -187,14 +186,12 @@ func runPRSelectCore(
 		triggerRef:          triggerRef,
 		completeness:        completeness,
 		expectedAuthorLogin: expectedAuthorLogin,
-	})
+	}
+	prs, openPRs, err := source.pullRequests(ctx, repo, selectionRequest)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
-	safetyGateBases := []string{base}
-	if targeted, ok := targetedPullRequest(prs, targetedPullNumber, hasTargetedPullNumber); ok && targeted.Base != "" && targeted.Base != base {
-		safetyGateBases = append(safetyGateBases, targeted.Base)
-	}
+	safetyGateBases := prSelectSafetyBases(prs, targetedPullNumber, hasTargetedPullNumber, base)
 
 	gateState, gateCode := loadPRSelectSafetyGateState(
 		ctx, gateProvider, repo, openPRs, safetyGateBases, headPrefixes, expectedAuthorLogin, stdout, stderr,
@@ -234,20 +231,9 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, exclusionDraft)
 			continue
 		}
-		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
-			exclusions.recordPR(pr.Number, exclusionChecks)
-			continue
-		}
-		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
-			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr, expectedAuthorLogin)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
-			}
-			pr = refreshed
-			if cleared {
-				pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n",
-					pr.Number, abortedRunLabel)
-			}
+		pr, err = reconcilePRSelectAborted(ctx, gateProvider, repo, pr, expectedAuthorLogin, stdout)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			exclusions.recordPR(pr.Number, exclusionLabel)
@@ -287,6 +273,20 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, blockCode)
 			continue
 		}
+		conflicted, err := excludePRSelectConflict(ctx, source, repo, pr,
+			isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin), selectionRequest)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("route conflict for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		if conflicted {
+			pf(stdout, "excluded PR #%d: forge reports a merge conflict\n", pr.Number)
+			exclusions.recordPR(pr.Number, prqueue.Conflicted)
+			continue
+		}
+		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
+			exclusions.recordPR(pr.Number, exclusionChecks)
+			continue
+		}
 		exclusions.report.Add(pr.Number, "")
 		eligible = append(eligible, pr)
 	}
@@ -297,6 +297,43 @@ func runPRSelectCore(
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
 		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
+}
+
+func prSelectSafetyBases(prs []providers.PullRequestSummary, number string, targeted bool, base string) []string {
+	bases := []string{base}
+	if pr, ok := targetedPullRequest(prs, number, targeted); ok && pr.Base != "" && pr.Base != base {
+		bases = append(bases, pr.Base)
+	}
+	return bases
+}
+
+func reconcilePRSelectAborted(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, author string, stdout io.Writer) (providers.PullRequestSummary, error) {
+	if !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+		return pr, nil
+	}
+	refreshed, cleared, err := clearStaleRunAbortedPR(ctx, provider, repo, pr, author)
+	if err != nil {
+		return pr, err
+	}
+	if cleared {
+		pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n", pr.Number, abortedRunLabel)
+	}
+	return refreshed, nil
+}
+
+func resolvePRSelectSelfIdentity(ctx context.Context, source prSelectSource, respectAssignee bool, identity string) (string, error) {
+	if !respectAssignee || identity != "" {
+		return identity, nil
+	}
+	identitySource, ok := source.(prSelectSelfIdentitySource)
+	if !ok {
+		return "", fmt.Errorf("selfIdentity is required for respectAssignee on Azure DevOps")
+	}
+	identity, err := identitySource.resolveSelfIdentity(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve selfIdentity for assignee policy: %w", err)
+	}
+	return identity, nil
 }
 
 func validMergeReviewAuthorScope(authorScope string) bool {
@@ -490,6 +527,7 @@ func pullRequestsForSelection(
 }
 
 type selectionResolver struct {
+	matches       func(providers.PullRequestSummary) (bool, error)
 	target        func(context.Context, string) (providers.PullRequestSummary, error)
 	resolveTarget func(context.Context, *providers.PullRequestSummary) error
 	resolve       func(context.Context, *providers.PullRequestSummary) error
@@ -502,6 +540,10 @@ func pullRequestsForSelectionCommon(
 	req prSelectSourceRequest,
 	resolver selectionResolver,
 ) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	matches := req.identityFilters.MatchesSummary
+	if resolver.matches != nil {
+		matches = resolver.matches
+	}
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(req.triggerRef)
 	var targetedPR *providers.PullRequestSummary
 	if targeted {
@@ -509,7 +551,7 @@ func pullRequestsForSelectionCommon(
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
-		matched, err := req.identityFilters.MatchesSummary(pr)
+		matched, err := matches(pr)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -544,7 +586,7 @@ func pullRequestsForSelectionCommon(
 		if req.authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, req.headPrefixes, req.expectedAuthorLogin) {
 			continue
 		}
-		matched, err := req.identityFilters.MatchesSummary(pr)
+		matched, err := matches(pr)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -598,6 +640,10 @@ type prSelectSelfIdentitySource interface {
 }
 
 type prSelectSourceRequest struct {
+	excludeLabels       []string
+	requiredOptInLabel  string
+	respectAssignee     bool
+	selfIdentity        string
 	base                string
 	headPrefixes        []string
 	authorScope         string
@@ -613,28 +659,54 @@ type prSelectSourceRequest struct {
 // the documented ADO no-op gates unreachable rather than probing unsupported
 // comment, file, or branch operations.
 func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
-	if repo.Provider == providers.ProviderADO {
-		provider, err := newMergeReviewProvider(root, repo, true, withStageProviderCapability(capability.ProviderPRWrite))
-		if err != nil {
-			return nil, nil, err
-		}
-		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
-	}
-
-	token, err := providerToken(capability.ProviderPRWrite)
+	authority, err := prSelectAuthority()
 	if err != nil {
 		return nil, nil, err
 	}
+	opts := []stageProviderOption{withStageProviderCapability(authority)}
+	if repo.Provider == providers.ProviderADO {
+		provider, err := newMergeReviewProvider(root, repo, true, opts...)
+		if err != nil {
+			return nil, nil, err
+		}
+		ado, ok := provider.(*providers.ADOProvider)
+		if !ok {
+			return nil, nil, fmt.Errorf("ADO selection requires an ADO provider")
+		}
+		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider), conflicts: prSelectADOConflictProvider{mergeReviewADOProvider{ADOProvider: ado}}, snapshots: ado}, nil, nil
+	}
+
 	// Dispatch on the routed repo's own provider kind. Constructing a GitHub
 	// provider unconditionally addressed a Gitea-routed repo's selection scan
 	// to api.github.com with a Gitea credential, failing the stage with a 401
 	// github_auth_failed on a repo that has no GitHub side at all — the same
 	// defect open-pr's per-kind dispatch fixed for PR creation.
-	provider, err := remediationStageProvider(root, repo, token, true)
+	if repo.Provider == providers.ProviderGitHub {
+		opts = append(opts, withStageProviderCache())
+	}
+	provider, err := newProviderForStageSurface[remediationProvider](root, repo, false, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return refCheckPRSelectSource{provider: provider}, provider, nil
+}
+
+// prSelectAuthority implements only pr-select's manifested alternative, not a
+// global capability alias. Prefer a delivered provider:pr:write; once selected,
+// its fence or authentication failure must never fall back to github:pr:write.
+// Keep the capability identity through provider construction for scheme,
+// expiry and refresh-grant lookup, rather than passing a detached raw token.
+func prSelectAuthority() (capability.Capability, error) {
+	if os.Getenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite))) != "" {
+		if _, err := providerToken(capability.ProviderPRWrite); err != nil {
+			return "", fmt.Errorf("pr-select with the delivered %s (no fallback to %s): %w", capability.ProviderPRWrite, capability.GitHubPRWrite, err)
+		}
+		return capability.ProviderPRWrite, nil
+	}
+	if _, err := providerToken(capability.GitHubPRWrite); err != nil {
+		return "", fmt.Errorf("pr-select needs %s (or %s): %w", capability.ProviderPRWrite, capability.GitHubPRWrite, err)
+	}
+	return capability.GitHubPRWrite, nil
 }
 
 // refCheckPRSelectSource is the GitHub/Gitea source: checks are resolved at a
@@ -663,10 +735,15 @@ func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root st
 // self-identity or daemon-login lookup: ADO selection stays on the configured
 // branch-prefix ownership rule.
 type branchPolicyPRSelectSource struct {
-	provider adoSelectProvider
+	provider  adoSelectProvider
+	conflicts prSelectConflictProvider
+	snapshots *providers.ADOProvider
 }
 
 func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo providers.RepositoryRef, request prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	if s.snapshots != nil {
+		return s.selectionSnapshot(ctx, repo, request)
+	}
 	return pullRequestsForSelectionADO(
 		ctx, s.provider, repo, request.base, request.headPrefixes, request.authorScope,
 		request.identityFilters, request.triggerRef, request.completeness, request.expectedAuthorLogin,
@@ -740,7 +817,7 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 		}
 	}
 
-	cloneURLFn := repoCloneURL
+	cloneURLFn := runtimewiring.RepoCloneURL
 	if cloneURLFn == nil {
 		cloneURLFn = runner.DefaultRepoCloneURL
 	}
@@ -767,7 +844,7 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 			return nil, fmt.Errorf("resolve workcopies root for gaggle %q: %w", gaggle.Name, err)
 		}
 		workcopiesRoot := scoped.WorkcopiesDir()
-		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+		if configuredProject, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
 			workcopiesRoot = scoped.WorkcopiesBaseDir()
 		}
 		if seenRoots[workcopiesRoot] {
@@ -1153,6 +1230,9 @@ func pullRequestsForSelectionADO(
 		expectedAuthorLogin: expectedAuthorLogin,
 	}
 	return pullRequestsForSelectionCommon(ctx, openPRs, req, selectionResolver{
+		matches: func(pr providers.PullRequestSummary) (bool, error) {
+			return adoSelectionMatchesSummary(identityFilters, pr)
+		},
 		target: func(ctx context.Context, pullID string) (providers.PullRequestSummary, error) {
 			return adoSelectionCandidate(ctx, provider, repo, pullID)
 		},
@@ -1164,6 +1244,13 @@ func pullRequestsForSelectionADO(
 				return err
 			}
 			pr.CheckState = poll.CheckState
+			pr.Mergeable = poll.Mergeable
+			if poll.HeadSHA != "" {
+				pr.HeadSHA = poll.HeadSHA
+			}
+			if poll.Labels != nil {
+				pr.Labels = poll.Labels
+			}
 			if poll.State != "" {
 				pr.State = poll.State
 			}
@@ -1198,6 +1285,7 @@ func adoSelectionCandidate(ctx context.Context, provider adoSelectProvider, repo
 		RequestedReviewers: poll.RequestedReviewers,
 		State:              poll.State,
 		Merged:             poll.Merged,
+		Mergeable:          poll.Mergeable,
 		Head:               poll.HeadBranch,
 		Base:               poll.BaseBranch,
 		HeadSHA:            poll.HeadSHA,
@@ -1312,23 +1400,6 @@ func splitLabelList(value string) []string {
 		}
 	}
 	return labels
-}
-
-// hasAnyLabel reports whether labels contains any of wants (case-sensitive,
-// matching GitHub's own label-name comparison).
-func hasAnyLabel(labels, wants []string) bool {
-	for _, w := range wants {
-		w = strings.TrimSpace(w)
-		if w == "" {
-			continue
-		}
-		for _, l := range labels {
-			if l == w {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func hasPRSelectExclusion(labels, excludeLabels []string) bool {
@@ -1695,6 +1766,7 @@ func pullRequestSummaryFromPoll(pr providers.PullRequestSummary, poll providers.
 	}
 	pr.CheckState = poll.CheckState
 	pr.Body = poll.Body
+	pr.BodyIncomplete = false
 	pr.Integrity = poll.Integrity
 	return pr
 }

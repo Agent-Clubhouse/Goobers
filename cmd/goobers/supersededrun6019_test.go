@@ -15,7 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workspacedelta"
 	"github.com/goobers/goobers/providers"
@@ -35,8 +35,8 @@ func TestWorkspaceProvisionFailureCodeTypesAMovedPullRequestHead(t *testing.T) {
 	diverged := divergedFrom("cccc")
 
 	t.Setenv(dispatcher.EnvWorkspaceBranch, "goobers/impl/pr")
-	if got := workspaceProvisionFailureCode(diverged); got != runner.WorkspaceHeadMovedErrorCode {
-		t.Fatalf("rebound divergence from a moved head code = %q, want %q", got, runner.WorkspaceHeadMovedErrorCode)
+	if got := workspaceProvisionFailureCode(diverged); got != runsemantics.WorkspaceHeadMovedErrorCode {
+		t.Fatalf("rebound divergence from a moved head code = %q, want %q", got, runsemantics.WorkspaceHeadMovedErrorCode)
 	}
 	if got := workspaceProvisionFailureCode(divergedFrom("AAAA")); got != telemetry.ErrCodeWorkspaceProvisionFailed {
 		t.Fatalf("divergence on an unmoved head code = %q, want %q: the run rewrote its own history", got, telemetry.ErrCodeWorkspaceProvisionFailed)
@@ -59,10 +59,10 @@ func TestWorkspaceProvisionFailureCodeTypesAMovedPullRequestHead(t *testing.T) {
 // (a workflow shape the engine's typed exit does not cover), the failure
 // streak must still leave the moved pull request alone.
 func TestWorkspaceHeadMovedCodeIsAnItemJudgment(t *testing.T) {
-	if telemetry.ErrCodeWorkspaceHeadMoved != runner.WorkspaceHeadMovedErrorCode {
-		t.Fatalf("telemetry code %q != runner code %q", telemetry.ErrCodeWorkspaceHeadMoved, runner.WorkspaceHeadMovedErrorCode)
+	if telemetry.ErrCodeWorkspaceHeadMoved != runsemantics.WorkspaceHeadMovedErrorCode {
+		t.Fatalf("telemetry code %q != runner code %q", telemetry.ErrCodeWorkspaceHeadMoved, runsemantics.WorkspaceHeadMovedErrorCode)
 	}
-	if got := telemetry.ClassifyError(runner.WorkspaceHeadMovedErrorCode); got != telemetry.ErrorClassItemJudgment {
+	if got := telemetry.ClassifyError(runsemantics.WorkspaceHeadMovedErrorCode); got != telemetry.ErrorClassItemJudgment {
 		t.Fatalf("class = %q, want %q", got, telemetry.ErrorClassItemJudgment)
 	}
 }
@@ -128,7 +128,7 @@ func seedSupersededRun(t *testing.T, holdClaim bool, events ...journal.Event) (i
 func headMovedEvent(stage string) journal.Event {
 	return journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: runner.WorkspaceHeadMovedErrorCode, Message: "ancestry guard refused the delta"},
+		Error: &journal.ErrorDetail{Code: runsemantics.WorkspaceHeadMovedErrorCode, Message: "ancestry guard refused the delta"},
 	}
 }
 

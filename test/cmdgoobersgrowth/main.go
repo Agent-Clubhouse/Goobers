@@ -1,6 +1,6 @@
-// Command cmdgoobersgrowth ratchets non-test Go source lines and files in
-// cmd/goobers. Physical lines include comments and blanks, across all build tags;
-// child directories are separate packages and are not counted.
+// Command cmdgoobersgrowth ratchets non-test Go source lines and files in every
+// package main directly below cmd/. Physical lines include comments and blanks
+// across all build tags; child directories are separate packages.
 package main
 
 import (
@@ -9,10 +9,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -27,6 +30,13 @@ type justification struct {
 }
 
 type baseline struct {
+	commands map[string]commandBaseline
+	// Legacy aliases retained for the cmd/goobers-only baseline syntax.
+	counts  map[string]int
+	reasons map[string]justification
+}
+
+type commandBaseline struct {
 	counts  map[string]int
 	reasons map[string]justification
 }
@@ -62,18 +72,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 // Without an explicit PR head, counts are informational. Main may contain
 // independently reviewed growth from several merges beyond the last snapshot.
 func reportCounts(root string, stdout io.Writer) error {
-	counts, err := scanPackage(root)
+	commands, err := scanCommands(root)
 	if err != nil {
 		return err
 	}
-	for _, dimension := range dimensions {
-		_, _ = fmt.Fprintf(stdout, "cmdgoobersgrowth: %s %d (informational snapshot; PR deltas are enforced)\n", dimension, counts[dimension])
+	for _, command := range sortedCommands(commands) {
+		for _, dimension := range dimensions {
+			_, _ = fmt.Fprintf(stdout, "cmdgoobersgrowth: %s %s %d (informational snapshot; PR deltas are enforced)\n", command, dimension, commands[command][dimension])
+		}
 	}
 	return nil
 }
 
 func updateBaseline(root, baseRef string, stdout io.Writer) error {
-	counts, err := scanPackage(root)
+	counts, err := scanCommands(root)
 	if err != nil {
 		return err
 	}
@@ -86,7 +98,16 @@ func updateBaseline(root, baseRef string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	candidate.counts = counts
+	priorCommands := candidate.commands
+	candidate.commands = make(map[string]commandBaseline, len(counts))
+	for command, commandCounts := range counts {
+		reasons := map[string]justification{}
+		if prior, ok := priorCommands[command]; ok {
+			reasons = prior.reasons
+		}
+		candidate.commands[command] = commandBaseline{counts: commandCounts, reasons: reasons}
+	}
+	candidate.syncLegacy()
 	if err := validateUpdate(previous, candidate); err != nil {
 		return err
 	}
@@ -98,23 +119,63 @@ func updateBaseline(root, baseRef string, stdout io.Writer) error {
 }
 
 func scanPackage(root string) (map[string]int, error) {
-	path := filepath.Join(root, "cmd", "goobers")
-	entries, err := os.ReadDir(path)
+	commands, err := scanCommands(root)
 	if err != nil {
 		return nil, err
 	}
+	counts, ok := commands["cmd/goobers"]
+	if !ok {
+		return nil, errors.New("cmd/goobers is not a package main")
+	}
+	return counts, nil
+}
+
+func scanCommands(root string) (map[string]map[string]int, error) {
+	cmdRoot := filepath.Join(root, "cmd")
+	entries, err := os.ReadDir(cmdRoot)
+	if err != nil {
+		return nil, err
+	}
+	commands := make(map[string]map[string]int)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		command := "cmd/" + entry.Name()
+		counts, main, err := scanCommand(filepath.Join(cmdRoot, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if main {
+			commands[command] = counts
+		}
+	}
+	return commands, nil
+}
+
+func scanCommand(path string) (map[string]int, bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, false, err
+	}
 	counts := map[string]int{dimensions[0]: 0, dimensions[1]: 0}
+	main := false
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("source file %s must not be a symlink", entry.Name())
+			return nil, false, fmt.Errorf("source file %s must not be a symlink", entry.Name())
 		}
 		source, err := os.ReadFile(filepath.Join(path, entry.Name()))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
+		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), source, parser.PackageClauseOnly)
+		if err != nil {
+			return nil, false, fmt.Errorf("parse %s: %w", entry.Name(), err)
+		}
+		main = main || file.Name.Name == "main"
 		lines := bytes.Count(source, []byte{'\n'})
 		if len(source) > 0 && source[len(source)-1] != '\n' {
 			lines++
@@ -122,7 +183,7 @@ func scanPackage(root string) (map[string]int, error) {
 		counts[dimensions[0]] += lines
 		counts[dimensions[1]]++
 	}
-	return counts, nil
+	return counts, main, nil
 }
 
 func readBaseline(path string) (baseline, error) {
@@ -134,29 +195,65 @@ func readBaseline(path string) (baseline, error) {
 }
 
 func parseBaseline(content []byte) (baseline, error) {
-	base := baseline{counts: make(map[string]int), reasons: make(map[string]justification)}
+	base := baseline{commands: make(map[string]commandBaseline)}
+	command := "cmd/goobers"
 	scanner := bufio.NewScanner(bytes.NewReader(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if err := parseDirective(line, &base); err != nil {
+		if strings.HasPrefix(line, "!command ") {
+			command = strings.TrimSpace(strings.TrimPrefix(line, "!command "))
+			if !validCommand(command) {
+				return baseline{}, fmt.Errorf("invalid command %q", command)
+			}
+			if _, exists := base.commands[command]; exists {
+				return baseline{}, fmt.Errorf("duplicate command %q", command)
+			}
+			base.commands[command] = newCommandBaseline()
+			continue
+		}
+		current, ok := base.commands[command]
+		if !ok {
+			current = newCommandBaseline()
+		}
+		if err := parseDirective(line, &current); err != nil {
 			return baseline{}, err
 		}
+		base.commands[command] = current
 	}
 	if err := scanner.Err(); err != nil {
 		return baseline{}, err
 	}
-	for _, dimension := range dimensions {
-		if _, ok := base.counts[dimension]; !ok {
-			return baseline{}, fmt.Errorf("missing !%s in %s", dimension, baselinePath)
+	if len(base.commands) == 0 {
+		return baseline{}, fmt.Errorf("no command baselines in %s", baselinePath)
+	}
+	for command, current := range base.commands {
+		for _, dimension := range dimensions {
+			if _, ok := current.counts[dimension]; !ok {
+				return baseline{}, fmt.Errorf("%s: missing !%s in %s", command, dimension, baselinePath)
+			}
 		}
 	}
+	base.syncLegacy()
 	return base, nil
 }
 
-func parseDirective(line string, base *baseline) error {
+func newCommandBaseline() commandBaseline {
+	return commandBaseline{counts: make(map[string]int), reasons: make(map[string]justification)}
+}
+
+func (b *baseline) syncLegacy() {
+	current := b.commands["cmd/goobers"]
+	b.counts, b.reasons = current.counts, current.reasons
+}
+
+func validCommand(command string) bool {
+	return strings.HasPrefix(command, "cmd/") && filepath.Clean(command) == command && !strings.Contains(strings.TrimPrefix(command, "cmd/"), "/")
+}
+
+func parseDirective(line string, base *commandBaseline) error {
 	fields := strings.Fields(line)
 	for _, dimension := range dimensions {
 		switch fields[0] {
@@ -224,16 +321,22 @@ func validateUpdate(previous *baseline, next baseline) error {
 		return nil
 	}
 	var problems []string
-	for _, dimension := range dimensions {
-		current, old := next.counts[dimension], previous.counts[dimension]
-		if current <= old {
+	for command, currentCommand := range next.commands {
+		previousCommand, existed := previous.commands[command]
+		if !existed {
 			continue
 		}
-		reason, ok := next.reasons[dimension]
-		if ok && reason.target == current && strings.TrimSpace(reason.reason) != "" {
-			continue
+		for _, dimension := range dimensions {
+			current, old := currentCommand.counts[dimension], previousCommand.counts[dimension]
+			if current <= old {
+				continue
+			}
+			reason, ok := currentCommand.reasons[dimension]
+			if ok && reason.target == current && strings.TrimSpace(reason.reason) != "" {
+				continue
+			}
+			problems = append(problems, fmt.Sprintf("%s %s %s: baseline %d, new value %d; re-pin requires !%s-justification\\t%d\\t<why> and `make cmdgoobers-growth-update`", baselinePath, command, dimension, old, current, dimension, current))
 		}
-		problems = append(problems, fmt.Sprintf("%s %s: baseline %d, new value %d; re-pin requires !%s-justification\\t%d\\t<why> and `make cmdgoobers-growth-update`", baselinePath, dimension, old, current, dimension, current))
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "\n"))
@@ -247,12 +350,25 @@ func writeBaseline(path string, base baseline) error {
 	content.WriteString("# Physical lines (including blanks/comments) in direct non-test .go files, all build tags.\n")
 	content.WriteString("# Informational snapshot; PR enforcement compares head against merge-base.\n")
 	content.WriteString("# Snapshot updates require !<dimension>-justification\\t<exact target>\\t<why>.\n")
-	for _, dimension := range dimensions {
-		count := base.counts[dimension]
-		if reason, ok := base.reasons[dimension]; ok && reason.target == count {
-			fmt.Fprintf(&content, "!%s-justification\t%d\t%s\n", dimension, reason.target, reason.reason)
+	for _, command := range sortedCommands(base.commands) {
+		fmt.Fprintf(&content, "!command %s\n", command)
+		current := base.commands[command]
+		for _, dimension := range dimensions {
+			count := current.counts[dimension]
+			if reason, ok := current.reasons[dimension]; ok && reason.target == count {
+				fmt.Fprintf(&content, "!%s-justification\t%d\t%s\n", dimension, reason.target, reason.reason)
+			}
+			fmt.Fprintf(&content, "!%s %d\n", dimension, count)
 		}
-		fmt.Fprintf(&content, "!%s %d\n", dimension, count)
 	}
 	return os.WriteFile(path, []byte(content.String()), 0o644)
+}
+
+func sortedCommands[T any](commands map[string]T) []string {
+	names := make([]string, 0, len(commands))
+	for command := range commands {
+		names = append(names, command)
+	}
+	slices.Sort(names)
+	return names
 }

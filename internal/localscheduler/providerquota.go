@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -256,6 +257,30 @@ func (s *ProviderQuotaState) RefundReservation(reservation ProviderPollReservati
 	}
 	window.remaining++
 	s.windows[provider] = window
+}
+
+// ProviderQuotaWindow is one active provider window, as a restart-safe value.
+type ProviderQuotaWindow struct {
+	Provider  apiv1.Provider
+	Remaining int
+	ResetAt   time.Time
+}
+
+// Windows snapshots the active (not yet retired) provider windows in provider
+// order, for persistence across a controller restart. Restore a window with
+// Record, which ratchets, so replaying a snapshot can never add budget back.
+func (s *ProviderQuotaState) Windows() []ProviderQuotaWindow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	windows := make([]ProviderQuotaWindow, 0, len(s.windows))
+	for provider, window := range s.windows {
+		if window.resetReported {
+			continue
+		}
+		windows = append(windows, ProviderQuotaWindow{Provider: provider, Remaining: window.remaining, ResetAt: window.resetAt})
+	}
+	sort.Slice(windows, func(i, j int) bool { return windows[i].Provider < windows[j].Provider })
+	return windows
 }
 
 // ResetAt reports the last GitHub reset time for backward-compatible status

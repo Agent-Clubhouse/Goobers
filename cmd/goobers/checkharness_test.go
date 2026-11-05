@@ -7,9 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -18,13 +21,13 @@ import (
 // signed-in Copilot CLI being present on the machine running `make ci`.
 func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error)) {
 	t.Helper()
-	orig := harnessAdapterFor
-	harnessAdapterFor = lookup
-	t.Cleanup(func() { harnessAdapterFor = orig })
+	orig := runtimewiring.HarnessAdapterFor
+	runtimewiring.HarnessAdapterFor = lookup
+	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 }
 
 func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
-	adapter, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, nil, nil)
+	adapter, err := runtimewiring.AdapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{}, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -32,7 +35,7 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("adapterFor(copilot) = %T, want *harness.CopilotAdapter", adapter)
 	}
 
-	adapter, err = adapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{ExtraAllowlist: []string{"USER"}}, nil, nil)
+	adapter, err = runtimewiring.AdapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{ExtraAllowlist: []string{"USER"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(claude-code): %v", err)
 	}
@@ -44,7 +47,7 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("claude-code ExtraEnvAllowlist = %v, want [USER]", claude.ExtraEnvAllowlist)
 	}
 
-	if _, err := adapterFor("nonesuch", harness.EnvironmentConfig{}, nil, nil); err == nil {
+	if _, err := runtimewiring.AdapterFor("nonesuch", harness.EnvironmentConfig{}, nil, nil); err == nil {
 		t.Fatal("expected an error for an unsupported harness")
 	}
 }
@@ -138,7 +141,7 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	if !strings.Contains(stdout, "HARNESS copilot: OK") {
 		t.Fatalf("stdout = %q", stdout)
 	}
-	wantEnvironment := harnessEnvironmentPolicy(cfg.Runner)
+	wantEnvironment := runtimewiring.HarnessEnvironmentPolicy(cfg.Runner)
 	if !slices.Equal(gotEnvironment.ExtraAllowlist, wantEnvironment.ExtraAllowlist) ||
 		!slices.Equal(gotEnvironment.Unset, wantEnvironment.Unset) {
 		t.Fatalf("adapter environment policy = %+v, want %+v", gotEnvironment, wantEnvironment)
@@ -191,7 +194,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
-			AuthCheckArgs: copilotAuthCheckArgs,
+			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1, authInvoked: &authInvoked},
 		}, nil
 	})
@@ -207,7 +210,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
-			AuthCheckArgs: copilotAuthCheckArgs,
+			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 0},
 		}, nil
 	})

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/apireadcache"
@@ -138,7 +140,7 @@ func (d openPRListerDeps) forRepo(gaggle string, repo instance.RepoRef, resolver
 		if quota != nil {
 			// The same accounting adapter ci-poll's ADO provider observes
 			// through (buildCIPollExecutor).
-			lister.quota = &providerQuotaAccounting{state: quota}
+			lister.quota = &runtimewiring.ProviderQuotaAccounting{State: quota}
 		}
 		return lister, repoRef, key, nil
 	case "", string(providers.ProviderGitHub):
@@ -189,7 +191,7 @@ func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Wor
 	if len(cappedGaggles) == 0 {
 		return nil, nil
 	}
-	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
+	resolver, _, err := runtimewiring.BuildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
@@ -197,7 +199,7 @@ func (d runtimeDeps) openPRRefresher(cfg *instance.Config, workflows []apiv1.Wor
 	byGaggle := make(map[string]*localscheduler.OpenPRRefresher, len(cappedGaggles))
 	for gaggle := range cappedGaggles {
 		repo := cfg.Repos[0]
-		if configured, ok := configuredRepoForProject(cfg, gaggleProjects[gaggle]); ok {
+		if configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggleProjects[gaggle]); ok {
 			repo = configured
 		} else if project := gaggleProjects[gaggle]; project.Owner != "" && project.Name != "" {
 			// A project with no configured binding is polled under its own
@@ -402,11 +404,11 @@ func newCounterGitHubProvider(
 	quota *localscheduler.ProviderQuotaState,
 	scope apireadcache.Scope,
 ) (*providers.GitHubProvider, func(), error) {
-	var accounting *providerQuotaAccounting
+	var accounting *runtimewiring.ProviderQuotaAccounting
 	if quota != nil {
-		accounting = &providerQuotaAccounting{state: quota}
+		accounting = &runtimewiring.ProviderQuotaAccounting{State: quota}
 		if reservation, ok := localscheduler.ProviderPollReservationFromContext(ctx); ok {
-			accounting.prepaid = &reservation
+			accounting.Prepaid = &reservation
 		}
 	}
 	cleanup := func() {}
@@ -462,7 +464,7 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // instance's backlog count to api.github.com.
 func backlogCounterRepoRef(cfg *instance.Config, repoRef apiv1.RepoRef) providers.RepositoryRef {
 	provider := providers.ProviderKind(repoRef.Provider)
-	if configured, ok := configuredRepoForProject(cfg, repoRef); ok && configured.Provider != "" {
+	if configured, ok := runtimewiring.ConfiguredRepoForProject(cfg, repoRef); ok && configured.Provider != "" {
 		provider = providers.ProviderKind(configured.Provider)
 	} else if cfg != nil {
 		// Older/defaulted gaggle refs may omit Provider. Match their concrete
@@ -691,64 +693,4 @@ func remediationCounterScope(wf *apiv1.Workflow, branchNamespace string) (base, 
 		return base, headPrefix, true
 	}
 	return "", "", false
-}
-
-type providerQuotaAccounting struct {
-	mu          sync.Mutex
-	state       *localscheduler.ProviderQuotaState
-	prepaid     *localscheduler.ProviderPollReservation
-	outstanding []localscheduler.ProviderPollReservation
-}
-
-func (a *providerQuotaAccounting) AcquireQuotaRequest(_ context.Context, provider providers.ProviderKind) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.prepaid != nil {
-		a.outstanding = append(a.outstanding, *a.prepaid)
-		a.prepaid = nil
-		return nil
-	}
-	decision := a.state.ReserveCurrentPolls(apiv1.Provider(provider), 1)
-	if decision.Allowed == 0 {
-		return &localscheduler.ProviderPollBudgetError{
-			Provider:  decision.Provider,
-			Remaining: decision.RemainingBefore,
-			Requested: 1,
-			ResetAt:   decision.ResetAt,
-		}
-	}
-	reservation, _ := decision.Reservation()
-	a.outstanding = append(a.outstanding, reservation)
-	return nil
-}
-
-func (a *providerQuotaAccounting) ObserveQuota(_ context.Context, observation providers.QuotaObservation) {
-	a.mu.Lock()
-	var reservation localscheduler.ProviderPollReservation
-	if len(a.outstanding) > 0 {
-		reservation = a.outstanding[0]
-		a.outstanding = a.outstanding[1:]
-	}
-	a.mu.Unlock()
-
-	provider := apiv1.Provider(observation.Provider)
-	if observation.Cached {
-		a.state.RefundReservation(reservation)
-		return
-	}
-	if observation.Known {
-		a.state.Record(provider, observation.Remaining, observation.Reset)
-	}
-}
-
-func (a *providerQuotaAccounting) RefundUnused() {
-	a.mu.Lock()
-	if a.prepaid == nil {
-		a.mu.Unlock()
-		return
-	}
-	reservation := *a.prepaid
-	a.prepaid = nil
-	a.mu.Unlock()
-	a.state.RefundReservation(reservation)
 }

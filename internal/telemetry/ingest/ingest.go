@@ -173,20 +173,6 @@ func lastJournalSeq(dir string) (uint64, error) {
 	return highest, nil
 }
 
-// SchedulerTelemetry flushes pending spans and refreshes the scheduler decision
-// log in the rollup, outside any single run's completion.
-func SchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *rollup.DB, schedulerDir string, log *journal.InstanceLog) {
-	if tel != nil {
-		if err := tel.Flush(ctx); err != nil {
-			LogFailure(log, "", "telemetry_flush_failed", err)
-		}
-	}
-	if db == nil {
-		return
-	}
-	SchedulerLog(db, schedulerDir, log, "")
-}
-
 // SchedulerLog ingests the scheduler decision log, recording — never
 // returning — an ingest failure.
 func SchedulerLog(db *rollup.DB, schedulerDir string, log *journal.InstanceLog, runID string) {

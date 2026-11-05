@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
@@ -241,24 +242,24 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			"selectedNumber": "77", "needsFullRemediation": "true",
 		}},
 		runID + ":gather-pr-context": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
-			WorkspaceBranchOutput:    rebindBranch,
-			"selectedNumber":         "77",
-			"head":                   rebindBranch,
-			"base":                   "main",
-			"isBehindBase":           "true",
-			"hasSubstantiveFindings": "true",
-			"hasFailingCI":           "false",
+			runsemantics.WorkspaceBranchOutput: rebindBranch,
+			"selectedNumber":                   "77",
+			"head":                             rebindBranch,
+			"base":                             "main",
+			"isBehindBase":                     "true",
+			"hasSubstantiveFindings":           "true",
+			"hasFailingCI":                     "false",
 		}},
 		runID + ":gather-ci-failures": {
 			status: apiv1.ResultSuccess,
 			outputs: map[string]interface{}{
-				WorkspaceBranchOutput:    rebindBranch,
-				"selectedNumber":         "77",
-				"head":                   rebindBranch,
-				"base":                   "main",
-				"isBehindBase":           "true",
-				"hasSubstantiveFindings": "true",
-				"hasFailingCI":           "false",
+				runsemantics.WorkspaceBranchOutput: rebindBranch,
+				"selectedNumber":                   "77",
+				"head":                             rebindBranch,
+				"base":                             "main",
+				"isBehindBase":                     "true",
+				"hasSubstantiveFindings":           "true",
+				"hasFailingCI":                     "false",
 			},
 			artifactName: "remediation-brief.json", artifactData: []byte(`{"schema":"goobers.dev/remediation-brief/v3","integrity":"unapproved","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]}}`),
 			artifactMediaType: "application/json",

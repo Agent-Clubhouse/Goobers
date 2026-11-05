@@ -124,6 +124,14 @@ func newCommentClassifier(self commentIdentity, settings commentIdentitySettings
 	}
 }
 
+func (c commentClassifier) isSelf(comment providers.Comment) bool {
+	author := comment.Author
+	if c.byID {
+		author = comment.AuthorID
+	}
+	return author != "" && strings.EqualFold(author, c.selfKey)
+}
+
 func (c commentClassifier) origin(comment providers.Comment) commentOrigin {
 	author := comment.Author
 	if c.byID {
@@ -147,6 +155,8 @@ func (c commentClassifier) origin(comment providers.Comment) commentOrigin {
 // remediation and merge-demotion state, sibling and escalation records, the
 // issue-spec pin and the post-merge handoff.
 var goobersBookkeepingPayloads = []string{
+	prSelectConflictMarker,
+	commentWatchBudgetMarker,
 	"<!-- verdict-json: ",
 	"<!-- finding-set-history: ",
 	"<!-- remediation-state: ",

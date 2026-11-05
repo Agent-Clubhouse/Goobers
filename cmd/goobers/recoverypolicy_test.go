@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -54,9 +55,9 @@ func TestResolveRecoveryPolicyPrefersInstanceConfig(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			policy, origin := resolveRecoveryPolicy(layout, carried)
+			policy, origin := runtimewiring.ResolveRecoveryPolicy(layout, carried)
 			if !origin.Configured() {
-				t.Fatalf("origin = %+v; want source %q", origin, recoveryPolicyFromInstanceConfig)
+				t.Fatalf("origin = %+v; want source %q", origin, runtimewiring.RecoveryPolicyFromInstanceConfig)
 			}
 			if got := policy.MaxSnapshotsEffective(); got != 3072 {
 				t.Fatalf("MaxSnapshotsEffective() = %d; want the configured 3072", got)
@@ -70,7 +71,7 @@ func TestResolveRecoveryPolicyPrefersInstanceConfig(t *testing.T) {
 // is nothing to report.
 func TestResolveRecoveryPolicyUndeclaredSectionIsConfigured(t *testing.T) {
 	layout := writeRecoveryPolicyInstance(t, 0)
-	policy, origin := resolveRecoveryPolicy(layout, nil)
+	policy, origin := runtimewiring.ResolveRecoveryPolicy(layout, nil)
 	if !origin.Configured() || origin.LoadErr != nil {
 		t.Fatalf("origin = %+v; want a configured resolution", origin)
 	}
@@ -86,9 +87,9 @@ func TestResolveRecoveryPolicyFallsBackToCarriedConfig(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	carried := &instance.Config{Retention: instance.RetentionConfig{Recovery: &instance.RecoverySnapshotConfig{MaxSnapshots: 2048}}}
 
-	policy, origin := resolveRecoveryPolicy(layout, carried)
-	if origin.Source != recoveryPolicyFromCarriedConfig || origin.Configured() {
-		t.Fatalf("origin = %+v; want source %q", origin, recoveryPolicyFromCarriedConfig)
+	policy, origin := runtimewiring.ResolveRecoveryPolicy(layout, carried)
+	if origin.Source != runtimewiring.RecoveryPolicyFromCarriedConfig || origin.Configured() {
+		t.Fatalf("origin = %+v; want source %q", origin, runtimewiring.RecoveryPolicyFromCarriedConfig)
 	}
 	if origin.LoadErr == nil {
 		t.Fatal("fallback did not report why instance.yaml was not the source")
@@ -103,9 +104,9 @@ func TestResolveRecoveryPolicyFallsBackToCarriedConfig(t *testing.T) {
 // cap increases on the live instance changed nothing.
 func TestResolveRecoveryPolicyReportsBuiltInDefault(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
-	policy, origin := resolveRecoveryPolicy(layout, &instance.Config{})
-	if origin.Source != recoveryPolicyFromDefaults || origin.Configured() {
-		t.Fatalf("origin = %+v; want source %q", origin, recoveryPolicyFromDefaults)
+	policy, origin := runtimewiring.ResolveRecoveryPolicy(layout, &instance.Config{})
+	if origin.Source != runtimewiring.RecoveryPolicyFromDefaults || origin.Configured() {
+		t.Fatalf("origin = %+v; want source %q", origin, runtimewiring.RecoveryPolicyFromDefaults)
 	}
 	if got := policy.MaxSnapshotsEffective(); got != instance.DefaultRecoverySnapshotMaxCount {
 		t.Fatalf("MaxSnapshotsEffective() = %d; want %d", got, instance.DefaultRecoverySnapshotMaxCount)
@@ -124,11 +125,11 @@ func (r *recordingPublicationJournal) Append(event journal.Event) error {
 
 func TestJournalRecoveryPolicyFallbackReportsLimitAndRoot(t *testing.T) {
 	log := &recordingPublicationJournal{err: errors.New("journal unavailable")}
-	origin := recoveryPolicyOrigin{Source: recoveryPolicyFromDefaults, LoadErr: errors.New("read instance.yaml: no such file")}
+	origin := runtimewiring.RecoveryPolicyOrigin{Source: runtimewiring.RecoveryPolicyFromDefaults, LoadErr: errors.New("read instance.yaml: no such file")}
 
 	// A journal failure must not propagate: the resolution governs a cleanup
 	// that is about to run either way.
-	journalRecoveryPolicyFallback(log, origin, instance.RecoverySnapshotConfig{}, "/var/lib/goobers/recovery")
+	runtimewiring.JournalRecoveryPolicyFallback(log, origin, instance.RecoverySnapshotConfig{}, "/var/lib/goobers/recovery")
 
 	if len(log.events) != 1 {
 		t.Fatalf("appended %d events; want exactly 1", len(log.events))
@@ -137,7 +138,7 @@ func TestJournalRecoveryPolicyFallbackReportsLimitAndRoot(t *testing.T) {
 	if event.Error == nil || event.Error.Code != "recovery_policy_fallback" {
 		t.Fatalf("event = %+v; want a recovery_policy_fallback error", event)
 	}
-	for _, want := range []string{recoveryPolicyFromDefaults, "128", "/var/lib/goobers/recovery", "no such file"} {
+	for _, want := range []string{runtimewiring.RecoveryPolicyFromDefaults, "128", "/var/lib/goobers/recovery", "no such file"} {
 		if !strings.Contains(event.Error.Message, want) {
 			t.Fatalf("message %q does not name %q", event.Error.Message, want)
 		}
@@ -146,7 +147,7 @@ func TestJournalRecoveryPolicyFallbackReportsLimitAndRoot(t *testing.T) {
 
 func TestJournalRecoveryPolicyFallbackSilentWhenConfigured(t *testing.T) {
 	log := &recordingPublicationJournal{}
-	journalRecoveryPolicyFallback(log, recoveryPolicyOrigin{Source: recoveryPolicyFromInstanceConfig}, instance.RecoverySnapshotConfig{}, "/root/recovery")
+	runtimewiring.JournalRecoveryPolicyFallback(log, runtimewiring.RecoveryPolicyOrigin{Source: runtimewiring.RecoveryPolicyFromInstanceConfig}, instance.RecoverySnapshotConfig{}, "/root/recovery")
 	if len(log.events) != 0 {
 		t.Fatalf("configured resolution journaled %d events; want none", len(log.events))
 	}
@@ -160,7 +161,7 @@ func TestRecoveryCleanupRequestUsesConfiguredInventoryCap(t *testing.T) {
 	layout := writeRecoveryPolicyInstance(t, 3072)
 	log := &recordingPublicationJournal{}
 
-	request, err := recoveryCleanupRequest(
+	request, err := runtimewiring.RecoveryCleanupRequest(
 		layout,
 		&instance.Config{}, // the retention-less config #5092 traced the 128 to
 		filepath.Join(layout.Root, "workcopies"),
@@ -231,12 +232,12 @@ func TestRecoveryInventoryAcceptsConfiguredCapacityAndFailsClosedOnOverflow(t *t
 	for i := range 500 {
 		seedPolicyRecoveryRecord(t, layout, i, now)
 	}
-	entries, limit, err := readConfiguredRecoveryInventory(context.Background(), layout)
+	entries, limit, err := runtimewiring.ReadConfiguredRecoveryInventory(context.Background(), layout)
 	if err != nil || limit != 500 || len(entries) != 500 {
 		t.Fatalf("exact configured capacity: entries=%d limit=%d err=%v", len(entries), limit, err)
 	}
 	seedPolicyRecoveryRecord(t, layout, 500, now)
-	entries, limit, err = readConfiguredRecoveryInventory(context.Background(), layout)
+	entries, limit, err = runtimewiring.ReadConfiguredRecoveryInventory(context.Background(), layout)
 	if !errors.Is(err, recovery.ErrInventoryFull) || entries != nil || limit != 500 {
 		t.Fatalf("genuine overflow: entries=%d limit=%d err=%v", len(entries), limit, err)
 	}
@@ -278,7 +279,7 @@ func TestConfiguredRecoveryInventoryFailsClosedWithoutValidConfig(t *testing.T) 
 			layout := instance.NewLayout(t.TempDir())
 			configure(t, layout)
 
-			entries, limit, err := readConfiguredRecoveryInventory(context.Background(), layout)
+			entries, limit, err := runtimewiring.ReadConfiguredRecoveryInventory(context.Background(), layout)
 			if err == nil || entries != nil || limit != 0 {
 				t.Fatalf("unavailable configuration = entries:%v limit:%d error:%v; want nil, 0, error", entries, limit, err)
 			}
@@ -292,7 +293,7 @@ func TestConfiguredRecoveryInventoryFailsClosedWithoutValidConfig(t *testing.T) 
 func TestConfiguredRecoveryInventoryUsesDefaultForValidOmittedPolicy(t *testing.T) {
 	layout := writeRecoveryPolicyInstance(t, 0)
 
-	entries, limit, err := readConfiguredRecoveryInventory(context.Background(), layout)
+	entries, limit, err := runtimewiring.ReadConfiguredRecoveryInventory(context.Background(), layout)
 	if err != nil || len(entries) != 0 || limit != instance.DefaultRecoverySnapshotMaxCount {
 		t.Fatalf("valid default policy = entries:%v limit:%d error:%v; want empty, %d, nil",
 			entries, limit, err, instance.DefaultRecoverySnapshotMaxCount)

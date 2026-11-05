@@ -473,11 +473,15 @@ func yamlTokenEnd(source []byte, pos, limit int) int {
 }
 
 func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, replacement []byte) (sourceEdit, error) {
+	return nullScalarReplacementEdit(source, key, value, replacement, "pollIntervalSeconds")
+}
+
+func nullScalarReplacementEdit(source []byte, key, value *yaml.Node, replacement []byte, field string) (sourceEdit, error) {
 	if value.Value != "" {
-		return scalarReplacementEdit(source, value, replacement, "pollIntervalSeconds")
+		return scalarReplacementEdit(source, value, replacement, field)
 	}
 	if key == nil || key.Line < 1 || key.Column < 1 {
-		return sourceEdit{}, errors.New("pollIntervalSeconds key has no source position")
+		return sourceEdit{}, fmt.Errorf("%s key has no source position", field)
 	}
 	keyStart, err := nodeContentOffset(source, key)
 	if err != nil {
@@ -486,11 +490,11 @@ func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, repla
 	lineEnd := sourceLineEndOffsetFromOffset(source, keyStart)
 	searchEnd := lineEnd
 	if searchEnd < keyStart {
-		return sourceEdit{}, errors.New("pollIntervalSeconds key position is after its line end")
+		return sourceEdit{}, fmt.Errorf("%s key position is after its line end", field)
 	}
 	colonRel := bytes.IndexByte(source[keyStart:searchEnd], ':')
 	if colonRel < 0 {
-		return sourceEdit{}, errors.New("pollIntervalSeconds key has no colon on its source line")
+		return sourceEdit{}, fmt.Errorf("%s key has no colon on its source line", field)
 	}
 	colon := keyStart + colonRel
 	insert := colon + 1

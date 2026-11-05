@@ -628,6 +628,16 @@ func guidedConfig(opts GuidedOptions) *Config {
 				})
 			}
 		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowWorkNomination) {
+			// Alert feeds require exact grants; issue-write and repo-read do
+			// not release these credentials. Bind the repository's read token.
+			for _, granted := range []capability.Capability{capability.GitHubCodeScanningRead, capability.GitHubDependabotAlertsRead} {
+				credentials = append(credentials, CredentialGrant{
+					Capability: string(granted),
+					Token:      repoToken,
+				})
+			}
+		}
 		if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
 			credentials = append(credentials, CredentialGrant{
 				Capability: string(capability.RepoPush),

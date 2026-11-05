@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/goobers/goobers/internal/controlplane/scheduling"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
@@ -22,7 +23,7 @@ import (
 // the same instance root.
 const (
 	siblingCacheFileName     = stateclient.KeySiblingContextCache
-	siblingCacheLockFileName = "sibling-context-cache.lock"
+	siblingCacheLockFileName = scheduling.SiblingCacheLockFileName
 )
 
 // siblingCacheEntry is one sibling PR's memoized gather output, keyed by the

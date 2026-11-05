@@ -55,10 +55,12 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		t.Fatalf("guided runner capabilities = %v, want [node@20]", cfg.Runner.Capabilities)
 	}
 	wantCredentials := map[string]string{
-		string(capability.GitHubIssuesWrite): "WIDGET_ISSUES_TOKEN",
-		string(capability.ProviderPRWrite):   "WIDGET_PR_TOKEN",
-		string(capability.RepoPush):          "WIDGET_PUSH_TOKEN",
-		string(capability.AgentModel):        "WIDGET_COPILOT_TOKEN",
+		string(capability.GitHubIssuesWrite):          "WIDGET_ISSUES_TOKEN",
+		string(capability.ProviderPRWrite):            "WIDGET_PR_TOKEN",
+		string(capability.RepoPush):                   "WIDGET_PUSH_TOKEN",
+		string(capability.AgentModel):                 "WIDGET_COPILOT_TOKEN",
+		string(capability.GitHubCodeScanningRead):     "WIDGET_REPO_TOKEN",
+		string(capability.GitHubDependabotAlertsRead): "WIDGET_REPO_TOKEN",
 	}
 	if len(cfg.Credentials) != len(wantCredentials) {
 		t.Fatalf("unexpected guided credential config: %+v", cfg.Credentials)
@@ -322,6 +324,10 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 			wantCredentials := map[string]string{
 				string(capability.GitHubIssuesWrite): "ISSUES_TOKEN",
 				string(capability.AgentModel):        "MODEL_TOKEN",
+			}
+			if workflow == GuidedWorkflowWorkNomination {
+				wantCredentials[string(capability.GitHubCodeScanningRead)] = "REPO_TOKEN"
+				wantCredentials[string(capability.GitHubDependabotAlertsRead)] = "REPO_TOKEN"
 			}
 			if workflow != GuidedWorkflowWorkNomination {
 				wantCredentials[string(capability.ProviderPRWrite)] = "PR_TOKEN"

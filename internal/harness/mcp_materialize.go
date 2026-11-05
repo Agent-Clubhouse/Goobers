@@ -20,6 +20,7 @@ type mcpMaterializeOptions struct {
 
 type materializedMCPServer struct {
 	Name     string
+	Required bool
 	Command  string
 	Args     []string
 	URL      string
@@ -56,11 +57,18 @@ func materializeDeclaredMCP(ctx context.Context, adapter string, req RunRequest,
 	servers := make([]materializedMCPServer, 0, len(req.MCPServers))
 	var assignments []envAssignment
 	for serverIndex, server := range req.MCPServers {
+		required := declaredMCPServerRequired(server)
+		if opts.harness == apiv1.HarnessCodex && server.Required == nil {
+			// Preserve Codex's pre-3.1 behavior: every declared server was
+			// registered with the CLI's native required flag.
+			required = true
+		}
 		materialized := materializedMCPServer{
-			Name:    server.Name,
-			Command: server.Command,
-			Args:    append([]string(nil), server.Args...),
-			URL:     server.URL,
+			Name:     server.Name,
+			Required: required,
+			Command:  server.Command,
+			Args:     append([]string(nil), server.Args...),
+			URL:      server.URL,
 		}
 		for refIndex, ref := range server.CredentialRefs {
 			key, token, err := resolveMCPCredential(ctx, adapter, req, server.Name, ref)

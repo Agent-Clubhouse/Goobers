@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -248,9 +250,9 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		t.Fatal(err)
 	}
 	source, workcopies := t.TempDir(), t.TempDir()
-	previousCloneURL := repoCloneURL
-	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
-	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+	previousCloneURL := runtimewiring.RepoCloneURL
+	runtimewiring.RepoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { runtimewiring.RepoCloneURL = previousCloneURL })
 	recoveryCLIGit(t, source, "init", "--initial-branch="+baseBranch)
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	const runID = "cleanup-recovery"
@@ -302,11 +304,11 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		recoveryCLIGit(t, workspace.Path, "checkout", "goobers/implementation/"+runID)
 	}
 	if interruptRecord {
-		root, err := prepareRecoveryInventory(layout.Root)
+		root, err := runtimewiring.PrepareRecoveryInventory(layout.Root)
 		if err != nil {
 			t.Fatal(err)
 		}
-		identities, err := recoveryRepositoryIdentities(cfg, func(apiv1.RepoRef) (string, error) { return source, nil })
+		identities, err := runtimewiring.RecoveryRepositoryIdentities(cfg, func(apiv1.RepoRef) (string, error) { return source, nil })
 		if err != nil {
 			t.Fatal(err)
 		}

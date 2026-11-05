@@ -44,7 +44,7 @@ func TestAuthenticatedOpenAPIRequiresPrivateCacheRevalidation(t *testing.T) {
 
 func TestOpenAPIDrivesEventsResumeHeader(t *testing.T) {
 	store := feedTestStoreAt(t, t.TempDir())
-	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithChangeFeedStream(store), WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}))
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithChangeFeedStream(store, store.Feed()), WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}))
 	if err != nil {
 		t.Fatal(err)
 	}

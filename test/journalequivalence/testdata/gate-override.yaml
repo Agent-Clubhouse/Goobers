@@ -1,0 +1,29 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: gate-override
+dslVersion: "3.0"
+spec:
+  gaggle: equivalence
+  start: implement
+  tasks:
+    - name: implement
+      type: deterministic
+      goal: prepare review input
+      run:
+        command: [fixture]
+      next: review
+    - name: recover
+      type: deterministic
+      goal: complete after operator override
+      run:
+        command: [fixture]
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: recover
+        needs-changes: "@escalate"
+        fail: "@escalate"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 )
 
 func TestConfigMirrorPublishesOnlyAppliedGeneration(t *testing.T) {
@@ -20,7 +22,7 @@ func TestConfigMirrorPublishesOnlyAppliedGeneration(t *testing.T) {
 	}
 	config.ConfigMirrorPath = t.TempDir()
 	config.WorkflowSource = &instance.WorkflowSource{Kind: instance.WorkflowSourceKindGit}
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +79,37 @@ func TestConfigMirrorAbsentSettingDoesNothing(t *testing.T) {
 	stop()
 }
 
+func TestConfigureWorkerConfigPlaneDefersPublishingUntilBackgroundReload(t *testing.T) {
+	layout := instance.NewLayout(initDeterministicDemo(t))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.PodTokenKeyFile = filepath.Join(t.TempDir(), "key")
+	config.ConfigMirrorPath = t.TempDir()
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &upSession{}
+	session.ctx = context.Background()
+	session.l = layout
+	session.setup = &schedulerSetup{
+		Config:       config,
+		ConfigDigest: digest,
+	}
+	session.configureWorkerConfigPlane()
+	if session.configSnapshots == nil {
+		t.Fatal("keyed daemon did not wire the config plane")
+	}
+	if current := session.configSnapshots.Current(); current != "" {
+		t.Fatalf("configureAPI synchronously published %q", current)
+	}
+	if _, err := os.Stat(filepath.Join(config.ConfigMirrorPath, configmirror.SnapshotName)); !os.IsNotExist(err) {
+		t.Fatalf("configureAPI synchronously published legacy mirror: %v", err)
+	}
+}
+
 func TestConfigMirrorRetriesUnchangedAppliedDigestAfterShareFailure(t *testing.T) {
 	layout := instance.NewLayout(initDeterministicDemo(t))
 	config, err := instance.LoadConfig(layout.ConfigFile())
@@ -87,7 +120,7 @@ func TestConfigMirrorRetriesUnchangedAppliedDigestAfterShareFailure(t *testing.T
 	if err := os.WriteFile(config.ConfigMirrorPath, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	digest, err := configDirectoryDigest(layout.ConfigDir())
+	digest, err := runtimewiring.ConfigDirectoryDigest(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}

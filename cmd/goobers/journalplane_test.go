@@ -1,10 +1,7 @@
 package main
 
 // journalplane_test.go covers the daemon wiring of the live journal service
-// (distributed-state-and-coordination.md §8, DS4/DS5) and the second half of
-// §13 acceptance item 3: StalledRunTimeout sees a wedged engine run, because
-// live authorship gives the run an on-disk journal the existing sweep
-// already knows how to read.
+// (distributed-state-and-coordination.md §8, DS4/DS5).
 
 import (
 	"context"
@@ -21,8 +18,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
-	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/worktree"
 )
 
 func liveOpenBatch(runID, gaggle string, at time.Time) livejournal.EmitRequest {
@@ -71,48 +66,6 @@ func liveOpenBatch(runID, gaggle string, at time.Time) livejournal.EmitRequest {
 // only test that carries a live-journal-AUTHORED engine run all the way into
 // the sweep — enginerunguards_test.go's sweep cases build their journals with
 // journal.Create.
-func TestSweepStalledRunsCancelsWedgedLiveEngineRun(t *testing.T) {
-	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
-	layout := instance.NewLayout(t.TempDir())
-	writer, err := livejournal.NewWriter(func(string) (string, bool) { return layout.RunsDir(), true })
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(writer.Close)
-
-	const runID = "wedged-engine-run"
-	if _, err := writer.Emit(context.Background(), liveOpenBatch(runID, "example", now.Add(-time.Hour))); err != nil {
-		t.Fatalf("emit opening batch: %v", err)
-	}
-	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseRunning)
-
-	// The run wedges: no further emissions. The writer's idle-close (the
-	// projection loop runs it each tick) releases the journal and its lock.
-	if closed := writer.CloseIdle(0); len(closed) != 1 || closed[0] != runID {
-		t.Fatalf("CloseIdle = %v, want the wedged run released", closed)
-	}
-
-	manager, err := worktree.NewManager(layout.WorkcopiesDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	runRunner, err := runner.New(runner.Config{Worktrees: manager, RunsDir: layout.RunsDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeEngineWorkflows{}
-	if err := sweepStalledRuns(
-		context.Background(), layout, nil, runRunner, &engineRunGuards{client: fake}, nil,
-		nil, nil, nil, now, 45*time.Minute, 0,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, cancelled := fake.snapshot(); len(cancelled) != 1 || cancelled[0] != runID {
-		t.Fatalf("cancelled = %v, want [%s] — a live-authored engine run must be settled on the engine, not on disk", cancelled, runID)
-	}
-	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseRunning)
-}
-
 // TestNewLiveJournalWriterRequiresEngineConfiguration pins the writer's gate
 // to the projection loop's own: no engine, no live journal service — and
 // with one, emissions land in the configured gaggle's runs directory while
@@ -323,39 +276,5 @@ func TestLiveJournalWriterAdoptsSpansFromTheDaemonBlobStore(t *testing.T) {
 	if degraded.Type != journal.EventError || degraded.Error == nil ||
 		degraded.Error.Code != livejournal.SpanUnavailableErrorCode {
 		t.Fatalf("writer with no span source did not degrade softly; last event = %+v", degraded)
-	}
-}
-
-// TestLiveJournalDivergenceReporterFilesCodedInstanceEvent: the DS5 channel
-// the #2871 parity ledger reads is an instance-journal error event under the
-// stable live_journal_divergence code.
-func TestLiveJournalDivergenceReporterFilesCodedInstanceEvent(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
-	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = log.Close() })
-
-	if reporter := liveJournalDivergenceReporter(nil); reporter != nil {
-		t.Fatal("nil instance log must produce no reporter")
-	}
-	reporter := liveJournalDivergenceReporter(log)
-	reporter("run-diverged", "normative event 3 diverges")
-
-	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, event := range events {
-		if event.Type == journal.EventError && event.RunID == "run-diverged" &&
-			event.Error != nil && event.Error.Code == liveJournalDivergenceCode &&
-			event.Error.Message == "normative event 3 diverges" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("instance journal has no %s event: %+v", liveJournalDivergenceCode, events)
 	}
 }

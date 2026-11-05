@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -84,7 +85,7 @@ func TestIntegrationRecoverySweepRetiresDuplicatesUnderAliasedWorkcopies(t *test
 		if active[superseded] {
 			t.Fatalf("the sweep retired nothing through an aliased workcopies root: %s survived", superseded)
 		}
-		if recorded, found := f.reclamationJustification(superseded); !found || recorded != reclaimSupersededDuplicate {
+		if recorded, found := f.reclamationJustification(superseded); !found || recorded != runtimewiring.ReclaimSupersededDuplicate {
 			t.Fatalf("%s was retired without the superseded-duplicate justification: found=%v justification=%q", superseded, found, recorded)
 		}
 	}

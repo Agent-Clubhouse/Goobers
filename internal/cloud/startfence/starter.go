@@ -1,0 +1,295 @@
+// Package startfence starts cloud engine workflows under durable acceptance authority.
+package startfence
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"strconv"
+
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+
+	"github.com/goobers/goobers/internal/engine"
+)
+
+// RunGaggleMemoKey identifies engine runs in Temporal visibility without
+// requiring a namespace-specific search attribute registration.
+const RunGaggleMemoKey = "goobers.run.gaggle.v1"
+
+// StartOwnerMemoKey binds a Temporal execution to its accepted owner epoch.
+const StartOwnerMemoKey = "goobers.start-owner"
+
+// RunWorkflowMemoKey, RunWorkflowVersionMemoKey, and RunBacklogItemMemoKey
+// extend RunGaggleMemoKey with the rest of a run's Goobers identity (#2911):
+// an operator starting from a Temporal workflow execution — the Web UI, tctl,
+// or a query — can identify the gaggle, workflow, version, and driving
+// backlog item without decoding RunInput from the execution's input payload.
+// Additive: existing readers of RunGaggleMemoKey (completed_runs.go's
+// reconciler) are unaffected, and every key here uses the same versioned,
+// namespace-registration-free Memo mechanism.
+const (
+	RunWorkflowMemoKey        = "goobers.run.workflow.v1"
+	RunWorkflowVersionMemoKey = "goobers.run.workflow_version.v1"
+	RunBacklogItemMemoKey     = "goobers.run.backlog_item.v1"
+)
+
+// BacklogItemMemo is RunBacklogItemMemoKey's value shape: enough to identify
+// and follow the item driving a run without decoding the full BacklogItem
+// (title/body/labels) into Temporal visibility.
+type BacklogItemMemo struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+	URL      string `json:"url,omitempty"`
+}
+
+// StartOwnerMemo is the start-fence identity persisted in Temporal.
+type StartOwnerMemo struct {
+	AcceptanceID string `json:"acceptanceId,omitempty"`
+	OwnerEpoch   int64  `json:"ownerEpoch,omitempty"`
+	StarterID    string `json:"starterId,omitempty"`
+	InstanceID   string `json:"instanceId,omitempty"`
+	InputDigest  string `json:"inputDigest,omitempty"`
+}
+
+// workflowStarter is the slice of the Temporal client the TemporalStarter needs.
+// client.Client satisfies it; tests provide a fake.
+type workflowStarter interface {
+	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error)
+}
+
+type workflowDescriber interface {
+	DescribeWorkflowExecution(context.Context, string, string) (*workflowservice.DescribeWorkflowExecutionResponse, error)
+}
+
+// TemporalStarter starts engine runs on a Temporal task queue. It sets the run's
+// WorkflowID to RunInput.RunID and asks Temporal to reject reuse whether the
+// first run is open or closed, mapping that rejection to AlreadyRunning.
+type TemporalStarter struct {
+	client     workflowStarter
+	taskQueue  string
+	admission  engine.StartAdmission
+	generation GenerationAdmission
+}
+
+// Start launches the engine workflow for in, idempotently on in.RunID.
+func (s *TemporalStarter) Start(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
+	return s.start(ctx, in)
+}
+
+func (s *TemporalStarter) start(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
+	if s.generation == nil {
+		return engine.StartResult{}, errors.New("cloud start requires configuration admission guard")
+	}
+	if err := s.generation.Admit(in.ConfigGeneration, in.Gaggle, in.WorkflowName); err != nil {
+		return engine.StartResult{}, err
+	}
+	var err error
+	in, err = s.admit(ctx, in)
+	if err != nil {
+		return engine.StartResult{}, err
+	}
+	if in.RunID == "" {
+		return engine.StartResult{}, errors.New("engine: RunInput.RunID is required to start a run")
+	}
+	memo, err := runMemo(in)
+	if err != nil {
+		return engine.StartResult{}, err
+	}
+	opts := client.StartWorkflowOptions{
+		ID:                                       in.RunID,
+		TaskQueue:                                s.taskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
+		Memo:                                     memo,
+	}
+	run, err := s.client.ExecuteWorkflow(ctx, opts, engine.Run, in)
+	if err != nil {
+		if isAlreadyStarted(err) {
+			result, startedInput, classifyErr := s.classifyExisting(ctx, in)
+			if classifyErr != nil {
+				return engine.StartResult{}, classifyErr
+			}
+			return s.confirm(ctx, startedInput, result)
+		}
+		return engine.StartResult{}, err
+	}
+	return s.confirm(ctx, in, engine.StartResult{RunID: run.GetID()})
+}
+
+// StartedExecution is what the start fence left on a run's engine execution:
+// its status, whether it is the engine Run workflow, and its start-owner memo
+// (nil when the execution carries none).
+type StartedExecution struct {
+	Status enumspb.WorkflowExecutionStatus
+	Engine bool
+	Owner  *StartOwnerMemo
+}
+
+// DescribeStarted describes the latest execution of runID's workflow (the
+// workflow ID is the run ID) through the strongly consistent Describe call and
+// decodes its start-owner memo. A memo that does not decode is an error, never
+// an absent owner.
+func DescribeStarted(ctx context.Context, describer workflowDescriber, runID string) (StartedExecution, error) {
+	description, err := describer.DescribeWorkflowExecution(ctx, runID, "")
+	if err != nil {
+		return StartedExecution{}, err
+	}
+	info := description.GetWorkflowExecutionInfo()
+	if info == nil {
+		return StartedExecution{}, errors.New("engine: existing execution description is incomplete")
+	}
+	started := StartedExecution{Status: info.GetStatus(), Engine: info.GetType().GetName() == "Run"}
+	payload, exists := info.GetMemo().GetFields()[StartOwnerMemoKey]
+	if !exists {
+		return started, nil
+	}
+	var owner StartOwnerMemo
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &owner); err != nil {
+		return StartedExecution{}, errors.New("engine: existing start-owner memo is invalid")
+	}
+	started.Owner = &owner
+	return started, nil
+}
+
+// classifyExisting returns the matched execution's input for confirmation.
+// Recovery may recognize a legacy encoding, but must never persist new-input
+// pins for an execution whose immutable memo still identifies the old input.
+func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInput) (engine.StartResult, engine.RunInput, error) {
+	describer, ok := s.client.(workflowDescriber)
+	if !ok {
+		return engine.StartResult{}, in, errors.New("engine: cloud starter cannot describe existing execution")
+	}
+	started, err := DescribeStarted(ctx, describer, in.RunID)
+	if err != nil {
+		return engine.StartResult{}, in, err
+	}
+	if !started.Engine || started.Owner == nil {
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
+	}
+	owner := *started.Owner
+	expected, err := startOwner(in)
+	if err != nil {
+		return engine.StartResult{}, in, err
+	}
+	if owner.InstanceID == expected.InstanceID && owner.InputDigest != expected.InputDigest &&
+		owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch > 0 && owner.OwnerEpoch < in.OwnerEpoch && owner.StarterID != "" {
+		// A predecessor may carry either of the explicitly supported encodings:
+		// annotation-less input from before annotations were pinned, or the
+		// opposite child-workflow posture from before a config rollback/re-enable.
+		// Every other input field remains covered by the digest.
+		candidates := make([]engine.RunInput, 0, 3)
+		if len(in.Annotations) > 0 {
+			legacy := in
+			legacy.Annotations = nil
+			candidates = append(candidates, legacy)
+		}
+		opposite := in
+		opposite.ChildWorkflowsEnabled = !in.ChildWorkflowsEnabled
+		candidates = append(candidates, opposite)
+		if len(in.Annotations) > 0 {
+			opposite.Annotations = nil
+			candidates = append(candidates, opposite)
+		}
+		for _, candidate := range candidates {
+			candidateOwner, candidateErr := startOwner(candidate)
+			if candidateErr != nil {
+				return engine.StartResult{}, in, candidateErr
+			}
+			if owner.InputDigest == candidateOwner.InputDigest {
+				// Confirm the input actually running, so persisted pins keep its
+				// original posture, annotations, and memo digest during adoption.
+				in, expected = candidate, candidateOwner
+				break
+			}
+		}
+	}
+	if owner.InstanceID != expected.InstanceID || owner.InputDigest != expected.InputDigest {
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
+	}
+	if in.OwnerEpoch != 0 && (owner.AcceptanceID == "" || owner.OwnerEpoch < 1 || owner.StarterID == "") {
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
+	}
+	switch {
+	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch == in.OwnerEpoch && owner.StarterID == in.StarterID:
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true}, in, nil
+	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch < in.OwnerEpoch:
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, in, nil
+	default:
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
+	}
+}
+
+// isAlreadyStarted reports whether err is Temporal's "already started" error.
+func isAlreadyStarted(err error) bool {
+	var already *serviceerror.WorkflowExecutionAlreadyStarted
+	return errors.As(err, &already)
+}
+
+// runMemo builds a run's Goobers-identity Memo (#2911): gaggle, workflow,
+// version, and — when the run has one — the driving backlog item. Each field
+// is independently omittable so a run with no backlog item (a manual or
+// scheduled trigger) carries no RunBacklogItemMemoKey at all rather than an
+// empty placeholder.
+func runMemo(in engine.RunInput) (map[string]interface{}, error) {
+	owner, err := startOwner(in)
+	if err != nil {
+		return nil, err
+	}
+	memo := map[string]interface{}{
+		RunGaggleMemoKey:          in.Gaggle,
+		RunWorkflowMemoKey:        in.WorkflowName,
+		RunWorkflowVersionMemoKey: strconv.Itoa(in.Version),
+		StartOwnerMemoKey:         owner,
+	}
+	if in.Item != nil {
+		memo[RunBacklogItemMemoKey] = BacklogItemMemo{
+			ID: in.Item.ID, Provider: string(in.Item.Provider), URL: in.Item.URL,
+		}
+	}
+	return memo, nil
+}
+
+// startOwner binds immutable input identity while allowing a successor epoch.
+func startOwner(in engine.RunInput) (StartOwnerMemo, error) {
+	owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID, InstanceID: in.InstanceID}
+	digest, err := InputDigest(in)
+	if err != nil {
+		return StartOwnerMemo{}, err
+	}
+	owner.InputDigest = digest
+	return owner, nil
+}
+
+// InputDigest is a start's immutable input identity: the RunInput without the
+// owner epoch and starter, which a lease successor may change. An existing
+// workflow is adopted only when its start-owner memo carries this digest (or
+// the explicitly matched predecessor encoding in classifyExisting).
+func InputDigest(in engine.RunInput) (string, error) {
+	in.OwnerEpoch, in.StarterID = 0, ""
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// New requires a durable admission adapter before any Temporal operation.
+func New(c client.Client, taskQueue string, admission engine.StartAdmission, generation GenerationAdmission) *TemporalStarter {
+	return &TemporalStarter{client: c, taskQueue: taskQueue, admission: admission, generation: generation}
+}
+func (s *TemporalStarter) admit(ctx context.Context, in engine.RunInput) (engine.RunInput, error) {
+	if s.admission == nil {
+		return engine.RunInput{}, errors.New("cloud start requires durable acceptance admission")
+	}
+	return s.admission.AdmitStart(ctx, in)
+}
+func (s *TemporalStarter) confirm(ctx context.Context, in engine.RunInput, result engine.StartResult) (engine.StartResult, error) {
+	return result, s.admission.ConfirmStart(ctx, in, result)
+}

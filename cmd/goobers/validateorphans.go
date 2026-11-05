@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
@@ -30,7 +32,7 @@ type backlogRoutingScope struct {
 func appendBacklogRoutingDemand(cfg *instance.Config, set *instance.ConfigSet, demand map[int]*repoRealityDemand) {
 	for index, d := range demand {
 		for _, gaggle := range set.Gaggles {
-			bound, ok := configuredRepoForProject(cfg, gaggle.Spec.Project)
+			bound, ok := runtimewiring.ConfiguredRepoForProject(cfg, gaggle.Spec.Project)
 			if !ok || !sameRoutingRepository(bound, cfg.Repos[index]) {
 				continue
 			}

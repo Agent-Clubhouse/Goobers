@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engineadmission"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -375,11 +377,15 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 	}
 }
 
-func TestHumanGateRejectedBeforeSignal(t *testing.T) {
+func TestHumanGateRequiresEnabledDecisionPolicy(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
-		Start:    "approve",
+		Start:    "prepare",
+		Tasks: []apiv1.Task{{
+			Name: "prepare", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "approve",
+		}},
 		Gates: []apiv1.Gate{
 			{
 				Name:      "approve",
@@ -389,13 +395,40 @@ func TestHumanGateRejectedBeforeSignal(t *testing.T) {
 			},
 		},
 	}
-	var ts testsuite.WorkflowTestSuite
-	env := temporaltest.NewWorkflowEnvironment(&ts)
-	env.ExecuteWorkflow(Run, runInput("human", spec))
-
-	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), temporalHumanGateUnsupported) {
-		t.Fatalf("workflow error = %v, want occurrence-bound signal rejection", err)
+	for name, c := range map[string]struct {
+		legacy bool
+		hitl   bool
+		want   string
+	}{
+		// A new run with no enabled decision policy fails closed at start
+		// rather than holding a gate no decision can reach.
+		"no decision policy": {want: HumanGateDecisionPolicyRequired},
+		// An enabled policy without live journaling cannot commit the gate
+		// occurrence a decision binds to, so it fails closed too.
+		"enabled policy without live journal": {hitl: true, want: HumanGateDecisionPolicyRequired},
+		// A history recorded before engine support replays its refusal.
+		"pre-support history": {legacy: true, want: engineadmission.HumanGateUnsupported},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ts testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&ts)
+			if c.legacy {
+				env.OnGetVersion(humanGateDecisionChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+			}
+			calls := 0
+			env.RegisterActivity(&Activities{Det: &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+				calls++
+				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+			}}})
+			in := runInput("human", spec)
+			if c.hitl {
+				in.HITL, in.LiveJournal = &HITLPolicy{Enabled: true, WaitSeconds: 3600}, false
+			}
+			env.ExecuteWorkflow(Run, in)
+			if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), c.want) || calls != 0 {
+				t.Fatalf("workflow error = %v calls=%d, want run-start refusal %q", err, calls, c.want)
+			}
+		})
 	}
 }
 

@@ -81,7 +81,11 @@ func establishEphemeralTmp(adapterName string, enabled bool, root string) (*ephe
 }
 
 func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunRequest) ([]string, error) {
+	if credentials.TrustedLocalProcess(ctx) {
+		cfg.extraEnvAllowlist = nil
+	}
 	env := baseEnv(cfg.extraEnvAllowlist, cfg.envUnset)
+	env = credentials.TrustedLocalBaseEnvironment(ctx, env)
 	if cfg.ephemeralTmp != nil {
 		scoped, err := cfg.ephemeralTmp.Apply(env)
 		if err != nil {
@@ -150,7 +154,7 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 	if storedCopilotAuth {
 		env = withoutEnvVars(env, "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 	}
-	for _, capability := range req.Envelope.Capabilities {
+	for _, capability := range credentials.FilterChildCredentialKeys(ctx, req.Envelope.Capabilities) {
 		envVar, ok := cfg.envCapabilities[capability]
 		if !ok {
 			continue

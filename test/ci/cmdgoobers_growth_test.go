@@ -29,7 +29,7 @@ func TestCmdGoobersGrowthGateUsesBaseRevision(t *testing.T) {
 	for _, want := range []string{
 		"CI_NEEDS: ${{ toJSON(needs) }}",
 		"run: go run ./test/cipolicy gate",
-		"needs: [scope, preflight, cmdgoobers-growth,",
+		"needs: [scope, cloud-pg, preflight, cmdgoobers-growth,",
 	} {
 		if !strings.Contains(aggregate, want) {
 			t.Errorf("required-ci missing %q", want)

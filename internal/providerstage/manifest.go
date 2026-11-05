@@ -115,6 +115,9 @@ type Command struct {
 
 	mutatesClaimLedger bool
 	claimMutationFlags []string
+	// valueFlags names non-boolean CLI flags whose next argument is a value.
+	// Boolean-condition scans need this arity to preserve positional boundaries.
+	valueFlags []string
 
 	// sinceDSL/untilDSL bound the DSL versions in which the command exists,
 	// with the same window semantics as CapabilityUse. Entry metadata
@@ -364,6 +367,7 @@ var commands = map[string]Command{
 	"post-merge": {
 		ResultFile: "post-merge-result.json",
 		Capabilities: []CapabilityUse{
+			optional(capability.GitHubPRReview, "without the review identity credential, native stale-base verdict withdrawal is skipped with a warning"),
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so merged pull-request inspection fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so post-merge issue updates fail at runtime"),
 		},
@@ -385,9 +389,8 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			// github:pr:write was the requirement through v0.6.0-alpha.2 and
-			// stays accepted so configs written against it keep validating.
-			// Validation only: at runtime pr-select still reads the
-			// provider:pr:write credential until the providers are split.
+			// stays accepted at validation and runtime. pr-select prefers a
+			// delivered provider:pr:write, without falling back on failure.
 			requiredAnyOf(capability.ProviderPRWrite, []capability.Capability{capability.GitHubPRWrite},
 				"the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
@@ -437,6 +440,7 @@ var commands = map[string]Command{
 	"reconcile-post-merge": {
 		ResultFile: "reconcile-post-merge-result.json",
 		Capabilities: []CapabilityUse{
+			optional(capability.GitHubPRReview, "without the review identity credential, native stale-base verdict withdrawal is skipped with a warning"),
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so late merge inspection fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so late merge issue reconciliation fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so late merge branch cleanup fails at runtime"),
@@ -556,7 +560,7 @@ func requiredCapabilitiesIn(table map[string]Command, dslVersion, command string
 	}
 	var required []CapabilityUse
 	for _, use := range entry.Capabilities {
-		if use.required(args) {
+		if use.required(args, entry.valueFlags) {
 			required = append(required, use)
 		}
 	}
@@ -568,7 +572,7 @@ func mutatesClaimLedgerIn(table map[string]Command, dslVersion, command string, 
 	if !ok {
 		return false
 	}
-	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
+	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags, entry.valueFlags)
 }
 
 // lookupIn resolves command's entry in table as seen at dslVersion: an entry
@@ -698,15 +702,15 @@ func SupportsResultFile(command string) (ResultFileSupport, bool) {
 	return entry.effectiveSupport(), true
 }
 
-func (u CapabilityUse) required(args []string) bool {
+func (u CapabilityUse) required(args, valueFlags []string) bool {
 	if u.optional {
 		return false
 	}
 	if len(u.anyFlags) > 0 {
-		return anyFlagEnabled(args, u.anyFlags)
+		return anyFlagEnabled(args, u.anyFlags, valueFlags)
 	}
 	if len(u.unlessFlags) > 0 {
-		return !anyFlagEnabled(args, u.unlessFlags)
+		return !anyFlagEnabled(args, u.unlessFlags, valueFlags)
 	}
 	if u.flag == "" {
 		return true
@@ -730,15 +734,24 @@ func (u CapabilityUse) required(args []string) bool {
 	return false
 }
 
-func anyFlagEnabled(args, flags []string) bool {
+func anyFlagEnabled(args, flags, valueFlags []string) bool {
 	enabled := make(map[string]bool, len(flags))
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
 			break
 		}
 		name := strings.TrimPrefix(arg, "-")
 		name = strings.TrimPrefix(name, "-")
 		name, value, hasValue := strings.Cut(name, "=")
+		if slices.Contains(valueFlags, name) {
+			// Like flag.FlagSet, consume even a dash-prefixed value or "--".
+			// Unrelated boolean flags do not consume a following positional.
+			if !hasValue {
+				i++
+			}
+			continue
+		}
 		for _, flag := range flags {
 			if name != flag {
 				continue

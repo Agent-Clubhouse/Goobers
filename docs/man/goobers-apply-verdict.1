@@ -24,7 +24,11 @@ standing comment is marked stale, and a standing verdict status on the
 unchanged head turns pending; exit 0 (this
 cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
-selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
+selectedBaseSha from Task.InputsFrom. Every published verdict carries
+standingFindings: the findings earlier reviews raised on the same head
+that no verdict answered in its dispositions (resolved with evidence,
+or rejected with a reason). A pass that leaves one standing is
+published as needs-changes (#5890). Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
 .fi
 .SH EXAMPLES

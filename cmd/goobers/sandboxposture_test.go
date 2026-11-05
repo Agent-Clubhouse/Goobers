@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -30,7 +32,7 @@ func TestSandboxPosturesByGaggle(t *testing.T) {
 			gaggle("inherits", ""),
 			gaggle("opts-down", string(instance.SandboxDisabled)),
 		}}
-		got := sandboxPosturesByGaggle(cfg, set)
+		got := runtimewiring.SandboxPosturesByGaggle(cfg, set)
 		if got["inherits"] != instance.SandboxEnforced {
 			t.Fatalf("inherits = %q, want the instance-wide enforced posture", got["inherits"])
 		}
@@ -45,7 +47,7 @@ func TestSandboxPosturesByGaggle(t *testing.T) {
 			gaggle("opts-up", string(instance.SandboxEnforced)),
 			gaggle("default", ""),
 		}}
-		got := sandboxPosturesByGaggle(cfg, set)
+		got := runtimewiring.SandboxPosturesByGaggle(cfg, set)
 		if got["opts-up"] != instance.SandboxEnforced {
 			t.Fatalf("opts-up = %q, want enforced from the gaggle override alone", got["opts-up"])
 		}

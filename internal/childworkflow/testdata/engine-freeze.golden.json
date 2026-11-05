@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "source": "YXBpVmVyc2lvbjogZ29vYmVycy5kZXYvdjFhbHBoYTEKa2luZDogV29ya2Zsb3cKZHNsVmVyc2lvbjogIjMuMSIKbWV0YWRhdGE6CiAgbmFtZTogZ2VuZXJhdGVkLWNoZWNrCnNwZWM6CiAgZ2FnZ2xlOiB3ZWIKICB0cmlnZ2VyczogW3t0eXBlOiBtYW51YWx9XQogIHN0YXJ0OiBjaGVjawogIHRhc2tzOgogICAgLSBuYW1lOiBjaGVjawogICAgICB0eXBlOiBkZXRlcm1pbmlzdGljCiAgICAgIGdvYWw6IFJ1biB0aGUgbG9jYWwgY2hlY2sKICAgICAgcnVuOgogICAgICAgIGNvbW1hbmQ6IFsidHJ1ZSJdCiAgICAgIG5leHQ6ICIiCg==",
+  "sourceDigest": "sha256:9e110889c940044ea3949a11ab752d2d48420ff302fc323e8ecd9cab186f0218",
+  "canonicalDigest": "sha256:f132841bcf2946bd38ba8f2c013c9d592db890de37470eaaba26838a4ef3071e",
+  "input": {
+    "instanceId": "instance-a",
+    "runId": "child-run-1",
+    "gaggle": "web",
+    "workflowName": "generated-check",
+    "version": 1,
+    "dslVersion": "3.1",
+    "workflowDigest": "sha256:17b9413aec9a247eb21304959bd3ee5232167188f370fa53bfc4469d484be785",
+    "previewFeaturesEnabled": true,
+    "spec": {
+      "gaggle": "web",
+      "triggers": [
+        {
+          "type": "manual"
+        }
+      ],
+      "readiness": {},
+      "start": "check",
+      "tasks": [
+        {
+          "name": "check",
+          "type": "deterministic",
+          "goal": "Run the local check",
+          "run": {
+            "command": [
+              "true"
+            ]
+          }
+        }
+      ]
+    },
+    "repoRef": {
+      "provider": "github",
+      "owner": "acme",
+      "name": "web",
+      "branch": "main"
+    },
+    "triggerKind": "manual",
+    "branchNamespace": "goobers",
+    "runControls": {},
+    "liveJournal": true,
+    "placements": [
+      {
+        "stage": "check",
+        "self": true
+      }
+    ],
+    "gooberDigest": "sha256:7482430039f9177113e79f9a48ee440833085ca25b92204ae480223d6c4ea018",
+    "configGeneration": "sha256:41d22f3ff3734e6722e04b3dd9f61735e0dcbf8b1d49bea68900c4c04dcfbf12"
+  }
+}

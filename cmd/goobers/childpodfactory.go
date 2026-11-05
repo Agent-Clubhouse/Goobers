@@ -99,11 +99,12 @@ func admitChildPodPlan(start childExecutionStart) error {
 }
 
 type childPodFactory struct {
-	service    *daemonCredentialService
-	start      childExecutionStart
-	runtime    preparedChildRuntime
-	client     childpod.TemporalClient
-	surrenders dispatcher.SurrenderPlane
+	trustedLocal bool
+	service      *daemonCredentialService
+	start        childExecutionStart
+	runtime      preparedChildRuntime
+	client       childpod.TemporalClient
+	surrenders   dispatcher.SurrenderPlane
 }
 
 type childStagePod struct {
@@ -282,7 +283,7 @@ func (p *childStagePod) stagePlan(stage string, run *apiv1.DeterministicRun, rev
 			break
 		}
 	}
-	if pin.Stage == "" || pin.Self {
+	if pin.Stage == "" || (pin.Self && !p.trustedLocal) || (!pin.Self && p.trustedLocal) {
 		return pin, "", errors.New("child stage has no pinned isolated placement")
 	}
 	if review {

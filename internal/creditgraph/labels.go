@@ -282,7 +282,7 @@ func groundTruthConfidence(confidence float64, label *GroundTruthLabel) float64 
 // PinnedGroundTruth returns the ground-truth label source contract of a run's
 // trusted pinned workflow, after gaggle inheritance was applied at compile
 // time. A nil contract accepts every supported source.
-func PinnedGroundTruth(reader *journal.Reader, identity journal.RunIdentity) (*apiv1.BackpropGroundTruth, error) {
+func PinnedGroundTruth(reader journal.RunReader, identity journal.RunIdentity) (*apiv1.BackpropGroundTruth, error) {
 	config, enrolled, err := resolvedBackprop(reader, identity, nil)
 	if err != nil || !enrolled {
 		return nil, err

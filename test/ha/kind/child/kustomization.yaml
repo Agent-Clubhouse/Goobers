@@ -1,0 +1,58 @@
+# Render BUILD_SHA as the checked-out commit before applying.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../cloud-reference
+  - ../../../../deploy/reference/goobers-cloud/workers
+  - stages
+configMapGenerator:
+  - name: goobers-child-config
+    namespace: goobers-cloud
+    files:
+      - instance.yaml=config/instance.yaml
+      - manifest.yaml=config/manifest.yaml
+      - gaggle.yaml=config/gaggle.yaml
+      - goober.yaml=config/goober.yaml
+      - instructions.md=config/instructions.md
+      - happy.yaml=config/happy.yaml
+      - failover.yaml=config/failover.yaml
+generatorOptions: {disableNameSuffixHash: true}
+patches:
+  - target: {kind: Deployment, name: goobers-control}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: KIND_CHILD_MODEL_TOKEN, value: kind-child-model-only}
+      - op: replace
+        path: /spec/template/spec/volumes/4/projected/sources
+        value:
+          - configMap:
+              name: goobers-child-config
+              items:
+                - {key: instance.yaml, path: instance.yaml}
+                - {key: manifest.yaml, path: config/manifest.yaml}
+                - {key: gaggle.yaml, path: config/gaggles/reference/gaggle.yaml}
+                - {key: goober.yaml, path: config/gaggles/reference/goobers/child-parent/goober.yaml}
+                - {key: instructions.md, path: config/gaggles/reference/goobers/child-parent/instructions.md}
+                - {key: happy.yaml, path: config/gaggles/reference/workflows/kind-child-happy.yaml}
+                - {key: failover.yaml, path: config/gaggles/reference/workflows/kind-child-failover.yaml}
+  - target: {kind: WorkerDeployment, name: goobers}
+    patch: |-
+      - op: replace
+        path: /spec/deployment/template/spec/containers/0/image
+        value: goobers:ha-nightly
+      - op: replace
+        path: /spec/workerOptions/unsafeCustomBuildID
+        value: BUILD_ID
+      - op: replace
+        path: /spec/deployment/template/spec/containers/0/args/2
+        value: kind-child-engine
+      - op: add
+        path: /spec/deployment/template/spec/containers/0/env/-
+        value: {name: KIND_CHILD_MODEL_TOKEN, value: kind-child-model-only}
+      - op: replace
+        path: /spec/workerOptions/temporalNamespace
+        value: kind-child
+      - op: add
+        path: /spec/deployment/template/spec/containers/0/args/-
+        value: --temporal-namespace=kind-child

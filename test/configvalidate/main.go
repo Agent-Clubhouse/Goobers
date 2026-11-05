@@ -64,10 +64,9 @@ const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-
 const preReviewExperimentInertWarning = "WARNING Workflow/implementation-pre-review-experiment: workflow \"implementation-pre-review-experiment\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run implementation-pre-review-experiment`"
 const qualitySpotCheckInertWarning = "WARNING Workflow/quality-spot-check: workflow \"quality-spot-check\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run quality-spot-check`"
 
-// qualitySpotCheckPreviewWarnings are the expected acknowledgements of the
-// reference selective parallel's DSL 3.1 preview features. They change when a
-// feature's release or lifecycle does, which is when they should be reviewed.
-var qualitySpotCheckPreviewWarnings = func() []string {
+// qualitySpotCheckWarnings include preview acknowledgements and the
+// machine-independent local placement advisory for its Linux shell selector.
+var qualitySpotCheckWarnings = func() []string {
 	const prefix = "WARNING VER002 gaggles/goobers/workflows/quality-spot-check.yaml Gaggle/goobers Workflow/quality-spot-check: DSL feature "
 	warnings := []string{"WARNING DVL010 gaggles/goobers/workflows/quality-spot-check.yaml Gaggle/goobers Workflow/quality-spot-check: dslVersion \"3.1\" is preview; this workflow has opted in via its own metadata.annotations[\"goobers.dev/allow-preview-features\"]"}
 	for _, feature := range []struct{ name, since string }{
@@ -80,6 +79,7 @@ var qualitySpotCheckPreviewWarnings = func() []string {
 	} {
 		warnings = append(warnings, prefix+"\""+feature.name+"\" is preview and unstable (available since "+feature.since+")")
 	}
+	warnings = append(warnings, `WARNING RNR001 Workflow/quality-spot-check: stage "select-lenses" requires os "linux", capabilities [run:shell]; no runner satisfies it: runner "self" claims no os (stage requires "linux"); the self runner declares no provides.os, so its operating system is unknown at validate time and this check stays machine-independent — declare provides.os on the self runner to validate OS placement statically, or rely on runtime admission (the daemon checks the actual host OS at boot and per run)`)
 	return warnings
 }()
 
@@ -104,7 +104,7 @@ var checkedInTrees = []checkedInTree{
 			docsUpdaterInertWarning,
 			preReviewExperimentInertWarning,
 			qualitySpotCheckInertWarning,
-		}, qualitySpotCheckPreviewWarnings...),
+		}, qualitySpotCheckWarnings...),
 	},
 	{path: "config-examples"},
 	{path: "examples/ios-simulator"},

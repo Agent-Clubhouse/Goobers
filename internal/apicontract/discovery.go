@@ -82,4 +82,8 @@ type RouteCapability struct {
 	Reason       string       `json:"reason,omitempty"`
 	Streaming    bool         `json:"streaming"`
 	RecoverySafe bool         `json:"recoverySafe"`
+
+	// ExactWorkItem is present only when the trigger service retains an exact
+	// workItemId through durable acceptance, replay and local dispatch.
+	ExactWorkItem bool `json:"exactWorkItem,omitempty"`
 }

@@ -17,6 +17,9 @@ func TestIsTransientError(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
+		{"local admission refusal", &RequestAdmissionError{Err: errors.New("request budget exhausted")}, false},
+		{"wrapped admission deadline", &url.Error{Op: "Get", URL: "https://api.github.com", Err: &RequestAdmissionError{Err: context.DeadlineExceeded}}, false},
+		{"admission cause resembles transient error", fmt.Errorf("send request: %w", &RequestAdmissionError{Err: errors.New("temporary failure: request budget exhausted")}), false},
 		{"github 503 status", fmt.Errorf("GET /pulls/1 failed: status 503: service unavailable"), true},
 		{"ado 502 status", fmt.Errorf("PATCH https://dev.azure.com/acme failed: status 502: bad gateway"), true},
 		{"rate limited status", fmt.Errorf("GET /pulls/1 failed: status 429: rate limited; retry after 60s"), true},

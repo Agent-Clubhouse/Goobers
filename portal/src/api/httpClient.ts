@@ -54,6 +54,7 @@ import type {
   TranscriptContent,
   WorkflowDetail,
   QueueEligibilityView,
+  LabsWorkflowClusterView,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -268,6 +269,10 @@ export class HttpDaemonClient implements DaemonClient {
     return this.getJSON(clientRoutes.workflowQueueEligibility, undefined, options, { gaggle, workflow });
   }
 
+  getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView> {
+    return this.getJSON(clientRoutes.labsWorkflowClusters, undefined, options);
+  }
+
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
     return this.getJSON(
       clientRoutes.runs,
@@ -291,8 +296,8 @@ export class HttpDaemonClient implements DaemonClient {
     );
   }
 
-  getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
-    return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
+  getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail> {
+    return this.getJSON(clientRoutes.runDetail, { continuationsAfter: options?.continuationsAfter }, options, { run: runId });
   }
 
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage> {

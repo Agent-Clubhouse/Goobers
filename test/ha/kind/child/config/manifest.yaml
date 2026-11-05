@@ -1,0 +1,6 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata: {name: kind-child}
+spec:
+  instance: {name: kind-child, environment: dev}
+  gaggles: [reference]

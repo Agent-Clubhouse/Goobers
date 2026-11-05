@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"golang.org/x/term"
 
 	"github.com/goobers/goobers/internal/fleet"
@@ -146,7 +148,7 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(root), stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

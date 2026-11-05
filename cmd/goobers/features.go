@@ -67,10 +67,11 @@ func runFeatures(args []string, stdout, stderr io.Writer) int {
 }
 
 type featureJSON struct {
-	Name         string `json:"name"`
-	Stability    string `json:"stability"`
-	SinceVersion string `json:"sinceVersion"`
-	Used         *bool  `json:"used,omitempty"`
+	Name         string                    `json:"name"`
+	Stability    string                    `json:"stability"`
+	SinceVersion string                    `json:"sinceVersion"`
+	Runtimes     []workflow.RuntimeSupport `json:"runtimes"`
+	Used         *bool                     `json:"used,omitempty"`
 }
 
 type featuresEnvelope struct {
@@ -96,6 +97,7 @@ func newFeaturesEnvelope(rows []featureMatrixRow, dslVersion string, usedOnly bo
 			Name:         name,
 			Stability:    string(row.Feature.Level),
 			SinceVersion: row.Feature.SinceVersion,
+			Runtimes:     row.Feature.Runtimes,
 		}
 		if usedOnly {
 			used := true
@@ -300,16 +302,27 @@ func addUsedFeature(used map[workflow.FeatureID]workflow.Feature, feature workfl
 // writeFeatureTable prints versioned feature rows followed by a count.
 func writeFeatureTable(w io.Writer, rows []featureMatrixRow) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	pf(tw, "FEATURE\tDSL VERSION\tFEATURE SUPPORT\tVERSION SUPPORT\tSINCE\n")
+	pf(tw, "FEATURE\tDSL VERSION\tFEATURE SUPPORT\tRUNNER\tENGINE\tVERSION SUPPORT\tSINCE\n")
 	for _, row := range rows {
-		pf(tw, "%s\t%s\t%s\t%s\t%s\n",
+		pf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			row.Feature.ID,
 			row.DSLVersion,
 			row.Feature.Level,
+			runtimeSupportLevel(row.Feature, workflow.RuntimeRunner),
+			runtimeSupportLevel(row.Feature, workflow.RuntimeEngine),
 			row.DSLLevel,
 			row.Feature.SinceVersion,
 		)
 	}
 	_ = tw.Flush()
 	pf(w, "\n%d feature/version row(s)\n", len(rows))
+}
+
+func runtimeSupportLevel(feature workflow.Feature, runtime workflow.Runtime) workflow.RuntimeSupportLevel {
+	for _, support := range feature.Runtimes {
+		if support.Runtime == runtime {
+			return support.Level
+		}
+	}
+	return workflow.RuntimeUnsupported
 }

@@ -32,6 +32,26 @@ feature and DSL-version baselines. Later releases download both JSON snapshots
 from the previous stable GitHub Release; a missing prior snapshot stops
 publication.
 
+When a prior stable release was cut on a separate release branch, configure
+`.github/release-baselines.json` with a stable target version and its prior
+stable tag (for example, `"v0.6.0": "v0.5.0"`). The entry also applies to all
+prereleases of that target version. Both the changelog and feature/support
+snapshot downloads use this baseline; it must resolve to an earlier stable tag
+with shared Git history. Without an entry, selection uses the highest stable
+tag merged into the release commit's parent. Invalid configuration stops the
+release rather than silently choosing an older baseline. To inspect the
+selection without generating notes or downloading assets, run:
+
+```sh
+go run ./release/notes -tag v0.6.0-alpha.4 -print-baseline
+```
+
+The `release/notes` tool accepts `-tag`, `-print-baseline`, `-feature-notes`
+(append generated policy notes), and `-output` (write the combined notes).
+`-print-baseline` prints only the tag and cannot be combined with the two
+note-output options. These are release-tool flags, separate from the shipped
+`goobers` command registry and its generated man pages and help.
+
 ```sh
 mkdir -p .github/release-notes
 $EDITOR .github/release-notes/vMAJOR.MINOR.PATCH.md
@@ -223,7 +243,10 @@ Every platform archive carries `README.md` and the tagged checkout's complete
 `docs/` tree beside the binary. Before packaging, the release engine invokes the
 release-stamped binary's hidden documentation generator, which uses the same
 registry-backed writer as `make docs` to replace `docs/cli/`, `docs/man/`, and
-`docs/completion/`. `docs/RELEASE.md` records the release version and commit.
+`docs/completion/`. These staged directories are cleared before generation so
+references owned by other binaries, such as `goobers-cloud`, cannot leak into
+the archive. The source documentation tree is unchanged.
+`docs/RELEASE.md` records the release version and commit.
 The same staging pass adapts the bundled README and quickstarts to the installed
 archive: the README's installer step and the quickstarts' build steps become a
 tagged binary check, and walkthrough commands invoke `goobers` from `PATH`.

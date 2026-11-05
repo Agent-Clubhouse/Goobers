@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/parallelworkspace/spec"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -96,7 +97,7 @@ func preparedForkCovered(reader *journal.Reader, value parallelworkspace.Pending
 
 func (r parentArchiveRestorer) releaseForkPreparation(ctx context.Context, value parallelworkspace.PendingPreparation, covered bool, at time.Time) error {
 	record := value.Value.Snapshot.Record
-	project, err := recoveryConfiguredProject(r.config, record.RepositoryKey)
+	project, err := runtimewiring.RecoveryConfiguredProject(r.config, record.RepositoryKey)
 	if err != nil {
 		return err
 	}
@@ -126,8 +127,8 @@ func (r parentArchiveRestorer) releaseForkPreparation(ctx context.Context, value
 // A source captured before any fork plan may be the only retained copy. Move
 // that exact snapshot into normal inventory; never discard it as scratch data.
 func (r parentArchiveRestorer) retainOrphanForkPreparation(ctx context.Context, repository string, record recovery.Record, at time.Time) error {
-	publication := recoveryCleanupJournal{directory: r.layout.SchedulerDir(), scrubber: r.scrubber}
-	request, err := recoveryCleanupRequest(r.layout, r.config, r.worktrees.Root, r.worktrees, record.RepositoryKey, repository, record.RunID, at, publication)
+	publication := runtimewiring.RecoveryCleanupJournal{Directory: r.layout.SchedulerDir(), Scrubber: r.scrubber}
+	request, err := runtimewiring.RecoveryCleanupRequest(r.layout, r.config, r.worktrees.Root, r.worktrees, record.RepositoryKey, repository, record.RunID, at, publication)
 	if err != nil {
 		return err
 	}

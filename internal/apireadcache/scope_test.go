@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -75,29 +76,57 @@ func TestScopedCacheSeparatesGagglesBindingsGenerationsAndRepresentations(t *tes
 func TestScopedADOListsShareAndPreserveContinuation(t *testing.T) {
 	dir := t.TempDir()
 	scope := Scope{Gaggle: "one", Binding: "backlog", Generation: "v1"}
-	var mu sync.Mutex
-	calls := 0
-	inner := scopedTransport(func(*http.Request) (*http.Response, error) {
-		mu.Lock()
-		calls++
-		mu.Unlock()
+	const readers = 8
+	var calls atomic.Int32
+	// Hold the leader's upstream read until every reader has started, so the
+	// others really overlap it instead of arriving after the snapshot is stored.
+	firstFetch, releaseFetch := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFetch) }) }
+	defer release()
+	inner := scopedTransport(func(req *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			close(firstFetch)
+			select {
+			case <-releaseFetch:
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			}
+		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"X-Ms-Continuationtoken": {"next-page"}}, Body: io.NopCloser(strings.NewReader(`{"value":[]}`))}, nil
 	})
-	var wg sync.WaitGroup
-	for range 8 {
+	// Coalescing across separately constructed wrappers is the contract under
+	// test; the production one-second fail-open budget is covered separately.
+	lockBudget := coalescingLockBudget(t)
+	start := make(chan struct{})
+	var entered, wg sync.WaitGroup
+	entered.Add(readers)
+	for range readers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp := scopedRead(t, ScopedClient(dir, "tick", scope, providers.ProviderADO, inner), providers.ProviderADO, "token", "json")
+			client := ScopedClient(dir, "tick", scope, providers.ProviderADO, inner)
+			client.(*apiReadCache).lockBudget = lockBudget
+			<-start
+			entered.Done()
+			resp := scopedRead(t, client, providers.ProviderADO, "token", "json")
 			if resp.Header.Get("X-MS-ContinuationToken") != "next-page" {
 				t.Error("lost pagination")
 			}
 			_ = apiReadBody(t, resp)
 		}()
 	}
+	close(start)
+	select {
+	case <-firstFetch:
+	case <-t.Context().Done():
+		t.Fatal("first snapshot fetch never started")
+	}
+	entered.Wait()
+	release()
 	wg.Wait()
-	if calls != 1 {
-		t.Fatal("same evaluation did not coalesce", calls)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream list reads = %d for %d concurrent readers of one evaluation, want 1", got, readers)
 	}
 }
 func TestMissingScopeAndExplicitFreshReadsBypassSharedCache(t *testing.T) {

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -41,7 +43,7 @@ func TestAgentModelCredentialResolverResolvesFileRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
+	resolve, _, err := runtimewiring.AgentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		t.Fatalf("agentModelCredentialResolver: %v", err)
 	}
@@ -67,7 +69,7 @@ func TestAgentModelCredentialResolverNilWithoutGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
+	resolve, _, err := runtimewiring.AgentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		t.Fatalf("agentModelCredentialResolver: %v", err)
 	}
@@ -77,9 +79,9 @@ func TestAgentModelCredentialResolverNilWithoutGrant(t *testing.T) {
 }
 
 func TestAgentModelCredentialResolverUsesGitHubAppSource(t *testing.T) {
-	prev := newAgentModelGitHubAppTokenSource
+	prev := runtimewiring.NewAgentModelGitHubAppTokenSource
 	expiresAt := time.Now().Add(45 * time.Minute).UTC()
-	newAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+	runtimewiring.NewAgentModelGitHubAppTokenSource = func(app *instance.AgentModelGitHubAppConfig, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		if app.Repository != "acme/web" {
 			t.Fatalf("source repository = %q, want acme/web", app.Repository)
 		}
@@ -90,7 +92,7 @@ func TestAgentModelCredentialResolverUsesGitHubAppSource(t *testing.T) {
 			return "minted-preflight-token", expiresAt, nil
 		}, nil
 	}
-	t.Cleanup(func() { newAgentModelGitHubAppTokenSource = prev })
+	t.Cleanup(func() { runtimewiring.NewAgentModelGitHubAppTokenSource = prev })
 
 	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
 		Capability: string(capability.AgentModel),
@@ -104,7 +106,7 @@ func TestAgentModelCredentialResolverUsesGitHubAppSource(t *testing.T) {
 			PrivateKey:     &instance.TokenRef{File: "/run/secrets/copilot-app.pem"},
 		},
 	}}}
-	resolve, _, err := agentModelCredentialExpiringResolver(cfg, nil, apiv1.HarnessCopilot)
+	resolve, _, err := runtimewiring.AgentModelCredentialExpiringResolver(cfg, nil, apiv1.HarnessCopilot)
 	if err != nil {
 		t.Fatalf("agentModelCredentialExpiringResolver: %v", err)
 	}
@@ -144,8 +146,8 @@ func preflightVersionFixture(req harness.ProcessRequest, exit int) (harness.Proc
 // harness fails preflight (fail closed), a healthy one passes, and a
 // deterministic-only workflow preflights no harness at all.
 func TestPreflightAgenticHarnesses(t *testing.T) {
-	orig := harnessAdapterFor
-	t.Cleanup(func() { harnessAdapterFor = orig })
+	orig := runtimewiring.HarnessAdapterFor
+	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
 	goobers := map[string]apiv1.GooberSpec{"nominator": {Harness: apiv1.HarnessCopilot}}
 	agentic := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{
@@ -156,21 +158,21 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	}}}}
 
 	// Unusable harness (its version check exits non-zero) → fail closed.
-	harnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+	runtimewiring.HarnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
-	if _, err := preflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil); err == nil {
+	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
 	}
 	// A deterministic-only workflow references no harness, so it must not be
 	// gated by a broken harness (the adapter would fail if consulted).
-	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, harness.EnvironmentConfig{}, nil, nil); err != nil {
+	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, deterministicOnly, harness.EnvironmentConfig{}, nil, nil); err != nil {
 		t.Fatalf("deterministic-only workflow must not preflight a harness: %v", err)
 	}
 
 	// Healthy harness → preflight passes.
 	var gotEnvironment harness.EnvironmentConfig
-	harnessAdapterFor = func(_ apiv1.Harness, environment harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	runtimewiring.HarnessAdapterFor = func(_ apiv1.Harness, environment harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		gotEnvironment = environment
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
@@ -178,7 +180,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 		ExtraAllowlist: []string{"CLAUDE_CONFIG_DIR"},
 		Unset:          []string{"OUTER_LAUNCHER_SESSION_ID"},
 	}
-	info, err := preflightAgenticHarnesses(goobers, agentic, environment, nil, nil)
+	info, err := runtimewiring.PreflightAgenticHarnesses(goobers, agentic, environment, nil, nil)
 	if err != nil {
 		t.Fatalf("healthy agentic harness should preflight OK: %v", err)
 	}
@@ -194,7 +196,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 		Name: "review", Evaluator: apiv1.EvaluatorAgentic,
 		Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
 	}}}}}
-	info, err = preflightAgenticHarnesses(
+	info, err = runtimewiring.PreflightAgenticHarnesses(
 		map[string]apiv1.GooberSpec{"reviewer": {}},
 		gateOnly,
 		harness.EnvironmentConfig{},
@@ -214,7 +216,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 // preflight through adapterFor — validate --check-harness AND the automatic
 // daemon-startup preflight — verifies sign-in, not just CLI presence.
 func TestAdapterForConfiguresAuthProbe(t *testing.T) {
-	a, err := adapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{
+	a, err := runtimewiring.AdapterFor(apiv1.HarnessCopilot, harness.EnvironmentConfig{
 		ExtraAllowlist: []string{"CLAUDE_CONFIG_DIR"},
 		Unset:          []string{"OUTER_LAUNCHER_SESSION_ID"},
 	}, nil, nil)
@@ -228,8 +230,8 @@ func TestAdapterForConfiguresAuthProbe(t *testing.T) {
 	if len(ca.AuthCheckArgs) == 0 {
 		t.Fatal("adapterFor's CopilotAdapter has no AuthCheckArgs — the daemon-startup preflight would skip the sign-in probe (#238)")
 	}
-	if strings.Join(ca.AuthCheckArgs, " ") != strings.Join(copilotAuthCheckArgs, " ") {
-		t.Fatalf("AuthCheckArgs = %v, want the confirmed probe %v", ca.AuthCheckArgs, copilotAuthCheckArgs)
+	if strings.Join(ca.AuthCheckArgs, " ") != strings.Join(runtimewiring.CopilotAuthCheckArgs, " ") {
+		t.Fatalf("AuthCheckArgs = %v, want the confirmed probe %v", ca.AuthCheckArgs, runtimewiring.CopilotAuthCheckArgs)
 	}
 	if strings.Join(ca.ExtraEnvAllowlist, ",") != "CLAUDE_CONFIG_DIR" {
 		t.Fatalf("ExtraEnvAllowlist = %v, want [CLAUDE_CONFIG_DIR]", ca.ExtraEnvAllowlist)
@@ -246,8 +248,8 @@ func TestAdapterForConfiguresAuthProbe(t *testing.T) {
 // startup path ran only the version check, so this signed-out harness passed
 // preflight and failed later, mid-run.
 func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
-	orig := harnessAdapterFor
-	t.Cleanup(func() { harnessAdapterFor = orig })
+	orig := runtimewiring.HarnessAdapterFor
+	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
 	goobers := map[string]apiv1.GooberSpec{"nominator": {Harness: apiv1.HarnessCopilot}}
 	agentic := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{
@@ -257,14 +259,14 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 	// Installed but signed out: version 0, auth probe non-zero. The adapter
 	// carries copilotAuthCheckArgs (as the real adapterFor now does), so the
 	// probe actually runs during the startup preflight.
-	harnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+	runtimewiring.HarnessAdapterFor = func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
-			AuthCheckArgs: copilotAuthCheckArgs,
+			AuthCheckArgs: runtimewiring.CopilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	_, err := preflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil)
+	_, err := runtimewiring.PreflightAgenticHarnesses(goobers, agentic, harness.EnvironmentConfig{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}
@@ -324,7 +326,7 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, _, err := agentModelCredentialResolver(cfg, stores, "")
+	resolve, _, err := runtimewiring.AgentModelCredentialResolver(cfg, stores, "")
 	if err != nil {
 		t.Fatalf("agentModelCredentialResolver: %v", err)
 	}
@@ -366,11 +368,11 @@ func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
 //
 // The preflight must ask for the credential PER HARNESS.
 func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
-	orig := harnessAdapterFor
-	t.Cleanup(func() { harnessAdapterFor = orig })
+	orig := runtimewiring.HarnessAdapterFor
+	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
 	var sawCredential []string
-	harnessAdapterFor = func(_ apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, credential func(context.Context) (string, error)) (harness.Adapter, error) {
+	runtimewiring.HarnessAdapterFor = func(_ apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, credential func(context.Context) (string, error)) (harness.Adapter, error) {
 		token := ""
 		if credential != nil {
 			token, _ = credential(context.Background())
@@ -389,12 +391,12 @@ func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
 	}}}}
 
 	askedFor := map[apiv1.Harness]int{}
-	credentialFor := &modelCredentialSource{resolve: func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
+	credentialFor := &runtimewiring.ModelCredentialSource{Resolve: func(h apiv1.Harness) (func(ctx context.Context) (string, error), error) {
 		askedFor[h]++
 		return func(context.Context) (string, error) { return "token-for-" + string(h), nil }, nil
 	}}
 
-	if _, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err != nil {
+	if _, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, credentialFor); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
 	if askedFor[apiv1.HarnessCopilot] != 1 || askedFor[apiv1.HarnessClaudeCode] != 1 {
@@ -419,11 +421,11 @@ func TestPreflightResolvesCredentialPerHarness(t *testing.T) {
 // depends on it, while a different healthy harness still preflights and its
 // workflow remains eligible.
 func TestPreflightFailuresAreMappedToEveryDependentWorkflow(t *testing.T) {
-	orig := harnessAdapterFor
-	t.Cleanup(func() { harnessAdapterFor = orig })
+	orig := runtimewiring.HarnessAdapterFor
+	t.Cleanup(func() { runtimewiring.HarnessAdapterFor = orig })
 
 	calls := map[apiv1.Harness]int{}
-	harnessAdapterFor = func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
+	runtimewiring.HarnessAdapterFor = func(h apiv1.Harness, _ harness.EnvironmentConfig, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		calls[h]++
 		if h == apiv1.HarnessCopilot {
 			return &harness.FakeAdapter{AdapterName: string(h), PreflightErr: errors.New("signed out; run copilot auth login")}, nil
@@ -441,8 +443,8 @@ func TestPreflightFailuresAreMappedToEveryDependentWorkflow(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "healthy"}, Spec: apiv1.WorkflowSpec{Gaggle: "example", Tasks: []apiv1.Task{{Name: "write", Type: apiv1.TaskAgentic, Goober: "healthy"}}}},
 	}
 
-	info, err := preflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
-	var failures *harnessPreflightFailures
+	info, err := runtimewiring.PreflightAgenticHarnesses(goobers, workflows, harness.EnvironmentConfig{}, nil, nil)
+	var failures *runtimewiring.HarnessPreflightFailures
 	if !errors.As(err, &failures) {
 		t.Fatalf("error = %T %v, want scoped *harnessPreflightFailures", err, err)
 	}

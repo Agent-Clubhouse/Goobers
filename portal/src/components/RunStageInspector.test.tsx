@@ -17,6 +17,7 @@ import type {
 import { goWireFixtures } from "../api/wire.generated";
 import styles from "../styles.css?inline";
 import tokens from "../tokens.css?inline";
+import { resolveComputedColor } from "../test/computedColor";
 import { RunStageInspector } from "./RunStageInspector";
 
 /**
@@ -103,19 +104,6 @@ function stubClient(
   } as unknown as DaemonClient;
 }
 
-function resolveComputedColor(element: Element, property: "background" | "color"): string {
-  const computed = window.getComputedStyle(element).getPropertyValue(property).trim();
-  const customProperty = computed.match(/^var\((--[\w-]+)\)$/)?.[1];
-  const resolved = customProperty
-    ? window.getComputedStyle(document.documentElement).getPropertyValue(customProperty).trim()
-    : computed;
-
-  if (!/^#[\da-f]{6}$/i.test(resolved)) {
-    throw new Error(`Expected ${property} to resolve to a six-digit hex color, received "${resolved}".`);
-  }
-  return resolved;
-}
-
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (color: string) => {
     const channels = color
@@ -140,7 +128,7 @@ function expectPreviewColors(
 ) {
   const colors = {
     foreground: resolveComputedColor(preview, "color"),
-    background: resolveComputedColor(preview, "background"),
+    background: resolveComputedColor(preview, "background-color"),
   };
   expect(colors).toEqual(expected);
   expect(contrastRatio(colors.foreground, colors.background)).toBeGreaterThanOrEqual(4.5);

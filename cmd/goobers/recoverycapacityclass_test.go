@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -47,7 +48,7 @@ func TestClassifyRecoveryCapacityGuardDistinguishesCaptureFromCapacity(t *testin
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := classifyRecoveryCapacityGuard(func(context.Context, worktree.CleanupTarget) error {
+			guard := runtimewiring.ClassifyRecoveryCapacityGuard(func(context.Context, worktree.CleanupTarget) error {
 				return tc.guardErr
 			})
 			err := guard(context.Background(), worktree.CleanupTarget{})
@@ -84,10 +85,10 @@ func TestClassifyRecoveryCapacityGuardDistinguishesCaptureFromCapacity(t *testin
 // TestClassifyRecoveryCapacityGuardNilCallbackAndSuccess covers the
 // pass-through cases classifyRecoveryCapacityGuard's callers rely on.
 func TestClassifyRecoveryCapacityGuardNilCallbackAndSuccess(t *testing.T) {
-	if classifyRecoveryCapacityGuard(nil) != nil {
+	if runtimewiring.ClassifyRecoveryCapacityGuard(nil) != nil {
 		t.Error("a nil callback must produce a nil guard")
 	}
-	guard := classifyRecoveryCapacityGuard(func(context.Context, worktree.CleanupTarget) error {
+	guard := runtimewiring.ClassifyRecoveryCapacityGuard(func(context.Context, worktree.CleanupTarget) error {
 		return nil
 	})
 	if err := guard(context.Background(), worktree.CleanupTarget{}); err != nil {

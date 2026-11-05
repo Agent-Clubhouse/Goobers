@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/testgit"
 )
 
@@ -90,11 +91,11 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 			t.Fatal("CD reconciler failure did not reach the code repository authorization boundary")
 		}
 
-		resolver, runnerGrants, err := buildCredentials(config, nil, "", "", nil, nil)
+		resolver, runnerGrants, err := runtimewiring.BuildCredentials(config, nil, "", "", nil, nil)
 		if err != nil {
 			t.Fatalf("buildCredentials: %v", err)
 		}
-		stageGrants := buildGooberCredentialGrants(
+		stageGrants := runtimewiring.BuildGooberCredentialGrants(
 			fixture.Goober,
 			"",
 			[]string{fixture.CodeCapability},
@@ -122,7 +123,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		assertWorkflowCDGitAllowed(t, server, fixture.CodeRepository, codeURL, codeToken)
 		assertWorkflowCDGitDenied(t, server, fixture.WorkflowSource, workflowURL, codeToken)
 
-		forgedGrants := buildGooberCredentialGrants(
+		forgedGrants := runtimewiring.BuildGooberCredentialGrants(
 			fixture.Goober,
 			"",
 			[]string{string(capability.ConfigRepoRead)},
@@ -176,11 +177,11 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		crossedConfig := *config
 		crossedConfig.Repos = append([]instance.RepoRef(nil), config.Repos...)
 		crossedConfig.Repos[0].Token = instance.TokenRef{Env: fixture.WorkflowSource.TokenEnv}
-		resolver, runnerGrants, err := buildCredentials(&crossedConfig, nil, "", "", nil, nil)
+		resolver, runnerGrants, err := runtimewiring.BuildCredentials(&crossedConfig, nil, "", "", nil, nil)
 		if err != nil {
 			t.Fatalf("buildCredentials with crossed token: %v", err)
 		}
-		stageGrants := buildGooberCredentialGrants(
+		stageGrants := runtimewiring.BuildGooberCredentialGrants(
 			fixture.Goober,
 			"",
 			[]string{fixture.CodeCapability},

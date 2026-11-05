@@ -11,6 +11,7 @@ import (
 type copilotTranscriptCheckpoints struct {
 	worker transcriptCheckpoints
 	root   *os.File
+	state  *fileTranscriptCheckpoint
 }
 
 func startCopilotTranscriptCheckpoints(req *RunRequest, path string, env []string) (copilotTranscriptCheckpoints, error) {
@@ -56,8 +57,42 @@ func startCopilotTranscriptCheckpoints(req *RunRequest, path string, env []strin
 	}
 	return copilotTranscriptCheckpoints{
 		root:   root,
+		state:  &state,
 		worker: startTranscriptCheckpointWorker(req.TranscriptCheckpointInterval, state.capture),
 	}, nil
+}
+
+// follow drains the initial log before watching the fresh repair session.
+// Both files remain one bounded copilot-session checkpoint stream.
+func (c *copilotTranscriptCheckpoints) follow(req RunRequest, path string, env []string) error {
+	if c.root == nil {
+		return nil
+	}
+	previous := *c
+	*c = copilotTranscriptCheckpoints{}
+	if err := previous.finish(nil); err != nil {
+		return err
+	}
+	limit := req.MaxTranscriptBytes
+	if limit <= 0 {
+		limit = DefaultMaxTranscriptBytes
+	}
+	baseOffset := previous.state.offset
+	baseDropped := max(0, previous.state.size-limit)
+	sink := req.TranscriptCheckpoint
+	req.TranscriptCheckpoint = func(delta InvocationTranscriptDelta) error {
+		if delta.Source == "copilot-session" {
+			end := int64(delta.Offset) + int64(len(delta.Data))
+			remaining := max(0, limit-baseOffset-int64(delta.Offset))
+			delta.Data = delta.Data[:min(int64(len(delta.Data)), remaining)]
+			delta.Offset = int(min(limit, baseOffset+int64(delta.Offset)))
+			delta.DroppedBytes += baseDropped + max(0, baseOffset+end-limit)
+		}
+		return sink(delta)
+	}
+	next, err := startCopilotTranscriptCheckpoints(&req, path, env)
+	*c = next
+	return err
 }
 
 func (c copilotTranscriptCheckpoints) finish(runErr error) error {

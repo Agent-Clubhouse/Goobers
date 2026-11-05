@@ -9,16 +9,31 @@ import (
 	"time"
 )
 
-// Policy controls exponential retry pacing. RandInt63n defaults to
-// rand.Int64N when nil.
+// ErrDeadlineExceeded marks a retry loop stopped by its elapsed-time bound.
+var ErrDeadlineExceeded = errors.New("retry deadline exceeded")
+
+// Policy controls exponential retry pacing.
 type Policy struct {
-	Base       time.Duration
-	Max        time.Duration
-	RandInt63n func(int64) int64
+	Base time.Duration
+	Max  time.Duration
+
+	// FullJitter samples from zero through the capped exponential delay.
+	FullJitter bool
+
+	// SymmetricJitter selects a ±25% window around the capped exponential
+	// delay instead of the default half-to-full window. Samples above Max
+	// are clamped to Max.
+	SymmetricJitter bool
+
+	// randInt64N is a test hook that defaults to rand.Int64N when nil.
+	randInt64N func(int64) int64
 }
 
 // JitteredExponential returns a duration between half and all of
 // Base<<attempt, with the exponential ceiling capped at Max.
+// With SymmetricJitter, it instead samples within ±25% of that ceiling,
+// still returning at most Max.
+// If Base <= 0, Max is used as the ceiling. If Max <= 0, it returns zero.
 func JitteredExponential(p Policy, attempt int) time.Duration {
 	ceiling := p.Max
 	if attempt >= 0 && p.Base > 0 && p.Max > 0 && attempt < 63 && p.Base <= p.Max>>attempt {
@@ -28,16 +43,34 @@ func JitteredExponential(p Policy, attempt int) time.Duration {
 		return 0
 	}
 	floor := ceiling / 2
-	randInt63n := p.RandInt63n
-	if randInt63n == nil {
-		randInt63n = rand.Int64N
+	width := ceiling - floor
+	if p.FullJitter {
+		floor = 0
+		width = ceiling
+	} else if p.SymmetricJitter {
+		quarter := ceiling / 4
+		floor = ceiling - quarter
+		width = 2 * quarter
 	}
-	return floor + time.Duration(randInt63n(int64(ceiling-floor)+1))
+	randInt64N := p.randInt64N
+	if randInt64N == nil {
+		randInt64N = rand.Int64N
+	}
+	jitter := time.Duration(randInt64N(int64(width) + 1))
+	// Check before adding so a symmetric sample cannot overflow Duration.
+	if jitter > p.Max-floor {
+		return p.Max
+	}
+	return floor + jitter
 }
 
 // Until runs attempt until it succeeds, reports a non-retryable failure, or
 // deadline elapses, waiting according to p between retryable failures.
+// The deadline bounds the whole loop; an earlier deadline on ctx takes precedence.
 func Until(ctx context.Context, deadline time.Duration, p Policy, attempt func(context.Context) (retryable bool, err error)) error {
+	if deadline <= 0 {
+		return fmt.Errorf("%w before first attempt", ErrDeadlineExceeded)
+	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
@@ -56,15 +89,77 @@ func Until(ctx context.Context, deadline time.Duration, p Policy, attempt func(c
 			return err
 		}
 		if ctx.Err() != nil {
-			return fmt.Errorf("retry deadline exceeded after %d attempt(s): %w", n+1, err)
+			return retryDeadlineError(ctx.Err(), n+1, err)
 		}
 		previousErr = err
 		timer := time.NewTimer(JitteredExponential(p, n))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("retry deadline exceeded after %d attempt(s): %w", n+1, err)
+			return retryDeadlineError(ctx.Err(), n+1, err)
 		case <-timer.C:
 		}
 	}
+}
+
+// UntilWithRetryMargin always makes the first attempt under ctx, then reserves
+// margin from the caller deadline when deciding whether another attempt fits.
+func UntilWithRetryMargin(ctx context.Context, deadline, margin time.Duration, p Policy, attempt func(context.Context) (retryable bool, err error)) error {
+	start := time.Now()
+	retryUntil := start.Add(deadline)
+	stageLimited := false
+	if callerDeadline, ok := ctx.Deadline(); ok {
+		candidate := callerDeadline.Add(-margin)
+		if candidate.After(start) && candidate.Before(retryUntil) {
+			retryUntil = candidate
+			stageLimited = true
+		}
+	}
+	var previousErr error
+	for n := 0; ; n++ {
+		retryable, err := attempt(ctx)
+		if err == nil {
+			return nil
+		}
+		if previousErr != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			err = errors.Join(previousErr, err)
+		}
+		if !retryable {
+			return err
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return ctx.Err()
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if n == 0 {
+				return err
+			}
+			return retryDeadlineError(ctx.Err(), n+1, err)
+		}
+		delay := JitteredExponential(p, n)
+		if !retryUntil.After(start) || !time.Now().Add(delay).Before(retryUntil) {
+			if stageLimited {
+				return err
+			}
+			return fmt.Errorf("%w after %d attempt(s): %w", ErrDeadlineExceeded, n+1, err)
+		}
+		previousErr = err
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return ctx.Err()
+			}
+			return retryDeadlineError(ctx.Err(), n+1, err)
+		case <-timer.C:
+		}
+	}
+}
+
+func retryDeadlineError(ctxErr error, attempts int, err error) error {
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf("%w after %d attempt(s): %w", ErrDeadlineExceeded, attempts, err)
+	}
+	return fmt.Errorf("retry canceled after %d attempt(s): %w", attempts, err)
 }

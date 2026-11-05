@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runsemantics"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -276,9 +277,9 @@ func TestPinnedWorkflowMachineReconstructsMultipleHistoricalDigests(t *testing.T
 		if err != nil {
 			t.Fatalf("Identity(%s): %v", goal, err)
 		}
-		reconstructed, err := PinnedWorkflowMachine(rd, id)
+		reconstructed, err := runsemantics.PinnedWorkflowMachine(rd, id)
 		if err != nil {
-			t.Fatalf("PinnedWorkflowMachine(%s): %v", goal, err)
+			t.Fatalf("runsemantics.PinnedWorkflowMachine(%s): %v", goal, err)
 		}
 		if reconstructed.Digest() != machine.Digest() {
 			t.Fatalf("reconstructed digest = %q, want %q", reconstructed.Digest(), machine.Digest())

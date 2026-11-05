@@ -4,10 +4,11 @@ package recovery
 
 import (
 	"bytes"
-	"github.com/goobers/goobers/test/testsupport/testdep"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationChildPublicationPreservesAncestryOmissionsAndWorkspace(t *testing.T) {

@@ -63,6 +63,26 @@ func TestDispatchCancellationStillDeletesStageWithBoundedContext(t *testing.T) {
 	}
 }
 
+func TestWorkerHandoffLeavesLiveStagePodForAdoption(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pods := &cancellationPodAPI{fakePodAPI: &fakePodAPI{}, cancel: cancel}
+	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var custody PodCustody
+	ctx = WithPodCustodyObserver(ctx, func(observed PodCustody) { custody = observed })
+	ctx = WithWorkerHandoffDecision(ctx, func() bool { return true })
+	report, err := d.Dispatch(ctx, testAttempt(), []RunnerSpec{linuxRunner()})
+	if !errors.Is(err, ErrWorkerHandoff) || report.Disposed || len(pods.deleted) != 0 {
+		t.Fatalf("handoff did not preserve pod: report=%+v deleted=%v err=%v", report, pods.deleted, err)
+	}
+	if custody.UID == "" || !custody.Custody {
+		t.Fatalf("handoff carried no exact custody: %+v", custody)
+	}
+}
+
 type sidecarPodAPI struct {
 	*fakePodAPI
 	exitCode    int32

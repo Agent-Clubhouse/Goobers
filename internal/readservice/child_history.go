@@ -53,7 +53,7 @@ func (s *Local) RunChildren(ctx context.Context, runID, cursor string) (ChildHis
 	if err := ctx.Err(); err != nil {
 		return ChildHistoryPage{}, err
 	}
-	run, err := s.openRun(runID)
+	run, err := s.openRun(ctx, runID)
 	if err != nil {
 		return ChildHistoryPage{}, err
 	}

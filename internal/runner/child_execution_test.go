@@ -79,3 +79,12 @@ func TestChildExecutionDriverUsesOnlyIsolatedFactoriesAndNoProviderHooks(t *test
 		t.Fatal("remote child advertised host placement")
 	}
 }
+
+func TestChildPlacementUsesSelectedBackend(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		r := &Runner{cfg: Config{childExecution: &journal.RunIdentity{}, childTrustedLocal: local, RunnersDeclared: true}}
+		if got := r.recordsPlacement(); got != local {
+			t.Fatalf("local=%v records host placement=%v", local, got)
+		}
+	}
+}

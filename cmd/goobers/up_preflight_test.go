@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -77,7 +79,7 @@ func TestUpPreflightRejectsElectLanderDefectBeforeSchedulerState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	banner := fmt.Sprintf("Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id)
+	banner := fmt.Sprintf("Instance root: %q; instance ID: %q\n", runtimewiring.CanonicalStatusRoot(root), id)
 	if got, want := stderr.String(), banner+validateOut+validateErr; got != want {
 		t.Fatalf("up validation output differs from validate:\nup:       %q\nvalidate: %q", got, want)
 	}

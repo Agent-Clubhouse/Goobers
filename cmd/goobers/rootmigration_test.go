@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -61,7 +63,7 @@ func TestRootMigrationPreservesIdentityAndDistinguishesAuthority(t *testing.T) {
 	}
 	assertMigratedRoots(t, result, source, destination, id)
 	var banner bytes.Buffer
-	if err := prepareManualRoot(instance.NewLayout(destination), &banner); err != nil {
+	if err := runtimewiring.PrepareManualRoot(instance.NewLayout(destination), &banner); err != nil {
 		t.Fatalf("source decommission blocked destination: %v", err)
 	}
 	if banner.String() != manualServiceRootHeader(t, destination) {
@@ -85,7 +87,7 @@ func assertMigratedRoots(t *testing.T, result rootsDiscoveryOutput, source, dest
 		}
 		byPath[root.Path] = root
 	}
-	old, current := byPath[canonicalStatusRoot(source)], byPath[canonicalStatusRoot(destination)]
+	old, current := byPath[runtimewiring.CanonicalStatusRoot(source)], byPath[runtimewiring.CanonicalStatusRoot(destination)]
 	if old.DecommissionedAt == nil || old.DecommissionReason != "migrated" || old.OwningPID != 0 || old.DaemonState != "not-running" {
 		t.Fatalf("historical source appears authoritative: %+v", old)
 	}

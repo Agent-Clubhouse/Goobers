@@ -78,10 +78,10 @@ func selectHeldParentContribution(events []journal.Event, runID, branch string) 
 	if err != nil {
 		return parentContribution{}, false, err
 	}
-	if state.retiredAt != 0 {
+	if state.RetiredAt != 0 {
 		return parentContribution{}, false, errors.New("parent contribution has been retired")
 	}
-	return state.contribution, state.returnedAt != 0 && state.fork == nil, nil
+	return state.Contribution, state.ReturnedAt != 0 && state.Fork == nil, nil
 }
 
 func inheritedParentCustody(reader *journal.Reader, events []journal.Event, runID, branch string) (worktree.StageCustody, bool, error) {
@@ -89,17 +89,17 @@ func inheritedParentCustody(reader *journal.Reader, events []journal.Event, runI
 	if err != nil {
 		return worktree.StageCustody{}, false, err
 	}
-	if state.retiredAt != 0 {
+	if state.RetiredAt != 0 {
 		return worktree.StageCustody{}, false, errors.New("parent contribution has been retired")
 	}
-	if state.returnedAt == 0 {
+	if state.ReturnedAt == 0 {
 		return worktree.StageCustody{}, false, nil
 	}
-	if state.fork != nil {
-		if state.branch != 0 {
+	if state.Fork != nil {
+		if state.Branch != 0 {
 			return worktree.StageCustody{}, false, errors.New("branch fork cannot replace the root workspace")
 		}
-		if _, _, err := ParentForkArchivePlan(reader, state.archiveValue(journal.Ref{})); err != nil {
+		if _, _, err := ParentForkArchivePlan(reader, state.ArchiveValue(journal.Ref{})); err != nil {
 			return worktree.StageCustody{}, false, err
 		}
 	} else {
@@ -111,5 +111,5 @@ func inheritedParentCustody(reader *journal.Reader, events []journal.Event, runI
 			return worktree.StageCustody{}, false, err
 		}
 	}
-	return state.hold.Workspace, true, nil
+	return state.Hold.Workspace, true, nil
 }

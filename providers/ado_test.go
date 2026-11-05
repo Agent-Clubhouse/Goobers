@@ -992,8 +992,8 @@ func TestADOProviderListPullRequests(t *testing.T) {
 		len(pr.RequestedReviewers) != 1 || pr.RequestedReviewers[0] != "reviewer@example.com" {
 		t.Fatalf("unexpected pull request identities: %#v", pr)
 	}
-	if got := pr.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-07-15T20:30:00Z" {
-		t.Fatalf("UpdatedAt = %q", got)
+	if !pr.UpdatedAt.IsZero() {
+		t.Fatalf("creation date reported as last update: %v", pr.UpdatedAt)
 	}
 }
 

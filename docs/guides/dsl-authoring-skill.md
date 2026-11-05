@@ -81,6 +81,24 @@ release-matched schemas, and structured validator govern the generated YAML.
 Repository prose never overrides those contracts, and current `main` is not used
 as a substitute for an installed release.
 
+### Choose a DSL version without complicating local setup
+
+For new workflows, the authoring skill prefers DSL 3.0 once the selected binary
+lists it as supported. Before that lock, a 3.x preview pin requires the user's
+preview intent and a per-Workflow acknowledgement. Existing workflows keep their
+pin unless migration is requested. Choose 3.1 when its features are needed;
+`versions --json` and `features --json --dsl-version` from the selected release
+remain authoritative.
+
+A 3.x workflow for an implicit local self runner does not need invented
+scheduling tags, resource minimums, a `runners:` block, or new runner flags.
+Declare placement only when the work requires it, preserve existing isolation,
+and validate distributed requirements against the actual instance inventory.
+The skill distinguishes runner `runsOn.capabilities` from action-authorizing
+capabilities and accounts for explicit `repoFrom` handoffs. It reviews the
+`goobers fix` diff for a requested migration instead of changing only the pin of
+a 2.0 example.
+
 ## Ask in plain English
 
 Include the target repo, desired cadence, work, decisions, and allowed side

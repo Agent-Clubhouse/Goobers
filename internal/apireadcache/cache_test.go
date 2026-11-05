@@ -321,6 +321,20 @@ func TestAPIReadCacheNoETagNotCached(t *testing.T) {
 	}
 }
 
+// coalescingLockBudget is the lock budget for tests that assert successful
+// coalescing. Under the production one-second budget a waiter deliberately
+// fails open to its own live read (TestAPIReadCacheSnapshotDeadlineFallsBackToLiveRequest
+// covers that policy), so a strict one-upstream-read assertion would otherwise
+// depend on how fast a loaded runner finishes the leader's fetch and SQLite
+// writes (#6526, #7471).
+func coalescingLockBudget(t *testing.T) time.Duration {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return time.Minute
+}
+
 func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
 	const body = `[{"number":1},{"number":2},{"number":3}]`
 	var requests atomic.Int32
@@ -346,12 +360,7 @@ func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
 	url := srv.URL + "/repos/acme/app/issues?state=open"
 	const consumers = 20
 	results := make(chan string, consumers)
-	// This test asserts successful coalescing, independently of the production
-	// fail-open deadline. A separate test below exercises that one-second budget.
-	lockBudget := time.Minute
-	if deadline, ok := t.Deadline(); ok {
-		lockBudget = time.Until(deadline)
-	}
+	lockBudget := coalescingLockBudget(t)
 	start := make(chan struct{})
 	var entered sync.WaitGroup
 	entered.Add(consumers)

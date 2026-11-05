@@ -67,7 +67,14 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	if err != nil {
 		return nil, "", err
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	// Prompt/RPC calls retain the caller's cancellation. The owned server gets
+	// only a bounded accounting grace period so abort + usage can run before
+	// teardown; the watchdog still kills it if finalization cannot progress.
+	req.Timeout = effectiveProcessTimeout(ctx, req.Timeout, time.Now()) + copilotFinalizeTimeout
+	runCtx, cancel := copilotAccountingProcessContext(ctx, req.Timeout)
 	capture := &copilotPortCapture{ready: make(chan int, 1)}
 	done := make(chan struct{})
 	process := &copilotControlProcess{cancel: cancel, done: done}
@@ -85,7 +92,7 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 	case port = <-capture.ready:
 	case <-done:
 		cancel()
-		return nil, "", copilotControlExitError(process.result, process.err)
+		return nil, "", copilotControlExitError(process.result, process.err, req.Env)
 	case <-startup.Done():
 		process.close()
 		return nil, "", fmt.Errorf("%w: Copilot control startup timed out", errRequiredMCPUnavailable)
@@ -96,6 +103,25 @@ func startCopilotControlProcess(ctx context.Context, runner ProcessRunner, req P
 		return nil, "", fmt.Errorf("%w: Copilot control connection failed", errRequiredMCPUnavailable)
 	}
 	return process, sessionID, nil
+}
+
+func copilotAccountingProcessContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-runCtx.Done():
+			return
+		}
+		timer := time.NewTimer(copilotFinalizeTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			cancel()
+		case <-runCtx.Done():
+		}
+	}()
+	return runCtx, cancel
 }
 
 func (p *copilotControlProcess) close() {
@@ -119,12 +145,19 @@ func (p *copilotControlProcess) close() {
 // port. The CLI rejects a bad argv on stderr and exits within a second (#5636:
 // --usage-output-file with --headless), so a bare "exited" reads the same as a
 // crash; the exit status and a redacted stderr tail name the rejected option.
-func copilotControlExitError(result ProcessResult, runErr error) error {
+func copilotControlExitError(result ProcessResult, runErr error, env []string) error {
+	registry, scrubber := journal.DefaultScrubber()
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && (name == "GH_TOKEN" || name == "GITHUB_TOKEN" || name == "COPILOT_GITHUB_TOKEN" || name == "COPILOT_CONNECTION_TOKEN") {
+			registry.Register([]byte(value))
+		}
+	}
 	status := fmt.Sprintf("exit %d", result.ExitCode)
 	if result.ExitCode <= 0 && runErr != nil {
-		status = runErr.Error()
+		status = copilotControlStderrTail([]byte(runErr.Error()), scrubber)
 	}
-	detail := copilotControlStderrTail(result.Stderr)
+	detail := copilotControlStderrTail(result.Stderr, scrubber)
 	if detail != "" {
 		detail = ": " + detail
 	}
@@ -134,8 +167,8 @@ func copilotControlExitError(result ProcessResult, runErr error) error {
 // copilotControlStderrTail scrubs before clipping so a credential straddling
 // the cut is never half-quoted, and keeps the tail: the CLI's last line is why
 // it exited.
-func copilotControlStderrTail(stderr []byte) string {
-	detail := strings.TrimSpace(string(journal.NewPatternScrubber().Scrub(stderr)))
+func copilotControlStderrTail(stderr []byte, scrubber journal.Scrubber) string {
+	detail := strings.TrimSpace(string(scrubber.Scrub(stderr)))
 	if len(detail) <= copilotControlExitDetailBytes {
 		return detail
 	}

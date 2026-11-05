@@ -7,6 +7,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -36,11 +38,11 @@ func TestClaudePreflightRegistryUsesScopedFileCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolve, err := harnessModelCredentialResolver(cfg, stores).resolve(apiv1.HarnessClaudeCode)
+	resolve, err := runtimewiring.HarnessModelCredentialResolver(cfg, stores).Resolve(apiv1.HarnessClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := adapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{}, map[string][]string{"claude-code": {"echo"}}, resolve)
+	adapter, err := runtimewiring.AdapterFor(apiv1.HarnessClaudeCode, harness.EnvironmentConfig{}, map[string][]string{"claude-code": {"echo"}}, resolve)
 	if err != nil {
 		t.Fatal(err)
 	}

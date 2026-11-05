@@ -1,9 +1,15 @@
 import { CopyCommand } from "../ui/CopyCommand";
 
-export function RecoveryCommand({ command }: { command: string }) {
+export function RecoveryCommand({
+  command,
+  label = "Run:",
+}: {
+  command: string;
+  label?: string;
+}) {
   return (
     <div className="recovery-action">
-      <span>Run:</span>
+      <span>{label}</span>
       <code>{command}</code>
       <CopyCommand
         compact

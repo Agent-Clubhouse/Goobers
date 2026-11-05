@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/internal/runtimewiring"
+
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -34,7 +36,7 @@ func TestLegacyClaimFallbackRefusesPartialPinsAndSharedConfiguration(t *testing.
 					t.Fatal(err)
 				}
 				if _, report, err := instance.LoadConfigDir(layout.ConfigDir()); err != nil {
-					t.Fatalf("shared fixture must be valid, not rejected because of a parse error: %v (%s)", err, validationIssueSummary(report))
+					t.Fatalf("shared fixture must be valid, not rejected because of a parse error: %v (%s)", err, runtimewiring.ValidationIssueSummary(report))
 				}
 			}
 			resolver := stageSharedClaimResolver(layout)

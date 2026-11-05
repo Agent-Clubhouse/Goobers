@@ -13,28 +13,25 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	workflowservice "go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
-// TestOptionsUnsetIsTodaysDial pins the rollback posture: with no TLS block
-// the options are exactly what every dial site built before #5289.
+// TestOptionsUnsetIsTodaysDial pins the plaintext posture while allowing the
+// transport diagnostics shared by plaintext and TLS clients.
 func TestOptionsUnsetIsTodaysDial(t *testing.T) {
 	got, err := Options("temporal:7233", "goobers", nil)
 	if err != nil {
 		t.Fatalf("Options: %v", err)
 	}
-	want := client.Options{HostPort: "temporal:7233", Namespace: "goobers"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Options(nil TLS) = %#v, want %#v", got, want)
+	if got.HostPort != "temporal:7233" || got.Namespace != "goobers" || got.ConnectionOptions.TLS != nil || len(got.ConnectionOptions.DialOptions) != 1 {
+		t.Fatalf("Options(nil TLS) = %#v", got)
 	}
 	if got := (*TLS)(nil).Transport(); got != "plaintext" {
 		t.Fatalf("nil Transport = %q, want plaintext", got)
