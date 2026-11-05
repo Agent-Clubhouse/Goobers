@@ -84,6 +84,7 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
   cost: { path: "/#/cost", heading: "Cost" },
+  labs: { path: "/#/labs", heading: "Labs" },
   "work-items": { path: "/#/work-items", heading: "Work Items" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
@@ -852,6 +853,17 @@ test("loads the Gaggle page from fixture daemon data", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Core product active runs" })).toContainText(
     "01JZE2ESMOKERUN",
   );
+  expect(consoleErrors).toEqual([]);
+});
+
+test("loads the Labs workflow cluster map from fixture daemon data", async ({ page }) => {
+  const consoleErrors = trackConsoleErrors(page);
+  await page.goto("/#/labs/workflow-clustering");
+
+  const map = page.getByRole("region", { name: "Workflow cluster map" });
+  await expect(map.getByRole("listitem", { name: "Cluster c0" })).toContainText("core/implementation");
+  await expect(map.getByRole("region", { name: "Noise" })).toContainText("core/outlier");
+  await expect(map).toContainText("Advisory");
   expect(consoleErrors).toEqual([]);
 });
 

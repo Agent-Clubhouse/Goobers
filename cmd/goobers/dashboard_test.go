@@ -1700,3 +1700,25 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 		t.Fatalf("dashboard mode output = %q, want standalone mode", stderr.String())
 	}
 }
+
+// TestStandaloneDashboardAPIServesLabsWorkflowClusters guards that the
+// standalone dashboard wires the same Labs cluster read as `goobers up`
+// instead of answering 503 labs_unavailable (#8309).
+func TestStandaloneDashboardAPIServesLabsWorkflowClusters(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = api.close() }()
+	response := httptest.NewRecorder()
+	api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.LabsWorkflowClustersPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+}

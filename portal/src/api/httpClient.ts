@@ -54,6 +54,7 @@ import type {
   TranscriptContent,
   WorkflowDetail,
   QueueEligibilityView,
+  LabsWorkflowClusterView,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -266,6 +267,10 @@ export class HttpDaemonClient implements DaemonClient {
 
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
     return this.getJSON(clientRoutes.workflowQueueEligibility, undefined, options, { gaggle, workflow });
+  }
+
+  getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView> {
+    return this.getJSON(clientRoutes.labsWorkflowClusters, undefined, options);
   }
 
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {

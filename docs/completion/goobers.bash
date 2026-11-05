@@ -148,7 +148,8 @@ _goobers_completion()
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
-                validate-child) flags+=" --gaggle --parent --stage --backend --json" ;;
+                validate-child) flags+=" --gaggle --parent --stage --backend --cluster-model --json" ;;
+                clusters) flags+=" --features --since --max-runs --min-samples --min-cluster-size --seed --stratify --json" ;;
             esac
             ;;
         runs)
@@ -406,7 +407,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( COMP_CWORD == 2 )); then
-                candidates="show validate-child"
+                candidates="show validate-child clusters"
             elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete workflows 2>/dev/null)"
