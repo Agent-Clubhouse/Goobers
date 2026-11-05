@@ -11,9 +11,15 @@
 //	go run ./test/attributioneval -update    # record a new baseline
 //	go run ./test/attributioneval -publish=<instance-root>
 //	go run ./test/attributioneval -import=<run-dir>  # case skeleton from a real run
+//	go run ./test/attributioneval -ablation [-report=r.json]  # evidence-fidelity ablation
 //
 // -import prints a case built from a real run's journal for a labeler to
 // complete; see importRun.
+//
+// -ablation runs the evidence-fidelity ablation (#7317) instead of the
+// baseline check: it attributes every case again with its tool evidence
+// ablated or explicitly marked missing, and reports the paired comparison with
+// full fidelity; see runAblation. -report then writes the ablation report.
 //
 // -publish records the report's summary on a Goobers instance after the
 // baseline check passes: telemetry read surfaces (and so the portal) report it,
@@ -52,11 +58,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	update := flags.Bool("update", false, "record this run's accuracy as the new baseline")
 	publishRoot := flags.String("publish", "", "publish the report summary to this Goobers instance root")
 	importDir := flags.String("import", "", "print an eval case skeleton built from this run directory")
+	ablation := flags.Bool("ablation", false, "run the evidence-fidelity ablation instead of the baseline check")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if *importDir != "" {
 		return importCase(*importDir, stdout, stderr)
+	}
+	if *ablation {
+		if *update || *publishRoot != "" {
+			_, _ = fmt.Fprintln(stderr, "attributioneval: -ablation cannot be combined with -update or -publish")
+			return 2
+		}
+		return ablationRun(*setPath, *reportPath, stdout, stderr)
 	}
 	if *update && *publishRoot != "" {
 		_, _ = fmt.Fprintln(stderr, "attributioneval: -publish requires a baseline check and cannot be combined with -update")
@@ -97,6 +111,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "attributioneval: %v\n", err)
 			return 1
 		}
+	}
+	return 0
+}
+
+func ablationRun(setPath, reportPath string, stdout, stderr io.Writer) int {
+	set, err := loadEvalSet(setPath)
+	if err == nil {
+		var report ablationReport
+		if report, err = runAblation(set); err == nil {
+			printAblationSummary(stdout, report)
+			if reportPath != "" {
+				err = writeJSON(reportPath, report)
+			}
+		}
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "attributioneval: ablation: %v\n", err)
+		return 1
 	}
 	return 0
 }
