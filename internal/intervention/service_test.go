@@ -592,6 +592,11 @@ func TestPrepareInterventionReplaysCompletedActions(t *testing.T) {
 			completion: journal.Event{Type: journal.EventStageRerunRequested, Stage: "implement"},
 			input:      httpapi.InterventionRequest{Stage: "implement", InstructionAddendum: "try again"},
 		},
+		{
+			name:       "retry",
+			completion: journal.Event{Type: journal.EventStageRerunRequested, Stage: "build"},
+			input:      httpapi.InterventionRequest{Stage: "build", DeterministicRetry: true},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runID := "run-replay-" + tc.name

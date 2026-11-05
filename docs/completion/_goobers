@@ -171,6 +171,9 @@ _goobers_completion()
         rerun-stage)
             flags+=(--addendum --actor --api)
             ;;
+        retry-stage)
+            flags+=(--actor --api)
+            ;;
         signal)
             flags+=(--request-id)
             ;;

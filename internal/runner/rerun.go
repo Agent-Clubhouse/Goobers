@@ -14,8 +14,9 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-// RerunStageInput identifies one agentic task or reviewer gate in an escalated
-// run to execute again with an operator-supplied instruction addendum.
+// RerunStageInput identifies one stage in an escalated run to execute again.
+// DeterministicRetry selects a deterministic task without an instruction
+// addendum; otherwise the target must be agentic and carry an addendum.
 type RerunStageInput struct {
 	RunID               string
 	Machine             *workflow.Machine
@@ -24,6 +25,7 @@ type RerunStageInput struct {
 	Stage               string
 	Actor               string
 	InstructionAddendum string
+	DeterministicRetry  bool
 	// ExpectedTerminalSeq binds the request to the escalation that was
 	// inspected before the operator action was accepted.
 	ExpectedTerminalSeq uint64
@@ -60,14 +62,17 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		return Result{}, fmt.Errorf("runner: Actor is required")
 	}
 	addendum := strings.TrimSpace(in.InstructionAddendum)
-	if addendum == "" {
+	if !in.DeterministicRetry && addendum == "" {
 		return Result{}, fmt.Errorf("runner: InstructionAddendum is required")
+	}
+	if in.DeterministicRetry && addendum != "" {
+		return Result{}, fmt.Errorf("runner: deterministic retry does not accept an instruction addendum")
 	}
 	if in.ExpectedTerminalSeq == 0 {
 		return Result{}, fmt.Errorf("runner: expected terminal sequence is required")
 	}
 
-	isGate, err := validateRerunTarget(in.Machine, in.Stage)
+	isGate, err := validateRerunTarget(in.Machine, in.Stage, in.DeterministicRetry)
 	if err != nil {
 		return Result{}, err
 	}
@@ -305,14 +310,23 @@ func branchOwningState(machine *workflow.Machine, spec apiv1.Parallel, state str
 	return ""
 }
 
-func validateRerunTarget(machine *workflow.Machine, stage string) (bool, error) {
+func validateRerunTarget(machine *workflow.Machine, stage string, deterministicRetry bool) (bool, error) {
 	if task, ok := machine.Task(stage); ok {
+		if deterministicRetry {
+			if task.Type != apiv1.TaskDeterministic {
+				return false, fmt.Errorf("runner: stage %q is agentic; deterministic retry requires a deterministic task", stage)
+			}
+			return false, nil
+		}
 		if task.Type != apiv1.TaskAgentic {
 			return false, fmt.Errorf("runner: stage %q is deterministic; instruction addenda require an agentic stage", stage)
 		}
 		return false, nil
 	}
 	if gate, ok := machine.Gate(stage); ok {
+		if deterministicRetry {
+			return false, fmt.Errorf("runner: stage %q is a gate; deterministic retry requires a deterministic task", stage)
+		}
 		if gate.Evaluator != apiv1.EvaluatorAgentic {
 			return false, fmt.Errorf("runner: stage %q is not an agentic reviewer gate", stage)
 		}
@@ -350,16 +364,25 @@ func pendingRerun(events []journal.Event, machine *workflow.Machine) (*rerunCont
 			continue
 		}
 		if request.Attempt < 1 || request.AttemptClass != journal.AttemptHuman ||
-			strings.TrimSpace(request.Actor) == "" || strings.TrimSpace(request.InstructionAddendum) == "" {
+			strings.TrimSpace(request.Actor) == "" {
 			return nil, nil, fmt.Errorf("pending rerun request for %q is incomplete", request.Stage)
 		}
 		isGate := false
 		if task, ok := machine.Task(request.Stage); ok {
-			if task.Type != apiv1.TaskAgentic {
-				return nil, nil, fmt.Errorf("pending rerun target %q is not agentic", request.Stage)
+			switch task.Type {
+			case apiv1.TaskAgentic:
+				if strings.TrimSpace(request.InstructionAddendum) == "" {
+					return nil, nil, fmt.Errorf("pending agentic rerun request for %q has no instruction addendum", request.Stage)
+				}
+			case apiv1.TaskDeterministic:
+				if strings.TrimSpace(request.InstructionAddendum) != "" {
+					return nil, nil, fmt.Errorf("pending deterministic retry request for %q has an instruction addendum", request.Stage)
+				}
+			default:
+				return nil, nil, fmt.Errorf("pending rerun target %q has unsupported task type %q", request.Stage, task.Type)
 			}
 		} else if gate, ok := machine.Gate(request.Stage); ok {
-			if gate.Evaluator != apiv1.EvaluatorAgentic {
+			if gate.Evaluator != apiv1.EvaluatorAgentic || strings.TrimSpace(request.InstructionAddendum) == "" {
 				return nil, nil, fmt.Errorf("pending rerun target %q is not an agentic reviewer gate", request.Stage)
 			}
 			isGate = true
