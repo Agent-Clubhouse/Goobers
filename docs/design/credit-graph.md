@@ -722,7 +722,12 @@ Predeclared success criteria, each reported with a verdict:
    `insufficient-sample`, and a negative result is a valid result.
 
 Criteria 1–4 are safety properties that fail on a single violation at any
-sample size; `TestEvidenceAblationOnTheEvalSet` holds them in CI.
+sample size; `TestEvidenceAblationOnTheEvalSet` holds them in CI. Criterion 4
+is a self-consistency check only: citations are resolved against the same
+graph the attribution was built from, and the attributor cites only tool
+results that record an outcome, so with today's attributor it cannot fail. It
+guards against a future attributor that cites evidence the graph lacks; it is
+not evidence that ablated causes are correct, which criterion 2 measures.
 
 Result on eval set v1 (18 cases): only 4 cases carry a transcript, all from
 `copilot-cli` with every tool result recording an outcome; the other 14 have
@@ -740,5 +745,7 @@ as tool calls with no result.
 Not covered yet: labeled transcripts from `claude-code` (which records tool
 results with outcomes) and `codex` (whose composed transcript records no tool
 calls), real trajectories with tool evidence beyond v1, the enriched tool
-observations listed above (no adapter emits them), and an opt-in shadow run.
+observations listed above (no adapter emits them), successful trajectories
+(every v1 case ends `failed`, so the report cannot yet show whether ablation
+blames a healthy run), and an opt-in shadow run.
 These need new labeled cases, not changes to the harness.
