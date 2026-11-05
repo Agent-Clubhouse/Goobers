@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -81,5 +84,55 @@ func TestAdaptersRunThroughTheSandbox(t *testing.T) {
 	err := adapter.run(context.Background(), "", map[string]string{}, &out)
 	if err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Fatalf("adapter through sandbox = %v; want the probe's non-JSON token to fail decoding", err)
+	}
+}
+
+func TestEgressProbeChecksTheForgeThroughTheAdapterProxy(t *testing.T) {
+	t.Setenv(egressHelperEnv, "1")
+	// The forbidden host does not resolve, so only the proxy can reach it;
+	// httpproxy never proxies loopback targets, so it cannot be 127.0.0.1.
+	const forge = "forge.invalid:443"
+	sandbox := []string{os.Args[0]}
+	probe := []string{"-test.run=^TestEgressProbeHelperProcess$", egressProbeCommand}
+	passthrough := []string{egressHelperEnv}
+	for _, tc := range []struct {
+		name    string
+		status  int
+		blocked bool
+	}{
+		{name: "proxy tunnels to the forge", status: http.StatusOK},
+		{name: "proxy refuses the forge", status: http.StatusForbidden, blocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var connects []string
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodConnect {
+					mu.Lock()
+					connects = append(connects, r.Host)
+					mu.Unlock()
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer proxy.Close()
+			t.Setenv("HTTPS_PROXY", proxy.URL)
+			t.Setenv("NO_PROXY", "example.com")
+
+			err := verifyEgressBlocked(context.Background(), sandbox, probe, []string{forge}, t.TempDir(), passthrough)
+			mu.Lock()
+			defer mu.Unlock()
+			if len(connects) != 1 || connects[0] != forge {
+				t.Fatalf("proxy CONNECTs = %v; want one to %s", connects, forge)
+			}
+			if tc.blocked {
+				if err != nil {
+					t.Fatalf("proxy refusing CONNECT: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "reachable through proxy") {
+				t.Fatalf("sandbox whose proxy reaches the forge verified: %v", err)
+			}
+		})
 	}
 }

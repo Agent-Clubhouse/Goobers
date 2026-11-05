@@ -529,7 +529,10 @@ into a lookup. What is enforced:
   egress allowlist admits only the model provider), and before any review
   replay runs its own `egress-probe` subcommand through that sandbox with the
   adapter environment. Replay refuses to start unless the probe ran (it must
-  print its token) and connected to none of `-forbidden-hosts` (by default
+  print its token) and reached none of `-forbidden-hosts`, neither directly
+  nor, when the adapter environment's `HTTPS_PROXY`/`NO_PROXY` route the host
+  through a proxy as curl, gh, node, and python would, by an HTTP `CONNECT`
+  through that proxy (by default
   `github.com:443`, `api.github.com:443`, `codeload.github.com:443`, and
   `raw.githubusercontent.com:443`; add the forge's endpoints when the
   repository lives elsewhere). A blanket `network:none` would also cut off the
