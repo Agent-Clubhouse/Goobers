@@ -78,8 +78,27 @@ describe("LabsPage", () => {
     expect(screen.getByRole("heading", { name: "Labs" })).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "Workflow clustering" });
     expect(link).toHaveAttribute("href", "#/labs/workflow-clustering");
-    expect(screen.getByText("Experimental")).toBeInTheDocument();
-    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
+    for (const name of ["Backprop", "System One decisions", "Workflow Gym", "R-SZZ review evaluation", "Fluid UI"]) {
+      expect(screen.getByRole("link", { name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByText("Experimental").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Coming soon").length).toBeGreaterThan(0);
+  });
+
+  it("points shipped features at their portal, CLI, and docs surfaces", () => {
+    renderLabs(fixtureClient(), "backprop");
+
+    expect(screen.getByRole("heading", { name: "Where to find it" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Insights → Backprop" })).toHaveAttribute(
+      "href",
+      "#/insight?section=backprop",
+    );
+    expect(screen.getByText(/goobers telemetry shadow \[--gaggle/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Backprop guide" })).toHaveAttribute(
+      "href",
+      "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/backprop.md",
+    );
+    expect(screen.queryByRole("heading", { name: "Not available yet" })).not.toBeInTheDocument();
   });
 
   it("shows the experimental banner, prerequisites, and tracking issues for a feature", () => {
@@ -165,6 +184,30 @@ describe("LabsPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Workflow clusters unavailable: config invalid");
   });
 
+  it("shows Not available yet for a coming-soon feature with no surfaces", () => {
+    renderLabs(fixtureClient(), "workflow-gym");
+    expect(screen.queryByRole("heading", { name: "Where to find it" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Not available yet" })).toBeInTheDocument();
+    expect(screen.getByText(/This feature is not implemented yet\./)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Get ready" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Try it" })).not.toBeInTheDocument();
+  });
+
+  it("walks users through trying a shipped feature and wiring it into workflows", () => {
+    renderLabs(fixtureClient(), "workflow-clustering");
+
+    expect(screen.getByText(/works on your instance today/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Try it" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Use it in your workflows" })).toBeInTheDocument();
+    expect(screen.getByText("goobers workflow clusters --stratify gaggle ./instance")).toBeInTheDocument();
+    expect(screen.getByText(/--cluster-model clusters\.json proposal\.yaml/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What's next" })).toBeInTheDocument();
+    expect(screen.getByText("Which shapes actually work")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "#8345" })[0]).toHaveAttribute(
+      "href",
+      "https://github.com/Agent-Clubhouse/Goobers/issues/8345",
+    );
+  });
   it("falls back to the catalog for an unknown feature", () => {
     renderLabs(fixtureClient(), "does-not-exist");
 

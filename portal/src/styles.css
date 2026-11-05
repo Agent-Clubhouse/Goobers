@@ -13054,6 +13054,44 @@ select {
   padding: 0;
 }
 
+.labs-status {
+  font-size: var(--font-ui);
+  margin: 0 0 4px;
+}
+
+.labs-steps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.labs-steps p,
+.labs-roadmap p {
+  margin: 4px 0 0;
+}
+
+.labs-roadmap {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.labs-code {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-label);
+  line-height: 1.5;
+  margin: 8px 0 0;
+  overflow-x: auto;
+  padding: 10px 12px;
+  white-space: pre;
+}
+
 /* Labs cluster scatter map. */
 .labs-map {
   margin: 12px 0 16px;

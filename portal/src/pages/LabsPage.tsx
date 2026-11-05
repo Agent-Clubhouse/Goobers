@@ -4,9 +4,12 @@ import { LabsWorkflowClusters } from "../components/LabsWorkflowClusters";
 import {
   findLabsFeature,
   labsFeatures,
+  labsDocsBaseUrl,
   labsIssueBaseUrl,
   labsMaturityLabel,
   type LabsFeature,
+  type LabsStep,
+  type LabsSurface,
 } from "../labs";
 import { routeHash } from "../routing";
 import { PageHeading } from "../ui/Heading";
@@ -75,7 +78,51 @@ function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature:
       </p>
       {view?.(client)}
       <section className="content-section labs-detail">
+        <p className="labs-status">
+          {feature.availability === "available" ? (
+            <>
+              <strong>Ready to try.</strong> This feature is implemented and works on your instance today.
+            </>
+          ) : (
+            <>
+              <strong>Planned.</strong> This feature is not implemented yet. The steps below describe how you will use it.
+            </>
+          )}
+        </p>
+        <h2>{feature.availability === "available" ? "Try it" : "Get ready"}</h2>
+        <LabsSteps steps={feature.tryIt} />
+        <h2>{feature.availability === "available" ? "Use it in your workflows" : "How it will fit your workflows"}</h2>
+        <LabsSteps steps={feature.integrate} />
+        {feature.roadmap && feature.roadmap.length > 0 && (
+          <>
+            <h2>What's next</h2>
+            <ul className="labs-roadmap">
+              {feature.roadmap.map((item) => (
+                <li key={item.issue}>
+                  <strong>{item.title}</strong>{" "}
+                  <a href={`${labsIssueBaseUrl}${item.issue}`} rel="noreferrer" target="_blank">
+                    #{item.issue}
+                  </a>
+                  <p>{item.detail}</p>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <h2>How it works</h2>
         <p>{feature.description}</p>
+        {feature.surfaces && feature.surfaces.length > 0 && (
+          <>
+            <h2>Where to find it</h2>
+            <ul className="labs-surfaces">
+              {feature.surfaces.map((surface) => (
+                <li key={labsSurfaceKey(surface)}>
+                  <LabsSurfaceItem surface={surface} />
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
         <h2>Prerequisites</h2>
         <ul>
           {feature.prerequisites.map((prerequisite) => (
@@ -95,14 +142,79 @@ function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature:
       </section>
       {feature.availability === "coming-soon" && (
         <section className="content-section">
-          <div className="empty-state">
-            <h2>Not available yet</h2>
-            <p>This feature is still being built. Follow the tracking issues above for progress.</p>
-          </div>
+          {feature.surfaces && feature.surfaces.length > 0 ? (
+            <div className="empty-state">
+              <h2>Portal view coming soon</h2>
+              <p>
+                The Portal view is still being built. Use the surfaces listed above today, and follow the
+                tracking issues for progress.
+              </p>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <h2>Not available yet</h2>
+              <p>This feature is still being built. Follow the tracking issues above for progress.</p>
+            </div>
+          )}
         </section>
       )}
     </>
   );
+}
+
+function LabsSteps({ steps }: { steps: LabsStep[] }) {
+  return (
+    <ol className="labs-steps">
+      {steps.map((step) => (
+        <li key={step.title}>
+          <strong>{step.title}</strong>
+          <p>{step.detail}</p>
+          {step.code && (
+            <pre className="labs-code">
+              <code>{step.code}</code>
+            </pre>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function labsSurfaceKey(surface: LabsSurface): string {
+  switch (surface.kind) {
+    case "portal":
+      return `portal:${surface.label}`;
+    case "cli":
+      return `cli:${surface.command}`;
+    case "docs":
+      return `docs:${surface.path}`;
+  }
+}
+
+function LabsSurfaceItem({ surface }: { surface: LabsSurface }) {
+  switch (surface.kind) {
+    case "portal":
+      return (
+        <>
+          Portal: <a href={routeHash(surface.route)}>{surface.label}</a>
+        </>
+      );
+    case "cli":
+      return (
+        <>
+          CLI: <code>{surface.command}</code> — {surface.description}
+        </>
+      );
+    case "docs":
+      return (
+        <>
+          Docs:{" "}
+          <a href={`${labsDocsBaseUrl}${surface.path}`} rel="noreferrer" target="_blank">
+            {surface.label}
+          </a>
+        </>
+      );
+  }
 }
 
 function LabsBadges({ feature }: { feature: LabsFeature }) {
