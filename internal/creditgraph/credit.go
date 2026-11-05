@@ -105,9 +105,12 @@ type Attribution struct {
 	// Claims, UnverifiedClaims, and DroppedClaims carry the graph's claim
 	// evaluation into the persisted record. Claims never change shares,
 	// scores, confidences, or cause classes.
-	Claims           []ClaimRecord `json:"claims,omitempty"`
-	UnverifiedClaims []ClaimRecord `json:"unverifiedClaims,omitempty"`
-	DroppedClaims    int           `json:"droppedClaims,omitempty"`
+	Claims                  []ClaimRecord        `json:"claims,omitempty"`
+	UnverifiedClaims        []ClaimRecord        `json:"unverifiedClaims,omitempty"`
+	DroppedClaims           int                  `json:"droppedClaims,omitempty"`
+	Verifications           []VerificationRecord `json:"verifications,omitempty"`
+	UnverifiedVerifications []VerificationRecord `json:"unverifiedVerifications,omitempty"`
+	DroppedVerifications    int                  `json:"droppedVerifications,omitempty"`
 }
 
 // Contribution returns the contribution computed for one node.
@@ -232,6 +235,9 @@ func Attribute(graph *Graph) Attribution {
 	}
 	attribution.Causes = a.classify(attribution)
 	attachClaims(graph, &attribution)
+	attribution.Verifications = graph.Verifications
+	attribution.UnverifiedVerifications = graph.UnverifiedVerifications
+	attribution.DroppedVerifications = graph.DroppedVerifications
 	return attribution
 }
 

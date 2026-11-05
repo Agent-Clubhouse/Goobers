@@ -102,11 +102,22 @@
         "health": { "$ref": "#/$defs/healthPolicy", "description": "Optional gaggle-health observation, notification, escalation, and hard-safety-bounded repair policy. Omitted uses conservative documented defaults." },
         "backprop": {
           "type": "object",
-          "description": "Gaggle-level Backprop override. mode=shadow observes every workflow in this gaggle that declares neither its own backprop.mode nor enabled=true, without editing it; the override can never enroll a workflow in active filing.",
+          "description": "Preview gaggle-level Backprop default for every workflow in this gaggle that declares neither its own backprop.mode nor enabled=true. A workflow's own mode, including mode=off, always wins.",
           "additionalProperties": false,
           "required": ["mode"],
           "properties": {
-            "mode": { "enum": ["off", "shadow"], "description": "Override applied to workflows without their own Backprop mode. off applies no override; shadow observes their terminal runs in shadow mode, analyzed on demand from the run journal and never filed." }
+            "mode": { "enum": ["off", "shadow", "active"], "description": "Default mode for workflows without their own Backprop mode. off applies no default; shadow observes their terminal runs on demand from the run journal and never files; active enrolls workflows pinned to dslVersion 3.0 or later that acknowledge preview features, and is not applied to other workflows." },
+            "version": { "enum": ["v1"], "description": "Attribution contract version inheriting workflows use. Omitted means v1." },
+            "granularity": { "enum": ["run", "stage"], "description": "Default attribution granularity for every workflow in this gaggle that omits its own. stage applies only to active runs." },
+            "groundTruth": {
+              "type": "object",
+              "description": "Default ground-truth label source contract for every workflow in this gaggle that omits its own, including workflows that declare their own mode. A workflow's own groundTruth always wins.",
+              "additionalProperties": false,
+              "required": ["sources"],
+              "properties": {
+                "sources": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "enum": ["human"] }, "description": "Label sources whose ground-truth labels feed attribution aggregates. human is an operator verdict recorded with goobers telemetry label. An empty list is the explicit opt-out: no label is accepted." }
+              }
+            }
           }
         },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },

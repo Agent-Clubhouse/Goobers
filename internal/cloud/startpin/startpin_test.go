@@ -97,8 +97,7 @@ func TestComputeAppliesGaggleOverlaysItself(t *testing.T) {
 		raw.Gaggles[i].Spec.CICommand = []string{"make", "verify"}
 		overlaid.Gaggles[i].Spec.CICommand = []string{"make", "verify"}
 	}
-	instance.ApplyGaggleCICommand(overlaid)
-	instance.ApplyGaggleOutboxMirror(overlaid)
+	instance.ApplyGaggleDefaults(overlaid)
 	want, err := Compute(root, cfg, overlaid)
 	if err != nil {
 		t.Fatal(err)

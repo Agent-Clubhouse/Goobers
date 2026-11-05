@@ -46,8 +46,7 @@ func newPinnedChildFixture(t *testing.T, editConfig ...func(string)) pinnedChild
 	if err != nil {
 		t.Fatalf("config load: %v; findings: %+v", err, report)
 	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	instance.ApplyGaggleDefaults(set)
 	goobers := runtimewiring.GoobersByName(set)
 	instructions, err := runtimewiring.LoadGooberInstructions(layout.ConfigDir(), set, goobers)
 	if err != nil {

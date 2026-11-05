@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: verify-finite-model
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+dslVersion: "3.0"
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: verify-model
+  tasks:
+    - name: verify-model
+      type: deterministic
+      goal: Check the finite graph against the reviewed invariant.
+      run:
+        command: ["tlc"]
+        workspace: repo
+      inputs:
+        kind: tlc
+        tlcManifest: manifest.json
+        tlcModel: examples/backprop-tlc/positive.json
+        timeout: 30s
+        maxOutputBytes: "1048576"

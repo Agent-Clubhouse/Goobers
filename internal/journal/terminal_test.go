@@ -4,8 +4,105 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+// These are concrete witnesses for the action paths in
+// test/formal/recovery/TerminalRecovery.tla, not a refinement proof.
+func TestTerminalRecoveryModelTraces(t *testing.T) {
+	for _, phase := range []RunPhase{PhaseCompleted, PhaseFailed, PhaseAborted, PhaseEscalated} {
+		for _, location := range []string{"synced-stale-checkpoint", "synced-current-checkpoint", "partial-before-sync"} {
+			t.Run(string(phase)+"/"+location, func(t *testing.T) {
+				root := t.TempDir()
+				run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				run.SetMachineState("review")
+				if err := run.Checkpoint(); err != nil {
+					t.Fatal(err)
+				}
+				torn := location == "partial-before-sync"
+				wantPhase := phase
+				wantCursor := ""
+				wantFinished := 1
+				if torn {
+					wantPhase, wantCursor, wantFinished = PhaseRunning, "review", 0
+				} else if err := run.Append(Event{Type: EventRunFinished, Status: string(phase)}); err != nil {
+					t.Fatal(err)
+				}
+				if err := run.Close(); err != nil {
+					t.Fatal(err)
+				}
+				dir := filepath.Join(root, testIdentity().RunID)
+				if location == "synced-stale-checkpoint" {
+					simulateCrashInTerminalWindow(t, dir, PhaseRunning, "review")
+				}
+				reader, err := OpenRead(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before, err := reader.Events()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if torn {
+					f, err := os.OpenFile(filepath.Join(dir, fileEvents), os.O_APPEND|os.O_WRONLY, 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, writeErr := f.WriteString(`{"type":"run.finished","status":"` + string(phase))
+					closeErr := f.Close()
+					if writeErr != nil || closeErr != nil {
+						t.Fatalf("write torn tail: %v, close: %v", writeErr, closeErr)
+					}
+				}
+				for restart := range 2 {
+					got, err := reader.Phase()
+					if err != nil || got != wantPhase {
+						t.Fatalf("restart %d reader phase = %q, %v; want %q", restart, got, err, wantPhase)
+					}
+					recovered, report, err := Recover(dir, WithClock(fixedClock()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := recovered.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if report.Repaired != (torn && restart == 0) {
+						t.Fatalf("restart %d repaired = %v", restart, report.Repaired)
+					}
+					state, err := reader.State()
+					if err != nil || state.Phase != wantPhase || state.MachineState != wantCursor {
+						t.Fatalf("restart %d checkpoint = %+v, %v; want %s at %q", restart, state, err, wantPhase, wantCursor)
+					}
+					after, err := reader.Events()
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Recovery may add a repaired diagnostic, never rewrite the
+					// normative terminal prefix or invent another outcome.
+					if len(after) < len(before) || !reflect.DeepEqual(ConformanceView(before), ConformanceView(after[:len(before)])) {
+						t.Fatal("recovery changed the normative event prefix")
+					}
+					finished := 0
+					for _, event := range after {
+						if event.Type == EventRunFinished {
+							finished++
+							if event.Status != string(phase) {
+								t.Fatalf("terminal outcome changed to %q", event.Status)
+							}
+						}
+					}
+					if finished != wantFinished {
+						t.Fatalf("run.finished count = %d, want %d", finished, wantFinished)
+					}
+				}
+			})
+		}
+	}
+}
 
 // simulateCrashInTerminalWindow hand-builds a run journal exactly to the
 // point a real Append(run.finished) would have left it had the process died

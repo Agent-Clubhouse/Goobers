@@ -129,7 +129,17 @@ func runDecide(args []string, stdout, stderr io.Writer) int {
 		return unavailable("decision gate unavailable: " + err.Error())
 	}
 
-	q := decider.Noul(*question, &decider.NoulCriteria{True: *yesText, False: *noText})
+	var criteria *decider.NoulCriteria
+	if yes, no := strings.TrimSpace(*yesText), strings.TrimSpace(*noText); yes != "" || no != "" {
+		criteria = &decider.NoulCriteria{}
+		if yes != "" {
+			criteria.True = *yesText
+		}
+		if no != "" {
+			criteria.False = *noText
+		}
+	}
+	q := decider.Noul(*question, criteria)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	outcome, jerr := gate.JudgeNoul(ctx, *name, state, q)
