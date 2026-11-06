@@ -9,12 +9,14 @@ TLA+, claims, scripts, assumptions, or proof text.
 ## Operator setup (offline)
 
 Install a closed Java runtime and the
-[TLC v1.8.0 jar](https://github.com/tlaplus/tlaplus/releases/tag/v1.8.0) in
+[TLC v1.7.4 jar](https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4) in
 operator-owned locations outside every candidate checkout. No production
 download or PATH lookup occurs. The exact jar SHA-256 is
-`e20447644bfabd29d6bd0fc2c0eb1473fb301c1a0e4dfe1961938ce5a191edbf`.
-Its actual banner is `2026.11.03.180953 (rev: 309e489)`; the report records
-both the release and build identity.
+`936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88`.
+Its actual banner is `TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)`; the
+report records both the release and build identity. v1.7.4 is the newest stable
+(non-prerelease) release; the `v1.8.0` and `rolling` pre-release jars are rebuilt
+in place and cannot be pinned by digest.
 
 Review the two specification files, then use an existing Python installation:
 
