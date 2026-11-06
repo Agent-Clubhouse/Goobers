@@ -14,6 +14,10 @@
     "class": "runtime-mutation",
     "capability": "rerun"
   },
+  "retry": {
+    "class": "runtime-mutation",
+    "capability": "retry"
+  },
   "revealRun": {
     "class": "maintenance"
   }

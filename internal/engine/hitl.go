@@ -85,8 +85,8 @@ const (
 	HITLStateQuery = "goobers.hitl-state.v1"
 )
 
-// HITLIntentKind is the operator intent being delivered. The three kinds are
-// the three in-process runner paths #3847 refuses for an engine-driven run.
+// HITLIntentKind is the operator intent being delivered. The kinds mirror the
+// in-process runner paths available to engine-driven runs.
 type HITLIntentKind string
 
 const (
@@ -97,6 +97,9 @@ const (
 	// HITLRerunStage reruns one agentic stage with an instruction addendum,
 	// mirroring Runner.RerunStage.
 	HITLRerunStage HITLIntentKind = "rerun-stage"
+	// HITLRetryStage retries one previously-run deterministic task without
+	// changing its inputs or supplying agent instructions.
+	HITLRetryStage HITLIntentKind = "retry-stage"
 	// HITLResumeFromTerminal resumes the walk at an explicit workflow state
 	// (or completes it), mirroring Runner.ResumeFromTerminal's raw form.
 	HITLResumeFromTerminal HITLIntentKind = "resume-from-terminal"
@@ -220,7 +223,8 @@ type HITLIntent struct {
 	Decision   string `json:"decision,omitempty"`
 	Rationale  string `json:"rationale,omitempty"`
 
-	// Stage and InstructionAddendum carry HITLRerunStage.
+	// Stage carries HITLRerunStage and HITLRetryStage. InstructionAddendum is
+	// required only for HITLRerunStage.
 	Stage               string `json:"stage,omitempty"`
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
 
@@ -602,6 +606,13 @@ func validateHITLShape(intent HITLIntent) error {
 		if strings.TrimSpace(intent.InstructionAddendum) == "" {
 			return hitlRefusal(HITLErrInvalidIntent, "instruction addendum is required to rerun a stage")
 		}
+	case HITLRetryStage:
+		if strings.TrimSpace(intent.Stage) == "" {
+			return hitlRefusal(HITLErrInvalidIntent, "stage is required to retry a deterministic task")
+		}
+		if strings.TrimSpace(intent.InstructionAddendum) != "" {
+			return hitlRefusal(HITLErrInvalidIntent, "deterministic retry does not accept an instruction addendum")
+		}
 	case HITLResumeFromTerminal:
 		target := strings.TrimSpace(intent.Target)
 		if target == "" && !intent.Complete {
@@ -722,7 +733,9 @@ func (s *hitlSession) plan(intent HITLIntent) (*hitlResumePlan, error) {
 	case HITLResolveEscalation:
 		return s.planResolve(intent)
 	case HITLRerunStage:
-		return s.planRerun(intent)
+		return s.planRerun(intent, false)
+	case HITLRetryStage:
+		return s.planRerun(intent, true)
 	case HITLResumeFromTerminal:
 		return s.planResume(intent)
 	default:
@@ -771,7 +784,7 @@ func (s *hitlSession) planResolve(intent HITLIntent) (*hitlResumePlan, error) {
 // names none — the same "pass" default the daemon's approve verb applies.
 const gateDefaultDecision = "pass"
 
-func (s *hitlSession) planRerun(intent HITLIntent) (*hitlResumePlan, error) {
+func (s *hitlSession) planRerun(intent HITLIntent, deterministicRetry bool) (*hitlResumePlan, error) {
 	stage := strings.TrimSpace(intent.Stage)
 	// A rerun re-enters a stage to do work again, which only means anything
 	// for an escalated run: a run that FAILED has an unresolved stage failure
@@ -783,11 +796,20 @@ func (s *hitlSession) planRerun(intent HITLIntent) (*hitlResumePlan, error) {
 			"run %s is %s; only an escalated run can rerun a stage", s.runID, s.terminal.Status)
 	}
 	if task, ok := s.m.Task(stage); ok {
-		if task.Type != apiv1.TaskAgentic {
+		if deterministicRetry {
+			if task.Type != apiv1.TaskDeterministic {
+				return nil, hitlRefusal(HITLErrNotResumable,
+					"stage %q is agentic; deterministic retry requires a deterministic task", stage)
+			}
+		} else if task.Type != apiv1.TaskAgentic {
 			return nil, hitlRefusal(HITLErrNotResumable,
 				"stage %q is deterministic; instruction addenda require an agentic stage", stage)
 		}
 	} else if g, ok := s.m.Gate(stage); ok {
+		if deterministicRetry {
+			return nil, hitlRefusal(HITLErrNotResumable,
+				"stage %q is a gate; deterministic retry requires a deterministic task", stage)
+		}
 		if g.Evaluator != apiv1.EvaluatorAgentic {
 			return nil, hitlRefusal(HITLErrNotResumable,
 				"stage %q is not an agentic reviewer gate", stage)
@@ -851,7 +873,7 @@ func (s *hitlSession) recordResumed(ctx workflow.Context, intent HITLIntent, pla
 }
 
 func (s *hitlSession) resumedEvent(intent HITLIntent, plan hitlResumePlan) journal.Event {
-	if plan.kind == HITLRerunStage {
+	if plan.kind == HITLRerunStage || plan.kind == HITLRetryStage {
 		return journal.Event{
 			Type:                journal.EventStageRerunRequested,
 			Stage:               plan.stage,
@@ -906,11 +928,12 @@ const HITLEscalationResolutionMarker = "escalation.resolution"
 
 func hitlProvenance(intent HITLIntent) map[string]any {
 	return map[string]any{
-		"protocol":       HITLProtocol,
-		"version":        HITLProtocolVersion,
-		"intent":         string(intent.Kind),
-		"idempotencyKey": intent.RequestID,
-		"actor":          strings.TrimSpace(intent.Actor),
+		"protocol":           HITLProtocol,
+		"version":            HITLProtocolVersion,
+		"intent":             string(intent.Kind),
+		"idempotencyKey":     intent.RequestID,
+		"actor":              strings.TrimSpace(intent.Actor),
+		"terminalGeneration": intent.ExpectedTerminalGeneration,
 	}
 }
 

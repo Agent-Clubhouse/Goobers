@@ -186,7 +186,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage, RouteTriggerIngest,
 		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart:
 		return true
 	default:
@@ -224,7 +224,7 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("CancelRunRequest")
 	case RouteOperatorMessageSubmit:
 		schema = schemaRef("OperatorMessageSubmitRequest")
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage:
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage:
 		schema = schemaRef("InterventionRequest")
 	case RouteResolveEscalation:
 		schema = schemaRef("EscalationResolutionRequest")
@@ -301,7 +301,7 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("CancelRunResult")
 	case RouteOperatorMessageSubmit:
 		successSchema = schemaRef("OperatorMessageSubmitResponse")
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage, RouteResolveEscalation:
 		successSchema = schemaRef("InterventionResult")
 	case RouteWorkflowEnabled:
 		successSchema = schemaRef("WorkflowEnabledResult")

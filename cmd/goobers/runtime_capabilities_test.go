@@ -81,7 +81,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// follows the blob plane exactly: gaggleStatePut is a pod compare-and-
 	// swapping its gaggle's scheduler state, and gaggleStateGet is the
 	// genuine read half that needs no entry.
-	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
+	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true, "retryStage": true}
 	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{

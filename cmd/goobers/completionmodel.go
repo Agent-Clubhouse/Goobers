@@ -385,6 +385,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
+	"retry-stage": {
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
+	},
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},

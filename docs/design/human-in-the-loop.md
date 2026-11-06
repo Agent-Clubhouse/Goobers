@@ -138,18 +138,20 @@ and the outcome are durably in history before `handle.Get` returns. The daemon s
 `WaitForStage: WorkflowUpdateStageCompleted`, so **the API never reports success before durable
 workflow acceptance**. The in-tree precedent is `internal/engine/schedule.go`'s reconcile update.
 
-### The three intents
+### The four intents
 
 | Intent | Runner analogue | Resumes at |
 |---|---|---|
 | `resolve-escalation` (`approve` / `override` / `deny`) | `ResumeFromTerminal` via `approve`/`override`, plus the deny marker | the gate's branch target for the operator's decision |
 | `rerun-stage` | `RerunStage` | the named stage, re-dispatched with the operator's addendum |
+| `retry-stage` | `RerunStage` with deterministic retry | the named deterministic task, re-dispatched with its original inputs |
 | `resume-from-terminal` | `ResumeFromTerminal` (raw form) | an explicit target state, or `@complete` |
 
 `approve` and `override` name a gate; `deny` does not, because it resumes nothing. `override` and
 `deny` require a rationale. `rerun-stage` requires an instruction addendum and is accepted only for
 an **escalated** run whose stage is agentic under an agentic gate — `Runner.RerunStage`'s
-`validateRerunTarget` rule, verbatim.
+`validateRerunTarget` rule, verbatim. `retry-stage` accepts no addendum and is accepted only for an
+already-run deterministic task on an escalated run.
 
 ### Phase matrix — reject, never queue
 
@@ -205,13 +207,15 @@ runner writes**:
 
 - `rerun-stage` → `stage.rerun.requested` with `stage`, `attempt` (cumulative), `attemptClass:
   human`, `actor`, and `instructionAddendum`.
+- `retry-stage` → `stage.rerun.requested` with `stage`, `attempt` (cumulative), `attemptClass:
+  human`, and `actor`, without an instruction addendum.
 - `resolve-escalation` / `resume-from-terminal` → `run.resumed` with `status`, `target`,
   `complete`, `actor`, `action`, `gate`, `decision`, and `rationale`.
 - `deny` → a `runner.annotation` whose `kind` is `escalation.resolution` — deliberately the same
   string the in-process deny path uses, so one grep finds both drivers.
 
-Each also carries a `runner` provenance map naming the protocol, its version, the intent kind, the
-idempotency key, and the actor.
+Each also carries provenance naming the intent/action, idempotency key, actor, and terminal
+generation.
 
 ### Terminal-hook and claim behaviour
 
