@@ -388,7 +388,7 @@ func runInsufficientStructural(points []Point, explicit Strata, minSize int, asJ
 			return 2
 		}
 	} else {
-		_, _ = fmt.Fprintf(stdout, "%d workflows; clustering needs at least %d.\n", len(points), minSize)
+		_, _ = fmt.Fprintf(stdout, "Too few workflows to cluster: %d configured; clustering needs at least %d.\n", len(points), minSize)
 		writeWorkflowTemplateReport(stdout, report, false)
 	}
 	_, _ = fmt.Fprintf(stderr, "error: workflowcluster: population %d is below minimum cluster size %d\n", len(points), minSize)
