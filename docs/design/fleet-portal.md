@@ -445,6 +445,59 @@ The safest initial enrollment is metadata-only and read-only. Runtime mutation
 capabilities require a separate explicit grant. An instance MUST never auto-enroll
 merely because a fleet URI is present in untrusted repository configuration.
 
+### 8.4 Labs workflow-feature projection
+
+The Labs fleet-convergence work tracked by
+[#8345](https://github.com/Agent-Clubhouse/Goobers/issues/8345) uses the explicit
+registration scope `labs.workflowFeatures`. An instance records that scope in its
+registration with the repeatable `--projection labs.workflowFeatures` flag on
+`goobers fleet join`. `goobers fleet status --json` exposes the resulting
+`projections` field (`Projections` in text output); absence of the scope means that
+the projection is unavailable.
+
+The projection is exactly the `FleetSnapshot` produced by `goobers workflow clusters
+--snapshot`: its wire-format and feature versions, instance ID, Goobers version,
+generation time, salted workflow keys, shape digests, and numeric and categorical
+feature vectors. It never includes workflow YAML, prompts, goals, workflow, gaggle,
+goober, or stage names, or repository content. Workflow keys and goober-name hashes
+are salted with the fleet ID, so equal inputs hash alike within one fleet and those
+hashes cannot be compared across fleets. Shape digests are not salted: each is a
+structural digest of the workflow's numeric and categorical features, so workflows
+with identical structure, such as a workflow with no goobers, get the same shape
+digest in every fleet. Shape digests carry no names or free text; any goober names
+reach them only as the salted hashes above. Salting shape digests is a possible
+future hardening if cross-fleet comparability of shapes is unwanted.
+
+A group-level grant authorizes use of this scope across current and future instances
+in that group that registered it; it does not add the scope to an unscoped instance.
+The scope MAY be on by default only for fleet-operated instances, through their
+managed deployment configuration. Third-party and self-hosted instances require
+explicit opt-in. Every registration grant, group grant, revocation, and use is
+audited. The scope ends immediately when the instance leaves the fleet, is revoked,
+or removes the scope.
+
+The remotely invocable instance route is:
+
+```text
+GET /v1/labs/workflow-features?features=structural|behavior
+```
+
+It accepts only a [§5.2 delegation envelope](#52-request-envelope) whose capability
+is `labs.workflowFeatures`; registration alone is not a reusable bearer credential.
+
+The fleet supports two distinct processing modes:
+
+- **On-demand:** fan out to scoped instances, pool and cluster their snapshots, render
+  the result, and discard the snapshots. Nothing is retained.
+- **Retained:** store snapshots for drift analysis only after a separate, explicit
+  retention contract is enabled. That contract MUST define the maximum age, deletion
+  when an instance leaves, is revoked, or removes the scope, and which principals may
+  read the snapshots.
+
+Offline, unscoped, timed-out, and incompatible instances are reported as excluded
+with a reason and are never silently dropped. Any retained result that is shown after
+its source goes offline is labeled stale consistently with [§5.3](#53-offline-behavior).
+
 ## 9. Security model
 
 ### 9.1 Trust boundaries
