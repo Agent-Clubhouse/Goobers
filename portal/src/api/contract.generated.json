@@ -478,6 +478,18 @@
       "recoverySafe": false
     },
     {
+      "id": "retryStage",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/stages/{stage}/retry",
+      "actionClass": "runtime-mutation",
+      "capability": "retry",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 65000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workflowEnabled",
       "method": "PUT",
       "path": "/api/v1/gaggles/{gaggle}/workflows/{workflow}/enabled",

@@ -114,6 +114,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers recovery-restore`](#goobers-recovery-restore) | restore retained implementation onto current main |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers retry-stage`](#goobers-retry-stage) | retry a previously-run deterministic task |
 | [`goobers roots`](#goobers-roots) | inspect and manage instance roots |
 | [`goobers roots decommission`](#goobers-roots-decommission) | mark a stopped instance root as historical |
 | [`goobers roots discover`](#goobers-roots-discover) | discover likely instance roots and daemon ownership |
@@ -4041,6 +4042,29 @@ processed, 1 = business error, 2 = usage/IO error.
 $ goobers respond-to-findings
 ~~~
 
+## `goobers retry-stage`
+
+retry a previously-run deterministic task
+
+~~~text
+Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
+
+Retry one previously-run deterministic task on an escalated run without
+replaying earlier stages or supplying agent instructions. The actor, target,
+terminal generation, and retry attempt are recorded in the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers retry-stage <run-id> <stage>
+~~~
+
 ## `goobers roots`
 
 inspect and manage instance roots
@@ -5731,6 +5755,7 @@ Labs: cluster workflows by structural shape or run behavior
 Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
+       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
 
 Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
 and report each cluster's medoid, members, stability, and distinguishing
@@ -5765,6 +5790,17 @@ cloned onto many instances counts once, only the most common feature
 version is clustered (others are listed as excluded), each instance is
 scored aligned/private/outlier, and clusters are tested for an instance
 confound.
+
+Reusable templates: --templates <evidence.json> reads a JSON array of
+joined child-proposal evidence (proposalId, proposalDigest, runId,
+parentRunId, repository, taskCohort, succeeded, findings, parameters) and
+--cluster-model a frozen structural model whose point IDs are those
+proposal IDs. It reports each stable cluster that clears the evidence bar
+(stability, parent-run and repository support, no policy or safety
+findings, outcomes no worse than comparable alternatives per task cohort,
+a parameterized medoid) as a review-required config change request for
+the child-authoring catalog, and lists why every other cluster was
+suppressed. Advisory only: nothing is written or registered.
 ~~~
 
 **Examples**
@@ -5776,6 +5812,7 @@ $ goobers workflow clusters --stratify gaggle
 $ goobers workflow clusters --features behavior --since 720h --json
 $ goobers workflow clusters --snapshot > snapshots/$(hostname).json
 $ goobers workflow clusters --fleet snapshots
+$ goobers workflow clusters --templates evidence.json --cluster-model model.json
 ~~~
 
 ## `goobers workflow show`

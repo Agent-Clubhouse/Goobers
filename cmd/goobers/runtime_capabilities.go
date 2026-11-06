@@ -548,6 +548,10 @@ func init() {
 			withSynopsis(synopsisByID["rerun-stage"]).
 			withHelp("rerun a stage with a recorded instruction addendum", rerunStageHelp).
 			withExamples(`goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>`),
+		runtimeCommand("retry-stage", "retry", runRetryStage).
+			withSynopsis(synopsisByID["retry-stage"]).
+			withHelp("retry a previously-run deterministic task", retryStageHelp).
+			withExamples("goobers retry-stage <run-id> <stage>"),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
 		command(dispatcher.DispatchExecCommand, apicontract.ActionWorkflowExecution, runDispatchExec),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),

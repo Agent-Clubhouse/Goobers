@@ -8,7 +8,7 @@ import (
 // Resolution happens before acquiring the per-run intervention slot. Re-read
 // under that slot so a request delayed behind an already completed rerun cannot
 // append a second acceptance marker from its stale terminal snapshot.
-func recheckRerunAcceptance(resolved resolvedInterventionRun, input httpapi.InterventionRequest) (bool, error) {
+func recheckRerunAcceptance(resolved resolvedInterventionRun, action string, input httpapi.InterventionRequest) (bool, error) {
 	rd, err := journal.OpenRead(resolved.runDir)
 	if err != nil {
 		return false, err
@@ -19,7 +19,7 @@ func recheckRerunAcceptance(resolved resolvedInterventionRun, input httpapi.Inte
 	}
 	fresh := resolved
 	fresh.events = current
-	_, replayed, err := replayIntervention(fresh, "rerun", input)
+	_, replayed, err := replayIntervention(fresh, action, input)
 	if replayed || err != nil {
 		return replayed, err
 	}

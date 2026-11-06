@@ -27,11 +27,11 @@ func workflowCommands() cliCommand {
 		coreSubcommand("workflow clusters", "clusters", apicontract.ActionReadOnlyNavigation, runWorkflowClusters).
 			withSynopsis(workflowClustersSynopsis).
 			withHelp("Labs: cluster workflows by structural shape or run behavior", workflowcluster.CLIHelp).
-			withExamples("goobers workflow clusters", "goobers workflow clusters --min-cluster-size 4 --json", "goobers workflow clusters --stratify gaggle", "goobers workflow clusters --features behavior --since 720h --json", "goobers workflow clusters --snapshot > snapshots/$(hostname).json", "goobers workflow clusters --fleet snapshots"),
+			withExamples("goobers workflow clusters", "goobers workflow clusters --min-cluster-size 4 --json", "goobers workflow clusters --stratify gaggle", "goobers workflow clusters --features behavior --since 720h --json", "goobers workflow clusters --fitness --since 720h", "goobers workflow clusters --snapshot > snapshots/$(hostname).json", "goobers workflow clusters --fleet snapshots", "goobers workflow clusters --templates evidence.json --cluster-model model.json"),
 	).withHelp("inspect workflows and validate child proposals", workflowHelp)
 }
 
-const workflowClustersSynopsis = "  goobers workflow clusters [--features structural|behavior] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [--snapshot [--instance-id <id>] [--salt <salt>] | --fleet <dir>] [path]\n                                Labs: cluster workflows by structural shape or run behavior\n"
+const workflowClustersSynopsis = "  goobers workflow clusters [--features structural|behavior] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [--snapshot [--instance-id <id>] [--salt <salt>] | --fleet <dir> | --templates <evidence.json> --cluster-model <model.json>] [path]\n                                Labs: cluster workflows by structural shape or run behavior\n"
 
 func runWorkflowClusters(args []string, stdout, stderr io.Writer) int {
 	return workflowcluster.RunCLI(args, newCLIFlagSet("workflow clusters", flag.ContinueOnError), stdout, stderr)

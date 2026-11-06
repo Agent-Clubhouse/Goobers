@@ -108,6 +108,22 @@ func (d *rerunChangingDeterministic) Run(_ context.Context, env apiv1.Invocation
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
+type retryDeterministic struct {
+	calls int
+}
+
+func (d *retryDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.calls++
+	if d.calls == 1 {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultBlocked,
+			Summary: "transient deterministic failure",
+			Error:   &apiv1.ErrorInfo{Code: "transient", Message: "retry requested"},
+		}, nil
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
 type rerunInfrastructureGoober struct {
 	invocations []apiv1.InvocationEnvelope
 }
@@ -206,6 +222,48 @@ func TestRunnerRerunStageAppliesAddendumToOneAgenticTaskAttempt(t *testing.T) {
 	}
 	if !hasStageAttempt(events, "implement", 2, journal.AttemptHuman, apiv1.ResultSuccess) {
 		t.Fatalf("journal does not contain the requested human attempt: %+v", events)
+	}
+}
+
+func TestRunnerRetryDeterministicStageWithoutAddendum(t *testing.T) {
+	const runID = "run-retry-deterministic"
+	machine := retryDeterministicMachine(t)
+	executor := &retryDeterministic{}
+	r, runsDir := newRerunTestRunner(t, nil, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return executor, nil
+	})
+	r.cfg.ScratchDir = t.TempDir()
+	repo := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
+
+	started, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", started.Phase)
+	}
+
+	result, err := r.RerunStage(context.Background(), RerunStageInput{
+		RunID: runID, Machine: machine, RepoRef: repo, Stage: "build",
+		Actor: "operator", DeterministicRetry: true,
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
+	})
+	if err != nil {
+		t.Fatalf("retry deterministic stage: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("retry phase = %s, want completed", result.Phase)
+	}
+	if executor.calls != 2 {
+		t.Fatalf("deterministic calls = %d, want 2", executor.calls)
+	}
+	request := findRerunRequest(t, readRerunEvents(t, runsDir, runID), "build")
+	if request.Actor != "operator" || request.Attempt != 2 ||
+		request.AttemptClass != journal.AttemptHuman || request.InstructionAddendum != "" {
+		t.Fatalf("retry request event = %+v", request)
 	}
 }
 
@@ -641,6 +699,32 @@ func TestPendingRerunRestoresUnfinishedAddendum(t *testing.T) {
 	}
 }
 
+func TestPendingRerunRestoresDeterministicRetry(t *testing.T) {
+	machine := retryDeterministicMachine(t)
+	events := []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "build", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "build", Attempt: 1, Status: string(apiv1.ResultBlocked)},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+		{
+			Type: journal.EventStageRerunRequested, Stage: "build", Attempt: 2,
+			AttemptClass: journal.AttemptHuman, Actor: "operator",
+		},
+		{Type: journal.EventStageStarted, Stage: "build", Attempt: 2, AttemptClass: journal.AttemptHuman},
+	}
+
+	rerun, seed, err := pendingRerun(events, machine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rerun == nil || rerun.stage != "build" || rerun.attempt != 2 ||
+		rerun.requestAttempt != 2 || rerun.instructionAddendum != "" {
+		t.Fatalf("pending deterministic retry = %+v", rerun)
+	}
+	if len(seed) != 0 {
+		t.Fatalf("pending deterministic retry seed length = %d, want 0", len(seed))
+	}
+}
+
 func TestStageResultWithInterruptedErrorCodeIsNotRecoveryMarker(t *testing.T) {
 	machine := rerunTaskMachine(t)
 	events := []journal.Event{
@@ -1021,6 +1105,25 @@ func TestResumePreservesHumanRerunInfrastructureBudget(t *testing.T) {
 
 func rerunTaskMachine(t *testing.T) *workflow.Machine {
 	return rerunTaskMachineWithMaxAttempts(t, 2)
+}
+
+func retryDeterministicMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "retry-deterministic", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Start: "build",
+			Tasks: []apiv1.Task{{
+				Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+				Run:  &apiv1.DeterministicRun{Command: []string{"build"}, Workspace: apiv1.WorkspaceScratch},
+				Next: workflow.TerminalComplete,
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile deterministic retry machine: %v", err)
+	}
+	return machine
 }
 
 func rerunTaskMachineWithMaxAttempts(t *testing.T, maxAttempts int32) *workflow.Machine {

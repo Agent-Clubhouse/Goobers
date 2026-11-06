@@ -327,7 +327,7 @@ function Portal({
     }
   }, [config, loading, theme]);
 
-  // approve/override/rerun (HITL-7/#469): registered now so the UI surface
+  // approve/override/rerun/retry (HITL-7/#469): registered now so the UI surface
   // participates in the CLI/API/UI runtime-mutation parity check alongside
   // the daemon's stub routes, but each handler is itself a stub — no
   // intervention UI exists yet, and the underlying gate-resolution/rerun
@@ -354,6 +354,9 @@ function Portal({
     },
     rerun: () => {
       console.warn("goobers: rerun is not implemented yet (HITL-7/#469)");
+    },
+    retry: () => {
+      console.warn("goobers: retry is not implemented yet (#8269)");
     },
     revealRun: (runId: string) => client.revealRun(runId),
   });
