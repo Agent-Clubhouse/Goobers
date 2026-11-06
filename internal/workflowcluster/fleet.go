@@ -188,11 +188,8 @@ func ClusterFleet(snapshots []FleetSnapshot, opts Options) (FleetView, error) {
 
 	latest := map[string]FleetSnapshot{}
 	for _, s := range snapshots {
-		if s.Version != FleetSnapshotVersion {
-			return FleetView{}, fmt.Errorf("workflowcluster: snapshot from %q has unsupported version %q", s.InstanceID, s.Version)
-		}
-		if s.InstanceID == "" || s.FeatureVersion == "" {
-			return FleetView{}, errors.New("workflowcluster: snapshot is missing an instance ID or feature version")
+		if err := validateFleetSnapshotEnvelope(s); err != nil {
+			return FleetView{}, err
 		}
 		prev, ok := latest[s.InstanceID]
 		if !ok {
@@ -229,26 +226,22 @@ func ClusterFleet(snapshots []FleetSnapshot, opts Options) (FleetView, error) {
 				Reason: fmt.Sprintf("feature version %s; fleet clustered %s", s.FeatureVersion, view.FeatureVersion)})
 			continue
 		}
+		if err := validateFleetSnapshotWorkflows(s); err != nil {
+			return FleetView{}, err
+		}
 		included = append(included, s)
 		for _, w := range s.Workflows {
-			shape, err := fleetShape(w)
-			if err != nil {
-				return FleetView{}, err
-			}
-			if shape != w.Shape {
-				return FleetView{}, fmt.Errorf("workflowcluster: snapshot from %q has a workflow whose shape does not match its features", id)
-			}
-			acc := shapes[shape]
+			acc := shapes[w.Shape]
 			if acc == nil {
 				acc = &fleetShapeAcc{workflow: w, perInst: map[string]int{}}
-				shapes[shape] = acc
+				shapes[w.Shape] = acc
 			}
 			acc.workflows++
 			acc.perInst[id]++
 			view.Workflows++
 		}
 	}
-	sort.Slice(view.Excluded, func(i, j int) bool { return view.Excluded[i].InstanceID < view.Excluded[j].InstanceID })
+	sortFleetExclusions(view.Excluded)
 
 	points := make([]Point, 0, len(shapes))
 	for shape, acc := range shapes {
@@ -322,6 +315,36 @@ func ClusterFleet(snapshots []FleetSnapshot, opts Options) (FleetView, error) {
 		view.Instances = append(view.Instances, fi)
 	}
 	return view, nil
+}
+
+func validateFleetSnapshot(snapshot FleetSnapshot) error {
+	if err := validateFleetSnapshotEnvelope(snapshot); err != nil {
+		return err
+	}
+	return validateFleetSnapshotWorkflows(snapshot)
+}
+
+func validateFleetSnapshotEnvelope(snapshot FleetSnapshot) error {
+	if snapshot.Version != FleetSnapshotVersion {
+		return fmt.Errorf("workflowcluster: snapshot from %q has unsupported version %q", snapshot.InstanceID, snapshot.Version)
+	}
+	if snapshot.InstanceID == "" || snapshot.FeatureVersion == "" {
+		return errors.New("workflowcluster: snapshot is missing an instance ID or feature version")
+	}
+	return nil
+}
+
+func validateFleetSnapshotWorkflows(snapshot FleetSnapshot) error {
+	for _, workflow := range snapshot.Workflows {
+		shape, err := fleetShape(workflow)
+		if err != nil {
+			return err
+		}
+		if shape != workflow.Shape {
+			return fmt.Errorf("workflowcluster: snapshot from %q has a workflow whose shape does not match its features", snapshot.InstanceID)
+		}
+	}
+	return nil
 }
 
 // sharedStratum labels shapes deployed on more than one instance.
