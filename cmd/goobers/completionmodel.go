@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -335,6 +336,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "enrollment-token-file", takesArg: true, desc: "Private file containing the one-time enrollment grant"},
 		{name: "grant-local-admin", desc: "Grant the discovered local administrator instance:read"},
 		{name: "no-grant-local-admin", desc: "Explicitly enroll with an empty ACL"},
+		{name: "projection", takesArg: true, values: []string{fleet.ProjectionLabsWorkflowFeatures}, desc: "Data projection to grant (repeatable)"},
 	},
 	"fleet status": {
 		{name: "json", desc: "Emit JSON"},
