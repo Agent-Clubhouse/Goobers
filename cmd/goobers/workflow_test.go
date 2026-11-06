@@ -442,9 +442,9 @@ func TestWorkflowClustersFitnessCountsOutboxMirrorRuns(t *testing.T) {
 	}
 
 	layout := instance.NewLayout(root)
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
-	if err != nil {
-		t.Fatal(err)
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil || report.HasErrors() {
+		t.Fatalf("load config: %v (report: %+v)", err, report)
 	}
 	var def workflow.Definition
 	for _, wf := range set.Workflows {
