@@ -33,6 +33,7 @@ const wlWeight = 0.25
 // workflow proposal or an EffectiveVersion.
 type Point struct {
 	ID          string              `json:"id"`
+	Cohort      string              `json:"cohort,omitempty"`
 	Numeric     map[string]float64  `json:"numeric,omitempty"`
 	Categorical map[string][]string `json:"categorical,omitempty"`
 }
