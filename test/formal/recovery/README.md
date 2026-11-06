@@ -73,15 +73,18 @@ activity retries, journal emission receipts, or distributed workflow workers.
 
 ## Reproduce with real TLC
 
-Use the public [TLA+ v1.8.0 release](https://github.com/tlaplus/tlaplus/releases/tag/v1.8.0)
+Use the public, stable (non-prerelease) [TLA+ v1.7.4 release](https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4)
 `tla2tools.jar`, SHA-256:
 
 ```text
-e20447644bfabd29d6bd0fc2c0eb1473fb301c1a0e4dfe1961938ce5a191edbf
+936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 ```
 
-The recorded run used TLC's banner `TLC2 Version 2026.11.03.180953 (rev: 309e489)`
-and Eclipse Temurin Windows x64 JRE `21.0.13+9-LTS`. The public
+Do not use the `v1.8.0` or `rolling` pre-releases: their `tla2tools.jar` assets
+are periodically rebuilt in place, so a SHA-256 pin against them breaks (#8364).
+The recorded run used TLC's banner `TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)`
+on Eclipse Temurin Windows x64 `21.0.13+9-LTS` (re-run with the JDK build of the same
+release). The public
 [Temurin 21.0.13+9 JRE archive](https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.13%2B9)
 was verified against release metadata SHA-256
 `2332c0b4cff6bed722da3567c91d5e47568bcba863fa4945d0a8d6fc76158628`.
@@ -95,14 +98,12 @@ Set-Location test\formal\recovery
 New-Item -ItemType Directory -Force .tlc-work | Out-Null
 $common = @('-Djava.io.tmpdir=.tlc-work', '-XX:+UseParallelGC',
     '-cp', $env:TLC_JAR, 'tlc2.TLC', '-workers', '1',
-    '-seed', '1', '-fp', '0', '-noGenerateSpecTE')
+    '-seed', '1', '-fp', '0')
 & $env:JAVA @common -metadir .tlc-work\good `
-    -config TerminalRecovery.cfg `
-    -dumpTrace json results\counterexample.json TerminalRecovery.tla
+    -config TerminalRecovery.cfg TerminalRecovery.tla
 if ($LASTEXITCODE -ne 0) { throw 'Good model failed' }
 & $env:JAVA @common -metadir .tlc-work\bad `
-    -config TerminalRecoveryBad.cfg `
-    -dumpTrace json results\counterexample.json TerminalRecovery.tla
+    -config TerminalRecoveryBad.cfg TerminalRecovery.tla
 if ($LASTEXITCODE -ne 12) { throw 'Expected invariant counterexample' }
 Remove-Item -Recurse -Force .tlc-work
 ```
@@ -122,7 +123,8 @@ go vet ./internal/journal ./internal/runner
 
 ## Actual measured results and negative control
 
-Recorded 2026-11-03 on Windows x64:
+Recorded 2026-11-05 on Windows x64 with the v1.7.4 jar (the same counts as the
+earlier 2026-11-03 run on the v1.8.0 pre-release):
 
 | Configuration | TLC result | Generated / distinct / queued | Search depth |
 |---|---|---|---|
@@ -134,9 +136,12 @@ Path-redacted actual stdout/stderr: [good](results/good.log),
 only machine-specific absolute paths were replaced by `<MODEL_DIR>`,
 `<TLC_MODULE_DIR>`, and `<TLC_JAR>` placeholders. Counts, errors, actions,
 source locations, timestamps, and all other output are retained.
-The [native TLC JSON counterexample](results/counterexample.json) retains all
+The mutation log prints the same five-state trace as the
+[native TLC JSON counterexample](results/counterexample.json), which retains all
 five states and action/source locations; it contained no machine-specific
-absolute paths and is unchanged. Its shortest path is:
+absolute paths and is unchanged. That JSON was captured earlier with the
+since-rebuilt `v1.8.0` pre-release (`-dumpTrace json`), which v1.7.4 does not
+support; v1.7.4 reproduces the identical counts and trace. Its shortest path is:
 
 ```text
 Init(completed) -> BeginAppend -> CompleteWrite

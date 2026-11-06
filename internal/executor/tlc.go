@@ -23,8 +23,8 @@ const (
 	InputTLCManifest = "tlcManifest"
 	// InputTLCModel selects the agent-editable graph under the stage workspace.
 	InputTLCModel = "tlcModel"
-	tlcJarDigest  = "sha256:e20447644bfabd29d6bd0fc2c0eb1473fb301c1a0e4dfe1961938ce5a191edbf"
-	tlcVersion    = "v1.8.0+2026.11.03.180953.rev309e489"
+	tlcJarDigest  = "sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+	tlcVersion    = "v1.7.4+2.19.2024.08.08.rev5a47802"
 )
 
 // TLCManifest is runner-owned policy, never a candidate-supplied success report.
