@@ -319,6 +319,56 @@ func TestHTTPMergeLockPollsRenewsAndReleases(t *testing.T) {
 	}
 }
 
+func TestHTTPMergeLockWaitsForInFlightRenewBeforeRelease(t *testing.T) {
+	renewStarted := make(chan struct{})
+	finishRenew := make(chan struct{})
+	releaseStarted := make(chan struct{}, 1)
+	var signalRenewStarted sync.Once
+	_, client := newFakePlane(t, func(path string, _ map[string]any) (int, any) {
+		switch path {
+		case apicontract.ClaimAcquirePath:
+			return http.StatusOK, map[string]any{"ok": true}
+		case apicontract.ClaimRenewPath:
+			signalRenewStarted.Do(func() { close(renewStarted) })
+			<-finishRenew
+			return http.StatusOK, map[string]any{"ok": true}
+		case apicontract.ClaimReleasePath:
+			releaseStarted <- struct{}{}
+			return http.StatusOK, map[string]any{"ok": true}
+		}
+		return http.StatusNotFound, map[string]any{}
+	})
+	client.cfg.MergeLockLease = 30 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		done <- client.MergeLock(t.Context(), MergeLock{
+			Key: MergeLockKey("g", "github", "acme", "web"), RunID: "run-1", Workflow: "merge-review",
+		}, func(context.Context) error {
+			<-renewStarted
+			return nil
+		})
+	}()
+
+	releasedBeforeRenewFinished := false
+	select {
+	case <-releaseStarted:
+		releasedBeforeRenewFinished = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(finishRenew)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if releasedBeforeRenewFinished {
+		t.Fatal("merge lease release overlapped an in-flight renewal")
+	}
+	select {
+	case <-releaseStarted:
+	default:
+		t.Fatal("merge lease was not released after the renewal finished")
+	}
+}
+
 // TestHTTPMergeLockFailsClosedOnLostLease is SHOULD #3: a renewal that comes
 // back definitively refused (ok=false, not a transport error) must cancel
 // fn's context with errMergeLeaseLost — and, if fn does not itself observe
