@@ -5752,7 +5752,7 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 Labs: cluster workflows by structural shape or run behavior
 
 ~~~text
-Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--ablation] [--json] [path]
+Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort] [--ablation] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
        goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
@@ -5775,10 +5775,19 @@ that Go duration, --max-runs bounds the journals read (newest first), and
 cohorts with fewer than --min-samples runs are dropped.
 
 Node names, stage names, and goal text never contribute. Structural and
-behavior features are never mixed in one model. With --stratify gaggle,
-also test whether clusters merely track gaggle boundaries (a confound);
+behavior features are never mixed in one model. --cohort limits structural
+clustering to one privacy-safe task cohort. With --stratify gaggle or
+--stratify cohort, also test whether clusters merely track that boundary;
 that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
+
+Task cohorts use metadata.labels["goobers.dev/task-class"] when explicitly
+set. Otherwise an auto:<digest> label is derived only from trigger types,
+work-item kinds, the declared policy-action side-effect set, and repo:*
+capabilities. Workflow and stage names, goals, selectors, schedules, signals,
+and webhook payload text are excluded, making derivation deterministic and
+rename-invariant. --stratify cohort requires structural features and cannot
+be combined with --cohort.
 
 --ablation refits after dropping each feature (the WL histogram is one
 group), reports stability and assignment change, and flags dominant
@@ -5813,7 +5822,8 @@ suppressed. Advisory only: nothing is written or registered.
 ~~~console
 $ goobers workflow clusters
 $ goobers workflow clusters --min-cluster-size 4 --json
-$ goobers workflow clusters --stratify gaggle
+$ goobers workflow clusters --cohort review
+$ goobers workflow clusters --stratify cohort
 $ goobers workflow clusters --features behavior --since 720h --json
 $ goobers workflow clusters --snapshot > snapshots/$(hostname).json
 $ goobers workflow clusters --fleet snapshots
