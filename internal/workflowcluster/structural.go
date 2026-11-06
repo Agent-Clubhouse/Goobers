@@ -20,10 +20,10 @@ import (
 // StructuralFeatureVersion identifies the structural feature schema. Bump it
 // whenever a feature is added, removed, or computed differently so persisted
 // vectors and fitted cluster models are never silently compared across schemas.
-const StructuralFeatureVersion = "workflowcluster.structural/v1"
+const StructuralFeatureVersion = "workflowcluster.structural/v2"
 
 // wlBuckets is the fixed width of the hashed Weisfeiler-Lehman histogram.
-const wlBuckets = 32
+const wlBuckets = 128
 
 // wlIterations is the number of Weisfeiler-Lehman relabeling rounds.
 const wlIterations = 2
@@ -106,8 +106,8 @@ func nodeFeatures(doc ir.Document) map[string]float64 {
 	numeric := map[string]float64{
 		"nodes": float64(len(doc.Nodes)), "nodes.agentic": 0, "nodes.deterministic": 0,
 		"nodes.gate": 0, "nodes.gate.human": 0, "nodes.parallel": 0, "nodes.childAuthoring": 0,
-		"parallel.branches": 0, "parallel.maxConcurrency": 0, "retry.nodes": 0, "retry.attempts": 0,
-		"timeout.nodes": 0, "timeout.totalSeconds": 0, "timeout.maxSeconds": 0, "goal.chars": 0,
+		"parallel.branches": 0, "parallel.maxConcurrency": 0, "retry.nodes": 0,
+		"timeout.nodes": 0,
 	}
 	for _, node := range doc.Nodes {
 		if _, known := numeric["nodes."+node.Kind]; known {
@@ -118,20 +118,15 @@ func nodeFeatures(doc ir.Document) map[string]float64 {
 		}
 		if node.Retry != nil && node.Retry.MaxAttempts > 1 {
 			numeric["retry.nodes"]++
-			numeric["retry.attempts"] += float64(node.Retry.MaxAttempts)
 		}
 		if node.Timeout > 0 {
 			numeric["timeout.nodes"]++
-			numeric["timeout.totalSeconds"] += float64(node.Timeout)
-			numeric["timeout.maxSeconds"] = max(numeric["timeout.maxSeconds"], float64(node.Timeout))
 		}
 		if node.Parallelism != nil {
 			numeric["parallel.branches"] += float64(node.Parallelism.Branches)
 			numeric["parallel.maxConcurrency"] = max(numeric["parallel.maxConcurrency"], float64(node.Parallelism.MaxConcurrent))
 		}
 		if node.Task != nil {
-			// Goal text is excluded; only its size contributes.
-			numeric["goal.chars"] += float64(len(node.Task.Goal))
 			if node.Task.ChildWorkflows != nil {
 				numeric["nodes.childAuthoring"]++
 			}

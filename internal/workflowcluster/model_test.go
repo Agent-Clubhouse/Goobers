@@ -3,6 +3,7 @@ package workflowcluster
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -155,5 +156,104 @@ func TestFitSeparatesWorkflowShapes(t *testing.T) {
 				t.Errorf("cluster %s mixes %s into %s", c.ID, id, kind)
 			}
 		}
+	}
+}
+
+func TestBuildSchemaNormalizesWLGroupWeight(t *testing.T) {
+	points := []Point{{ID: "a", Numeric: map[string]float64{}}, {ID: "b", Numeric: map[string]float64{}}}
+	for i := range wlBuckets {
+		name := fmt.Sprintf("%s%02d", wlFeaturePrefix, i)
+		points[0].Numeric[name] = 0
+		points[1].Numeric[name] = 1
+	}
+	var total float64
+	for _, feature := range buildSchema(points).Features {
+		total += feature.Weight
+	}
+	if total != wlGroupWeight {
+		t.Fatalf("WL aggregate weight = %v, want %v", total, wlGroupWeight)
+	}
+}
+
+func TestBuildSchemaKeepsWLGroupWeightWithConstantBuckets(t *testing.T) {
+	a := Point{ID: "a", Numeric: map[string]float64{"x": 0}}
+	b := Point{ID: "b", Numeric: map[string]float64{"x": 0}}
+	c := Point{ID: "c", Numeric: map[string]float64{"x": 1}}
+	for i := range wlBuckets {
+		name := fmt.Sprintf("%s%02d", wlFeaturePrefix, i)
+		a.Numeric[name], b.Numeric[name], c.Numeric[name] = 3, 3, 3
+		if i < 2 {
+			b.Numeric[name] = 4
+		}
+	}
+	schema := buildSchema([]Point{a, b, c})
+	var effective float64
+	for _, feature := range schema.Features {
+		if strings.HasPrefix(feature.Name, wlFeaturePrefix) && feature.Max > feature.Min {
+			effective += feature.Weight
+		}
+	}
+	if effective != wlGroupWeight {
+		t.Fatalf("effective WL group weight = %v, want %v", effective, wlGroupWeight)
+	}
+	want := wlGroupWeight / (wlGroupWeight + 1)
+	if got := schema.Distance(a, b); math.Abs(got-want) > 1e-12 {
+		t.Fatalf("WL-only distance = %v, want %v", got, want)
+	}
+}
+
+func TestFitUsesSampledPathAboveExactnessBoundary(t *testing.T) {
+	points := blobs()
+	model, err := Fit("test/v1", points, Options{
+		MinClusterSize: 4, Resamples: 5, Seed: 7,
+		ApproximateAbove: 20, ApproximateSample: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := len(model.Noise)
+	for _, cluster := range model.Clusters {
+		assigned += len(cluster.Members)
+	}
+	if model.Population != len(points) || assigned != len(points) {
+		t.Fatalf("population = %d, assigned = %d, want %d", model.Population, assigned, len(points))
+	}
+	if len(model.Clusters) == 0 || !slices.Contains(model.Noise, "outlier") {
+		t.Fatalf("sampled clusters = %d, noise = %v", len(model.Clusters), model.Noise)
+	}
+	if model.Options.ApproximateAbove != 20 || model.Options.ApproximateSample != 20 {
+		t.Fatalf("options = %+v", model.Options)
+	}
+}
+
+func BenchmarkFitPopulationScale(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		size int
+	}{
+		{"1k", 1000},
+		{"5k", 5000},
+		{"20k", 20000},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			points := make([]Point, tc.size)
+			for i := range points {
+				points[i] = Point{
+					ID: fmt.Sprintf("p%05d", i),
+					Numeric: map[string]float64{
+						"x": float64((i%4)*100) + float64(i%10),
+						"y": float64((i / 4) % 10),
+					},
+				}
+			}
+			b.ResetTimer()
+			for range b.N {
+				if _, err := Fit("benchmark/v1", points, Options{
+					MinClusterSize: 5, Resamples: 1, ApproximateSample: 500,
+				}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
