@@ -201,6 +201,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected 
 		DisplayName:            record.Association.DisplayName,
 		GoobersVersion:         c.GoobersVersion,
 		ACL:                    record.Association.ACL,
+		Projections:            record.Association.Projections,
 	}); err != nil {
 		return err
 	}
@@ -321,17 +322,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected 
 				if err := json.Unmarshal(message.data, &revoke); err != nil {
 					return fmt.Errorf("fleet: decode revoke: %w", err)
 				}
-				if err := c.Storage.Update(c.InstanceRoot, func(association *Association) error {
-					if association.RegistrationID != record.Association.RegistrationID {
-						return errAssociationChanged
-					}
-					association.Revoked = true
-					association.RevokeReason = strings.TrimSpace(revoke.Reason)
-					association.Connected = false
-					association.ConnectionID = ""
-					association.LastError = ""
-					return nil
-				}); err != nil {
+				if err := c.recordRevoked(record.Association.RegistrationID, revoke.Reason); err != nil {
 					return err
 				}
 				return errRevoked
@@ -433,6 +424,22 @@ func (c *Connector) recordDisconnected(registrationID string, connectionErr erro
 		}
 		// A nil error deliberately preserves the last transient failure until
 		// the next successful authentication or heartbeat acknowledgement.
+		return nil
+	})
+}
+
+func (c *Connector) recordRevoked(registrationID, reason string) error {
+	return c.Storage.Update(c.InstanceRoot, func(association *Association) error {
+		if association.RegistrationID != registrationID {
+			return errAssociationChanged
+		}
+		association.Revoked = true
+		association.RevokeReason = strings.TrimSpace(reason)
+		// Revocation ends every projection scope granted to the registration.
+		association.Projections = nil
+		association.Connected = false
+		association.ConnectionID = ""
+		association.LastError = ""
 		return nil
 	})
 }

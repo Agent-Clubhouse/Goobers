@@ -1528,7 +1528,7 @@ are stored outside the instance root so copying an instance does not clone its
 identity.
 
 ### fleet join
-Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [--projection <name>] [path]
 
 Experimental and superseded embedded Fleet connector. Discover and enroll an
 instance with a Fleet service. By default the one-time enrollment grant is read
@@ -1541,6 +1541,9 @@ offers an explicit instance:read self-grant. Noninteractive use must choose
 --grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
 explicit opt-out or interactive confirmation.
 
+--projection grants a data projection to the Fleet association and may be
+repeated. Supported projections: labs.workflowFeatures.
+
 ### fleet leave
 Usage: goobers fleet leave [path]
 
@@ -1552,7 +1555,7 @@ removal and stops reconnecting.
 Usage: goobers fleet status [--json] [path]
 
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
-registration, connection, heartbeat, ACL version, and credential expiry state.
+registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
 
 ### gaggle

@@ -205,6 +205,7 @@ complete -c goobers -n '__fish_seen_subcommand_from fleet; and __fish_seen_subco
 complete -c goobers -n '__fish_seen_subcommand_from fleet; and __fish_seen_subcommand_from join' -l enrollment-token-file -r -d 'Private file containing the one-time enrollment grant'
 complete -c goobers -n '__fish_seen_subcommand_from fleet; and __fish_seen_subcommand_from join' -l grant-local-admin -d 'Grant the discovered local administrator instance:read'
 complete -c goobers -n '__fish_seen_subcommand_from fleet; and __fish_seen_subcommand_from join' -l no-grant-local-admin -d 'Explicitly enroll with an empty ACL'
+complete -c goobers -n '__fish_seen_subcommand_from fleet; and __fish_seen_subcommand_from join' -l projection -r -a 'labs.workflowFeatures' -d 'Data projection to grant (repeatable)'
 complete -c goobers -n '__fish_seen_subcommand_from fleet; and __fish_seen_subcommand_from status' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress liveness heartbeats'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l diagnostics -d 'Capture deep per-stage diagnostics for hang debugging'
