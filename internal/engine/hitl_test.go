@@ -677,6 +677,47 @@ func TestHITLRerunStageJournalsHumanAttempt(t *testing.T) {
 	}
 }
 
+func TestHITLRetryDeterministicStageWithoutAddendum(t *testing.T) {
+	spec := fixtureSpec("build", []apiv1.Task{{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		Run:  &apiv1.DeterministicRun{Command: []string{"build"}, Workspace: apiv1.WorkspaceScratch},
+		Next: wf.TerminalComplete,
+	}}, nil)
+	exec := newScriptedExec(map[string][]scriptedCall{
+		"build": {
+			{result: apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Summary: "transient failure"}},
+			{result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "built"}},
+		},
+	})
+	env := hitlEnv(t, exec)
+	intent := baseIntent(HITLRetryStage, "req-retry")
+	intent.Stage = "build"
+	out := deliver(t, env, time.Minute, "req-retry", intent)
+
+	env.ExecuteWorkflow(Run, hitlInputFor(t, spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if out.rejected != nil || out.err != nil {
+		t.Fatalf("retry rejected=%v failed=%v", out.rejected, out.err)
+	}
+	if !out.ack.Resumed || out.ack.ResumeState != "build" || out.ack.Attempt != 2 {
+		t.Fatalf("ack = %+v, want deterministic retry attempt 2", out.ack)
+	}
+	events := hitlEvents(hitlProjection(t, env))
+	request, ok := hitlFindEvent(events, journal.EventStageRerunRequested)
+	if !ok {
+		t.Fatalf("no stage.rerun.requested event: %v", hitlEventTypes(events))
+	}
+	if request.Stage != "build" || request.Attempt != 2 || request.Actor != "ops@example.com" ||
+		request.InstructionAddendum != "" || request.Runner["terminalGeneration"] != float64(1) {
+		t.Fatalf("deterministic retry request = %+v", request)
+	}
+	if exec.calls["build"] != 2 {
+		t.Fatalf("build dispatched %d times, want 2", exec.calls["build"])
+	}
+}
+
 // TestHITLResumeFromTerminalComplete covers the raw resume intent's Complete
 // form: the run finishes at @complete without executing another stage, exactly
 // as ResumeFromTerminalInput.Complete does.

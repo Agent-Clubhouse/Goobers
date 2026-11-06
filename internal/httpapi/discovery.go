@@ -282,7 +282,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.events != nil
 	case apicontract.RouteRunReveal:
 		available = config.runRevealer != nil
-	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage:
+	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage, apicontract.RouteRetryStage:
 		available = config.interventions != nil
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil

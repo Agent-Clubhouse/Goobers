@@ -44,6 +44,7 @@ export const apiRoutes = {
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
   "rerunStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/rerun", actionClass: "runtime-mutation", capability: "rerun" },
+  "retryStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/retry", actionClass: "runtime-mutation", capability: "retry" },
   "workflowEnabled": { method: "PUT", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}/enabled", actionClass: "maintenance" },
   "claimAcquire": { method: "POST", path: "/api/v1/claims/acquire", actionClass: "workflow-execution" },
   "claimRenew": { method: "POST", path: "/api/v1/claims/renew", actionClass: "workflow-execution" },
@@ -111,7 +112,7 @@ export const configAuthoringErrorCodes = ["config_source_not_found", "config_doc
 export type ConfigAuthoringErrorCode =
   (typeof configAuthoringErrorCodes)[number];
 
-export const runtimeMutationCapabilities = ["approve", "override", "rerun"] as const;
+export const runtimeMutationCapabilities = ["approve", "override", "rerun", "retry"] as const;
 
 export type RuntimeMutationCapabilityId =
   (typeof runtimeMutationCapabilities)[number];
