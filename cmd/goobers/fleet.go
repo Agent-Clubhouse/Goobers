@@ -19,8 +19,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/secfile"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const fleetHelp = `Usage: goobers fleet <join|status|leave> [flags] [path]
@@ -74,6 +76,21 @@ var (
 	fleetHTTPClient = &http.Client{Timeout: 15 * time.Second}
 	fleetStatusNow  = time.Now
 )
+
+// labsWorkflowFeaturesOptions wires the optional Labs workflow-feature route.
+// Fleet storage failures degrade only that route: it stays unconfigured, so the
+// API answers 503 labs_unavailable while the daemon or dashboard keeps serving.
+func labsWorkflowFeaturesOptions(root string, warnings io.Writer) []httpapi.HandlerOption {
+	storage, err := newFleetStorage()
+	if err == nil {
+		var source *workflowcluster.FleetSnapshotSource
+		if source, err = workflowcluster.NewFleetSnapshotSource(root, storage); err == nil {
+			return []httpapi.HandlerOption{httpapi.WithLabsWorkflowFeatures(source)}
+		}
+	}
+	_, _ = fmt.Fprintf(warnings, "warning: Labs workflow features unavailable: %v\n", err)
+	return nil
+}
 
 const minimumFleetStaleAfter = 30 * time.Second
 

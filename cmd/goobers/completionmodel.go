@@ -405,7 +405,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"workflow clusters": {
 		{name: "features", takesArg: true, values: []string{"structural", "behavior"}, desc: "Feature set to cluster (structural or behavior)"},
 		{name: "cohort", takesArg: true, desc: "Structural: cluster only this task cohort"},
-		{name: "since", takesArg: true, desc: "Behavior: only runs started within this duration"},
+		{name: "fitness", desc: "Report advisory retained-run fitness for structural clusters"},
+		{name: "since", takesArg: true, desc: "Behavior or fitness: only runs started within this duration"},
 		{name: "max-runs", takesArg: true, desc: "Behavior: newest run journals to scan"},
 		{name: "min-samples", takesArg: true, desc: "Behavior: runs required per cohort"},
 		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},

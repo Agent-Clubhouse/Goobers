@@ -1003,6 +1003,7 @@ func (u *upSession) configureAPI() int {
 	// absence is reported rather than silent.
 	u.apiHandlerOpts = daemonReadHandlerOptions(u.l.Root, u.setup)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithGaggleHealth(u.gaggleHealth), httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: u.root}))
+	u.apiHandlerOpts = append(u.apiHandlerOpts, labsWorkflowFeaturesOptions(u.root, u.stderr)...)
 	configReader, err := newConfigAuthoringReader(u.ctx, u.l, u.setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize configuration source reader", err)

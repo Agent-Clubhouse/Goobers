@@ -173,6 +173,11 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 			{"name": "since", "in": "query", "required": true, "schema": dateTimeSchema(),
 				"description": "Start of the bounded lookback window ending at request time; must satisfy the daemon's window policy."},
 		}
+	case RouteLabsWorkflowFeatures:
+		return []map[string]any{
+			{"name": "features", "in": "query", "required": true,
+				"schema": map[string]any{"type": "string", "enum": []string{"structural", "behavior"}}},
+		}
 	case RouteGaggleStatePut:
 		return []map[string]any{
 			{"name": "If-Match", "in": "header", "schema": map[string]any{"type": "string", "pattern": `^"[^",]+"$`},
@@ -293,6 +298,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("RunListDocument")
 	case RouteInstanceReadiness:
 		successSchema = schemaRef("InstanceReadiness")
+	case RouteLabsWorkflowFeatures:
+		successSchema = schemaRef("FleetSnapshot")
 	case RouteTriggerIngest:
 		successSchema = schemaRef("TriggerResponse")
 	case RouteTriggerStatus:

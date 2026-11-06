@@ -1,4 +1,4 @@
-import type { LabsClusterMapPoint } from "../api/types";
+import type { LabsClusterFitness, LabsClusterMapPoint } from "../api/types";
 import { routeHash } from "../routing";
 
 const width = 640;
@@ -23,12 +23,14 @@ export function LabsClusterMap({
   points,
   clusterIds,
   medoids,
+  fitness,
   highlightedIds,
   unit = "workflow",
 }: {
   points: readonly LabsClusterMapPoint[];
   clusterIds: readonly string[];
   medoids: ReadonlySet<string>;
+  fitness?: ReadonlyMap<string, LabsClusterFitness>;
   highlightedIds?: ReadonlySet<string>;
   unit?: "workflow" | "shape";
 }) {
@@ -51,6 +53,8 @@ export function LabsClusterMap({
         <rect className="labs-map-frame" x={1} y={1} width={width - 2} height={height - 2} rx={8} />
         {placed.map((dot) => {
           const isMedoid = dot.ids.some((id) => medoids.has(id));
+          const clusterFitness = fitness?.get(dot.cluster);
+          const radius = clusterFitness ? Math.min(12, 6 + Math.sqrt(clusterFitness.runCount)) : dot.ids.length > 1 ? 9 : 7;
           const isHighlighted = highlightedIds === undefined || dot.ids.some((id) => highlightedIds.has(id));
           const label = dot.ids.length > 1 ? `${shortName(dot.ids[0])} +${dot.ids.length - 1}` : shortName(dot.ids[0]);
           const title = `${dot.ids.join(", ")} — ${dot.cluster ? `cluster ${dot.cluster}` : "noise"}${isMedoid ? " (medoid)" : ""}`;
@@ -58,7 +62,10 @@ export function LabsClusterMap({
           const content = (
             <>
               <title>{title}</title>
-              <circle cx={dot.x} cy={dot.y} r={dot.ids.length > 1 ? 9 : 7} />
+              <circle cx={dot.x} cy={dot.y} r={radius} />
+              {clusterFitness && !clusterFitness.insufficientRuns && (
+                <circle className="labs-map-fitness" cx={dot.x} cy={dot.y} r={radius + 4} />
+              )}
               {isMedoid && <circle className="labs-map-medoid" cx={dot.x} cy={dot.y} r={13} />}
               {showLabels && (
                 <text x={dot.x + 15} y={dot.y + 4}>

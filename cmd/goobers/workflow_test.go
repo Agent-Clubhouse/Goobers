@@ -10,6 +10,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
@@ -374,6 +376,29 @@ func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
 		t.Fatalf("model = %+v", model)
 	}
 
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--fitness", "--min-cluster-size", "2", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters --fitness: code = %d, stderr = %q", code, stderr)
+	}
+	var fitnessOut struct {
+		Model   struct{ Population int }
+		Fitness struct {
+			Clusters []workflowcluster.ClusterFitness
+			Scan     workflowcluster.BehaviorScan
+		}
+	}
+	if err := json.Unmarshal([]byte(stdout), &fitnessOut); err != nil {
+		t.Fatalf("decode fitness: %v\n%s", err, stdout)
+	}
+	if fitnessOut.Model.Population != model.Population || fitnessOut.Fitness.Scan.Candidates != 0 {
+		t.Fatalf("fitness output = %+v", fitnessOut)
+	}
+	for _, fitness := range fitnessOut.Fitness.Clusters {
+		if fitness.RunCount != 0 || !fitness.InsufficientRuns {
+			t.Fatalf("fitness = %+v, want zero-sample insufficient result", fitness)
+		}
+	}
+
 	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--ablation", root)
 	if code != 0 || !strings.Contains(stdout, "Labs: experimental") ||
 		!strings.Contains(stdout, "Feature ablation") {
@@ -386,6 +411,111 @@ func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
 
 // TestLabsWorkflowClustersViewMatchesConfiguredInstance pins the daemon's
 // Labs cluster read (#8309) to the same configured data the CLI clusters.
+// TestWorkflowClustersFitnessCountsOutboxMirrorRuns pins the fitness join to
+// the compiled digest run journals record: Compile copies a workflow-level
+// outboxMirrorPath into its tasks, so the raw definition digest differs.
+func TestWorkflowClustersFitnessCountsOutboxMirrorRuns(t *testing.T) {
+	root := initDemo(t)
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	raw, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirrored := strings.Replace(string(raw), "name: default-implement", "name: mirrored-implement", 1)
+	mirrored = strings.Replace(mirrored, "\nspec:\n", "\nspec:\n  outboxMirrorPath: "+filepath.ToSlash(t.TempDir())+"\n", 1)
+	if !strings.Contains(mirrored, "outboxMirrorPath:") || !strings.Contains(mirrored, "mirrored-implement") {
+		t.Fatal("workflow fixture was not rewritten")
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "mirrored-implement.yaml"), []byte(mirrored), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Two same-shaped pairs give HDBSCAN dense groups to report.
+	copies := map[string]string{
+		"sibling-implement": strings.Replace(string(raw), "name: default-implement", "name: sibling-implement", 1),
+		"show-a":            strings.Replace(workflowShowFixture, "name: default-implement", "name: show-a", 1),
+		"show-b":            strings.Replace(workflowShowFixture, "name: default-implement", "name: show-b", 1),
+	}
+	for name, copied := range copies {
+		if err := os.WriteFile(filepath.Join(workflowDir, name+".yaml"), []byte(copied), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	layout := instance.NewLayout(root)
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil || report.HasErrors() {
+		t.Fatalf("load config: %v (report: %+v)", err, report)
+	}
+	var def workflow.Definition
+	for _, wf := range set.Workflows {
+		if wf.Name == "mirrored-implement" {
+			def = workflow.Definition{Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations}
+		}
+	}
+	if def.Spec.OutboxMirrorPath == "" {
+		t.Fatalf("mirrored workflow not loaded with outboxMirrorPath: %+v", def)
+	}
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(def.Annotations)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rawDigest, err := workflow.ComputeDigest(def); err != nil || rawDigest == machine.Digest() {
+		t.Fatalf("raw digest %q (err %v) must differ from compiled %q", rawDigest, err, machine.Digest())
+	}
+	run, err := journal.Create(layout.ForGaggle("example").RunsDir(), journal.RunIdentity{
+		RunID: "mirrored-run", Gaggle: "example", Workflow: def.Name, WorkflowVersion: 1,
+		WorkflowDigest: machine.Digest(), Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "clusters", "--fitness", "--min-cluster-size", "2", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters --fitness: code = %d, stderr = %q", code, stderr)
+	}
+	var out struct {
+		Model struct {
+			Clusters []struct {
+				ID      string
+				Members []string
+			}
+		}
+		Fitness struct {
+			Clusters []workflowcluster.ClusterFitness
+		}
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("decode fitness: %v\n%s", err, stdout)
+	}
+	clusterID := ""
+	for _, c := range out.Model.Clusters {
+		for _, member := range c.Members {
+			if member == "example/mirrored-implement" {
+				clusterID = c.ID
+			}
+		}
+	}
+	if clusterID == "" {
+		t.Fatalf("mirrored workflow not clustered: %s", stdout)
+	}
+	for _, fitness := range out.Fitness.Clusters {
+		if fitness.ClusterID == clusterID {
+			if fitness.RunCount != 1 {
+				t.Fatalf("fitness = %+v, want the mirrored workflow's run counted", fitness)
+			}
+			return
+		}
+	}
+	t.Fatalf("no fitness for cluster %s: %+v", clusterID, out.Fitness)
+}
+
 func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
 	root := initDemo(t)
 	source := workflowcluster.ConfiguredSource{Root: root}
@@ -421,8 +551,9 @@ func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
 	if assigned != view.Population || view.Confounds.Evidence != workflowcluster.EvidenceObservational {
 		t.Fatalf("model = %+v confounds = %+v", view.Model, view.Confounds)
 	}
-	if view.Trends == nil || view.TrendsUnavailable != "" {
-		t.Fatalf("trends = %+v, unavailable = %q", view.Trends, view.TrendsUnavailable)
+	if view.Trends == nil || view.TrendsUnavailable != "" || view.Fitness == nil || view.FitnessUnavailable != "" {
+		t.Fatalf("trends = %+v, fitness = %+v, unavailable = %q/%q",
+			view.Trends, view.Fitness, view.TrendsUnavailable, view.FitnessUnavailable)
 	}
 
 	// An unreadable journal root degrades only the supplementary trends.
@@ -438,7 +569,8 @@ func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if degraded.Status != workflowcluster.ViewClustered || degraded.Model == nil || degraded.Trends != nil ||
-		degraded.TrendsUnavailable == "" || degraded.TrendsErr == nil {
+		degraded.TrendsUnavailable == "" || degraded.TrendsErr == nil || degraded.Fitness != nil ||
+		degraded.FitnessUnavailable == "" || degraded.FitnessErr == nil {
 		t.Fatalf("degraded view = %+v", degraded)
 	}
 }

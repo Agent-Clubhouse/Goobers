@@ -829,6 +829,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		// Same read-only Labs source `goobers up` wires (#8309).
 		httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: layout.Root}),
 	}
+	streamOpts = append(streamOpts, labsWorkflowFeaturesOptions(layout.Root, errorLog.Writer())...)
 	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
 		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
 	} else {
