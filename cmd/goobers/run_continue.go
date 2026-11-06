@@ -800,7 +800,7 @@ func currentWorkflowMachine(root string, source journal.RunIdentity) (*workflow.
 		return workflow.Compile(workflow.Definition{
 			Name: definition.Name, Version: source.WorkflowVersion,
 			DSLVersion: definition.DSLVersion, Spec: definition.Spec, Annotations: definition.Annotations,
-		}, workflow.WithPreviewFeatures(
+		}, workflow.WithLabels(definition.Labels), workflow.WithPreviewFeatures(
 			workflow.PreviewFeaturesEnabled(definition.Annotations),
 		))
 	}

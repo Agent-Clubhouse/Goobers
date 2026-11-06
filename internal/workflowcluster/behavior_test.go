@@ -328,6 +328,58 @@ func TestScanBehaviorJoinsChildObservationToMatchingParent(t *testing.T) {
 	t.Fatalf("child descriptor missing from %+v", scan)
 }
 
+func TestScanBehaviorKeepsPinnedExplicitTaskClass(t *testing.T) {
+	root := t.TempDir()
+	runsDir := instance.NewLayout(root).ForGaggle("g").RunsDir()
+	definition := []byte(`{"Spec":{"triggers":[{"type":"manual"}]}}`)
+	create := func(runID string, labels []byte) {
+		inputs := map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition}
+		if labels != nil {
+			inputs[journal.PinnedWorkflowLabelsInputName] = labels
+		}
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Gaggle: "g", Workflow: "w", WorkflowVersion: 1, WorkflowDigest: "sha256:w",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		}, inputs, journal.WithClock(func() time.Time { return behaviorEpoch }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create("run-auto", nil)
+	create("run-labeled", []byte(`{"goobers.dev/task-class":"review","team":"x"}`))
+
+	scan, err := ScanBehavior(root, BehaviorScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cohorts := map[string]string{}
+	for _, d := range scan.Descriptors {
+		cohorts[d.RunID] = d.TaskCohort
+	}
+	if cohorts["run-labeled"] != "review" || !strings.HasPrefix(cohorts["run-auto"], "auto:") {
+		t.Fatalf("cohorts = %v", cohorts)
+	}
+	summaries := SummarizeBehavior(scan.Descriptors, 1)
+	if len(summaries) != 2 {
+		t.Fatalf("explicit and auto cohorts were pooled: %+v", summaries)
+	}
+	again, err := ScanBehavior(root, BehaviorScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := json.Marshal(summaries)
+	second, _ := json.Marshal(SummarizeBehavior(again.Descriptors, 1))
+	if !bytes.Equal(first, second) {
+		t.Fatal("behavior summaries are not byte-identical across scans")
+	}
+}
+
 // writeJournal records a synthetic terminal run under the instance root.
 func writeJournal(t *testing.T, root, gaggle, runID, workflow, digest string, visits int, status journal.RunPhase) string {
 	t.Helper()

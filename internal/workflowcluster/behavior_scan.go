@@ -241,22 +241,34 @@ type behaviorArtifact struct {
 	data []byte
 }
 
+// pinnedTaskCohort derives the run's task cohort from what the run pinned at
+// start: the Definition's spec plus, when present, the Workflow's
+// metadata.labels snapshot, so an explicit goobers.dev/task-class survives
+// later config edits and is never replaced by the auto-derived cohort.
 func pinnedTaskCohort(reader *journal.Reader, identity journal.RunIdentity) string {
+	var wf apiv1.Workflow
+	found := false
 	for _, input := range identity.Inputs {
-		if input.Name != journal.PinnedWorkflowDefinitionInputName {
-			continue
+		switch input.Name {
+		case journal.PinnedWorkflowDefinitionInputName:
+			var definition workflow.Definition
+			data, err := reader.ArtifactBytesBounded(input.Ref, 4<<20)
+			if err != nil || json.Unmarshal(data, &definition) != nil {
+				return ""
+			}
+			wf.Spec, found = definition.Spec, true
+		case journal.PinnedWorkflowLabelsInputName:
+			var labels map[string]string
+			data, err := reader.ArtifactBytesBounded(input.Ref, 1<<20)
+			if err == nil && json.Unmarshal(data, &labels) == nil {
+				wf.Labels = labels
+			}
 		}
-		data, err := reader.ArtifactBytesBounded(input.Ref, 4<<20)
-		if err != nil {
-			return ""
-		}
-		var definition workflow.Definition
-		if json.Unmarshal(data, &definition) != nil {
-			return ""
-		}
-		return Cohort(apiv1.Workflow{Spec: definition.Spec})
 	}
-	return ""
+	if !found {
+		return ""
+	}
+	return Cohort(wf)
 }
 
 func readBehaviorArtifacts(reader *journal.Reader, events []journal.Event) []behaviorArtifact {
