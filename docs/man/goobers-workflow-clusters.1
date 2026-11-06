@@ -36,12 +36,15 @@ skill-set, or tool-set boundaries (a confound). Undefined provenance is excluded
 counted; that check is observational, not gym-controlled. Nothing is
 modified (default path ".").
 
-Template provenance fingerprints the shipped reference and example workflows
-embedded in this build. Configured workflows use the explicit
+Template provenance fingerprints the workflow templates embedded in this
+build: reference workflows, config examples, and the starter, demo,
+quickstart, and scaffold workflows. Configured workflows use the explicit
 metadata.annotations["goobers.dev/template-provenance"] written by init and
-scaffolding, or the nearest shipped template by structural distance. The
-report marks template-derived workflows and cluster medoids farther than
-0.35 from every shipped template (convergence beyond templates).
+scaffolding when it names a shipped template, or else the nearest shipped
+template by structural distance. The report marks template-derived
+workflows and cluster medoids farther than 0.35 from every shipped template
+(convergence beyond templates). Provenance is reported even when too few
+workflows are configured to cluster.
 
 --fitness joins retained terminal runs to the current structural clusters
 by workflow digest and reports sample size, success with a 95% Wilson

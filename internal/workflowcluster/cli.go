@@ -247,9 +247,24 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		}
 		ablations = &report
 	}
-	if *asJSON {
+	return writeCLIReports(stdout, stderr, *asJSON, *stratify, model, cliReports{
+		confounds: confounds, behavior: behavior, ablation: ablations, fitness: fitnessReport, templates: templateReport,
+	})
+}
+
+// cliReports holds the optional reports RunCLI attaches to a fitted model.
+type cliReports struct {
+	confounds *ConfoundReport
+	behavior  *behaviorReport
+	ablation  *AblationReport
+	fitness   *FitnessReport
+	templates *TemplateReport
+}
+
+func writeCLIReports(stdout, stderr io.Writer, asJSON bool, stratify string, model Model, r cliReports) int {
+	if asJSON {
 		var out any = model
-		if behavior != nil || confounds != nil || ablations != nil || fitnessReport != nil || templateReport != nil {
+		if r.behavior != nil || r.confounds != nil || r.ablation != nil || r.fitness != nil || r.templates != nil {
 			out = struct {
 				Model
 				NestedModel Model           `json:"model"`
@@ -258,7 +273,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 				Ablation    *AblationReport `json:"ablation,omitempty"`
 				Fitness     *FitnessReport  `json:"fitness,omitempty"`
 				Templates   *TemplateReport `json:"templates,omitempty"`
-			}{model, model, confounds, behavior, ablations, fitnessReport, templateReport}
+			}{model, model, r.confounds, r.behavior, r.ablation, r.fitness, r.templates}
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -269,20 +284,20 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		return 0
 	}
 	writeReport(stdout, model)
-	if templateReport != nil {
-		writeWorkflowTemplateReport(stdout, *templateReport, true)
+	if r.templates != nil {
+		writeWorkflowTemplateReport(stdout, *r.templates, true)
 	}
-	if behavior != nil {
-		writeBehaviorScan(stdout, *behavior)
+	if r.behavior != nil {
+		writeBehaviorScan(stdout, *r.behavior)
 	}
-	if confounds != nil {
-		writeConfounds(stdout, *stratify, *confounds)
+	if r.confounds != nil {
+		writeConfounds(stdout, stratify, *r.confounds)
 	}
-	if fitnessReport != nil {
-		writeFitness(stdout, *fitnessReport)
+	if r.fitness != nil {
+		writeFitness(stdout, *r.fitness)
 	}
-	if ablations != nil {
-		writeAblation(stdout, *ablations)
+	if r.ablation != nil {
+		writeAblation(stdout, *r.ablation)
 	}
 	return 0
 }
