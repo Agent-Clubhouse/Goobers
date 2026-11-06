@@ -54,7 +54,7 @@ func NewFleetSnapshotSource(root string, associations AssociationReader) (*Fleet
 		now:            time.Now,
 		goobersVersion: func() string { return version.Get().Version },
 		configuredPoints: func(root string) ([]Point, error) {
-			points, _, err := configuredPoints(root)
+			points, _, _, err := configuredPoints(root)
 			return points, err
 		},
 		runBehaviorPoints: func(root string) ([]Point, error) {
