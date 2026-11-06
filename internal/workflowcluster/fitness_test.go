@@ -66,3 +66,16 @@ func TestEvaluateFitnessReportsClusterWithNoRuns(t *testing.T) {
 		t.Fatalf("fitness = %+v", got)
 	}
 }
+
+func TestEvaluateFitnessAveragesEvenSampleMedian(t *testing.T) {
+	model := Model{Clusters: []Cluster{{ID: "c0", Members: []string{"g/a"}}}}
+	scan := BehaviorScan{Descriptors: []BehaviorDescriptor{
+		fitnessDescriptor("r1", "a", "sha256:a", journal.PhaseCompleted, 10, 1, nil),
+		fitnessDescriptor("r2", "a", "sha256:a", journal.PhaseCompleted, 20, 2, nil),
+	}}
+
+	got := EvaluateFitness(model, map[string]string{"g/a": "sha256:a"}, scan, 2).Clusters[0]
+	if math.Abs(got.MedianWallTimeSeconds-15) > 1e-9 || math.Abs(got.MedianCostUSD-1.5) > 1e-9 {
+		t.Fatalf("even-sample medians = wall %v, cost %v", got.MedianWallTimeSeconds, got.MedianCostUSD)
+	}
+}

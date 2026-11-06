@@ -102,12 +102,20 @@ func summarizeFitness(clusterID string, runs []BehaviorDescriptor, minRuns int) 
 	n := float64(len(runs))
 	f.SuccessRate = float64(successes) / n
 	f.SuccessInterval = wilson95(successes, len(runs))
-	f.MedianWallTimeSeconds, f.P90WallTimeSeconds = nearestRank(wall, 0.5), nearestRank(wall, 0.9)
-	f.MedianCostUSD, f.P90CostUSD = nearestRank(cost, 0.5), nearestRank(cost, 0.9)
+	f.MedianWallTimeSeconds, f.P90WallTimeSeconds = median(wall), nearestRank(wall, 0.9)
+	f.MedianCostUSD, f.P90CostUSD = median(cost), nearestRank(cost, 0.9)
 	f.HumanGateRate = float64(human) / n
 	f.EscalationRate = float64(escalated) / n
 	f.RetryLoopRate = float64(retryLoop) / n
 	return f
+}
+
+func median(sorted []float64) float64 {
+	middle := len(sorted) / 2
+	if len(sorted)%2 != 0 {
+		return sorted[middle]
+	}
+	return (sorted[middle-1] + sorted[middle]) / 2
 }
 
 func wilson95(successes, total int) WilsonInterval {
