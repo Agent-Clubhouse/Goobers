@@ -119,6 +119,9 @@ const Features = "features.schema.json"
 // CloudReadiness is the engine-only cloud cutover readiness report.
 const CloudReadiness = "cloud-readiness.schema.json"
 
+// WorkflowGymTask is the versioned benchmark task manifest contract.
+const WorkflowGymTask = "workflow-gym-task.schema.json"
+
 // OnboardingAction is the shared versioned onboarding result envelope.
 const OnboardingAction = "config-source-action.schema.json"
 
