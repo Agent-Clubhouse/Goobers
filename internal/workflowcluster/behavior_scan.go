@@ -27,6 +27,9 @@ const (
 	// maxSpanRecordBytes bounds one span record; a larger record marks the run
 	// oversized rather than silently undercounting its usage.
 	maxSpanRecordBytes = 1 << 20
+	// maxTranscriptBytesPerRun bounds the harness transcripts read for one
+	// run's tool histogram (each stage transcript defaults to at most 4 MiB).
+	maxTranscriptBytesPerRun = 32 << 20
 )
 
 // BehaviorScanOptions bounds a read-only journal scan.
@@ -62,7 +65,8 @@ type BehaviorScan struct {
 	Candidates int `json:"candidates"`
 	// OverLimit runs were not read because MaxRuns was reached.
 	OverLimit int `json:"overLimit"`
-	// Oversized runs exceeded MaxEventBytes or MaxSpanBytes.
+	// Oversized runs exceeded MaxEventBytes, MaxSpanBytes, or the per-run
+	// harness transcript bound.
 	Oversized int `json:"oversized"`
 	// BeforeSince runs started before the requested window.
 	BeforeSince int `json:"beforeSince"`
@@ -205,6 +209,9 @@ func readBehaviorInput(dir string, opts BehaviorScanOptions) (BehaviorInput, err
 	}
 	in := BehaviorInput{Identity: identity, Events: events}
 	in.TaskCohort = pinnedTaskCohort(reader, identity)
+	if in.ToolCalls, err = readTranscriptToolCalls(reader, events); err != nil {
+		return BehaviorInput{}, err
+	}
 	var total int64
 	for _, e := range events {
 		if e.Type != journal.EventSpanRecorded || e.Ref == nil || e.DataSchema != telemetry.SpanSchema {
@@ -230,11 +237,52 @@ func readBehaviorInput(dir string, opts BehaviorScanOptions) (BehaviorInput, err
 		}
 		var span telemetry.SpanRecord
 		if json.Unmarshal(data, &span) == nil {
+			span.Events = runnerOwnedSpanEvents(span.Events)
 			in.Spans = append(in.Spans, span)
 		}
 	}
 	in.artifacts = readBehaviorArtifacts(reader, events)
 	return in, nil
+}
+
+// runnerOwnedSpanEvents drops span events a stage emitted from its
+// agent-writable telemetry directory, so no behavior feature can be spoofed
+// by an agent writing events that imitate runner telemetry.
+func runnerOwnedSpanEvents(events []telemetry.SpanEventRecord) []telemetry.SpanEventRecord {
+	kept := events[:0]
+	for _, event := range events {
+		if _, emitted := event.Attributes[telemetry.EmissionKindAttribute]; !emitted {
+			kept = append(kept, event)
+		}
+	}
+	return kept
+}
+
+// readTranscriptToolCalls collects tool calls from the harness transcripts the
+// runner recorded (telemetry.GenAIEventSchema span blobs). Their bytes are
+// digest-verified and bounded per run; exceeding the bound marks the run
+// oversized rather than undercounting its tools.
+func readTranscriptToolCalls(reader *journal.Reader, events []journal.Event) ([]string, error) {
+	var calls []string
+	remaining := int64(maxTranscriptBytesPerRun)
+	for _, e := range events {
+		if e.Type != journal.EventSpanRecorded || e.Ref == nil || e.DataSchema != telemetry.GenAIEventSchema {
+			continue
+		}
+		if e.Ref.Size > remaining {
+			return nil, errBehaviorOversized
+		}
+		data, err := reader.ArtifactBytesBounded(*e.Ref, remaining)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		remaining -= int64(len(data))
+		calls = append(calls, transcriptToolCalls(data)...)
+	}
+	return calls, nil
 }
 
 type behaviorArtifact struct {

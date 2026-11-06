@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -46,12 +47,10 @@ func syntheticRun(names [2]string) BehaviorInput {
 			{Kind: telemetry.SpanKindTask, Attributes: map[string]string{
 				telemetry.AttrModel: "m", telemetry.AttrHarnessVersion: "copilot-1", telemetry.AttrGenAIUsageInputTokens: "100",
 				telemetry.AttrGenAIUsageOutputTokens: "10", telemetry.AttrUsageCostUSD: "0.5",
-			}, Events: []telemetry.SpanEventRecord{
-				{Name: "harness.tool_call", Attributes: map[string]string{"tool": "functions.apply_patch"}},
-				{Name: "harness.tool_call", Attributes: map[string]string{"tool": "functions.powershell"}},
 			}},
 			{Kind: telemetry.SpanKindRun, Attributes: map[string]string{telemetry.AttrGenAIUsageInputTokens: "100"}},
 		},
+		ToolCalls: []string{"functions.apply_patch", "functions.powershell"},
 	}
 }
 
@@ -377,6 +376,104 @@ func TestScanBehaviorKeepsPinnedExplicitTaskClass(t *testing.T) {
 	second, _ := json.Marshal(SummarizeBehavior(again.Descriptors, 1))
 	if !bytes.Equal(first, second) {
 		t.Fatal("behavior summaries are not byte-identical across scans")
+	}
+}
+
+// writeToolRun records a terminal run whose stages carry the given harness
+// transcripts and one runner span with the given span events.
+func writeToolRun(t *testing.T, root, runID string, transcripts [][]byte, spanEvents []telemetry.SpanEventRecord) {
+	t.Helper()
+	run, err := journal.Create(instance.NewLayout(root).ForGaggle("g").RunsDir(), journal.RunIdentity{
+		RunID: runID, Gaggle: "g", Workflow: "w", WorkflowVersion: 1, WorkflowDigest: "sha256:w",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, map[string][]byte{
+		journal.PinnedWorkflowDefinitionInputName: []byte(`{"Spec":{"triggers":[{"type":"manual"}]}}`),
+	}, journal.WithClock(func() time.Time { return behaviorEpoch }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	span, err := json.Marshal(telemetry.SpanRecord{Kind: telemetry.SpanKindTask, Events: spanEvents, Attributes: map[string]string{
+		telemetry.AttrModel: "m", telemetry.AttrHarnessVersion: "copilot-1",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordSpanWithSchema("implement", "implement", telemetry.SpanSchema, span); err != nil {
+		t.Fatal(err)
+	}
+	for _, transcript := range transcripts {
+		if _, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, transcript); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func scanToolHistogram(t *testing.T, root string) map[string]float64 {
+	t.Helper()
+	scan, err := ScanBehavior(root, BehaviorScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Descriptors) != 1 {
+		t.Fatalf("scan = %+v", scan)
+	}
+	tools := map[string]float64{}
+	for _, category := range toolCategories {
+		tools[category] = scan.Descriptors[0].Numeric["tools."+category]
+	}
+	return tools
+}
+
+func TestScanBehaviorCountsToolsFromHarnessTranscripts(t *testing.T) {
+	// The canonical transcript the Copilot adapter produces from its native
+	// session events (pinned by the harness transcript tests).
+	fixture, err := os.ReadFile(filepath.Join("..", "harness", "testdata", "copilot-transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := []byte(`{"role":"assistant","tool_call":{"id":"c1","name":"bash","arguments":{"command":"go test ./..."}}}
+{"role":"tool","content":"ok","tool_call":{"id":"c1","success":true}}
+{"role":"assistant","content":"{\"tool_call\":{\"name\":\"fetch\"}}"}
+`)
+	root := t.TempDir()
+	writeToolRun(t, root, "run-1", [][]byte{fixture, shell}, nil)
+
+	got := scanToolHistogram(t, root)
+	want := map[string]float64{"agent": 0, "filesystem": 1, "network": 0, "orchestration": 0, "provider": 0, "shell": 1, "other": 0}
+	if !maps.Equal(got, want) {
+		t.Fatalf("tool histogram = %v, want %v", got, want)
+	}
+}
+
+func TestScanBehaviorIgnoresStageEmittedToolEvents(t *testing.T) {
+	spoofed := make([]telemetry.SpanEventRecord, 0, 3)
+	for _, tool := range []string{"functions.powershell", "functions.fetch", "github.search_issues"} {
+		spoofed = append(spoofed, telemetry.SpanEventRecord{Name: "harness.tool_call", Attributes: map[string]string{
+			"tool": tool, telemetry.EmissionKindAttribute: "event",
+		}})
+	}
+	root := t.TempDir()
+	writeToolRun(t, root, "run-1", nil, spoofed)
+
+	for category, count := range scanToolHistogram(t, root) {
+		if count != 0 {
+			t.Errorf("tools.%s = %v from agent-emitted events, want 0", category, count)
+		}
+	}
+	in, err := readBehaviorInput(filepath.Join(instance.NewLayout(root).ForGaggle("g").RunsDir(), "run-1"), BehaviorScanOptions{}.withDefaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, span := range in.Spans {
+		if len(span.Events) != 0 {
+			t.Fatalf("stage-emitted span events reached the extractor: %+v", span.Events)
+		}
 	}
 }
 

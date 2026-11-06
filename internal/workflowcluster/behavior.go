@@ -1,6 +1,8 @@
 package workflowcluster
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,7 +23,7 @@ import (
 // schema. It is distinct from StructuralFeatureVersion so behavior and
 // structure are never mixed in one fitted model. Bump it whenever a feature is
 // added, removed, or computed differently.
-const BehaviorFeatureVersion = "workflowcluster.behavior/v2"
+const BehaviorFeatureVersion = "workflowcluster.behavior/v3"
 
 // Errors that exclude a run from behavior descriptors.
 var (
@@ -53,6 +55,10 @@ type BehaviorInput struct {
 	Identity journal.RunIdentity
 	Events   []journal.Event
 	Spans    []telemetry.SpanRecord
+	// ToolCalls are the tool names invoked in the run's harness transcripts:
+	// the runner-recorded telemetry.GenAIEventSchema span blobs, in journal
+	// order. Stage-emitted span events are agent-authored and never a source.
+	ToolCalls []string
 	// TaskCohort is derived from the pinned workflow definition.
 	TaskCohort string
 	// ChildObservation is joined from the parent journal for a generated child.
@@ -121,7 +127,7 @@ func ExtractBehavior(in BehaviorInput) (BehaviorDescriptor, error) {
 	timeFeatures(numeric, id, in.Events, started, finished)
 	usageFeatures(numeric, in.Spans)
 	childFeatures(numeric, id, in.Events)
-	toolFeatures(numeric, in.Spans)
+	toolFeatures(numeric, in.ToolCalls)
 	childObservationFeatures(numeric, id, in.ChildObservation)
 
 	d := BehaviorDescriptor{
@@ -354,18 +360,37 @@ func usageFeatures(numeric map[string]float64, spans []telemetry.SpanRecord) {
 	numeric["usage.log1pCostCents"] = math.Log1p(cost * 100)
 }
 
-func toolFeatures(numeric map[string]float64, spans []telemetry.SpanRecord) {
+func toolFeatures(numeric map[string]float64, toolCalls []string) {
 	for _, category := range toolCategories {
 		numeric["tools."+category] = 0
 	}
-	for _, span := range spans {
-		for _, event := range span.Events {
-			if event.Name != "harness.tool_call" {
-				continue
-			}
-			numeric["tools."+toolCategory(event.Attributes["tool"])]++
-		}
+	for _, name := range toolCalls {
+		numeric["tools."+toolCategory(name)]++
 	}
+}
+
+// transcriptToolCalls returns the tool names a canonical harness transcript
+// records as invoked. A call is its request record (a tool_call on a non-tool
+// role); the role:"tool" result record is not counted again. Only structural
+// fields are decoded, never content or arguments.
+func transcriptToolCalls(data []byte) []string {
+	var calls []string
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(data)+1)
+	for scanner.Scan() {
+		var record struct {
+			Role     string `json:"role"`
+			ToolCall *struct {
+				Name string `json:"name"`
+			} `json:"tool_call"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &record) != nil || record.ToolCall == nil ||
+			record.Role == "tool" || record.ToolCall.Name == "" {
+			continue
+		}
+		calls = append(calls, record.ToolCall.Name)
+	}
+	return calls
 }
 
 func toolCategory(name string) string {
