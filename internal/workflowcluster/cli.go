@@ -14,7 +14,7 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort] [--json] [path]\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort] [--ablation] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
 	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n" +
 	"       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]\n\n" +
@@ -45,6 +45,10 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"and webhook payload text are excluded, making derivation deterministic and\n" +
 	"rename-invariant. --stratify cohort requires structural features and cannot\n" +
 	"be combined with --cohort.\n\n" +
+	"--ablation refits after dropping each feature (the WL histogram is one\n" +
+	"group), reports stability and assignment change, and flags dominant\n" +
+	"features. Populations through 2,000 points are exact; larger populations\n" +
+	"use a deterministic 1,000-point HDBSCAN sample and radius assignment.\n\n" +
 	"Fleet convergence: --snapshot prints this instance's feature vectors as a\n" +
 	"fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;\n" +
 	"workflows become salted keys and goober names salted hashes. The instance\n" +
@@ -92,6 +96,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
 	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle or cohort)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
+	ablation := fs.Bool("ablation", false, "report leave-one-feature-out cluster stability and assignment change")
 	snapshot := fs.Bool("snapshot", false, "emit a privacy-safe fleet snapshot of this instance's features")
 	instanceID := fs.String("instance-id", "", "snapshot: instance ID (default: fleet association)")
 	salt := fs.String("salt", "", "snapshot: salt for name hashes (default: fleet ID)")
@@ -126,7 +131,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	parsed := cliArgs{
 		features: *features, cohort: *cohort, stratify: *stratify, fleetDir: *fleetDir, since: *since,
 		maxRuns: *maxRuns, minSamples: *minSamples, minSize: *minSize, nargs: fs.NArg(),
-		asJSON: *asJSON, snapshot: *snapshot, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
+		asJSON: *asJSON, snapshot: *snapshot, ablation: *ablation, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
 	}
 	if parsed.invalid() {
 		fs.Usage()
@@ -185,20 +190,24 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		report := ConfoundCheck(model, strata, ConfoundOptions{Seed: *seed})
 		confounds = &report
 	}
+	var ablations *AblationReport
+	if *ablation {
+		report, err := Ablate(featureVersion, points, Options{MinClusterSize: *minSize, Seed: *seed}, model)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		ablations = &report
+	}
 	if *asJSON {
 		var out any = model
-		switch {
-		case behavior != nil:
+		if behavior != nil || confounds != nil || ablations != nil {
 			out = struct {
 				Model     Model           `json:"model"`
 				Confounds *ConfoundReport `json:"confounds,omitempty"`
-				Behavior  behaviorReport  `json:"behavior"`
-			}{model, confounds, *behavior}
-		case confounds != nil:
-			out = struct {
-				Model     Model           `json:"model"`
-				Confounds *ConfoundReport `json:"confounds"`
-			}{model, confounds}
+				Behavior  *behaviorReport `json:"behavior,omitempty"`
+				Ablation  *AblationReport `json:"ablation,omitempty"`
+			}{model, confounds, behavior, ablations}
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -215,15 +224,18 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	if confounds != nil {
 		writeConfounds(stdout, *stratify, *confounds)
 	}
+	if ablations != nil {
+		writeAblation(stdout, *ablations)
+	}
 	return 0
 }
 
 // cliArgs holds the parsed flags RunCLI validates together.
 type cliArgs struct {
-	features, cohort, stratify, fleetDir         string
-	since                                        time.Duration
-	maxRuns, minSamples, minSize, nargs          int
-	asJSON, snapshot, behaviorOnly, snapshotOnly bool
+	features, cohort, stratify, fleetDir                   string
+	since                                                  time.Duration
+	maxRuns, minSamples, minSize, nargs                    int
+	asJSON, snapshot, ablation, behaviorOnly, snapshotOnly bool
 }
 
 // invalid reports flag combinations RunCLI rejects with usage.
@@ -233,8 +245,8 @@ func (a cliArgs) invalid() bool {
 		((a.cohort != "" || a.stratify == stratifyCohort) && a.features != featuresStructural) ||
 		(a.cohort != "" && a.stratify == stratifyCohort) ||
 		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
-		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "" || a.cohort != "")) ||
-		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.cohort != "" || a.behaviorOnly))
+		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "" || a.cohort != "" || a.ablation)) ||
+		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.cohort != "" || a.ablation || a.behaviorOnly))
 }
 
 // behaviorReport is the cohort and scan accounting behind a behavior model.
@@ -374,5 +386,20 @@ func writeConfounds(w io.Writer, axis string, r ConfoundReport) {
 	p("  strata      %s\n", strings.Join(strata, ", "))
 	if len(r.Undersized) > 0 {
 		p("  undersized  %s (below %d; reported, not pooled)\n", strings.Join(r.Undersized, ", "), r.Options.MinStratumSize)
+	}
+}
+
+func writeAblation(w io.Writer, report AblationReport) {
+	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	p("\nFeature ablation (baseline stability %.2f; dominant at change >= %.2f)\n",
+		report.BaselineStability, report.DominanceCutoff)
+	for _, feature := range report.Features {
+		flag := ""
+		if feature.Dominant {
+			flag = " DOMINANT"
+		}
+		p("  %-28s stability %.2f  delta %.2f  assignments %.1f%%%s\n",
+			feature.Feature, feature.ClusterStability, feature.StabilityChange,
+			100*feature.AssignmentChange, flag)
 	}
 }

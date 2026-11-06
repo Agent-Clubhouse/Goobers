@@ -67,8 +67,8 @@ func TestStructuralFeaturesCaptureShape(t *testing.T) {
 	f := extract(t, reviewLoop([4]string{"implement", "review", "verdict", "publish"}, "fix"))
 	want := map[string]float64{
 		"nodes": 4, "nodes.agentic": 2, "nodes.deterministic": 1, "nodes.gate": 1,
-		"edges.next": 2, "edges.gate": 2, "retry.nodes": 1, "retry.attempts": 3,
-		"timeout.maxSeconds": 600, "graph.depth": 3, "graph.unreachable": 0,
+		"edges.next": 2, "edges.gate": 2, "retry.nodes": 1, "timeout.nodes": 1,
+		"graph.depth": 3, "graph.unreachable": 0,
 		// implement -> review -> verdict -> implement is one cycle of three nodes.
 		"graph.cycles": 1, "graph.cycleNodes": 3, "capabilities": 1,
 	}
@@ -82,6 +82,21 @@ func TestStructuralFeaturesCaptureShape(t *testing.T) {
 	}
 	if len(f.WL) != wlBuckets {
 		t.Errorf("WL width = %d", len(f.WL))
+	}
+	if f.Version != "workflowcluster.structural/v2" {
+		t.Errorf("version = %q", f.Version)
+	}
+	if _, ok := f.Numeric["goal.chars"]; ok {
+		t.Error("goal.chars remains in structural/v2")
+	}
+	if _, ok := f.Numeric["timeout.totalSeconds"]; ok {
+		t.Error("timeout.totalSeconds remains in structural/v2")
+	}
+	if _, ok := f.Numeric["timeout.maxSeconds"]; ok {
+		t.Error("timeout.maxSeconds remains in structural/v2")
+	}
+	if _, ok := f.Numeric["retry.attempts"]; ok {
+		t.Error("retry.attempts remains in structural/v2")
 	}
 }
 
