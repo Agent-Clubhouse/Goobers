@@ -41,6 +41,9 @@ func registerLabsWorkflowClustersRoute(router *Router, service LabsWorkflowClust
 		if view.TrendsErr != nil {
 			errorLog.Printf("labs workflow cluster trends unavailable: %v", view.TrendsErr)
 		}
+		if view.FitnessErr != nil {
+			errorLog.Printf("labs workflow cluster fitness unavailable: %v", view.FitnessErr)
+		}
 		writeJSON(w, http.StatusOK, view)
 	})
 }

@@ -1,4 +1,4 @@
-import type { LabsClusterMapPoint } from "../api/types";
+import type { LabsClusterFitness, LabsClusterMapPoint } from "../api/types";
 import { routeHash } from "../routing";
 
 const width = 640;
@@ -21,10 +21,12 @@ export function LabsClusterMap({
   points,
   clusterIds,
   medoids,
+  fitness,
 }: {
   points: readonly LabsClusterMapPoint[];
   clusterIds: readonly string[];
   medoids: ReadonlySet<string>;
+  fitness: ReadonlyMap<string, LabsClusterFitness>;
 }) {
   if (points.length === 0) {
     return null;
@@ -44,12 +46,17 @@ export function LabsClusterMap({
         <rect className="labs-map-frame" x={1} y={1} width={width - 2} height={height - 2} rx={8} />
         {placed.map((dot) => {
           const isMedoid = dot.ids.some((id) => medoids.has(id));
+          const clusterFitness = fitness.get(dot.cluster);
+          const radius = clusterFitness ? Math.min(12, 6 + Math.sqrt(clusterFitness.runCount)) : dot.ids.length > 1 ? 9 : 7;
           const label = dot.ids.length > 1 ? `${shortName(dot.ids[0])} +${dot.ids.length - 1}` : shortName(dot.ids[0]);
           const title = `${dot.ids.join(", ")} — ${dot.cluster ? `cluster ${dot.cluster}` : "noise"}${isMedoid ? " (medoid)" : ""}`;
           return (
             <a key={dot.key} href={workflowHref(dot.ids[0])} className={`labs-map-dot ${colorOf(dot.cluster)}`}>
               <title>{title}</title>
-              <circle cx={dot.x} cy={dot.y} r={dot.ids.length > 1 ? 9 : 7} />
+              <circle cx={dot.x} cy={dot.y} r={radius} />
+              {clusterFitness && !clusterFitness.insufficientRuns && (
+                <circle className="labs-map-fitness" cx={dot.x} cy={dot.y} r={radius + 4} />
+              )}
               {isMedoid && <circle className="labs-map-medoid" cx={dot.x} cy={dot.y} r={13} />}
               {showLabels && (
                 <text x={dot.x + 15} y={dot.y + 4}>

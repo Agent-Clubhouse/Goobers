@@ -2274,6 +2274,38 @@ export interface LabsWorkflowClusterView {
   trends?: LabsWorkflowTrendReport;
   /** Why a clustered view carries no trends (the trend scan failed). */
   trendsUnavailable?: string;
+  fitness?: LabsClusterFitnessReport;
+  /** Why a clustered view carries no fitness (the retained-run scan failed). */
+  fitnessUnavailable?: string;
+}
+
+export interface LabsClusterFitnessReport {
+  scan: {
+    candidates: number;
+    overLimit: number;
+    oversized: number;
+    beforeSince: number;
+    nonTerminal: number;
+    undefinedProvenance: number;
+    unreadable: number;
+  };
+  clusters: LabsClusterFitness[];
+}
+
+export interface LabsClusterFitness {
+  clusterId: string;
+  runCount: number;
+  minimumRuns: number;
+  insufficientRuns: boolean;
+  successRate: number;
+  successInterval: { lower: number; upper: number };
+  medianWallTimeSeconds: number;
+  p90WallTimeSeconds: number;
+  medianCostUsd: number;
+  p90CostUsd: number;
+  humanGateRate: number;
+  escalationRate: number;
+  retryLoopRate: number;
 }
 
 export interface LabsWorkflowTrendReport {

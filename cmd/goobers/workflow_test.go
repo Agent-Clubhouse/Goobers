@@ -374,6 +374,29 @@ func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
 		t.Fatalf("model = %+v", model)
 	}
 
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--fitness", "--min-cluster-size", "2", "--json", root)
+	if code != 0 {
+		t.Fatalf("workflow clusters --fitness: code = %d, stderr = %q", code, stderr)
+	}
+	var fitnessOut struct {
+		Model   struct{ Population int }
+		Fitness struct {
+			Clusters []workflowcluster.ClusterFitness
+			Scan     workflowcluster.BehaviorScan
+		}
+	}
+	if err := json.Unmarshal([]byte(stdout), &fitnessOut); err != nil {
+		t.Fatalf("decode fitness: %v\n%s", err, stdout)
+	}
+	if fitnessOut.Model.Population != model.Population || fitnessOut.Fitness.Scan.Candidates != 0 {
+		t.Fatalf("fitness output = %+v", fitnessOut)
+	}
+	for _, fitness := range fitnessOut.Fitness.Clusters {
+		if fitness.RunCount != 0 || !fitness.InsufficientRuns {
+			t.Fatalf("fitness = %+v, want zero-sample insufficient result", fitness)
+		}
+	}
+
 	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", root)
 	if code != 0 || !strings.Contains(stdout, "Labs: experimental") {
 		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -420,8 +443,9 @@ func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
 	if assigned != view.Population || view.Confounds.Evidence != workflowcluster.EvidenceObservational {
 		t.Fatalf("model = %+v confounds = %+v", view.Model, view.Confounds)
 	}
-	if view.Trends == nil || view.TrendsUnavailable != "" {
-		t.Fatalf("trends = %+v, unavailable = %q", view.Trends, view.TrendsUnavailable)
+	if view.Trends == nil || view.TrendsUnavailable != "" || view.Fitness == nil || view.FitnessUnavailable != "" {
+		t.Fatalf("trends = %+v, fitness = %+v, unavailable = %q/%q",
+			view.Trends, view.Fitness, view.TrendsUnavailable, view.FitnessUnavailable)
 	}
 
 	// An unreadable journal root degrades only the supplementary trends.
@@ -437,7 +461,8 @@ func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if degraded.Status != workflowcluster.ViewClustered || degraded.Model == nil || degraded.Trends != nil ||
-		degraded.TrendsUnavailable == "" || degraded.TrendsErr == nil {
+		degraded.TrendsUnavailable == "" || degraded.TrendsErr == nil || degraded.Fitness != nil ||
+		degraded.FitnessUnavailable == "" || degraded.FitnessErr == nil {
 		t.Fatalf("degraded view = %+v", degraded)
 	}
 }

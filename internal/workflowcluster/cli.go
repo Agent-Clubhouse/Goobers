@@ -14,7 +14,7 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
 	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n\n" +
 	"Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN\n" +
@@ -36,6 +36,11 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"also test whether clusters merely track gaggle boundaries (a confound);\n" +
 	"that check is observational, not gym-controlled. Nothing is modified\n" +
 	"(default path \".\").\n\n" +
+	"--fitness joins retained terminal runs to the current structural clusters\n" +
+	"by workflow digest and reports sample size, success with a 95% Wilson\n" +
+	"interval, wall time, cost, human-gate, escalation, and retry/loop rates.\n" +
+	"Clusters with fewer than 5 runs are marked insufficient and are never\n" +
+	"ranked. --since limits the retained runs included.\n\n" +
 	"Fleet convergence: --snapshot prints this instance's feature vectors as a\n" +
 	"fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;\n" +
 	"workflows become salted keys and goober names salted hashes. The instance\n" +
@@ -72,6 +77,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
 	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
+	fitness := fs.Bool("fitness", false, "structural: report retained-run fitness for each cluster")
 	snapshot := fs.Bool("snapshot", false, "emit a privacy-safe fleet snapshot of this instance's features")
 	instanceID := fs.String("instance-id", "", "snapshot: instance ID (default: fleet association)")
 	salt := fs.String("salt", "", "snapshot: salt for name hashes (default: fleet ID)")
@@ -85,7 +91,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	behaviorOnly, snapshotOnly, saltSet := false, false, false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "since", "max-runs", "min-samples":
+		case "max-runs", "min-samples":
 			behaviorOnly = true
 		case "salt":
 			saltSet = true
@@ -98,6 +104,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		features: *features, stratify: *stratify, fleetDir: *fleetDir, since: *since,
 		maxRuns: *maxRuns, minSamples: *minSamples, minSize: *minSize, nargs: fs.NArg(),
 		asJSON: *asJSON, snapshot: *snapshot, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
+		fitness: *fitness,
 	}
 	if parsed.invalid() {
 		fs.Usage()
@@ -113,6 +120,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 
 	featureVersion := StructuralFeatureVersion
 	var behavior *behaviorReport
+	var workflowDigests map[string]string
 	var points []Point
 	var err error
 	if *features == featuresBehavior {
@@ -123,7 +131,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		}
 		behavior, points, err = behaviorPoints(root, scanOpts, *minSamples)
 	} else {
-		points, err = ConfiguredPoints(root)
+		points, workflowDigests, err = configuredPoints(root)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
@@ -145,6 +153,20 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		report := ConfoundCheck(model, gaggleStrata(points), ConfoundOptions{Seed: *seed})
 		confounds = &report
 	}
+	var fitnessReport *FitnessReport
+	if *fitness {
+		scanOpts := BehaviorScanOptions{MaxRuns: *maxRuns}
+		if *since > 0 {
+			scanOpts.Since = time.Now().Add(-*since)
+		}
+		scan, scanErr := ScanBehavior(root, scanOpts)
+		if scanErr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", scanErr)
+			return 2
+		}
+		report := EvaluateFitness(model, workflowDigests, scan, DefaultFitnessMinRuns)
+		fitnessReport = &report
+	}
 	if *asJSON {
 		var out any = model
 		switch {
@@ -154,11 +176,12 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 				Confounds *ConfoundReport `json:"confounds,omitempty"`
 				Behavior  behaviorReport  `json:"behavior"`
 			}{model, confounds, *behavior}
-		case confounds != nil:
+		case confounds != nil || fitnessReport != nil:
 			out = struct {
 				Model     Model           `json:"model"`
-				Confounds *ConfoundReport `json:"confounds"`
-			}{model, confounds}
+				Confounds *ConfoundReport `json:"confounds,omitempty"`
+				Fitness   *FitnessReport  `json:"fitness,omitempty"`
+			}{model, confounds, fitnessReport}
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -175,15 +198,18 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	if confounds != nil {
 		writeConfounds(stdout, *stratify, *confounds)
 	}
+	if fitnessReport != nil {
+		writeFitness(stdout, *fitnessReport)
+	}
 	return 0
 }
 
 // cliArgs holds the parsed flags RunCLI validates together.
 type cliArgs struct {
-	features, stratify, fleetDir                 string
-	since                                        time.Duration
-	maxRuns, minSamples, minSize, nargs          int
-	asJSON, snapshot, behaviorOnly, snapshotOnly bool
+	features, stratify, fleetDir                          string
+	since                                                 time.Duration
+	maxRuns, minSamples, minSize, nargs                   int
+	asJSON, snapshot, behaviorOnly, snapshotOnly, fitness bool
 }
 
 // invalid reports flag combinations RunCLI rejects with usage.
@@ -191,8 +217,9 @@ func (a cliArgs) invalid() bool {
 	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && a.stratify != stratifyGaggle) ||
 		(a.features != featuresStructural && a.features != featuresBehavior) ||
 		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
-		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "")) ||
-		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.behaviorOnly))
+		(a.fitness && a.features != featuresStructural) || (a.since > 0 && a.features != featuresBehavior && !a.fitness) ||
+		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "" || a.fitness)) ||
+		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.behaviorOnly || a.fitness))
 }
 
 // behaviorReport is the cohort and scan accounting behind a behavior model.
@@ -251,23 +278,47 @@ func gaggleStrata(points []Point) Strata {
 // ConfiguredPoints loads the instance config under root and returns one
 // structural point per configured workflow, keyed "<gaggle>/<workflow>".
 func ConfiguredPoints(root string) ([]Point, error) {
+	points, _, err := configuredPoints(root)
+	return points, err
+}
+
+func configuredPoints(root string) ([]Point, map[string]string, error) {
 	layout := instance.NewLayout(root)
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		return nil, fmt.Errorf("load instance config: %w", err)
+		return nil, nil, fmt.Errorf("load instance config: %w", err)
 	}
 	if set == nil || report == nil || report.HasErrors() {
-		return nil, errors.New("instance config has validation errors; run `goobers validate`")
+		return nil, nil, errors.New("instance config has validation errors; run `goobers validate`")
 	}
 	points := make([]Point, 0, len(set.Workflows))
+	digests := make(map[string]string, len(set.Workflows))
 	for _, wf := range set.Workflows {
 		features, err := ExtractDefinition(definitionOf(wf))
 		if err != nil {
-			return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+			return nil, nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}
-		points = append(points, StructuralPoint(wf.Spec.Gaggle+"/"+wf.Name, features))
+		id := wf.Spec.Gaggle + "/" + wf.Name
+		points = append(points, StructuralPoint(id, features))
+		digests[id] = features.WorkflowDigest
 	}
-	return points, nil
+	return points, digests, nil
+}
+
+func writeFitness(w io.Writer, report FitnessReport) {
+	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	p("\nFitness (advisory; clusters are not ranked)\n")
+	p("cluster  runs  success (95%% Wilson)  wall p50/p90  cost p50/p90  human  escalated  retry/loop\n")
+	for _, f := range report.Clusters {
+		if f.InsufficientRuns {
+			p("%s  %d  insufficient runs (need %d)\n", f.ClusterID, f.RunCount, f.MinimumRuns)
+			continue
+		}
+		p("%s  %d  %.1f%% (%.1f-%.1f%%)  %.1fs/%.1fs  $%.2f/$%.2f  %.1f%%  %.1f%%  %.1f%%\n",
+			f.ClusterID, f.RunCount, 100*f.SuccessRate, 100*f.SuccessInterval.Lower, 100*f.SuccessInterval.Upper,
+			f.MedianWallTimeSeconds, f.P90WallTimeSeconds, f.MedianCostUSD, f.P90CostUSD,
+			100*f.HumanGateRate, 100*f.EscalationRate, 100*f.RetryLoopRate)
+	}
 }
 
 func writeReport(w io.Writer, m Model) {

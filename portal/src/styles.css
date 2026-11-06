@@ -13127,6 +13127,12 @@ select {
   stroke-width: 1.5;
 }
 
+.labs-map-dot circle.labs-map-fitness {
+  fill: none;
+  stroke: var(--dot);
+  stroke-width: 2;
+}
+
 .labs-map-dot text {
   fill: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

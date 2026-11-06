@@ -65,6 +65,34 @@ const clustered: LabsWorkflowClusterView = {
     { id: "core/novel", x: 1, y: -0.4 },
     { id: "ops/odd-one", x: -0.8, y: 0.6 },
   ],
+  fitness: {
+    scan: {
+      candidates: 8,
+      overLimit: 0,
+      oversized: 0,
+      beforeSince: 0,
+      nonTerminal: 0,
+      undefinedProvenance: 0,
+      unreadable: 0,
+    },
+    clusters: [
+      {
+        clusterId: "c0",
+        runCount: 8,
+        minimumRuns: 5,
+        insufficientRuns: false,
+        successRate: 0.75,
+        successInterval: { lower: 0.41, upper: 0.93 },
+        medianWallTimeSeconds: 90,
+        p90WallTimeSeconds: 240,
+        medianCostUsd: 1.25,
+        p90CostUsd: 3.5,
+        humanGateRate: 0.25,
+        escalationRate: 0.125,
+        retryLoopRate: 0.5,
+      },
+    ],
+  },
 };
 
 describe("LabsPage", () => {
@@ -153,11 +181,23 @@ describe("LabsPage", () => {
       "core/implement, core/review — cluster c0 (medoid)",
     );
     expect(merged?.querySelector(".labs-map-medoid")).not.toBeNull();
+    expect(merged?.querySelector(".labs-map-fitness")).not.toBeNull();
     const noise = [...dots].filter((dot) => dot.classList.contains("labs-map-noise"));
     expect(noise.map((dot) => dot.querySelector("title")?.textContent)).toEqual([
       "core/novel — noise",
       "ops/odd-one — noise",
     ]);
+  });
+
+  it("shows advisory fitness and sample sizes on cluster cards", async () => {
+    renderLabs(fixtureClient(clustered), "workflow-clustering");
+
+    const card = await screen.findByRole("listitem", { name: "Cluster c0" });
+    const fitness = within(card).getByRole("region", { name: "Fitness" });
+    expect(fitness).toHaveTextContent("Fitness · 8 runs");
+    expect(fitness).toHaveTextContent("75% (95% Wilson 41%–93%)");
+    expect(fitness).toHaveTextContent("$1.25 / $3.50");
+    expect(fitness).toHaveTextContent("50%");
   });
 
   it("explains insufficient data and an all-noise model", async () => {
