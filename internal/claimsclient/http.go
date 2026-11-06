@@ -426,7 +426,11 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Co
 			case <-renewCtx.Done():
 				return
 			case <-ticker.C:
-				ok, err := h.renew(renewCtx, lock.Key, lock.RunID, lock.Workflow, h.cfg.MergeLockLease)
+				// Once dispatched, a renewal must reach its server response
+				// before release can cross the same coordination boundary.
+				renewRequestCtx, cancelRenewRequest := context.WithTimeout(context.WithoutCancel(renewCtx), DefaultHTTPTimeout)
+				ok, err := h.renew(renewRequestCtx, lock.Key, lock.RunID, lock.Workflow, h.cfg.MergeLockLease)
+				cancelRenewRequest()
 				if err != nil {
 					// Best effort: a failed renewal shortens the window to
 					// the remaining lease; the release below is what ends
