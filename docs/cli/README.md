@@ -161,6 +161,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate or list Workflow Gym benchmark tasks |
+| [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
+| [`goobers workflow-gym validate`](#goobers-workflow-gym-validate) | validate a file-backed benchmark dataset |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
 | [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
 
@@ -5870,6 +5873,58 @@ Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ~~~console
 $ goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
+~~~
+
+## `goobers workflow-gym`
+
+validate or list Workflow Gym benchmark tasks
+
+~~~text
+Usage: goobers workflow-gym <validate|list> <path>
+
+Validate or list a file-backed Workflow Gym benchmark dataset. The path
+may name one JSON/YAML task manifest or a directory of manifests.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym validate ./benchmark-tasks
+$ goobers workflow-gym list ./benchmark-tasks
+~~~
+
+## `goobers workflow-gym list`
+
+list a file-backed benchmark dataset
+
+~~~text
+Usage: goobers workflow-gym list <path>
+
+Validate a Workflow Gym dataset, print its version, deterministic digest,
+and task count, then list tasks in stable task ID order.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym list ./benchmark-tasks
+~~~
+
+## `goobers workflow-gym validate`
+
+validate a file-backed benchmark dataset
+
+~~~text
+Usage: goobers workflow-gym validate <path>
+
+Validate a Workflow Gym dataset and print its version, deterministic
+digest, and task count.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym validate ./benchmark-tasks
 ~~~
 
 ## `goobers workspace`

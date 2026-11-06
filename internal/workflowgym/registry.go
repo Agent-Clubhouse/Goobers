@@ -14,10 +14,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/strictyaml"
-	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 var (

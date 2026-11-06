@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW GYM" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow-gym \- validate or list Workflow Gym benchmark tasks
+.SH SYNOPSIS
+\fBgoobers workflow-gym\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow-gym <validate|list> <path>
+
+Validate or list a file-backed Workflow Gym benchmark dataset. The path
+may name one JSON/YAML task manifest or a directory of manifests.
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow-gym validate ./benchmark-tasks
+goobers workflow-gym list ./benchmark-tasks
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

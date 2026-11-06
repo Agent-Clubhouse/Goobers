@@ -4,6 +4,7 @@ import (
 	"io"
 	"text/tabwriter"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/workflowgym"
 )
 
@@ -18,6 +19,22 @@ const workflowGymValidateHelp = "Usage: goobers workflow-gym validate <path>\n\n
 const workflowGymListHelp = "Usage: goobers workflow-gym list <path>\n\n" +
 	"Validate a Workflow Gym dataset, print its version, deterministic digest,\n" +
 	"and task count, then list tasks in stable task ID order.\n"
+
+func workflowGymCLICommand() cliCommand {
+	return groupCommand(
+		"workflow-gym",
+		runWorkflowGym,
+		subcommand("workflow-gym validate", "validate", apicontract.ActionReadOnlyNavigation, runWorkflowGymValidate).
+			withHelp("validate a file-backed benchmark dataset", workflowGymValidateHelp).
+			withExamples("goobers workflow-gym validate ./benchmark-tasks"),
+		subcommand("workflow-gym list", "list", apicontract.ActionReadOnlyNavigation, runWorkflowGymList).
+			withHelp("list a file-backed benchmark dataset", workflowGymListHelp).
+			withExamples("goobers workflow-gym list ./benchmark-tasks"),
+	).
+		withSynopsis("workflow-gym <validate|list> <path>").
+		withHelp("validate or list Workflow Gym benchmark tasks", workflowGymHelp).
+		withExamples("goobers workflow-gym validate ./benchmark-tasks", "goobers workflow-gym list ./benchmark-tasks")
+}
 
 func runWorkflowGym(args []string, _, stderr io.Writer) int {
 	if len(args) > 0 {

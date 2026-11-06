@@ -325,19 +325,7 @@ func init() {
 			withSynopsis(synopsisByID["examples"]).
 			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
 			withExamples("goobers examples list", "goobers examples show implementation"),
-		groupCommand(
-			"workflow-gym",
-			runWorkflowGym,
-			subcommand("workflow-gym validate", "validate", apicontract.ActionReadOnlyNavigation, runWorkflowGymValidate).
-				withHelp("validate a file-backed benchmark dataset", workflowGymValidateHelp).
-				withExamples("goobers workflow-gym validate ./benchmark-tasks"),
-			subcommand("workflow-gym list", "list", apicontract.ActionReadOnlyNavigation, runWorkflowGymList).
-				withHelp("list a file-backed benchmark dataset", workflowGymListHelp).
-				withExamples("goobers workflow-gym list ./benchmark-tasks"),
-		).
-			withSynopsis("workflow-gym <validate|list> <path>").
-			withHelp("validate or list Workflow Gym benchmark tasks", workflowGymHelp).
-			withExamples("goobers workflow-gym validate ./benchmark-tasks", "goobers workflow-gym list ./benchmark-tasks"),
+		workflowGymCLICommand(),
 		coreGroupCommand(
 			"scaffold",
 			runScaffold,

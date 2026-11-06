@@ -4,11 +4,16 @@ package v1alpha1
 type WorkflowGymSplit string
 
 const (
+	// WorkflowGymTaskAPIVersion is the apiVersion of Workflow Gym task manifests.
 	WorkflowGymTaskAPIVersion = GroupName + "/" + Version
-	WorkflowGymTaskKind       = "WorkflowGymTask"
+	// WorkflowGymTaskKind is the kind of Workflow Gym task manifests.
+	WorkflowGymTaskKind = "WorkflowGymTask"
 
-	WorkflowGymSplitTrain   WorkflowGymSplit = "train"
-	WorkflowGymSplitEval    WorkflowGymSplit = "eval"
+	// WorkflowGymSplitTrain marks a task usable for training.
+	WorkflowGymSplitTrain WorkflowGymSplit = "train"
+	// WorkflowGymSplitEval marks a task reserved for evaluation.
+	WorkflowGymSplitEval WorkflowGymSplit = "eval"
+	// WorkflowGymSplitHoldout marks a task withheld from training and routine evaluation.
 	WorkflowGymSplitHoldout WorkflowGymSplit = "holdout"
 )
 
