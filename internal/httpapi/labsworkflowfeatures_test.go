@@ -151,12 +151,13 @@ func writeSentinelWorkflowInstance(t *testing.T) string {
 
 func TestLabsWorkflowFeaturesRouteServesOnlySnapshotSchemaAndAudits(t *testing.T) {
 	root := writeSentinelWorkflowInstance(t)
-	points, err := workflowcluster.ConfiguredPoints(root)
-	if err != nil || len(points) != 1 {
-		t.Fatalf("fixture points = %d, err = %v", len(points), err)
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil || report.HasErrors() || len(set.Workflows) != 1 {
+		t.Fatalf("fixture config: err = %v, report = %+v", err, report)
 	}
-	if want := labsWorkflowFeatureSentinels["example"] + "/" + labsWorkflowFeatureSentinels["default-implement"]; points[0].ID != want {
-		t.Fatalf("fixture point ID = %q, want %q", points[0].ID, want)
+	if got := set.Workflows[0]; got.Name != labsWorkflowFeatureSentinels["default-implement"] ||
+		got.Spec.Gaggle != labsWorkflowFeatureSentinels["example"] {
+		t.Fatalf("fixture workflow = %s/%s", got.Spec.Gaggle, got.Name)
 	}
 	source, err := workflowcluster.NewFleetSnapshotSource(root, labsAssociationFunc(func(string) (fleet.Association, error) {
 		return fleet.Association{

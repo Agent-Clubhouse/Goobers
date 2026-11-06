@@ -49,11 +49,14 @@ func NewFleetSnapshotSource(root string, associations AssociationReader) (*Fleet
 		return nil, errors.New("workflowcluster: fleet association reader is required")
 	}
 	return &FleetSnapshotSource{
-		root:             root,
-		associations:     associations,
-		now:              time.Now,
-		goobersVersion:   func() string { return version.Get().Version },
-		configuredPoints: ConfiguredPoints,
+		root:           root,
+		associations:   associations,
+		now:            time.Now,
+		goobersVersion: func() string { return version.Get().Version },
+		configuredPoints: func(root string) ([]Point, error) {
+			points, _, err := configuredPoints(root)
+			return points, err
+		},
 		runBehaviorPoints: func(root string) ([]Point, error) {
 			_, points, err := behaviorPoints(root, BehaviorScanOptions{}, cliMinSamples)
 			return points, err

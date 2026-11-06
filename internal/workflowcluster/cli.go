@@ -14,7 +14,7 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort] [--ablation] [--json] [path]\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--ablation] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
 	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n" +
 	"       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]\n\n" +
@@ -34,10 +34,11 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"cohorts with fewer than --min-samples runs are dropped.\n\n" +
 	"Node names, stage names, and goal text never contribute. Structural and\n" +
 	"behavior features are never mixed in one model. --cohort limits structural\n" +
-	"clustering to one privacy-safe task cohort. With --stratify gaggle or\n" +
-	"--stratify cohort, also test whether clusters merely track that boundary;\n" +
-	"that check is observational, not gym-controlled. Nothing is modified\n" +
-	"(default path \".\").\n\n" +
+	"clustering to one privacy-safe task cohort. --stratify tests whether\n" +
+	"clusters merely track gaggle, task-cohort, model, harness, skill-set, or\n" +
+	"tool-set boundaries (a confound). Undefined provenance is excluded and\n" +
+	"counted; that check is observational, not gym-controlled. Nothing is\n" +
+	"modified (default path \".\").\n\n" +
 	"Task cohorts use metadata.labels[\"goobers.dev/task-class\"] when explicitly\n" +
 	"set. Otherwise an auto:<digest> label is derived only from trigger types,\n" +
 	"work-item kinds, the declared policy-action side-effect set, and repo:*\n" +
@@ -94,7 +95,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	minSamples := fs.Int("min-samples", cliMinSamples, "behavior: smallest EffectiveVersion cohort clustered")
 	minSize := fs.Int("min-cluster-size", cliMinClusterSize, "smallest group reported as a cluster")
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
-	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle or cohort)")
+	stratify := fs.String("stratify", "", "confound axis (gaggle, cohort, model, harness, skills, or tools)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
 	ablation := fs.Bool("ablation", false, "report leave-one-feature-out cluster stability and assignment change")
 	snapshot := fs.Bool("snapshot", false, "emit a privacy-safe fleet snapshot of this instance's features")
@@ -148,6 +149,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	featureVersion := StructuralFeatureVersion
 	var behavior *behaviorReport
 	var points []Point
+	var strata pointStrata
 	var err error
 	if *features == featuresBehavior {
 		featureVersion = BehaviorFeatureVersion
@@ -156,8 +158,14 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 			scanOpts.Since = time.Now().Add(-*since)
 		}
 		behavior, points, err = behaviorPoints(root, scanOpts, *minSamples)
+		if behavior != nil {
+			strata = pointStrata{StratifyGaggle: gaggleStrata(points)}
+			for _, axis := range provenanceAxes {
+				strata[axis] = behaviorStrata(behavior.Cohorts, axis)
+			}
+		}
 	} else {
-		points, err = ConfiguredPoints(root)
+		points, strata, err = configuredPoints(root)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
@@ -183,11 +191,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	}
 	var confounds *ConfoundReport
 	if *stratify != "" {
-		strata := gaggleStrata(points)
-		if *stratify == stratifyCohort {
-			strata = cohortStrata(points)
-		}
-		report := ConfoundCheck(model, strata, ConfoundOptions{Seed: *seed})
+		report := ConfoundCheck(model, strata[*stratify], ConfoundOptions{Seed: *seed})
 		confounds = &report
 	}
 	var ablations *AblationReport
@@ -240,10 +244,10 @@ type cliArgs struct {
 
 // invalid reports flag combinations RunCLI rejects with usage.
 func (a cliArgs) invalid() bool {
-	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && a.stratify != stratifyGaggle && a.stratify != stratifyCohort) ||
+	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && !validStratify(a.stratify)) ||
 		(a.features != featuresStructural && a.features != featuresBehavior) ||
-		((a.cohort != "" || a.stratify == stratifyCohort) && a.features != featuresStructural) ||
-		(a.cohort != "" && a.stratify == stratifyCohort) ||
+		((a.cohort != "" || a.stratify == StratifyCohort) && a.features != featuresStructural) ||
+		(a.cohort != "" && a.stratify == StratifyCohort) ||
 		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
 		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "" || a.cohort != "" || a.ablation)) ||
 		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.cohort != "" || a.ablation || a.behaviorOnly))
@@ -288,11 +292,10 @@ func writeBehaviorScan(w io.Writer, r behaviorReport) {
 		s.NonTerminal, s.UndefinedProvenance, s.BeforeSince, s.OverLimit, s.Oversized, s.Unreadable)
 }
 
-// Supported confound axes for configured workflows.
-const (
-	stratifyGaggle = "gaggle"
-	stratifyCohort = "cohort"
-)
+func validStratify(axis string) bool {
+	return axis == StratifyGaggle || axis == StratifyCohort || axis == StratifyModel || axis == StratifyHarness ||
+		axis == StratifySkills || axis == StratifyTools
+}
 
 // gaggleStrata labels each "<gaggle>/<workflow>" point with its gaggle.
 func gaggleStrata(points []Point) Strata {
@@ -314,28 +317,31 @@ func pointsInCohort(points []Point, cohort string) []Point {
 	return filtered
 }
 
-// ConfiguredPoints loads the instance config under root and returns one
-// structural point per configured workflow, keyed "<gaggle>/<workflow>".
-func ConfiguredPoints(root string) ([]Point, error) {
+// configuredPoints loads the instance config under root and returns one
+// structural point per configured workflow, keyed "<gaggle>/<workflow>",
+// with its provenance strata.
+func configuredPoints(root string) ([]Point, pointStrata, error) {
 	layout := instance.NewLayout(root)
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		return nil, fmt.Errorf("load instance config: %w", err)
+		return nil, nil, fmt.Errorf("load instance config: %w", err)
 	}
 	if set == nil || report == nil || report.HasErrors() {
-		return nil, errors.New("instance config has validation errors; run `goobers validate`")
+		return nil, nil, errors.New("instance config has validation errors; run `goobers validate`")
 	}
 	points := make([]Point, 0, len(set.Workflows))
 	for _, wf := range set.Workflows {
 		features, err := ExtractDefinition(definitionOf(wf))
 		if err != nil {
-			return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+			return nil, nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}
 		point := StructuralPoint(wf.Spec.Gaggle+"/"+wf.Name, features)
 		point.Cohort = Cohort(wf)
 		points = append(points, point)
 	}
-	return points, nil
+	strata := configuredStrata(set.Workflows, set.Goobers)
+	strata[StratifyCohort] = cohortStrata(points)
+	return points, strata, nil
 }
 
 func writeReport(w io.Writer, m Model) {

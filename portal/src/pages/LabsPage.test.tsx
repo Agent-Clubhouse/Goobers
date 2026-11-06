@@ -58,17 +58,43 @@ const clustered: LabsWorkflowClusterView = {
     undersized: ["ops"],
     options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
   },
-  cohortConfounds: {
-    evidence: "observational",
-    statistic: "cramersV",
-    association: 0.1,
-    pValue: 0.8,
-    confounded: false,
-    tested: 5,
-    unlabeled: 0,
-    strata: [{ key: "review", size: 3 }, { key: "deploy", size: 2 }],
-    undersized: ["deploy"],
-    options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
+  confoundsByAxis: {
+    gaggle: {
+      evidence: "observational",
+      statistic: "cramersV",
+      association: 0.82,
+      pValue: 0.004,
+      confounded: true,
+      tested: 5,
+      unlabeled: 0,
+      strata: [{ key: "core", size: 3 }, { key: "ops", size: 2 }],
+      undersized: ["ops"],
+      options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
+    },
+    model: {
+      evidence: "observational",
+      statistic: "cramersV",
+      association: 0,
+      pValue: 1,
+      confounded: false,
+      tested: 3,
+      unlabeled: 2,
+      strata: [{ key: "gpt-5.6-sol", size: 3 }],
+      undersized: [],
+      options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
+    },
+    cohort: {
+      evidence: "observational",
+      statistic: "cramersV",
+      association: 0.1,
+      pValue: 0.8,
+      confounded: false,
+      tested: 5,
+      unlabeled: 0,
+      strata: [{ key: "review", size: 3 }, { key: "deploy", size: 2 }],
+      undersized: ["deploy"],
+      options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
+    },
   },
   cohorts: ["deploy", "review"],
   map: [
@@ -151,8 +177,17 @@ describe("LabsPage", () => {
       "clusters track gaggle boundaries",
     );
     expect(screen.getByText(/were not tested: ops\./)).toBeInTheDocument();
-    expect(screen.getByText(/No task cohort confound detected/)).toBeInTheDocument();
     expect(screen.getByText("0123456789ab")).toBeInTheDocument();
+  });
+
+  it("selects each available provenance confound axis", async () => {
+    const user = userEvent.setup();
+    renderLabs(fixtureClient(clustered), "workflow-clustering");
+
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Confound axis" }), "model");
+    expect(screen.getByText(/No model confound detected/)).toHaveTextContent("2 undefined");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Confound axis" }), "cohort");
+    expect(screen.getByText(/No task cohort confound detected/)).toBeInTheDocument();
   });
 
   it("filters the cluster map by task cohort", async () => {
@@ -194,6 +229,10 @@ describe("LabsPage", () => {
       ...clustered,
       model: { ...clustered.model!, clusters: null, noise: ["a/x", "a/y", "a/z"] },
       confounds: { ...clustered.confounds!, confounded: false, undersized: null },
+      confoundsByAxis: {
+        ...clustered.confoundsByAxis,
+        gaggle: { ...clustered.confoundsByAxis!.gaggle!, confounded: false, undersized: null },
+      },
     } as unknown as LabsWorkflowClusterView;
     renderLabs(fixtureClient(allNoise), "workflow-clustering");
     expect(await screen.findByRole("heading", { name: "No clusters found" })).toBeInTheDocument();
