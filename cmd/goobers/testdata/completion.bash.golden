@@ -339,6 +339,11 @@ _goobers_completion()
                 candidates="$(command goobers __complete examples 2>/dev/null)"
             fi
             ;;
+        workflow-gym)
+            if (( COMP_CWORD == 2 )); then
+                candidates="validate list"
+            fi
+            ;;
         scaffold)
             if (( COMP_CWORD == 2 )); then
                 candidates="goober workflow gaggle"

@@ -325,6 +325,7 @@ func init() {
 			withSynopsis(synopsisByID["examples"]).
 			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
 			withExamples("goobers examples list", "goobers examples show implementation"),
+		workflowGymCLICommand(),
 		coreGroupCommand(
 			"scaffold",
 			runScaffold,

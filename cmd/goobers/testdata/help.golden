@@ -180,6 +180,7 @@ Advanced operator commands:
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
+  workflow-gym      validate or list Workflow Gym benchmark tasks
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
@@ -3791,6 +3792,24 @@ Config digests identify declarative validation inputs, not an execution archive.
 from 'goobers workflow clusters --json'; it never changes validity or exit code.
 --json emits child-workflow-validation/v1 diagnostics and digests.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+
+### workflow-gym
+Usage: goobers workflow-gym <validate|list> <path>
+
+Validate or list a file-backed Workflow Gym benchmark dataset. The path
+may name one JSON/YAML task manifest or a directory of manifests.
+
+### workflow-gym list
+Usage: goobers workflow-gym list <path>
+
+Validate a Workflow Gym dataset, print its version, deterministic digest,
+and task count, then list tasks in stable task ID order.
+
+### workflow-gym validate
+Usage: goobers workflow-gym validate <path>
+
+Validate a Workflow Gym dataset and print its version, deterministic
+digest, and task count.
 
 ### workspace
 Usage: goobers workspace reset <repo> [path]

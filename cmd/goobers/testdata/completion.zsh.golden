@@ -375,6 +375,13 @@ _goobers_completion()
                 return
             fi
             ;;
+        workflow-gym)
+            if (( CURRENT == 3 )); then
+                candidates=(validate list)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow gaggle)

@@ -32,6 +32,7 @@ complete -c goobers -n '__fish_seen_subcommand_from roots; and test (count (comm
 complete -c goobers -n '__fish_seen_subcommand_from onboarding; and test (count (commandline -opc)) -eq 2' -f -a 'stub-sample stub-agent-instructions'
 complete -c goobers -n '__fish_seen_subcommand_from examples; and test (count (commandline -opc)) -eq 2' -f -a 'list show'
 complete -c goobers -n '__fish_seen_subcommand_from examples; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_examples)'
+complete -c goobers -n '__fish_seen_subcommand_from workflow-gym; and test (count (commandline -opc)) -eq 2' -f -a 'validate list'
 complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (commandline -opc)) -eq 2' -f -a 'goober workflow gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from gaggle; and test (count (commandline -opc)) -eq 2' -f -a 'export import'
 complete -c goobers -n '__fish_seen_subcommand_from diagnostics; and test (count (commandline -opc)) -eq 2' -f -a 'bundle triage'
