@@ -123,6 +123,15 @@ type Association struct {
 	LastError           string    `json:"lastError,omitempty"`
 }
 
+// ActiveProjections returns a copy of the projection scopes currently granted
+// to the association. A revoked association has no active projections.
+func (a Association) ActiveProjections() []string {
+	if a.Revoked {
+		return []string{}
+	}
+	return append([]string{}, a.Projections...)
+}
+
 // Record bundles an Association with its private key and bearer credential
 // for storage.
 type Record struct {

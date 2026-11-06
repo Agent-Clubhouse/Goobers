@@ -316,6 +316,52 @@ func TestFleetStatusLabelsNonExpiringDevelopmentCredential(t *testing.T) {
 	}
 }
 
+func TestFleetStatusRevokedAssociationHasNoActiveProjections(t *testing.T) {
+	root := t.TempDir()
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	store := &fleetMemoryStorage{
+		saved: true,
+		record: fleet.Record{
+			Association: fleet.Association{
+				InstanceID:      "instance-1",
+				DisplayName:     "dev-box",
+				CanonicalURI:    "http://127.0.0.1:15080",
+				ProtocolVersion: fleet.ProtocolVersion,
+				Projections:     []string{fleet.ProjectionLabsWorkflowFeatures},
+				Revoked:         true,
+				RevokeReason:    "operator removed registration",
+			},
+		},
+	}
+	originalStorage := newFleetStorage
+	newFleetStorage = func() (fleet.Storage, error) { return store, nil }
+	t.Cleanup(func() { newFleetStorage = originalStorage })
+
+	code, stdout, stderr := runArgs(t, "fleet", "status", "--json", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var status fleetStatusOutput
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Revoked || status.RevokeReason != "operator removed registration" {
+		t.Fatalf("status = %+v, want revoked with reason", status)
+	}
+	if status.Projections == nil || len(status.Projections) != 0 {
+		t.Fatalf("status projections = %#v, want empty array", status.Projections)
+	}
+
+	code, stdout, stderr = runArgs(t, "fleet", "status", root)
+	if code != 0 || stderr != "" ||
+		!strings.Contains(stdout, "Projections: none") ||
+		strings.Contains(stdout, fleet.ProjectionLabsWorkflowFeatures) {
+		t.Fatalf("text status code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestFleetJoinRejectsUnknownProjection(t *testing.T) {
 	code, _, stderr := runArgs(t, "fleet", "join", "--url", "https://fleet.example",
 		"--projection", "unknown.projection")

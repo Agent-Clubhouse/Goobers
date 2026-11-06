@@ -164,8 +164,35 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("connector did not stop after revoke")
 	}
-	if _, err := store.Load("root"); !errors.Is(err, ErrNotAssociated) {
-		t.Fatalf("Load after revoke error = %v, want ErrNotAssociated", err)
+	record, err := store.Load("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Association.Revoked || record.Association.RevokeReason != "operator removed registration" ||
+		record.Association.Connected {
+		t.Fatalf("association after revoke = %+v", record.Association)
+	}
+	if record.Association.HeartbeatSeconds != 30 {
+		t.Fatalf("heartbeat seconds = %d, want 30", record.Association.HeartbeatSeconds)
+	}
+	if record.Association.Projections != nil || len(record.Association.ActiveProjections()) != 0 {
+		t.Fatalf("projections after revoke = %v, active = %v",
+			record.Association.Projections, record.Association.ActiveProjections())
+	}
+}
+
+func TestRevokedAssociationHasNoActiveProjections(t *testing.T) {
+	association := Association{Projections: []string{ProjectionLabsWorkflowFeatures}}
+	if got := association.ActiveProjections(); len(got) != 1 || got[0] != ProjectionLabsWorkflowFeatures {
+		t.Fatalf("active projections = %v", got)
+	}
+	association.Revoked = true
+	association.RevokeReason = "operator removed registration"
+	if got := association.ActiveProjections(); got == nil || len(got) != 0 {
+		t.Fatalf("revoked active projections = %#v, want empty", got)
+	}
+	if !association.Revoked || association.RevokeReason != "operator removed registration" {
+		t.Fatalf("association = %+v", association)
 	}
 }
 

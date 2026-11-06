@@ -222,7 +222,7 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 		ConnectionEndpoint:     association.ConnectionEndpoint,
 		ProtocolVersion:        association.ProtocolVersion,
 		ACLVersion:             association.ACL.PolicyVersion,
-		Projections:            append([]string{}, association.Projections...),
+		Projections:            association.ActiveProjections(),
 		CredentialExpiresAt:    association.CredentialExpiresAt,
 		CredentialNonExpiring:  association.CredentialExpiresAt.IsZero(),
 		Revoked:                association.Revoked,
