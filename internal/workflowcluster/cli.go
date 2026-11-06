@@ -76,8 +76,8 @@ const cliMinClusterSize = 3
 
 // Feature sets selectable with --features.
 const (
-	featuresStructural = "structural"
-	featuresBehavior   = "behavior"
+	featuresStructural = FleetFeatureStructural
+	featuresBehavior   = FleetFeatureBehavior
 )
 
 // cliMinSamples is the default smallest EffectiveVersion cohort clustered.

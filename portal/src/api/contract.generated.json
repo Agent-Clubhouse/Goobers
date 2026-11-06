@@ -432,6 +432,18 @@
       "recoverySafe": false
     },
     {
+      "id": "labsWorkflowFeatures",
+      "method": "GET",
+      "path": "/api/v1/labs/workflow-features",
+      "actionClass": "read-only-navigation",
+      "capability": "labs.workflowFeatures",
+      "remoteInvocable": true,
+      "cost": "aggregate",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "events",
       "method": "GET",
       "path": "/api/v1/events",

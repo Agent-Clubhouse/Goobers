@@ -19,8 +19,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/secfile"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const fleetHelp = `Usage: goobers fleet <join|status|leave> [flags] [path]
@@ -74,6 +76,18 @@ var (
 	fleetHTTPClient = &http.Client{Timeout: 15 * time.Second}
 	fleetStatusNow  = time.Now
 )
+
+func newLabsWorkflowFeaturesOption(root string) (httpapi.HandlerOption, error) {
+	storage, err := newFleetStorage()
+	if err != nil {
+		return nil, err
+	}
+	source, err := workflowcluster.NewFleetSnapshotSource(root, storage)
+	if err != nil {
+		return nil, err
+	}
+	return httpapi.WithLabsWorkflowFeatures(source), nil
+}
 
 const minimumFleetStaleAfter = 30 * time.Second
 

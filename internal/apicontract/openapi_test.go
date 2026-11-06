@@ -3,6 +3,7 @@ package apicontract
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -162,6 +163,37 @@ func TestOpenAPIInitialRemoteProfileHasConcreteSchemasAndHeaders(t *testing.T) {
 					t.Error("events operation is missing Last-Event-ID")
 				}
 			}
+		}
+	}
+}
+
+func TestOpenAPIDescribesLabsWorkflowFeaturesProjection(t *testing.T) {
+	document, err := OpenAPIDocument(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	operation := decoded["paths"].(map[string]any)[LabsWorkflowFeaturesPath].(map[string]any)["get"].(map[string]any)
+	if operation["x-goobers-capability"] != "labs.workflowFeatures" || operation["x-goobers-remote-invocable"] != true {
+		t.Fatalf("operation extensions = %#v", operation)
+	}
+	parameters := operation["parameters"].([]any)
+	if len(parameters) != 1 {
+		t.Fatalf("parameters = %#v", parameters)
+	}
+	features := parameters[0].(map[string]any)
+	schema := features["schema"].(map[string]any)
+	if features["name"] != "features" || features["required"] != true ||
+		!reflect.DeepEqual(schema["enum"], []any{"structural", "behavior"}) {
+		t.Fatalf("features parameter = %#v", features)
+	}
+	schemas := decoded["components"].(map[string]any)["schemas"].(map[string]any)
+	for _, name := range []string{"FleetSnapshot", "FleetWorkflow"} {
+		if schemas[name].(map[string]any)["additionalProperties"] != false {
+			t.Fatalf("%s schema is not strict: %#v", name, schemas[name])
 		}
 	}
 }

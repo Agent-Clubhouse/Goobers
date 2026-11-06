@@ -90,6 +90,9 @@ const (
 	// LabsWorkflowClustersPath is the experimental, advisory cluster map of the
 	// instance's configured workflows (#8309).
 	LabsWorkflowClustersPath = V1Prefix + "/labs/workflow-clusters"
+	// LabsWorkflowFeaturesPath serves a privacy-safe fleet feature snapshot to
+	// associations that grant the labs.workflowFeatures projection.
+	LabsWorkflowFeaturesPath = V1Prefix + "/labs/workflow-features"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -375,6 +378,7 @@ const (
 	// widening it is a ruling amendment, not a parameter change.
 	RouteTelemetryDefectAggregates RouteID = "telemetryDefectAggregates"
 	RouteLabsWorkflowClusters      RouteID = "labsWorkflowClusters"
+	RouteLabsWorkflowFeatures      RouteID = "labsWorkflowFeatures"
 
 	RouteEvents RouteID = "events"
 
@@ -642,6 +646,7 @@ var v1Routes = []Route{
 	// Its window, response and cardinality remain bounded server-side.
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteLabsWorkflowClusters, Method: http.MethodGet, Path: LabsWorkflowClustersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteLabsWorkflowFeatures, Method: http.MethodGet, Path: LabsWorkflowFeaturesPath, ActionClass: ActionReadOnlyNavigation, Capability: "labs.workflowFeatures", Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
@@ -773,10 +778,11 @@ var v1Routes = []Route{
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{
-	RouteHealth:   {},
-	RouteInstance: {},
-	RouteRuns:     {},
-	RouteEvents:   {},
+	RouteHealth:               {},
+	RouteInstance:             {},
+	RouteRuns:                 {},
+	RouteEvents:               {},
+	RouteLabsWorkflowFeatures: {},
 }
 
 // InitiallyRemoteInvocable identifies the bounded first remote-read profile.
@@ -967,7 +973,8 @@ type Capability struct {
 }
 
 // SurfaceAction attaches parity classification to an actual adapter
-// registration. Capability is required only for runtime mutations.
+// registration. Capability is required for runtime mutations and may also
+// scope an explicitly remote-invocable read.
 type SurfaceAction struct {
 	ID         ActionID     `json:"id"`
 	Class      ActionClass  `json:"class"`
@@ -1101,6 +1108,9 @@ func validateActionShape(action SurfaceAction) error {
 		if action.Capability == "" {
 			return fmt.Errorf("runtime mutation action %q has no capability", action.ID)
 		}
+		return nil
+	}
+	if action.Class == ActionReadOnlyNavigation && InitiallyRemoteInvocable(RouteID(action.ID)) {
 		return nil
 	}
 	if action.Capability != "" {
