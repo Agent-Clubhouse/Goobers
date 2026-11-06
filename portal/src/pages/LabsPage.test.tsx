@@ -344,6 +344,31 @@ describe("LabsPage", () => {
     expect(screen.getByText(/configures 0 workflows; clustering needs at least 3/)).toBeInTheDocument();
     unmount();
 
+    const starter = {
+      status: "insufficient-data",
+      population: 1,
+      minClusterSize: 3,
+      templates: {
+        distanceThreshold: 0.35,
+        catalog: [{ id: "starter/default-implement", fingerprint: "sha256:def" }],
+        workflows: {
+          "example/default-implement": {
+            templateId: "starter/default-implement",
+            fingerprint: "sha256:def",
+            distance: 0,
+            explicit: true,
+            derived: true,
+          },
+        },
+        beyondTemplates: null,
+      },
+    } as unknown as LabsWorkflowClusterView;
+    const { unmount: unmountStarter } = renderLabs(fixtureClient(starter), "workflow-clustering");
+    const provenance = await screen.findByRole("region", { name: "Workflow template provenance" });
+    expect(within(provenance).getByRole("link", { name: "example/default-implement" })).toBeInTheDocument();
+    expect(provenance).toHaveTextContent("declared from starter/default-implement · 0.00");
+    unmountStarter();
+
     const allNoise = {
       ...clustered,
       model: { ...clustered.model!, clusters: null, noise: ["a/x", "a/y", "a/z"] },

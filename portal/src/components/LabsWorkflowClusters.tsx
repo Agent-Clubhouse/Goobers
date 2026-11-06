@@ -58,6 +58,9 @@ export function LabsWorkflowClusters({ client }: { client: DaemonClient }) {
           </p>
         </div>
       )}
+      {view && view.status === "insufficient-data" && view.templates && (
+        <WorkflowTemplateProvenance report={view.templates} />
+      )}
       {view?.model && <ClusterModel view={view} />}
     </section>
   );
@@ -335,6 +338,23 @@ function ClusterCard({
         </>
       )}
     </li>
+  );
+}
+
+function WorkflowTemplateProvenance({ report }: { report: NonNullable<LabsWorkflowClusterView["templates"]> }) {
+  const ids = Object.keys(report.workflows).sort();
+  if (ids.length === 0) return null;
+  return (
+    <section aria-label="Workflow template provenance">
+      <h3>Template provenance</h3>
+      <ul className="labs-cluster-features">
+        {ids.map((id) => (
+          <li key={id}>
+            <WorkflowLink id={id} /> <TemplateLabel provenance={report.workflows[id]} />
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

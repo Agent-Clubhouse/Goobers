@@ -5,18 +5,20 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"sync"
 
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	configexamples "github.com/goobers/goobers/config-examples"
+	"github.com/goobers/goobers/internal/instance"
 	referenceworkflows "github.com/goobers/goobers/reference-workflows"
 )
 
 const (
 	// TemplateProvenanceAnnotation records the shipped template used to create
 	// a workflow.
-	TemplateProvenanceAnnotation = "goobers.dev/template-provenance"
+	TemplateProvenanceAnnotation = instance.TemplateProvenanceAnnotation
 	// StratifyTemplate groups workflows by explicit or nearest template.
 	StratifyTemplate = "template"
 	// DefaultTemplateDistanceThreshold is the maximum structural distance at
@@ -63,7 +65,12 @@ type shippedTemplate struct {
 	Point Point
 }
 
-func shippedTemplates() ([]shippedTemplate, error) {
+// shippedTemplates fingerprints, once per process, every workflow template
+// embedded in this build: the reference workflows, the config examples guided
+// init copies, and the starter, demo, quickstart, and scaffold workflows.
+var shippedTemplates = sync.OnceValues(loadShippedTemplates)
+
+func loadShippedTemplates() ([]shippedTemplate, error) {
 	var templates []shippedTemplate
 	references, err := referenceworkflows.WorkflowTemplates()
 	if err != nil {
@@ -89,13 +96,29 @@ func shippedTemplates() ([]shippedTemplate, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read example template %q: %w", example.Path, err)
 		}
-		template, err := templateFromYAML("example/"+example.Name, data)
+		template, err := templateFromYAML(instance.ExampleTemplateProvenance(example.Name), data)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, template)
+	}
+	seeded, err := instance.SeededWorkflowTemplates()
+	if err != nil {
+		return nil, err
+	}
+	for _, workflow := range seeded {
+		template, err := templateFromWorkflow(workflow.ID, workflow.Source, workflow.Workflow)
 		if err != nil {
 			return nil, err
 		}
 		templates = append(templates, template)
 	}
 	sort.Slice(templates, func(i, j int) bool { return templates[i].ID < templates[j].ID })
+	for i := 1; i < len(templates); i++ {
+		if templates[i].ID == templates[i-1].ID {
+			return nil, fmt.Errorf("shipped template ID %q is not unique", templates[i].ID)
+		}
+	}
 	return templates, nil
 }
 
@@ -104,6 +127,10 @@ func templateFromYAML(id string, data []byte) (shippedTemplate, error) {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return shippedTemplate{}, fmt.Errorf("decode shipped template %q: %w", id, err)
 	}
+	return templateFromWorkflow(id, data, workflow)
+}
+
+func templateFromWorkflow(id string, data []byte, workflow apiv1.Workflow) (shippedTemplate, error) {
 	features, err := ExtractDefinition(definitionOf(workflow))
 	if err != nil {
 		return shippedTemplate{}, fmt.Errorf("fingerprint shipped template %q: %w", id, err)
@@ -142,11 +169,12 @@ func analyzeTemplateCatalog(points []Point, explicit Strata, model *Model, templ
 	strata := make(Strata, len(points))
 	for _, point := range points {
 		provenance := nearestTemplate(schema, point, templates)
-		if id := explicit[point.ID]; id != "" {
-			provenance = TemplateProvenance{TemplateID: id, Explicit: true, Derived: true}
-			if template, ok := templateByID[id]; ok {
-				provenance.Fingerprint = template.Fingerprint
-				provenance.Distance = round6(schema.Distance(point, template.Point))
+		// An annotation naming a template this build does not ship falls back
+		// to the nearest shipped template rather than reporting a distance.
+		if template, ok := templateByID[explicit[point.ID]]; ok {
+			provenance = TemplateProvenance{
+				TemplateID: template.ID, Fingerprint: template.Fingerprint,
+				Distance: round6(schema.Distance(point, template.Point)), Explicit: true, Derived: true,
 			}
 		}
 		report.Workflows[point.ID] = provenance

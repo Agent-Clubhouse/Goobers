@@ -665,3 +665,62 @@ func TestWorkflowClustersStratifyReportsConfounds(t *testing.T) {
 		t.Fatalf("stratify bogus: code = %d, want 2", code)
 	}
 }
+
+// Every provenance ID init and scaffolding write must name a fingerprinted
+// shipped template, and small instances still report it.
+func TestWorkflowClustersReportsShippedTemplateProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		init     []string
+		scaffold bool
+	}{
+		{name: "starter", init: []string{"init"}, scaffold: true},
+		{name: "demo", init: []string{"init", "--demo", "--insecure"}},
+		{name: "quickstart", init: []string{"init", "--template=quickstart"}},
+		{name: "guided", init: []string{"init", "--template=standard", "--pr-ci"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), tc.name)
+			if code, _, stderr := runArgs(t, append(tc.init, root)...); code != 0 {
+				t.Fatalf("init: code = %d, stderr = %q", code, stderr)
+			}
+			if tc.scaffold {
+				if code, _, stderr := runArgs(t, "scaffold", "workflow", "my-flow", root); code != 0 {
+					t.Fatalf("scaffold: code = %d, stderr = %q", code, stderr)
+				}
+			}
+			code, stdout, stderr := runArgs(t, "workflow", "clusters", "--json", root)
+			var out struct {
+				Status    string                          `json:"status"`
+				Templates *workflowcluster.TemplateReport `json:"templates"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &out); err != nil || out.Templates == nil {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q: %v", code, stdout, stderr, err)
+			}
+			if code == 1 && out.Status != workflowcluster.ViewInsufficientData {
+				t.Fatalf("code = %d, status = %q, stderr = %q", code, out.Status, stderr)
+			}
+			catalog := map[string]string{}
+			for _, template := range out.Templates.Catalog {
+				catalog[template.ID] = template.Fingerprint
+			}
+			if len(out.Templates.Workflows) == 0 {
+				t.Fatal("no workflow provenance reported")
+			}
+			for id, provenance := range out.Templates.Workflows {
+				if !provenance.Explicit || provenance.Fingerprint == "" || catalog[provenance.TemplateID] != provenance.Fingerprint {
+					t.Errorf("%s provenance = %+v, want a declared, cataloged template", id, provenance)
+				}
+			}
+			if tc.scaffold && out.Templates.Workflows["example/my-flow"].TemplateID != "scaffold/workflow" {
+				t.Errorf("scaffolded provenance = %+v", out.Templates.Workflows["example/my-flow"])
+			}
+			if code != 0 {
+				code, stdout, _ = runArgs(t, "workflow", "clusters", root)
+				if code != 1 || !strings.Contains(stdout, "Template provenance") || !strings.Contains(stdout, "declared from") {
+					t.Fatalf("text: code = %d, stdout = %q", code, stdout)
+				}
+			}
+		})
+	}
+}

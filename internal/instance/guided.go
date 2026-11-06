@@ -772,7 +772,7 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 	if workflow.Annotations == nil {
 		workflow.Annotations = map[string]string{}
 	}
-	workflow.Annotations["goobers.dev/template-provenance"] = "example/" + name
+	workflow.Annotations[TemplateProvenanceAnnotation] = ExampleTemplateProvenance(name)
 	workflow.Spec.Gaggle = opts.GaggleName
 	if name == GuidedWorkflowImplementation && opts.PullRequestCI {
 		tasks := workflow.Spec.Tasks[:0]

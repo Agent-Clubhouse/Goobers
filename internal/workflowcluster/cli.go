@@ -40,12 +40,15 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"skill-set, or tool-set boundaries (a confound). Undefined provenance is excluded and\n" +
 	"counted; that check is observational, not gym-controlled. Nothing is\n" +
 	"modified (default path \".\").\n\n" +
-	"Template provenance fingerprints the shipped reference and example workflows\n" +
-	"embedded in this build. Configured workflows use the explicit\n" +
+	"Template provenance fingerprints the workflow templates embedded in this\n" +
+	"build: reference workflows, config examples, and the starter, demo,\n" +
+	"quickstart, and scaffold workflows. Configured workflows use the explicit\n" +
 	"metadata.annotations[\"goobers.dev/template-provenance\"] written by init and\n" +
-	"scaffolding, or the nearest shipped template by structural distance. The\n" +
-	"report marks template-derived workflows and cluster medoids farther than\n" +
-	"0.35 from every shipped template (convergence beyond templates).\n\n" +
+	"scaffolding when it names a shipped template, or else the nearest shipped\n" +
+	"template by structural distance. The report marks template-derived\n" +
+	"workflows and cluster medoids farther than 0.35 from every shipped template\n" +
+	"(convergence beyond templates). Provenance is reported even when too few\n" +
+	"workflows are configured to cluster.\n\n" +
 	"--fitness joins retained terminal runs to the current structural clusters\n" +
 	"by workflow digest and reports sample size, success with a 95% Wilson\n" +
 	"interval, wall time, cost, human-gate, escalation, and retry/loop rates.\n" +
@@ -196,6 +199,9 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	if *snapshot {
 		return runSnapshotCLI(root, featureVersion, *instanceID, *salt, saltSet, points, stdout, stderr)
 	}
+	if *features == featuresStructural && len(points) < *minSize {
+		return runInsufficientStructural(points, strata[StratifyTemplate], *minSize, *asJSON, stdout, stderr)
+	}
 	model, err := Fit(featureVersion, points, Options{MinClusterSize: *minSize, Seed: *seed})
 	if err != nil {
 		if behavior != nil {
@@ -212,8 +218,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", analyzeErr)
 			return 2
 		}
-		templateReport = &report
-		strata[StratifyTemplate] = templateStrata
+		templateReport, strata[StratifyTemplate] = &report, templateStrata
 	}
 	if *stratify != "" {
 		report := ConfoundCheck(model, strata[*stratify], ConfoundOptions{Seed: *seed})
@@ -265,7 +270,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	}
 	writeReport(stdout, model)
 	if templateReport != nil {
-		writeWorkflowTemplateReport(stdout, *templateReport)
+		writeWorkflowTemplateReport(stdout, *templateReport, true)
 	}
 	if behavior != nil {
 		writeBehaviorScan(stdout, *behavior)
@@ -346,7 +351,36 @@ func validStratify(axis string) bool {
 		axis == StratifySkills || axis == StratifyTools
 }
 
-func writeWorkflowTemplateReport(w io.Writer, report TemplateReport) {
+// runInsufficientStructural reports template provenance for a structural
+// population too small to fit, so starter, demo, and quickstart instances
+// still see it, then fails as Fit would.
+func runInsufficientStructural(points []Point, explicit Strata, minSize int, asJSON bool, stdout, stderr io.Writer) int {
+	report, _, err := analyzeTemplates(points, explicit, nil)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if asJSON {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(struct {
+			Status         string          `json:"status"`
+			Population     int             `json:"population"`
+			MinClusterSize int             `json:"minClusterSize"`
+			Templates      *TemplateReport `json:"templates"`
+		}{ViewInsufficientData, len(points), minSize, &report}); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+	} else {
+		_, _ = fmt.Fprintf(stdout, "%d workflows; clustering needs at least %d.\n", len(points), minSize)
+		writeWorkflowTemplateReport(stdout, report, false)
+	}
+	_, _ = fmt.Fprintf(stderr, "error: workflowcluster: population %d is below minimum cluster size %d\n", len(points), minSize)
+	return 1
+}
+
+func writeWorkflowTemplateReport(w io.Writer, report TemplateReport, clustered bool) {
 	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
 	p("\nTemplate provenance (%d shipped templates; derived at distance <= %.2f)\n",
 		len(report.Catalog), report.DistanceThreshold)
@@ -361,6 +395,9 @@ func writeWorkflowTemplateReport(w io.Writer, report TemplateReport) {
 			relation = "declared from"
 		}
 		p("  %s  %s %s (distance %.3f)\n", id, relation, provenance.TemplateID, provenance.Distance)
+	}
+	if !clustered {
+		return
 	}
 	p("Convergence beyond templates: %d clusters\n", len(report.BeyondTemplates))
 	for _, cluster := range report.BeyondTemplates {
