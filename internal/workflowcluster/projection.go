@@ -14,6 +14,7 @@ type MapPoint struct {
 	X       float64 `json:"x"`
 	Y       float64 `json:"y"`
 	Cluster string  `json:"cluster,omitempty"`
+	Cohort  string  `json:"cohort,omitempty"`
 }
 
 const (
@@ -56,7 +57,7 @@ func Project(m Model, points []Point) []MapPoint {
 	}
 	out := make([]MapPoint, n)
 	for i, p := range sorted {
-		out[i] = MapPoint{ID: p.ID, X: round6(axes[0][i]), Y: round6(axes[1][i]), Cluster: cluster[p.ID]}
+		out[i] = MapPoint{ID: p.ID, X: round6(axes[0][i]), Y: round6(axes[1][i]), Cluster: cluster[p.ID], Cohort: p.Cohort}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
