@@ -1,7 +1,13 @@
 package workflowcluster
 
 import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -131,5 +137,65 @@ func TestProposeTemplatesRequiresStructuralModelAndCompleteEvidence(t *testing.T
 	evidence[0].RunID = ""
 	if _, err := ProposeTemplates(model, evidence, CandidateOptions{}); err == nil {
 		t.Fatal("incomplete evidence was accepted")
+	}
+}
+
+func TestRunCLITemplatesReportsAdvisoryCandidatesWithoutWriting(t *testing.T) {
+	model, evidence := candidateFixture()
+	model.Version = ModelVersion
+	id, err := modelID(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.ID = id
+	dir := t.TempDir()
+	write := func(name string, v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	modelPath, evidencePath := write("model.json", model), write("evidence.json", evidence)
+	run := func(args ...string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := RunCLI(args, flag.NewFlagSet("clusters", flag.ContinueOnError), &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+
+	code, stdout, stderr := run("--templates", evidencePath, "--cluster-model", modelPath, "--json")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	var report CandidateReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Candidates) != 1 || !report.Candidates[0].Proposal.ReviewRequired || report.Candidates[0].Proposal.AutomaticRegistration {
+		t.Fatalf("report = %+v", report)
+	}
+
+	code, stdout, _ = run("--templates", evidencePath, "--cluster-model", modelPath)
+	if code != 0 || !strings.Contains(stdout, "review required; nothing is registered") || !strings.Contains(stdout, "proposal-c") {
+		t.Fatalf("text exit %d:\n%s", code, stdout)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("templates wrote files: %v %v", entries, err)
+	}
+
+	for _, args := range [][]string{
+		{"--templates", evidencePath},
+		{"--cluster-model", modelPath},
+		{"--templates", evidencePath, "--cluster-model", modelPath, "--features", "behavior"},
+		{"--templates", evidencePath, "--cluster-model", modelPath, "."},
+	} {
+		if code, _, _ := run(args...); code != 2 {
+			t.Fatalf("%v: exit %d, want usage error", args, code)
+		}
 	}
 }

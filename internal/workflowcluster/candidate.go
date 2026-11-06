@@ -7,16 +7,28 @@ import (
 	"strings"
 )
 
+// Proposal kind and target stamped on every advisory TemplateChangeRequest.
 const (
+	// ProposalKindConfigChange marks a proposal as a reviewed config change request.
 	ProposalKindConfigChange = "config-change-request"
-	ProposalTargetCatalog    = "child-authoring-catalog"
+	// ProposalTargetCatalog names the child-authoring catalog the change targets.
+	ProposalTargetCatalog = "child-authoring-catalog"
+)
 
-	SuppressedUnstable      = "low-stability"
-	SuppressedLowSupport    = "low-support"
+// Suppression reasons reported in CandidateSuppression.Reason.
+const (
+	// SuppressedUnstable means the cluster is unstable or below the stability bar.
+	SuppressedUnstable = "low-stability"
+	// SuppressedLowSupport means too few parent runs, repositories, or joined evidence.
+	SuppressedLowSupport = "low-support"
+	// SuppressedWorseOutcomes means a task cohort underperforms comparable alternatives.
 	SuppressedWorseOutcomes = "worse-outcomes"
-	SuppressedFindings      = "policy-or-safety-findings"
-	SuppressedNoComparator  = "no-comparable-alternative"
-	SuppressedNoParameters  = "medoid-not-parameterized"
+	// SuppressedFindings means a member carries policy or safety findings.
+	SuppressedFindings = "policy-or-safety-findings"
+	// SuppressedNoComparator means a task cohort has no alternative-approach outcomes.
+	SuppressedNoComparator = "no-comparable-alternative"
+	// SuppressedNoParameters means the medoid exposes no reviewed template parameters.
+	SuppressedNoParameters = "medoid-not-parameterized"
 )
 
 // CandidateOptions defines the evidence bar for proposing a reusable template.

@@ -409,6 +409,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "instance-id", takesArg: true, desc: "Snapshot: instance ID (default: fleet association)"},
 		{name: "salt", takesArg: true, desc: "Snapshot: salt for name hashes (default: fleet ID)"},
 		{name: "fleet", takesArg: true, desc: "Cluster the fleet snapshots in this directory"},
+		{name: "templates", takesArg: true, valueKind: "file", desc: "Propose reusable templates from joined evidence JSON"},
+		{name: "cluster-model", takesArg: true, valueKind: "file", desc: "Templates: frozen structural cluster model"},
 	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},

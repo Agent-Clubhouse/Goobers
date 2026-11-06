@@ -5731,6 +5731,7 @@ Labs: cluster workflows by structural shape or run behavior
 Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
+       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
 
 Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
 and report each cluster's medoid, members, stability, and distinguishing
@@ -5765,6 +5766,17 @@ cloned onto many instances counts once, only the most common feature
 version is clustered (others are listed as excluded), each instance is
 scored aligned/private/outlier, and clusters are tested for an instance
 confound.
+
+Reusable templates: --templates <evidence.json> reads a JSON array of
+joined child-proposal evidence (proposalId, proposalDigest, runId,
+parentRunId, repository, taskCohort, succeeded, findings, parameters) and
+--cluster-model a frozen structural model whose point IDs are those
+proposal IDs. It reports each stable cluster that clears the evidence bar
+(stability, parent-run and repository support, no policy or safety
+findings, outcomes no worse than comparable alternatives per task cohort,
+a parameterized medoid) as a review-required config change request for
+the child-authoring catalog, and lists why every other cluster was
+suppressed. Advisory only: nothing is written or registered.
 ~~~
 
 **Examples**
@@ -5776,6 +5788,7 @@ $ goobers workflow clusters --stratify gaggle
 $ goobers workflow clusters --features behavior --since 720h --json
 $ goobers workflow clusters --snapshot > snapshots/$(hostname).json
 $ goobers workflow clusters --fleet snapshots
+$ goobers workflow clusters --templates evidence.json --cluster-model model.json
 ~~~
 
 ## `goobers workflow show`
