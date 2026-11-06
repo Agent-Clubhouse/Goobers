@@ -263,7 +263,7 @@
       "github.com/golangci/golangci-lint/releases",
       "github.com/temporalio/cli/releases v1.9.0 and release-asset redirects; SHA256 pinned in integration provisioning",
       "github.com/Azure/bicep/releases v0.40.2 bicep-linux-x64 and release-asset redirects; SHA256 pinned in preflight provisioning",
-      "github.com/tlaplus/tlaplus/releases v1.8.0 tla2tools.jar and release-asset redirects; SHA256 pinned in integration provisioning",
+      "github.com/tlaplus/tlaplus/releases v1.7.4 tla2tools.jar and release-asset redirects; SHA256 pinned in integration provisioning",
       "github.com release assets and raw.githubusercontent.com for the versions pinned in ha-nightly.yml",
       "get.helm.sh for the Helm archive pinned in ha-nightly.yml"
     ],
@@ -283,7 +283,7 @@
       ".github/workflows/ha-nightly.yml#smoke/Acquire pinned nightly tools and manifests@8ab6d3464f547b14a9502860be66f1a32d72573a80bce546fb5cb4fcfd14cb01[11]:direct-download",
       ".github/workflows/ci.yml#preflight/Provision pinned Bicep CLI@43f70147e5a9e1b65130fac427d1a5741191453029d5f70164ecd96028965a69:direct-download",
       ".github/workflows/ci.yml#integration/Provision Temporal cancellation dependency@5c04c82ab982d8d8f1e9aa42ec53118bc02e8a79ff12e0f474166fc237cd885a:direct-download",
-      ".github/workflows/ci.yml#integration/Provision pinned TLC integration checker@54d22c06f753472cc65b2a6be4c643ae2aaa4160492db7754a6cb38354e11a06:direct-download"
+      ".github/workflows/ci.yml#integration/Provision pinned TLC integration checker@0ecbdad5924f6ffbd2c487ef58dd7256a263af89510aedfe87673ad8972dc95e:direct-download"
     ]
   },
   {

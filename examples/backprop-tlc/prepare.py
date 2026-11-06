@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-JAR_DIGEST = "sha256:e20447644bfabd29d6bd0fc2c0eb1473fb301c1a0e4dfe1961938ce5a191edbf"
+JAR_DIGEST = "sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 
 
 def digest(data):
@@ -22,7 +22,7 @@ def main():
     runtime = args.java_home.resolve(strict=True)
     jar = args.jar.resolve(strict=True)
     if digest(jar.read_bytes()) != JAR_DIGEST:
-        parser.error("TLC jar does not match the reviewed v1.8.0 pin")
+        parser.error("TLC jar does not match the reviewed v1.7.4 pin")
     files = []
     for path in sorted(runtime.rglob("*")):
         if path.is_symlink():
