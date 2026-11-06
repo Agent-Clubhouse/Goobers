@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -56,5 +59,34 @@ func TestLabsWorkflowClustersRouteReportsUnavailableAndFailures(t *testing.T) {
 	})
 	if response := serveLabsClusters(t, WithLabsWorkflowClusters(failing)); response.Code != http.StatusInternalServerError {
 		t.Fatalf("failing status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLabsWorkflowClustersRouteServesViewWhenTrendsDegrade(t *testing.T) {
+	model := workflowcluster.Model{Version: workflowcluster.ModelVersion, Noise: []string{}}
+	service := labsClustersFunc(func(context.Context) (workflowcluster.View, error) {
+		return workflowcluster.View{
+			Status: workflowcluster.ViewClustered, Model: &model,
+			TrendsUnavailable: "child-workflow trends could not be computed from retained journals",
+			TrendsErr:         errors.New("list trend journals: permission denied"),
+		}, nil
+	})
+	var logs bytes.Buffer
+	handler, err := NewHandler(&fakeReader{}, AllowAll, log.New(&logs, "", 0), WithLabsWorkflowClusters(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.LabsWorkflowClustersPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var view workflowcluster.View
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != workflowcluster.ViewClustered || view.Trends != nil || view.TrendsUnavailable == "" ||
+		strings.Contains(response.Body.String(), "permission denied") || !strings.Contains(logs.String(), "permission denied") {
+		t.Fatalf("view = %+v, body = %s, logs = %q", view, response.Body.String(), logs.String())
 	}
 }

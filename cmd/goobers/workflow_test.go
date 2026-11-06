@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
@@ -418,6 +419,26 @@ func TestLabsWorkflowClustersViewMatchesConfiguredInstance(t *testing.T) {
 	}
 	if assigned != view.Population || view.Confounds.Evidence != workflowcluster.EvidenceObservational {
 		t.Fatalf("model = %+v confounds = %+v", view.Model, view.Confounds)
+	}
+	if view.Trends == nil || view.TrendsUnavailable != "" {
+		t.Fatalf("trends = %+v, unavailable = %q", view.Trends, view.TrendsUnavailable)
+	}
+
+	// An unreadable journal root degrades only the supplementary trends.
+	legacyRuns := instance.NewLayout(root).RunsDir()
+	if err := os.RemoveAll(legacyRuns); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyRuns, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	degraded, err := source.WorkflowClusters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if degraded.Status != workflowcluster.ViewClustered || degraded.Model == nil || degraded.Trends != nil ||
+		degraded.TrendsUnavailable == "" || degraded.TrendsErr == nil {
+		t.Fatalf("degraded view = %+v", degraded)
 	}
 }
 

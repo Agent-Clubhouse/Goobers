@@ -1,6 +1,7 @@
 package workflowcluster
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,40 +76,10 @@ type BehaviorScan struct {
 // behavior descriptors. It never writes or migrates a journal.
 func ScanBehavior(root string, opts BehaviorScanOptions) (BehaviorScan, error) {
 	opts = opts.withDefaults()
-	roots, err := instance.NewLayout(root).RunDirs()
+	candidates, err := listRunCandidates(context.Background(), root)
 	if err != nil {
-		return BehaviorScan{}, fmt.Errorf("list run journals: %w", err)
+		return BehaviorScan{}, err
 	}
-	type candidate struct {
-		dir      string
-		modified time.Time
-	}
-	var candidates []candidate
-	for _, runsDir := range roots {
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			return BehaviorScan{}, fmt.Errorf("read runs directory: %w", err)
-		}
-		for _, entry := range entries {
-			dir := filepath.Join(runsDir, entry.Name())
-			if !entry.IsDir() || !journal.Recorded(dir) {
-				continue
-			}
-			info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
-			if err != nil {
-				candidates = append(candidates, candidate{dir: dir})
-				continue
-			}
-			candidates = append(candidates, candidate{dir: dir, modified: info.ModTime()})
-		}
-	}
-	// Newest activity first so the run cap keeps the most recent behavior.
-	sort.Slice(candidates, func(i, j int) bool {
-		if !candidates[i].modified.Equal(candidates[j].modified) {
-			return candidates[i].modified.After(candidates[j].modified)
-		}
-		return candidates[i].dir < candidates[j].dir
-	})
 
 	scan := BehaviorScan{Descriptors: []BehaviorDescriptor{}, Candidates: len(candidates)}
 	for i, c := range candidates {
@@ -126,6 +97,49 @@ func ScanBehavior(root string, opts BehaviorScanOptions) (BehaviorScan, error) {
 	}
 	sort.Slice(scan.Descriptors, func(i, j int) bool { return scan.Descriptors[i].RunID < scan.Descriptors[j].RunID })
 	return scan, nil
+}
+
+type runCandidate struct {
+	dir      string
+	modified time.Time
+}
+
+// listRunCandidates lists recorded run journals newest activity first, so a
+// run cap keeps the most recent history.
+func listRunCandidates(ctx context.Context, root string) ([]runCandidate, error) {
+	roots, err := instance.NewLayout(root).RunDirsContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list run journals: %w", err)
+	}
+	var candidates []runCandidate
+	for _, runsDir := range roots {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entries, err := os.ReadDir(runsDir)
+		if err != nil {
+			return nil, fmt.Errorf("read runs directory: %w", err)
+		}
+		for _, entry := range entries {
+			dir := filepath.Join(runsDir, entry.Name())
+			if !entry.IsDir() || !journal.Recorded(dir) {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
+			if err != nil {
+				candidates = append(candidates, runCandidate{dir: dir})
+				continue
+			}
+			candidates = append(candidates, runCandidate{dir: dir, modified: info.ModTime()})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].modified.Equal(candidates[j].modified) {
+			return candidates[i].modified.After(candidates[j].modified)
+		}
+		return candidates[i].dir < candidates[j].dir
+	})
+	return candidates, nil
 }
 
 func (s *BehaviorScan) add(dir string, opts BehaviorScanOptions) {
