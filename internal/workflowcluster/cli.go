@@ -14,7 +14,7 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|model|harness|skills|tools] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
 	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n\n" +
 	"Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN\n" +
@@ -32,8 +32,9 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"that Go duration, --max-runs bounds the journals read (newest first), and\n" +
 	"cohorts with fewer than --min-samples runs are dropped.\n\n" +
 	"Node names, stage names, and goal text never contribute. Structural and\n" +
-	"behavior features are never mixed in one model. With --stratify gaggle,\n" +
-	"also test whether clusters merely track gaggle boundaries (a confound);\n" +
+	"behavior features are never mixed in one model. --stratify tests whether\n" +
+	"clusters merely track gaggle, model, harness, skill-set, or tool-set\n" +
+	"boundaries (a confound). Undefined provenance is excluded and counted;\n" +
 	"that check is observational, not gym-controlled. Nothing is modified\n" +
 	"(default path \".\").\n\n" +
 	"Fleet convergence: --snapshot prints this instance's feature vectors as a\n" +
@@ -70,7 +71,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	minSamples := fs.Int("min-samples", cliMinSamples, "behavior: smallest EffectiveVersion cohort clustered")
 	minSize := fs.Int("min-cluster-size", cliMinClusterSize, "smallest group reported as a cluster")
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
-	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle)")
+	stratify := fs.String("stratify", "", "confound axis (gaggle, model, harness, skills, or tools)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
 	snapshot := fs.Bool("snapshot", false, "emit a privacy-safe fleet snapshot of this instance's features")
 	instanceID := fs.String("instance-id", "", "snapshot: instance ID (default: fleet association)")
@@ -114,6 +115,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	featureVersion := StructuralFeatureVersion
 	var behavior *behaviorReport
 	var points []Point
+	var strata pointStrata
 	var err error
 	if *features == featuresBehavior {
 		featureVersion = BehaviorFeatureVersion
@@ -122,8 +124,14 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 			scanOpts.Since = time.Now().Add(-*since)
 		}
 		behavior, points, err = behaviorPoints(root, scanOpts, *minSamples)
+		if behavior != nil {
+			strata = pointStrata{StratifyGaggle: gaggleStrata(points)}
+			for _, axis := range provenanceAxes {
+				strata[axis] = behaviorStrata(behavior.Cohorts, axis)
+			}
+		}
 	} else {
-		points, err = ConfiguredPoints(root)
+		points, strata, err = configuredPoints(root)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
@@ -142,7 +150,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	}
 	var confounds *ConfoundReport
 	if *stratify != "" {
-		report := ConfoundCheck(model, gaggleStrata(points), ConfoundOptions{Seed: *seed})
+		report := ConfoundCheck(model, strata[*stratify], ConfoundOptions{Seed: *seed})
 		confounds = &report
 	}
 	if *asJSON {
@@ -188,7 +196,7 @@ type cliArgs struct {
 
 // invalid reports flag combinations RunCLI rejects with usage.
 func (a cliArgs) invalid() bool {
-	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && a.stratify != stratifyGaggle) ||
+	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && !validStratify(a.stratify)) ||
 		(a.features != featuresStructural && a.features != featuresBehavior) ||
 		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
 		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "")) ||
@@ -234,9 +242,10 @@ func writeBehaviorScan(w io.Writer, r behaviorReport) {
 		s.NonTerminal, s.UndefinedProvenance, s.BeforeSince, s.OverLimit, s.Oversized, s.Unreadable)
 }
 
-// stratifyGaggle is the only --stratify axis the instance config supports;
-// model, harness, and task-cohort axes need run-behavior descriptors.
-const stratifyGaggle = "gaggle"
+func validStratify(axis string) bool {
+	return axis == StratifyGaggle || axis == StratifyModel || axis == StratifyHarness ||
+		axis == StratifySkills || axis == StratifyTools
+}
 
 // gaggleStrata labels each "<gaggle>/<workflow>" point with its gaggle.
 func gaggleStrata(points []Point) Strata {
@@ -251,23 +260,28 @@ func gaggleStrata(points []Point) Strata {
 // ConfiguredPoints loads the instance config under root and returns one
 // structural point per configured workflow, keyed "<gaggle>/<workflow>".
 func ConfiguredPoints(root string) ([]Point, error) {
+	points, _, err := configuredPoints(root)
+	return points, err
+}
+
+func configuredPoints(root string) ([]Point, pointStrata, error) {
 	layout := instance.NewLayout(root)
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		return nil, fmt.Errorf("load instance config: %w", err)
+		return nil, nil, fmt.Errorf("load instance config: %w", err)
 	}
 	if set == nil || report == nil || report.HasErrors() {
-		return nil, errors.New("instance config has validation errors; run `goobers validate`")
+		return nil, nil, errors.New("instance config has validation errors; run `goobers validate`")
 	}
 	points := make([]Point, 0, len(set.Workflows))
 	for _, wf := range set.Workflows {
 		features, err := ExtractDefinition(definitionOf(wf))
 		if err != nil {
-			return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+			return nil, nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}
 		points = append(points, StructuralPoint(wf.Spec.Gaggle+"/"+wf.Name, features))
 	}
-	return points, nil
+	return points, configuredStrata(set.Workflows, set.Goobers), nil
 }
 
 func writeReport(w io.Writer, m Model) {

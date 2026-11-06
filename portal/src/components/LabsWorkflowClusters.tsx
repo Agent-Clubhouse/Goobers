@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   DaemonClient,
   LabsConfoundReport,
@@ -63,6 +64,10 @@ export function LabsWorkflowClusters({ client }: { client: DaemonClient }) {
 
 function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
   const model = view.model!;
+  const [confoundAxis, setConfoundAxis] = useState("gaggle");
+  const confounds =
+    view.confoundsByAxis?.[confoundAxis as keyof NonNullable<typeof view.confoundsByAxis>] ??
+    (confoundAxis === "gaggle" ? view.confounds : undefined);
   return (
     <>
       <p>
@@ -74,7 +79,23 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         Model <span className="mono">{shortModelId(model.id)}</span> · features{" "}
         <span className="mono">{model.featureVersion}</span>
       </p>
-      {view.confounds && <ConfoundSummary report={view.confounds} />}
+      {view.confoundsByAxis && (
+        <label>
+          Confound axis{" "}
+          <select
+            aria-label="Confound axis"
+            value={confoundAxis}
+            onChange={(event) => setConfoundAxis(event.target.value)}
+          >
+            {Object.keys(view.confoundsByAxis).map((axis) => (
+              <option value={axis} key={axis}>
+                {axis}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {confounds && <ConfoundSummary axis={confoundAxis} report={confounds} />}
       {view.trends && <TrendSummary report={view.trends} />}
       {!view.trends && view.trendsUnavailable && <p role="status">{view.trendsUnavailable}.</p>}
       {model.clusters.length > 0 && (view.map ?? []).length > 0 && (
@@ -180,23 +201,24 @@ function TrendSummary({ report }: { report: NonNullable<LabsWorkflowClusterView[
   );
 }
 
-function ConfoundSummary({ report }: { report: LabsConfoundReport }) {
+function ConfoundSummary({ axis, report }: { axis: string; report: LabsConfoundReport }) {
   const stats = `Cramér's V ${report.association.toFixed(2)}, p ${report.pValue.toFixed(3)}, ${report.evidence}`;
+  const label = axis === "skills" || axis === "tools" ? `${axis} digest` : axis;
   return (
     <div className={report.confounded ? "labs-confound labs-confound-warning" : "labs-confound"} role="status">
       {report.confounded ? (
         <p>
-          <strong>Confound warning:</strong> clusters track gaggle boundaries ({stats}). They may
-          reflect which gaggle a workflow belongs to rather than a shared shape.
+          <strong>Confound warning:</strong> clusters track {label} boundaries ({stats}). They may
+          reflect {label} provenance rather than a shared shape.
         </p>
       ) : (
         <p>
-          No gaggle confound detected ({stats}; {report.tested} tested).
+          No {label} confound detected ({stats}; {report.tested} tested, {report.unlabeled} undefined).
         </p>
       )}
       {report.undersized.length > 0 && (
         <p>
-          Gaggles below {report.options.minStratumSize} workflows were not tested:{" "}
+          Strata below {report.options.minStratumSize} workflows were not tested:{" "}
           {report.undersized.join(", ")}.
         </p>
       )}
@@ -313,6 +335,18 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       undersized: view.confounds.undersized ?? [],
       strata: view.confounds.strata ?? [],
     },
+    confoundsByAxis:
+      view.confoundsByAxis &&
+      Object.fromEntries(
+        Object.entries(view.confoundsByAxis).map(([axis, report]) => [
+          axis,
+          {
+            ...report,
+            undersized: report.undersized ?? [],
+            strata: report.strata ?? [],
+          },
+        ]),
+      ),
     trends: view.trends && {
       ...view.trends,
       candidates: view.trends.candidates ?? 0,
