@@ -38,6 +38,9 @@ func registerLabsWorkflowClustersRoute(router *Router, service LabsWorkflowClust
 			writeError(w, http.StatusInternalServerError, "read_error", "workflow clusters could not be computed")
 			return
 		}
+		if view.TrendsErr != nil {
+			errorLog.Printf("labs workflow cluster trends unavailable: %v", view.TrendsErr)
+		}
 		writeJSON(w, http.StatusOK, view)
 	})
 }

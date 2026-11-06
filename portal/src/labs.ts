@@ -63,7 +63,7 @@ export const labsFeatures: readonly LabsFeature[] = [
       "Clusters configured and agent-authored (dynamic) child workflows with HDBSCAN over versioned structural features " +
       "and journal-derived run behavior. Stable clusters reveal what self-spawning workflows converge to; proposals that " +
       "match no known cluster are flagged as novel; confound checks warn when clusters merely mirror a gaggle. " +
-      "Retained child runs show occupancy, diversity, fitness, and drift across model, harness, and authoring-skill versions. " +
+      "Retained child runs show occupancy, diversity, fitness, and drift across the authoring stage's model and harness versions. " +
       "Recurring successful shapes become template candidates. Results are advisory only.",
     maturity: "experimental",
     availability: "available",
@@ -121,7 +121,8 @@ export const labsFeatures: readonly LabsFeature[] = [
         title: "Track agent-authored shape drift",
         detail:
           "The cluster map compares retained child workflows against its frozen model and reports occupancy, entropy, " +
-          "pairwise shape distance, and completion fitness by model, harness, and authoring-skill version. " +
+          "pairwise shape distance, and completion fitness by the authoring stage's model and harness version. " +
+          "Authoring-skill cohorts wait for a journal digest scoped to the authoring goober's skills; until then those samples are counted as missing provenance. " +
           "Convergence and mode-collapse labels are observational signals, not null-baseline claims.",
       },
     ],

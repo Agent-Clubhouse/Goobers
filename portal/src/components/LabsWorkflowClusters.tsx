@@ -76,6 +76,7 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
       </p>
       {view.confounds && <ConfoundSummary report={view.confounds} />}
       {view.trends && <TrendSummary report={view.trends} />}
+      {!view.trends && view.trendsUnavailable && <p role="status">{view.trendsUnavailable}.</p>}
       {model.clusters.length > 0 && (view.map ?? []).length > 0 && (
         <LabsClusterMap
           points={view.map ?? []}
@@ -121,12 +122,21 @@ function TrendSummary({ report }: { report: NonNullable<LabsWorkflowClusterView[
       <p>
         {report.samples} child workflow{report.samples === 1 ? "" : "s"} assigned against frozen model{" "}
         <span className="mono">{shortModelId(report.modelId)}</span>
-        {report.excluded > 0 ? ` · ${report.excluded} excluded` : ""}. Signals are observational, not
+        {report.excluded > 0 ? ` · ${report.excluded} excluded` : ""}
+        {report.overLimit > 0 ? ` · ${report.overLimit} older runs not scanned` : ""}. Signals are observational, not
         null-baseline or selection claims.
       </p>
       {report.axes.map((axis) => (
         <div key={axis.axis}>
           <h4>By {axis.axis.replace("-", " ")}</h4>
+          {axis.missingProvenance > 0 && (
+            <p>
+              {axis.missingProvenance} of {report.samples} sample{report.samples === 1 ? "" : "s"} lack recorded{" "}
+              {axis.axis.replace("-", " ")} provenance and are in no cohort.
+              {axis.axis === "authoring-skill" &&
+                " Journals do not yet record a digest scoped to the authoring goober's skills, so this axis is not inferred from the run-wide goober digest."}
+            </p>
+          )}
           {axis.cohorts.length === 0 ? (
             <p>No complete provenance for this axis.</p>
           ) : (
@@ -305,8 +315,11 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
     },
     trends: view.trends && {
       ...view.trends,
+      candidates: view.trends.candidates ?? 0,
+      overLimit: view.trends.overLimit ?? 0,
       axes: (view.trends.axes ?? []).map((axis) => ({
         ...axis,
+        missingProvenance: axis.missingProvenance ?? 0,
         cohorts: (axis.cohorts ?? []).map((cohort) => ({
           ...cohort,
           occupancy: cohort.occupancy ?? [],

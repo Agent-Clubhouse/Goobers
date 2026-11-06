@@ -2272,6 +2272,8 @@ export interface LabsWorkflowClusterView {
   /** 2-D layout of every workflow (classical MDS of the model distances). */
   map?: LabsClusterMapPoint[];
   trends?: LabsWorkflowTrendReport;
+  /** Why a clustered view carries no trends (the trend scan failed). */
+  trendsUnavailable?: string;
 }
 
 export interface LabsWorkflowTrendReport {
@@ -2279,8 +2281,13 @@ export interface LabsWorkflowTrendReport {
   featureVersion: string;
   samples: number;
   excluded: number;
+  /** Run journals found; overLimit of them were not read because of the scan cap. */
+  candidates: number;
+  overLimit: number;
   axes: Array<{
     axis: "model" | "harness" | "authoring-skill";
+    /** Samples with no single recorded version on this axis (in no cohort). */
+    missingProvenance: number;
     cohorts: Array<{
       version: string;
       firstObserved: string;
