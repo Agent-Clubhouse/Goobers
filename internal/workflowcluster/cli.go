@@ -257,13 +257,9 @@ func gaggleStrata(points []Point) Strata {
 	return strata
 }
 
-// ConfiguredPoints loads the instance config under root and returns one
-// structural point per configured workflow, keyed "<gaggle>/<workflow>".
-func ConfiguredPoints(root string) ([]Point, error) {
-	points, _, err := configuredPoints(root)
-	return points, err
-}
-
+// configuredPoints loads the instance config under root and returns one
+// structural point per configured workflow, keyed "<gaggle>/<workflow>",
+// with its provenance strata.
 func configuredPoints(root string) ([]Point, pointStrata, error) {
 	layout := instance.NewLayout(root)
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())

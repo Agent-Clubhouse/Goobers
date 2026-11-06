@@ -403,7 +403,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "min-samples", takesArg: true, desc: "Behavior: runs required per cohort"},
 		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},
 		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
-		{name: "stratify", takesArg: true, values: []string{"gaggle"}, desc: "Confound axis to test clusters against (gaggle)"},
+		{name: "stratify", takesArg: true, values: []string{"gaggle", "model", "harness", "skills", "tools"}, desc: "Confound axis to test clusters against"},
 		{name: "json", desc: "Emit the fitted model as JSON"},
 		{name: "snapshot", desc: "Emit a privacy-safe fleet snapshot of this instance"},
 		{name: "instance-id", takesArg: true, desc: "Snapshot: instance ID (default: fleet association)"},

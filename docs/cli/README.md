@@ -5728,7 +5728,7 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 Labs: cluster workflows by structural shape or run behavior
 
 ~~~text
-Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
+Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|model|harness|skills|tools] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
 
@@ -5750,8 +5750,9 @@ that Go duration, --max-runs bounds the journals read (newest first), and
 cohorts with fewer than --min-samples runs are dropped.
 
 Node names, stage names, and goal text never contribute. Structural and
-behavior features are never mixed in one model. With --stratify gaggle,
-also test whether clusters merely track gaggle boundaries (a confound);
+behavior features are never mixed in one model. --stratify tests whether
+clusters merely track gaggle, model, harness, skill-set, or tool-set
+boundaries (a confound). Undefined provenance is excluded and counted;
 that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
 
