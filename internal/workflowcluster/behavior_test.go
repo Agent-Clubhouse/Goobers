@@ -43,7 +43,7 @@ func syntheticRun(names [2]string) BehaviorInput {
 		},
 		Spans: []telemetry.SpanRecord{
 			{Kind: telemetry.SpanKindTask, Attributes: map[string]string{
-				telemetry.AttrModel: "m", telemetry.AttrGenAIUsageInputTokens: "100",
+				telemetry.AttrModel: "m", telemetry.AttrHarnessVersion: "copilot-1", telemetry.AttrGenAIUsageInputTokens: "100",
 				telemetry.AttrGenAIUsageOutputTokens: "10", telemetry.AttrUsageCostUSD: "0.5",
 			}},
 			{Kind: telemetry.SpanKindRun, Attributes: map[string]string{telemetry.AttrGenAIUsageInputTokens: "100"}},
@@ -88,6 +88,10 @@ func TestExtractBehaviorIsDeterministicAndNameFree(t *testing.T) {
 	}
 	if first.Version != BehaviorFeatureVersion || first.Outcome != journal.PhaseCompleted || first.EffectiveVersion == "" {
 		t.Fatalf("descriptor header = %+v", first)
+	}
+	if first.Provenance[StratifyModel] != "m" || first.Provenance[StratifyHarness] != "copilot-1" ||
+		first.Provenance[StratifySkills] != "" || first.Provenance[StratifyTools] != "" {
+		t.Fatalf("provenance = %+v", first.Provenance)
 	}
 }
 

@@ -72,6 +72,9 @@ type BehaviorDescriptor struct {
 	Outcome          journal.RunPhase `json:"outcome"`
 	StartedAt        time.Time        `json:"startedAt"`
 	Lineage          *BehaviorLineage `json:"lineage,omitempty"`
+	// Provenance contains only axis-scoped identifiers recorded by the run.
+	// Skills and tools remain absent until journals pin those scoped digests.
+	Provenance map[string]string `json:"provenance,omitempty"`
 	// Numeric holds named features. Every name is present for every run so the
 	// schema is fixed within Version.
 	Numeric map[string]float64 `json:"numeric"`
@@ -103,12 +106,33 @@ func ExtractBehavior(in BehaviorInput) (BehaviorDescriptor, error) {
 	d := BehaviorDescriptor{
 		Version: BehaviorFeatureVersion, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow,
 		WorkflowDigest: id.WorkflowDigest, EffectiveVersion: ev, Outcome: outcome,
-		StartedAt: started.UTC(), Numeric: numeric,
+		StartedAt: started.UTC(), Numeric: numeric, Provenance: behaviorProvenance(in.Spans),
 	}
+
 	if c := id.Child; c != nil {
 		d.Lineage = &BehaviorLineage{ParentRunID: c.ParentRunID, ParentWorkflow: c.ParentWorkflow, SourceDigest: c.SourceDigest}
 	}
 	return d, nil
+}
+
+func behaviorProvenance(spans []telemetry.SpanRecord) map[string]string {
+	models, harnesses := map[string]bool{}, map[string]bool{}
+	for _, span := range spans {
+		if model := span.Attributes[telemetry.AttrModel]; model != "" {
+			models[model] = true
+		}
+		if harness := span.Attributes[telemetry.AttrHarnessVersion]; harness != "" {
+			harnesses[harness] = true
+		}
+	}
+	out := map[string]string{}
+	if len(models) == 1 {
+		out[StratifyModel] = setLabel(models, false)
+	}
+	if len(harnesses) == 1 {
+		out[StratifyHarness] = setLabel(harnesses, false)
+	}
+	return out
 }
 
 // behaviorEffectiveVersion mirrors the rollup cohort rule: a run needs a
@@ -378,6 +402,7 @@ type BehaviorSummary struct {
 	EffectiveVersion string                  `json:"effectiveVersion"`
 	SampleCount      int                     `json:"sampleCount"`
 	ChildRuns        int                     `json:"childRuns"`
+	Provenance       map[string]string       `json:"provenance,omitempty"`
 	Features         map[string]Distribution `json:"features"`
 }
 
@@ -401,7 +426,9 @@ func SummarizeBehavior(descriptors []BehaviorDescriptor, minSamples int) []Behav
 		s := BehaviorSummary{
 			ID: id, Version: BehaviorFeatureVersion, Gaggle: first.Gaggle, Workflow: first.Workflow,
 			EffectiveVersion: first.EffectiveVersion, SampleCount: len(members), Features: map[string]Distribution{},
+			Provenance: commonProvenance(members),
 		}
+
 		names := map[string]bool{}
 		for _, d := range members {
 			if d.Lineage != nil {
@@ -421,6 +448,24 @@ func SummarizeBehavior(descriptors []BehaviorDescriptor, minSamples int) []Behav
 		summaries = append(summaries, s)
 	}
 	return summaries
+}
+
+func commonProvenance(members []BehaviorDescriptor) map[string]string {
+	out := map[string]string{}
+	for _, axis := range provenanceAxes {
+		value := members[0].Provenance[axis]
+		if value == "" {
+			continue
+		}
+		same := true
+		for _, member := range members[1:] {
+			same = same && member.Provenance[axis] == value
+		}
+		if same {
+			out[axis] = value
+		}
+	}
+	return out
 }
 
 func behaviorCohortID(d BehaviorDescriptor) string {

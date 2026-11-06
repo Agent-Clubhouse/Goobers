@@ -66,6 +66,10 @@ export function LabsWorkflowClusters({ client }: { client: DaemonClient }) {
 function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
   const model = view.model!;
   const fitness = new Map((view.fitness?.clusters ?? []).map((item) => [item.clusterId, item]));
+  const [confoundAxis, setConfoundAxis] = useState("gaggle");
+  const confounds =
+    view.confoundsByAxis?.[confoundAxis as keyof NonNullable<typeof view.confoundsByAxis>] ??
+    (confoundAxis === "gaggle" ? view.confounds : undefined);
   const [cohort, setCohort] = useState("");
   const map = (view.map ?? []).filter((point) => !cohort || point.cohort === cohort);
   return (
@@ -79,8 +83,23 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         Model <span className="mono">{shortModelId(model.id)}</span> · features{" "}
         <span className="mono">{model.featureVersion}</span>
       </p>
-      {view.confounds && <ConfoundSummary report={view.confounds} />}
-      {view.cohortConfounds && <ConfoundSummary report={view.cohortConfounds} axis="task cohort" />}
+      {view.confoundsByAxis && (
+        <label>
+          Confound axis{" "}
+          <select
+            aria-label="Confound axis"
+            value={confoundAxis}
+            onChange={(event) => setConfoundAxis(event.target.value)}
+          >
+            {Object.keys(view.confoundsByAxis).map((axis) => (
+              <option value={axis} key={axis}>
+                {axis === "cohort" ? "task cohort" : axis}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {confounds && <ConfoundSummary axis={confoundAxis} report={confounds} />}
       {(view.cohorts ?? []).length > 1 && (
         <label className="labs-cohort-filter">
           Task cohort{" "}
@@ -201,24 +220,26 @@ function TrendSummary({ report }: { report: NonNullable<LabsWorkflowClusterView[
   );
 }
 
-function ConfoundSummary({ report, axis = "gaggle" }: { report: LabsConfoundReport; axis?: string }) {
+function ConfoundSummary({ axis, report }: { axis: string; report: LabsConfoundReport }) {
   const stats = `Cramér's V ${report.association.toFixed(2)}, p ${report.pValue.toFixed(3)}, ${report.evidence}`;
+  const label =
+    axis === "cohort" ? "task cohort" : axis === "skills" || axis === "tools" ? `${axis} digest` : axis;
   return (
     <div className={report.confounded ? "labs-confound labs-confound-warning" : "labs-confound"} role="status">
       {report.confounded ? (
         <p>
-          <strong>Confound warning:</strong> clusters track {axis} boundaries ({stats}). They may
-          reflect a workflow&apos;s {axis} rather than a shared shape.
+          <strong>Confound warning:</strong> clusters track {label} boundaries ({stats}). They may
+          reflect {label} provenance rather than a shared shape.
         </p>
       ) : (
         <p>
-          No {axis} confound detected ({stats}; {report.tested} tested).
+          No {label} confound detected ({stats}; {report.tested} tested, {report.unlabeled} undefined).
         </p>
       )}
       {report.undersized.length > 0 && (
         <p>
-          {axis === "gaggle" ? "Gaggles" : "Task cohorts"} below {report.options.minStratumSize} workflows
-          were not tested: {report.undersized.join(", ")}.
+          Strata below {report.options.minStratumSize} workflows were not tested:{" "}
+          {report.undersized.join(", ")}.
         </p>
       )}
     </div>
@@ -376,11 +397,18 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       undersized: view.confounds.undersized ?? [],
       strata: view.confounds.strata ?? [],
     },
-    cohortConfounds: view.cohortConfounds && {
-      ...view.cohortConfounds,
-      undersized: view.cohortConfounds.undersized ?? [],
-      strata: view.cohortConfounds.strata ?? [],
-    },
+    confoundsByAxis:
+      view.confoundsByAxis &&
+      Object.fromEntries(
+        Object.entries(view.confoundsByAxis).map(([axis, report]) => [
+          axis,
+          {
+            ...report,
+            undersized: report.undersized ?? [],
+            strata: report.strata ?? [],
+          },
+        ]),
+      ),
     cohorts: view.cohorts ?? [],
     trends: view.trends && {
       ...view.trends,

@@ -614,7 +614,42 @@ func TestWorkflowClustersStratifyReportsConfounds(t *testing.T) {
 		!strings.Contains(stdout, "reported, not pooled") {
 		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if code, _, _ := runArgs(t, "workflow", "clusters", "--stratify", "model", root); code != 2 {
-		t.Fatalf("stratify model: code = %d, want 2", code)
+	for _, axis := range []string{"cohort", "model", "harness", "skills", "tools"} {
+		code, stdout, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", axis, "--json", root)
+		if code != 0 {
+			t.Fatalf("stratify %s: code = %d, stderr = %q", axis, code, stderr)
+		}
+		var got struct {
+			Model     struct{ Population int }
+			Confounds *struct {
+				Evidence  string
+				Unlabeled int
+				Strata    []struct{ Size int }
+			}
+		}
+		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+			t.Fatalf("stratify %s decode: %v\n%s", axis, err, stdout)
+		}
+		if got.Confounds == nil || got.Confounds.Evidence != "observational" {
+			t.Fatalf("stratify %s: confounds = %+v", axis, got.Confounds)
+		}
+		labeled := 0
+		for _, s := range got.Confounds.Strata {
+			labeled += s.Size
+		}
+		if labeled+got.Confounds.Unlabeled != got.Model.Population {
+			t.Fatalf("stratify %s: labeled %d + unlabeled %d != population %d", axis, labeled, got.Confounds.Unlabeled, got.Model.Population)
+		}
+		if axis == "cohort" && got.Confounds.Unlabeled != 0 {
+			t.Fatalf("stratify cohort: every configured workflow has a task cohort, got %d unlabeled", got.Confounds.Unlabeled)
+		}
+		code, stdout, _ = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", axis, root)
+		if code != 0 || !strings.Contains(stdout, "Confounds (stratified by "+axis+"; evidence: observational)") ||
+			!strings.Contains(stdout, "unlabeled)") {
+			t.Fatalf("stratify %s text: code = %d, stdout = %q", axis, code, stdout)
+		}
+	}
+	if code, _, _ := runArgs(t, "workflow", "clusters", "--stratify", "bogus", root); code != 2 {
+		t.Fatalf("stratify bogus: code = %d, want 2", code)
 	}
 }

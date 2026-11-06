@@ -275,7 +275,7 @@ complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_su
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l min-samples -r -d 'Behavior: runs required per cohort'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l min-cluster-size -r -d 'Smallest group reported as a cluster'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l seed -r -d 'Seed for stability resampling'
-complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l stratify -r -a 'gaggle cohort' -d 'Confound axis to test clusters against (gaggle or cohort)'
+complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l stratify -r -a 'gaggle cohort model harness skills tools' -d 'Confound axis to test clusters against'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l ablation -d 'Report leave-one-feature-out cluster stability and assignment change'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l json -d 'Emit the fitted model as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from clusters' -l snapshot -d 'Emit a privacy-safe fleet snapshot of this instance'
