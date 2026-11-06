@@ -3,6 +3,7 @@ package workflowcluster
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -171,6 +172,33 @@ func TestBuildSchemaNormalizesWLGroupWeight(t *testing.T) {
 	}
 	if total != wlGroupWeight {
 		t.Fatalf("WL aggregate weight = %v, want %v", total, wlGroupWeight)
+	}
+}
+
+func TestBuildSchemaKeepsWLGroupWeightWithConstantBuckets(t *testing.T) {
+	a := Point{ID: "a", Numeric: map[string]float64{"x": 0}}
+	b := Point{ID: "b", Numeric: map[string]float64{"x": 0}}
+	c := Point{ID: "c", Numeric: map[string]float64{"x": 1}}
+	for i := range wlBuckets {
+		name := fmt.Sprintf("%s%02d", wlFeaturePrefix, i)
+		a.Numeric[name], b.Numeric[name], c.Numeric[name] = 3, 3, 3
+		if i < 2 {
+			b.Numeric[name] = 4
+		}
+	}
+	schema := buildSchema([]Point{a, b, c})
+	var effective float64
+	for _, feature := range schema.Features {
+		if strings.HasPrefix(feature.Name, wlFeaturePrefix) && feature.Max > feature.Min {
+			effective += feature.Weight
+		}
+	}
+	if effective != wlGroupWeight {
+		t.Fatalf("effective WL group weight = %v, want %v", effective, wlGroupWeight)
+	}
+	want := wlGroupWeight / (wlGroupWeight + 1)
+	if got := schema.Distance(a, b); math.Abs(got-want) > 1e-12 {
+		t.Fatalf("WL-only distance = %v, want %v", got, want)
 	}
 }
 

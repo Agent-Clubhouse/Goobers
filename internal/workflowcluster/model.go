@@ -26,7 +26,8 @@ const (
 const wlFeaturePrefix = "wl."
 
 // wlGroupWeight preserves the aggregate weight of the original 32-bucket WL
-// histogram after widening it, so the structural signal cannot dominate.
+// histogram after widening it, so the structural signal cannot dominate. It is
+// split across the WL buckets that vary in the fit population.
 const wlGroupWeight = 8.0
 
 const (
@@ -407,9 +408,11 @@ func buildSchema(points []Point) Schema {
 		}
 		numeric[name] = [2]float64{lo, hi}
 	}
+	// Distance ignores constant features, so only varying WL buckets share the
+	// group weight; otherwise constant buckets would shrink its effective weight.
 	wlFeatures := 0
-	for name := range numeric {
-		if strings.HasPrefix(name, wlFeaturePrefix) {
+	for name, bounds := range numeric {
+		if strings.HasPrefix(name, wlFeaturePrefix) && bounds[1] > bounds[0] {
 			wlFeatures++
 		}
 	}
@@ -417,7 +420,7 @@ func buildSchema(points []Point) Schema {
 	for name, bounds := range numeric {
 		weight := 1.0
 		if strings.HasPrefix(name, wlFeaturePrefix) {
-			weight = wlGroupWeight / float64(wlFeatures)
+			weight = wlGroupWeight / float64(max(wlFeatures, 1))
 		}
 		schema.Features = append(schema.Features, SchemaFeature{Name: name, Kind: KindNumeric, Weight: weight, Min: bounds[0], Max: bounds[1]})
 	}

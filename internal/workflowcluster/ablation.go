@@ -18,7 +18,7 @@ type AblationReport struct {
 }
 
 // FeatureImpact is one leave-one-feature-out fit. WL histogram dimensions are
-// treated as one feature group.
+// treated as one feature group, and set features are labeled "name[set]".
 type FeatureImpact struct {
 	Feature          string  `json:"feature"`
 	ClusterStability float64 `json:"clusterStability"`
@@ -33,56 +33,77 @@ func Ablate(featureVersion string, points []Point, opts Options, baseline Model)
 		BaselineStability: meanStability(baseline),
 		DominanceCutoff:   dominantAblationChange,
 	}
-	for _, feature := range ablationFeatures(baseline.Schema) {
-		reduced := dropFeature(points, feature)
+	for _, target := range ablationFeatures(baseline.Schema) {
+		reduced := dropFeature(points, target)
 		model, err := Fit(featureVersion, reduced, opts)
 		if err != nil {
-			return AblationReport{}, fmt.Errorf("ablate %s: %w", feature, err)
+			return AblationReport{}, fmt.Errorf("ablate %s: %w", target.label, err)
 		}
 		stability := meanStability(model)
 		change := assignmentChange(baseline, model)
 		delta := math.Abs(stability - report.BaselineStability)
 		report.Features = append(report.Features, FeatureImpact{
-			Feature: feature, ClusterStability: stability, StabilityChange: delta,
+			Feature: target.label, ClusterStability: stability, StabilityChange: delta,
 			AssignmentChange: change, Dominant: change >= dominantAblationChange || delta >= dominantAblationChange,
 		})
 	}
 	return report, nil
 }
 
-func ablationFeatures(schema Schema) []string {
-	features := make([]string, 0, len(schema.Features))
-	hasWL := false
-	for _, feature := range schema.Features {
-		if strings.HasPrefix(feature.Name, wlFeaturePrefix) {
-			hasWL = true
-			continue
-		}
-		features = append(features, feature.Name)
-	}
-	if hasWL {
-		features = append(features, "wl")
-	}
-	sort.Strings(features)
-	return features
+// ablationTarget is one leave-out unit. A name can appear as both a numeric
+// and a set feature (for example "capabilities"), so targets are keyed by kind.
+type ablationTarget struct {
+	label string
+	kind  string
+	name  string
 }
 
-func dropFeature(points []Point, feature string) []Point {
+const wlAblationLabel = "wl"
+
+func ablationFeatures(schema Schema) []ablationTarget {
+	targets := make([]ablationTarget, 0, len(schema.Features))
+	seen := map[string]bool{}
+	for _, feature := range schema.Features {
+		target := ablationTarget{label: feature.Name, kind: feature.Kind, name: feature.Name}
+		switch {
+		case feature.Kind == KindNumeric && strings.HasPrefix(feature.Name, wlFeaturePrefix):
+			target = ablationTarget{label: wlAblationLabel, kind: KindNumeric, name: wlAblationLabel}
+		case feature.Kind == KindSet:
+			target.label = feature.Name + "[set]"
+		}
+		if seen[target.label] {
+			continue
+		}
+		seen[target.label] = true
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].label < targets[j].label })
+	return targets
+}
+
+func dropFeature(points []Point, target ablationTarget) []Point {
 	out := make([]Point, len(points))
 	for i, point := range points {
 		out[i] = Point{ID: point.ID, Numeric: map[string]float64{}, Categorical: map[string][]string{}}
 		for name, value := range point.Numeric {
-			if name != feature && !(feature == "wl" && strings.HasPrefix(name, wlFeaturePrefix)) {
+			if target.kind != KindNumeric || !target.matchesNumeric(name) {
 				out[i].Numeric[name] = value
 			}
 		}
 		for name, values := range point.Categorical {
-			if name != feature {
+			if target.kind != KindSet || name != target.name {
 				out[i].Categorical[name] = append([]string(nil), values...)
 			}
 		}
 	}
 	return out
+}
+
+func (t ablationTarget) matchesNumeric(name string) bool {
+	if t.name == wlAblationLabel {
+		return strings.HasPrefix(name, wlFeaturePrefix)
+	}
+	return name == t.name
 }
 
 func meanStability(model Model) float64 {
