@@ -31,7 +31,7 @@ func workflowCommands() cliCommand {
 	).withHelp("inspect workflows and validate child proposals", workflowHelp)
 }
 
-const workflowClustersSynopsis = "  goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--json] [--snapshot [--instance-id <id>] [--salt <salt>] | --fleet <dir> | --templates <evidence.json> --cluster-model <model.json>] [path]\n                                Labs: cluster workflows by structural shape or run behavior\n"
+const workflowClustersSynopsis = "  goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--ablation] [--json] [--snapshot [--instance-id <id>] [--salt <salt>] | --fleet <dir> | --templates <evidence.json> --cluster-model <model.json>] [path]\n                                Labs: cluster workflows by structural shape or run behavior\n"
 
 func runWorkflowClusters(args []string, stdout, stderr io.Writer) int {
 	return workflowcluster.RunCLI(args, newCLIFlagSet("workflow clusters", flag.ContinueOnError), stdout, stderr)
