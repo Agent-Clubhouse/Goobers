@@ -142,6 +142,9 @@ _goobers_completion()
         rerun-stage)
             flags+=" --addendum --actor --api"
             ;;
+        retry-stage)
+            flags+=" --actor --api"
+            ;;
         signal)
             flags+=" --request-id"
             ;;
@@ -149,7 +152,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
                 validate-child) flags+=" --gaggle --parent --stage --backend --cluster-model --json" ;;
-                clusters) flags+=" --features --since --max-runs --min-samples --min-cluster-size --seed --stratify --json --snapshot --instance-id --salt --fleet" ;;
+                clusters) flags+=" --features --since --max-runs --min-samples --min-cluster-size --seed --stratify --json --snapshot --instance-id --salt --fleet --templates --cluster-model" ;;
             esac
             ;;
         runs)

@@ -96,6 +96,7 @@ const (
 	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
+	RunStageRetryPath    = V1Prefix + "/runs/{run}/stages/{stage}/retry"
 
 	// WorkflowEnabledPath is the write-plane route that toggles the
 	// scheduler's honor bit for every non-manual trigger of a workflow. The
@@ -380,6 +381,7 @@ const (
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
 	RouteRerunStage    RouteID = "rerunStage"
+	RouteRetryStage    RouteID = "retryStage"
 
 	// RouteWorkflowEnabled toggles the scheduler's honor bit for a workflow's
 	// non-manual triggers atomically. It is classed as a maintenance action
@@ -645,6 +647,7 @@ var v1Routes = []Route{
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
 	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: InterventionBudget},
 	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteRetryStage, Method: http.MethodPost, Path: RunStageRetryPath, ActionClass: ActionRuntimeMutation, Capability: "retry", Cost: CostMutation, Budget: InterventionBudget},
 
 	// RouteWorkflowEnabled edits a workflow definition source atomically to
 	// toggle the scheduler's honor bit for its non-manual triggers. It is
@@ -997,10 +1000,11 @@ var v1RuntimeCapabilities = []Capability{
 	{ID: "approve", Class: ActionRuntimeMutation},
 	{ID: "override", Class: ActionRuntimeMutation},
 	{ID: "rerun", Class: ActionRuntimeMutation},
+	{ID: "retry", Class: ActionRuntimeMutation},
 }
 
 // V1RuntimeCapabilities returns V1's registered runtime mutation
-// capabilities (HITL-7/#469): approve, override, and rerun.
+// capabilities (HITL-7/#469): approve, override, rerun, and retry.
 func V1RuntimeCapabilities() []Capability {
 	return slices.Clone(v1RuntimeCapabilities)
 }

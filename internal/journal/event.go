@@ -69,7 +69,7 @@ const (
 	// EventStageFinished marks a stage attempt ending with a result.
 	EventStageFinished EventType = "stage.finished"
 	// EventStageRerunRequested records an operator-requested rerun of one
-	// agentic task or gate with a one-off instruction addendum.
+	// agentic target with an addendum or one deterministic task without one.
 	EventStageRerunRequested EventType = "stage.rerun.requested"
 	// EventGateStarted marks a gate evaluation beginning. It is recovery
 	// bookkeeping, excluded from cross-runner conformance.

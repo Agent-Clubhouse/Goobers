@@ -16,7 +16,8 @@ import (
 // CLIHelp documents `goobers workflow clusters`.
 const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--ablation] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
-	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n\n" +
+	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n" +
+	"       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]\n\n" +
 	"Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN\n" +
 	"and report each cluster's medoid, members, stability, and distinguishing\n" +
 	"features. Points that fit no dense group are reported as noise.\n\n" +
@@ -49,7 +50,17 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"cloned onto many instances counts once, only the most common feature\n" +
 	"version is clustered (others are listed as excluded), each instance is\n" +
 	"scored aligned/private/outlier, and clusters are tested for an instance\n" +
-	"confound.\n"
+	"confound.\n\n" +
+	"Reusable templates: --templates <evidence.json> reads a JSON array of\n" +
+	"joined child-proposal evidence (proposalId, proposalDigest, runId,\n" +
+	"parentRunId, repository, taskCohort, succeeded, findings, parameters) and\n" +
+	"--cluster-model a frozen structural model whose point IDs are those\n" +
+	"proposal IDs. It reports each stable cluster that clears the evidence bar\n" +
+	"(stability, parent-run and repository support, no policy or safety\n" +
+	"findings, outcomes no worse than comparable alternatives per task cohort,\n" +
+	"a parameterized medoid) as a review-required config change request for\n" +
+	"the child-authoring catalog, and lists why every other cluster was\n" +
+	"suppressed. Advisory only: nothing is written or registered.\n"
 
 // cliMinClusterSize is smaller than the library default because a single
 // instance usually configures tens of workflows, not hundreds.
@@ -81,11 +92,20 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	instanceID := fs.String("instance-id", "", "snapshot: instance ID (default: fleet association)")
 	salt := fs.String("salt", "", "snapshot: salt for name hashes (default: fleet ID)")
 	fleetDir := fs.String("fleet", "", "cluster the *.json fleet snapshots in this directory")
+	templates := fs.String("templates", "", "propose reusable templates from this joined evidence JSON")
+	clusterModel := fs.String("cluster-model", "", "templates: frozen structural cluster model JSON")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
+	}
+	if *templates != "" || *clusterModel != "" {
+		if templatesArgsInvalid(fs, *templates, *clusterModel) {
+			fs.Usage()
+			return 2
+		}
+		return runTemplatesCLI(*templates, *clusterModel, *asJSON, stdout, stderr)
 	}
 	behaviorOnly, snapshotOnly, saltSet := false, false, false
 	fs.Visit(func(f *flag.Flag) {

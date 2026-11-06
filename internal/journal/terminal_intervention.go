@@ -86,7 +86,7 @@ func ValidateTerminalIntervention(req TerminalIntervention) error {
 	}
 	event := req.Events[1]
 	switch marker.Runner["action"] {
-	case "rerun":
+	case "rerun", "retry":
 		if event.Type != EventStageRerunRequested || event.Stage == "" || event.Attempt < 1 {
 			return ErrInterventionInvalid
 		}
