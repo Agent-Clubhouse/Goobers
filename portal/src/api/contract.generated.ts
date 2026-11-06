@@ -40,6 +40,7 @@ export const apiRoutes = {
   "telemetryImplementationOutcomes": { method: "GET", path: "/api/v1/telemetry/implementation-outcomes", actionClass: "read-only-navigation" },
   "telemetryDefectAggregates": { method: "GET", path: "/api/v1/telemetry/defect-aggregates", actionClass: "read-only-navigation" },
   "labsWorkflowClusters": { method: "GET", path: "/api/v1/labs/workflow-clusters", actionClass: "read-only-navigation" },
+  "labsWorkflowFeatures": { method: "GET", path: "/api/v1/labs/workflow-features", actionClass: "read-only-navigation", capability: "labs.workflowFeatures" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
