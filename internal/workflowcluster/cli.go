@@ -39,9 +39,11 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"(default path \".\").\n\n" +
 	"Task cohorts use metadata.labels[\"goobers.dev/task-class\"] when explicitly\n" +
 	"set. Otherwise an auto:<digest> label is derived only from trigger types,\n" +
-	"work-item kinds, side-effect classes, and repo:* capabilities. Workflow and\n" +
-	"stage names, goals, selectors, schedules, signals, and webhook payload text\n" +
-	"are excluded, making derivation deterministic and rename-invariant.\n\n" +
+	"work-item kinds, the declared policy-action side-effect set, and repo:*\n" +
+	"capabilities. Workflow and stage names, goals, selectors, schedules, signals,\n" +
+	"and webhook payload text are excluded, making derivation deterministic and\n" +
+	"rename-invariant. --stratify cohort requires structural features and cannot\n" +
+	"be combined with --cohort.\n\n" +
 	"Fleet convergence: --snapshot prints this instance's feature vectors as a\n" +
 	"fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;\n" +
 	"workflows become salted keys and goober names salted hashes. The instance\n" +
@@ -208,7 +210,8 @@ type cliArgs struct {
 func (a cliArgs) invalid() bool {
 	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && a.stratify != stratifyGaggle && a.stratify != stratifyCohort) ||
 		(a.features != featuresStructural && a.features != featuresBehavior) ||
-		(a.cohort != "" && a.features != featuresStructural) ||
+		((a.cohort != "" || a.stratify == stratifyCohort) && a.features != featuresStructural) ||
+		(a.cohort != "" && a.stratify == stratifyCohort) ||
 		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
 		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "" || a.cohort != "")) ||
 		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.cohort != "" || a.behaviorOnly))

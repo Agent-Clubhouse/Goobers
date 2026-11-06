@@ -1,11 +1,14 @@
 package workflowcluster
 
 import (
+	"bytes"
+	"flag"
 	"strings"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func cohortWorkflow() apiv1.Workflow {
@@ -60,6 +63,21 @@ func TestCohortCLIValidationKeepsBehaviorAndFleetModesSeparate(t *testing.T) {
 	} {
 		if !args.invalid() {
 			t.Fatalf("args = %+v, want invalid", args)
+		}
+	}
+}
+
+func TestRunCLIRejectsMeaninglessCohortStratification(t *testing.T) {
+	for _, args := range [][]string{
+		{"--features", "behavior", "--stratify", "cohort"},
+		{"--cohort", "review", "--stratify", "cohort"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := RunCLI(args, flag.NewFlagSet("t", flag.ContinueOnError), &stdout, &stderr); code != 2 {
+			t.Fatalf("%v: exit %d, want 2 (stderr %q)", args, code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "Usage:") {
+			t.Fatalf("%v: stderr missing usage: %q", args, stderr.String())
 		}
 	}
 }
