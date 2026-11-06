@@ -161,6 +161,7 @@ Advanced operator commands:
   recovery-restore  restore retained implementation onto current main
   rerun-stage       rerun a stage with a recorded instruction addendum
   reset-rate-limit  clear the hourly run-rate budget without deleting runs/
+  retry-stage       retry a previously-run deterministic task
   roots decommission mark a stopped instance root as historical
   roots discover    discover likely instance roots and daemon ownership
   run abort         mark a stuck non-terminal run aborted
@@ -2726,6 +2727,18 @@ If push-remediated skipped a closed PR, records the unposted account
 without claiming those local changes landed.
 [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = response
 processed, 1 = business error, 2 = usage/IO error.
+
+### retry-stage
+Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
+
+Retry one previously-run deterministic task on an escalated run without
+replaying earlier stages or supplying agent instructions. The actor, target,
+terminal generation, and retry attempt are recorded in the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 
 ### roots
 Usage: goobers roots <discover | decommission> [flags] [path]
