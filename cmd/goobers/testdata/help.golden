@@ -3688,6 +3688,8 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 
 ### workflow clusters
 Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
+       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
+       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
 
 Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
 and report each cluster's medoid, members, stability, and distinguishing
@@ -3711,6 +3713,17 @@ behavior features are never mixed in one model. With --stratify gaggle,
 also test whether clusters merely track gaggle boundaries (a confound);
 that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
+
+Fleet convergence: --snapshot prints this instance's feature vectors as a
+fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;
+workflows become salted keys and goober names salted hashes. The instance
+ID and salt default to the fleet association (salt = fleet ID), so every
+instance in a fleet hashes alike. --fleet <dir> pools the *.json snapshots
+in dir and clusters distinct workflow shapes across instances: a shape
+cloned onto many instances counts once, only the most common feature
+version is clustered (others are listed as excluded), each instance is
+scored aligned/private/outlier, and clusters are tested for an instance
+confound.
 
 ### workflow show
 Usage: goobers workflow show [--dot] <name> [path]

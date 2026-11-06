@@ -190,7 +190,9 @@ export const labsFeatures: readonly LabsFeature[] = [
         detail:
           "Run convergence over every cloud instance in your fleet: see which workflow shapes the whole fleet settles on, " +
           "which instances drift from the norm, and where the same shape succeeds on one instance and fails on another. " +
-          "Instances share feature vectors, never workflow text, under a group-granted scope that is off by default and revocable.",
+          "Ready today from the CLI: each instance runs 'goobers workflow clusters --snapshot' (feature vectors only, no " +
+          "workflow text), and 'goobers workflow clusters --fleet <dir>' clusters them, counting cloned workflows once. " +
+          "Next: the fleet service collects snapshots automatically and shows the map in the fleet portal.",
         issue: 8345,
       },
       {

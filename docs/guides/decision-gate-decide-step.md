@@ -66,3 +66,17 @@ threshold. The result is `match`, `mismatch` or `unsure`; `unsure` and any error
 leave publishing untouched. It is advisory: a caller may add a review note on
 `mismatch` and must never block on it. The result carries the size bucket and
 probability, not the text, so shadow scores can be compared across diff sizes.
+
+## Review comment severity (advisory)
+
+`decisiongate.Gate.EvaluateSeverity` labels a review comment `blocking`,
+`nit`, `question` or `unsure`. Code decides first: an explicit `nit:`,
+`question:` or `blocking:` prefix, or a short comment that is only a question,
+never reaches the model. Otherwise the model judges one yes/no question (must
+this be fixed before merge) behind the `review_comment_blocking` threshold;
+`uncertain` and any error return `unsure`, and the caller keeps its existing
+behavior of treating the comment as actionable.
+
+`ShadowSeverity` and `SeverityTally` record the model's label next to a human
+or reviewer-agent label and report agreement only above a minimum sample.
+Nothing is enforced until those measured counts justify it.
