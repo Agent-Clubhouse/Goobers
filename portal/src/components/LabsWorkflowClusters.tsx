@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   DaemonClient,
   LabsConfoundReport,
@@ -63,6 +64,8 @@ export function LabsWorkflowClusters({ client }: { client: DaemonClient }) {
 
 function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
   const model = view.model!;
+  const [cohort, setCohort] = useState("");
+  const map = (view.map ?? []).filter((point) => !cohort || point.cohort === cohort);
   return (
     <>
       <p>
@@ -75,9 +78,23 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         <span className="mono">{model.featureVersion}</span>
       </p>
       {view.confounds && <ConfoundSummary report={view.confounds} />}
-      {model.clusters.length > 0 && (view.map ?? []).length > 0 && (
+      {view.cohortConfounds && <ConfoundSummary report={view.cohortConfounds} axis="task cohort" />}
+      {(view.cohorts ?? []).length > 1 && (
+        <label className="labs-cohort-filter">
+          Task cohort{" "}
+          <select value={cohort} onChange={(event) => setCohort(event.target.value)}>
+            <option value="">All cohorts</option>
+            {(view.cohorts ?? []).map((label) => (
+              <option value={label} key={label}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {model.clusters.length > 0 && map.length > 0 && (
         <LabsClusterMap
-          points={view.map ?? []}
+          points={map}
           clusterIds={model.clusters.map((cluster) => cluster.id)}
           medoids={new Set(model.clusters.map((cluster) => cluster.medoid.id))}
         />
@@ -105,24 +122,24 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
   );
 }
 
-function ConfoundSummary({ report }: { report: LabsConfoundReport }) {
+function ConfoundSummary({ report, axis = "gaggle" }: { report: LabsConfoundReport; axis?: string }) {
   const stats = `Cramér's V ${report.association.toFixed(2)}, p ${report.pValue.toFixed(3)}, ${report.evidence}`;
   return (
     <div className={report.confounded ? "labs-confound labs-confound-warning" : "labs-confound"} role="status">
       {report.confounded ? (
         <p>
-          <strong>Confound warning:</strong> clusters track gaggle boundaries ({stats}). They may
-          reflect which gaggle a workflow belongs to rather than a shared shape.
+          <strong>Confound warning:</strong> clusters track {axis} boundaries ({stats}). They may
+          reflect a workflow&apos;s {axis} rather than a shared shape.
         </p>
       ) : (
         <p>
-          No gaggle confound detected ({stats}; {report.tested} tested).
+          No {axis} confound detected ({stats}; {report.tested} tested).
         </p>
       )}
       {report.undersized.length > 0 && (
         <p>
-          Gaggles below {report.options.minStratumSize} workflows were not tested:{" "}
-          {report.undersized.join(", ")}.
+          {axis === "gaggle" ? "Gaggles" : "Task cohorts"} below {report.options.minStratumSize} workflows
+          were not tested: {report.undersized.join(", ")}.
         </p>
       )}
     </div>
@@ -238,5 +255,11 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       undersized: view.confounds.undersized ?? [],
       strata: view.confounds.strata ?? [],
     },
+    cohortConfounds: view.cohortConfounds && {
+      ...view.cohortConfounds,
+      undersized: view.cohortConfounds.undersized ?? [],
+      strata: view.cohortConfounds.strata ?? [],
+    },
+    cohorts: view.cohorts ?? [],
   };
 }
