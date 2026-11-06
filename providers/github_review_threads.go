@@ -11,7 +11,7 @@ import (
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
-const pullRequestReviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+const pullRequestReviewThreadsQuery = `query PullRequestReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
