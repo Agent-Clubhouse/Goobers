@@ -176,13 +176,15 @@ func (s *BenchmarkSandbox) GitHubProvider() (*providers.GitHubProvider, error) {
 
 // Do serves provider HTTP requests from recorded exchanges only.
 func (s *BenchmarkSandbox) Do(req *http.Request) (*http.Response, error) {
-	if req.Body != nil {
-		_ = req.Body.Close()
-	}
 	path := req.URL.RequestURI()
-	effect := classifyBenchmarkRequest(req.Method, req.URL.Path)
+	body, err := readBenchmarkRequestBody(req)
+	if err != nil {
+		return nil, s.violate(mutationDenied(BenchmarkEffectProviderWrite, req.Method+" "+path,
+			"provider request body is unreadable: "+err.Error()))
+	}
+	op := classifyBenchmarkRequest(req.Method, req.URL.Path, body)
 	if req.URL.Scheme+"://"+req.URL.Host != BenchmarkProviderBaseURL {
-		return nil, s.violate(gapOrDenial(effect, req.Method+" "+req.URL.Redacted(),
+		return nil, s.violate(gapOrDenial(op.effect, req.Method+" "+req.URL.Redacted()+op.target(),
 			"request is outside the benchmark provider boundary"))
 	}
 	if auth := req.Header.Get("Authorization"); auth != "" && auth != "Bearer "+BenchmarkVirtualToken {
@@ -192,19 +194,31 @@ func (s *BenchmarkSandbox) Do(req *http.Request) (*http.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, exchange := range s.fixture.Provider.Exchanges {
-		if exchange.Method != req.Method || exchange.Path != path {
+		if exchange.Method != req.Method || exchange.Path != path || !op.servedBy(exchange.Name) {
 			continue
 		}
-		if effect != BenchmarkEffectProviderRead {
+		if op.effect != BenchmarkEffectProviderRead {
 			if s.consumed[i] {
 				continue
 			}
 			s.consumed[i] = true
-			s.recordReceiptLocked(BenchmarkReceipt{Effect: effect, Exchange: exchange.Name, Method: req.Method, Path: path})
+			s.recordReceiptLocked(BenchmarkReceipt{Effect: op.effect, Exchange: exchange.Name, Method: req.Method, Path: path})
 		}
 		return benchmarkResponse(req, exchange.Response.Status, exchange.Response.Headers, exchange.Response.Body), nil
 	}
-	return nil, s.violateLocked(gapOrDenial(effect, req.Method+" "+path, "no recorded exchange"))
+	return nil, s.violateLocked(gapOrDenial(op.effect, req.Method+" "+path+op.target(), "no recorded exchange"))
+}
+
+// readBenchmarkRequestBody reads the request body and leaves an identical,
+// re-readable copy in place.
+func readBenchmarkRequestBody(req *http.Request) ([]byte, error) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil, nil
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	return body, err
 }
 
 func gapOrDenial(effect BenchmarkEffect, target, reason string) *BenchmarkViolation {
@@ -214,18 +228,61 @@ func gapOrDenial(effect BenchmarkEffect, target, reason string) *BenchmarkViolat
 	return mutationDenied(effect, target, fmt.Sprintf("%s %s: %s; the fixture declares no virtual sink", effect, target, reason))
 }
 
-func classifyBenchmarkRequest(method, path string) BenchmarkEffect {
+// benchmarkOperation is the boundary's classification of one provider request.
+type benchmarkOperation struct {
+	effect BenchmarkEffect
+	// graphQL marks a request to the GitHub GraphQL endpoint, where every
+	// operation shares POST /graphql and only the document tells them apart.
+	graphQL bool
+	// mutation is the single top-level field of a GraphQL mutation document,
+	// or "" when the document names none or several.
+	mutation string
+}
+
+// servedBy reports whether the recorded exchange named name may answer op.
+// REST requests are bound by method and path alone. A GraphQL mutation is
+// served only by an exchange bound to its exact mutation field; a GraphQL
+// query is served by any GraphQL exchange that is not a mutation sink.
+func (op benchmarkOperation) servedBy(name string) bool {
+	if !op.graphQL {
+		return true
+	}
+	field, isSink := strings.CutPrefix(name, BenchmarkGraphQLMutationExchangePrefix)
+	if op.effect == BenchmarkEffectProviderRead {
+		return !isSink
+	}
+	return isSink && op.mutation != "" && field == op.mutation
+}
+
+// target qualifies a violation target with the GraphQL operation, if any.
+func (op benchmarkOperation) target() string {
+	switch {
+	case !op.graphQL:
+		return ""
+	case op.effect == BenchmarkEffectProviderRead:
+		return " query"
+	case op.mutation == "":
+		return " mutation"
+	default:
+		return " mutation " + op.mutation
+	}
+}
+
+func classifyBenchmarkRequest(method, path string, body []byte) benchmarkOperation {
+	if method == http.MethodPost && path == "/graphql" {
+		return classifyBenchmarkGraphQL(body)
+	}
 	switch {
 	case method == http.MethodGet || method == http.MethodHead:
-		return BenchmarkEffectProviderRead
+		return benchmarkOperation{effect: BenchmarkEffectProviderRead}
 	case strings.HasSuffix(path, "/merge"):
-		return BenchmarkEffectMerge
+		return benchmarkOperation{effect: BenchmarkEffectMerge}
 	case strings.HasSuffix(path, "/comments") || strings.Contains(path, "/comments/"):
-		return BenchmarkEffectComment
+		return benchmarkOperation{effect: BenchmarkEffectComment}
 	case strings.Contains(path, "/git/refs") || strings.Contains(path, "/contents/"):
-		return BenchmarkEffectGitPush
+		return benchmarkOperation{effect: BenchmarkEffectGitPush}
 	default:
-		return BenchmarkEffectProviderWrite
+		return benchmarkOperation{effect: BenchmarkEffectProviderWrite}
 	}
 }
 

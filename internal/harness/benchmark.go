@@ -25,14 +25,25 @@ const (
 	// BenchmarkCompletionArtifact names the recorded artifact replayed as the
 	// session's completion payload.
 	BenchmarkCompletionArtifact = "completion.json"
+	// BenchmarkGraphQLMutationExchangePrefix prefixes the name of a recorded
+	// POST /graphql exchange that is the virtual sink for one GraphQL
+	// mutation; the rest of the name is that mutation's top-level field, as
+	// in "graphql-mutation:resolveReviewThread".
+	BenchmarkGraphQLMutationExchangePrefix = "graphql-mutation:"
 )
 
 // BenchmarkFixture is one recorded benchmark task, expressed only in the
 // repository's existing recorded structures.
 type BenchmarkFixture struct {
-	// Provider holds every recorded provider exchange. A recorded mutating
-	// exchange (any non-GET method) is the fixture's declaration of a virtual
-	// sink for exactly that mutation.
+	// Provider holds every recorded provider exchange. A REST exchange is
+	// bound by method and path: GET and HEAD exchanges are reads served on
+	// every request, and any other recorded exchange is the fixture's
+	// declaration of a virtual sink for exactly that mutation, consumed once.
+	// GitHub GraphQL shares POST /graphql for every operation, so the
+	// document decides: a query is a read served by any recorded GraphQL
+	// exchange that is not a mutation sink, and a mutation is served once,
+	// only by an exchange named BenchmarkGraphQLMutationExchangePrefix plus
+	// its single top-level field. Anything else fails closed.
 	Provider providerfixture.Fixture
 	// Events is the recorded stage journal in seq order.
 	Events []journal.Event

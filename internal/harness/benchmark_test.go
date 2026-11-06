@@ -5,16 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/providerfixture"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -400,5 +403,143 @@ func TestBenchmarkAdapterRunsThroughExecutor(t *testing.T) {
 	report, err := sandbox.Report()
 	if err != nil || len(report.Receipts) != 1 || report.Status != "success" {
 		t.Fatalf("report = %+v, %v", report, err)
+	}
+}
+
+// withGraphQLExchanges appends recorded POST /graphql exchanges to fixture.
+func withGraphQLExchanges(fixture BenchmarkFixture, exchanges map[string]string) BenchmarkFixture {
+	names := make([]string, 0, len(exchanges))
+	for name := range exchanges {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		fixture.Provider.Exchanges = append(fixture.Provider.Exchanges, providerfixture.Exchange{
+			Name: name, Method: http.MethodPost, Path: "/graphql",
+			Response: providerfixture.FixtureResponse{Status: http.StatusOK, Body: json.RawMessage(exchanges[name])},
+		})
+	}
+	return fixture
+}
+
+const (
+	benchmarkGraphQLPullRead = `{"data":{"repository":{"pullRequest":{"id":"PR_8","state":"OPEN","merged":false,` +
+		`"mergeCommit":null,"mergeQueueEntry":{"state":"QUEUED","position":1},"labels":{"nodes":[]}}}}}`
+	benchmarkGraphQLUnqueuedPullRead = `{"data":{"repository":{"pullRequest":{"id":"PR_8","state":"OPEN",` +
+		`"merged":false,"mergeCommit":null,"mergeQueueEntry":null}}}}`
+	benchmarkGraphQLResolved = `{"data":{"resolveReviewThread":{"thread":{"id":"RT_1","isResolved":true}}}}`
+)
+
+func TestBenchmarkGraphQLMutationsFailClosed(t *testing.T) {
+	cases := map[string]struct {
+		exchanges map[string]string
+		act       func(context.Context, *providers.GitHubProvider) error
+		effect    BenchmarkEffect
+		target    string
+	}{
+		"merge through graphql": {
+			exchanges: map[string]string{"lookup-pull": benchmarkGraphQLUnqueuedPullRead},
+			effect:    BenchmarkEffectMerge, target: "POST /graphql mutation enqueuePullRequest",
+			act: func(ctx context.Context, p *providers.GitHubProvider) error {
+				_, err := p.EnqueuePullRequest(ctx, providers.EnqueuePullRequestRequest{Repository: benchmarkTestRepo, PullID: "8"})
+				return err
+			},
+		},
+		"unrelated read or sink cannot satisfy a mutation": {
+			exchanges: map[string]string{
+				"poll-merge-queue": benchmarkGraphQLPullRead,
+				BenchmarkGraphQLMutationExchangePrefix + "dequeuePullRequest": benchmarkGraphQLResolved,
+			},
+			effect: BenchmarkEffectProviderWrite, target: "POST /graphql mutation resolveReviewThread",
+			act: func(ctx context.Context, p *providers.GitHubProvider) error {
+				return p.ResolvePullRequestReviewThread(ctx, benchmarkTestRepo, "RT_1")
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var actErr error
+			_, report, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil), tc.exchanges),
+				func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+					provider, err := s.GitHubProvider()
+					if err != nil {
+						return err
+					}
+					actErr = tc.act(ctx, provider)
+					return nil
+				})
+			if !errors.Is(actErr, ErrBenchmarkMutationDenied) {
+				t.Fatalf("act error = %v, want ErrBenchmarkMutationDenied", actErr)
+			}
+			var violation *BenchmarkViolation
+			if !errors.As(err, &violation) || violation.Effect != tc.effect || violation.Target != tc.target {
+				t.Fatalf("Run error = %v (%+v), want %s violation on %q", err, violation, tc.effect, tc.target)
+			}
+			if len(report.Receipts) != 0 {
+				t.Fatalf("receipts = %+v, want no virtual sink used", report.Receipts)
+			}
+		})
+	}
+}
+
+func TestBenchmarkGraphQLReadsAreRepeatable(t *testing.T) {
+	_, report, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil),
+		map[string]string{"poll-merge-queue": benchmarkGraphQLPullRead}),
+		func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+			provider, err := s.GitHubProvider()
+			if err != nil {
+				return err
+			}
+			for range 2 {
+				result, err := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: benchmarkTestRepo, PullID: "8"})
+				if err != nil {
+					return err
+				}
+				if result.State != providers.MergeQueueEntryPending {
+					return fmt.Errorf("poll state = %q, want pending", result.State)
+				}
+			}
+			return nil
+		})
+	if err != nil || report.Status != "success" || len(report.Receipts) != 0 {
+		t.Fatalf("Run = %v, status %q receipts %+v; want repeated reads served", err, report.Status, report.Receipts)
+	}
+
+	_, _, err = runBenchmark(t, loadBenchmarkTestFixture(t, nil),
+		func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+			provider, err := s.GitHubProvider()
+			if err != nil {
+				return err
+			}
+			_, err = provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: benchmarkTestRepo, PullID: "8"})
+			return err
+		})
+	if !errors.Is(err, ErrBenchmarkVirtualizationGap) {
+		t.Fatalf("unrecorded GraphQL read error = %v, want virtualization gap", err)
+	}
+}
+
+func TestBenchmarkBoundGraphQLMutationIsVirtualizedOnce(t *testing.T) {
+	sink := BenchmarkGraphQLMutationExchangePrefix + "resolveReviewThread"
+	var second error
+	_, report, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil),
+		map[string]string{sink: benchmarkGraphQLResolved}),
+		func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+			provider, err := s.GitHubProvider()
+			if err != nil {
+				return err
+			}
+			if err := provider.ResolvePullRequestReviewThread(ctx, benchmarkTestRepo, "RT_1"); err != nil {
+				return err
+			}
+			second = provider.ResolvePullRequestReviewThread(ctx, benchmarkTestRepo, "RT_1")
+			return nil
+		})
+	if len(report.Receipts) != 1 || report.Receipts[0].Exchange != sink ||
+		report.Receipts[0].Effect != BenchmarkEffectProviderWrite {
+		t.Fatalf("receipts = %+v, want one receipt from %s", report.Receipts, sink)
+	}
+	if !errors.Is(second, ErrBenchmarkMutationDenied) || !errors.Is(err, ErrBenchmarkMutationDenied) {
+		t.Fatalf("second mutation = %v, Run = %v; want the consumed sink to deny it", second, err)
 	}
 }
