@@ -1,6 +1,8 @@
 package workflowcluster
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,7 @@ import (
 // schema. It is distinct from StructuralFeatureVersion so behavior and
 // structure are never mixed in one fitted model. Bump it whenever a feature is
 // added, removed, or computed differently.
-const BehaviorFeatureVersion = "workflowcluster.behavior/v1"
+const BehaviorFeatureVersion = "workflowcluster.behavior/v2"
 
 // Errors that exclude a run from behavior descriptors.
 var (
@@ -43,12 +45,28 @@ var visitTokens = []string{"new", "retry", "loop"}
 // childActions are the parent-side dispositions of a child workflow result.
 var childActions = []string{"merge", "replace", "discard"}
 
+var toolCategories = []string{"agent", "filesystem", "network", "orchestration", "provider", "shell", "other"}
+
 // BehaviorInput is the journal data one descriptor is derived from. Spans are
 // the decoded telemetry.SpanSchema records referenced by Events.
 type BehaviorInput struct {
 	Identity journal.RunIdentity
 	Events   []journal.Event
 	Spans    []telemetry.SpanRecord
+	// TaskCohort is derived from the pinned workflow definition.
+	TaskCohort string
+	// ChildObservation is joined from the parent journal for a generated child.
+	ChildObservation *ChildBehaviorObservation
+	artifacts        []behaviorArtifact
+}
+
+// ChildBehaviorObservation contains structural parent-side facts about one
+// generated child. It carries no authored completion summary or provider text.
+type ChildBehaviorObservation struct {
+	Disposition      string
+	ParentWait       time.Duration
+	PublicationState map[string]string
+	CompletionSeen   bool
 }
 
 // BehaviorLineage links an agent-authored child run to its parent run and
@@ -69,6 +87,7 @@ type BehaviorDescriptor struct {
 	Workflow         string           `json:"workflow"`
 	WorkflowDigest   string           `json:"workflowDigest"`
 	EffectiveVersion string           `json:"effectiveVersion"`
+	TaskCohort       string           `json:"taskCohort"`
 	Outcome          journal.RunPhase `json:"outcome"`
 	StartedAt        time.Time        `json:"startedAt"`
 	Lineage          *BehaviorLineage `json:"lineage,omitempty"`
@@ -102,10 +121,12 @@ func ExtractBehavior(in BehaviorInput) (BehaviorDescriptor, error) {
 	timeFeatures(numeric, id, in.Events, started, finished)
 	usageFeatures(numeric, in.Spans)
 	childFeatures(numeric, id, in.Events)
+	toolFeatures(numeric, in.Spans)
+	childObservationFeatures(numeric, id, in.ChildObservation)
 
 	d := BehaviorDescriptor{
 		Version: BehaviorFeatureVersion, RunID: id.RunID, Gaggle: id.Gaggle, Workflow: id.Workflow,
-		WorkflowDigest: id.WorkflowDigest, EffectiveVersion: ev, Outcome: outcome,
+		WorkflowDigest: id.WorkflowDigest, EffectiveVersion: ev, TaskCohort: in.TaskCohort, Outcome: outcome,
 		StartedAt: started.UTC(), Numeric: numeric, Provenance: behaviorProvenance(in.Spans),
 	}
 
@@ -333,6 +354,49 @@ func usageFeatures(numeric map[string]float64, spans []telemetry.SpanRecord) {
 	numeric["usage.log1pCostCents"] = math.Log1p(cost * 100)
 }
 
+func toolFeatures(numeric map[string]float64, spans []telemetry.SpanRecord) {
+	for _, category := range toolCategories {
+		numeric["tools."+category] = 0
+	}
+	for _, span := range spans {
+		for _, event := range span.Events {
+			if event.Name != "harness.tool_call" {
+				continue
+			}
+			numeric["tools."+toolCategory(event.Attributes["tool"])]++
+		}
+	}
+}
+
+func toolCategory(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case containsAny(name, "github", "gitlab", "azure", "ado", "issue", "pull_request"):
+		return "provider"
+	case containsAny(name, "goobers-io", "get_run_info", "publish_output", "read_input"):
+		return "orchestration"
+	case containsAny(name, "agent", "delegate", "subagent"):
+		return "agent"
+	case containsAny(name, "browser", "fetch", "http", "web", "curl"):
+		return "network"
+	case containsAny(name, "apply_patch", "read_file", "write_file", "edit_file", "filesystem", "glob", "grep", ".rg", "search", "view"):
+		return "filesystem"
+	case containsAny(name, "powershell", "terminal", "shell", "bash", "command", "exec"):
+		return "shell"
+	default:
+		return "other"
+	}
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func spanNumber(span telemetry.SpanRecord, attr string) float64 {
 	value, err := strconv.ParseFloat(span.Attributes[attr], 64)
 	if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
@@ -363,6 +427,44 @@ func childFeatures(numeric map[string]float64, id journal.RunIdentity, events []
 		}
 	}
 	numeric["children.spawned"] = float64(len(children))
+}
+
+func childObservationFeatures(numeric map[string]float64, id journal.RunIdentity, observation *ChildBehaviorObservation) {
+	numeric["child.stages.generated"] = 0
+	numeric["child.parentWait.log1pSeconds"] = 0
+	for _, action := range childActions {
+		numeric["child.disposition."+action] = 0
+	}
+	for _, publication := range []string{"branch", "pr"} {
+		for _, state := range []string{"none", "prepared", "effect_pending", "confirmed"} {
+			numeric["child.publication."+publication+"."+state] = 0
+		}
+	}
+	if id.Child == nil {
+		return
+	}
+	numeric["child.stages.generated"] = numeric["stages.distinct"]
+	if observation == nil {
+		return
+	}
+	if _, ok := numeric["child.disposition."+observation.Disposition]; ok {
+		numeric["child.disposition."+observation.Disposition] = 1
+	}
+	numeric["child.parentWait.log1pSeconds"] = math.Log1p(observation.ParentWait.Seconds())
+	if !observation.CompletionSeen {
+		return
+	}
+	for _, publication := range []string{"branch", "pr"} {
+		state := observation.PublicationState[publication]
+		if state == "" {
+			state = "none"
+		}
+		if name := "child.publication." + publication + "." + state; state != "" {
+			if _, ok := numeric[name]; ok {
+				numeric[name] = 1
+			}
+		}
+	}
 }
 
 func childWaitRequest(e journal.Event) (journal.ChildHandoffRequest, bool) {
@@ -400,32 +502,35 @@ type BehaviorSummary struct {
 	Gaggle           string                  `json:"gaggle"`
 	Workflow         string                  `json:"workflow"`
 	EffectiveVersion string                  `json:"effectiveVersion"`
+	TaskCohort       string                  `json:"taskCohort"`
 	SampleCount      int                     `json:"sampleCount"`
 	ChildRuns        int                     `json:"childRuns"`
 	Provenance       map[string]string       `json:"provenance,omitempty"`
 	Features         map[string]Distribution `json:"features"`
 }
 
-// SummarizeBehavior groups descriptors by gaggle, workflow, and
-// EffectiveVersion and summarizes each feature's distribution. Cohorts with
-// fewer than minSamples runs are dropped. The result is sorted by ID and
-// independent of input order.
+// SummarizeBehavior groups descriptors by gaggle, workflow, EffectiveVersion,
+// and task cohort, then summarizes each feature's distribution. Cohorts with
+// fewer than minSamples runs are dropped.
 func SummarizeBehavior(descriptors []BehaviorDescriptor, minSamples int) []BehaviorSummary {
-	groups := map[string][]BehaviorDescriptor{}
+	type groupKey struct {
+		gaggle, workflow, effectiveVersion, taskCohort string
+	}
+	groups := map[groupKey][]BehaviorDescriptor{}
 	for _, d := range descriptors {
-		id := behaviorCohortID(d)
-		groups[id] = append(groups[id], d)
+		key := groupKey{d.Gaggle, d.Workflow, d.EffectiveVersion, d.TaskCohort}
+		groups[key] = append(groups[key], d)
 	}
 	summaries := make([]BehaviorSummary, 0, len(groups))
-	for _, id := range sortedKeys(groups) {
-		members := groups[id]
+	for _, members := range groups {
 		if len(members) < max(1, minSamples) {
 			continue
 		}
 		first := members[0]
 		s := BehaviorSummary{
-			ID: id, Version: BehaviorFeatureVersion, Gaggle: first.Gaggle, Workflow: first.Workflow,
-			EffectiveVersion: first.EffectiveVersion, SampleCount: len(members), Features: map[string]Distribution{},
+			ID: behaviorCohortID(first), Version: BehaviorFeatureVersion, Gaggle: first.Gaggle, Workflow: first.Workflow,
+			EffectiveVersion: first.EffectiveVersion, TaskCohort: first.TaskCohort,
+			SampleCount: len(members), Features: map[string]Distribution{},
 			Provenance: commonProvenance(members),
 		}
 
@@ -447,6 +552,16 @@ func SummarizeBehavior(descriptors []BehaviorDescriptor, minSamples int) []Behav
 		}
 		summaries = append(summaries, s)
 	}
+	sort.Slice(summaries, func(i, j int) bool {
+		a, b := summaries[i], summaries[j]
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		if a.EffectiveVersion != b.EffectiveVersion {
+			return a.EffectiveVersion < b.EffectiveVersion
+		}
+		return a.TaskCohort < b.TaskCohort
+	})
 	return summaries
 }
 
@@ -473,7 +588,8 @@ func behaviorCohortID(d BehaviorDescriptor) string {
 	if len(ev) > 16 {
 		ev = ev[:16]
 	}
-	return fmt.Sprintf("%s/%s@%s", d.Gaggle, d.Workflow, ev)
+	sum := sha256.Sum256([]byte(d.TaskCohort))
+	return fmt.Sprintf("%s/%s@%s~%s", d.Gaggle, d.Workflow, ev, hex.EncodeToString(sum[:4]))
 }
 
 func distribution(values []float64) Distribution {
@@ -508,5 +624,5 @@ func BehaviorPoint(s BehaviorSummary) Point {
 		numeric[name+".mean"] = dist.Mean
 		numeric[name+".p90"] = dist.P90
 	}
-	return Point{ID: s.ID, Numeric: numeric}
+	return Point{ID: s.ID, Cohort: s.TaskCohort, Numeric: numeric}
 }

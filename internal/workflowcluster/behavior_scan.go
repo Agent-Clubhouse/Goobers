@@ -8,11 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Default scan bounds. They keep a behavior scan's memory proportional to
@@ -82,6 +85,7 @@ func ScanBehavior(root string, opts BehaviorScanOptions) (BehaviorScan, error) {
 	}
 
 	scan := BehaviorScan{Descriptors: []BehaviorDescriptor{}, Candidates: len(candidates)}
+	observations := map[childObservationKey]ChildBehaviorObservation{}
 	for i, c := range candidates {
 		if i >= opts.MaxRuns {
 			scan.OverLimit = len(candidates) - i
@@ -93,7 +97,18 @@ func ScanBehavior(root string, opts BehaviorScanOptions) (BehaviorScan, error) {
 			scan.BeforeSince++
 			continue
 		}
-		scan.add(c.dir, opts)
+		scan.add(c.dir, opts, observations)
+	}
+	for i := range scan.Descriptors {
+		if scan.Descriptors[i].Lineage == nil {
+			continue
+		}
+		key := childObservationKey{parentRunID: scan.Descriptors[i].Lineage.ParentRunID, childRunID: scan.Descriptors[i].RunID}
+		observation, ok := observations[key]
+		if !ok {
+			continue
+		}
+		childObservationFeatures(scan.Descriptors[i].Numeric, journal.RunIdentity{Child: &journal.ChildLineage{}}, &observation)
 	}
 	sort.Slice(scan.Descriptors, func(i, j int) bool { return scan.Descriptors[i].RunID < scan.Descriptors[j].RunID })
 	return scan, nil
@@ -142,7 +157,7 @@ func listRunCandidates(ctx context.Context, root string) ([]runCandidate, error)
 	return candidates, nil
 }
 
-func (s *BehaviorScan) add(dir string, opts BehaviorScanOptions) {
+func (s *BehaviorScan) add(dir string, opts BehaviorScanOptions, observations map[childObservationKey]ChildBehaviorObservation) {
 	in, err := readBehaviorInput(dir, opts)
 	switch {
 	case errors.Is(err, errBehaviorOversized):
@@ -151,6 +166,9 @@ func (s *BehaviorScan) add(dir string, opts BehaviorScanOptions) {
 	case err != nil:
 		s.Unreadable++
 		return
+	}
+	for key, observation := range readChildObservations(in.Identity.RunID, in.Events, in.artifacts) {
+		observations[key] = mergeChildObservation(observations[key], observation)
 	}
 	d, err := ExtractBehavior(in)
 	switch {
@@ -186,6 +204,7 @@ func readBehaviorInput(dir string, opts BehaviorScanOptions) (BehaviorInput, err
 		return BehaviorInput{}, err
 	}
 	in := BehaviorInput{Identity: identity, Events: events}
+	in.TaskCohort = pinnedTaskCohort(reader, identity)
 	var total int64
 	for _, e := range events {
 		if e.Type != journal.EventSpanRecorded || e.Ref == nil || e.DataSchema != telemetry.SpanSchema {
@@ -214,5 +233,147 @@ func readBehaviorInput(dir string, opts BehaviorScanOptions) (BehaviorInput, err
 			in.Spans = append(in.Spans, span)
 		}
 	}
+	in.artifacts = readBehaviorArtifacts(reader, events)
 	return in, nil
+}
+
+type behaviorArtifact struct {
+	data []byte
+}
+
+func pinnedTaskCohort(reader *journal.Reader, identity journal.RunIdentity) string {
+	for _, input := range identity.Inputs {
+		if input.Name != journal.PinnedWorkflowDefinitionInputName {
+			continue
+		}
+		data, err := reader.ArtifactBytesBounded(input.Ref, 4<<20)
+		if err != nil {
+			return ""
+		}
+		var definition workflow.Definition
+		if json.Unmarshal(data, &definition) != nil {
+			return ""
+		}
+		return Cohort(apiv1.Workflow{Spec: definition.Spec})
+	}
+	return ""
+}
+
+func readBehaviorArtifacts(reader *journal.Reader, events []journal.Event) []behaviorArtifact {
+	var artifacts []behaviorArtifact
+	for _, event := range events {
+		if event.Type != journal.EventArtifactRecorded || event.Ref == nil ||
+			!strings.HasPrefix(event.Name, "child-") || !strings.HasSuffix(event.Name, "-completion.json") {
+			continue
+		}
+		data, err := reader.ArtifactBytesBounded(*event.Ref, journal.MaxChildWaitBytes)
+		if err == nil {
+			artifacts = append(artifacts, behaviorArtifact{data: data})
+		}
+	}
+	return artifacts
+}
+
+type childObservationKey struct {
+	parentRunID string
+	childRunID  string
+}
+
+func readChildObservations(parentRunID string, events []journal.Event, artifacts []behaviorArtifact) map[childObservationKey]ChildBehaviorObservation {
+	type activeWait struct {
+		childRunID string
+		requestID  string
+		action     string
+		started    time.Time
+	}
+	active := map[int]activeWait{}
+	requests := map[string]journal.ChildHandoffRequest{}
+	out := map[childObservationKey]ChildBehaviorObservation{}
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation {
+			continue
+		}
+		switch event.Runner["kind"] {
+		case journal.ChildWaitKind:
+			request, ok := childWaitRequest(event)
+			if ok && request.ParentRunID == parentRunID {
+				active[event.Branch] = activeWait{request.ChildRunID, request.RequestID, request.Action, event.Time}
+				requests[request.RequestID] = request
+				key := childObservationKey{parentRunID: parentRunID, childRunID: request.ChildRunID}
+				observation := out[key]
+				if request.Action != "wait" {
+					observation.Disposition = request.Action
+				}
+				out[key] = observation
+			}
+		case journal.ChildContinuedKind:
+			wait, ok := active[event.Branch]
+			if !ok || event.Runner["requestId"] != wait.requestID || event.Time.Before(wait.started) {
+				continue
+			}
+			key := childObservationKey{parentRunID: parentRunID, childRunID: wait.childRunID}
+			observation := out[key]
+			observation.ParentWait += event.Time.Sub(wait.started)
+			if wait.action != "wait" {
+				observation.Disposition = wait.action
+			}
+			out[key] = observation
+			delete(active, event.Branch)
+		}
+	}
+	for _, artifact := range artifacts {
+		var completion struct {
+			Request struct {
+				ParentRunID string `json:"parentRunId"`
+				RequestID   string `json:"requestId"`
+				ChildRunID  string `json:"childRunId"`
+				Action      string `json:"action"`
+			} `json:"request"`
+			Completion struct {
+				Publications []struct {
+					Action string `json:"action"`
+					State  string `json:"state"`
+				} `json:"publications"`
+			} `json:"completion"`
+		}
+		if json.Unmarshal(artifact.data, &completion) != nil {
+			continue
+		}
+		request, ok := requests[completion.Request.RequestID]
+		if !ok || completion.Request.ParentRunID != parentRunID ||
+			completion.Request.ChildRunID != request.ChildRunID || completion.Request.Action != request.Action {
+			continue
+		}
+		key := childObservationKey{parentRunID: parentRunID, childRunID: completion.Request.ChildRunID}
+		observation := out[key]
+		if completion.Request.Action != "wait" {
+			observation.Disposition = completion.Request.Action
+		}
+		if observation.PublicationState == nil {
+			observation.PublicationState = map[string]string{}
+		}
+		observation.CompletionSeen = true
+		for _, publication := range completion.Completion.Publications {
+			if publication.Action == "branch" || publication.Action == "pr" {
+				observation.PublicationState[publication.Action] = publication.State
+			}
+		}
+		out[key] = observation
+	}
+	return out
+}
+
+func mergeChildObservation(a, b ChildBehaviorObservation) ChildBehaviorObservation {
+	a.ParentWait += b.ParentWait
+	if b.Disposition != "" {
+		a.Disposition = b.Disposition
+	}
+	a.CompletionSeen = a.CompletionSeen || b.CompletionSeen
+	if a.PublicationState == nil {
+		a.PublicationState = map[string]string{}
+	}
+	for action, state := range b.PublicationState {
+		a.PublicationState[action] = state
+	}
+	return a
 }

@@ -27,6 +27,7 @@ func syntheticRun(names [2]string) BehaviorInput {
 	at := func(s int) time.Time { return behaviorEpoch.Add(time.Duration(s) * time.Second) }
 	childWait := map[string]any{"version": 1, "request": map[string]any{"childRunId": "child-1", "action": "merge"}}
 	return BehaviorInput{
+		TaskCohort: "cohort-a",
 		Identity: journal.RunIdentity{
 			RunID: "run-1", Gaggle: "g", Workflow: "wf", WorkflowDigest: "sha256:wf", GooberDigest: "sha256:gb",
 			RunControls: &apiv1.RunControls{MaxRunDuration: "100s", MaxRepasses: 2},
@@ -45,6 +46,9 @@ func syntheticRun(names [2]string) BehaviorInput {
 			{Kind: telemetry.SpanKindTask, Attributes: map[string]string{
 				telemetry.AttrModel: "m", telemetry.AttrHarnessVersion: "copilot-1", telemetry.AttrGenAIUsageInputTokens: "100",
 				telemetry.AttrGenAIUsageOutputTokens: "10", telemetry.AttrUsageCostUSD: "0.5",
+			}, Events: []telemetry.SpanEventRecord{
+				{Name: "harness.tool_call", Attributes: map[string]string{"tool": "functions.apply_patch"}},
+				{Name: "harness.tool_call", Attributes: map[string]string{"tool": "functions.powershell"}},
 			}},
 			{Kind: telemetry.SpanKindRun, Attributes: map[string]string{telemetry.AttrGenAIUsageInputTokens: "100"}},
 		},
@@ -80,6 +84,7 @@ func TestExtractBehaviorIsDeterministicAndNameFree(t *testing.T) {
 		"nearMiss.repass": 1, "nearMiss.timeout": 1, "children.spawned": 1, "children.merge": 1,
 		"child.generated": 0, "duration.log1pSeconds": math.Log1p(90),
 		"usage.log1pInputTokens": math.Log1p(100), "usage.log1pCostCents": math.Log1p(50),
+		"tools.filesystem": 1, "tools.shell": 1,
 	}
 	for name, value := range want {
 		if got, ok := first.Numeric[name]; !ok || math.Abs(got-value) > 1e-9 {
@@ -98,12 +103,39 @@ func TestExtractBehaviorIsDeterministicAndNameFree(t *testing.T) {
 func TestExtractBehaviorLinksChildRunLineage(t *testing.T) {
 	in := syntheticRun([2]string{"a", "b"})
 	in.Identity.Child = &journal.ChildLineage{ParentRunID: "parent-1", ParentWorkflow: "wf", SourceDigest: "sha256:proposal"}
+	in.ChildObservation = &ChildBehaviorObservation{
+		Disposition: "replace", ParentWait: 12 * time.Second,
+		PublicationState: map[string]string{"branch": "confirmed", "pr": "effect_pending"},
+		CompletionSeen:   true,
+	}
 	d, err := ExtractBehavior(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d.Lineage == nil || d.Lineage.ParentRunID != "parent-1" || d.Lineage.SourceDigest != "sha256:proposal" || d.Numeric["child.generated"] != 1 {
 		t.Fatalf("child lineage = %+v, generated = %v", d.Lineage, d.Numeric["child.generated"])
+	}
+	if d.Numeric["child.stages.generated"] != 2 || d.Numeric["child.disposition.replace"] != 1 ||
+		d.Numeric["child.publication.branch.confirmed"] != 1 || d.Numeric["child.publication.pr.effect_pending"] != 1 ||
+		d.Numeric["child.parentWait.log1pSeconds"] != math.Log1p(12) {
+		t.Fatalf("child features = %+v", d.Numeric)
+	}
+}
+
+func TestToolCategoryUsesFixedStructuralBuckets(t *testing.T) {
+	tests := map[string]string{
+		"functions.delegate":         "agent",
+		"functions.rg":               "filesystem",
+		"functions.fetch":            "network",
+		"goobers-io-read_input":      "orchestration",
+		"github.search_issues":       "provider",
+		"functions.powershell":       "shell",
+		"unrecognized-custom-method": "other",
+	}
+	for tool, want := range tests {
+		if got := toolCategory(tool); got != want {
+			t.Errorf("%q category = %q, want %q", tool, got, want)
+		}
 	}
 }
 
@@ -132,16 +164,18 @@ func TestExtractBehaviorExcludesUndefinedAndNonTerminalRuns(t *testing.T) {
 func TestSummarizeBehaviorDistributionsAndMinSamples(t *testing.T) {
 	descriptor := func(run, workflow string, visits float64) BehaviorDescriptor {
 		return BehaviorDescriptor{RunID: run, Gaggle: "g", Workflow: workflow, EffectiveVersion: "sha256:0123456789abcdef0123",
-			Numeric: map[string]float64{"visits.total": visits}}
+			TaskCohort: "review", Numeric: map[string]float64{"visits.total": visits}}
 	}
 	ds := []BehaviorDescriptor{
 		descriptor("r4", "a", 4), descriptor("r1", "a", 1), descriptor("r3", "a", 3), descriptor("r2", "a", 2),
 		descriptor("r5", "b", 9),
 	}
 	got := SummarizeBehavior(ds, 2)
-	if len(got) != 1 || got[0].ID != "g/a@0123456789abcdef" || got[0].SampleCount != 4 {
+	if len(got) != 1 || !strings.HasPrefix(got[0].ID, "g/a@0123456789abcdef~") ||
+		got[0].TaskCohort != "review" || got[0].SampleCount != 4 {
 		t.Fatalf("summaries = %+v", got)
 	}
+
 	if d := got[0].Features["visits.total"]; d != (Distribution{Mean: 2.5, P50: 2, P90: 4, Variance: 1.25}) {
 		t.Fatalf("distribution = %+v", d)
 	}
@@ -156,6 +190,144 @@ func TestSummarizeBehaviorDistributionsAndMinSamples(t *testing.T) {
 	}
 }
 
+func TestSummarizeBehaviorSeparatesTaskCohorts(t *testing.T) {
+	base := BehaviorDescriptor{
+		Gaggle: "g", Workflow: "wf", EffectiveVersion: "sha256:0123456789abcdef",
+		Numeric: map[string]float64{"visits.total": 1},
+	}
+	a, b := base, base
+	a.RunID, a.TaskCohort = "a", "review"
+	b.RunID, b.TaskCohort = "b", "implementation"
+	got := SummarizeBehavior([]BehaviorDescriptor{a, b}, 1)
+	if len(got) != 2 || got[0].ID == got[1].ID || got[0].TaskCohort == got[1].TaskCohort {
+		t.Fatalf("task cohorts were pooled: %+v", got)
+	}
+}
+
+func TestReadChildObservationsJoinsWaitDispositionAndPublication(t *testing.T) {
+	at := func(seconds int) time.Time { return behaviorEpoch.Add(time.Duration(seconds) * time.Second) }
+	wait := func(requestID, action string, started int) journal.Event {
+		return journal.Event{
+			Type: journal.EventRunnerAnnotation, Time: at(started),
+			Runner: map[string]any{
+				"kind": journal.ChildWaitKind,
+				"childWait": map[string]any{"request": map[string]any{
+					"parentRunId": "parent-1", "requestId": requestID, "childRunId": "child-1", "action": action,
+				}},
+			},
+		}
+	}
+	events := []journal.Event{
+		wait("request-1", "wait", 2),
+		{Type: journal.EventRunnerAnnotation, Time: at(7), Runner: map[string]any{"kind": journal.ChildContinuedKind, "requestId": "request-1"}},
+		wait("request-2", "merge", 10),
+		{Type: journal.EventRunnerAnnotation, Time: at(13), Runner: map[string]any{"kind": journal.ChildContinuedKind, "requestId": "request-2"}},
+	}
+	artifact := behaviorArtifact{data: []byte(`{
+		"request":{"parentRunId":"parent-1","requestId":"request-2","childRunId":"child-1","action":"merge"},
+		"completion":{"publications":[
+			{"action":"branch","state":"confirmed"},
+			{"action":"pr","state":"prepared"}
+		]}}`)}
+	key := childObservationKey{parentRunID: "parent-1", childRunID: "child-1"}
+	got := readChildObservations("parent-1", events, []behaviorArtifact{artifact})[key]
+	if got.Disposition != "merge" || got.ParentWait != 8*time.Second ||
+		got.PublicationState["branch"] != "confirmed" || got.PublicationState["pr"] != "prepared" || !got.CompletionSeen {
+		t.Fatalf("observation = %+v", got)
+	}
+}
+
+func TestScanBehaviorJoinsChildObservationToMatchingParent(t *testing.T) {
+	root := t.TempDir()
+	runsDir := instance.NewLayout(root).ForGaggle("g").RunsDir()
+	now := behaviorEpoch
+	parent, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "parent-1", Gaggle: "g", Workflow: "parent", WorkflowDigest: "sha256:parent",
+	}, nil, journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = behaviorEpoch.Add(2 * time.Second)
+	wait := map[string]any{"request": map[string]any{
+		"parentRunId": "parent-1", "requestId": "request-1", "childRunId": "child-1", "action": "merge",
+	}}
+	if err := parent.Append(journal.Event{
+		Type:   journal.EventRunnerAnnotation,
+		Runner: map[string]any{"kind": journal.ChildWaitKind, "childWait": wait},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = behaviorEpoch.Add(7 * time.Second)
+	if err := parent.Append(journal.Event{
+		Type:   journal.EventRunnerAnnotation,
+		Runner: map[string]any{"kind": journal.ChildContinuedKind, "requestId": "request-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	completion := []byte(`{
+		"request":{"parentRunId":"parent-1","requestId":"request-1","childRunId":"child-1","action":"merge"},
+		"completion":{"publications":[{"action":"branch","state":"confirmed"}]}}`)
+	if _, err := parent.RecordStageArtifact("parent", 1, "", "child-1-completion.json", completion); err != nil {
+		t.Fatal(err)
+	}
+	now = behaviorEpoch.Add(8 * time.Second)
+	if err := parent.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "child-1", Gaggle: "g", Workflow: "child",
+		WorkflowDigest:   "sha256:" + strings.Repeat("1", 64),
+		GooberDigest:     "sha256:" + strings.Repeat("2", 64),
+		ConfigGeneration: "sha256:" + strings.Repeat("3", 64),
+		Child: &journal.ChildLineage{
+			Gaggle: "g", ParentRunID: "parent-1", ParentWorkflow: "parent",
+			StageOccurrence: "parent/branch0/visit1", InvocationKey: "parent",
+			AcceptanceID: "trigger-child-1", SourceDigest: "sha256:" + strings.Repeat("4", 64),
+			EnvelopeDigest: "sha256:" + strings.Repeat("5", 64),
+		},
+	}, nil, journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = behaviorEpoch
+	if err := child.Append(journal.Event{Type: journal.EventStageStarted, Stage: "generated", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now = behaviorEpoch.Add(time.Second)
+	if err := child.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	scan, err := ScanBehavior(root, BehaviorScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, descriptor := range scan.Descriptors {
+		if descriptor.RunID != "child-1" {
+			continue
+		}
+		if descriptor.Numeric["child.parentWait.log1pSeconds"] != math.Log1p(5) ||
+			descriptor.Numeric["child.disposition.merge"] != 1 ||
+			descriptor.Numeric["child.publication.branch.confirmed"] != 1 ||
+			descriptor.Numeric["child.publication.pr.none"] != 1 {
+			t.Fatalf("child descriptor = %+v", descriptor)
+		}
+		return
+	}
+	t.Fatalf("child descriptor missing from %+v", scan)
+}
+
 // writeJournal records a synthetic terminal run under the instance root.
 func writeJournal(t *testing.T, root, gaggle, runID, workflow, digest string, visits int, status journal.RunPhase) string {
 	t.Helper()
@@ -163,7 +335,9 @@ func writeJournal(t *testing.T, root, gaggle, runID, workflow, digest string, vi
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Gaggle: gaggle, Workflow: workflow, WorkflowVersion: 1, WorkflowDigest: digest,
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-	}, nil)
+	}, map[string][]byte{
+		journal.PinnedWorkflowDefinitionInputName: []byte(`{"Spec":{"triggers":[{"type":"manual"}]}}`),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +376,8 @@ func TestScanBehaviorReadsJournalsReadOnlyAndAccountsExclusions(t *testing.T) {
 	if scan.Candidates != 5 || len(scan.Descriptors) != 3 || scan.UndefinedProvenance != 1 || scan.NonTerminal != 1 {
 		t.Fatalf("scan = %+v", scan)
 	}
-	if scan.Descriptors[0].RunID != "run-a1" || scan.Descriptors[2].Numeric["visits.total"] != 3 {
+	if scan.Descriptors[0].RunID != "run-a1" || scan.Descriptors[0].TaskCohort == "" ||
+		scan.Descriptors[2].Numeric["visits.total"] != 3 {
 		t.Fatalf("descriptors = %+v", scan.Descriptors)
 	}
 	after, _ := os.ReadFile(filepath.Join(dir, "events.jsonl"))
