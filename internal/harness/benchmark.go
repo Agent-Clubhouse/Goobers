@@ -30,6 +30,11 @@ const (
 	// mutation; the rest of the name is that mutation's top-level field, as
 	// in "graphql-mutation:resolveReviewThread".
 	BenchmarkGraphQLMutationExchangePrefix = "graphql-mutation:"
+	// BenchmarkGraphQLQueryExchangePrefix prefixes the name of a recorded
+	// POST /graphql exchange that answers one GraphQL query; the rest of the
+	// name is the query's operation name, or its single top-level field when
+	// the query is anonymous, as in "graphql-query:PollMergeQueueEntry".
+	BenchmarkGraphQLQueryExchangePrefix = "graphql-query:"
 )
 
 // BenchmarkFixture is one recorded benchmark task, expressed only in the
@@ -40,10 +45,12 @@ type BenchmarkFixture struct {
 	// every request, and any other recorded exchange is the fixture's
 	// declaration of a virtual sink for exactly that mutation, consumed once.
 	// GitHub GraphQL shares POST /graphql for every operation, so the
-	// document decides: a query is a read served by any recorded GraphQL
-	// exchange that is not a mutation sink, and a mutation is served once,
-	// only by an exchange named BenchmarkGraphQLMutationExchangePrefix plus
-	// its single top-level field. Anything else fails closed.
+	// document decides: a query is a read served on every request, but only
+	// by an exchange named BenchmarkGraphQLQueryExchangePrefix plus its
+	// operation name (or single top-level field when anonymous); an unmatched
+	// query is a virtualization gap. A mutation is served once, only by an
+	// exchange named BenchmarkGraphQLMutationExchangePrefix plus its single
+	// top-level field; anything else fails closed.
 	Provider providerfixture.Fixture
 	// Events is the recorded stage journal in seq order.
 	Events []journal.Event

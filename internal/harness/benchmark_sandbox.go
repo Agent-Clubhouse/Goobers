@@ -234,38 +234,40 @@ type benchmarkOperation struct {
 	// graphQL marks a request to the GitHub GraphQL endpoint, where every
 	// operation shares POST /graphql and only the document tells them apart.
 	graphQL bool
-	// mutation is the single top-level field of a GraphQL mutation document,
-	// or "" when the document names none or several.
-	mutation string
+	// binding identifies a GraphQL operation: a query's operation name (or
+	// its single top-level field when unnamed), or a mutation's single
+	// top-level field. It is "" when the document identifies none.
+	binding string
 }
 
 // servedBy reports whether the recorded exchange named name may answer op.
-// REST requests are bound by method and path alone. A GraphQL mutation is
-// served only by an exchange bound to its exact mutation field; a GraphQL
-// query is served by any GraphQL exchange that is not a mutation sink.
+// REST requests are bound by method and path alone. A GraphQL operation is
+// served only by an exchange bound to exactly that query or mutation.
 func (op benchmarkOperation) servedBy(name string) bool {
 	if !op.graphQL {
 		return true
 	}
-	field, isSink := strings.CutPrefix(name, BenchmarkGraphQLMutationExchangePrefix)
+	prefix := BenchmarkGraphQLMutationExchangePrefix
 	if op.effect == BenchmarkEffectProviderRead {
-		return !isSink
+		prefix = BenchmarkGraphQLQueryExchangePrefix
 	}
-	return isSink && op.mutation != "" && field == op.mutation
+	binding, bound := strings.CutPrefix(name, prefix)
+	return bound && op.binding != "" && binding == op.binding
 }
 
 // target qualifies a violation target with the GraphQL operation, if any.
 func (op benchmarkOperation) target() string {
-	switch {
-	case !op.graphQL:
+	if !op.graphQL {
 		return ""
-	case op.effect == BenchmarkEffectProviderRead:
-		return " query"
-	case op.mutation == "":
-		return " mutation"
-	default:
-		return " mutation " + op.mutation
 	}
+	kind := " mutation"
+	if op.effect == BenchmarkEffectProviderRead {
+		kind = " query"
+	}
+	if op.binding == "" {
+		return kind
+	}
+	return kind + " " + op.binding
 }
 
 func classifyBenchmarkRequest(method, path string, body []byte) benchmarkOperation {

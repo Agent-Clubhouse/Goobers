@@ -427,6 +427,8 @@ const (
 		`"mergeCommit":null,"mergeQueueEntry":{"state":"QUEUED","position":1},"labels":{"nodes":[]}}}}}`
 	benchmarkGraphQLUnqueuedPullRead = `{"data":{"repository":{"pullRequest":{"id":"PR_8","state":"OPEN",` +
 		`"merged":false,"mergeCommit":null,"mergeQueueEntry":null}}}}`
+	benchmarkGraphQLMergedPullRead = `{"data":{"repository":{"pullRequest":{"id":"PR_8","state":"MERGED","merged":true,` +
+		`"mergeCommit":{"oid":"c0ffee"},"mergeQueueEntry":null,"labels":{"nodes":[]}}}}}`
 	benchmarkGraphQLResolved = `{"data":{"resolveReviewThread":{"thread":{"id":"RT_1","isResolved":true}}}}`
 )
 
@@ -438,7 +440,7 @@ func TestBenchmarkGraphQLMutationsFailClosed(t *testing.T) {
 		target    string
 	}{
 		"merge through graphql": {
-			exchanges: map[string]string{"lookup-pull": benchmarkGraphQLUnqueuedPullRead},
+			exchanges: map[string]string{BenchmarkGraphQLQueryExchangePrefix + "EnqueuePullRequestLookup": benchmarkGraphQLUnqueuedPullRead},
 			effect:    BenchmarkEffectMerge, target: "POST /graphql mutation enqueuePullRequest",
 			act: func(ctx context.Context, p *providers.GitHubProvider) error {
 				_, err := p.EnqueuePullRequest(ctx, providers.EnqueuePullRequestRequest{Repository: benchmarkTestRepo, PullID: "8"})
@@ -447,7 +449,7 @@ func TestBenchmarkGraphQLMutationsFailClosed(t *testing.T) {
 		},
 		"unrelated read or sink cannot satisfy a mutation": {
 			exchanges: map[string]string{
-				"poll-merge-queue": benchmarkGraphQLPullRead,
+				BenchmarkGraphQLQueryExchangePrefix + "PollMergeQueueEntry":   benchmarkGraphQLPullRead,
 				BenchmarkGraphQLMutationExchangePrefix + "dequeuePullRequest": benchmarkGraphQLResolved,
 			},
 			effect: BenchmarkEffectProviderWrite, target: "POST /graphql mutation resolveReviewThread",
@@ -482,30 +484,46 @@ func TestBenchmarkGraphQLMutationsFailClosed(t *testing.T) {
 	}
 }
 
-func TestBenchmarkGraphQLReadsAreRepeatable(t *testing.T) {
-	_, report, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil),
-		map[string]string{"poll-merge-queue": benchmarkGraphQLPullRead}),
+func TestBenchmarkGraphQLQueriesAreBoundToTheirOperation(t *testing.T) {
+	exchanges := map[string]string{
+		BenchmarkGraphQLQueryExchangePrefix + "EnqueuePullRequestLookup": benchmarkGraphQLPullRead,
+		BenchmarkGraphQLQueryExchangePrefix + "PollMergeQueueEntry":      benchmarkGraphQLMergedPullRead,
+	}
+	_, report, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil), exchanges),
 		func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
 			provider, err := s.GitHubProvider()
 			if err != nil {
 				return err
+			}
+			enqueued, err := provider.EnqueuePullRequest(ctx, providers.EnqueuePullRequestRequest{Repository: benchmarkTestRepo, PullID: "8"})
+			if err != nil {
+				return err
+			}
+			if enqueued.Merged || !strings.Contains(enqueued.Message, "already enqueued") {
+				return fmt.Errorf("enqueue = %+v, want the recorded lookup's queued entry", enqueued)
 			}
 			for range 2 {
 				result, err := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: benchmarkTestRepo, PullID: "8"})
 				if err != nil {
 					return err
 				}
-				if result.State != providers.MergeQueueEntryPending {
-					return fmt.Errorf("poll state = %q, want pending", result.State)
+				if result.State != providers.MergeQueueEntryMerged || result.MergeSHA != "c0ffee" {
+					return fmt.Errorf("poll = %+v, want the recorded poll's merged state", result)
 				}
 			}
 			return nil
 		})
 	if err != nil || report.Status != "success" || len(report.Receipts) != 0 {
-		t.Fatalf("Run = %v, status %q receipts %+v; want repeated reads served", err, report.Status, report.Receipts)
+		t.Fatalf("Run = %v, status %q receipts %+v; want each query served its own recorded read", err, report.Status, report.Receipts)
 	}
+}
 
-	_, _, err = runBenchmark(t, loadBenchmarkTestFixture(t, nil),
+func TestBenchmarkUnmatchedGraphQLQueryIsAGap(t *testing.T) {
+	exchanges := map[string]string{
+		BenchmarkGraphQLQueryExchangePrefix + "EnqueuePullRequestLookup": benchmarkGraphQLPullRead,
+		"unbound-poll": benchmarkGraphQLMergedPullRead,
+	}
+	_, report, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil), exchanges),
 		func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
 			provider, err := s.GitHubProvider()
 			if err != nil {
@@ -515,7 +533,10 @@ func TestBenchmarkGraphQLReadsAreRepeatable(t *testing.T) {
 			return err
 		})
 	if !errors.Is(err, ErrBenchmarkVirtualizationGap) {
-		t.Fatalf("unrecorded GraphQL read error = %v, want virtualization gap", err)
+		t.Fatalf("Run error = %v, want virtualization gap", err)
+	}
+	if len(report.Violations) != 1 || report.Violations[0].Target != "POST /graphql query PollMergeQueueEntry" {
+		t.Fatalf("violations = %+v, want the unmatched query reported", report.Violations)
 	}
 }
 

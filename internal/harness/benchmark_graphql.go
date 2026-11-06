@@ -29,20 +29,45 @@ func classifyBenchmarkGraphQL(body []byte) benchmarkOperation {
 	if err := json.Unmarshal(body, &request); err != nil || strings.TrimSpace(request.Query) == "" {
 		return benchmarkOperation{effect: BenchmarkEffectProviderWrite, graphQL: true}
 	}
-	if !providers.IsGraphQLMutation(request.Query) {
-		return benchmarkOperation{effect: BenchmarkEffectProviderRead, graphQL: true}
-	}
-	op := benchmarkOperation{effect: BenchmarkEffectProviderWrite, graphQL: true}
+	var field string
 	if fields := graphQLTopLevelFields(request.Query); len(fields) == 1 {
-		op.mutation = fields[0]
+		field = fields[0]
 	}
+	if !providers.IsGraphQLMutation(request.Query) {
+		binding := graphQLOperationName(request.Query)
+		if binding == "" {
+			binding = field
+		}
+		return benchmarkOperation{effect: BenchmarkEffectProviderRead, graphQL: true, binding: binding}
+	}
+	op := benchmarkOperation{effect: BenchmarkEffectProviderWrite, graphQL: true, binding: field}
 	switch {
-	case benchmarkGraphQLMergeMutations[op.mutation]:
+	case benchmarkGraphQLMergeMutations[field]:
 		op.effect = BenchmarkEffectMerge
-	case op.mutation == "addComment":
+	case field == "addComment":
 		op.effect = BenchmarkEffectComment
 	}
 	return op
+}
+
+// graphQLOperationName returns the name of a document's first operation,
+// as in "query PollMergeQueueEntry(...)", or "" when it is anonymous.
+func graphQLOperationName(document string) string {
+	rest := strings.TrimSpace(document)
+	for _, keyword := range []string{"query", "mutation", "subscription"} {
+		if after, ok := strings.CutPrefix(rest, keyword); ok && (after == "" || !isGraphQLNameChar(after[0])) {
+			rest = strings.TrimLeft(after, " \t\r\n,")
+			end := 0
+			for end < len(rest) && isGraphQLNameChar(rest[end]) {
+				end++
+			}
+			if end > 0 && isGraphQLNameStart(rest[0]) {
+				return rest[:end]
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 // graphQLTopLevelFields returns the field names (aliases resolved) selected
