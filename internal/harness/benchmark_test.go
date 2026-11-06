@@ -564,3 +564,126 @@ func TestBenchmarkBoundGraphQLMutationIsVirtualizedOnce(t *testing.T) {
 		t.Fatalf("second mutation = %v, Run = %v; want the consumed sink to deny it", second, err)
 	}
 }
+
+func benchmarkExchange(method, path, name, body string) providerfixture.Exchange {
+	return providerfixture.Exchange{
+		Name: name, Method: method, Path: path,
+		Response: providerfixture.FixtureResponse{Status: http.StatusOK, Body: json.RawMessage(body)},
+	}
+}
+
+func reviewThreadsPage(threadID string, commentID int, cursor string) string {
+	return fmt.Sprintf(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":%q,"isResolved":true,`+
+		`"path":"login.go","comments":{"nodes":[{"databaseId":%d}]}}],"pageInfo":{"hasNextPage":%t,"endCursor":%q}}}}}}`,
+		threadID, commentID, cursor != "", cursor)
+}
+
+func reviewThreadsAct(threads *providers.PullRequestReviewThreads) BenchmarkAct {
+	return func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+		provider, err := s.GitHubProvider()
+		if err != nil {
+			return err
+		}
+		*threads, err = provider.ListPullRequestReviewThreads(ctx, benchmarkTestRepo, "8")
+		return err
+	}
+}
+
+func reviewThreadsFixture(t *testing.T, pages ...string) BenchmarkFixture {
+	t.Helper()
+	fixture := loadBenchmarkTestFixture(t, nil)
+	fixture.Provider.Exchanges = append(fixture.Provider.Exchanges,
+		benchmarkExchange(http.MethodGet, "/repos/acme/web/pulls/8/reviews?per_page=100", "reviews", `[]`),
+		benchmarkExchange(http.MethodGet, "/repos/acme/web/pulls/8/comments?per_page=100", "inline-comments",
+			`[{"id":101,"body":"one","path":"login.go"},{"id":202,"body":"two","path":"login.go"}]`))
+	for _, page := range pages {
+		fixture.Provider.Exchanges = append(fixture.Provider.Exchanges, benchmarkExchange(http.MethodPost, "/graphql",
+			BenchmarkGraphQLQueryExchangePrefix+"PullRequestReviewThreads", page))
+	}
+	return fixture
+}
+
+func TestBenchmarkPaginatedGraphQLReplayReachesLastPage(t *testing.T) {
+	var threads providers.PullRequestReviewThreads
+	_, report, err := runBenchmark(t, reviewThreadsFixture(t,
+		reviewThreadsPage("RT_1", 101, "CURSOR_1"), reviewThreadsPage("RT_2", 202, "")), reviewThreadsAct(&threads))
+	if err != nil || report.Status != "success" {
+		t.Fatalf("Run = %v, status %q; want both pages replayed", err, report.Status)
+	}
+	if len(threads.InlineComments) != 2 || threads.InlineComments[1].ThreadID != "RT_2" {
+		t.Fatalf("inline comments = %+v, want comment 202 bound to the page-2 thread", threads.InlineComments)
+	}
+}
+
+func TestBenchmarkGraphQLReadPastFixtureIsAGap(t *testing.T) {
+	var threads providers.PullRequestReviewThreads
+	_, report, err := runBenchmark(t, reviewThreadsFixture(t, reviewThreadsPage("RT_1", 101, "CURSOR_1")), reviewThreadsAct(&threads))
+	if !errors.Is(err, ErrBenchmarkVirtualizationGap) {
+		t.Fatalf("Run error = %v, want the unrecorded page reported as a gap", err)
+	}
+	if len(report.Violations) != 1 || report.Violations[0].Target != "POST /graphql query PullRequestReviewThreads" {
+		t.Fatalf("violations = %+v", report.Violations)
+	}
+}
+
+func TestBenchmarkGraphQLPollReplaysStateChanges(t *testing.T) {
+	fixture := loadBenchmarkTestFixture(t, nil)
+	poll := BenchmarkGraphQLQueryExchangePrefix + "PollMergeQueueEntry"
+	fixture.Provider.Exchanges = append(fixture.Provider.Exchanges,
+		benchmarkExchange(http.MethodPost, "/graphql", poll, benchmarkGraphQLPullRead),
+		benchmarkExchange(http.MethodPost, "/graphql", poll, benchmarkGraphQLMergedPullRead))
+	var states []providers.MergeQueueEntryState
+	_, _, err := runBenchmark(t, fixture, func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+		provider, err := s.GitHubProvider()
+		if err != nil {
+			return err
+		}
+		for range 3 {
+			result, err := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: benchmarkTestRepo, PullID: "8"})
+			if err != nil {
+				return err
+			}
+			states = append(states, result.State)
+		}
+		return nil
+	})
+	want := []providers.MergeQueueEntryState{providers.MergeQueueEntryPending, providers.MergeQueueEntryMerged, providers.MergeQueueEntryMerged}
+	if err != nil || !slices.Equal(states, want) {
+		t.Fatalf("Run = %v, poll states = %v; want %v", err, states, want)
+	}
+}
+
+func TestBenchmarkRunawayGraphQLPollFailsClosed(t *testing.T) {
+	_, _, err := runBenchmark(t, withGraphQLExchanges(loadBenchmarkTestFixture(t, nil),
+		map[string]string{BenchmarkGraphQLQueryExchangePrefix + "PollMergeQueueEntry": benchmarkGraphQLPullRead}),
+		func(ctx context.Context, _ RunRequest, s *BenchmarkSandbox) error {
+			provider, err := s.GitHubProvider()
+			if err != nil {
+				return err
+			}
+			for {
+				if _, err := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: benchmarkTestRepo, PullID: "8"}); err != nil {
+					return err
+				}
+			}
+		})
+	if !errors.Is(err, ErrBenchmarkVirtualizationGap) {
+		t.Fatalf("Run error = %v, want a non-converging poll reported as a gap", err)
+	}
+}
+
+func TestBenchmarkProviderRequestHonorsCancellation(t *testing.T) {
+	sandbox := newBenchmarkTestSandbox(t, loadBenchmarkTestFixture(t, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, BenchmarkProviderBaseURL+"/repos/acme/web/issues/7", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sandbox.Do(req); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Do error = %v, want context.Canceled", err)
+	}
+	if report, err := sandbox.Report(); err != nil || len(report.Violations) != 0 {
+		t.Fatalf("report = %+v, %v; want cancellation to be no boundary violation", report, err)
+	}
+}

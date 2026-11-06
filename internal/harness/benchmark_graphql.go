@@ -24,7 +24,8 @@ var benchmarkGraphQLMergeMutations = map[string]bool{
 // exchange can serve it.
 func classifyBenchmarkGraphQL(body []byte) benchmarkOperation {
 	var request struct {
-		Query string `json:"query"`
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
 	}
 	if err := json.Unmarshal(body, &request); err != nil || strings.TrimSpace(request.Query) == "" {
 		return benchmarkOperation{effect: BenchmarkEffectProviderWrite, graphQL: true}
@@ -38,7 +39,9 @@ func classifyBenchmarkGraphQL(body []byte) benchmarkOperation {
 		if binding == "" {
 			binding = field
 		}
-		return benchmarkOperation{effect: BenchmarkEffectProviderRead, graphQL: true, binding: binding}
+		// Map keys marshal sorted, so equal variables yield equal JSON.
+		variables, _ := json.Marshal(request.Variables)
+		return benchmarkOperation{effect: BenchmarkEffectProviderRead, graphQL: true, binding: binding, variables: string(variables)}
 	}
 	op := benchmarkOperation{effect: BenchmarkEffectProviderWrite, graphQL: true, binding: field}
 	switch {

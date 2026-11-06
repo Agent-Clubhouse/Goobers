@@ -34,6 +34,10 @@ const (
 	BenchmarkErrorSessionFailed = "workflow_gym_session_failed"
 
 	benchmarkVirtualSinkAnnotation = "workflow-gym.virtual-sink"
+
+	// maxBenchmarkReadRepeats caps how many reads one recorded exchange may
+	// answer before the replay is reported as a virtualization gap.
+	maxBenchmarkReadRepeats = 64
 )
 
 var (
@@ -123,6 +127,8 @@ type BenchmarkSandbox struct {
 	workspace  string
 	stage      string
 	consumed   []bool
+	served     []int
+	variables  []string
 	events     []journal.Event
 	receipts   []BenchmarkReceipt
 	violations []*BenchmarkViolation
@@ -144,10 +150,12 @@ func NewBenchmarkSandbox(fixture BenchmarkFixture) (*BenchmarkSandbox, error) {
 		return nil, err
 	}
 	return &BenchmarkSandbox{
-		fixture:  fixture,
-		session:  session,
-		consumed: make([]bool, len(fixture.Provider.Exchanges)),
-		events:   []journal.Event{benchmarkEvent(journal.EventRunStarted)},
+		fixture:   fixture,
+		session:   session,
+		consumed:  make([]bool, len(fixture.Provider.Exchanges)),
+		served:    make([]int, len(fixture.Provider.Exchanges)),
+		variables: make([]string, len(fixture.Provider.Exchanges)),
+		events:    []journal.Event{benchmarkEvent(journal.EventRunStarted)},
 	}, nil
 }
 
@@ -174,8 +182,12 @@ func (s *BenchmarkSandbox) GitHubProvider() (*providers.GitHubProvider, error) {
 	return provider, nil
 }
 
-// Do serves provider HTTP requests from recorded exchanges only.
+// Do serves provider HTTP requests from recorded exchanges only. A request
+// whose context is already done is refused without touching the fixture.
 func (s *BenchmarkSandbox) Do(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, fmt.Errorf("workflow gym: provider request %s %s: %w", req.Method, req.URL.Path, err)
+	}
 	path := req.URL.RequestURI()
 	body, err := readBenchmarkRequestBody(req)
 	if err != nil {
@@ -191,22 +203,69 @@ func (s *BenchmarkSandbox) Do(req *http.Request) (*http.Response, error) {
 		return nil, s.violate(mutationDenied(BenchmarkEffectCredentialRead, req.Method+" "+path,
 			"provider request carries a credential other than the benchmark virtual token"))
 	}
+	target := req.Method + " " + path + op.target()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if op.graphQL && op.effect == BenchmarkEffectProviderRead {
+		return s.serveGraphQLReadLocked(req, op, path, target)
+	}
 	for i, exchange := range s.fixture.Provider.Exchanges {
 		if exchange.Method != req.Method || exchange.Path != path || !op.servedBy(exchange.Name) {
 			continue
 		}
-		if op.effect != BenchmarkEffectProviderRead {
-			if s.consumed[i] {
-				continue
-			}
-			s.consumed[i] = true
-			s.recordReceiptLocked(BenchmarkReceipt{Effect: op.effect, Exchange: exchange.Name, Method: req.Method, Path: path})
+		if op.effect == BenchmarkEffectProviderRead {
+			return s.serveReadLocked(req, i, op.variables, target)
 		}
+		if s.consumed[i] {
+			continue
+		}
+		s.consumed[i] = true
+		s.recordReceiptLocked(BenchmarkReceipt{Effect: op.effect, Exchange: exchange.Name, Method: req.Method, Path: path})
 		return benchmarkResponse(req, exchange.Response.Status, exchange.Response.Headers, exchange.Response.Body), nil
 	}
-	return nil, s.violateLocked(gapOrDenial(op.effect, req.Method+" "+path+op.target(), "no recorded exchange"))
+	return nil, s.violateLocked(gapOrDenial(op.effect, target, "no recorded exchange"))
+}
+
+// serveGraphQLReadLocked replays the exchanges bound to one GraphQL query in
+// recorded order, so successive pages and changing poll states replay as
+// recorded. Once they are exhausted, the last response answers only exact
+// repeats of the request it last answered; a read with different variables
+// (such as the next page's cursor) is past what the fixture recorded.
+func (s *BenchmarkSandbox) serveGraphQLReadLocked(req *http.Request, op benchmarkOperation, path, target string) (*http.Response, error) {
+	last := -1
+	for i, exchange := range s.fixture.Provider.Exchanges {
+		if exchange.Method != req.Method || exchange.Path != path || !op.servedBy(exchange.Name) {
+			continue
+		}
+		if !s.consumed[i] {
+			return s.serveReadLocked(req, i, op.variables, target)
+		}
+		last = i
+	}
+	if last < 0 {
+		return nil, s.violateLocked(gapOrDenial(op.effect, target, "no recorded exchange"))
+	}
+	if s.variables[last] != op.variables {
+		return nil, s.violateLocked(gapOrDenial(op.effect, target,
+			"every recorded response is spent and its variables differ from the last recorded read"))
+	}
+	return s.serveReadLocked(req, last, op.variables, target)
+}
+
+// serveReadLocked answers a read from exchange i, failing closed once one
+// exchange has answered maxBenchmarkReadRepeats reads so a replay that never
+// converges cannot spin forever.
+func (s *BenchmarkSandbox) serveReadLocked(req *http.Request, i int, variables, target string) (*http.Response, error) {
+	if s.served[i] >= maxBenchmarkReadRepeats {
+		return nil, s.violateLocked(gapOrDenial(BenchmarkEffectProviderRead, target,
+			fmt.Sprintf("recorded exchange %q already answered %d reads; the replay is not converging",
+				s.fixture.Provider.Exchanges[i].Name, maxBenchmarkReadRepeats)))
+	}
+	s.served[i]++
+	s.consumed[i] = true
+	s.variables[i] = variables
+	response := s.fixture.Provider.Exchanges[i].Response
+	return benchmarkResponse(req, response.Status, response.Headers, response.Body), nil
 }
 
 // readBenchmarkRequestBody reads the request body and leaves an identical,
@@ -238,6 +297,8 @@ type benchmarkOperation struct {
 	// its single top-level field when unnamed), or a mutation's single
 	// top-level field. It is "" when the document identifies none.
 	binding string
+	// variables is a GraphQL request's canonical variables JSON.
+	variables string
 }
 
 // servedBy reports whether the recorded exchange named name may answer op.
