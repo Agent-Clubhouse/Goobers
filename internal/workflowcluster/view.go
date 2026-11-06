@@ -35,6 +35,12 @@ type View struct {
 	// TrendsErr is the trend scan failure behind TrendsUnavailable, for
 	// server-side logging only.
 	TrendsErr error `json:"-"`
+	// Fitness summarizes retained terminal runs for each structural cluster.
+	Fitness *FitnessReport `json:"fitness,omitempty"`
+	// FitnessUnavailable explains why a clustered view carries no Fitness.
+	FitnessUnavailable string `json:"fitnessUnavailable,omitempty"`
+	// FitnessErr is the scan failure behind FitnessUnavailable.
+	FitnessErr error `json:"-"`
 }
 
 // ConfiguredSource serves the cluster View of the instance rooted at Root.
@@ -48,7 +54,7 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	if err := ctx.Err(); err != nil {
 		return View{}, err
 	}
-	points, strata, err := configuredPoints(s.Root)
+	points, strata, digests, err := configuredPoints(s.Root)
 	if err != nil {
 		return View{}, err
 	}
@@ -71,6 +77,14 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	view.ConfoundsByAxis = confoundsByAxis
 	view.Cohorts = cohortLabels(points)
 	view.Map = Project(model, points)
+	scan, fitnessErr := ScanBehavior(s.Root, BehaviorScanOptions{})
+	if fitnessErr == nil {
+		fitness := EvaluateFitness(model, digests, scan, DefaultFitnessMinRuns)
+		view.Fitness = &fitness
+	} else {
+		view.FitnessUnavailable = "cluster fitness could not be computed from retained journals"
+		view.FitnessErr = fitnessErr
+	}
 	trends, err := ScanChildTrends(ctx, s.Root, model, TrendScanOptions{})
 	switch {
 	case err == nil:

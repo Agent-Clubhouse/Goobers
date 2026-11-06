@@ -5758,7 +5758,7 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 Labs: cluster workflows by structural shape or run behavior
 
 ~~~text
-Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--ablation] [--json] [path]
+Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--ablation] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
        goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
@@ -5787,6 +5787,12 @@ clusters merely track gaggle, task-cohort, model, harness, skill-set, or
 tool-set boundaries (a confound). Undefined provenance is excluded and
 counted; that check is observational, not gym-controlled. Nothing is
 modified (default path ".").
+
+--fitness joins retained terminal runs to the current structural clusters
+by workflow digest and reports sample size, success with a 95% Wilson
+interval, wall time, cost, human-gate, escalation, and retry/loop rates.
+Clusters with fewer than 5 runs are marked insufficient and are never
+ranked. --since limits the retained runs included.
 
 Task cohorts use metadata.labels["goobers.dev/task-class"] when explicitly
 set. Otherwise an auto:<digest> label is derived only from trigger types,
@@ -5832,6 +5838,7 @@ $ goobers workflow clusters --min-cluster-size 4 --json
 $ goobers workflow clusters --cohort review
 $ goobers workflow clusters --stratify cohort
 $ goobers workflow clusters --features behavior --since 720h --json
+$ goobers workflow clusters --fitness --since 720h
 $ goobers workflow clusters --snapshot > snapshots/$(hostname).json
 $ goobers workflow clusters --fleet snapshots
 $ goobers workflow clusters --templates evidence.json --cluster-model model.json

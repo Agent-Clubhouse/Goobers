@@ -2,6 +2,7 @@ import { useState } from "react";
 import type {
   DaemonClient,
   LabsConfoundReport,
+  LabsClusterFitness,
   LabsWorkflowCluster,
   LabsWorkflowClusterView,
 } from "../api/types";
@@ -64,6 +65,7 @@ export function LabsWorkflowClusters({ client }: { client: DaemonClient }) {
 
 function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
   const model = view.model!;
+  const fitness = new Map((view.fitness?.clusters ?? []).map((item) => [item.clusterId, item]));
   const [confoundAxis, setConfoundAxis] = useState("gaggle");
   const confounds =
     view.confoundsByAxis?.[confoundAxis as keyof NonNullable<typeof view.confoundsByAxis>] ??
@@ -113,11 +115,13 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
       )}
       {view.trends && <TrendSummary report={view.trends} />}
       {!view.trends && view.trendsUnavailable && <p role="status">{view.trendsUnavailable}.</p>}
+      {!view.fitness && view.fitnessUnavailable && <p role="status">{view.fitnessUnavailable}.</p>}
       {model.clusters.length > 0 && map.length > 0 && (
         <LabsClusterMap
           points={map}
           clusterIds={model.clusters.map((cluster) => cluster.id)}
           medoids={new Set(model.clusters.map((cluster) => cluster.medoid.id))}
+          fitness={fitness}
         />
       )}
       {model.clusters.length === 0 ? (
@@ -128,7 +132,7 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
       ) : (
         <ul className="labs-cluster-list">
           {model.clusters.map((cluster) => (
-            <ClusterCard cluster={cluster} key={cluster.id} />
+            <ClusterCard cluster={cluster} fitness={fitness.get(cluster.id)} key={cluster.id} />
           ))}
         </ul>
       )}
@@ -242,7 +246,7 @@ function ConfoundSummary({ axis, report }: { axis: string; report: LabsConfoundR
   );
 }
 
-function ClusterCard({ cluster }: { cluster: LabsWorkflowCluster }) {
+function ClusterCard({ cluster, fitness }: { cluster: LabsWorkflowCluster; fitness?: LabsClusterFitness }) {
   return (
     <li className="labs-card labs-cluster" aria-label={`Cluster ${cluster.id}`}>
       <div className="labs-card-heading">
@@ -261,6 +265,7 @@ function ClusterCard({ cluster }: { cluster: LabsWorkflowCluster }) {
         <dt>Radius</dt>
         <dd>{cluster.radius.toFixed(2)}</dd>
       </dl>
+      {fitness && <ClusterFitness fitness={fitness} />}
       <h4>Members</h4>
       <WorkflowLinks ids={cluster.members} />
       {(cluster.distinguishing ?? []).length > 0 && (
@@ -283,6 +288,47 @@ function ClusterCard({ cluster }: { cluster: LabsWorkflowCluster }) {
       )}
     </li>
   );
+}
+
+function ClusterFitness({ fitness }: { fitness: LabsClusterFitness }) {
+  if (fitness.insufficientRuns) {
+    return (
+      <section aria-label="Fitness">
+        <h4>Fitness</h4>
+        <p>Insufficient runs ({fitness.runCount}/{fitness.minimumRuns}); this cluster is not ranked.</p>
+      </section>
+    );
+  }
+  return (
+    <section aria-label="Fitness">
+      <h4>Fitness · {fitness.runCount} runs</h4>
+      <dl className="labs-cluster-facts">
+        <dt>Success</dt>
+        <dd>
+          {percent(fitness.successRate)} (95% Wilson {percent(fitness.successInterval.lower)}–
+          {percent(fitness.successInterval.upper)})
+        </dd>
+        <dt>Wall time p50 / p90</dt>
+        <dd>{duration(fitness.medianWallTimeSeconds)} / {duration(fitness.p90WallTimeSeconds)}</dd>
+        <dt>Cost p50 / p90</dt>
+        <dd>${fitness.medianCostUsd.toFixed(2)} / ${fitness.p90CostUsd.toFixed(2)}</dd>
+        <dt>Human gate</dt>
+        <dd>{percent(fitness.humanGateRate)}</dd>
+        <dt>Escalation</dt>
+        <dd>{percent(fitness.escalationRate)}</dd>
+        <dt>Retry / loop</dt>
+        <dd>{percent(fitness.retryLoopRate)}</dd>
+      </dl>
+    </section>
+  );
+}
+
+function percent(value: number): string {
+  return `${(value * 100).toFixed(0)}%`;
+}
+
+function duration(seconds: number): string {
+  return seconds < 60 ? `${seconds.toFixed(0)}s` : `${(seconds / 60).toFixed(1)}m`;
 }
 
 function WorkflowLinks({ ids }: { ids: readonly string[] }) {
@@ -376,6 +422,10 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
           occupancy: cohort.occupancy ?? [],
         })),
       })),
+    },
+    fitness: view.fitness && {
+      ...view.fitness,
+      clusters: view.fitness.clusters ?? [],
     },
   };
 }
