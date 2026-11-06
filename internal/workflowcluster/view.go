@@ -21,9 +21,11 @@ type View struct {
 	MinClusterSize int             `json:"minClusterSize"`
 	Model          *Model          `json:"model,omitempty"`
 	Confounds      *ConfoundReport `json:"confounds,omitempty"`
-	// CohortConfounds tests whether clusters merely reproduce task cohorts.
-	CohortConfounds *ConfoundReport `json:"cohortConfounds,omitempty"`
-	Cohorts         []string        `json:"cohorts,omitempty"`
+	// ConfoundsByAxis contains every supported structural provenance check,
+	// including the task-cohort axis.
+	ConfoundsByAxis map[string]ConfoundReport `json:"confoundsByAxis,omitempty"`
+	// Cohorts lists the task-cohort labels present in Map.
+	Cohorts []string `json:"cohorts,omitempty"`
 	// Map places every workflow in two dimensions for the Portal's scatter map.
 	Map []MapPoint `json:"map,omitempty"`
 	// Trends compares retained agent-authored child shapes against Model.
@@ -46,7 +48,7 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	if err := ctx.Err(); err != nil {
 		return View{}, err
 	}
-	points, err := ConfiguredPoints(s.Root)
+	points, strata, err := configuredPoints(s.Root)
 	if err != nil {
 		return View{}, err
 	}
@@ -58,12 +60,15 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	confounds := ConfoundCheck(model, gaggleStrata(points), ConfoundOptions{})
-	cohortConfounds := ConfoundCheck(model, cohortStrata(points), ConfoundOptions{})
+	confoundsByAxis := map[string]ConfoundReport{}
+	for _, axis := range append([]string{StratifyGaggle, StratifyCohort}, provenanceAxes...) {
+		confoundsByAxis[axis] = ConfoundCheck(model, strata[axis], ConfoundOptions{})
+	}
+	confounds := confoundsByAxis[StratifyGaggle]
 	view.Status = ViewClustered
 	view.Model = &model
 	view.Confounds = &confounds
-	view.CohortConfounds = &cohortConfounds
+	view.ConfoundsByAxis = confoundsByAxis
 	view.Cohorts = cohortLabels(points)
 	view.Map = Project(model, points)
 	trends, err := ScanChildTrends(ctx, s.Root, model, TrendScanOptions{})
