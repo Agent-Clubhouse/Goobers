@@ -63,8 +63,8 @@ export const labsFeatures: readonly LabsFeature[] = [
       "Clusters configured and agent-authored (dynamic) child workflows with HDBSCAN over versioned structural features " +
       "and journal-derived run behavior. Stable clusters reveal what self-spawning workflows converge to; proposals that " +
       "match no known cluster are flagged as novel; confound checks warn when clusters merely mirror a gaggle. " +
-      "Recurring successful shapes become template candidates. Results are advisory only. " +
-      "The cluster map below groups the instance's configured workflows by structural shape today; run-behavior descriptors and child proposals join it as they land.",
+      "Retained child runs show occupancy, diversity, fitness, and drift across the authoring stage's model and harness versions. " +
+      "Recurring successful shapes become template candidates. Results are advisory only.",
     maturity: "experimental",
     availability: "available",
     prerequisites: [
@@ -117,6 +117,14 @@ export const labsFeatures: readonly LabsFeature[] = [
           "instead of workflow structure. Workflows that look different can behave alike, and the reverse.",
         code: "goobers workflow clusters --features behavior --since 168h ./instance",
       },
+      {
+        title: "Track agent-authored shape drift",
+        detail:
+          "The cluster map compares retained child workflows against its frozen model and reports occupancy, entropy, " +
+          "pairwise shape distance, and completion fitness by the authoring stage's model and harness version. " +
+          "Authoring-skill cohorts wait for a journal digest scoped to the authoring goober's skills; until then those samples are counted as missing provenance. " +
+          "Convergence and mode-collapse labels are observational signals, not null-baseline claims.",
+      },
     ],
     integrate: [
       {
@@ -148,13 +156,6 @@ export const labsFeatures: readonly LabsFeature[] = [
           "Per-cluster success rate, cost, and how often a human had to step in, so you can tell convergence toward a " +
           "good shape from convergence toward the model's habits.",
         issue: 8340,
-      },
-      {
-        title: "Convergence over time",
-        detail:
-          "Cluster occupancy across generations and model or harness versions, against a no-selection baseline, so the " +
-          "map shows a trend instead of a snapshot.",
-        issue: 8306,
       },
       {
         title: "Compare like with like",

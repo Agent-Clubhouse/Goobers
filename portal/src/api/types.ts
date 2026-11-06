@@ -2273,6 +2273,41 @@ export interface LabsWorkflowClusterView {
   cohorts?: string[];
   /** 2-D layout of every workflow (classical MDS of the model distances). */
   map?: LabsClusterMapPoint[];
+  trends?: LabsWorkflowTrendReport;
+  /** Why a clustered view carries no trends (the trend scan failed). */
+  trendsUnavailable?: string;
+}
+
+export interface LabsWorkflowTrendReport {
+  modelId: string;
+  featureVersion: string;
+  samples: number;
+  excluded: number;
+  /** Run journals found; overLimit of them were not read because of the scan cap. */
+  candidates: number;
+  overLimit: number;
+  axes: Array<{
+    axis: "model" | "harness" | "authoring-skill";
+    /** Samples with no single recorded version on this axis (in no cohort). */
+    missingProvenance: number;
+    cohorts: Array<{
+      version: string;
+      firstObserved: string;
+      samples: number;
+      occupancy: Array<{ cluster: string; samples: number; share: number; meanFitness: number }>;
+      entropy: number;
+      meanPairwiseDistance: number;
+      meanFitness: number;
+      drift?: {
+        from: string;
+        occupancyDistance: number;
+        entropyDelta: number;
+        pairwiseDistanceDelta: number;
+        fitnessDelta: number;
+        signal: "stable" | "converging" | "diverging" | "mode-collapse" | "mixed";
+      };
+    }>;
+  }>;
 }
 
 export interface LabsClusterMapPoint {

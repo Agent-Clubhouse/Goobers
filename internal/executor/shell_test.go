@@ -285,8 +285,12 @@ func TestShellExecutor_RefusesCommandReferencingGuardedCredentialPath(t *testing
 
 	// An unrelated command that never names the guarded path must still run
 	// normally — the refusal is scoped to the literal path, not the stage.
+	command := []string{"sh", "-c", "echo unaffected"}
+	if runtime.GOOS == "windows" {
+		command = []string{"cmd.exe", "/C", "echo unaffected"}
+	}
 	result, err = exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
-		Command: []string{"sh", "-c", "echo unaffected"},
+		Command: command,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

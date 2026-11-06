@@ -92,6 +92,8 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
           </select>
         </label>
       )}
+      {view.trends && <TrendSummary report={view.trends} />}
+      {!view.trends && view.trendsUnavailable && <p role="status">{view.trendsUnavailable}.</p>}
       {model.clusters.length > 0 && map.length > 0 && (
         <LabsClusterMap
           points={map}
@@ -119,6 +121,79 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
         </section>
       )}
     </>
+  );
+}
+
+function TrendSummary({ report }: { report: NonNullable<LabsWorkflowClusterView["trends"]> }) {
+  if (report.samples === 0) {
+    return (
+      <div className="empty-state">
+        <h3>No retained child-workflow history</h3>
+        <p>Run agent-authored child workflows to track shape drift across authoring versions.</p>
+      </div>
+    );
+  }
+  return (
+    <section aria-label="Child workflow shape trends" className="labs-cluster-trends">
+      <h3>Agent-authored shape trends</h3>
+      <p>
+        {report.samples} child workflow{report.samples === 1 ? "" : "s"} assigned against frozen model{" "}
+        <span className="mono">{shortModelId(report.modelId)}</span>
+        {report.excluded > 0 ? ` · ${report.excluded} excluded` : ""}
+        {report.overLimit > 0 ? ` · ${report.overLimit} older runs not scanned` : ""}. Signals are observational, not
+        null-baseline or selection claims.
+      </p>
+      {report.axes.map((axis) => (
+        <div key={axis.axis}>
+          <h4>By {axis.axis.replace("-", " ")}</h4>
+          {axis.missingProvenance > 0 && (
+            <p>
+              {axis.missingProvenance} of {report.samples} sample{report.samples === 1 ? "" : "s"} lack recorded{" "}
+              {axis.axis.replace("-", " ")} provenance and are in no cohort.
+              {axis.axis === "authoring-skill" &&
+                " Journals do not yet record a digest scoped to the authoring goober's skills, so this axis is not inferred from the run-wide goober digest."}
+            </p>
+          )}
+          {axis.cohorts.length === 0 ? (
+            <p>No complete provenance for this axis.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Samples</th>
+                  <th>Cluster occupancy</th>
+                  <th>Entropy</th>
+                  <th>Shape distance</th>
+                  <th>Fitness</th>
+                  <th>Drift</th>
+                </tr>
+              </thead>
+              <tbody>
+                {axis.cohorts.map((cohort) => (
+                  <tr key={cohort.version}>
+                    <td className="mono">{shortModelId(cohort.version)}</td>
+                    <td>{cohort.samples}</td>
+                    <td>
+                      {cohort.occupancy
+                        .map(
+                          (cluster) =>
+                            `${cluster.cluster} ${(cluster.share * 100).toFixed(0)}% (n=${cluster.samples}, fitness ${cluster.meanFitness.toFixed(2)})`,
+                        )
+                        .join(", ")}
+                    </td>
+                    <td>{cohort.entropy.toFixed(2)}</td>
+                    <td>{cohort.meanPairwiseDistance.toFixed(2)}</td>
+                    <td>{cohort.meanFitness.toFixed(2)}</td>
+                    <td>{cohort.drift?.signal ?? "baseline"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -261,5 +336,18 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       strata: view.cohortConfounds.strata ?? [],
     },
     cohorts: view.cohorts ?? [],
+    trends: view.trends && {
+      ...view.trends,
+      candidates: view.trends.candidates ?? 0,
+      overLimit: view.trends.overLimit ?? 0,
+      axes: (view.trends.axes ?? []).map((axis) => ({
+        ...axis,
+        missingProvenance: axis.missingProvenance ?? 0,
+        cohorts: (axis.cohorts ?? []).map((cohort) => ({
+          ...cohort,
+          occupancy: cohort.occupancy ?? [],
+        })),
+      })),
+    },
   };
 }

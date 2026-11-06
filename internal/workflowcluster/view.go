@@ -26,6 +26,13 @@ type View struct {
 	Cohorts         []string        `json:"cohorts,omitempty"`
 	// Map places every workflow in two dimensions for the Portal's scatter map.
 	Map []MapPoint `json:"map,omitempty"`
+	// Trends compares retained agent-authored child shapes against Model.
+	Trends *TrendReport `json:"trends,omitempty"`
+	// TrendsUnavailable explains why a clustered view carries no Trends.
+	TrendsUnavailable string `json:"trendsUnavailable,omitempty"`
+	// TrendsErr is the trend scan failure behind TrendsUnavailable, for
+	// server-side logging only.
+	TrendsErr error `json:"-"`
 }
 
 // ConfiguredSource serves the cluster View of the instance rooted at Root.
@@ -59,5 +66,16 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	view.CohortConfounds = &cohortConfounds
 	view.Cohorts = cohortLabels(points)
 	view.Map = Project(model, points)
+	trends, err := ScanChildTrends(ctx, s.Root, model, TrendScanOptions{})
+	switch {
+	case err == nil:
+		view.Trends = &trends
+	case ctx.Err() != nil:
+		return View{}, ctx.Err()
+	default:
+		// Trends are supplementary; the clustered view is still served.
+		view.TrendsUnavailable = "child-workflow trends could not be computed from retained journals"
+		view.TrendsErr = err
+	}
 	return view, nil
 }
