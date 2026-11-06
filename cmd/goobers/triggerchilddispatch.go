@@ -68,7 +68,7 @@ func childReference(ctx context.Context, queue *triggerqueue.Store, record trigg
 	if c.AcceptanceID != record.ID || c.StartKey != record.Key || c.ProposalDigest != e.SourceDigest || c.RunID == "" || (record.RunID != "" && c.RunID != record.RunID) || !c.TombstonedAt.IsZero() {
 		return childExecutionRef{}, childworkflow.ErrSubmissionInvalid
 	}
-	lineage := journal.ChildLineage{Gaggle: e.Gaggle, ParentRunID: e.ParentRunID, ParentWorkflow: e.ParentWorkflow, StageOccurrence: e.StageOccurrence, InvocationKey: e.InvocationKey, AcceptanceID: record.ID, SourceDigest: e.SourceDigest, EnvelopeDigest: journal.Digest(record.Payload)}
+	lineage := journal.ChildLineage{Gaggle: e.Gaggle, ParentRunID: e.ParentRunID, ParentWorkflow: e.ParentWorkflow, StageOccurrence: e.StageOccurrence, InvocationKey: e.InvocationKey, AcceptanceID: record.ID, SourceDigest: e.SourceDigest, EnvelopeDigest: journal.Digest(record.Payload), Novelty: e.JournalNovelty()}
 	id := journal.RunIdentity{RunID: c.RunID, Gaggle: e.Gaggle, Child: &lineage, ConfigGeneration: e.ConfigGeneration, WorkflowDigest: e.WorkflowDigest, GooberDigest: e.ParentGooberDigest}
 	if err := id.ValidateChildLineage(); err != nil {
 		return childExecutionRef{}, err

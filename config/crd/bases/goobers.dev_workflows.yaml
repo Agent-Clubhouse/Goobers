@@ -927,6 +927,12 @@ spec:
                           maximum: 32
                           minimum: 1
                           type: integer
+                        requireHumanApprovalForOutOfDistribution:
+                          description: |-
+                            RequireHumanApprovalForOutOfDistribution prevents an OOD proposal from
+                            being auto-admitted when a current frozen model can score it.
+                            Unscored proposals preserve the prior admission behavior.
+                          type: boolean
                       required:
                       - allowedGoobers
                       type: object

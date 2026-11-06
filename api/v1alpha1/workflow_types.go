@@ -242,6 +242,11 @@ type ChildWorkflowPolicy struct {
 	// False by default; true cannot widen the enclosing publication policy.
 	// +optional
 	AllowPRPublication bool `json:"allowPRPublication,omitempty" yaml:"allowPRPublication,omitempty"`
+	// RequireHumanApprovalForOutOfDistribution prevents an OOD proposal from
+	// being auto-admitted when a current frozen model can score it.
+	// Unscored proposals preserve the prior admission behavior.
+	// +optional
+	RequireHumanApprovalForOutOfDistribution bool `json:"requireHumanApprovalForOutOfDistribution,omitempty" yaml:"requireHumanApprovalForOutOfDistribution,omitempty"`
 }
 
 const (

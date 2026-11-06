@@ -1197,7 +1197,31 @@ export interface ChildHistoryPage {
 
 export interface ChildActivity {
   status: "recorded" | "unavailable";
-  parent?: { runId: string; workflow: string; stageOccurrence: string };
+  parent?: {
+    runId: string;
+    workflow: string;
+    stageOccurrence: string;
+    novelty?: {
+      scored: boolean;
+      reason?: string;
+      modelId?: string;
+      modelVersion?: string;
+      featureVersion?: string;
+      clusterId?: string;
+      nearest?: string;
+      nearestMedoid?: string;
+      nearestSize?: number;
+      nearestStable?: boolean;
+      distance: number;
+      outOfDistribution: boolean;
+      historicalOutcome?: {
+        runCount: number;
+        successRate: number;
+        insufficientRuns: boolean;
+      };
+      humanApprovalRequired?: boolean;
+    };
+  };
   waits: Array<{ runId: string; stage: string; branch: number; action: "wait" | "merge" | "replace" | "discard"; since: string; sequence: number }>;
   parked: boolean;
 }

@@ -360,7 +360,7 @@ func runFrozenChild(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 	r := binding.Request
 	frozen.childLineage = &journal.ChildLineage{Gaggle: r.Gaggle, ParentRunID: r.ParentRunID, ParentWorkflow: binding.ParentWorkflow, StageOccurrence: r.Origin.StageOccurrence,
-		InvocationKey: r.InvocationKey, AcceptanceID: r.AcceptanceID, SourceDigest: r.SourceDigest, EnvelopeDigest: binding.ManifestDigest}
+		InvocationKey: r.InvocationKey, AcceptanceID: r.AcceptanceID, SourceDigest: r.SourceDigest, EnvelopeDigest: binding.ManifestDigest, Novelty: r.Novelty}
 	// A generated child never acquires child authority of its own.
 	result, runErr := run(workflow.WithValue(ctx, childProtocolContextKey{}, false), frozen)
 	state := triggerqueue.ChildCompleted

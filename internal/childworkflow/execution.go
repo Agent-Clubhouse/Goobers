@@ -21,6 +21,9 @@ func ValidateRetainedStart(a Authority, e ChildStartEnvelope, source []byte) (*P
 	if err != nil {
 		return nil, err
 	}
+	// Advisory evidence is pinned at acceptance and does not become an
+	// execution gate when the host later replaces or removes its model.
+	expected.Novelty = e.Novelty
 	if e != expected {
 		return nil, ErrSubmissionInvalid
 	}

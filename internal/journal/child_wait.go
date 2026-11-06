@@ -29,6 +29,7 @@ type ChildHandoffRequest struct {
 	InvocationKey     string                    `json:"invocationKey"`
 	SourceDigest      string                    `json:"sourceDigest"`
 	Origin            apiv1.ChildWorkflowOrigin `json:"origin"`
+	Novelty           *ChildNovelty             `json:"novelty,omitempty"`
 }
 
 // Validate binds the receipt to a trusted current stage occurrence.
@@ -38,6 +39,9 @@ func (r ChildHandoffRequest) Validate(origin *apiv1.ChildWorkflowOrigin) error {
 	}
 	if r.DispositionDigest != "" && !validChildDigest(r.DispositionDigest) {
 		return fmt.Errorf("runner: invalid child disposition revision")
+	}
+	if r.Novelty != nil && !r.Novelty.valid() {
+		return fmt.Errorf("runner: invalid child novelty evidence")
 	}
 	switch r.Action {
 	case "wait", "merge", "replace", "discard":

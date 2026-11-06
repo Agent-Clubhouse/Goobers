@@ -140,6 +140,8 @@ func childOperationError(err error) error {
 		return childHTTPError(http.StatusForbidden, "child_workflow_authority_changed", "the stage no longer holds current child-workflow authority", nil)
 	case errors.As(err, &invalid), errors.Is(err, ErrSubmissionInvalid):
 		return childHTTPError(http.StatusUnprocessableEntity, "child_workflow_invalid", "the child proposal or invocation is invalid; validate the proposal before starting it", nil)
+	case errors.Is(err, ErrHumanApprovalRequired):
+		return childHTTPError(http.StatusConflict, "child_workflow_human_approval_required", "the proposal is out of distribution and current policy requires human approval", nil)
 	case errors.Is(err, triggerqueue.ErrChildDispositionReconcile):
 		return childHTTPError(http.StatusConflict, "child_disposition_reconciliation_required", "the published application plan must be reconciled before selecting a different action", nil)
 	case errors.Is(err, triggerqueue.ErrChildDispositionHistoryFull):

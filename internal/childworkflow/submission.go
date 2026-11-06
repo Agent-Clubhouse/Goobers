@@ -87,9 +87,10 @@ var (
 	// ErrAuthorityRetryable marks an authority check that could not be made
 	// (its owner, journal or engine is briefly unreachable), not one that
 	// refused: the same request may succeed when retried.
-	ErrAuthorityRetryable = errors.New("childworkflow: stage authority is temporarily unavailable")
-	ErrProposalExpired    = errors.New("childworkflow: retained proposal has expired")
-	ErrSubmissionInvalid  = errors.New("childworkflow: invalid submission or retained envelope")
+	ErrAuthorityRetryable    = errors.New("childworkflow: stage authority is temporarily unavailable")
+	ErrProposalExpired       = errors.New("childworkflow: retained proposal has expired")
+	ErrSubmissionInvalid     = errors.New("childworkflow: invalid submission or retained envelope")
+	ErrHumanApprovalRequired = errors.New("childworkflow: out-of-distribution proposal requires human approval")
 )
 
 // Validate is advisory and writes no custody. It still authenticates the live
@@ -130,6 +131,9 @@ func (s *SubmissionService) Submit(ctx context.Context, origin Origin, request S
 	authority, proposal, err := s.validated(ctx, origin, request.Source)
 	if err != nil {
 		return Submission{}, err
+	}
+	if proposal.Novelty != nil && proposal.Novelty.HumanApprovalRequired {
+		return Submission{}, ErrHumanApprovalRequired
 	}
 	envelope, err := childStartEnvelope(authority, proposal, request.InvocationKey)
 	if err != nil {

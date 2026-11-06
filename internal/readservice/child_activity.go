@@ -18,9 +18,10 @@ type ChildActivity struct {
 
 // ChildParentLink identifies the parent recorded in a generated run's identity.
 type ChildParentLink struct {
-	RunID           string `json:"runId"`
-	Workflow        string `json:"workflow"`
-	StageOccurrence string `json:"stageOccurrence"`
+	RunID           string                `json:"runId"`
+	Workflow        string                `json:"workflow"`
+	StageOccurrence string                `json:"stageOccurrence"`
+	Novelty         *journal.ChildNovelty `json:"novelty,omitempty"`
 }
 
 // ChildStageWait is one validated host wait, independent of sibling activity.
@@ -47,7 +48,7 @@ func recordedChildActivity(id journal.RunIdentity, events []journal.Event) *Chil
 	}
 	out := &ChildActivity{Status: "recorded", Waits: []ChildStageWait{}, Parked: projection.Parked()}
 	if id.Child != nil {
-		out.Parent = &ChildParentLink{RunID: id.Child.ParentRunID, Workflow: id.Child.ParentWorkflow, StageOccurrence: id.Child.StageOccurrence}
+		out.Parent = &ChildParentLink{RunID: id.Child.ParentRunID, Workflow: id.Child.ParentWorkflow, StageOccurrence: id.Child.StageOccurrence, Novelty: id.Child.Novelty}
 	}
 	for branch, wait := range projection.Waits {
 		request := wait.Header.Request

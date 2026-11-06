@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 type submissionAuthority struct {
@@ -88,10 +90,12 @@ func TestSubmissionRevalidatesAndReopensExactCustody(t *testing.T) {
 	if _, err := s.Validate(t.Context(), origin, source); err != nil {
 		t.Fatal(err)
 	}
+
 	db := submissionDB(t, path)
 	if n := proposalCount(t, db); n != 0 {
 		t.Fatalf("advisory validation wrote %d artifacts", n)
 	}
+
 	accepted, err := s.Submit(t.Context(), origin, SubmissionRequest{InvocationKey: "call", Source: source})
 	if err != nil || accepted.Duplicate {
 		t.Fatalf("submit=%+v, %v", accepted, err)
@@ -128,6 +132,113 @@ func TestSubmissionRevalidatesAndReopensExactCustody(t *testing.T) {
 	}
 	if _, err := s.Submit(t.Context(), origin, SubmissionRequest{InvocationKey: "call", Source: append([]byte("# changed bytes\n"), source...)}); !errors.Is(err, triggerqueue.ErrConflict) {
 		t.Fatalf("changed source retry=%v", err)
+	}
+}
+
+func TestSubmissionPinsUnscoredStaleModelEvidenceWithoutChangingAdmission(t *testing.T) {
+	s, resolver, _ := submissionFixture(t)
+	resolver.current.Admission.ClusterModelConfigured = true
+	resolver.current.Admission.ClusterModel = &workflowcluster.Model{
+		Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: "workflowcluster.structural/v0",
+	}
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "stale-model", Source: []byte(validProposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := accepted.Envelope.Novelty
+	if n == nil || n.Scored || n.Reason != workflowcluster.UnscoredStaleModel || n.ModelVersion != workflowcluster.ModelVersion {
+		t.Fatalf("novelty = %+v", n)
+	}
+	if got := accepted.Envelope.JournalNovelty(); got == nil || got.Reason != workflowcluster.UnscoredStaleModel || got.ModelVersion != workflowcluster.ModelVersion {
+		t.Fatalf("journal novelty = %+v", got)
+	}
+}
+
+func TestSubmissionPinsHistoricalOutcome(t *testing.T) {
+	s, resolver, _ := submissionFixture(t)
+	proposal, err := validator(t, resolver.current.Admission).Validate([]byte(validProposal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := workflow.Definition{
+		Name: proposal.Workflow.Name, DSLVersion: proposal.Workflow.DSLVersion,
+		Spec: proposal.Workflow.Spec, Annotations: proposal.Workflow.Annotations,
+	}
+	features, err := workflowcluster.ExtractDefinition(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	points := []workflowcluster.Point{
+		workflowcluster.StructuralPoint("a", features),
+		workflowcluster.StructuralPoint("b", features),
+		workflowcluster.StructuralPoint("c", features),
+	}
+	model, err := workflowcluster.Fit(workflowcluster.StructuralFeatureVersion, points, workflowcluster.Options{
+		MinClusterSize: 2, Resamples: 10, Seed: 1, AllowSingleCluster: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.current.Admission.ClusterModelConfigured = true
+	resolver.current.Admission.ClusterModel = &model
+	resolver.current.Admission.ClusterFitness = map[string]workflowcluster.ClusterFitness{
+		"c0": {ClusterID: "c0", RunCount: 17, SuccessRate: 0.75, InsufficientRuns: false},
+	}
+
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "history", Source: []byte(validProposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := accepted.Envelope.Novelty.HistoricalOutcome
+	if outcome == nil || outcome.RunCount != 17 || outcome.SuccessRate != 0.75 || outcome.InsufficientRuns {
+		t.Fatalf("historical outcome = %+v", outcome)
+	}
+	journalOutcome := accepted.Envelope.JournalNovelty().HistoricalOutcome
+	if journalOutcome == nil || journalOutcome.RunCount != 17 || journalOutcome.SuccessRate != 0.75 {
+		t.Fatalf("journal historical outcome = %+v", journalOutcome)
+	}
+}
+
+func TestSubmissionOODHumanApprovalPolicyIsOffByDefaultAndFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		wantErr error
+	}{
+		{name: "off by default"},
+		{name: "enabled", enabled: true, wantErr: ErrHumanApprovalRequired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, resolver, _ := submissionFixture(t)
+			resolver.current.Admission.ClusterModelConfigured = true
+			resolver.current.Admission.ClusterModel = &workflowcluster.Model{
+				Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: workflowcluster.StructuralFeatureVersion,
+			}
+			resolver.current.Admission.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution = tc.enabled
+			validated, err := validator(t, resolver.current.Admission).Validate([]byte(validProposal))
+			if err != nil {
+				t.Fatal(err)
+			}
+			previousGrant := resolver.current.Origin.GrantID
+			resolver.current.Origin.GrantID = "policy-grant"
+			resolver.current.Origin.AttemptID = "policy-attempt"
+			resolver.current.Origin.PolicyDigest = validated.PolicyDigest
+			bindSubmissionOrigin(t, s, resolver.current.Origin, previousGrant)
+
+			accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Submit error = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantErr == nil {
+				if accepted.Envelope.Novelty == nil || !accepted.Envelope.Novelty.OutOfDistribution || accepted.Envelope.Novelty.HumanApprovalRequired {
+					t.Fatalf("default novelty = %+v", accepted.Envelope.Novelty)
+				}
+				return
+			}
+			if accepted.Child.AcceptanceID != "" {
+				t.Fatalf("policy admitted child %+v", accepted.Child)
+			}
+		})
 	}
 }
 

@@ -28,6 +28,7 @@ type Novelty struct {
 	Scored         bool   `json:"scored"`
 	Reason         string `json:"reason,omitempty"`
 	ModelID        string `json:"modelId,omitempty"`
+	ModelVersion   string `json:"modelVersion,omitempty"`
 	FeatureVersion string `json:"featureVersion,omitempty"`
 	// ClusterID is set when the workflow falls within a cluster's radius.
 	ClusterID string `json:"clusterId,omitempty"`
@@ -39,6 +40,19 @@ type Novelty struct {
 	Distance      float64 `json:"distance"`
 	// OutOfDistribution is true when the workflow lies outside every cluster.
 	OutOfDistribution bool `json:"outOfDistribution"`
+	// HistoricalOutcome summarizes retained runs attributed to the nearest
+	// cluster when that evidence was available at admission.
+	HistoricalOutcome *HistoricalOutcome `json:"historicalOutcome,omitempty"`
+	// HumanApprovalRequired is an explicit policy consequence. It can only
+	// tighten admission for an out-of-distribution proposal.
+	HumanApprovalRequired bool `json:"humanApprovalRequired,omitempty"`
+}
+
+// HistoricalOutcome is the bounded outcome evidence shown with an assignment.
+type HistoricalOutcome struct {
+	RunCount         int     `json:"runCount"`
+	SuccessRate      float64 `json:"successRate"`
+	InsufficientRuns bool    `json:"insufficientRuns"`
 }
 
 // LoadModel reads a frozen model written by `goobers workflow clusters --json`
@@ -83,7 +97,7 @@ func ScoreWorkflow(model *Model, wf apiv1.Workflow) Novelty {
 	if model == nil {
 		return Novelty{Reason: UnscoredInvalidModel}
 	}
-	result := Novelty{ModelID: model.ID, FeatureVersion: model.FeatureVersion}
+	result := Novelty{ModelID: model.ID, ModelVersion: model.Version, FeatureVersion: model.FeatureVersion}
 	if model.FeatureVersion != StructuralFeatureVersion {
 		result.Reason = UnscoredStaleModel
 		return result

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -14,14 +15,41 @@ import (
 // EnvelopeDigest commits to every pinned start input, including policy and
 // placement, without copying credentials or authored source into run.yaml.
 type ChildLineage struct {
-	Gaggle          string `json:"gaggle"`
-	ParentRunID     string `json:"parentRunId"`
-	ParentWorkflow  string `json:"parentWorkflow"`
-	StageOccurrence string `json:"stageOccurrence"`
-	InvocationKey   string `json:"invocationKey"`
-	AcceptanceID    string `json:"acceptanceId"`
-	SourceDigest    string `json:"sourceDigest"`
-	EnvelopeDigest  string `json:"envelopeDigest"`
+	Gaggle          string        `json:"gaggle"`
+	ParentRunID     string        `json:"parentRunId"`
+	ParentWorkflow  string        `json:"parentWorkflow"`
+	StageOccurrence string        `json:"stageOccurrence"`
+	InvocationKey   string        `json:"invocationKey"`
+	AcceptanceID    string        `json:"acceptanceId"`
+	SourceDigest    string        `json:"sourceDigest"`
+	EnvelopeDigest  string        `json:"envelopeDigest"`
+	Novelty         *ChildNovelty `json:"novelty,omitempty"`
+}
+
+// ChildNovelty is the bounded, advisory cluster assignment pinned at child
+// admission. It is evidence only and grants no workflow authority.
+type ChildNovelty struct {
+	Scored                bool                    `json:"scored"`
+	Reason                string                  `json:"reason,omitempty"`
+	ModelID               string                  `json:"modelId,omitempty"`
+	ModelVersion          string                  `json:"modelVersion,omitempty"`
+	FeatureVersion        string                  `json:"featureVersion,omitempty"`
+	ClusterID             string                  `json:"clusterId,omitempty"`
+	Nearest               string                  `json:"nearest,omitempty"`
+	NearestMedoid         string                  `json:"nearestMedoid,omitempty"`
+	NearestSize           int                     `json:"nearestSize,omitempty"`
+	NearestStable         bool                    `json:"nearestStable,omitempty"`
+	Distance              float64                 `json:"distance"`
+	OutOfDistribution     bool                    `json:"outOfDistribution"`
+	HistoricalOutcome     *ChildHistoricalOutcome `json:"historicalOutcome,omitempty"`
+	HumanApprovalRequired bool                    `json:"humanApprovalRequired,omitempty"`
+}
+
+// ChildHistoricalOutcome is the admission-time outcome snapshot for a cluster.
+type ChildHistoricalOutcome struct {
+	RunCount         int     `json:"runCount"`
+	SuccessRate      float64 `json:"successRate"`
+	InsufficientRuns bool    `json:"insufficientRuns"`
 }
 
 // ValidateChildLineage refuses malformed or cross-gaggle generated provenance.
@@ -46,7 +74,29 @@ func (id RunIdentity) ValidateChildLineage() error {
 			return errors.New("journal: invalid child execution digest")
 		}
 	}
+	if c.Novelty != nil && !c.Novelty.valid() {
+		return errors.New("journal: invalid child novelty evidence")
+	}
 	return nil
+}
+
+func (n ChildNovelty) valid() bool {
+	for _, value := range []string{n.Reason, n.ModelID, n.ModelVersion, n.FeatureVersion, n.ClusterID, n.Nearest, n.NearestMedoid} {
+		if len(value) > 256 || !utf8.ValidString(value) || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			return false
+		}
+	}
+	if math.IsNaN(n.Distance) || math.IsInf(n.Distance, 0) || n.Distance < 0 || n.Distance > 1 || n.NearestSize < 0 {
+		return false
+	}
+	if n.HistoricalOutcome != nil {
+		outcome := n.HistoricalOutcome
+		if outcome.RunCount < 0 || math.IsNaN(outcome.SuccessRate) || math.IsInf(outcome.SuccessRate, 0) ||
+			outcome.SuccessRate < 0 || outcome.SuccessRate > 1 {
+			return false
+		}
+	}
+	return !n.HumanApprovalRequired || n.Scored && n.OutOfDistribution
 }
 
 func childIdentityText(value string, max int) bool {

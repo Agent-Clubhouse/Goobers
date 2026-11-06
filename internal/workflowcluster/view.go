@@ -98,3 +98,17 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	}
 	return view, nil
 }
+
+// ConfiguredFitness evaluates a frozen model against retained runs for the
+// instance's current matching workflow definitions.
+func ConfiguredFitness(root string, model Model) (FitnessReport, error) {
+	_, _, digests, err := configuredPoints(root)
+	if err != nil {
+		return FitnessReport{}, err
+	}
+	scan, err := ScanBehavior(root, BehaviorScanOptions{})
+	if err != nil {
+		return FitnessReport{}, err
+	}
+	return EvaluateFitness(model, digests, scan, DefaultFitnessMinRuns), nil
+}
