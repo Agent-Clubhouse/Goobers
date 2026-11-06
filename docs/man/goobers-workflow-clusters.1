@@ -44,7 +44,9 @@ scaffolding when it names a shipped template, or else the nearest shipped
 template by structural distance. The report marks template-derived
 workflows and cluster medoids farther than 0.35 from every shipped template
 (convergence beyond templates). Provenance is reported even when too few
-workflows are configured to cluster.
+workflows are configured to cluster. Bare --json stays the frozen model
+that --cluster-model reads; JSON carries the template report alongside
+any other requested report (for example --stratify template --json).
 
 --fitness joins retained terminal runs to the current structural clusters
 by workflow digest and reports sample size, success with a 95% Wilson

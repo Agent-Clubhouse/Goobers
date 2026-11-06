@@ -48,7 +48,9 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"template by structural distance. The report marks template-derived\n" +
 	"workflows and cluster medoids farther than 0.35 from every shipped template\n" +
 	"(convergence beyond templates). Provenance is reported even when too few\n" +
-	"workflows are configured to cluster.\n\n" +
+	"workflows are configured to cluster. Bare --json stays the frozen model\n" +
+	"that --cluster-model reads; JSON carries the template report alongside\n" +
+	"any other requested report (for example --stratify template --json).\n\n" +
 	"--fitness joins retained terminal runs to the current structural clusters\n" +
 	"by workflow digest and reports sample size, success with a 95% Wilson\n" +
 	"interval, wall time, cost, human-gate, escalation, and retry/loop rates.\n" +
@@ -263,17 +265,18 @@ type cliReports struct {
 
 func writeCLIReports(stdout, stderr io.Writer, asJSON bool, stratify string, model Model, r cliReports) int {
 	if asJSON {
+		// Bare --json stays the frozen model LoadModel reads; template
+		// provenance rides along with any other requested report.
 		var out any = model
-		if r.behavior != nil || r.confounds != nil || r.ablation != nil || r.fitness != nil || r.templates != nil {
+		if r.behavior != nil || r.confounds != nil || r.ablation != nil || r.fitness != nil {
 			out = struct {
-				Model
-				NestedModel Model           `json:"model"`
-				Confounds   *ConfoundReport `json:"confounds,omitempty"`
-				Behavior    *behaviorReport `json:"behavior,omitempty"`
-				Ablation    *AblationReport `json:"ablation,omitempty"`
-				Fitness     *FitnessReport  `json:"fitness,omitempty"`
-				Templates   *TemplateReport `json:"templates,omitempty"`
-			}{model, model, r.confounds, r.behavior, r.ablation, r.fitness, r.templates}
+				Model     Model           `json:"model"`
+				Confounds *ConfoundReport `json:"confounds,omitempty"`
+				Behavior  *behaviorReport `json:"behavior,omitempty"`
+				Ablation  *AblationReport `json:"ablation,omitempty"`
+				Fitness   *FitnessReport  `json:"fitness,omitempty"`
+				Templates *TemplateReport `json:"templates,omitempty"`
+			}{model, r.confounds, r.behavior, r.ablation, r.fitness, r.templates}
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")

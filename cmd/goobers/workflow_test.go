@@ -689,7 +689,7 @@ func TestWorkflowClustersReportsShippedTemplateProvenance(t *testing.T) {
 					t.Fatalf("scaffold: code = %d, stderr = %q", code, stderr)
 				}
 			}
-			code, stdout, stderr := runArgs(t, "workflow", "clusters", "--json", root)
+			code, stdout, stderr := runArgs(t, "workflow", "clusters", "--stratify", "template", "--json", root)
 			var out struct {
 				Status    string                          `json:"status"`
 				Templates *workflowcluster.TemplateReport `json:"templates"`
