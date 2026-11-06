@@ -14,7 +14,9 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]\n" +
+	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
+	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n\n" +
 	"Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN\n" +
 	"and report each cluster's medoid, members, stability, and distinguishing\n" +
 	"features. Points that fit no dense group are reported as noise.\n\n" +
@@ -33,7 +35,17 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"behavior features are never mixed in one model. With --stratify gaggle,\n" +
 	"also test whether clusters merely track gaggle boundaries (a confound);\n" +
 	"that check is observational, not gym-controlled. Nothing is modified\n" +
-	"(default path \".\").\n"
+	"(default path \".\").\n\n" +
+	"Fleet convergence: --snapshot prints this instance's feature vectors as a\n" +
+	"fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;\n" +
+	"workflows become salted keys and goober names salted hashes. The instance\n" +
+	"ID and salt default to the fleet association (salt = fleet ID), so every\n" +
+	"instance in a fleet hashes alike. --fleet <dir> pools the *.json snapshots\n" +
+	"in dir and clusters distinct workflow shapes across instances: a shape\n" +
+	"cloned onto many instances counts once, only the most common feature\n" +
+	"version is clustered (others are listed as excluded), each instance is\n" +
+	"scored aligned/private/outlier, and clusters are tested for an instance\n" +
+	"confound.\n"
 
 // cliMinClusterSize is smaller than the library default because a single
 // instance usually configures tens of workflows, not hundreds.
@@ -60,25 +72,39 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
 	stratify := fs.String("stratify", "", "confound axis to test cluster assignment against (gaggle)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
+	snapshot := fs.Bool("snapshot", false, "emit a privacy-safe fleet snapshot of this instance's features")
+	instanceID := fs.String("instance-id", "", "snapshot: instance ID (default: fleet association)")
+	salt := fs.String("salt", "", "snapshot: salt for name hashes (default: fleet ID)")
+	fleetDir := fs.String("fleet", "", "cluster the *.json fleet snapshots in this directory")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	behaviorOnly := false
+	behaviorOnly, snapshotOnly, saltSet := false, false, false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "since", "max-runs", "min-samples":
 			behaviorOnly = true
+		case "salt":
+			saltSet = true
+			snapshotOnly = true
+		case "instance-id":
+			snapshotOnly = true
 		}
 	})
-	invalid := fs.NArg() > 1 || *minSize < 2 || (*stratify != "" && *stratify != stratifyGaggle) ||
-		(*features != featuresStructural && *features != featuresBehavior) ||
-		(behaviorOnly && *features != featuresBehavior) || *since < 0 || *maxRuns < 1 || *minSamples < 1
-	if invalid {
+	parsed := cliArgs{
+		features: *features, stratify: *stratify, fleetDir: *fleetDir, since: *since,
+		maxRuns: *maxRuns, minSamples: *minSamples, minSize: *minSize, nargs: fs.NArg(),
+		asJSON: *asJSON, snapshot: *snapshot, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
+	}
+	if parsed.invalid() {
 		fs.Usage()
 		return 2
+	}
+	if *fleetDir != "" {
+		return runFleetCLI(*fleetDir, Options{MinClusterSize: *minSize, Seed: *seed}, *asJSON, stdout, stderr)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -102,6 +128,9 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
+	}
+	if *snapshot {
+		return runSnapshotCLI(root, featureVersion, *instanceID, *salt, saltSet, points, stdout, stderr)
 	}
 	model, err := Fit(featureVersion, points, Options{MinClusterSize: *minSize, Seed: *seed})
 	if err != nil {
@@ -147,6 +176,23 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		writeConfounds(stdout, *stratify, *confounds)
 	}
 	return 0
+}
+
+// cliArgs holds the parsed flags RunCLI validates together.
+type cliArgs struct {
+	features, stratify, fleetDir                 string
+	since                                        time.Duration
+	maxRuns, minSamples, minSize, nargs          int
+	asJSON, snapshot, behaviorOnly, snapshotOnly bool
+}
+
+// invalid reports flag combinations RunCLI rejects with usage.
+func (a cliArgs) invalid() bool {
+	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && a.stratify != stratifyGaggle) ||
+		(a.features != featuresStructural && a.features != featuresBehavior) ||
+		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
+		(a.snapshotOnly && !a.snapshot) || (a.snapshot && (a.fleetDir != "" || a.asJSON || a.stratify != "")) ||
+		(a.fleetDir != "" && (a.nargs > 0 || a.stratify != "" || a.behaviorOnly))
 }
 
 // behaviorReport is the cohort and scan accounting behind a behavior model.
