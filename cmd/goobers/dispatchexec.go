@@ -864,19 +864,25 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 // non-secret authorization scheme the plane states for an Azure DevOps
 // repository credential ("" for every other provider).
 func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.MintedCredential, string, error) {
+	resolution, err := resolveStageCredentialResolution(ctx)
+	return resolution.Credentials, resolution.RepoAuthScheme, err
+}
+
+// resolveStageCredentialResolution is the whole stage-start answer, including
+// the decision-shadow delivery an agentic stage may receive.
+func resolveStageCredentialResolution(ctx context.Context) (dispatcher.CredentialResolution, error) {
 	capabilities, err := stageDeclaredCapabilities()
 	if err != nil {
-		return nil, "", err
+		return dispatcher.CredentialResolution{}, err
 	}
 	if len(capabilities) == 0 {
-		return nil, "", nil
+		return dispatcher.CredentialResolution{}, nil
 	}
 	client, err := credentialPlaneClient(capabilities)
 	if err != nil {
-		return nil, "", err
+		return dispatcher.CredentialResolution{}, err
 	}
-	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
-	return resolution.Credentials, resolution.RepoAuthScheme, err
+	return client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
 }
 
 // podStageCredentials is a deterministic pod stage's stage-start resolution:

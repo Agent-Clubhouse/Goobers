@@ -134,8 +134,7 @@ func StageCatalog(cfg *instance.Config, source *instance.ConfigSet, parent Paren
 	if err != nil {
 		return AdmissionContext{}, nil, err
 	}
-	instance.ApplyGaggleCICommand(selected)
-	instance.ApplyGaggleOutboxMirror(selected)
+	instance.ApplyGaggleDefaults(selected)
 	input, err := ConfiguredAdmission(parent, backend, cfg, selected, admit)
 	if err != nil {
 		return AdmissionContext{}, nil, err
@@ -167,8 +166,7 @@ func CurrentCustodyPolicy(cfg *instance.Config, source *instance.ConfigSet, pare
 	if err != nil {
 		return AdmissionContext{}, err
 	}
-	instance.ApplyGaggleCICommand(selected)
-	instance.ApplyGaggleOutboxMirror(selected)
+	instance.ApplyGaggleDefaults(selected)
 	admitted, err := admit(cfg, runtimewiring.GoobersByName(selected))
 	if err != nil {
 		return AdmissionContext{}, err

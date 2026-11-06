@@ -90,6 +90,16 @@ type PublicationLeakScreenDelivery struct {
 	Model    string                `json:"model"`
 }
 
+// DecisionShadowDelivery carries an explicitly opted-in decision-gate shadow
+// observer's provider settings to an agentic stage pod over the authenticated
+// plane, so the endpoint and key never enter a pod spec, kit or journal.
+type DecisionShadowDelivery struct {
+	Settings decisiongate.Settings `json:"settings"`
+	BaseURL  string                `json:"baseUrl"`
+	APIKey   string                `json:"apiKey"`
+	Model    string                `json:"model"`
+}
+
 // MintedCredential is one resolved credential value. ExpiresAt is present
 // when the backing source states an expiry (GitHub App installation tokens
 // do); absent means the source stated none — the consumer must still treat
@@ -131,6 +141,9 @@ type CredentialResolveResponse struct {
 	RepoAuthScheme        string                         `json:"repoAuthScheme,omitempty"`
 	Grant                 *CredentialGrantDelivery       `json:"grant,omitempty"`
 	PublicationLeakScreen *PublicationLeakScreenDelivery `json:"publicationLeakScreen,omitempty"`
+	// DecisionShadow is present only for an agentic stage when the instance
+	// has explicitly enabled decisionGate shadow mode.
+	DecisionShadow *DecisionShadowDelivery `json:"decisionShadow,omitempty"`
 }
 
 // CredentialService is the daemon-side credential plane. Implementations

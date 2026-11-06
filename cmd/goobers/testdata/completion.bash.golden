@@ -152,7 +152,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
                 validate-child) flags+=" --gaggle --parent --stage --backend --cluster-model --json" ;;
-                clusters) flags+=" --features --since --max-runs --min-samples --min-cluster-size --seed --stratify --json" ;;
+                clusters) flags+=" --features --since --max-runs --min-samples --min-cluster-size --seed --stratify --json --snapshot --instance-id --salt --fleet" ;;
             esac
             ;;
         runs)
@@ -231,6 +231,7 @@ _goobers_completion()
                 label) flags+=" --run --outcome --reason --by --labeled-at" ;;
                 claim) flags+=" --kind --stage --attempt --agent --artifact --statement --evidence --confidence" ;;
                 shadow) flags+=" --json --gaggle --workflow --since --until" ;;
+                gaggle) flags+=" --json --gaggle --since --until" ;;
                 prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
                 compact) flags+=" --dry-run" ;;
@@ -465,7 +466,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix label claim claims shadow gaggle prune prune-orphans compact"
             fi
             ;;
         journal)

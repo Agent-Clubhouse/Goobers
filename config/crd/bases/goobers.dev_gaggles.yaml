@@ -227,19 +227,60 @@ spec:
                 type: object
               backprop:
                 description: |-
-                  Backprop overrides Backprop attribution for this gaggle's workflows
-                  without editing them. mode=shadow observes every workflow that declares
-                  neither its own backprop.mode nor enabled=true; the override can never
-                  activate filing. Omitted or mode=off applies no override.
+                  Backprop is the gaggle-level Backprop default for workflows that
+                  declare neither their own backprop.mode nor enabled=true. mode=shadow
+                  observes them on demand without editing them; mode=active enrolls
+                  workflows pinned to DSL 3.0+ with preview features acknowledged.
+                  Omitted or mode=off applies no default.
                 properties:
+                  granularity:
+                    description: |-
+                      Granularity is the default granularity for every workflow in the gaggle
+                      that omits its own, including workflows that declare their own mode.
+                      Preview.
+                    enum:
+                    - run
+                    - stage
+                    type: string
+                  groundTruth:
+                    description: |-
+                      GroundTruth is the default ground-truth label source contract for every
+                      workflow in the gaggle that omits its own, including workflows that
+                      declare their own mode. Preview.
+                    properties:
+                      sources:
+                        description: |-
+                          Sources lists the label sources whose labels feed attribution
+                          aggregates. An empty list is the explicit opt-out: no label is accepted
+                          for the workflow's runs.
+                        items:
+                          description: BackpropLabelSource names a kind of ground-truth
+                            label signal.
+                          enum:
+                          - human
+                          type: string
+                        maxItems: 8
+                        type: array
+                    required:
+                    - sources
+                    type: object
                   mode:
                     description: |-
-                      Mode is the override applied to workflows without their own mode.
-                      Only off and shadow are accepted: a gaggle cannot enroll workflows
-                      in active filing.
+                      Mode is the default applied to workflows without their own mode. off
+                      applies none; shadow observes them on demand; active enrolls eligible
+                      workflows (DSL 3.0+ with preview features acknowledged) in active
+                      attribution, and observes nothing for ineligible ones.
                     enum:
                     - "off"
                     - shadow
+                    - active
+                    type: string
+                  version:
+                    description: |-
+                      Version is the attribution contract inheriting workflows use. Omitted
+                      means v1. Preview.
+                    enum:
+                    - v1
                     type: string
                 required:
                 - mode

@@ -72,6 +72,28 @@ spec:
                     - run
                     - stage
                     type: string
+                  groundTruth:
+                    description: |-
+                      GroundTruth selects which ground-truth label sources feed this
+                      workflow's attribution aggregates. Omitted inherits the gaggle default,
+                      and with neither every supported source is accepted. Preview.
+                    properties:
+                      sources:
+                        description: |-
+                          Sources lists the label sources whose labels feed attribution
+                          aggregates. An empty list is the explicit opt-out: no label is accepted
+                          for the workflow's runs.
+                        items:
+                          description: BackpropLabelSource names a kind of ground-truth
+                            label signal.
+                          enum:
+                          - human
+                          type: string
+                        maxItems: 8
+                        type: array
+                    required:
+                    - sources
+                    type: object
                   mode:
                     description: |-
                       Mode selects off, shadow, or active attribution. When set it is

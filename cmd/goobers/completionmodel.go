@@ -409,6 +409,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
 		{name: "stratify", takesArg: true, values: []string{"gaggle"}, desc: "Confound axis to test clusters against (gaggle)"},
 		{name: "json", desc: "Emit the fitted model as JSON"},
+		{name: "snapshot", desc: "Emit a privacy-safe fleet snapshot of this instance"},
+		{name: "instance-id", takesArg: true, desc: "Snapshot: instance ID (default: fleet association)"},
+		{name: "salt", takesArg: true, desc: "Snapshot: salt for name hashes (default: fleet ID)"},
+		{name: "fleet", takesArg: true, desc: "Cluster the fleet snapshots in this directory"},
 	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
@@ -622,6 +626,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter to one workflow"},
 		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
+	},
+	"telemetry gaggle": {
+		{name: "json", desc: "Emit the gaggle report as JSON"},
+		{name: "gaggle", takesArg: true, valueKind: "gaggles", desc: "Gaggle to report on (required)"},
+		{name: "since", takesArg: true, desc: "Include runs started at or after this RFC3339 timestamp"},
+		{name: "until", takesArg: true, desc: "Include runs started before this RFC3339 timestamp"},
 	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},

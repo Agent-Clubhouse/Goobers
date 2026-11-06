@@ -3263,7 +3263,7 @@ see docs/guides/desired-concurrency-and-pause.md for refill and pausing work.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|gaggle|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -3276,6 +3276,7 @@ label:   record a ground-truth verdict for a Backprop-enrolled run
 claim:   append a Backprop claim from inside an agentic stage
 claims:  print the Backprop claims earlier stages of this run recorded
 shadow:  compare Backprop shadow-mode findings with actual run outcomes
+gaggle:  gaggle-wide Backprop credit, recurring findings, trends, and links
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -3347,6 +3348,18 @@ Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
 Every discovered run journal is validated before output; missing, corrupt, or
 unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
+
+### telemetry gaggle
+Usage: goobers telemetry gaggle --gaggle=name [--json] [--since=RFC3339] [--until=RFC3339] [path]
+
+Summarize one gaggle's active Backprop attribution across its workflows:
+per-workflow and per-stage credit and blame share, the top recurring
+findings, each workflow's trend against the previous window of the same
+length, and cross-workflow links. A link exists only where two runs
+recorded the same identifier (an external reference touched by both, or a
+run continuation); nothing is inferred. The window defaults to the seven
+days before --until (default now). Shadow records are never read. Exit
+codes: 0 = OK, 1 = query error, 2 = usage error.
 
 ### telemetry label
 Usage: goobers telemetry label --run=<run-id> --outcome=correct|incorrect [--reason=TEXT] [--by=NAME] [--labeled-at=RFC3339] [path]
@@ -3675,6 +3688,8 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 
 ### workflow clusters
 Usage: goobers workflow clusters [--features structural|behavior] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle] [--json] [path]
+       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
+       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
 
 Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
 and report each cluster's medoid, members, stability, and distinguishing
@@ -3698,6 +3713,17 @@ behavior features are never mixed in one model. With --stratify gaggle,
 also test whether clusters merely track gaggle boundaries (a confound);
 that check is observational, not gym-controlled. Nothing is modified
 (default path ".").
+
+Fleet convergence: --snapshot prints this instance's feature vectors as a
+fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;
+workflows become salted keys and goober names salted hashes. The instance
+ID and salt default to the fleet association (salt = fleet ID), so every
+instance in a fleet hashes alike. --fleet <dir> pools the *.json snapshots
+in dir and clusters distinct workflow shapes across instances: a shape
+cloned onto many instances counts once, only the most common feature
+version is clustered (others are listed as excluded), each instance is
+scored aligned/private/outlier, and clusters are tested for an instance
+confound.
 
 ### workflow show
 Usage: goobers workflow show [--dot] <name> [path]
