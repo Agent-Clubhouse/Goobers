@@ -158,6 +158,22 @@ func TestFitSeparatesWorkflowShapes(t *testing.T) {
 	}
 }
 
+func TestBuildSchemaNormalizesWLGroupWeight(t *testing.T) {
+	points := []Point{{ID: "a", Numeric: map[string]float64{}}, {ID: "b", Numeric: map[string]float64{}}}
+	for i := range wlBuckets {
+		name := fmt.Sprintf("%s%02d", wlFeaturePrefix, i)
+		points[0].Numeric[name] = 0
+		points[1].Numeric[name] = 1
+	}
+	var total float64
+	for _, feature := range buildSchema(points).Features {
+		total += feature.Weight
+	}
+	if total != wlGroupWeight {
+		t.Fatalf("WL aggregate weight = %v, want %v", total, wlGroupWeight)
+	}
+}
+
 func TestFitUsesSampledPathAboveExactnessBoundary(t *testing.T) {
 	points := blobs()
 	model, err := Fit("test/v1", points, Options{

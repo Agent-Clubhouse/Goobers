@@ -45,3 +45,19 @@ func TestAssignmentChangeIgnoresClusterLabelRenumbering(t *testing.T) {
 		t.Fatalf("assignment change = %v, want 0", change)
 	}
 }
+
+func TestAssignmentChangeDetectsClusterSplitsAndMerges(t *testing.T) {
+	oneCluster := Model{Population: 4, Clusters: []Cluster{
+		{ID: "c0", Members: []string{"a", "b", "c", "d"}},
+	}}
+	twoClusters := Model{Population: 4, Clusters: []Cluster{
+		{ID: "c0", Members: []string{"a", "b"}},
+		{ID: "c1", Members: []string{"c", "d"}},
+	}}
+	if change := assignmentChange(oneCluster, twoClusters); change != 0.5 {
+		t.Errorf("split assignment change = %v, want 0.5", change)
+	}
+	if change := assignmentChange(twoClusters, oneCluster); change != 0.5 {
+		t.Errorf("merge assignment change = %v, want 0.5", change)
+	}
+}

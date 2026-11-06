@@ -96,51 +96,111 @@ func meanStability(model Model) float64 {
 	return total / float64(len(model.Clusters))
 }
 
-// assignmentChange matches each ablated cluster to the baseline cluster with
-// greatest member Jaccard, avoiding dependence on generated cluster IDs.
+// assignmentChange uses maximum-overlap one-to-one cluster matching, avoiding
+// dependence on generated cluster IDs while still detecting splits and merges.
 func assignmentChange(baseline, ablated Model) float64 {
-	base := memberLabels(baseline)
-	other := memberLabels(ablated)
-	matches := map[string]string{}
-	for _, cluster := range ablated.Clusters {
-		bestID, best := "", -1.0
-		for _, candidate := range baseline.Clusters {
-			score := memberJaccard(cluster.Members, candidate.Members)
-			if score > best {
-				bestID, best = candidate.ID, score
+	otherCluster := make(map[string]int, ablated.Population)
+	for i, cluster := range ablated.Clusters {
+		for _, id := range cluster.Members {
+			otherCluster[id] = i
+		}
+	}
+	overlap := make([][]int, len(baseline.Clusters))
+	total := len(baseline.Noise)
+	for i, cluster := range baseline.Clusters {
+		overlap[i] = make([]int, len(ablated.Clusters))
+		total += len(cluster.Members)
+		for _, id := range cluster.Members {
+			if j, ok := otherCluster[id]; ok {
+				overlap[i][j]++
 			}
 		}
-		matches[cluster.ID] = bestID
 	}
-	changed := 0
-	for id, expected := range base {
-		actual := other[id]
-		if actual != "" {
-			actual = matches[actual]
-		}
-		if actual != expected {
-			changed++
+	otherNoise := make(map[string]bool, len(ablated.Noise))
+	for _, id := range ablated.Noise {
+		otherNoise[id] = true
+	}
+	unchanged := maximumOverlap(overlap)
+	for _, id := range baseline.Noise {
+		if otherNoise[id] {
+			unchanged++
 		}
 	}
-	if len(base) == 0 {
+	if total == 0 {
 		return 0
 	}
-	return float64(changed) / float64(len(base))
+	return float64(total-unchanged) / float64(total)
 }
 
-func memberLabels(model Model) map[string]string {
-	out := make(map[string]string, model.Population)
-	for _, id := range model.Noise {
-		out[id] = ""
+func maximumOverlap(weights [][]int) int {
+	rows := len(weights)
+	cols := 0
+	if rows > 0 {
+		cols = len(weights[0])
 	}
-	for _, cluster := range model.Clusters {
-		for _, id := range cluster.Members {
-			out[id] = cluster.ID
+	n := max(rows, cols)
+	if n == 0 {
+		return 0
+	}
+
+	u, v := make([]int, n+1), make([]int, n+1)
+	matchedRow, previousColumn := make([]int, n+1), make([]int, n+1)
+	for row := 1; row <= n; row++ {
+		matchedRow[0] = row
+		minCost := make([]int, n+1)
+		used := make([]bool, n+1)
+		for column := 1; column <= n; column++ {
+			minCost[column] = int(^uint(0) >> 1)
+		}
+		column := 0
+		for {
+			used[column] = true
+			currentRow := matchedRow[column]
+			delta, nextColumn := int(^uint(0)>>1), 0
+			for candidate := 1; candidate <= n; candidate++ {
+				if used[candidate] {
+					continue
+				}
+				weight := 0
+				if currentRow <= rows && candidate <= cols {
+					weight = weights[currentRow-1][candidate-1]
+				}
+				cost := -weight - u[currentRow] - v[candidate]
+				if cost < minCost[candidate] {
+					minCost[candidate], previousColumn[candidate] = cost, column
+				}
+				if minCost[candidate] < delta {
+					delta, nextColumn = minCost[candidate], candidate
+				}
+			}
+			for candidate := 0; candidate <= n; candidate++ {
+				if used[candidate] {
+					u[matchedRow[candidate]] += delta
+					v[candidate] -= delta
+				} else {
+					minCost[candidate] -= delta
+				}
+			}
+			column = nextColumn
+			if matchedRow[column] == 0 {
+				break
+			}
+		}
+		for {
+			nextColumn := previousColumn[column]
+			matchedRow[column] = matchedRow[nextColumn]
+			column = nextColumn
+			if column == 0 {
+				break
+			}
 		}
 	}
-	return out
-}
 
-func memberJaccard(a, b []string) float64 {
-	return 1 - jaccardDistance(a, b)
+	total := 0
+	for column := 1; column <= cols; column++ {
+		if row := matchedRow[column]; row > 0 && row <= rows {
+			total += weights[row-1][column-1]
+		}
+	}
+	return total
 }

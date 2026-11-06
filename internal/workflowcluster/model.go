@@ -25,8 +25,9 @@ const (
 // wlFeaturePrefix names flattened Weisfeiler-Lehman buckets in a Point.
 const wlFeaturePrefix = "wl."
 
-// wlWeight keeps each sparse WL bucket below an ordinary scalar feature.
-const wlWeight = 0.25
+// wlGroupWeight preserves the aggregate weight of the original 32-bucket WL
+// histogram after widening it, so the structural signal cannot dominate.
+const wlGroupWeight = 8.0
 
 const (
 	// DefaultApproximateAbove is the largest population fitted exactly.
@@ -406,11 +407,17 @@ func buildSchema(points []Point) Schema {
 		}
 		numeric[name] = [2]float64{lo, hi}
 	}
+	wlFeatures := 0
+	for name := range numeric {
+		if strings.HasPrefix(name, wlFeaturePrefix) {
+			wlFeatures++
+		}
+	}
 	var schema Schema
 	for name, bounds := range numeric {
 		weight := 1.0
 		if strings.HasPrefix(name, wlFeaturePrefix) {
-			weight = wlWeight
+			weight = wlGroupWeight / float64(wlFeatures)
 		}
 		schema.Features = append(schema.Features, SchemaFeature{Name: name, Kind: KindNumeric, Weight: weight, Min: bounds[0], Max: bounds[1]})
 	}
