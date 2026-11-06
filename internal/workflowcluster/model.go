@@ -14,7 +14,7 @@ import (
 
 // ModelVersion identifies the fitted-model format and algorithm. Bump it when
 // distance, clustering, or stability semantics change.
-const ModelVersion = "workflowcluster.model/v1"
+const ModelVersion = "workflowcluster.model/v2"
 
 // Feature kinds in a Schema.
 const (
@@ -25,9 +25,16 @@ const (
 // wlFeaturePrefix names flattened Weisfeiler-Lehman buckets in a Point.
 const wlFeaturePrefix = "wl."
 
-// wlWeight down-weights each WL bucket so the 32-bucket histogram counts as
-// eight ordinary features in total instead of dominating the distance.
+// wlWeight keeps each sparse WL bucket below an ordinary scalar feature.
 const wlWeight = 0.25
+
+const (
+	// DefaultApproximateAbove is the largest population fitted exactly.
+	DefaultApproximateAbove = 2000
+	// DefaultApproximateSample is the deterministic sample clustered above
+	// DefaultApproximateAbove.
+	DefaultApproximateSample = 1000
+)
 
 // Point is one member of the population being clustered, such as a child
 // workflow proposal or an EffectiveVersion.
@@ -138,6 +145,11 @@ type Options struct {
 	TopFeatures int `json:"topFeatures"`
 	// Seed makes subsampling reproducible.
 	Seed uint64 `json:"seed"`
+	// ApproximateAbove switches larger populations to deterministic sampled
+	// fitting. Default 2000; exact fitting is guaranteed at or below it.
+	ApproximateAbove int `json:"approximateAbove"`
+	// ApproximateSample is the sample clustered by HDBSCAN. Default 1000.
+	ApproximateSample int `json:"approximateSample"`
 }
 
 func (o Options) withDefaults() Options {
@@ -159,6 +171,13 @@ func (o Options) withDefaults() Options {
 	if o.TopFeatures <= 0 {
 		o.TopFeatures = 5
 	}
+	if o.ApproximateAbove <= 0 {
+		o.ApproximateAbove = DefaultApproximateAbove
+	}
+	if o.ApproximateSample <= 0 {
+		o.ApproximateSample = DefaultApproximateSample
+	}
+	o.ApproximateSample = max(o.ApproximateSample, o.MinClusterSize)
 	return o
 }
 
@@ -218,11 +237,21 @@ func Fit(featureVersion string, points []Point, opts Options) (Model, error) {
 	}
 
 	schema := buildSchema(sorted)
+	if len(sorted) > opts.ApproximateAbove && opts.ApproximateSample < len(sorted) {
+		return fitSampled(featureVersion, sorted, schema, opts)
+	}
+	return fitExact(featureVersion, sorted, schema, opts)
+}
+
+func fitExact(featureVersion string, sorted []Point, schema Schema, opts Options) (Model, error) {
 	dist := distanceMatrix(schema, sorted)
 	labels := hdbscan(dist, opts.MinClusterSize, opts.MinSamples, opts.AllowSingleCluster)
 	groups := groupLabels(labels)
 	stability := subsampleStability(dist, groups, opts)
+	return buildModel(featureVersion, sorted, schema, opts, dist, labels, groups, stability)
+}
 
+func buildModel(featureVersion string, sorted []Point, schema Schema, opts Options, dist [][]float64, labels []int, groups [][]int, stability []float64) (Model, error) {
 	model := Model{
 		Version: ModelVersion, FeatureVersion: featureVersion, Options: opts,
 		Schema: schema, Population: len(sorted), Noise: []string{},
@@ -248,11 +277,95 @@ func Fit(featureVersion string, points []Point, opts Options) (Model, error) {
 			model.Noise = append(model.Noise, sorted[i].ID)
 		}
 	}
+	var err error
 	model.ID, err = modelID(model)
 	if err != nil {
 		return Model{}, err
 	}
 	return model, nil
+}
+
+// fitSampled clusters an evenly spaced deterministic sample, then assigns
+// remaining points to a sampled cluster only when they fall within its radius.
+// It bounds distance-matrix memory while preserving exact fitting through the
+// configured threshold.
+func fitSampled(featureVersion string, sorted []Point, schema Schema, opts Options) (Model, error) {
+	sampleSize := min(opts.ApproximateSample, len(sorted))
+	sample := make([]Point, sampleSize)
+	sampleOriginal := make([]int, sampleSize)
+	sampled := make([]bool, len(sorted))
+	for i := range sampleSize {
+		index := i * len(sorted) / sampleSize
+		sample[i], sampleOriginal[i], sampled[index] = sorted[index], index, true
+	}
+	dist := distanceMatrix(schema, sample)
+	labels := hdbscan(dist, opts.MinClusterSize, opts.MinSamples, opts.AllowSingleCluster)
+	sampleGroups := groupLabels(labels)
+	stability := subsampleStability(dist, sampleGroups, opts)
+
+	groups := make([][]int, len(sampleGroups))
+	medoids := make([]Point, len(sampleGroups))
+	radii := make([]float64, len(sampleGroups))
+	for g, members := range sampleGroups {
+		medoid, radius := medoidOf(dist, members)
+		medoids[g], radii[g] = sample[medoid], radius
+		for _, member := range members {
+			groups[g] = append(groups[g], sampleOriginal[member])
+		}
+	}
+	fullLabels := make([]int, len(sorted))
+	for i := range fullLabels {
+		fullLabels[i] = -1
+	}
+	for g, members := range groups {
+		for _, member := range members {
+			fullLabels[member] = g
+		}
+	}
+	for i, point := range sorted {
+		if sampled[i] {
+			continue
+		}
+		best, nearest := math.Inf(1), -1
+		for g, medoid := range medoids {
+			if d := schema.Distance(point, medoid); d < best {
+				best, nearest = d, g
+			}
+		}
+		if nearest >= 0 && best <= radii[nearest] {
+			fullLabels[i] = nearest
+			groups[nearest] = append(groups[nearest], i)
+		}
+	}
+
+	model := Model{
+		Version: ModelVersion, FeatureVersion: featureVersion, Options: opts,
+		Schema: schema, Population: len(sorted), Noise: []string{},
+	}
+	for g, members := range groups {
+		ids := make([]string, len(members))
+		for i, member := range members {
+			ids[i] = sorted[member].ID
+		}
+		sort.Strings(ids)
+		model.Clusters = append(model.Clusters, Cluster{
+			Medoid: medoids[g], Members: ids, Radius: radii[g],
+			Stability: stability[g], Stable: stability[g] >= opts.StabilityThreshold,
+			Distinguishing: distinguishing(schema, sorted, members, opts.TopFeatures),
+		})
+	}
+	sort.Slice(model.Clusters, func(i, j int) bool { return model.Clusters[i].Medoid.ID < model.Clusters[j].Medoid.ID })
+	for i := range model.Clusters {
+		model.Clusters[i].ID = fmt.Sprintf("c%d", i)
+	}
+	for i, label := range fullLabels {
+		if label < 0 {
+			model.Noise = append(model.Noise, sorted[i].ID)
+		}
+	}
+	var err error
+	model.ID, err = modelID(model)
+	return model, err
 }
 
 func validatePoints(points []Point) ([]Point, error) {

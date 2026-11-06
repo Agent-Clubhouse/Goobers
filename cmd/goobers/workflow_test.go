@@ -370,12 +370,13 @@ func TestWorkflowClustersReportsConfiguredWorkflows(t *testing.T) {
 	for _, c := range model.Clusters {
 		assigned += len(c.Members)
 	}
-	if model.Version != "workflowcluster.model/v1" || model.Population < 2 || assigned != model.Population {
+	if model.Version != "workflowcluster.model/v2" || model.Population < 2 || assigned != model.Population {
 		t.Fatalf("model = %+v", model)
 	}
 
-	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", root)
-	if code != 0 || !strings.Contains(stdout, "Labs: experimental") {
+	code, stdout, stderr = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--ablation", root)
+	if code != 0 || !strings.Contains(stdout, "Labs: experimental") ||
+		!strings.Contains(stdout, "Feature ablation") {
 		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if code, _, _ := runArgs(t, "workflow", "clusters", "--min-cluster-size", "1", root); code != 2 {
