@@ -68,6 +68,8 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
   const confounds =
     view.confoundsByAxis?.[confoundAxis as keyof NonNullable<typeof view.confoundsByAxis>] ??
     (confoundAxis === "gaggle" ? view.confounds : undefined);
+  const [cohort, setCohort] = useState("");
+  const map = (view.map ?? []).filter((point) => !cohort || point.cohort === cohort);
   return (
     <>
       <p>
@@ -89,18 +91,31 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
           >
             {Object.keys(view.confoundsByAxis).map((axis) => (
               <option value={axis} key={axis}>
-                {axis}
+                {axis === "cohort" ? "task cohort" : axis}
               </option>
             ))}
           </select>
         </label>
       )}
       {confounds && <ConfoundSummary axis={confoundAxis} report={confounds} />}
+      {(view.cohorts ?? []).length > 1 && (
+        <label className="labs-cohort-filter">
+          Task cohort{" "}
+          <select value={cohort} onChange={(event) => setCohort(event.target.value)}>
+            <option value="">All cohorts</option>
+            {(view.cohorts ?? []).map((label) => (
+              <option value={label} key={label}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {view.trends && <TrendSummary report={view.trends} />}
       {!view.trends && view.trendsUnavailable && <p role="status">{view.trendsUnavailable}.</p>}
-      {model.clusters.length > 0 && (view.map ?? []).length > 0 && (
+      {model.clusters.length > 0 && map.length > 0 && (
         <LabsClusterMap
-          points={view.map ?? []}
+          points={map}
           clusterIds={model.clusters.map((cluster) => cluster.id)}
           medoids={new Set(model.clusters.map((cluster) => cluster.medoid.id))}
         />
@@ -203,7 +218,8 @@ function TrendSummary({ report }: { report: NonNullable<LabsWorkflowClusterView[
 
 function ConfoundSummary({ axis, report }: { axis: string; report: LabsConfoundReport }) {
   const stats = `Cramér's V ${report.association.toFixed(2)}, p ${report.pValue.toFixed(3)}, ${report.evidence}`;
-  const label = axis === "skills" || axis === "tools" ? `${axis} digest` : axis;
+  const label =
+    axis === "cohort" ? "task cohort" : axis === "skills" || axis === "tools" ? `${axis} digest` : axis;
   return (
     <div className={report.confounded ? "labs-confound labs-confound-warning" : "labs-confound"} role="status">
       {report.confounded ? (
@@ -347,6 +363,7 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
           },
         ]),
       ),
+    cohorts: view.cohorts ?? [],
     trends: view.trends && {
       ...view.trends,
       candidates: view.trends.candidates ?? 0,

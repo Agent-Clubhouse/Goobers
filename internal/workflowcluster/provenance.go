@@ -11,6 +11,8 @@ import (
 const (
 	// StratifyGaggle groups workflows by their owning gaggle.
 	StratifyGaggle = "gaggle"
+	// StratifyCohort groups configured workflows by their task cohort.
+	StratifyCohort = "cohort"
 	// StratifyModel groups workflows or runs by recorded model identifiers.
 	StratifyModel = "model"
 	// StratifyHarness groups workflows or runs by harness identifiers.

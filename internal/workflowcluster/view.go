@@ -21,8 +21,11 @@ type View struct {
 	MinClusterSize int             `json:"minClusterSize"`
 	Model          *Model          `json:"model,omitempty"`
 	Confounds      *ConfoundReport `json:"confounds,omitempty"`
-	// ConfoundsByAxis contains every supported structural provenance check.
+	// ConfoundsByAxis contains every supported structural provenance check,
+	// including the task-cohort axis.
 	ConfoundsByAxis map[string]ConfoundReport `json:"confoundsByAxis,omitempty"`
+	// Cohorts lists the task-cohort labels present in Map.
+	Cohorts []string `json:"cohorts,omitempty"`
 	// Map places every workflow in two dimensions for the Portal's scatter map.
 	Map []MapPoint `json:"map,omitempty"`
 	// Trends compares retained agent-authored child shapes against Model.
@@ -58,7 +61,7 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 		return View{}, err
 	}
 	confoundsByAxis := map[string]ConfoundReport{}
-	for _, axis := range append([]string{StratifyGaggle}, provenanceAxes...) {
+	for _, axis := range append([]string{StratifyGaggle, StratifyCohort}, provenanceAxes...) {
 		confoundsByAxis[axis] = ConfoundCheck(model, strata[axis], ConfoundOptions{})
 	}
 	confounds := confoundsByAxis[StratifyGaggle]
@@ -66,6 +69,7 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	view.Model = &model
 	view.Confounds = &confounds
 	view.ConfoundsByAxis = confoundsByAxis
+	view.Cohorts = cohortLabels(points)
 	view.Map = Project(model, points)
 	trends, err := ScanChildTrends(ctx, s.Root, model, TrendScanOptions{})
 	switch {

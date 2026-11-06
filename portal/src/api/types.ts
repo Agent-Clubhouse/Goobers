@@ -2269,7 +2269,8 @@ export interface LabsWorkflowClusterView {
   minClusterSize: number;
   model?: LabsClusterModel;
   confounds?: LabsConfoundReport;
-  confoundsByAxis?: Partial<Record<"gaggle" | "model" | "harness" | "skills" | "tools", LabsConfoundReport>>;
+  confoundsByAxis?: Partial<Record<"gaggle" | "cohort" | "model" | "harness" | "skills" | "tools", LabsConfoundReport>>;
+  cohorts?: string[];
   /** 2-D layout of every workflow (classical MDS of the model distances). */
   map?: LabsClusterMapPoint[];
   trends?: LabsWorkflowTrendReport;
@@ -2315,6 +2316,7 @@ export interface LabsClusterMapPoint {
   y: number;
   /** Empty or absent for noise. */
   cluster?: string;
+  cohort?: string;
 }
 
 export interface DaemonClient {

@@ -481,7 +481,7 @@ func TestWorkflowClustersStratifyReportsConfounds(t *testing.T) {
 		!strings.Contains(stdout, "reported, not pooled") {
 		t.Fatalf("text report: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	for _, axis := range []string{"model", "harness", "skills", "tools"} {
+	for _, axis := range []string{"cohort", "model", "harness", "skills", "tools"} {
 		code, stdout, stderr := runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", axis, "--json", root)
 		if code != 0 {
 			t.Fatalf("stratify %s: code = %d, stderr = %q", axis, code, stderr)
@@ -506,6 +506,9 @@ func TestWorkflowClustersStratifyReportsConfounds(t *testing.T) {
 		}
 		if labeled+got.Confounds.Unlabeled != got.Model.Population {
 			t.Fatalf("stratify %s: labeled %d + unlabeled %d != population %d", axis, labeled, got.Confounds.Unlabeled, got.Model.Population)
+		}
+		if axis == "cohort" && got.Confounds.Unlabeled != 0 {
+			t.Fatalf("stratify cohort: every configured workflow has a task cohort, got %d unlabeled", got.Confounds.Unlabeled)
 		}
 		code, stdout, _ = runArgs(t, "workflow", "clusters", "--min-cluster-size", "2", "--stratify", axis, root)
 		if code != 0 || !strings.Contains(stdout, "Confounds (stratified by "+axis+"; evidence: observational)") ||
