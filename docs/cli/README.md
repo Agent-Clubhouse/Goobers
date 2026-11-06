@@ -5758,9 +5758,10 @@ that check is observational, not gym-controlled. Nothing is modified
 
 Task cohorts use metadata.labels["goobers.dev/task-class"] when explicitly
 set. Otherwise an auto:<digest> label is derived only from trigger types,
-work-item kinds, side-effect classes, and repo:* capabilities. Workflow and
-stage names, goals, selectors, schedules, signals, and webhook payload text
-are excluded, making derivation deterministic and rename-invariant.
+work-item kinds, the declared policy-action side-effect set, and repo:*
+capabilities. Workflow and stage names, goals, selectors, schedules, signals,
+and webhook payload text are excluded, making derivation deterministic and
+rename-invariant.
 
 Fleet convergence: --snapshot prints this instance's feature vectors as a
 fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;

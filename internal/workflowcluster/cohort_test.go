@@ -72,6 +72,32 @@ func TestCohortUsesExplicitTaskClass(t *testing.T) {
 	}
 }
 
+func TestCohortDistinguishesPolicyActionSideEffects(t *testing.T) {
+	readOnly := cohortWorkflow()
+	readOnlyLabel := Cohort(readOnly)
+
+	commenting := readOnly.DeepCopy()
+	commenting.Spec.Tasks[0].PolicyActions = []string{"comment-on-issue"}
+	commentingLabel := Cohort(*commenting)
+	if commentingLabel == readOnlyLabel {
+		t.Fatalf("read-only and mutating workflows share cohort %q", readOnlyLabel)
+	}
+
+	merging := readOnly.DeepCopy()
+	merging.Spec.Tasks[0].PolicyActions = []string{"merge-pull-request"}
+	if got := Cohort(*merging); got == commentingLabel {
+		t.Fatalf("different side-effect sets share cohort %q", got)
+	}
+
+	reordered := readOnly.DeepCopy()
+	reordered.Spec.Tasks[0].PolicyActions = []string{"merge-pull-request", "comment-on-issue"}
+	multipleLabel := Cohort(*reordered)
+	reordered.Spec.Tasks[0].PolicyActions = []string{"comment-on-issue", "merge-pull-request"}
+	if got := Cohort(*reordered); got != multipleLabel {
+		t.Fatalf("reordered side effects cohort = %q, want %q", got, multipleLabel)
+	}
+}
+
 func TestCohortFilteringAndStrata(t *testing.T) {
 	points := []Point{{ID: "g/a", Cohort: "review"}, {ID: "g/b", Cohort: "deploy"}, {ID: "g/c", Cohort: "review"}}
 	filtered := pointsInCohort(points, "review")

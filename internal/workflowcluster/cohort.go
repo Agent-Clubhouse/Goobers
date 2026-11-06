@@ -44,19 +44,11 @@ func Cohort(wf apiv1.Workflow) string {
 
 	sideEffects := map[string]bool{}
 	for _, task := range wf.Spec.Tasks {
-		if len(task.Capabilities) == 0 && task.Type == apiv1.TaskDeterministic {
-			sideEffects["none"] = true
-		} else {
-			sideEffects["external"] = true
+		for _, action := range task.PolicyActions {
+			sideEffects[action] = true
 		}
 	}
-	for range wf.Spec.Gates {
-		sideEffects["none"] = true
-	}
-	for range wf.Spec.Parallels {
-		sideEffects["none"] = true
-	}
-	for range wf.Spec.Maps {
+	if len(sideEffects) == 0 {
 		sideEffects["none"] = true
 	}
 
