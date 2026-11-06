@@ -2,9 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestWorkflowGymListPrintsDigestCountAndStableOrder(t *testing.T) {
@@ -33,4 +38,61 @@ func TestWorkflowGymValidateRejectsInvalidFixture(t *testing.T) {
 	if !strings.Contains(stderr.String(), "provenance") {
 		t.Fatalf("stderr = %s", stderr.String())
 	}
+}
+
+func TestWorkflowGymReplayEmitsOfflineManifest(t *testing.T) {
+	task := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid", "10-train.yaml")
+	providerFixture := filepath.Join("..", "..", "internal", "harness", "testdata", "workflowgym", "provider.json")
+	journalDir := workflowGymReplayJournal(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "replay", task, providerFixture, journalDir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var manifest apiv1.WorkflowGymReplayManifest
+	if err := json.Unmarshal(stdout.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode replay manifest: %v\n%s", err, stdout.String())
+	}
+	if manifest.Kind != apiv1.WorkflowGymReplayKind || manifest.Status != "success" ||
+		manifest.JournalDigest == "" || len(manifest.NondeterminismFindings) != 0 {
+		t.Fatalf("manifest = %+v, want deterministic replay success", manifest)
+	}
+}
+
+func workflowGymReplayJournal(t *testing.T) string {
+	t.Helper()
+	runJournal, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID:           "0af7651916cd43dd8448eb211c80319c",
+		Workflow:        "workflow-gym",
+		WorkflowVersion: 1,
+		Gaggle:          "test",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "task-alpha"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runJournal.Close() }()
+	if err := runJournal.Append(journal.Event{Type: journal.EventStageStarted, Stage: "candidate", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "historical result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []struct {
+		name string
+		data []byte
+	}{
+		{harness.BenchmarkTranscriptArtifact, []byte("{\"message\":\"offline\"}\n")},
+		{harness.BenchmarkCompletionArtifact, completion},
+	} {
+		if _, err := runJournal.RecordStageArtifact("candidate", 1, journal.AttemptPolicy, artifact.name, artifact.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runJournal.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "candidate", Attempt: 1, Status: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return runJournal.Dir()
 }

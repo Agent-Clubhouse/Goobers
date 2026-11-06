@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"text/tabwriter"
 
@@ -8,9 +10,10 @@ import (
 	"github.com/goobers/goobers/internal/workflowgym"
 )
 
-const workflowGymHelp = "Usage: goobers workflow-gym <validate|list> <path>\n\n" +
+const workflowGymHelp = "Usage: goobers workflow-gym <validate|list|replay> <args>\n\n" +
 	"Validate or list a file-backed Workflow Gym benchmark dataset. The path\n" +
-	"may name one JSON/YAML task manifest or a directory of manifests.\n"
+	"may name one JSON/YAML task manifest or a directory of manifests. Replay\n" +
+	"runs one task against historical fixture and journal inputs, entirely offline.\n"
 
 const workflowGymValidateHelp = "Usage: goobers workflow-gym validate <path>\n\n" +
 	"Validate a Workflow Gym dataset and print its version, deterministic\n" +
@@ -19,6 +22,10 @@ const workflowGymValidateHelp = "Usage: goobers workflow-gym validate <path>\n\n
 const workflowGymListHelp = "Usage: goobers workflow-gym list <path>\n\n" +
 	"Validate a Workflow Gym dataset, print its version, deterministic digest,\n" +
 	"and task count, then list tasks in stable task ID order.\n"
+
+const workflowGymReplayHelp = "Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>\n\n" +
+	"Replay one historical task twice through the offline benchmark harness and\n" +
+	"write its deterministic replay manifest as JSON.\n"
 
 func workflowGymCLICommand() cliCommand {
 	return groupCommand(
@@ -30,10 +37,14 @@ func workflowGymCLICommand() cliCommand {
 		subcommand("workflow-gym list", "list", apicontract.ActionReadOnlyNavigation, runWorkflowGymList).
 			withHelp("list a file-backed benchmark dataset", workflowGymListHelp).
 			withExamples("goobers workflow-gym list ./benchmark-tasks"),
+		subcommand("workflow-gym replay", "replay", apicontract.ActionReadOnlyNavigation, runWorkflowGymReplay).
+			withHelp("replay a historical benchmark task offline", workflowGymReplayHelp).
+			withExamples("goobers workflow-gym replay ./task.yaml ./provider.json ./journal"),
 	).
-		withSynopsis("workflow-gym <validate|list> <path>").
-		withHelp("validate or list Workflow Gym benchmark tasks", workflowGymHelp).
-		withExamples("goobers workflow-gym validate ./benchmark-tasks", "goobers workflow-gym list ./benchmark-tasks")
+		withSynopsis("workflow-gym <validate|list|replay> <args>").
+		withHelp("validate, list, or replay Workflow Gym benchmark tasks", workflowGymHelp).
+		withExamples("goobers workflow-gym validate ./benchmark-tasks", "goobers workflow-gym list ./benchmark-tasks",
+			"goobers workflow-gym replay ./task.yaml ./provider.json ./journal")
 }
 
 func runWorkflowGym(args []string, _, stderr io.Writer) int {
@@ -65,6 +76,38 @@ func runWorkflowGymList(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := tw.Flush(); err != nil {
 		pf(stderr, "error: write task list: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runWorkflowGymReplay(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 3 {
+		pf(stderr, "%s", workflowGymReplayHelp)
+		return 2
+	}
+	registry, err := workflowgym.Load(args[0])
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if len(registry.Tasks) != 1 {
+		pf(stderr, "error: replay requires exactly one task manifest, got %d\n", len(registry.Tasks))
+		return 1
+	}
+	manifest, err := workflowgym.Replay(context.Background(), workflowgym.ReplayRequest{
+		Task:                registry.Tasks[0],
+		ProviderFixturePath: args[1],
+		JournalDir:          args[2],
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(manifest); err != nil {
+		pf(stderr, "error: write replay manifest: %v\n", err)
 		return 1
 	}
 	return 0

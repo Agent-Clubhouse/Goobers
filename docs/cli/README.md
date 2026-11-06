@@ -161,8 +161,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
-| [`goobers workflow-gym`](#goobers-workflow-gym) | validate or list Workflow Gym benchmark tasks |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, list, or replay Workflow Gym benchmark tasks |
 | [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
+| [`goobers workflow-gym replay`](#goobers-workflow-gym-replay) | replay a historical benchmark task offline |
 | [`goobers workflow-gym validate`](#goobers-workflow-gym-validate) | validate a file-backed benchmark dataset |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
 | [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
@@ -5893,13 +5894,14 @@ $ goobers workflow validate-child --gaggle example --parent implementation --sta
 
 ## `goobers workflow-gym`
 
-validate or list Workflow Gym benchmark tasks
+validate, list, or replay Workflow Gym benchmark tasks
 
 ~~~text
-Usage: goobers workflow-gym <validate|list> <path>
+Usage: goobers workflow-gym <validate|list|replay> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
-may name one JSON/YAML task manifest or a directory of manifests.
+may name one JSON/YAML task manifest or a directory of manifests. Replay
+runs one task against historical fixture and journal inputs, entirely offline.
 ~~~
 
 **Examples**
@@ -5907,6 +5909,7 @@ may name one JSON/YAML task manifest or a directory of manifests.
 ~~~console
 $ goobers workflow-gym validate ./benchmark-tasks
 $ goobers workflow-gym list ./benchmark-tasks
+$ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 ~~~
 
 ## `goobers workflow-gym list`
@@ -5924,6 +5927,23 @@ and task count, then list tasks in stable task ID order.
 
 ~~~console
 $ goobers workflow-gym list ./benchmark-tasks
+~~~
+
+## `goobers workflow-gym replay`
+
+replay a historical benchmark task offline
+
+~~~text
+Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
+
+Replay one historical task twice through the offline benchmark harness and
+write its deterministic replay manifest as JSON.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 ~~~
 
 ## `goobers workflow-gym validate`
