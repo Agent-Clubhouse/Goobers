@@ -58,12 +58,25 @@ const clustered: LabsWorkflowClusterView = {
     undersized: ["ops"],
     options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
   },
+  cohortConfounds: {
+    evidence: "observational",
+    statistic: "cramersV",
+    association: 0.1,
+    pValue: 0.8,
+    confounded: false,
+    tested: 5,
+    unlabeled: 0,
+    strata: [{ key: "review", size: 3 }, { key: "deploy", size: 2 }],
+    undersized: ["deploy"],
+    options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
+  },
+  cohorts: ["deploy", "review"],
   map: [
-    { id: "core/implement", x: 0, y: 0, cluster: "c0" },
-    { id: "core/review", x: 0, y: 0, cluster: "c0" },
-    { id: "ops/triage", x: 0.1, y: 0.05, cluster: "c0" },
-    { id: "core/novel", x: 1, y: -0.4 },
-    { id: "ops/odd-one", x: -0.8, y: 0.6 },
+    { id: "core/implement", x: 0, y: 0, cluster: "c0", cohort: "review" },
+    { id: "core/review", x: 0, y: 0, cluster: "c0", cohort: "review" },
+    { id: "ops/triage", x: 0.1, y: 0.05, cluster: "c0", cohort: "review" },
+    { id: "core/novel", x: 1, y: -0.4, cohort: "deploy" },
+    { id: "ops/odd-one", x: -0.8, y: 0.6, cohort: "deploy" },
   ],
   fitness: {
     scan: {
@@ -166,7 +179,18 @@ describe("LabsPage", () => {
       "clusters track gaggle boundaries",
     );
     expect(screen.getByText(/were not tested: ops\./)).toBeInTheDocument();
+    expect(screen.getByText(/No task cohort confound detected/)).toBeInTheDocument();
     expect(screen.getByText("0123456789ab")).toBeInTheDocument();
+  });
+
+  it("filters the cluster map by task cohort", async () => {
+    const user = userEvent.setup();
+    renderLabs(fixtureClient(clustered), "workflow-clustering");
+
+    await screen.findByRole("img", { name: "Scatter map of 5 workflows in 1 cluster" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Task cohort" }), "deploy");
+    expect(screen.getByRole("img", { name: "Scatter map of 2 workflows in 1 cluster" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Task cohort" })).toHaveValue("deploy");
   });
 
   it("plots every workflow on a scatter map, merging identical shapes and marking medoids", async () => {
