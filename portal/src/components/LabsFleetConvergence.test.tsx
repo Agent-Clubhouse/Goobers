@@ -107,8 +107,10 @@ describe("LabsFleetConvergence", () => {
     const user = userEvent.setup();
     renderPage(true);
 
-    const map = await screen.findByRole("img", { name: "Scatter map of 3 workflows in 2 clusters" });
-    const westOutlier = [...map.querySelectorAll("a.labs-map-dot")].find(
+    const map = await screen.findByRole("img", { name: "Scatter map of 3 workflow shapes in 2 clusters" });
+    expect(map.querySelectorAll("a")).toHaveLength(0);
+    expect(screen.queryByText(/Click a dot to open/)).not.toBeInTheDocument();
+    const westOutlier = [...map.querySelectorAll("g.labs-map-dot")].find(
       (dot) => dot.querySelector("title")?.textContent === "west-outlier — noise",
     );
     expect(westOutlier).not.toHaveClass("labs-map-dot-dimmed");
@@ -116,7 +118,7 @@ describe("LabsFleetConvergence", () => {
     await user.click(screen.getByRole("checkbox", { name: "west" }));
 
     expect(westOutlier).toHaveClass("labs-map-dot-dimmed");
-    const shared = [...map.querySelectorAll("a.labs-map-dot")].find(
+    const shared = [...map.querySelectorAll("g.labs-map-dot")].find(
       (dot) => dot.querySelector("title")?.textContent?.startsWith("shared-shape"),
     );
     expect(shared).not.toHaveClass("labs-map-dot-dimmed");

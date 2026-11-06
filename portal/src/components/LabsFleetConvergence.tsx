@@ -115,6 +115,7 @@ function FleetModel({ view }: { view: LabsFleetConvergenceView }) {
           clusterIds={view.clusters.map((cluster) => cluster.id)}
           medoids={new Set(view.clusters.map((cluster) => cluster.medoidShape))}
           highlightedIds={highlightedShapes}
+          unit="shape"
         />
       )}
       {view.clusters.length === 0 ? (
