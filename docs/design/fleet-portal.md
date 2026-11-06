@@ -459,8 +459,14 @@ The projection is exactly the `FleetSnapshot` produced by `goobers workflow clus
 --snapshot`: its wire-format and feature versions, instance ID, Goobers version,
 generation time, salted workflow keys, shape digests, and numeric and categorical
 feature vectors. It never includes workflow YAML, prompts, goals, workflow, gaggle,
-goober, or stage names, or repository content. The salt is the fleet ID, so equal
-inputs hash alike within one fleet and hashes cannot be compared across fleets.
+goober, or stage names, or repository content. Workflow keys and goober-name hashes
+are salted with the fleet ID, so equal inputs hash alike within one fleet and those
+hashes cannot be compared across fleets. Shape digests are not salted: each is a
+structural digest of the workflow's numeric and categorical features, so workflows
+with identical structure, such as a workflow with no goobers, get the same shape
+digest in every fleet. Shape digests carry no names or free text; any goober names
+reach them only as the salted hashes above. Salting shape digests is a possible
+future hardening if cross-fleet comparability of shapes is unwanted.
 
 A group-level grant authorizes use of this scope across current and future instances
 in that group that registered it; it does not add the scope to an unscoped instance.
