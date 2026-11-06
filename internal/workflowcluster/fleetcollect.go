@@ -99,6 +99,12 @@ func CollectFleetSnapshots(ctx context.Context, targets []FleetTarget, fetch Sna
 		go func() {
 			defer group.Done()
 			for target := range jobs {
+				if collectionCtx.Err() != nil {
+					// Queued targets are not fetched once the collection is
+					// cancelled or past its deadline; they time out unqueried.
+					results <- fleetCollectionResult{exclusion: FleetExclusion{InstanceID: target.InstanceID, Reason: FleetExclusionTimeout}}
+					continue
+				}
 				results <- fetchFleetSnapshot(collectionCtx, target, fetch, opts.PerInstanceTimeout)
 			}
 		}()

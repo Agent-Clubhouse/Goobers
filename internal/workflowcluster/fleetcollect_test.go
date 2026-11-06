@@ -139,34 +139,54 @@ func TestCollectFleetSnapshotsEnforcesOverallDeadline(t *testing.T) {
 	}
 }
 
-func TestCollectFleetSnapshotsCancellationStopsFetches(t *testing.T) {
+func TestCollectFleetSnapshotsCancellationStopsActiveAndQueuedFetches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var started sync.WaitGroup
-	started.Add(2)
-	stopped := make(chan struct{}, 2)
+	var mu sync.Mutex
+	var fetched []string
+	started := make(chan struct{}, 5)
+	stopped := make(chan struct{}, 5)
 	fetch := func(ctx context.Context, target FleetTarget) (FleetSnapshot, error) {
-		started.Done()
+		mu.Lock()
+		fetched = append(fetched, target.InstanceID)
+		mu.Unlock()
+		started <- struct{}{}
 		<-ctx.Done()
 		stopped <- struct{}{}
 		return FleetSnapshot{}, ctx.Err()
 	}
-	done := make(chan error, 1)
+	type outcome struct {
+		snapshots []FleetSnapshot
+		excluded  []FleetExclusion
+		err       error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		_, _, err := CollectFleetSnapshots(ctx, fleetTargets("a", "b"), fetch, FleetCollectionOptions{
+		snapshots, excluded, err := CollectFleetSnapshots(ctx, fleetTargets("a", "b", "c", "d", "e"), fetch, FleetCollectionOptions{
 			MaxConcurrency: 2, PerInstanceTimeout: time.Minute, OverallTimeout: time.Minute,
 		})
-		done <- err
+		done <- outcome{snapshots, excluded, err}
 	}()
-	started.Wait()
+	<-started
+	<-started
 	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context cancellation", err)
+	got := <-done
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", got.err)
 	}
-	for range 2 {
-		select {
-		case <-stopped:
-		case <-time.After(time.Second):
-			t.Fatal("fetch did not stop after cancellation")
+	if len(stopped) != 2 {
+		t.Fatalf("stopped active fetches = %d, want 2", len(stopped))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fetched) != 2 {
+		t.Fatalf("fetched targets = %v, want only the 2 active before cancellation", fetched)
+	}
+	if len(got.snapshots) != 0 || len(got.excluded) != 5 {
+		t.Fatalf("snapshots=%+v exclusions=%+v", got.snapshots, got.excluded)
+	}
+	for _, exclusion := range got.excluded {
+		if exclusion.Reason != FleetExclusionTimeout {
+			t.Fatalf("exclusion %+v, want timeout", exclusion)
 		}
 	}
 }
