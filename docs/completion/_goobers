@@ -131,7 +131,7 @@ _goobers_completion()
             ;;
         fleet)
             case "${words[3]:-}" in
-                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin) ;;
+                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin --projection) ;;
                 status) flags+=(--json) ;;
             esac
             ;;
@@ -181,7 +181,7 @@ _goobers_completion()
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
                 validate-child) flags+=(--gaggle --parent --stage --backend --cluster-model --json) ;;
-                clusters) flags+=(--features --cohort --since --max-runs --min-samples --min-cluster-size --seed --stratify --json --snapshot --instance-id --salt --fleet --templates --cluster-model) ;;
+                clusters) flags+=(--features --cohort --since --max-runs --min-samples --min-cluster-size --seed --stratify --ablation --json --snapshot --instance-id --salt --fleet --templates --cluster-model) ;;
             esac
             ;;
         runs)

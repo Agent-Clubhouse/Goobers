@@ -46,6 +46,7 @@ type JoinOptions struct {
 	InstanceRoot string
 	DisplayName  string
 	ACL          ACL
+	Projections  []string
 }
 
 // Discover fetches and validates the Fleet service's well-known discovery
@@ -101,6 +102,9 @@ func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery D
 	if strings.TrimSpace(options.Grant) == "" {
 		return Association{}, fmt.Errorf("fleet: enrollment grant must not be empty")
 	}
+	if err := ValidateProjections(options.Projections); err != nil {
+		return Association{}, err
+	}
 	if err := validateDiscovery(discovery); err != nil {
 		return Association{}, err
 	}
@@ -132,6 +136,7 @@ func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery D
 		PublicKeySPKI:   publicKey,
 		ProtocolVersion: ProtocolVersion,
 		ACL:             options.ACL,
+		Projections:     options.Projections,
 	})
 	if err != nil {
 		return Association{}, err
@@ -158,6 +163,7 @@ func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery D
 		CredentialExpiresAt:    response.CredentialExpiresAt,
 		ProtocolVersion:        response.ProtocolVersion,
 		ACL:                    options.ACL,
+		Projections:            options.Projections,
 		JoinedAt:               now.UTC(),
 	}
 	if err := storage.Save(options.InstanceRoot, Record{
@@ -168,6 +174,17 @@ func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery D
 		return Association{}, err
 	}
 	return association, nil
+}
+
+// ValidateProjections rejects projection scopes that this client does not
+// understand.
+func ValidateProjections(projections []string) error {
+	for _, projection := range projections {
+		if projection != ProjectionLabsWorkflowFeatures {
+			return fmt.Errorf("fleet: unknown projection %q", projection)
+		}
+	}
+	return nil
 }
 
 func validateDiscovery(discovery Discovery) error {

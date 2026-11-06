@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -335,6 +336,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "enrollment-token-file", takesArg: true, desc: "Private file containing the one-time enrollment grant"},
 		{name: "grant-local-admin", desc: "Grant the discovered local administrator instance:read"},
 		{name: "no-grant-local-admin", desc: "Explicitly enroll with an empty ACL"},
+		{name: "projection", takesArg: true, values: []string{fleet.ProjectionLabsWorkflowFeatures}, desc: "Data projection to grant (repeatable)"},
 	},
 	"fleet status": {
 		{name: "json", desc: "Emit JSON"},
@@ -409,6 +411,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},
 		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
 		{name: "stratify", takesArg: true, values: []string{"gaggle", "cohort"}, desc: "Confound axis to test clusters against (gaggle or cohort)"},
+		{name: "ablation", desc: "Report leave-one-feature-out cluster stability and assignment change"},
 		{name: "json", desc: "Emit the fitted model as JSON"},
 		{name: "snapshot", desc: "Emit a privacy-safe fleet snapshot of this instance"},
 		{name: "instance-id", takesArg: true, desc: "Snapshot: instance ID (default: fleet association)"},

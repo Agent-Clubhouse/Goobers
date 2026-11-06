@@ -2147,7 +2147,7 @@ $ goobers fleet leave
 discover and enroll this instance with a Fleet service (experimental; superseded)
 
 ~~~text
-Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [--projection <name>] [path]
 
 Experimental and superseded embedded Fleet connector. Discover and enroll an
 instance with a Fleet service. By default the one-time enrollment grant is read
@@ -2159,6 +2159,9 @@ When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
 --grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
 explicit opt-out or interactive confirmation.
+
+--projection grants a data projection to the Fleet association and may be
+repeated. Supported projections: labs.workflowFeatures.
 ~~~
 
 **Examples**
@@ -2194,7 +2197,7 @@ show durable Fleet registration and connection state (experimental; superseded)
 Usage: goobers fleet status [--json] [path]
 
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
-registration, connection, heartbeat, ACL version, and credential expiry state.
+registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
 ~~~
 
@@ -5755,7 +5758,7 @@ A declarative, versioned step-machine describing triggers, stages, gates, retrie
 Labs: cluster workflows by structural shape or run behavior
 
 ~~~text
-Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort] [--json] [path]
+Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort] [--ablation] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
        goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
@@ -5791,6 +5794,11 @@ capabilities. Workflow and stage names, goals, selectors, schedules, signals,
 and webhook payload text are excluded, making derivation deterministic and
 rename-invariant. --stratify cohort requires structural features and cannot
 be combined with --cohort.
+
+--ablation refits after dropping each feature (the WL histogram is one
+group), reports stability and assignment change, and flags dominant
+features. Populations through 2,000 points are exact; larger populations
+use a deterministic 1,000-point HDBSCAN sample and radius assignment.
 
 Fleet convergence: --snapshot prints this instance's feature vectors as a
 fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;
