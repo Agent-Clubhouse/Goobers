@@ -13114,6 +13114,10 @@ select {
   color: var(--dot);
 }
 
+.labs-map-dot-dimmed {
+  opacity: 0.18;
+}
+
 .labs-map-dot circle {
   fill: var(--dot);
   stroke: var(--panel);
@@ -13275,4 +13279,32 @@ select {
 
 .labs-effect-down {
   color: var(--danger);
+}
+
+.labs-fleet-filters {
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 12px 0;
+  padding: 0;
+}
+
+.labs-fleet-filters legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.labs-fleet-filters label {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.labs-fleet-table {
+  margin-bottom: 20px;
+}
+
+.labs-fleet-instance {
+  margin: 16px 0;
 }

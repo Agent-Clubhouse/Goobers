@@ -472,7 +472,9 @@ function Portal({
               standalone={standalone}
             />
           )}
-          {route.page === "labs" && <LabsPage client={client} feature={route.feature} />}
+          {route.page === "labs" && (
+            <LabsPage client={client} feature={route.feature} fleet={mode === "fleet"} />
+          )}
           {route.page === "errors" && (
             <ErrorsPage
               client={client}

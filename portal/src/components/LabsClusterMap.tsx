@@ -17,16 +17,22 @@ interface Placed {
 // A 2-D scatter of every workflow. Positions come from classical MDS of the
 // model's own distances, so nearby dots are workflows the model considers
 // similar; axes have no units. Identical workflows share one dot.
+// With unit "shape" (fleet mode) points are workflow-shape digests, not
+// gaggle/workflow IDs, so dots are labelled as shapes and are not links.
 export function LabsClusterMap({
   points,
   clusterIds,
   medoids,
   fitness,
+  highlightedIds,
+  unit = "workflow",
 }: {
   points: readonly LabsClusterMapPoint[];
   clusterIds: readonly string[];
   medoids: ReadonlySet<string>;
-  fitness: ReadonlyMap<string, LabsClusterFitness>;
+  fitness?: ReadonlyMap<string, LabsClusterFitness>;
+  highlightedIds?: ReadonlySet<string>;
+  unit?: "workflow" | "shape";
 }) {
   if (points.length === 0) {
     return null;
@@ -35,23 +41,26 @@ export function LabsClusterMap({
   const colorOf = (cluster: string) =>
     cluster ? `labs-map-c${clusterIds.indexOf(cluster) % paletteSize}` : "labs-map-noise";
   const showLabels = placed.length <= 40;
+  const noun = unit === "shape" ? "workflow shape" : "workflow";
   return (
     <figure className="labs-map">
       <svg
         role="img"
-        aria-label={`Scatter map of ${points.length} workflow${points.length === 1 ? "" : "s"} in ${clusterIds.length} cluster${clusterIds.length === 1 ? "" : "s"}`}
+        aria-label={`Scatter map of ${points.length} ${noun}${points.length === 1 ? "" : "s"} in ${clusterIds.length} cluster${clusterIds.length === 1 ? "" : "s"}`}
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="xMidYMid meet"
       >
         <rect className="labs-map-frame" x={1} y={1} width={width - 2} height={height - 2} rx={8} />
         {placed.map((dot) => {
           const isMedoid = dot.ids.some((id) => medoids.has(id));
-          const clusterFitness = fitness.get(dot.cluster);
+          const clusterFitness = fitness?.get(dot.cluster);
           const radius = clusterFitness ? Math.min(12, 6 + Math.sqrt(clusterFitness.runCount)) : dot.ids.length > 1 ? 9 : 7;
+          const isHighlighted = highlightedIds === undefined || dot.ids.some((id) => highlightedIds.has(id));
           const label = dot.ids.length > 1 ? `${shortName(dot.ids[0])} +${dot.ids.length - 1}` : shortName(dot.ids[0]);
           const title = `${dot.ids.join(", ")} — ${dot.cluster ? `cluster ${dot.cluster}` : "noise"}${isMedoid ? " (medoid)" : ""}`;
-          return (
-            <a key={dot.key} href={workflowHref(dot.ids[0])} className={`labs-map-dot ${colorOf(dot.cluster)}`}>
+          const className = `labs-map-dot ${colorOf(dot.cluster)}${isHighlighted ? "" : " labs-map-dot-dimmed"}`;
+          const content = (
+            <>
               <title>{title}</title>
               <circle cx={dot.x} cy={dot.y} r={radius} />
               {clusterFitness && !clusterFitness.insufficientRuns && (
@@ -63,6 +72,15 @@ export function LabsClusterMap({
                   {label}
                 </text>
               )}
+            </>
+          );
+          return unit === "shape" ? (
+            <g key={dot.key} className={className}>
+              {content}
+            </g>
+          ) : (
+            <a key={dot.key} href={workflowHref(dot.ids[0])} className={className}>
+              {content}
             </a>
           );
         })}
@@ -81,10 +99,17 @@ export function LabsClusterMap({
             <span className="labs-map-swatch labs-map-swatch-medoid" aria-hidden="true" /> Medoid
           </li>
         </ul>
-        <p>
-          Closer dots are more similar workflows. The layout is a 2-D approximation of the clustering, so distances
-          are indicative only; the axes have no units. Click a dot to open the workflow.
-        </p>
+        {unit === "shape" ? (
+          <p>
+            Closer dots are more similar workflow shapes. The layout is a 2-D approximation of the clustering, so
+            distances are indicative only; the axes have no units.
+          </p>
+        ) : (
+          <p>
+            Closer dots are more similar workflows. The layout is a 2-D approximation of the clustering, so distances
+            are indicative only; the axes have no units. Click a dot to open the workflow.
+          </p>
+        )}
       </figcaption>
     </figure>
   );
