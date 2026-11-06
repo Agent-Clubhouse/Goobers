@@ -21,6 +21,9 @@ type View struct {
 	MinClusterSize int             `json:"minClusterSize"`
 	Model          *Model          `json:"model,omitempty"`
 	Confounds      *ConfoundReport `json:"confounds,omitempty"`
+	// CohortConfounds tests whether clusters merely reproduce task cohorts.
+	CohortConfounds *ConfoundReport `json:"cohortConfounds,omitempty"`
+	Cohorts         []string        `json:"cohorts,omitempty"`
 	// Map places every workflow in two dimensions for the Portal's scatter map.
 	Map []MapPoint `json:"map,omitempty"`
 	// Trends compares retained agent-authored child shapes against Model.
@@ -56,9 +59,12 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 		return View{}, err
 	}
 	confounds := ConfoundCheck(model, gaggleStrata(points), ConfoundOptions{})
+	cohortConfounds := ConfoundCheck(model, cohortStrata(points), ConfoundOptions{})
 	view.Status = ViewClustered
 	view.Model = &model
 	view.Confounds = &confounds
+	view.CohortConfounds = &cohortConfounds
+	view.Cohorts = cohortLabels(points)
 	view.Map = Project(model, points)
 	trends, err := ScanChildTrends(ctx, s.Root, model, TrendScanOptions{})
 	switch {
