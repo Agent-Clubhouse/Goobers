@@ -56,6 +56,10 @@ func TestEvaluateFitnessMixedOutcomesAndDigestJoin(t *testing.T) {
 	if first.SuccessInterval.Lower <= 0 || first.SuccessInterval.Upper >= 1 {
 		t.Fatalf("Wilson interval = %+v", first.SuccessInterval)
 	}
+	if empty := got.Clusters[1]; empty.ClusterID != "c1" || empty.RunCount != 0 || !empty.InsufficientRuns ||
+		empty.MinimumRuns != 3 || empty.SuccessRate != 0 {
+		t.Fatalf("no-run cluster fitness = %+v", empty)
+	}
 }
 
 func TestEvaluateFitnessReportsClusterWithNoRuns(t *testing.T) {

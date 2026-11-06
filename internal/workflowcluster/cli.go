@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // CLIHelp documents `goobers workflow clusters`.
@@ -295,13 +296,9 @@ func gaggleStrata(points []Point) Strata {
 	return strata
 }
 
-// ConfiguredPoints loads the instance config under root and returns one
-// structural point per configured workflow, keyed "<gaggle>/<workflow>".
-func ConfiguredPoints(root string) ([]Point, error) {
-	points, _, err := configuredPoints(root)
-	return points, err
-}
-
+// configuredPoints loads the instance config under root and returns one
+// structural point per configured workflow, keyed "<gaggle>/<workflow>",
+// plus each workflow's compiled digest as run journals record it.
 func configuredPoints(root string) ([]Point, map[string]string, error) {
 	layout := instance.NewLayout(root)
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
@@ -314,13 +311,21 @@ func configuredPoints(root string) ([]Point, map[string]string, error) {
 	points := make([]Point, 0, len(set.Workflows))
 	digests := make(map[string]string, len(set.Workflows))
 	for _, wf := range set.Workflows {
-		features, err := ExtractDefinition(definitionOf(wf))
+		def := definitionOf(wf)
+		features, err := ExtractDefinition(def)
+		if err != nil {
+			return nil, nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+		}
+		// Run journals pin machine.Digest(), which Compile computes after
+		// normalizing the definition (e.g. inheriting outboxMirrorPath into
+		// tasks), so the raw definition's digest would never match.
+		machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)))
 		if err != nil {
 			return nil, nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 		}
 		id := wf.Spec.Gaggle + "/" + wf.Name
 		points = append(points, StructuralPoint(id, features))
-		digests[id] = features.WorkflowDigest
+		digests[id] = machine.Digest()
 	}
 	return points, digests, nil
 }
