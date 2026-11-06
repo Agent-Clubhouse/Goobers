@@ -252,5 +252,6 @@ func benchmarkErrorDetail(err error) journal.ErrorDetail {
 	if errors.As(err, &recorded) {
 		return recorded.Detail
 	}
-	return journal.ErrorDetail{Code: BenchmarkErrorSessionFailed, Message: err.Error()}
+	// Callers pass only a non-nil session error, so ErrorDetailFor never returns nil.
+	return *journal.ErrorDetailFor(BenchmarkErrorSessionFailed, err)
 }
