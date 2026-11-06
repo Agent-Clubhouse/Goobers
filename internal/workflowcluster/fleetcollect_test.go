@@ -3,12 +3,14 @@ package workflowcluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -28,6 +30,10 @@ func TestClusterFleetOnDemandReportsEveryFetchOutcome(t *testing.T) {
 			return FleetSnapshot{}, ErrFleetTargetOffline
 		case "denied":
 			return FleetSnapshot{}, ErrFleetProjectionNotGranted
+		case "server-error":
+			return FleetSnapshot{}, errors.New("unexpected status 500")
+		case "garbled":
+			return FleetSnapshot{}, fmt.Errorf("decode snapshot: %w", ErrFleetInvalidSnapshot)
 		case "slow":
 			<-ctx.Done()
 			return FleetSnapshot{}, ctx.Err()
@@ -35,7 +41,7 @@ func TestClusterFleetOnDemandReportsEveryFetchOutcome(t *testing.T) {
 			return valid[target.InstanceID], nil
 		}
 	}
-	targets := fleetTargets("ok-1", "offline", "denied", "slow", "tampered", "ok-2", "skew")
+	targets := fleetTargets("ok-1", "offline", "denied", "slow", "tampered", "server-error", "garbled", "ok-2", "skew")
 	view, err := ClusterFleetOnDemand(context.Background(), targets, fetch, FleetCollectionOptions{
 		MaxConcurrency: 3, PerInstanceTimeout: 10 * time.Millisecond, OverallTimeout: time.Second,
 	}, Options{MinClusterSize: 20})
@@ -52,8 +58,9 @@ func TestClusterFleetOnDemandReportsEveryFetchOutcome(t *testing.T) {
 	want := map[string]string{
 		"denied": FleetExclusionNotGranted, "offline": FleetExclusionOffline,
 		"slow": FleetExclusionTimeout, "tampered": FleetExclusionInvalidSnapshot,
+		"server-error": FleetExclusionFetchFailed, "garbled": FleetExclusionInvalidSnapshot,
 	}
-	if len(reasons) != 5 {
+	if len(reasons) != 7 {
 		t.Fatalf("exclusions = %+v", view.Excluded)
 	}
 	for instance, reason := range want {
@@ -67,51 +74,50 @@ func TestClusterFleetOnDemandReportsEveryFetchOutcome(t *testing.T) {
 }
 
 func TestCollectFleetSnapshotsBoundsConcurrency(t *testing.T) {
-	var active, maximum atomic.Int32
-	release := make(chan struct{})
-	started := make(chan struct{}, 6)
-	snapshots := map[string]FleetSnapshot{}
-	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
-		snapshots[id] = snapshotOf(t, "test/v1", id, "s", fleetT0)
-	}
-	fetch := func(ctx context.Context, target FleetTarget) (FleetSnapshot, error) {
-		current := active.Add(1)
-		defer active.Add(-1)
-		for {
-			observed := maximum.Load()
-			if current <= observed || maximum.CompareAndSwap(observed, current) {
-				break
+	synctest.Test(t, func(t *testing.T) {
+		var active, maximum atomic.Int32
+		release := make(chan struct{})
+		snapshots := map[string]FleetSnapshot{}
+		for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
+			snapshots[id] = snapshotOf(t, "test/v1", id, "s", fleetT0)
+		}
+		fetch := func(ctx context.Context, target FleetTarget) (FleetSnapshot, error) {
+			current := active.Add(1)
+			defer active.Add(-1)
+			for {
+				observed := maximum.Load()
+				if current <= observed || maximum.CompareAndSwap(observed, current) {
+					break
+				}
+			}
+			select {
+			case <-release:
+				return snapshots[target.InstanceID], nil
+			case <-ctx.Done():
+				return FleetSnapshot{}, ctx.Err()
 			}
 		}
-		started <- struct{}{}
-		select {
-		case <-release:
-			return snapshots[target.InstanceID], nil
-		case <-ctx.Done():
-			return FleetSnapshot{}, ctx.Err()
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := CollectFleetSnapshots(context.Background(), fleetTargets("a", "b", "c", "d", "e", "f"), fetch, FleetCollectionOptions{
+				MaxConcurrency: 2, PerInstanceTimeout: time.Second, OverallTimeout: time.Second,
+			})
+			done <- err
+		}()
+		// Wait until every goroutine is durably blocked: no further fetch can
+		// start until the in-flight ones are released.
+		synctest.Wait()
+		if got := active.Load(); got != 2 {
+			t.Fatalf("in-flight fetches while blocked = %d, want 2", got)
 		}
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := CollectFleetSnapshots(context.Background(), fleetTargets("a", "b", "c", "d", "e", "f"), fetch, FleetCollectionOptions{
-			MaxConcurrency: 2, PerInstanceTimeout: time.Second, OverallTimeout: time.Second,
-		})
-		done <- err
-	}()
-	<-started
-	<-started
-	select {
-	case <-started:
-		t.Fatal("third fetch started while two workers were blocked")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if maximum.Load() != 2 {
-		t.Fatalf("maximum concurrency = %d, want 2", maximum.Load())
-	}
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if maximum.Load() != 2 {
+			t.Fatalf("maximum concurrency = %d, want 2", maximum.Load())
+		}
+	})
 }
 
 func TestCollectFleetSnapshotsEnforcesOverallDeadline(t *testing.T) {

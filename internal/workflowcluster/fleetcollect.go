@@ -18,12 +18,18 @@ const (
 	FleetExclusionTimeout = "timeout"
 	// FleetExclusionInvalidSnapshot means the instance returned an invalid snapshot.
 	FleetExclusionInvalidSnapshot = "invalid_snapshot"
+	// FleetExclusionFetchFailed means the fetch failed for an unclassified
+	// reason, such as a server error from a reachable instance.
+	FleetExclusionFetchFailed = "fetch_failed"
 )
 
 var (
 	// ErrFleetTargetOffline is returned by a SnapshotFetcher when its target
 	// cannot be reached.
 	ErrFleetTargetOffline = errors.New("workflowcluster: fleet target is offline")
+	// ErrFleetInvalidSnapshot is returned by a SnapshotFetcher when its target
+	// responds with a body that is not a usable snapshot.
+	ErrFleetInvalidSnapshot = errors.New("workflowcluster: fleet target returned an invalid snapshot")
 )
 
 // FleetTarget identifies an enrolled instance to query.
@@ -33,8 +39,11 @@ type FleetTarget struct {
 }
 
 // SnapshotFetcher fetches one in-memory snapshot from an enrolled instance.
-// Implementations map an unreachable instance to ErrFleetTargetOffline and a
-// projection_not_granted response to ErrFleetProjectionNotGranted.
+// Implementations map an unreachable instance to ErrFleetTargetOffline, a
+// projection_not_granted response to ErrFleetProjectionNotGranted, and an
+// undecodable or malformed body to ErrFleetInvalidSnapshot. Context errors
+// become timeout exclusions and any other error becomes a fetch_failed
+// exclusion; no fetcher error fails the whole collection.
 type SnapshotFetcher func(context.Context, FleetTarget) (FleetSnapshot, error)
 
 // FleetCollectionOptions bounds an on-demand collection.
@@ -60,12 +69,12 @@ func (o FleetCollectionOptions) withDefaults() FleetCollectionOptions {
 type fleetCollectionResult struct {
 	snapshot  FleetSnapshot
 	exclusion FleetExclusion
-	err       error
 }
 
 // CollectFleetSnapshots fetches snapshots with bounded concurrency. Transport
-// outcomes are returned as exclusions; only invalid inputs, unclassified
-// fetcher errors, and caller cancellation fail the collection itself.
+// outcomes, including unclassified fetcher errors, are returned as
+// per-instance exclusions; only invalid inputs and caller cancellation fail
+// the collection itself.
 func CollectFleetSnapshots(ctx context.Context, targets []FleetTarget, fetch SnapshotFetcher, opts FleetCollectionOptions) ([]FleetSnapshot, []FleetExclusion, error) {
 	if fetch == nil {
 		return nil, nil, errors.New("workflowcluster: snapshot fetcher is required")
@@ -115,14 +124,11 @@ func CollectFleetSnapshots(ctx context.Context, targets []FleetTarget, fetch Sna
 	snapshots := make([]FleetSnapshot, 0, len(targets))
 	exclusions := make([]FleetExclusion, 0, len(targets))
 	for result := range results {
-		switch {
-		case result.err != nil:
-			return nil, nil, result.err
-		case result.exclusion.InstanceID != "":
+		if result.exclusion.InstanceID != "" {
 			exclusions = append(exclusions, result.exclusion)
-		default:
-			snapshots = append(snapshots, result.snapshot)
+			continue
 		}
+		snapshots = append(snapshots, result.snapshot)
 	}
 	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].InstanceID < snapshots[j].InstanceID })
 	sortFleetExclusions(exclusions)
@@ -137,18 +143,7 @@ func fetchFleetSnapshot(ctx context.Context, target FleetTarget, fetch SnapshotF
 	defer cancel()
 	snapshot, err := fetch(fetchCtx, target)
 	if err != nil {
-		reason := ""
-		switch {
-		case errors.Is(err, ErrFleetProjectionNotGranted):
-			reason = FleetExclusionNotGranted
-		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-			reason = FleetExclusionTimeout
-		case errors.Is(err, ErrFleetTargetOffline):
-			reason = FleetExclusionOffline
-		default:
-			return fleetCollectionResult{err: fmt.Errorf("workflowcluster: fetch snapshot from %q: %w", target.InstanceID, err)}
-		}
-		return fleetCollectionResult{exclusion: FleetExclusion{InstanceID: target.InstanceID, Reason: reason}}
+		return fleetCollectionResult{exclusion: FleetExclusion{InstanceID: target.InstanceID, Reason: fleetFetchErrorReason(err)}}
 	}
 	if snapshot.InstanceID != target.InstanceID {
 		return fleetCollectionResult{exclusion: FleetExclusion{InstanceID: target.InstanceID, Reason: FleetExclusionInvalidSnapshot}}
@@ -157,6 +152,21 @@ func fetchFleetSnapshot(ctx context.Context, target FleetTarget, fetch SnapshotF
 		return fleetCollectionResult{exclusion: FleetExclusion{InstanceID: target.InstanceID, Reason: FleetExclusionInvalidSnapshot}}
 	}
 	return fleetCollectionResult{snapshot: snapshot}
+}
+
+func fleetFetchErrorReason(err error) string {
+	switch {
+	case errors.Is(err, ErrFleetProjectionNotGranted):
+		return FleetExclusionNotGranted
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return FleetExclusionTimeout
+	case errors.Is(err, ErrFleetTargetOffline):
+		return FleetExclusionOffline
+	case errors.Is(err, ErrFleetInvalidSnapshot):
+		return FleetExclusionInvalidSnapshot
+	default:
+		return FleetExclusionFetchFailed
+	}
 }
 
 // ClusterFleetOnDemand collects ephemeral snapshots and clusters the valid
