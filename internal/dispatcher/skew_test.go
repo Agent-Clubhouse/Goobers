@@ -33,6 +33,9 @@ func TestVerifySkewAcceptsMatchingShaTag(t *testing.T) {
 	if err := VerifySkew(fullSha, "v0.1.0", "ghcr.io/goobers/goobers-base:"+fullSha); err != nil {
 		t.Fatalf("matching full sha refused: %v", err)
 	}
+	if err := VerifySkew(fullSha, "dev", "ghcr.io/goobers/goobers-base:"+fullSha+"-node22.23.4-v1@sha256:"+strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("matching sha with identity suffix refused: %v", err)
+	}
 	// The Makefile stamps the SHORT sha; prefix equality of the same commit
 	// must pass.
 	if err := VerifySkew(fullSha[:12], "v0.1.0", "ghcr.io/goobers/goobers-base:"+fullSha); err != nil {
@@ -52,11 +55,26 @@ func TestVerifySkewRefusesUnverifiableReferences(t *testing.T) {
 		"digest only":  "ghcr.io/goobers/goobers-base@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"port no tag":  "registry.example.com:5000/goobers/goobers-base",
 		"wrong length": "ghcr.io/goobers/goobers-base:" + fullSha[:39],
+		"empty suffix": "ghcr.io/goobers/goobers-base:" + fullSha + "-",
+		"bad suffix":   "ghcr.io/goobers/goobers-base:" + fullSha + "-node+22",
 	}
 	for name, image := range cases {
 		var skew *SkewError
 		if err := VerifySkew(fullSha, "v0.1.0", image); !errors.As(err, &skew) {
 			t.Errorf("%s (%q): got %v, want SkewError", name, image, err)
+		}
+	}
+}
+
+func TestVerifySkewRefusesMismatchedShaWithIdentitySuffix(t *testing.T) {
+	err := VerifySkew(fullSha, "dev", "ghcr.io/goobers/goobers-base:"+otherSha+"-windows-ltsc2025")
+	var skew *SkewError
+	if !errors.As(err, &skew) {
+		t.Fatalf("got err %v, want SkewError", err)
+	}
+	for _, needle := range []string{"version-skew", otherSha, fullSha, "#1061"} {
+		if !strings.Contains(err.Error(), needle) {
+			t.Errorf("diagnostic %q does not name %q", err.Error(), needle)
 		}
 	}
 }
