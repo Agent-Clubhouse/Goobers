@@ -1,0 +1,184 @@
+package workflowcluster
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"sort"
+
+	"sigs.k8s.io/yaml"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	configexamples "github.com/goobers/goobers/config-examples"
+	referenceworkflows "github.com/goobers/goobers/reference-workflows"
+)
+
+const (
+	// TemplateProvenanceAnnotation records the shipped template used to create
+	// a workflow.
+	TemplateProvenanceAnnotation = "goobers.dev/template-provenance"
+	// StratifyTemplate groups workflows by explicit or nearest template.
+	StratifyTemplate = "template"
+	// DefaultTemplateDistanceThreshold is the maximum structural distance at
+	// which a workflow is considered template-derived.
+	DefaultTemplateDistanceThreshold = 0.35
+)
+
+// TemplateFingerprint identifies one shipped workflow template compiled into
+// the binary.
+type TemplateFingerprint struct {
+	ID          string `json:"id"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// TemplateProvenance describes a configured workflow's relationship to a
+// shipped template.
+type TemplateProvenance struct {
+	TemplateID  string  `json:"templateId"`
+	Fingerprint string  `json:"fingerprint,omitempty"`
+	Distance    float64 `json:"distance"`
+	Explicit    bool    `json:"explicit"`
+	Derived     bool    `json:"derived"`
+}
+
+// BeyondTemplateCluster is a cluster whose medoid is structurally far from
+// every shipped template.
+type BeyondTemplateCluster struct {
+	ClusterID       string  `json:"clusterId"`
+	MedoidID        string  `json:"medoidId"`
+	NearestTemplate string  `json:"nearestTemplate"`
+	Distance        float64 `json:"distance"`
+}
+
+// TemplateReport is the template provenance and convergence read contract.
+type TemplateReport struct {
+	DistanceThreshold float64                       `json:"distanceThreshold"`
+	Catalog           []TemplateFingerprint         `json:"catalog"`
+	Workflows         map[string]TemplateProvenance `json:"workflows"`
+	BeyondTemplates   []BeyondTemplateCluster       `json:"beyondTemplates"`
+}
+
+type shippedTemplate struct {
+	TemplateFingerprint
+	Point Point
+}
+
+func shippedTemplates() ([]shippedTemplate, error) {
+	var templates []shippedTemplate
+	references, err := referenceworkflows.WorkflowTemplates()
+	if err != nil {
+		return nil, err
+	}
+	for _, reference := range references {
+		data, err := referenceworkflows.Files.ReadFile(reference.Path)
+		if err != nil {
+			return nil, fmt.Errorf("read reference template %q: %w", reference.Path, err)
+		}
+		template, err := templateFromYAML("reference/"+reference.Name, data)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, template)
+	}
+	examples, err := configexamples.WorkflowExamples()
+	if err != nil {
+		return nil, err
+	}
+	for _, example := range examples {
+		data, err := configexamples.Files.ReadFile(example.Path)
+		if err != nil {
+			return nil, fmt.Errorf("read example template %q: %w", example.Path, err)
+		}
+		template, err := templateFromYAML("example/"+example.Name, data)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, template)
+	}
+	sort.Slice(templates, func(i, j int) bool { return templates[i].ID < templates[j].ID })
+	return templates, nil
+}
+
+func templateFromYAML(id string, data []byte) (shippedTemplate, error) {
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		return shippedTemplate{}, fmt.Errorf("decode shipped template %q: %w", id, err)
+	}
+	features, err := ExtractDefinition(definitionOf(workflow))
+	if err != nil {
+		return shippedTemplate{}, fmt.Errorf("fingerprint shipped template %q: %w", id, err)
+	}
+	sum := sha256.Sum256(data)
+	return shippedTemplate{
+		TemplateFingerprint: TemplateFingerprint{ID: id, Fingerprint: "sha256:" + hex.EncodeToString(sum[:])},
+		Point:               StructuralPoint(id, features),
+	}, nil
+}
+
+func analyzeTemplates(points []Point, explicit Strata, model *Model) (TemplateReport, Strata, error) {
+	templates, err := shippedTemplates()
+	if err != nil {
+		return TemplateReport{}, nil, err
+	}
+	report, strata := analyzeTemplateCatalog(points, explicit, model, templates)
+	return report, strata, nil
+}
+
+func analyzeTemplateCatalog(points []Point, explicit Strata, model *Model, templates []shippedTemplate) (TemplateReport, Strata) {
+	report := TemplateReport{
+		DistanceThreshold: DefaultTemplateDistanceThreshold,
+		Catalog:           make([]TemplateFingerprint, len(templates)),
+		Workflows:         make(map[string]TemplateProvenance, len(points)),
+		BeyondTemplates:   []BeyondTemplateCluster{},
+	}
+	templateByID := make(map[string]shippedTemplate, len(templates))
+	comparison := append([]Point(nil), points...)
+	for i, template := range templates {
+		report.Catalog[i] = template.TemplateFingerprint
+		templateByID[template.ID] = template
+		comparison = append(comparison, template.Point)
+	}
+	schema := buildSchema(comparison)
+	strata := make(Strata, len(points))
+	for _, point := range points {
+		provenance := nearestTemplate(schema, point, templates)
+		if id := explicit[point.ID]; id != "" {
+			provenance = TemplateProvenance{TemplateID: id, Explicit: true, Derived: true}
+			if template, ok := templateByID[id]; ok {
+				provenance.Fingerprint = template.Fingerprint
+				provenance.Distance = round6(schema.Distance(point, template.Point))
+			}
+		}
+		report.Workflows[point.ID] = provenance
+		strata[point.ID] = provenance.TemplateID
+	}
+	if model != nil {
+		for _, cluster := range model.Clusters {
+			provenance, ok := report.Workflows[cluster.Medoid.ID]
+			if !ok || provenance.Derived {
+				continue
+			}
+			report.BeyondTemplates = append(report.BeyondTemplates, BeyondTemplateCluster{
+				ClusterID: cluster.ID, MedoidID: cluster.Medoid.ID,
+				NearestTemplate: provenance.TemplateID, Distance: provenance.Distance,
+			})
+		}
+	}
+	return report, strata
+}
+
+func nearestTemplate(schema Schema, point Point, templates []shippedTemplate) TemplateProvenance {
+	best := TemplateProvenance{Distance: 1}
+	for _, template := range templates {
+		distance := schema.Distance(point, template.Point)
+		if best.TemplateID == "" || distance < best.Distance ||
+			(distance == best.Distance && template.ID < best.TemplateID) {
+			best = TemplateProvenance{
+				TemplateID: template.ID, Fingerprint: template.Fingerprint,
+				Distance: round6(distance),
+			}
+		}
+	}
+	best.Derived = best.Distance <= DefaultTemplateDistanceThreshold
+	return best
+}

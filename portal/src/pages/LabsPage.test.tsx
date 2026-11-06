@@ -95,11 +95,49 @@ const clustered: LabsWorkflowClusterView = {
       undersized: ["deploy"],
       options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
     },
+    template: {
+      evidence: "observational",
+      statistic: "cramersV",
+      association: 0.7,
+      pValue: 0.02,
+      confounded: true,
+      tested: 5,
+      unlabeled: 0,
+      strata: [{ key: "reference/implementation", size: 3 }, { key: "reference/novel", size: 2 }],
+      undersized: ["reference/novel"],
+      options: { minStratumSize: 3, threshold: 0.5, alpha: 0.05, permutations: 999 },
+    },
   },
   cohorts: ["deploy", "review"],
   map: [
-    { id: "core/implement", x: 0, y: 0, cluster: "c0", cohort: "review" },
-    { id: "core/review", x: 0, y: 0, cluster: "c0", cohort: "review" },
+    {
+      id: "core/implement",
+      x: 0,
+      y: 0,
+      cluster: "c0",
+      cohort: "review",
+      templateProvenance: {
+        templateId: "reference/implementation",
+        fingerprint: "sha256:abc",
+        distance: 0.04,
+        explicit: false,
+        derived: true,
+      },
+    },
+    {
+      id: "core/review",
+      x: 0,
+      y: 0,
+      cluster: "c0",
+      cohort: "review",
+      templateProvenance: {
+        templateId: "reference/implementation",
+        fingerprint: "sha256:abc",
+        distance: 0.08,
+        explicit: false,
+        derived: true,
+      },
+    },
     { id: "ops/triage", x: 0.1, y: 0.05, cluster: "c0", cohort: "review" },
     { id: "core/novel", x: 1, y: -0.4, cohort: "deploy" },
     { id: "ops/odd-one", x: -0.8, y: 0.6, cohort: "deploy" },
@@ -129,6 +167,40 @@ const clustered: LabsWorkflowClusterView = {
         humanGateRate: 0.25,
         escalationRate: 0.125,
         retryLoopRate: 0.5,
+      },
+    ],
+  },
+  templates: {
+    distanceThreshold: 0.35,
+    catalog: [{ id: "reference/implementation", fingerprint: "sha256:abc" }],
+    workflows: {
+      "core/implement": {
+        templateId: "reference/implementation",
+        fingerprint: "sha256:abc",
+        distance: 0.04,
+        explicit: false,
+        derived: true,
+      },
+      "core/review": {
+        templateId: "reference/implementation",
+        fingerprint: "sha256:abc",
+        distance: 0.08,
+        explicit: false,
+        derived: true,
+      },
+      "ops/triage": {
+        templateId: "scaffold/workflow",
+        distance: 0,
+        explicit: true,
+        derived: true,
+      },
+    },
+    beyondTemplates: [
+      {
+        clusterId: "c1",
+        medoidId: "core/novel",
+        nearestTemplate: "reference/implementation",
+        distance: 0.72,
       },
     ],
   },
@@ -199,6 +271,10 @@ describe("LabsPage", () => {
     expect(within(card).getByText("+0.75")).toBeInTheDocument();
     expect(within(card).getByText("capabilities=git")).toBeInTheDocument();
     expect(within(card).getByText("-0.40")).toBeInTheDocument();
+    expect(within(card).getAllByText(/derived from reference\/implementation/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("region", { name: "Convergence beyond templates" })).toHaveTextContent(
+      "core/novel is 0.72 from reference/implementation",
+    );
     const noise = screen.getByRole("region", { name: "Noise" });
     expect(within(noise).getByRole("link", { name: "core/novel" })).toBeInTheDocument();
     expect(screen.getByText(/Confound warning:/).closest("[role=status]")).toHaveTextContent(
@@ -216,6 +292,8 @@ describe("LabsPage", () => {
     expect(screen.getByText(/No model confound detected/)).toHaveTextContent("2 undefined");
     await user.selectOptions(screen.getByRole("combobox", { name: "Confound axis" }), "cohort");
     expect(screen.getByText(/No task cohort confound detected/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Confound axis" }), "template");
+    expect(screen.getByText(/clusters track template boundaries/)).toBeInTheDocument();
   });
 
   it("filters the cluster map by task cohort", async () => {
@@ -237,8 +315,9 @@ describe("LabsPage", () => {
     const merged = [...dots].find((dot) => dot.textContent?.includes("implement +1"));
     expect(merged).toHaveAttribute("href", "#/workflow/core/implement");
     expect(merged?.querySelector("title")?.textContent).toBe(
-      "core/implement, core/review — cluster c0 (medoid)",
+      "core/implement, core/review — cluster c0 (medoid) (template-derived)",
     );
+    expect(merged).toHaveClass("labs-map-dot-template");
     expect(merged?.querySelector(".labs-map-medoid")).not.toBeNull();
     expect(merged?.querySelector(".labs-map-fitness")).not.toBeNull();
     const noise = [...dots].filter((dot) => dot.classList.contains("labs-map-noise"));

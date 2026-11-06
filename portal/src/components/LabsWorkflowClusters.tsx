@@ -116,6 +116,7 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
       {view.trends && <TrendSummary report={view.trends} />}
       {!view.trends && view.trendsUnavailable && <p role="status">{view.trendsUnavailable}.</p>}
       {!view.fitness && view.fitnessUnavailable && <p role="status">{view.fitnessUnavailable}.</p>}
+      {view.templates && <TemplateConvergence report={view.templates} />}
       {model.clusters.length > 0 && map.length > 0 && (
         <LabsClusterMap
           points={map}
@@ -132,7 +133,12 @@ function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
       ) : (
         <ul className="labs-cluster-list">
           {model.clusters.map((cluster) => (
-            <ClusterCard cluster={cluster} fitness={fitness.get(cluster.id)} key={cluster.id} />
+            <ClusterCard
+              cluster={cluster}
+              fitness={fitness.get(cluster.id)}
+              provenance={view.templates?.workflows}
+              key={cluster.id}
+            />
           ))}
         </ul>
       )}
@@ -246,7 +252,39 @@ function ConfoundSummary({ axis, report }: { axis: string; report: LabsConfoundR
   );
 }
 
-function ClusterCard({ cluster, fitness }: { cluster: LabsWorkflowCluster; fitness?: LabsClusterFitness }) {
+function TemplateConvergence({ report }: { report: NonNullable<LabsWorkflowClusterView["templates"]> }) {
+  return (
+    <section aria-label="Convergence beyond templates">
+      <h3>Convergence beyond templates</h3>
+      <p>
+        {report.beyondTemplates.length} cluster{report.beyondTemplates.length === 1 ? "" : "s"}{" "}
+        {report.beyondTemplates.length === 1 ? "has" : "have"} a medoid farther than{" "}
+        {report.distanceThreshold.toFixed(2)} from every shipped template.
+      </p>
+      {report.beyondTemplates.length > 0 && (
+        <ul>
+          {report.beyondTemplates.map((cluster) => (
+            <li key={cluster.clusterId}>
+              Cluster {cluster.clusterId}: <WorkflowLink id={cluster.medoidId} /> is {cluster.distance.toFixed(2)} from{" "}
+              <span className="mono">{cluster.nearestTemplate}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ClusterCard({
+  cluster,
+  fitness,
+  provenance,
+}: {
+  cluster: LabsWorkflowCluster;
+  fitness?: LabsClusterFitness;
+  provenance?: NonNullable<LabsWorkflowClusterView["templates"]>["workflows"];
+}) {
+  const medoidProvenance = provenance?.[cluster.medoid.id];
   return (
     <li className="labs-card labs-cluster" aria-label={`Cluster ${cluster.id}`}>
       <div className="labs-card-heading">
@@ -259,6 +297,7 @@ function ClusterCard({ cluster, fitness }: { cluster: LabsWorkflowCluster; fitne
         <dt>Medoid</dt>
         <dd>
           <WorkflowLink id={cluster.medoid.id} />
+          {medoidProvenance && <TemplateLabel provenance={medoidProvenance} />}
         </dd>
         <dt>Size</dt>
         <dd>{cluster.members.length}</dd>
@@ -268,6 +307,15 @@ function ClusterCard({ cluster, fitness }: { cluster: LabsWorkflowCluster; fitne
       {fitness && <ClusterFitness fitness={fitness} />}
       <h4>Members</h4>
       <WorkflowLinks ids={cluster.members} />
+      {provenance && (
+        <ul className="labs-cluster-features" aria-label="Member template provenance">
+          {cluster.members.map((id) => (
+            <li key={id}>
+              <span className="mono">{id}</span> <TemplateLabel provenance={provenance[id]} />
+            </li>
+          ))}
+        </ul>
+      )}
       {(cluster.distinguishing ?? []).length > 0 && (
         <>
           <h4>Distinguishing features</h4>
@@ -287,6 +335,20 @@ function ClusterCard({ cluster, fitness }: { cluster: LabsWorkflowCluster; fitne
         </>
       )}
     </li>
+  );
+}
+
+function TemplateLabel({
+  provenance,
+}: {
+  provenance?: NonNullable<LabsWorkflowClusterView["templates"]>["workflows"][string];
+}) {
+  if (!provenance) return null;
+  return (
+    <span className={provenance.derived ? "labs-badge labs-badge-template" : "labs-template-nearest"}>
+      {provenance.explicit ? "declared from" : provenance.derived ? "derived from" : "nearest"}{" "}
+      {provenance.templateId} · {provenance.distance.toFixed(2)}
+    </span>
   );
 }
 
@@ -375,7 +437,17 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
   }
   const view = value as unknown as LabsWorkflowClusterView;
   if (view.status === "insufficient-data") {
-    return { status: view.status, population: view.population, minClusterSize: view.minClusterSize };
+    return {
+      status: view.status,
+      population: view.population,
+      minClusterSize: view.minClusterSize,
+      templates: view.templates && {
+        ...view.templates,
+        catalog: view.templates.catalog ?? [],
+        workflows: view.templates.workflows ?? {},
+        beyondTemplates: view.templates.beyondTemplates ?? [],
+      },
+    };
   }
   if (!isRecord(view.model)) {
     throw new MalformedResponseError("The daemon returned workflow clusters without a model.");
@@ -426,6 +498,12 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
     fitness: view.fitness && {
       ...view.fitness,
       clusters: view.fitness.clusters ?? [],
+    },
+    templates: view.templates && {
+      ...view.templates,
+      catalog: view.templates.catalog ?? [],
+      workflows: view.templates.workflows ?? {},
+      beyondTemplates: view.templates.beyondTemplates ?? [],
     },
   };
 }

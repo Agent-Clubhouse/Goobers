@@ -13124,6 +13124,12 @@ select {
   stroke-width: 2;
 }
 
+.labs-map-dot-template > circle:first-of-type {
+  stroke: var(--ink);
+  stroke-dasharray: 2 2;
+  stroke-width: 3;
+}
+
 .labs-map-dot circle.labs-map-medoid {
   fill: none;
   stroke: var(--dot);
@@ -13244,6 +13250,20 @@ select {
 .labs-badge-stable {
   background: var(--success-soft);
   color: var(--success);
+}
+
+.labs-badge-template {
+  margin-left: 6px;
+}
+
+.labs-template-nearest {
+  color: var(--muted);
+  font-size: var(--font-label);
+  margin-left: 6px;
+}
+
+.labs-map-swatch-template {
+  border: 2px dashed var(--ink);
 }
 
 .labs-cluster-facts {
