@@ -15,8 +15,11 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
+// Trend axes name the provenance dimension that cohorts are grouped by.
 const (
-	TrendAxisModel   = "model"
+	// TrendAxisModel groups observations by recorded model version.
+	TrendAxisModel = "model"
+	// TrendAxisHarness groups observations by recorded harness version.
 	TrendAxisHarness = "harness"
 	// TrendAxisAuthoringSkill groups by the authoring goober's skill and
 	// instruction version. Journals do not yet record a digest scoped to that
@@ -30,6 +33,8 @@ const (
 	DefaultTrendMaxRuns = DefaultBehaviorMaxRuns
 )
 
+// TrendObservation is one child-workflow shape sample with its fitness and the
+// per-axis versions recorded for the run that produced it.
 type TrendObservation struct {
 	ID       string
 	At       time.Time
@@ -38,6 +43,7 @@ type TrendObservation struct {
 	Versions map[string]string
 }
 
+// ClusterOccupancy reports how many of a cohort's samples fall in one cluster.
 type ClusterOccupancy struct {
 	Cluster     string  `json:"cluster"`
 	Samples     int     `json:"samples"`
@@ -45,6 +51,8 @@ type ClusterOccupancy struct {
 	MeanFitness float64 `json:"meanFitness"`
 }
 
+// TrendDrift compares a cohort with the chronologically previous cohort on the
+// same axis and classifies the change as an observational signal.
 type TrendDrift struct {
 	From                  string  `json:"from"`
 	OccupancyDistance     float64 `json:"occupancyDistance"`
@@ -54,6 +62,8 @@ type TrendDrift struct {
 	Signal                string  `json:"signal"`
 }
 
+// TrendCohort summarizes the shape distribution of samples sharing one version
+// on a trend axis.
 type TrendCohort struct {
 	Version              string             `json:"version"`
 	FirstObserved        time.Time          `json:"firstObserved"`
@@ -65,6 +75,7 @@ type TrendCohort struct {
 	Drift                *TrendDrift        `json:"drift,omitempty"`
 }
 
+// TrendAxis lists one axis's cohorts in chronological order.
 type TrendAxis struct {
 	Axis    string        `json:"axis"`
 	Cohorts []TrendCohort `json:"cohorts"`
@@ -73,6 +84,7 @@ type TrendAxis struct {
 	MissingProvenance int `json:"missingProvenance"`
 }
 
+// TrendReport is the result of AnalyzeTrends against one frozen model.
 type TrendReport struct {
 	ModelID        string `json:"modelId"`
 	FeatureVersion string `json:"featureVersion"`
