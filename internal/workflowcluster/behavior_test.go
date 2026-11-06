@@ -130,6 +130,14 @@ func TestToolCategoryUsesFixedStructuralBuckets(t *testing.T) {
 		"github.search_issues":       "provider",
 		"functions.powershell":       "shell",
 		"unrecognized-custom-method": "other",
+		// Copilot built-ins.
+		"edit": "filesystem", "create": "filesystem", "view": "filesystem", "task": "agent", "bash": "shell",
+		// Claude built-ins.
+		"Read": "filesystem", "Edit": "filesystem", "Write": "filesystem", "MultiEdit": "filesystem",
+		"LS": "filesystem", "NotebookEdit": "filesystem", "Glob": "filesystem", "Grep": "filesystem",
+		"Task": "agent", "Bash": "shell", "WebFetch": "network",
+		// Codex canonical names.
+		"command_execution": "shell", "apply_patch": "filesystem", "web_search": "network",
 	}
 	for tool, want := range tests {
 		if got := toolCategory(tool); got != want {

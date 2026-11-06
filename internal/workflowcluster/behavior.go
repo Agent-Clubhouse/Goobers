@@ -395,6 +395,13 @@ func transcriptToolCalls(data []byte) []string {
 
 func toolCategory(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
+	// Built-in harness tools whose bare names carry no substring hint.
+	switch name {
+	case "edit", "create", "read", "write", "multiedit", "ls", "notebookedit", "glob", "grep", "view":
+		return "filesystem"
+	case "task":
+		return "agent"
+	}
 	switch {
 	case containsAny(name, "github", "gitlab", "azure", "ado", "issue", "pull_request"):
 		return "provider"
