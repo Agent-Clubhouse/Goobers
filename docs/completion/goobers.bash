@@ -102,7 +102,7 @@ _goobers_completion()
             ;;
         fleet)
             case "${COMP_WORDS[2]:-}" in
-                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin" ;;
+                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin --projection" ;;
                 status) flags+=" --json" ;;
             esac
             ;;

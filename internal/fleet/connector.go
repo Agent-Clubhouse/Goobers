@@ -201,6 +201,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected 
 		DisplayName:            record.Association.DisplayName,
 		GoobersVersion:         c.GoobersVersion,
 		ACL:                    record.Association.ACL,
+		Projections:            record.Association.Projections,
 	}); err != nil {
 		return err
 	}
@@ -321,17 +322,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record, onConnected 
 				if err := json.Unmarshal(message.data, &revoke); err != nil {
 					return fmt.Errorf("fleet: decode revoke: %w", err)
 				}
-				if err := c.Storage.Update(c.InstanceRoot, func(association *Association) error {
-					if association.RegistrationID != record.Association.RegistrationID {
-						return errAssociationChanged
-					}
-					association.Revoked = true
-					association.RevokeReason = strings.TrimSpace(revoke.Reason)
-					association.Connected = false
-					association.ConnectionID = ""
-					association.LastError = ""
-					return nil
-				}); err != nil {
+				if err := c.Storage.Delete(c.InstanceRoot); err != nil {
 					return err
 				}
 				return errRevoked

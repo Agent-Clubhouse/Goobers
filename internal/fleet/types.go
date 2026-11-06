@@ -17,6 +17,8 @@ const (
 	// MaxNegotiatedHeartbeatSeconds is the longest heartbeat interval this
 	// client accepts or trusts when evaluating persisted connection state.
 	MaxNegotiatedHeartbeatSeconds = 60 * 60
+	// ProjectionLabsWorkflowFeatures grants the Labs workflow feature projection.
+	ProjectionLabsWorkflowFeatures = "labs.workflowFeatures"
 
 	messageTypeChallenge    = "challenge"
 	messageTypeHello        = "hello"
@@ -66,12 +68,13 @@ type Discovery struct {
 // EnrollmentRequest is sent to redeem an enrollment grant with a Fleet
 // service.
 type EnrollmentRequest struct {
-	Grant           string `json:"grant"`
-	InstanceID      string `json:"instanceId"`
-	DisplayName     string `json:"displayName"`
-	PublicKeySPKI   string `json:"publicKeySpki"`
-	ProtocolVersion string `json:"protocolVersion"`
-	ACL             ACL    `json:"acl"`
+	Grant           string   `json:"grant"`
+	InstanceID      string   `json:"instanceId"`
+	DisplayName     string   `json:"displayName"`
+	PublicKeySPKI   string   `json:"publicKeySpki"`
+	ProtocolVersion string   `json:"protocolVersion"`
+	ACL             ACL      `json:"acl"`
+	Projections     []string `json:"projections,omitempty"`
 }
 
 // EnrollmentResponse is returned by a Fleet service after a successful
@@ -108,6 +111,7 @@ type Association struct {
 	CredentialExpiresAt time.Time `json:"credentialExpiresAt"`
 	ProtocolVersion     string    `json:"protocolVersion"`
 	ACL                 ACL       `json:"acl"`
+	Projections         []string  `json:"projections,omitempty"`
 	JoinedAt            time.Time `json:"joinedAt"`
 	Revoked             bool      `json:"revoked"`
 	RevokeReason        string    `json:"revokeReason,omitempty"`
@@ -142,17 +146,18 @@ type Challenge struct {
 // Hello is sent by an instance in response to a Challenge to authenticate a
 // connection.
 type Hello struct {
-	Type                   string `json:"type"`
-	ProtocolVersion        string `json:"protocolVersion"`
-	InstanceID             string `json:"instanceId"`
-	RegistrationID         string `json:"registrationId"`
-	RegistrationGeneration int64  `json:"registrationGeneration"`
-	ConnectionID           string `json:"connectionId"`
-	Nonce                  string `json:"nonce"`
-	Signature              string `json:"signature"`
-	DisplayName            string `json:"displayName"`
-	GoobersVersion         string `json:"goobersVersion"`
-	ACL                    ACL    `json:"acl"`
+	Type                   string   `json:"type"`
+	ProtocolVersion        string   `json:"protocolVersion"`
+	InstanceID             string   `json:"instanceId"`
+	RegistrationID         string   `json:"registrationId"`
+	RegistrationGeneration int64    `json:"registrationGeneration"`
+	ConnectionID           string   `json:"connectionId"`
+	Nonce                  string   `json:"nonce"`
+	Signature              string   `json:"signature"`
+	DisplayName            string   `json:"displayName"`
+	GoobersVersion         string   `json:"goobersVersion"`
+	ACL                    ACL      `json:"acl"`
+	Projections            []string `json:"projections,omitempty"`
 }
 
 // HelloAck is sent by a Fleet service to acknowledge a successful Hello.

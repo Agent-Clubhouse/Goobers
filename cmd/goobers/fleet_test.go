@@ -81,6 +81,7 @@ func TestFleetJoinTokenFileAndLocalAdminGrant(t *testing.T) {
 				LocalAdministratorPrincipal:    &fleet.Principal{Kind: "user", Issuer: "issuer", Subject: "subject"},
 			})
 		case "/api/fleet/v1/enrollments:redeem":
+			enrollment = fleet.EnrollmentRequest{}
 			if err := json.NewDecoder(r.Body).Decode(&enrollment); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -116,14 +117,20 @@ func TestFleetJoinTokenFileAndLocalAdminGrant(t *testing.T) {
 		"--url", server.URL,
 		"--enrollment-token-file", tokenFile,
 		"--grant-local-admin",
+		"--projection", fleet.ProjectionLabsWorkflowFeatures,
 		root,
 	}, strings.NewReader(""), &stdout, &stderr, false)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 	if enrollment.Grant != "secret-grant" || len(enrollment.ACL.Grants) != 1 ||
-		enrollment.ACL.Grants[0].Capabilities[0] != "instance:read" {
+		enrollment.ACL.Grants[0].Capabilities[0] != "instance:read" ||
+		len(enrollment.Projections) != 1 || enrollment.Projections[0] != fleet.ProjectionLabsWorkflowFeatures {
 		t.Fatalf("enrollment = %+v", enrollment)
+	}
+	if len(store.record.Association.Projections) != 1 ||
+		store.record.Association.Projections[0] != fleet.ProjectionLabsWorkflowFeatures {
+		t.Fatalf("stored projections = %v", store.record.Association.Projections)
 	}
 	id, err := instance.ReadRootIdentity(root)
 	if err != nil || !strings.Contains(stderr.String(), id) || !strings.Contains(stderr.String(), runtimewiring.CanonicalStatusRoot(root)) {
@@ -131,6 +138,27 @@ func TestFleetJoinTokenFileAndLocalAdminGrant(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "secret-grant") || strings.Contains(stderr.String(), "secret-grant") {
 		t.Fatal("CLI output exposed enrollment grant")
+	}
+
+	root = t.TempDir()
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	store = &fleetMemoryStorage{}
+	stdout.Reset()
+	stderr.Reset()
+	code = runFleetJoinWithInput(context.Background(), []string{
+		"--url", server.URL,
+		"--enrollment-token-file", tokenFile,
+		"--grant-local-admin",
+		root,
+	}, strings.NewReader(""), &stdout, &stderr, false)
+	if code != 0 {
+		t.Fatalf("join without projection code = %d, stderr = %q", code, stderr.String())
+	}
+	if enrollment.Projections != nil || store.record.Association.Projections != nil {
+		t.Fatalf("default projections: enrollment=%v association=%v",
+			enrollment.Projections, store.record.Association.Projections)
 	}
 }
 
@@ -187,6 +215,7 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 				ConnectionEndpoint:  "wss://fleet.example/api/fleet/v1/connections",
 				ProtocolVersion:     fleet.ProtocolVersion,
 				ACL:                 fleet.ACL{PolicyVersion: fleet.ProtocolVersion},
+				Projections:         []string{fleet.ProjectionLabsWorkflowFeatures},
 				CredentialExpiresAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
 				Connected:           true,
 				ConnectionID:        "connection-1",
@@ -220,6 +249,9 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	if !status.Associated || status.RegistrationID != "registration-1" {
 		t.Fatalf("status = %+v", status)
 	}
+	if len(status.Projections) != 1 || status.Projections[0] != fleet.ProjectionLabsWorkflowFeatures {
+		t.Fatalf("status projections = %v", status.Projections)
+	}
 	if status.CredentialNonExpiring {
 		t.Fatalf("dated credential reported as non-expiring: %+v", status)
 	}
@@ -227,7 +259,8 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 		t.Fatalf("stale connection status = %+v", status)
 	}
 	code, stdout, stderr = runArgs(t, "fleet", "status", root)
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "connection: stale") {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "connection: stale") ||
+		!strings.Contains(stdout, "Projections: "+fleet.ProjectionLabsWorkflowFeatures) {
 		t.Fatalf("text status code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if store.loadAssociationCalls != 2 || store.loadCalls != 0 {
@@ -271,11 +304,23 @@ func TestFleetStatusLabelsNonExpiringDevelopmentCredential(t *testing.T) {
 	if !status.CredentialNonExpiring {
 		t.Fatalf("status = %+v, want credentialNonExpiring", status)
 	}
+	if status.Projections == nil || len(status.Projections) != 0 {
+		t.Fatalf("status projections = %#v, want empty array", status.Projections)
+	}
 
 	code, stdout, stderr = runArgs(t, "fleet", "status", root)
 	if code != 0 || stderr != "" ||
-		!strings.Contains(stdout, "never (non-expiring development credential)") {
+		!strings.Contains(stdout, "never (non-expiring development credential)") ||
+		!strings.Contains(stdout, "Projections: none") {
 		t.Fatalf("text status code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestFleetJoinRejectsUnknownProjection(t *testing.T) {
+	code, _, stderr := runArgs(t, "fleet", "join", "--url", "https://fleet.example",
+		"--projection", "unknown.projection")
+	if code != 2 || !strings.Contains(stderr, `unknown projection "unknown.projection"`) {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 }
 

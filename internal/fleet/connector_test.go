@@ -72,6 +72,7 @@ func (s *fakeSocket) Close(websocket.StatusCode, string) error {
 
 func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	store, publicKey := connectorTestStorage(t)
+	store.record.Association.Projections = []string{ProjectionLabsWorkflowFeatures}
 	store.record.Association.LastHeartbeatAt = time.Now().Add(-time.Hour)
 	challenge := Challenge{
 		Type:            "challenge",
@@ -109,7 +110,8 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for hello")
 	}
-	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" {
+	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" ||
+		len(hello.Projections) != 1 || hello.Projections[0] != ProjectionLabsWorkflowFeatures {
 		t.Fatalf("hello = %+v", hello)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -162,16 +164,8 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("connector did not stop after revoke")
 	}
-	record, err := store.Load("root")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !record.Association.Revoked || record.Association.RevokeReason != "operator removed registration" ||
-		record.Association.Connected {
-		t.Fatalf("association after revoke = %+v", record.Association)
-	}
-	if record.Association.HeartbeatSeconds != 30 {
-		t.Fatalf("heartbeat seconds = %d, want 30", record.Association.HeartbeatSeconds)
+	if _, err := store.Load("root"); !errors.Is(err, ErrNotAssociated) {
+		t.Fatalf("Load after revoke error = %v, want ErrNotAssociated", err)
 	}
 }
 

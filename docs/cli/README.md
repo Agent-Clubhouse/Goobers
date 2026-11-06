@@ -2144,7 +2144,7 @@ $ goobers fleet leave
 discover and enroll this instance with a Fleet service (experimental; superseded)
 
 ~~~text
-Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [--projection <name>] [path]
 
 Experimental and superseded embedded Fleet connector. Discover and enroll an
 instance with a Fleet service. By default the one-time enrollment grant is read
@@ -2156,6 +2156,9 @@ When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
 --grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
 explicit opt-out or interactive confirmation.
+
+--projection grants a data projection to the Fleet association and may be
+repeated. Supported projections: labs.workflowFeatures.
 ~~~
 
 **Examples**
@@ -2191,7 +2194,7 @@ show durable Fleet registration and connection state (experimental; superseded)
 Usage: goobers fleet status [--json] [path]
 
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
-registration, connection, heartbeat, ACL version, and credential expiry state.
+registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
 ~~~
 
