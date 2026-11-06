@@ -54,22 +54,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	if err := r.admitExecution(ctx, in.Machine); err != nil {
 		return Result{}, err
 	}
-	if in.Stage == "" {
-		return Result{}, fmt.Errorf("runner: Stage is required")
-	}
-	actor := strings.TrimSpace(in.Actor)
-	if actor == "" {
-		return Result{}, fmt.Errorf("runner: Actor is required")
-	}
-	addendum := strings.TrimSpace(in.InstructionAddendum)
-	if !in.DeterministicRetry && addendum == "" {
-		return Result{}, fmt.Errorf("runner: InstructionAddendum is required")
-	}
-	if in.DeterministicRetry && addendum != "" {
-		return Result{}, fmt.Errorf("runner: deterministic retry does not accept an instruction addendum")
-	}
-	if in.ExpectedTerminalSeq == 0 {
-		return Result{}, fmt.Errorf("runner: expected terminal sequence is required")
+	actor, addendum, err := validateRerunRequest(in)
+	if err != nil {
+		return Result{}, err
 	}
 
 	isGate, err := validateRerunTarget(in.Machine, in.Stage, in.DeterministicRetry)
@@ -95,31 +82,8 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 		}
 		ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
-		phase, err := rd.Phase()
+		runControls, events, err := r.loadEscalatedRerunRun(rd, id, in)
 		if err != nil {
-			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
-		}
-		if phase != journal.PhaseEscalated {
-			return Result{}, fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
-		}
-		if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
-		}
-		if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
-			return Result{}, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
-		}
-		if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
-			return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
-		}
-		runControls, err := r.resolveRunControls(id.RunControls)
-		if err != nil {
-			return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
-		}
-		events, err := rd.Events()
-		if err != nil {
-			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
-		}
-		if err := validateTerminalGeneration(in.RunID, events, in.ExpectedTerminalSeq); err != nil {
 			return Result{}, err
 		}
 		seedEvents, err := rerunSeedEvents(events, in.Stage, isGate)
@@ -142,25 +106,8 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			requestAttempt:      attempt,
 			instructionAddendum: addendum,
 		}
-		startIn := StartInput{
-			configGeneration: id.ConfigGeneration,
-			instanceID:       id.InstanceID,
-			RunID:            in.RunID,
-			Machine:          in.Machine,
-			GooberDigest:     in.GooberDigest,
-			Gaggle:           id.Gaggle,
-			Child:            id.Child,
-			Trigger:          id.Trigger,
-			RepoRef:          in.RepoRef,
-			Item:             item,
-			RunControls:      runControls,
-		}
-		branch := 0
-		if activeParallel != nil && !parallelUsesDispatcher(in.Machine, activeParallel.spec) {
-			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
-				branch = owner.id
-			}
-		}
+		startIn := rerunStartInput(in, id, item, runControls)
+		branch := rerunRestoreBranch(activeParallel, in.Machine, in.Stage)
 		startIn, err = r.restoreExecutionWorkspace(ctx, rd, id, startIn, events, activeParallel, parallelStart, branch)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: restore workspace revision for stage rerun: %w", err)
@@ -193,31 +140,18 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 				retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
 			}
 		}()
-		pointerEvents := seedEvents
-		if activeParallel != nil {
-			pointerEvents = seedEvents[:parallelStart]
-		}
 		ws := newWalkState(jr, startIn, registrar, in.Stage)
-		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
-		ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
-		ws.visitedStages = stageVisitSeed(seedEvents)
-		ws.parallel = activeParallel
-		ws.fanIn = rerunFanIn(seedEvents, in.Machine, in.Stage)
-		ws.fanOutResults = assembleMapJoin(in.RunID, seedEvents, in.Machine, ws.fanIn)
-		if activeParallel != nil {
-			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
-		}
-		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
-		ws.lastResult = discardToleratedFailureOutputs(in.Machine, ws.lastStage, ws.lastResult)
-		ws.workspaceBranch = rerunBranch
-		ws.branchRecorded = hasRunBranchRef(events)
-		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
-		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-		ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
-		ws.infraGateAttempts = gateInfrastructureSeed(seedEvents)
-		ws.infraRepassAttempts = infrastructureTargetRepassSeed(seedEvents)
-		ws.pollAttempts = pollingTargetSeed(seedEvents)
-		ws.rerun = rerun
+		seedRerunWalkState(ws, rerunWalkSeed{
+			runID:          in.RunID,
+			machine:        in.Machine,
+			stage:          in.Stage,
+			events:         events,
+			seedEvents:     seedEvents,
+			activeParallel: activeParallel,
+			parallelStart:  parallelStart,
+			branch:         rerunBranch,
+			rerun:          rerun,
+		})
 
 		ctx, span := r.startRunSpan(ctx, startIn)
 		defer span.End()
@@ -231,6 +165,133 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		completeRunSpan(span, result)
 		return result, nil
 	})
+}
+
+// validateRerunRequest checks the operator-supplied request fields and
+// returns the trimmed actor and instruction addendum.
+func validateRerunRequest(in RerunStageInput) (string, string, error) {
+	if in.Stage == "" {
+		return "", "", fmt.Errorf("runner: Stage is required")
+	}
+	actor := strings.TrimSpace(in.Actor)
+	if actor == "" {
+		return "", "", fmt.Errorf("runner: Actor is required")
+	}
+	addendum := strings.TrimSpace(in.InstructionAddendum)
+	if !in.DeterministicRetry && addendum == "" {
+		return "", "", fmt.Errorf("runner: InstructionAddendum is required")
+	}
+	if in.DeterministicRetry && addendum != "" {
+		return "", "", fmt.Errorf("runner: deterministic retry does not accept an instruction addendum")
+	}
+	if in.ExpectedTerminalSeq == 0 {
+		return "", "", fmt.Errorf("runner: expected terminal sequence is required")
+	}
+	return actor, addendum, nil
+}
+
+// loadEscalatedRerunRun verifies the run is escalated, still pinned to the
+// requested workflow and goober, and bound to the inspected escalation; it
+// returns the resolved pinned run controls and the journal events.
+func (r *Runner) loadEscalatedRerunRun(rd *journal.Reader, id journal.RunIdentity, in RerunStageInput) (apiv1.RunControls, []journal.Event, error) {
+	phase, err := rd.Phase()
+	if err != nil {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
+	}
+	if phase != journal.PhaseEscalated {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
+	}
+	if id.WorkflowDigest == "" || id.WorkflowDigest != in.Machine.Digest() {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: run %q is pinned to workflow digest %q, cannot rerun against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest())
+	}
+	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: run %q is pinned to goober digest %q, cannot rerun against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest)
+	}
+	if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: invalid pinned run controls: %w", err)
+	}
+	runControls, err := r.resolveRunControls(id.RunControls)
+	if err != nil {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: resolve pinned run controls: %w", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return apiv1.RunControls{}, nil, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
+	}
+	if err := validateTerminalGeneration(in.RunID, events, in.ExpectedTerminalSeq); err != nil {
+		return apiv1.RunControls{}, nil, err
+	}
+	return runControls, events, nil
+}
+
+func rerunStartInput(in RerunStageInput, id journal.RunIdentity, item *apiv1.BacklogItem, runControls apiv1.RunControls) StartInput {
+	return StartInput{
+		configGeneration: id.ConfigGeneration,
+		instanceID:       id.InstanceID,
+		RunID:            in.RunID,
+		Machine:          in.Machine,
+		GooberDigest:     in.GooberDigest,
+		Gaggle:           id.Gaggle,
+		Child:            id.Child,
+		Trigger:          id.Trigger,
+		RepoRef:          in.RepoRef,
+		Item:             item,
+		RunControls:      runControls,
+	}
+}
+
+// rerunRestoreBranch selects the parallel branch whose workspace revision the
+// rerun restores; dispatcher-driven parallels and non-parallel targets use 0.
+func rerunRestoreBranch(activeParallel *parallelExec, machine *workflow.Machine, stage string) int {
+	if activeParallel == nil || parallelUsesDispatcher(machine, activeParallel.spec) {
+		return 0
+	}
+	if owner := rerunOwnerBranch(activeParallel, machine, stage); owner != nil {
+		return owner.id
+	}
+	return 0
+}
+
+type rerunWalkSeed struct {
+	runID          string
+	machine        *workflow.Machine
+	stage          string
+	events         []journal.Event
+	seedEvents     []journal.Event
+	activeParallel *parallelExec
+	parallelStart  int
+	branch         string
+	rerun          *rerunContext
+}
+
+// seedRerunWalkState rebuilds the walk state the run held just before the
+// target stage previously started.
+func seedRerunWalkState(ws *walkState, seed rerunWalkSeed) {
+	seedEvents, machine := seed.seedEvents, seed.machine
+	pointerEvents := seedEvents
+	if seed.activeParallel != nil {
+		pointerEvents = seedEvents[:seed.parallelStart]
+	}
+	ws.pointers = reconstructPointers(pointerEvents, machine)
+	ws.completed = reconstructStageOutputs(seedEvents, machine)
+	ws.visitedStages = stageVisitSeed(seedEvents)
+	ws.parallel = seed.activeParallel
+	ws.fanIn = rerunFanIn(seedEvents, machine, seed.stage)
+	ws.fanOutResults = assembleMapJoin(seed.runID, seedEvents, machine, ws.fanIn)
+	if seed.activeParallel != nil {
+		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
+	}
+	ws.lastStage, ws.lastResult, _ = lastFinishedSubject(mapJoinSubjectEvents(seedEvents, ws.fanIn))
+	ws.lastResult = discardToleratedFailureOutputs(machine, ws.lastStage, ws.lastResult)
+	ws.workspaceBranch = seed.branch
+	ws.branchRecorded = hasRunBranchRef(seed.events)
+	gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
+	gateAttempts = resetRerunGateSeeds(machine, seed.rerun, gateAttempts, gateDiffDigests)
+	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
+	ws.infraGateAttempts = gateInfrastructureSeed(seedEvents)
+	ws.infraRepassAttempts = infrastructureTargetRepassSeed(seedEvents)
+	ws.pollAttempts = pollingTargetSeed(seedEvents)
+	ws.rerun = seed.rerun
 }
 
 // rerunOwnerBranch resolves which branch a rerun request should be attributed
