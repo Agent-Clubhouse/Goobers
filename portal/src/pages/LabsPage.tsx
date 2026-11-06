@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { DaemonClient } from "../api/types";
+import { LabsFleetConvergence } from "../components/LabsFleetConvergence";
 import { LabsWorkflowClusters } from "../components/LabsWorkflowClusters";
 import {
   findLabsFeature,
@@ -15,14 +16,15 @@ import { routeHash } from "../routing";
 import { PageHeading } from "../ui/Heading";
 
 // Views for features whose availability is "available", keyed by feature id.
-const labsViews: Record<string, (client: DaemonClient) => ReactNode> = {
-  "workflow-clustering": (client) => <LabsWorkflowClusters client={client} />,
+const labsViews: Record<string, (client: DaemonClient, fleet: boolean) => ReactNode> = {
+  "workflow-clustering": (client, fleet) =>
+    fleet ? <LabsFleetConvergence client={client} /> : <LabsWorkflowClusters client={client} />,
 };
 
-export function LabsPage({ client, feature }: { client: DaemonClient; feature?: string }) {
+export function LabsPage({ client, feature, fleet = false }: { client: DaemonClient; feature?: string; fleet?: boolean }) {
   const selected = findLabsFeature(feature);
   if (selected) {
-    return <LabsFeatureDetail client={client} feature={selected} />;
+    return <LabsFeatureDetail client={client} feature={selected} fleet={fleet} />;
   }
   return <LabsCatalog unknownFeature={feature} />;
 }
@@ -58,7 +60,7 @@ function LabsCatalog({ unknownFeature }: { unknownFeature?: string }) {
   );
 }
 
-function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature: LabsFeature }) {
+function LabsFeatureDetail({ client, feature, fleet }: { client: DaemonClient; feature: LabsFeature; fleet: boolean }) {
   const view = feature.availability === "available" ? labsViews[feature.id] : undefined;
   return (
     <>
@@ -76,7 +78,7 @@ function LabsFeatureDetail({ client, feature }: { client: DaemonClient; feature:
         <strong>Labs: experimental.</strong> This feature is advisory and may change or be removed.
         It never writes configuration or bypasses validation, promotion, or approval gates.
       </p>
-      {view?.(client)}
+      {view?.(client, fleet)}
       <section className="content-section labs-detail">
         <p className="labs-status">
           {feature.availability === "available" ? (

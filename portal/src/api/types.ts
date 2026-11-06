@@ -2316,6 +2316,53 @@ export interface LabsClusterMapPoint {
   cluster?: string;
 }
 
+export interface LabsFleetInstance {
+  instanceId: string;
+  goobersVersion?: string;
+  workflows: number;
+  shapes: number;
+  aligned: number;
+  private: number;
+  outliers: number;
+}
+
+export interface LabsFleetExclusion {
+  instanceId: string;
+  reason: string;
+}
+
+export interface LabsFleetShape {
+  shape: string;
+  cluster?: string;
+  workflows: number;
+  instances: string[];
+}
+
+export interface LabsFleetCluster {
+  id: string;
+  medoidShape: string;
+  shapes: number;
+  workflows: number;
+  instances: number;
+  stability: number;
+  stable: boolean;
+  distinguishing?: LabsClusterAttribution[];
+}
+
+/** Labs fleet convergence read (#8376); mirrors internal/workflowcluster.FleetView. */
+export interface LabsFleetConvergenceView {
+  status: "clustered" | "insufficient-data";
+  featureVersion?: string;
+  workflows: number;
+  population: number;
+  minClusterSize: number;
+  instances: LabsFleetInstance[];
+  excluded: LabsFleetExclusion[];
+  shapes: LabsFleetShape[];
+  clusters: LabsFleetCluster[];
+  map?: LabsClusterMapPoint[];
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2332,6 +2379,7 @@ export interface DaemonClient {
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
+  getLabsFleetConvergence?(options?: RequestOptions): Promise<LabsFleetConvergenceView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;

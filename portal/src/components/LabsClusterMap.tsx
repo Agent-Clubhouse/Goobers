@@ -21,10 +21,12 @@ export function LabsClusterMap({
   points,
   clusterIds,
   medoids,
+  highlightedIds,
 }: {
   points: readonly LabsClusterMapPoint[];
   clusterIds: readonly string[];
   medoids: ReadonlySet<string>;
+  highlightedIds?: ReadonlySet<string>;
 }) {
   if (points.length === 0) {
     return null;
@@ -44,10 +46,15 @@ export function LabsClusterMap({
         <rect className="labs-map-frame" x={1} y={1} width={width - 2} height={height - 2} rx={8} />
         {placed.map((dot) => {
           const isMedoid = dot.ids.some((id) => medoids.has(id));
+          const isHighlighted = highlightedIds === undefined || dot.ids.some((id) => highlightedIds.has(id));
           const label = dot.ids.length > 1 ? `${shortName(dot.ids[0])} +${dot.ids.length - 1}` : shortName(dot.ids[0]);
           const title = `${dot.ids.join(", ")} — ${dot.cluster ? `cluster ${dot.cluster}` : "noise"}${isMedoid ? " (medoid)" : ""}`;
           return (
-            <a key={dot.key} href={workflowHref(dot.ids[0])} className={`labs-map-dot ${colorOf(dot.cluster)}`}>
+            <a
+              key={dot.key}
+              href={workflowHref(dot.ids[0])}
+              className={`labs-map-dot ${colorOf(dot.cluster)}${isHighlighted ? "" : " labs-map-dot-dimmed"}`}
+            >
               <title>{title}</title>
               <circle cx={dot.x} cy={dot.y} r={dot.ids.length > 1 ? 9 : 7} />
               {isMedoid && <circle className="labs-map-medoid" cx={dot.x} cy={dot.y} r={13} />}

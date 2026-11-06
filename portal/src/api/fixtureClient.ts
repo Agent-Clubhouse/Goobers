@@ -40,6 +40,7 @@ import type {
   WorkflowDetail,
   QueueEligibilityView,
   LabsWorkflowClusterView,
+  LabsFleetConvergenceView,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -71,6 +72,7 @@ export interface DaemonFixtures {
   workItems?: WorkItemPage;
   workItemDetails?: Record<string, WorkItemDetail>;
   labsWorkflowClusters?: LabsWorkflowClusterView;
+  labsFleetConvergence?: LabsFleetConvergenceView;
 }
 
 export interface FixtureStageUsage {
@@ -212,6 +214,22 @@ export class FixtureDaemonClient implements DaemonClient {
   async getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView> {
     return fixture(
       this.fixtures.labsWorkflowClusters ?? { status: "insufficient-data", population: 0, minClusterSize: 3 },
+      options,
+    );
+  }
+
+  async getLabsFleetConvergence(options?: RequestOptions): Promise<LabsFleetConvergenceView> {
+    return fixture(
+      this.fixtures.labsFleetConvergence ?? {
+        status: "insufficient-data",
+        workflows: 0,
+        population: 0,
+        minClusterSize: 3,
+        instances: [],
+        excluded: [],
+        shapes: [],
+        clusters: [],
+      },
       options,
     );
   }
