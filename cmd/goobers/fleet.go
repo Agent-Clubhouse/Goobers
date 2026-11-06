@@ -77,16 +77,19 @@ var (
 	fleetStatusNow  = time.Now
 )
 
-func newLabsWorkflowFeaturesOption(root string) (httpapi.HandlerOption, error) {
+// labsWorkflowFeaturesOptions wires the optional Labs workflow-feature route.
+// Fleet storage failures degrade only that route: it stays unconfigured, so the
+// API answers 503 labs_unavailable while the daemon or dashboard keeps serving.
+func labsWorkflowFeaturesOptions(root string, warnings io.Writer) []httpapi.HandlerOption {
 	storage, err := newFleetStorage()
-	if err != nil {
-		return nil, err
+	if err == nil {
+		var source *workflowcluster.FleetSnapshotSource
+		if source, err = workflowcluster.NewFleetSnapshotSource(root, storage); err == nil {
+			return []httpapi.HandlerOption{httpapi.WithLabsWorkflowFeatures(source)}
+		}
 	}
-	source, err := workflowcluster.NewFleetSnapshotSource(root, storage)
-	if err != nil {
-		return nil, err
-	}
-	return httpapi.WithLabsWorkflowFeatures(source), nil
+	_, _ = fmt.Fprintf(warnings, "warning: Labs workflow features unavailable: %v\n", err)
+	return nil
 }
 
 const minimumFleetStaleAfter = 30 * time.Second

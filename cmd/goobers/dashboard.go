@@ -819,10 +819,6 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		},
 		loadedAt: time.Now().UTC(),
 	}
-	workflowFeatures, err := newLabsWorkflowFeaturesOption(layout.Root)
-	if err != nil {
-		return dashboardAPI{}, fmt.Errorf("initialize Labs workflow features: %w", err)
-	}
 	// Standalone serves live updates from the change feed too (#1929), using
 	// the read model #1933 attaches. When none could be opened (a read-only
 	// volume with no writable cache directory) there is no SSE, and the
@@ -832,8 +828,8 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		httpapi.WithTrustedProxies(config.API.TrustedProxies),
 		// Same read-only Labs source `goobers up` wires (#8309).
 		httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: layout.Root}),
-		workflowFeatures,
 	}
+	streamOpts = append(streamOpts, labsWorkflowFeaturesOptions(layout.Root, errorLog.Writer())...)
 	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
 		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
 	} else {

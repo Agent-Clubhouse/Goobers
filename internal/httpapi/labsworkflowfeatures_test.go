@@ -8,11 +8,14 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
@@ -80,28 +83,108 @@ func TestLabsWorkflowFeaturesRouteValidatesQuery(t *testing.T) {
 	}
 }
 
-func TestLabsWorkflowFeaturesRouteServesOnlySnapshotSchemaAndAudits(t *testing.T) {
-	const sentinel = "SENTINEL-workflow-gaggle-goober-stage-goal"
-	snapshot, err := workflowcluster.NewFleetSnapshot(
-		workflowcluster.StructuralFeatureVersion, "instance-1", "test", "fleet-1",
-		[]workflowcluster.Point{{
-			ID:          sentinel,
-			Numeric:     map[string]float64{"nodes": 1},
-			Categorical: map[string][]string{"goobers": {sentinel}},
-		}},
-		time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC),
-	)
+type labsAssociationFunc func(string) (fleet.Association, error)
+
+func (f labsAssociationFunc) LoadAssociation(root string) (fleet.Association, error) {
+	return f(root)
+}
+
+// labsWorkflowFeatureSentinels are the configured names and goal text the
+// privacy contract proves never leave the instance (#8375).
+var labsWorkflowFeatureSentinels = map[string]string{
+	"example":           "zqsentinelgaggle",
+	"default-implement": "zqsentinelworkflow",
+	"coder":             "zqsentinelgoober",
+	"query-backlog":     "zqsentinelstage",
+	"Implement the claimed backlog item and commit the change.": "ZQSENTINEL goal text never served.",
+}
+
+// writeSentinelWorkflowInstance scaffolds a valid instance whose gaggle,
+// workflow, goober, stage names and a goal carry sentinel strings.
+func writeSentinelWorkflowInstance(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	configDir := instance.NewLayout(root).ConfigDir()
+	manifestPath := filepath.Join(configDir, "manifest.yaml")
+	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := &labsWorkflowFeaturesStub{snapshot: snapshot}
+	renamed := strings.Replace(string(manifest), "    - example\n", "    - "+labsWorkflowFeatureSentinels["example"]+"\n", 1)
+	if renamed == string(manifest) {
+		t.Fatalf("scaffolded manifest missing gaggle reference:\n%s", manifest)
+	}
+	if err := os.WriteFile(manifestPath, []byte(renamed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gaggles := filepath.Join(configDir, "gaggles")
+	gaggleDir := filepath.Join(gaggles, labsWorkflowFeatureSentinels["example"])
+	if err := os.Rename(filepath.Join(gaggles, "example"), gaggleDir); err != nil {
+		t.Fatal(err)
+	}
+	gooberDir := filepath.Join(gaggleDir, "goobers", labsWorkflowFeatureSentinels["coder"])
+	if err := os.Rename(filepath.Join(gaggleDir, "goobers", "coder"), gooberDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(gaggleDir, "gaggle.yaml"),
+		filepath.Join(gaggleDir, "workflows", "default-implement.yaml"),
+		filepath.Join(gooberDir, "goober.yaml"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for original, sentinel := range labsWorkflowFeatureSentinels {
+			text = strings.ReplaceAll(text, original, sentinel)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+func TestLabsWorkflowFeaturesRouteServesOnlySnapshotSchemaAndAudits(t *testing.T) {
+	root := writeSentinelWorkflowInstance(t)
+	points, err := workflowcluster.ConfiguredPoints(root)
+	if err != nil || len(points) != 1 {
+		t.Fatalf("fixture points = %d, err = %v", len(points), err)
+	}
+	if want := labsWorkflowFeatureSentinels["example"] + "/" + labsWorkflowFeatureSentinels["default-implement"]; points[0].ID != want {
+		t.Fatalf("fixture point ID = %q, want %q", points[0].ID, want)
+	}
+	source, err := workflowcluster.NewFleetSnapshotSource(root, labsAssociationFunc(func(string) (fleet.Association, error) {
+		return fleet.Association{
+			InstanceID: "instance-1", FleetID: "fleet-1",
+			Projections: []string{fleet.ProjectionLabsWorkflowFeatures},
+		}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var logs bytes.Buffer
-	response := serveLabsWorkflowFeatures(t, service, apicontract.LabsWorkflowFeaturesPath+"?features=structural", &logs)
+	response := serveLabsWorkflowFeatures(t, source, apicontract.LabsWorkflowFeaturesPath+"?features=structural", &logs)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), sentinel) {
-		t.Fatalf("response leaked sentinel: %s", response.Body.String())
+	body := strings.ToLower(response.Body.String())
+	for _, sentinel := range labsWorkflowFeatureSentinels {
+		if strings.Contains(body, strings.ToLower(sentinel)) {
+			t.Fatalf("response leaked sentinel %q: %s", sentinel, response.Body.String())
+		}
+		if strings.Contains(logs.String(), sentinel) {
+			t.Fatalf("audit log leaked sentinel %q: %q", sentinel, logs.String())
+		}
+	}
+	for _, leak := range []string{"zqsentinel", "never served"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("response leaked %q: %s", leak, response.Body.String())
+		}
 	}
 	var document map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
@@ -113,7 +196,7 @@ func TestLabsWorkflowFeaturesRouteServesOnlySnapshotSchemaAndAudits(t *testing.T
 		t.Fatalf("workflows = %#v", document["workflows"])
 	}
 	assertKeys(t, workflows[0].(map[string]any), "key", "shape", "numeric", "categorical")
-	if !strings.Contains(logs.String(), `principal="local" workflows=1`) || strings.Contains(logs.String(), sentinel) {
+	if !strings.Contains(logs.String(), `principal="local" workflows=1`) {
 		t.Fatalf("audit log = %q", logs.String())
 	}
 }
