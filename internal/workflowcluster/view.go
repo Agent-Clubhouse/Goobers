@@ -44,6 +44,13 @@ type View struct {
 	// Templates identifies shipped templates, configured workflow provenance,
 	// and clusters converging beyond those templates.
 	Templates *TemplateReport `json:"templates,omitempty"`
+	// Proposals is the per-gaggle child workflow pattern map reconstructed from
+	// retained journals. It shares its shape with CLI JSON output.
+	Proposals *ChildProposalView `json:"proposals,omitempty"`
+	// ProposalsUnavailable explains why a view carries no proposal map.
+	ProposalsUnavailable string `json:"proposalsUnavailable,omitempty"`
+	// ProposalsErr is the scan failure behind ProposalsUnavailable.
+	ProposalsErr error `json:"-"`
 }
 
 // ConfiguredSource serves the cluster View of the instance rooted at Root.
@@ -62,6 +69,13 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 		return View{}, err
 	}
 	view := View{Status: ViewInsufficientData, Population: len(points), MinClusterSize: cliMinClusterSize}
+	proposals, proposalErr := ScanChildProposalInsights(ctx, s.Root, DefaultTrendMaxRuns)
+	if proposalErr == nil {
+		view.Proposals = &proposals
+	} else {
+		view.ProposalsUnavailable = "child-workflow proposal patterns could not be computed from retained journals"
+		view.ProposalsErr = proposalErr
+	}
 	if len(points) < cliMinClusterSize {
 		templates, _, err := analyzeTemplates(points, strata[StratifyTemplate], nil)
 		if err != nil {
