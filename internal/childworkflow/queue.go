@@ -27,4 +27,13 @@ type ChildQueue interface {
 	RequestChildDisposition(ctx context.Context, request triggerqueue.ChildDispositionRequest, now time.Time) (triggerqueue.ChildDisposition, error)
 }
 
-var _ ChildQueue = (*triggerqueue.Store)(nil)
+// ChildAdmissionQueue is the optional durable human-review hold. A queue that
+// cannot retain a reviewable hold fails closed when policy requires approval.
+type ChildAdmissionQueue interface {
+	ChildAdmission(ctx context.Context, identity triggerqueue.ChildIdentity) (triggerqueue.ChildAdmissionReview, error)
+}
+
+var (
+	_ ChildQueue          = (*triggerqueue.Store)(nil)
+	_ ChildAdmissionQueue = (*triggerqueue.Store)(nil)
+)

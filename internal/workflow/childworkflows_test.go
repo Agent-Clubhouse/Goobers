@@ -81,6 +81,7 @@ func TestChildWorkflowPreviewAndCatalogBoundaries(t *testing.T) {
 	}
 	def.Spec.Tasks[0].ChildWorkflows.MaxChildren = 4
 	def.Spec.Tasks[0].ChildWorkflows.AllowPRPublication = true
+	def.Spec.Tasks[0].ChildWorkflows.RequireHumanApprovalForOutOfDistribution = true
 	features, err := FeaturesForWorkflow(def)
 	if err != nil {
 		t.Fatal(err)

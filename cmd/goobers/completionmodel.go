@@ -402,6 +402,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "cluster-model", takesArg: true, valueKind: "file", desc: "Labs: frozen cluster model for advisory novelty"},
 		{name: "json", desc: "Emit structured diagnostics and digests"},
 	},
+	"workflow child-admission": {
+		{name: "approve", takesArg: true, desc: "Child ID to approve for dispatch"},
+		{name: "reject", takesArg: true, desc: "Child ID to reject before dispatch"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "note", takesArg: true, desc: "Audit note recorded with the decision"},
+		{name: "json", desc: "Emit JSON"},
+	},
 	"workflow clusters": {
 		{name: "features", takesArg: true, values: []string{"structural", "behavior"}, desc: "Feature set to cluster (structural or behavior)"},
 		{name: "cohort", takesArg: true, desc: "Structural: cluster only this task cohort"},

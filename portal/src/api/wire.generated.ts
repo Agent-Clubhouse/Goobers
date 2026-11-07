@@ -118,7 +118,26 @@ export const goWireFixtures = {
         "field": "dslVersion",
         "message": "explicit DSL 3.1 is required"
       }
-    ]
+    ],
+    "novelty": {
+      "scored": true,
+      "modelId": "model-1",
+      "modelVersion": "workflowcluster.model/v1",
+      "featureVersion": "workflowcluster.features/v1",
+      "nearest": "c2",
+      "nearestMedoid": "medoid-2",
+      "nearestSize": 41,
+      "nearestStable": true,
+      "distance": 0.42,
+      "outOfDistribution": true,
+      "historicalOutcome": {
+        "runCount": 41,
+        "successRate": 0.94,
+        "insufficientRuns": false
+      },
+      "humanApprovalRequired": true,
+      "summary": "novel shape; nearest c2 at distance 0.42"
+    }
   },
   "childWorkflow": {
     "childId": "child-1",
@@ -135,7 +154,31 @@ export const goWireFixtures = {
     "cancellationRequested": false,
     "acknowledged": false,
     "acceptedAt": "2026-10-04T12:00:00Z",
-    "updatedAt": "2026-10-04T12:00:00Z"
+    "updatedAt": "2026-10-04T12:00:00Z",
+    "novelty": {
+      "scored": true,
+      "modelId": "model-1",
+      "modelVersion": "workflowcluster.model/v1",
+      "featureVersion": "workflowcluster.features/v1",
+      "nearest": "c2",
+      "nearestMedoid": "medoid-2",
+      "nearestSize": 41,
+      "nearestStable": true,
+      "distance": 0.42,
+      "outOfDistribution": true,
+      "historicalOutcome": {
+        "runCount": 41,
+        "successRate": 0.94,
+        "insufficientRuns": false
+      },
+      "humanApprovalRequired": true,
+      "summary": "novel shape; nearest c2 at distance 0.42"
+    },
+    "admission": {
+      "state": "pending",
+      "reason": "out-of-distribution",
+      "requestedAt": "2026-10-04T12:00:00Z"
+    }
   },
   "triggerRequest": {
     "gaggle": "goobers",
@@ -1333,6 +1376,39 @@ export const goWireFixtures = {
               "needsHuman": true
             }
           ]
+        }
+      },
+      {
+        "childId": "child-held",
+        "runId": "child-held-run",
+        "stageOccurrence": "inspect/branch0/visit1",
+        "invocationKey": "inspect-novel",
+        "state": "queued",
+        "acceptedAt": "2026-07-18T12:34:56Z",
+        "updatedAt": "2026-07-18T12:34:56Z",
+        "cancellationRequested": false,
+        "admission": {
+          "state": "pending",
+          "reason": "out-of-distribution",
+          "requestedAt": "2026-07-18T12:34:56Z",
+          "novelty": {
+            "scored": true,
+            "modelId": "model-1",
+            "modelVersion": "workflowcluster.model/v1",
+            "featureVersion": "workflowcluster.features/v1",
+            "nearest": "c2",
+            "nearestMedoid": "medoid-2",
+            "nearestSize": 41,
+            "nearestStable": true,
+            "distance": 0.42,
+            "outOfDistribution": true,
+            "historicalOutcome": {
+              "runCount": 41,
+              "successRate": 0.94,
+              "insufficientRuns": false
+            },
+            "humanApprovalRequired": true
+          }
         }
       }
     ],

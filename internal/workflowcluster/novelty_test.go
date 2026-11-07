@@ -77,7 +77,7 @@ func TestScoreWorkflowSeparatesFamiliarAndNovelShapes(t *testing.T) {
 	// Renamed nodes with a member's sizes: names never contribute to features.
 	renamed := reviewLoop([4]string{"build", "inspect", "decide", "ship"}, strings.Repeat("z", 3))
 	familiar := ScoreWorkflow(&model, asWorkflow(renamed))
-	if !familiar.Scored || familiar.OutOfDistribution || familiar.ClusterID != "c0" || familiar.ModelID != model.ID || familiar.NearestSize != 6 {
+	if !familiar.Scored || familiar.OutOfDistribution || familiar.ClusterID != "c0" || familiar.ModelID != model.ID || familiar.ModelVersion != ModelVersion || familiar.NearestSize != 6 {
 		t.Fatalf("familiar = %+v", familiar)
 	}
 	if !strings.HasPrefix(familiar.Summary(), "similar to cluster c0") {

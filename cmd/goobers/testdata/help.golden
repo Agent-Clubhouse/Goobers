@@ -25,6 +25,7 @@ Commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow child-admission Labs: review children held for human admission approval
   workflow clusters Labs: cluster workflows by structural shape or run behavior
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
@@ -74,6 +75,7 @@ Commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow child-admission Labs: review children held for human admission approval
   workflow clusters Labs: cluster workflows by structural shape or run behavior
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
@@ -120,6 +122,7 @@ Core commands:
   up                Start the local daemon.
   validate          Validate an instance or configuration source.
   version           Show build version information.
+  workflow child-admission Labs: review children held for human admission approval
   workflow clusters Labs: cluster workflows by structural shape or run behavior
   workflow show     Show a workflow as a text DAG.
   workflow validate-child validate a child proposal against its configured parent
@@ -3694,14 +3697,35 @@ List pull requests and issues changed by recorded provider mutations. Use
 Exit codes: 0 = OK, 2 = usage, query, or I/O error.
 
 ### workflow
-Usage: goobers workflow <show | validate-child | clusters> [flags]
+Usage: goobers workflow <show | validate-child | child-admission | clusters> [flags]
 
 Show a workflow DAG, validate a generated child proposal against its configured parent,
-or (Labs) cluster workflows by structural shape or run behavior.
+(Labs) review children held for human admission approval, or (Labs) cluster
+workflows by structural shape or run behavior.
 
 Workflow
 
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
+
+### workflow child-admission
+Usage: goobers workflow child-admission [--approve <child-id> | --reject <child-id>] [--actor <identity>] [--note <text>] [--json] [path]
+
+Review generated child workflows held for human admission approval because
+the parent's childWorkflows.requireHumanApprovalForOutOfDistribution policy
+(Labs) found them outside every cluster of the frozen model. A held child keeps
+durable custody but is never dispatched until approved.
+
+Without --approve or --reject, list pending children with their pinned novelty
+evidence. --approve releases the child to ordinary dispatch and journals the
+approval in its lineage; --reject settles it as a failed child result that the
+parent observes. Decisions are durable and immutable; repeating one is a no-op.
+--actor defaults to the invoking user: GITHUB_ACTOR, USER or USERNAME, then the
+OS account. The actor is self-asserted, matching the trusted-local model:
+anyone who can open the instance's local queue can decide, and the actor is
+recorded for audit, not authenticated. Operates on the instance's local queue
+(default path ".").
+
+Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.
 
 ### workflow clusters
 Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]

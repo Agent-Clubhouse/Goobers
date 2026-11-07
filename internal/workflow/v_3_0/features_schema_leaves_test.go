@@ -47,10 +47,11 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.parallels.selection.source.task": "DSL 3.1-only fan-out preview; registered in internal/workflow and rejected for older pins by the version router",
 
 	// DSL 3.1-only policy; the version router rejects it for this interpreter.
-	"workflow.spec.tasks.childWorkflows.allowedGoobers":      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
-	"workflow.spec.tasks.childWorkflows.allowedCapabilities": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
-	"workflow.spec.tasks.childWorkflows.maxChildren":         "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
-	"workflow.spec.tasks.childWorkflows.allowPRPublication":  "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedGoobers":                           "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowedCapabilities":                      "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.maxChildren":                              "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.allowPRPublication":                       "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
+	"workflow.spec.tasks.childWorkflows.requireHumanApprovalForOutOfDistribution": "DSL 3.1-only child policy; registered and rejected for older pins by the version router",
 
 	// Publication policy belongs to the binary, not this interpreter.
 	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin

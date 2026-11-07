@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const (
@@ -71,6 +72,11 @@ type AdmissionContext struct {
 	// ExecutionRefusal preserves owned custody when current launch permission narrows.
 	ExecutionRefusal        string
 	WorkspaceMutationDenied bool
+	// ClusterModel is host-owned advisory evidence. It is not part of the
+	// authority digest and cannot relax proposal validation.
+	ClusterModel           *workflowcluster.Model
+	ClusterModelConfigured bool
+	ClusterFitness         map[string]workflowcluster.ClusterFitness
 }
 
 // Diagnostic identifies a refused boundary without returning proposal source.
@@ -106,6 +112,7 @@ type Proposal struct {
 	Workflow          apiv1.Workflow
 	Machine           *workflow.Machine
 	Placements        []dispatcher.PinnedPlacement
+	Novelty           *workflowcluster.Novelty
 }
 
 // Validator owns a deep copy of its trusted inputs. Caller mutations cannot
@@ -191,8 +198,21 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Proposal{credentialCeiling: v.childCredentialCeiling(), Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
-		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins}, nil
+	proposal := &Proposal{credentialCeiling: v.childCredentialCeiling(), Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
+		ConfigDigest: v.context.ConfigDigest, PolicyDigest: v.PolicyDigest(), Workflow: wf, Machine: machine, Placements: pins,
+	}
+	if v.context.ClusterModelConfigured {
+		novelty := workflowcluster.ScoreWorkflow(v.context.ClusterModel, wf)
+		if fitness, ok := v.context.ClusterFitness[novelty.Nearest]; ok {
+			novelty.HistoricalOutcome = &workflowcluster.HistoricalOutcome{
+				RunCount: fitness.RunCount, SuccessRate: fitness.SuccessRate, InsufficientRuns: fitness.InsufficientRuns,
+			}
+		}
+		novelty.HumanApprovalRequired = novelty.Scored && novelty.OutOfDistribution &&
+			v.context.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution
+		proposal.Novelty = &novelty
+	}
+	return proposal, nil
 }
 
 // PolicyDigest identifies pinned policy, enclosing publication permission and

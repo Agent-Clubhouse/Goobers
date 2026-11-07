@@ -124,6 +124,15 @@ func ValidateConfigured(request ConfiguredRequest, admit GooberAdmission) (Confi
 	}
 	report.Warnings = append(report.Warnings, warnings...)
 	report.ConfigDigest = context.ConfigDigest
+	if request.ClusterModelPath != "" {
+		context.ClusterModelConfigured = true
+		model, modelErr := workflowcluster.LoadModel(request.ClusterModelPath)
+		if modelErr != nil {
+			report.Warnings = append(report.Warnings, "cluster model unavailable; novelty unscored: "+bounded(modelErr.Error()))
+		} else {
+			context.ClusterModel = &model
+		}
+	}
 	v, err := NewValidator(context)
 	if err != nil {
 		return configuredRefusal(report, "parent_config", err.Error()), nil
@@ -143,21 +152,9 @@ func ValidateConfigured(request ConfiguredRequest, admit GooberAdmission) (Confi
 	report.PolicyDigest = proposal.PolicyDigest
 	report.WorkflowDigest = proposal.Machine.Digest()
 	if request.ClusterModelPath != "" {
-		report.Novelty = scoreNovelty(&report, request.ClusterModelPath, proposal)
+		report.Novelty = proposal.Novelty
 	}
 	return report, nil
-}
-
-// scoreNovelty is advisory: a missing, edited, or stale model degrades to an
-// unscored result plus a warning and leaves the validation outcome untouched.
-func scoreNovelty(report *ConfiguredReport, path string, proposal *Proposal) *workflowcluster.Novelty {
-	model, err := workflowcluster.LoadModel(path)
-	if err != nil {
-		report.Warnings = append(report.Warnings, "cluster model unavailable; novelty unscored: "+bounded(err.Error()))
-		return &workflowcluster.Novelty{Reason: workflowcluster.UnscoredInvalidModel}
-	}
-	novelty := workflowcluster.ScoreWorkflow(&model, proposal.Workflow)
-	return &novelty
 }
 
 func configuredRefusal(report ConfiguredReport, code, message string) ConfiguredReport {

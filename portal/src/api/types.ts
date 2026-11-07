@@ -1170,6 +1170,39 @@ export interface ChildPublicationHistory {
   items: ChildPublicationItem[];
 }
 
+/** Advisory admission-time cluster evidence; it grants no workflow authority. */
+export interface ChildNovelty {
+  scored: boolean;
+  reason?: string;
+  modelId?: string;
+  modelVersion?: string;
+  featureVersion?: string;
+  clusterId?: string;
+  nearest?: string;
+  nearestMedoid?: string;
+  nearestSize?: number;
+  nearestStable?: boolean;
+  distance: number;
+  outOfDistribution: boolean;
+  historicalOutcome?: {
+    runCount: number;
+    successRate: number;
+    insufficientRuns: boolean;
+  };
+  humanApprovalRequired?: boolean;
+  humanApproval?: { actor: string; approvedAt: string };
+}
+
+/** A queued child's durable human-admission hold. Decisions are made with the operator CLI. */
+export interface ChildAdmissionHistory {
+  state: "pending" | "approved" | "rejected";
+  reason: string;
+  requestedAt: string;
+  decidedAt?: string;
+  actor?: string;
+  novelty?: ChildNovelty;
+}
+
 export interface ChildHistoryItem {
   childId: string;
   runId: string;
@@ -1183,6 +1216,7 @@ export interface ChildHistoryItem {
   expiredAt?: string;
   cancellationRequested: boolean;
   publication?: ChildPublicationHistory;
+  admission?: ChildAdmissionHistory;
 }
 
 export interface ChildHistoryPage {
@@ -1197,7 +1231,12 @@ export interface ChildHistoryPage {
 
 export interface ChildActivity {
   status: "recorded" | "unavailable";
-  parent?: { runId: string; workflow: string; stageOccurrence: string };
+  parent?: {
+    runId: string;
+    workflow: string;
+    stageOccurrence: string;
+    novelty?: ChildNovelty;
+  };
   waits: Array<{ runId: string; stage: string; branch: number; action: "wait" | "merge" | "replace" | "discard"; since: string; sequence: number }>;
   parked: boolean;
 }
@@ -2551,6 +2590,18 @@ export interface ChildWorkflowValidationResponse {
   policyDigest?: string;
   workflowDigest?: string;
   diagnostics: readonly ChildWorkflowDiagnostic[];
+  novelty?: ChildWorkflowNovelty;
+}
+
+export interface ChildWorkflowNovelty extends Omit<ChildNovelty, "humanApproval"> {
+  summary: string;
+}
+
+export interface ChildWorkflowAdmission {
+  state: "pending" | "approved" | "rejected";
+  reason: string;
+  requestedAt: string;
+  decidedAt?: string;
 }
 
 /** Acceptance reports custody, not that execution has begun. */
@@ -2574,4 +2625,6 @@ export interface ChildWorkflowResponse {
   disposition?: ChildWorkflowResolutionResponse;
   acceptedAt: string;
   updatedAt: string;
+  novelty?: ChildWorkflowNovelty;
+  admission?: ChildWorkflowAdmission;
 }

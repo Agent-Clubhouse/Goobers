@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const dispatchChildSource = `apiVersion: goobers.dev/v1alpha1
@@ -104,10 +105,15 @@ type childDrainFixture struct {
 }
 
 func newChildDrainFixture(t *testing.T, customSource ...string) childDrainFixture {
+	t.Helper()
 	source := dispatchChildSource
 	if len(customSource) > 0 {
 		source = customSource[0]
 	}
+	return newChildDrainFixtureWith(t, source, nil)
+}
+
+func newChildDrainFixtureWith(t *testing.T, source string, admit func(*childworkflow.AdmissionContext)) childDrainFixture {
 	t.Helper()
 	layout := instance.NewLayout(t.TempDir())
 	path := filepath.Join(layout.Root, "accepted.db")
@@ -119,6 +125,9 @@ func newChildDrainFixture(t *testing.T, customSource ...string) childDrainFixtur
 		ParentTask:   apiv1.Task{Name: "plan", Type: apiv1.TaskAgentic, ChildWorkflows: &apiv1.ChildWorkflowPolicy{AllowedGoobers: []string{"coder"}, AllowedCapabilities: []string{"agent:model", "repo:read"}}},
 		ConfigDigest: journal.Digest([]byte("config")), GrantedCapabilities: []string{"agent:model", "repo:read"},
 		Goobers: map[string]apiv1.GooberSpec{"coder": {Gaggle: "web", Harness: "fake", Capabilities: []string{"agent:model", "repo:read"}}}, KnownChecks: []string{"status-equals"}, KnownHarnesses: []string{"fake"}, Backend: childworkflow.BackendRunner,
+	}
+	if admit != nil {
+		admit(&input)
 	}
 	validator, err := childworkflow.NewValidator(input)
 	if err != nil {
@@ -169,6 +178,46 @@ func drainChildTwice(t *testing.T, f *childDrainFixture) {
 		if err := f.service.Drain(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestChildDrainHoldsOutOfDistributionChildUntilHumanDecision(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		t.Run(map[bool]string{true: "approve", false: "reject"}[approve], func(t *testing.T) {
+			f := newChildDrainFixtureWith(t, dispatchChildSource, func(input *childworkflow.AdmissionContext) {
+				input.ClusterModelConfigured = true
+				input.ClusterModel = &workflowcluster.Model{Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: workflowcluster.StructuralFeatureVersion}
+				input.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution = true
+			})
+			if a := f.submission.Admission; a == nil || a.State != triggerqueue.ChildAdmissionPending {
+				t.Fatalf("admission = %+v", a)
+			}
+			drainChildTwice(t, &f)
+			if child, receipt := f.state(t); child.State != triggerqueue.ChildQueued || receipt.State != triggerqueue.Accepted || f.launcher.starts != 0 {
+				t.Fatalf("held child=%s receipt=%s starts=%d", child.State, receipt.State, f.launcher.starts)
+			}
+			decidedAt := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+			if _, err := f.service.queue.DecideChildAdmission(t.Context(), triggerqueue.ChildAdmissionDecision{ChildID: f.submission.Child.ChildID, Approve: approve, Actor: "operator"}, decidedAt); err != nil {
+				t.Fatal(err)
+			}
+			var lineage journal.ChildLineage
+			f.launcher.beforeStart = func(start childExecutionStart) error {
+				lineage = start.Lineage
+				return nil
+			}
+			drainChildTwice(t, &f)
+			_, receipt := f.state(t)
+			if !approve {
+				if receipt.State != triggerqueue.Rejected || receipt.Reason != triggerqueue.ChildAdmissionRejectedReason || f.launcher.starts != 0 {
+					t.Fatalf("rejected receipt=%+v starts=%d", receipt, f.launcher.starts)
+				}
+				return
+			}
+			n := lineage.Novelty
+			if f.launcher.starts != 1 || n == nil || !n.HumanApprovalRequired || n.HumanApproval == nil || n.HumanApproval.Actor != "operator" || !n.HumanApproval.ApprovedAt.Equal(decidedAt) {
+				t.Fatalf("approved starts=%d novelty=%+v", f.launcher.starts, n)
+			}
+		})
 	}
 }
 

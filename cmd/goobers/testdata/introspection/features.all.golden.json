@@ -2487,6 +2487,23 @@
       ]
     },
     {
+      "name": "task.childWorkflows.requireHumanApprovalForOutOfDistribution",
+      "stability": "preview",
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
+    },
+    {
       "name": "task.commitsRepo",
       "stability": "ga",
       "sinceVersion": "v0.4.0",

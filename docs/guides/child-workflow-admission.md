@@ -258,3 +258,23 @@ no recovery link. Child run details may independently have been retained or prun
 The view refreshes on gaggle run invalidations and offers explicit refresh; it
 shows the observation time and uses the Portal's existing stale-data indication.
 This read surface does not enable public child execution or new interventions.
+
+## Human admission review for novel children (Labs)
+
+When a cluster model is configured, validation, start and status responses
+carry advisory novelty evidence. A missing or stale model leaves the proposal
+unscored and admission unchanged. With the parent's
+`childWorkflows.requireHumanApprovalForOutOfDistribution` policy enabled, an
+out-of-distribution child is accepted with a durable admission hold that pins
+its novelty evidence. A held child is not dispatched until an operator decides
+with `goobers workflow child-admission --approve <child-id>` or
+`--reject <child-id>`. Approval is journaled in the child's lineage; rejection
+settles the child as a failed result the parent observes. An exact retry with
+the same invocation key returns the original receipt and its pinned evidence,
+even if the model changed in between. Queues that cannot retain a hold, such as
+cloud acceptance, refuse the start instead.
+
+The decision actor defaults to `GITHUB_ACTOR`, `USER` or `USERNAME`, then the
+OS account, and can be overridden with `--actor`. In trusted-local mode it is
+self-asserted: anyone who can open the instance's local queue can decide, and
+the actor is recorded for audit rather than authenticated.
