@@ -89,7 +89,10 @@ type RunInput struct {
 	DSLVersion            string `json:"dslVersion,omitempty"`
 	// Annotations is part of the digested definition, pinned with Spec.
 	// Absent in old histories; never recovered from current configuration.
-	Annotations            map[string]string  `json:"annotations,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// WorkflowLabels carries the Workflow object's metadata.labels outside the
+	// digested definition, matching the local runner's immutable journal pin.
+	WorkflowLabels         map[string]string  `json:"workflowLabels,omitempty"`
 	WorkflowDigest         string             `json:"workflowDigest"`
 	PreviewFeaturesEnabled *bool              `json:"previewFeaturesEnabled,omitempty"`
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
@@ -296,6 +299,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	m, err := wf.Compile(
 		definition,
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
+		wf.WithLabels(in.WorkflowLabels),
 	)
 	if err != nil {
 		return RunResult{}, err
