@@ -106,6 +106,40 @@ func TestGenerateRejectsUnknownVersionAndClass(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsIncompleteGeneratedTasks(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]any){
+		"missing reproduction id": func(task map[string]any) { delete(task, "minimalReproductionId") },
+		"missing constraints":     func(task map[string]any) { delete(task, "constraints") },
+		"unknown class":           func(task map[string]any) { task["taskClass"] = "unknown" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			task, err := Generate(GeneratorVersionV1, TaskClassTimeout, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			mutate(fields)
+			if raw, err = json.Marshal(fields); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "task.json"), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(dir); err == nil {
+				t.Fatal("incomplete generated task validated")
+			}
+		})
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

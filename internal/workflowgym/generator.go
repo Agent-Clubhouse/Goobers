@@ -20,6 +20,7 @@ const (
 // TaskClass identifies a deterministic synthetic or adversarial scenario.
 type TaskClass string
 
+// Task classes supported by GeneratorVersionV1.
 const (
 	TaskClassNormal            TaskClass = "normal"
 	TaskClassIncomplete        TaskClass = "incomplete"
