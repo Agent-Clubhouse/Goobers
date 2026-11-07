@@ -173,6 +173,13 @@ func TestBenchmarkProviderCallsAreInterceptedAndVirtualized(t *testing.T) {
 		report.Receipts[0].Exchange != "comment-on-issue" {
 		t.Fatalf("receipts = %+v, want the comment served by its recorded sink", report.Receipts)
 	}
+	var served []string
+	for _, receipt := range report.Served {
+		served = append(served, string(receipt.Effect)+" "+receipt.Exchange)
+	}
+	if got := strings.Join(served, ","); got != "provider-read list-open-issues,provider-read get-issue,comment comment-on-issue" {
+		t.Fatalf("served = %s, want every answered exchange in observation order", got)
+	}
 	var touched *journal.ExternalRef
 	for _, event := range report.Events {
 		if event.Type == journal.EventRefTouched {

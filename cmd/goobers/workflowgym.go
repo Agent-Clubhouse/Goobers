@@ -25,7 +25,10 @@ const workflowGymListHelp = "Usage: goobers workflow-gym list <path>\n\n" +
 
 const workflowGymReplayHelp = "Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>\n\n" +
 	"Replay one historical task twice through the offline benchmark harness and\n" +
-	"write its deterministic replay manifest as JSON.\n"
+	"write its deterministic replay manifest as JSON. The replay reads the\n" +
+	"fixture's work item and re-issues the journal's recorded mutations through\n" +
+	"the side-effect sandbox; the manifest lists only effects the sandbox\n" +
+	"observed, as deterministic, virtualized, or unavailable.\n"
 
 func workflowGymCLICommand() cliCommand {
 	return groupCommand(

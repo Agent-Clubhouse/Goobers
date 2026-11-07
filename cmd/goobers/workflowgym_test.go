@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -56,6 +57,22 @@ func TestWorkflowGymReplayEmitsOfflineManifest(t *testing.T) {
 		manifest.JournalDigest == "" || len(manifest.NondeterminismFindings) != 0 {
 		t.Fatalf("manifest = %+v, want deterministic replay success", manifest)
 	}
+	// The CLI executes the recorded session: it reads the fixture issue and
+	// re-posts the journal's recorded comment through the virtual sink. The
+	// fixture's list-open-issues exchange is never requested, so it is absent.
+	var got []string
+	for _, effect := range manifest.Effects {
+		got = append(got, string(effect.Disposition)+" "+effect.Effect+" "+effect.Target)
+	}
+	want := []string{
+		"deterministic artifact transcript.jsonl",
+		"deterministic artifact completion.json",
+		"virtualized provider-read GET /repos/acme/web/issues/7",
+		"virtualized comment POST /repos/acme/web/issues/7/comments",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("effects = %q, want %q", got, want)
+	}
 }
 
 func workflowGymReplayJournal(t *testing.T) string {
@@ -88,6 +105,13 @@ func workflowGymReplayJournal(t *testing.T) string {
 		if _, err := runJournal.RecordStageArtifact("candidate", 1, journal.AttemptPolicy, artifact.name, artifact.data); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := runJournal.Append(journal.Event{
+		Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "7"},
+		Runner:      map[string]any{"operation": "comment"},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := runJournal.Append(journal.Event{
 		Type: journal.EventStageFinished, Stage: "candidate", Attempt: 1, Status: "success",

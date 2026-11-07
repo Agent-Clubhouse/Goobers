@@ -5937,7 +5937,10 @@ replay a historical benchmark task offline
 Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
 
 Replay one historical task twice through the offline benchmark harness and
-write its deterministic replay manifest as JSON.
+write its deterministic replay manifest as JSON. The replay reads the
+fixture's work item and re-issues the journal's recorded mutations through
+the side-effect sandbox; the manifest lists only effects the sandbox
+observed, as deterministic, virtualized, or unavailable.
 ~~~
 
 **Examples**

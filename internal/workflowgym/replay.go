@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
@@ -15,8 +16,9 @@ import (
 )
 
 // ReplayRequest selects one task and its historical, read-only replay inputs.
-// Act is optional: callers that evaluate candidate behavior provide a scripted
-// benchmark act, while the CLI replays the recorded harness session itself.
+// Act scripts the candidate's work through the benchmark sandbox; nil replays
+// the recorded session itself (see recordedSessionAct), which is what the CLI
+// does.
 type ReplayRequest struct {
 	Task                apiv1.WorkflowGymTaskManifest
 	ProviderFixturePath string
@@ -25,7 +27,9 @@ type ReplayRequest struct {
 }
 
 // Replay runs the historical task twice in fresh workspaces and returns a
-// canonical manifest describing its offline effects and determinism.
+// canonical manifest describing the effects the sandbox observed and the
+// replay's determinism. Recorded exchanges the replay never requested are not
+// effects and are omitted.
 func Replay(ctx context.Context, req ReplayRequest) (apiv1.WorkflowGymReplayManifest, error) {
 	if err := validateTask(req.Task); err != nil {
 		return apiv1.WorkflowGymReplayManifest{}, fmt.Errorf("workflow gym replay: task manifest: %w", err)
@@ -39,6 +43,9 @@ func Replay(ctx context.Context, req ReplayRequest) (apiv1.WorkflowGymReplayMani
 	fixture, err := harness.LoadBenchmarkFixture(req.ProviderFixturePath, req.JournalDir)
 	if err != nil {
 		return apiv1.WorkflowGymReplayManifest{}, err
+	}
+	if req.Act == nil {
+		req.Act = recordedSessionAct(fixture)
 	}
 
 	first, err := runReplay(ctx, req, fixture)
@@ -54,6 +61,7 @@ func Replay(ctx context.Context, req ReplayRequest) (apiv1.WorkflowGymReplayMani
 	if err != nil {
 		return apiv1.WorkflowGymReplayManifest{}, fmt.Errorf("workflow gym replay: encode task identity: %w", err)
 	}
+	firstEffects := effectLedger(first.report)
 	manifest := apiv1.WorkflowGymReplayManifest{
 		APIVersion: apiv1.WorkflowGymTaskAPIVersion,
 		Kind:       apiv1.WorkflowGymReplayKind,
@@ -68,39 +76,82 @@ func Replay(ctx context.Context, req ReplayRequest) (apiv1.WorkflowGymReplayMani
 			ProviderFixture: filepath.Clean(req.ProviderFixturePath),
 			Journal:         filepath.Clean(req.JournalDir),
 		},
-		Status:        first.report.Status,
-		JournalDigest: journal.Digest(first.report.Journal),
-		Effects: []apiv1.WorkflowGymReplayEffect{{
-			Disposition: apiv1.WorkflowGymEffectDeterministic,
-			Effect:      "recorded-journal",
-			Target:      filepath.Clean(req.JournalDir),
-		}},
-		VirtualizationGaps:     make([]apiv1.WorkflowGymReplayFinding, 0),
-		NondeterminismFindings: make([]apiv1.WorkflowGymReplayFinding, 0),
+		Status:                 first.report.Status,
+		JournalDigest:          journal.Digest(first.report.Journal),
+		Effects:                firstEffects,
+		VirtualizationGaps:     virtualizationGaps(first.report),
+		NondeterminismFindings: nondeterminismFindings(first, second, firstEffects, effectLedger(second.report)),
 	}
-	for _, exchange := range fixture.Provider.Exchanges {
-		manifest.Effects = append(manifest.Effects, apiv1.WorkflowGymReplayEffect{
-			Disposition: apiv1.WorkflowGymEffectVirtualized,
-			Effect:      "provider-exchange",
-			Target:      exchange.Method + " " + exchange.Path,
-			Detail:      exchange.Name,
+	return manifest, nil
+}
+
+// effectLedger projects what the sandbox observed during one replay:
+// recorded artifacts it replayed are deterministic, recorded exchanges that
+// answered a request are virtualized (repeat reads of one exchange collapse
+// into one entry), and every refused effect is unavailable.
+func effectLedger(report harness.BenchmarkReport) []apiv1.WorkflowGymReplayEffect {
+	effects := make([]apiv1.WorkflowGymReplayEffect, 0, len(report.Served)+len(report.Violations))
+	for _, event := range report.Events {
+		if event.Type != journal.EventArtifactRecorded || event.Ref == nil {
+			continue
+		}
+		effects = append(effects, apiv1.WorkflowGymReplayEffect{
+			Disposition: apiv1.WorkflowGymEffectDeterministic,
+			Effect:      string(harness.BenchmarkEffectArtifact),
+			Target:      event.Name,
+			Detail:      event.Ref.Digest,
 		})
 	}
-	for _, violation := range first.report.Violations {
-		manifest.Effects = append(manifest.Effects, apiv1.WorkflowGymReplayEffect{
+	reads := make(map[string]int)
+	for _, served := range report.Served {
+		if served.Effect == harness.BenchmarkEffectProviderRead {
+			reads[served.Exchange]++
+		}
+	}
+	collapsed := make(map[string]bool)
+	for _, served := range report.Served {
+		detail := served.Exchange
+		if served.Effect == harness.BenchmarkEffectProviderRead {
+			if collapsed[served.Exchange] {
+				continue
+			}
+			collapsed[served.Exchange] = true
+			if n := reads[served.Exchange]; n > 1 {
+				detail = fmt.Sprintf("%s (served %d reads)", served.Exchange, n)
+			}
+		}
+		effects = append(effects, apiv1.WorkflowGymReplayEffect{
+			Disposition: apiv1.WorkflowGymEffectVirtualized,
+			Effect:      string(served.Effect),
+			Target:      served.Method + " " + served.Path,
+			Detail:      detail,
+		})
+	}
+	for _, violation := range report.Violations {
+		effects = append(effects, apiv1.WorkflowGymReplayEffect{
 			Disposition: apiv1.WorkflowGymEffectUnavailable,
 			Effect:      string(violation.Effect),
 			Target:      violation.Target,
 			Detail:      violation.Message,
 		})
+	}
+	return effects
+}
+
+func virtualizationGaps(report harness.BenchmarkReport) []apiv1.WorkflowGymReplayFinding {
+	gaps := make([]apiv1.WorkflowGymReplayFinding, 0)
+	for _, violation := range report.Violations {
 		if violation.Code == harness.BenchmarkErrorVirtualizationGap {
-			manifest.VirtualizationGaps = append(manifest.VirtualizationGaps, apiv1.WorkflowGymReplayFinding{
-				Code: violation.Code, Detail: violation.Message,
-			})
+			gaps = append(gaps, apiv1.WorkflowGymReplayFinding{Code: violation.Code, Detail: violation.Message})
 		}
 	}
+	return gaps
+}
+
+func nondeterminismFindings(first, second replayResult, firstEffects, secondEffects []apiv1.WorkflowGymReplayEffect) []apiv1.WorkflowGymReplayFinding {
+	findings := make([]apiv1.WorkflowGymReplayFinding, 0)
 	if !bytes.Equal(first.report.Journal, second.report.Journal) {
-		manifest.NondeterminismFindings = append(manifest.NondeterminismFindings, apiv1.WorkflowGymReplayFinding{
+		findings = append(findings, apiv1.WorkflowGymReplayFinding{
 			Code: "journal_mismatch",
 			Detail: fmt.Sprintf("repeated replay journal digests differ: %s != %s",
 				journal.Digest(first.report.Journal), journal.Digest(second.report.Journal)),
@@ -108,12 +159,18 @@ func Replay(ctx context.Context, req ReplayRequest) (apiv1.WorkflowGymReplayMani
 	}
 	if !bytes.Equal(first.outcome.Payload, second.outcome.Payload) ||
 		!bytes.Equal(first.outcome.Transcript, second.outcome.Transcript) {
-		manifest.NondeterminismFindings = append(manifest.NondeterminismFindings, apiv1.WorkflowGymReplayFinding{
+		findings = append(findings, apiv1.WorkflowGymReplayFinding{
 			Code:   "harness_output_mismatch",
 			Detail: "repeated replay produced different completion or transcript bytes",
 		})
 	}
-	return manifest, nil
+	if !slices.Equal(firstEffects, secondEffects) {
+		findings = append(findings, apiv1.WorkflowGymReplayFinding{
+			Code:   "effect_ledger_mismatch",
+			Detail: "repeated replay observed different effects through the sandbox",
+		})
+	}
+	return findings
 }
 
 type replayResult struct {
