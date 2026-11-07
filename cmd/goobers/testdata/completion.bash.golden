@@ -341,7 +341,7 @@ _goobers_completion()
             ;;
         workflow-gym)
             if (( COMP_CWORD == 2 )); then
-                candidates="validate list replay"
+                candidates="validate list replay tournament"
             fi
             ;;
         scaffold)

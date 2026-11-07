@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflowgym"
 )
 
 func TestWorkflowGymListPrintsDigestCountAndStableOrder(t *testing.T) {
@@ -73,6 +76,57 @@ func TestWorkflowGymReplayEmitsOfflineManifest(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("effects = %q, want %q", got, want)
 	}
+}
+
+func TestWorkflowGymTournamentEmitsPairedReport(t *testing.T) {
+	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	authoritative := writeTournamentCandidate(t, "authoritative", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentPass},
+		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
+	})
+	candidate := writeTournamentCandidate(t, "candidate", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentFail, FailureClass: "evaluation"},
+	})
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "tournament", dataset, authoritative, candidate}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.TournamentReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode tournament report: %v\n%s", err, stdout.String())
+	}
+	if report.Kind != workflowgym.TournamentReportKind || len(report.Results) != 2 ||
+		report.Results[1].CandidateRun.Status != workflowgym.TournamentFail ||
+		report.Results[1].CandidateRun.FailureClass != "missing-result" {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func writeTournamentCandidate(t *testing.T, genome string, results []workflowgym.TournamentCandidateResult) string {
+	t.Helper()
+	manifest := workflowgym.TournamentCandidateManifest{
+		APIVersion: apiv1.WorkflowGymTaskAPIVersion,
+		Kind:       workflowgym.TournamentCandidateKind,
+		Identity: workflowgym.TournamentCandidateIdentity{
+			EffectiveVersion: rollup.EffectiveVersion{
+				WorkflowDigest: "sha256:workflow-" + genome,
+				GooberDigest:   "sha256:goober-" + genome,
+				Model:          "model-" + genome,
+				HarnessVersion: "harness-1",
+			},
+			GenomeDigest: "sha256:" + genome,
+		},
+		Results: results,
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), genome+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func workflowGymReplayJournal(t *testing.T) string {
