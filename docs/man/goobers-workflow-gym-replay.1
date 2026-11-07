@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW GYM REPLAY" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow-gym replay \- replay a historical benchmark task offline
+.SH SYNOPSIS
+\fBgoobers workflow-gym replay\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
+
+Replay one historical task twice through the offline benchmark harness and
+write its deterministic replay manifest as JSON. The replay reads the
+fixture's work item and re-issues the journal's recorded mutations through
+the side-effect sandbox; the manifest lists only effects the sandbox
+observed, as deterministic, virtualized, or unavailable.
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow-gym replay ./task.yaml ./provider.json ./journal
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -30,7 +30,7 @@ var provenanceAxes = []string{StratifyModel, StratifyHarness, StratifySkills, St
 type pointStrata map[string]Strata
 
 func configuredStrata(workflows []apiv1.Workflow, goobers []apiv1.Goober) pointStrata {
-	result := pointStrata{StratifyGaggle: {}}
+	result := pointStrata{StratifyGaggle: {}, StratifyTemplate: {}}
 	for _, axis := range provenanceAxes {
 		result[axis] = Strata{}
 	}
@@ -41,6 +41,9 @@ func configuredStrata(workflows []apiv1.Workflow, goobers []apiv1.Goober) pointS
 	for _, wf := range workflows {
 		id := wf.Spec.Gaggle + "/" + wf.Name
 		result[StratifyGaggle][id] = wf.Spec.Gaggle
+		if template := wf.Annotations[TemplateProvenanceAnnotation]; template != "" {
+			result[StratifyTemplate][id] = template
+		}
 		names := map[string]bool{}
 		for _, task := range wf.Spec.Tasks {
 			if task.Goober != "" {

@@ -162,8 +162,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
-| [`goobers workflow-gym`](#goobers-workflow-gym) | validate or list Workflow Gym benchmark tasks |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, list, or replay Workflow Gym benchmark tasks |
 | [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
+| [`goobers workflow-gym replay`](#goobers-workflow-gym-replay) | replay a historical benchmark task offline |
 | [`goobers workflow-gym validate`](#goobers-workflow-gym-validate) | validate a file-backed benchmark dataset |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
 | [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
@@ -5793,7 +5794,7 @@ $ goobers workflow child-admission --reject child-0123 --json
 Labs: cluster workflows by structural shape or run behavior
 
 ~~~text
-Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--ablation] [--json] [path]
+Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
        goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
@@ -5818,10 +5819,25 @@ cohorts with fewer than --min-samples runs are dropped.
 Node names, stage names, and goal text never contribute. Structural and
 behavior features are never mixed in one model. --cohort limits structural
 clustering to one privacy-safe task cohort. --stratify tests whether
-clusters merely track gaggle, task-cohort, model, harness, skill-set, or
-tool-set boundaries (a confound). Undefined provenance is excluded and
+clusters merely track gaggle, task-cohort, shipped-template, model, harness,
+skill-set, or tool-set boundaries (a confound). Undefined provenance is excluded and
 counted; that check is observational, not gym-controlled. Nothing is
 modified (default path ".").
+
+Template provenance fingerprints the workflow templates embedded in this
+build: reference workflows, config examples, and the starter, demo,
+quickstart, and scaffold workflows. A workflow is template-derived only
+when it lies within 0.35 structural distance of a shipped template. The
+metadata.annotations["goobers.dev/template-provenance"] written by init and
+scaffolding is reported as declared provenance; it names the attributed
+template while the workflow is still within 0.35 of it, and otherwise the
+nearest shipped template is shown. Cluster medoids farther than 0.35 from
+every shipped template are reported as convergence beyond templates, and
+--stratify template groups derived workflows by template and the rest as
+"beyond-templates". Provenance is reported even when too few
+workflows are configured to cluster. Bare --json stays the frozen model
+that --cluster-model reads; JSON carries the template report alongside
+any other requested report (for example --stratify template --json).
 
 --fitness joins retained terminal runs to the current structural clusters
 by workflow digest and reports sample size, success with a 95% Wilson
@@ -5929,13 +5945,14 @@ $ goobers workflow validate-child --gaggle example --parent implementation --sta
 
 ## `goobers workflow-gym`
 
-validate or list Workflow Gym benchmark tasks
+validate, list, or replay Workflow Gym benchmark tasks
 
 ~~~text
-Usage: goobers workflow-gym <validate|list> <path>
+Usage: goobers workflow-gym <validate|list|replay> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
-may name one JSON/YAML task manifest or a directory of manifests.
+may name one JSON/YAML task manifest or a directory of manifests. Replay
+runs one task against historical fixture and journal inputs, entirely offline.
 ~~~
 
 **Examples**
@@ -5943,6 +5960,7 @@ may name one JSON/YAML task manifest or a directory of manifests.
 ~~~console
 $ goobers workflow-gym validate ./benchmark-tasks
 $ goobers workflow-gym list ./benchmark-tasks
+$ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 ~~~
 
 ## `goobers workflow-gym list`
@@ -5960,6 +5978,26 @@ and task count, then list tasks in stable task ID order.
 
 ~~~console
 $ goobers workflow-gym list ./benchmark-tasks
+~~~
+
+## `goobers workflow-gym replay`
+
+replay a historical benchmark task offline
+
+~~~text
+Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
+
+Replay one historical task twice through the offline benchmark harness and
+write its deterministic replay manifest as JSON. The replay reads the
+fixture's work item and re-issues the journal's recorded mutations through
+the side-effect sandbox; the manifest lists only effects the sandbox
+observed, as deterministic, virtualized, or unavailable.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 ~~~
 
 ## `goobers workflow-gym validate`

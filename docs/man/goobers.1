@@ -458,10 +458,13 @@ print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured
 list pull requests and issues changed by Goobers
 .TP
 \fBgoobers workflow-gym\fR
-validate or list Workflow Gym benchmark tasks
+validate, list, or replay Workflow Gym benchmark tasks
 .TP
 \fBgoobers workflow-gym list\fR
 list a file-backed benchmark dataset
+.TP
+\fBgoobers workflow-gym replay\fR
+replay a historical benchmark task offline
 .TP
 \fBgoobers workflow-gym validate\fR
 validate a file-backed benchmark dataset
@@ -826,6 +829,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-workflow-validate-child\fR(1),
 \fBgoobers-workflow-gym\fR(1),
 \fBgoobers-workflow-gym-list\fR(1),
+\fBgoobers-workflow-gym-replay\fR(1),
 \fBgoobers-workflow-gym-validate\fR(1),
 \fBgoobers-workspace\fR(1),
 \fBgoobers-workspace-reset\fR(1)
