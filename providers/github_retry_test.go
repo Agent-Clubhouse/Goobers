@@ -107,7 +107,7 @@ func TestGitHubSendRetries5xxOnIdempotentMethodOnly(t *testing.T) {
 // TestGitHubGraphQLQueryRetriesTransportErrorDespitePostWireMethod pins the
 // subtlety #2026's fix has to get right: GraphQL's wire method is always
 // POST, but a query (read) is exactly as safe to retry as a REST GET —
-// isGraphQLMutation, not the literal HTTP method, must drive the
+// IsGraphQLMutation, not the literal HTTP method, must drive the
 // retry-safety decision here.
 func TestGitHubGraphQLQueryRetriesTransportErrorDespitePostWireMethod(t *testing.T) {
 	var mu sync.Mutex
