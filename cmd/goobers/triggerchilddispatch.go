@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -68,12 +69,37 @@ func childReference(ctx context.Context, queue *triggerqueue.Store, record trigg
 	if c.AcceptanceID != record.ID || c.StartKey != record.Key || c.ProposalDigest != e.SourceDigest || c.RunID == "" || (record.RunID != "" && c.RunID != record.RunID) || !c.TombstonedAt.IsZero() {
 		return childExecutionRef{}, childworkflow.ErrSubmissionInvalid
 	}
-	lineage := journal.ChildLineage{Gaggle: e.Gaggle, ParentRunID: e.ParentRunID, ParentWorkflow: e.ParentWorkflow, StageOccurrence: e.StageOccurrence, InvocationKey: e.InvocationKey, AcceptanceID: record.ID, SourceDigest: e.SourceDigest, EnvelopeDigest: journal.Digest(record.Payload), Novelty: e.JournalNovelty()}
+	novelty, err := childAdmissionNovelty(ctx, queue, e)
+	if err != nil {
+		return childExecutionRef{}, err
+	}
+	lineage := journal.ChildLineage{Gaggle: e.Gaggle, ParentRunID: e.ParentRunID, ParentWorkflow: e.ParentWorkflow, StageOccurrence: e.StageOccurrence, InvocationKey: e.InvocationKey, AcceptanceID: record.ID, SourceDigest: e.SourceDigest, EnvelopeDigest: journal.Digest(record.Payload), Novelty: novelty}
 	id := journal.RunIdentity{RunID: c.RunID, Gaggle: e.Gaggle, Child: &lineage, ConfigGeneration: e.ConfigGeneration, WorkflowDigest: e.WorkflowDigest, GooberDigest: e.ParentGooberDigest}
 	if err := id.ValidateChildLineage(); err != nil {
 		return childExecutionRef{}, err
 	}
 	return childExecutionRef{Child: c, Envelope: e, Lineage: lineage}, nil
+}
+
+// childAdmissionNovelty pins the advisory evidence and, once an operator has
+// approved a held start, the immutable approval into the child's lineage. A
+// pending or rejected hold leaves HumanApproval empty, which forbids dispatch.
+func childAdmissionNovelty(ctx context.Context, queue *triggerqueue.Store, e childworkflow.ChildStartEnvelope) (*journal.ChildNovelty, error) {
+	novelty := e.JournalNovelty()
+	if !e.HumanApprovalRequired() {
+		return novelty, nil
+	}
+	review, err := queue.ChildAdmission(ctx, e.Identity())
+	if errors.Is(err, sql.ErrNoRows) {
+		return novelty, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if review.State == triggerqueue.ChildAdmissionApproved {
+		novelty.HumanApproval = &journal.ChildHumanApproval{Actor: review.Actor, ApprovedAt: review.DecidedAt}
+	}
+	return novelty, nil
 }
 
 func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqueue.Record) error {
@@ -85,6 +111,10 @@ func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqu
 		return err
 	}
 	if ref.Child.CancellationRequested || ref.Child.State != triggerqueue.ChildQueued {
+		return nil
+	}
+	if ref.Envelope.HumanApprovalRequired() && ref.Lineage.Novelty.HumanApproval == nil {
+		// Held for operator review; the queue's dispatch fence agrees.
 		return nil
 	}
 	authority, err := s.children.Prepare(ctx, ref.Envelope)

@@ -3,7 +3,9 @@ package journal
 import (
 	"errors"
 	"math"
+	"reflect"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -43,6 +45,15 @@ type ChildNovelty struct {
 	OutOfDistribution     bool                    `json:"outOfDistribution"`
 	HistoricalOutcome     *ChildHistoricalOutcome `json:"historicalOutcome,omitempty"`
 	HumanApprovalRequired bool                    `json:"humanApprovalRequired,omitempty"`
+	// HumanApproval records the reviewed decision that released a held
+	// out-of-distribution child. It is present only when approval was required.
+	HumanApproval *ChildHumanApproval `json:"humanApproval,omitempty"`
+}
+
+// ChildHumanApproval is the durable operator decision that admitted a held child.
+type ChildHumanApproval struct {
+	Actor      string    `json:"actor"`
+	ApprovedAt time.Time `json:"approvedAt"`
 }
 
 // ChildHistoricalOutcome is the admission-time outcome snapshot for a cluster.
@@ -50,6 +61,11 @@ type ChildHistoricalOutcome struct {
 	RunCount         int     `json:"runCount"`
 	SuccessRate      float64 `json:"successRate"`
 	InsufficientRuns bool    `json:"insufficientRuns"`
+}
+
+// Equal compares lineage by value, including pinned advisory evidence.
+func (c ChildLineage) Equal(other ChildLineage) bool {
+	return reflect.DeepEqual(c, other)
 }
 
 // ValidateChildLineage refuses malformed or cross-gaggle generated provenance.
@@ -74,13 +90,14 @@ func (id RunIdentity) ValidateChildLineage() error {
 			return errors.New("journal: invalid child execution digest")
 		}
 	}
-	if c.Novelty != nil && !c.Novelty.valid() {
+	if c.Novelty != nil && !c.Novelty.Valid() {
 		return errors.New("journal: invalid child novelty evidence")
 	}
 	return nil
 }
 
-func (n ChildNovelty) valid() bool {
+// Valid reports whether advisory evidence is bounded and internally consistent.
+func (n ChildNovelty) Valid() bool {
 	for _, value := range []string{n.Reason, n.ModelID, n.ModelVersion, n.FeatureVersion, n.ClusterID, n.Nearest, n.NearestMedoid} {
 		if len(value) > 256 || !utf8.ValidString(value) || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 			return false
@@ -95,6 +112,9 @@ func (n ChildNovelty) valid() bool {
 			outcome.SuccessRate < 0 || outcome.SuccessRate > 1 {
 			return false
 		}
+	}
+	if a := n.HumanApproval; a != nil && (!n.HumanApprovalRequired || !childIdentityText(a.Actor, 1024) || a.ApprovedAt.IsZero()) {
+		return false
 	}
 	return !n.HumanApprovalRequired || n.Scored && n.OutOfDistribution
 }

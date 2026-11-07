@@ -1,0 +1,32 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW CHILD ADMISSION" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow child-admission \- Labs: review children held for human admission approval
+.SH SYNOPSIS
+\fBgoobers workflow child-admission\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow child-admission [--approve <child-id> | --reject <child-id>] [--actor <identity>] [--note <text>] [--json] [path]
+
+Review generated child workflows held for human admission approval because
+the parent's childWorkflows.requireHumanApprovalForOutOfDistribution policy
+(Labs) found them outside every cluster of the frozen model. A held child keeps
+durable custody but is never dispatched until approved.
+
+Without --approve or --reject, list pending children with their pinned novelty
+evidence. --approve releases the child to ordinary dispatch and journals the
+approval in its lineage; --reject settles it as a failed child result that the
+parent observes. Decisions are durable and immutable; repeating one is a no-op.
+--actor defaults to the invoking user. Operates on the instance's local queue
+(default path ".").
+
+Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow child-admission
+goobers workflow child-admission --approve child-0123 --note "reviewed shape"
+goobers workflow child-admission --reject child-0123 --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workflowcluster"
@@ -24,6 +25,10 @@ func workflowCommands() cliCommand {
 			withSynopsis(workflowValidateChildSynopsis).
 			withHelp("validate a child proposal against its configured parent", workflowValidateChildHelp).
 			withExamples("goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml"),
+		coreSubcommand("workflow child-admission", "child-admission", apicontract.ActionWorkflowExecution, runWorkflowChildAdmission).
+			withSynopsis(workflowChildAdmissionSynopsis).
+			withHelp("Labs: review children held for human admission approval", childworkflow.AdmissionHelp).
+			withExamples("goobers workflow child-admission", "goobers workflow child-admission --approve child-0123 --note \"reviewed shape\"", "goobers workflow child-admission --reject child-0123 --json"),
 		coreSubcommand("workflow clusters", "clusters", apicontract.ActionReadOnlyNavigation, runWorkflowClusters).
 			withSynopsis(workflowClustersSynopsis).
 			withHelp("Labs: cluster workflows by structural shape or run behavior", workflowcluster.CLIHelp).
@@ -53,9 +58,10 @@ func runWorkflow(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const workflowHelp = "Usage: goobers workflow <show | validate-child | clusters> [flags]\n\n" +
+const workflowHelp = "Usage: goobers workflow <show | validate-child | child-admission | clusters> [flags]\n\n" +
 	"Show a workflow DAG, validate a generated child proposal against its configured parent,\n" +
-	"or (Labs) cluster workflows by structural shape or run behavior.\n\n" +
+	"(Labs) review children held for human admission approval, or (Labs) cluster\n" +
+	"workflows by structural shape or run behavior.\n\n" +
 	"Workflow\n\n" +
 	workflowConcept + "\n"
 

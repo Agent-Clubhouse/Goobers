@@ -2,6 +2,7 @@ import type { ChildActivity } from "../api/types";
 import type { Navigate } from "../routing";
 import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
+import { describeChildNovelty } from "./childNovelty";
 
 export function ChildActivityPanel({ activity, navigate }: { activity?: ChildActivity; navigate: Navigate }) {
   if (!activity) return null;
@@ -18,20 +19,7 @@ export function ChildActivityPanel({ activity, navigate }: { activity?: ChildAct
                 Created by <Action onClick={() => navigate({ page: "run", id: activity.parent!.runId })}>{activity.parent.workflow}</Action>
                 {" · "}<span className="mono">{activity.parent.stageOccurrence}</span>
               </p>
-              {activity.parent.novelty && (
-                <p>
-                  Advisory novelty: {activity.parent.novelty.scored
-                    ? activity.parent.novelty.outOfDistribution
-                      ? `novel shape; nearest ${activity.parent.novelty.nearest ?? "cluster"} at distance ${activity.parent.novelty.distance.toFixed(2)}`
-                      : `similar to ${activity.parent.novelty.clusterId ?? activity.parent.novelty.nearest ?? "cluster"} at distance ${activity.parent.novelty.distance.toFixed(2)}`
-                    : `unscored (${activity.parent.novelty.reason ?? "model unavailable"})`}
-                  {activity.parent.novelty.modelVersion ? ` · Model ${activity.parent.novelty.modelVersion}` : ""}
-                  {activity.parent.novelty.historicalOutcome
-                    ? ` · ${(100 * activity.parent.novelty.historicalOutcome.successRate).toFixed(0)}% success across ${activity.parent.novelty.historicalOutcome.runCount} runs`
-                    : ""}
-                  {activity.parent.novelty.humanApprovalRequired ? " · Human approval required" : ""}
-                </p>
-              )}
+              {activity.parent.novelty && <p>Advisory novelty: {describeChildNovelty(activity.parent.novelty)}</p>}
             </>
           )}
           {activity.waits.length > 0 && (

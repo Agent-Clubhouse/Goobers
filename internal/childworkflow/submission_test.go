@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workflowcluster"
@@ -199,46 +201,101 @@ func TestSubmissionPinsHistoricalOutcome(t *testing.T) {
 	}
 }
 
-func TestSubmissionOODHumanApprovalPolicyIsOffByDefaultAndFailClosed(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		enabled bool
-		wantErr error
-	}{
-		{name: "off by default"},
-		{name: "enabled", enabled: true, wantErr: ErrHumanApprovalRequired},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s, resolver, _ := submissionFixture(t)
-			resolver.current.Admission.ClusterModelConfigured = true
-			resolver.current.Admission.ClusterModel = &workflowcluster.Model{
-				Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: workflowcluster.StructuralFeatureVersion,
+// oodSubmissionFixture configures an empty frozen model, so every proposal is
+// scored out of distribution.
+func oodSubmissionFixture(t *testing.T, requireApproval bool) (*SubmissionService, *submissionAuthority) {
+	t.Helper()
+	s, resolver, _ := submissionFixture(t)
+	resolver.current.Admission.ClusterModelConfigured = true
+	resolver.current.Admission.ClusterModel = &workflowcluster.Model{
+		Version: workflowcluster.ModelVersion, ID: "sha256:model", FeatureVersion: workflowcluster.StructuralFeatureVersion,
+	}
+	resolver.current.Admission.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution = requireApproval
+	validated, err := validator(t, resolver.current.Admission).Validate([]byte(validProposal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousGrant := resolver.current.Origin.GrantID
+	resolver.current.Origin.GrantID = "policy-grant"
+	resolver.current.Origin.AttemptID = "policy-attempt"
+	resolver.current.Origin.PolicyDigest = validated.PolicyDigest
+	bindSubmissionOrigin(t, s, resolver.current.Origin, previousGrant)
+	return s, resolver
+}
+
+func TestSubmissionOODHumanApprovalPolicyIsOffByDefault(t *testing.T) {
+	s, resolver := oodSubmissionFixture(t, false)
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+	if err != nil || accepted.Admission != nil {
+		t.Fatalf("Submit = %+v, %v", accepted.Admission, err)
+	}
+	if accepted.Envelope.Novelty == nil || !accepted.Envelope.Novelty.OutOfDistribution || accepted.Envelope.Novelty.HumanApprovalRequired {
+		t.Fatalf("default novelty = %+v", accepted.Envelope.Novelty)
+	}
+	if err := s.Queue.(*triggerqueue.Store).BeginDispatch(t.Context(), accepted.Child.AcceptanceID); err != nil {
+		t.Fatalf("unheld dispatch = %v", err)
+	}
+}
+
+func TestSubmissionOODHumanApprovalHoldsCustodyForReview(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		t.Run(map[bool]string{true: "approve", false: "reject"}[approve], func(t *testing.T) {
+			s, resolver := oodSubmissionFixture(t, true)
+			store := s.Queue.(*triggerqueue.Store)
+			accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+			if err != nil || accepted.Child.State != triggerqueue.ChildQueued {
+				t.Fatalf("Submit = %+v, %v", accepted.Child, err)
 			}
-			resolver.current.Admission.ParentTask.ChildWorkflows.RequireHumanApprovalForOutOfDistribution = tc.enabled
-			validated, err := validator(t, resolver.current.Admission).Validate([]byte(validProposal))
+			a := accepted.Admission
+			if a == nil || a.State != triggerqueue.ChildAdmissionPending || a.Reason != AdmissionHoldReasonOutOfDistribution {
+				t.Fatalf("admission = %+v", a)
+			}
+			var evidence journal.ChildNovelty
+			if err := json.Unmarshal(a.Evidence, &evidence); err != nil || !evidence.Valid() || !evidence.HumanApprovalRequired || !evidence.OutOfDistribution || evidence.ModelID != "sha256:model" {
+				t.Fatalf("pinned evidence = %s, %v", a.Evidence, err)
+			}
+			if err := store.BeginDispatch(t.Context(), accepted.Child.AcceptanceID); !errors.Is(err, triggerqueue.ErrTransition) {
+				t.Fatalf("held child dispatched: %v", err)
+			}
+			retry, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+			if err != nil || !retry.Duplicate || retry.Admission == nil || retry.Admission.State != triggerqueue.ChildAdmissionPending {
+				t.Fatalf("retry = %+v, %v", retry.Admission, err)
+			}
+			decided, err := store.DecideChildAdmission(t.Context(), triggerqueue.ChildAdmissionDecision{ChildID: accepted.Child.ChildID, Approve: approve, Actor: "operator"}, s.now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			previousGrant := resolver.current.Origin.GrantID
-			resolver.current.Origin.GrantID = "policy-grant"
-			resolver.current.Origin.AttemptID = "policy-attempt"
-			resolver.current.Origin.PolicyDigest = validated.PolicyDigest
-			bindSubmissionOrigin(t, s, resolver.current.Origin, previousGrant)
-
-			accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Submit error = %v, want %v", err, tc.wantErr)
+			got, err := s.Get(t.Context(), resolver.current.Origin, "ood")
+			if err != nil || got.Admission == nil || got.Admission.State != decided.State {
+				t.Fatalf("Get admission = %+v, %v", got.Admission, err)
 			}
-			if tc.wantErr == nil {
-				if accepted.Envelope.Novelty == nil || !accepted.Envelope.Novelty.OutOfDistribution || accepted.Envelope.Novelty.HumanApprovalRequired {
-					t.Fatalf("default novelty = %+v", accepted.Envelope.Novelty)
+			dispatchErr := store.BeginDispatch(t.Context(), accepted.Child.AcceptanceID)
+			if approve {
+				if dispatchErr != nil {
+					t.Fatalf("approved dispatch = %v", dispatchErr)
 				}
 				return
 			}
-			if accepted.Child.AcceptanceID != "" {
-				t.Fatalf("policy admitted child %+v", accepted.Child)
+			if !errors.Is(dispatchErr, triggerqueue.ErrTransition) {
+				t.Fatalf("rejected dispatch = %v", dispatchErr)
+			}
+			if _, reason, err := store.ChildRejection(t.Context(), accepted.Child.Identity); err != nil || reason != triggerqueue.ChildAdmissionRejectedReason {
+				t.Fatalf("rejection = %q, %v", reason, err)
 			}
 		})
+	}
+}
+
+type holdlessQueue struct{ ChildQueue }
+
+func TestSubmissionOODHumanApprovalFailsClosedWithoutDurableHold(t *testing.T) {
+	s, resolver := oodSubmissionFixture(t, true)
+	store := s.Queue
+	s.Queue = holdlessQueue{store}
+	t.Cleanup(func() { s.Queue = store })
+	accepted, err := s.Submit(t.Context(), resolver.current.Origin, SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)})
+	if !errors.Is(err, ErrHumanApprovalRequired) || accepted.Child.AcceptanceID != "" {
+		t.Fatalf("Submit = %+v, %v", accepted.Child, err)
 	}
 }
 

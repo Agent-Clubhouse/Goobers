@@ -181,6 +181,7 @@ _goobers_completion()
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
                 validate-child) flags+=(--gaggle --parent --stage --backend --cluster-model --json) ;;
+                child-admission) flags+=(--approve --reject --actor --note --json) ;;
                 clusters) flags+=(--features --cohort --fitness --since --max-runs --min-samples --min-cluster-size --seed --stratify --ablation --json --snapshot --instance-id --salt --fleet --templates --cluster-model) ;;
             esac
             ;;
@@ -486,7 +487,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( CURRENT == 3 )); then
-                candidates=(show validate-child clusters)
+                candidates=(show validate-child child-admission clusters)
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then

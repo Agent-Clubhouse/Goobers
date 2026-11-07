@@ -931,6 +931,7 @@ func (u *upSession) startServices() int {
 		ReadModel:                    u.setup.ReadModel,
 		ChildHistory:                 u.readChildHistory,
 		ChildPublications:            u.readChildPublications,
+		ChildAdmission:               u.readChildAdmission,
 		RetentionStats:               u.setup.RetentionStats,
 		InstanceLogStats:             u.setup.InstanceLog.Stats,
 		StorageHealthStats:           u.storageGate.Stats,

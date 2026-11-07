@@ -28,6 +28,7 @@
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
+| [`goobers workflow child-admission`](#goobers-workflow-child-admission) | Labs: review children held for human admission approval |
 | [`goobers workflow clusters`](#goobers-workflow-clusters) | Labs: cluster workflows by structural shape or run behavior |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 | [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
@@ -5743,14 +5744,45 @@ $ goobers work-items --provider=github --kind=pr --id=4398
 inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow <show | validate-child | clusters> [flags]
+Usage: goobers workflow <show | validate-child | child-admission | clusters> [flags]
 
 Show a workflow DAG, validate a generated child proposal against its configured parent,
-or (Labs) cluster workflows by structural shape or run behavior.
+(Labs) review children held for human admission approval, or (Labs) cluster
+workflows by structural shape or run behavior.
 
 Workflow
 
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
+~~~
+
+## `goobers workflow child-admission`
+
+Labs: review children held for human admission approval
+
+~~~text
+Usage: goobers workflow child-admission [--approve <child-id> | --reject <child-id>] [--actor <identity>] [--note <text>] [--json] [path]
+
+Review generated child workflows held for human admission approval because
+the parent's childWorkflows.requireHumanApprovalForOutOfDistribution policy
+(Labs) found them outside every cluster of the frozen model. A held child keeps
+durable custody but is never dispatched until approved.
+
+Without --approve or --reject, list pending children with their pinned novelty
+evidence. --approve releases the child to ordinary dispatch and journals the
+approval in its lineage; --reject settles it as a failed child result that the
+parent observes. Decisions are durable and immutable; repeating one is a no-op.
+--actor defaults to the invoking user. Operates on the instance's local queue
+(default path ".").
+
+Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow child-admission
+$ goobers workflow child-admission --approve child-0123 --note "reviewed shape"
+$ goobers workflow child-admission --reject child-0123 --json
 ~~~
 
 ## `goobers workflow clusters`

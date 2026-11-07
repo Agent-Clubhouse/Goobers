@@ -132,7 +132,7 @@ func (l *queuedChildLauncher) retainedChildWorktrees(ctx context.Context, id jou
 }
 
 func (l *queuedChildLauncher) rejectedResult(ctx context.Context, ref childExecutionRef) (childExecutionResult, error) {
-	at, _, err := l.queue.ChildRejection(ctx, ref.Child.Identity)
+	at, reason, err := l.queue.ChildRejection(ctx, ref.Child.Identity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return childExecutionResult{}, nil
 	}
@@ -143,8 +143,12 @@ func (l *queuedChildLauncher) rejectedResult(ctx context.Context, ref childExecu
 	if ref.Child.CancellationRequested {
 		state = triggerqueue.ChildCancelled
 	}
+	summary := "Child start rejected before execution"
+	if reason == triggerqueue.ChildAdmissionRejectedReason {
+		summary = "Child start rejected by human admission review"
+	}
 	coordinator := childworkflow.WorkspaceCoordinator{Queue: l.queue}
-	result, err := coordinator.CaptureResult(ctx, ref.Child, nil, childworkflow.TerminalResultInput{State: state, FinishedAt: at, Summary: "Child start rejected before execution"})
+	result, err := coordinator.CaptureResult(ctx, ref.Child, nil, childworkflow.TerminalResultInput{State: state, FinishedAt: at, Summary: summary})
 	if err != nil {
 		return childExecutionResult{}, err
 	}

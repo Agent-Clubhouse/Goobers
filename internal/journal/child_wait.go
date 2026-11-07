@@ -40,7 +40,7 @@ func (r ChildHandoffRequest) Validate(origin *apiv1.ChildWorkflowOrigin) error {
 	if r.DispositionDigest != "" && !validChildDigest(r.DispositionDigest) {
 		return fmt.Errorf("runner: invalid child disposition revision")
 	}
-	if r.Novelty != nil && !r.Novelty.valid() {
+	if r.Novelty != nil && !r.Novelty.Valid() {
 		return fmt.Errorf("runner: invalid child novelty evidence")
 	}
 	switch r.Action {
