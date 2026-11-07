@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 const replayTestProviderFixture = "../harness/testdata/workflowgym/provider.json"
@@ -20,7 +21,13 @@ func TestReplayHistoricalFixtureIsOfflineAndDeterministic(t *testing.T) {
 	req := ReplayRequest{
 		Task:                replayTestTask(t),
 		ProviderFixturePath: filepath.FromSlash(replayTestProviderFixture),
-		JournalDir:          replayTestJournal(t, recordedComment()),
+		// A real repo-using run journal: run-branch provenance, a recorded
+		// comment, and a comment whose recorded outcome never took effect.
+		JournalDir: replayTestJournal(t, runBranchProvenance(), recordedComment(), journal.Event{
+			Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
+			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "7"},
+			Runner:      map[string]any{"operation": "comment", "outcome": "skipped"},
+		}),
 	}
 	first, err := Replay(context.Background(), req)
 	if err != nil {
@@ -91,23 +98,32 @@ func TestReplayRecordedMutationWithoutRequestIsUnavailable(t *testing.T) {
 	manifest, err := Replay(context.Background(), ReplayRequest{
 		Task:                replayTestTask(t),
 		ProviderFixturePath: filepath.FromSlash(replayTestProviderFixture),
-		JournalDir: replayTestJournal(t, journal.Event{
+		JournalDir: replayTestJournal(t, runBranchProvenance(), journal.Event{
 			Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
 			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"},
 			Runner:      map[string]any{"operation": "merge"},
+		}, journal.Event{
+			// A published child branch: a stage-scoped push with no operation.
+			Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
+			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "branch", ID: "goobers/child/run-1", CommitSHA: "abc123"},
+		}, journal.Event{
+			Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
+			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pull-request", ID: "12"},
 		}),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Status != "failure" || len(manifest.VirtualizationGaps) != 1 {
-		t.Fatalf("manifest = %+v, want one virtualization gap", manifest)
+	if manifest.Status != "failure" || len(manifest.VirtualizationGaps) != 3 {
+		t.Fatalf("manifest = %+v, want three virtualization gaps", manifest)
 	}
 	want := []string{
 		"deterministic artifact transcript.jsonl",
 		"deterministic artifact completion.json",
 		"virtualized provider-read GET /repos/acme/web/issues/7 get-issue",
 		"unavailable merge merge github pr#9",
+		"unavailable git-push github branch#goobers/child/run-1",
+		"unavailable provider-write github pull-request#12",
 	}
 	if got := effectSummaries(manifest.Effects); !slices.Equal(got, want) {
 		t.Fatalf("effects = %q, want %q", got, want)
@@ -164,11 +180,27 @@ func effectSummaries(effects []apiv1.WorkflowGymReplayEffect) []string {
 	return out
 }
 
+// recordedComment is a comment as the runner projects a provider mutation
+// fact (internal/runner finishTaskDispatch).
 func recordedComment() journal.Event {
-	return journal.Event{
+	return journal.WithMutationOutcome(journal.Event{
 		Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "7"},
-		Runner:      map[string]any{"operation": "comment"},
+		Runner:      providers.MutationReceiptRunnerFields("receipt-1", "comment", nil, nil, nil),
+	}, "", "success", "", "")
+}
+
+// runBranchProvenance is the run-level branch record every repo-using run
+// journals (internal/runner and internal/engine recordRunBranch).
+func runBranchProvenance() journal.Event {
+	return journal.Event{
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider:  "github",
+			Kind:      "branch",
+			ID:        providers.BranchNameIn(providers.NormalizeBranchNamespace(""), "workflow-gym", "0af7651916cd43dd8448eb211c80319c"),
+			CommitSHA: "abc123",
+		},
 	}
 }
 

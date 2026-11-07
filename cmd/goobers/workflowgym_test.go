@@ -106,6 +106,13 @@ func workflowGymReplayJournal(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	// Run-branch provenance, as every repo-using run records it: not a mutation.
+	if err := runJournal.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "branch", ID: "goobers/workflow-gym/0af76519", CommitSHA: "abc123"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := runJournal.Append(journal.Event{
 		Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "7"},
