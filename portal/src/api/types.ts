@@ -2319,6 +2319,38 @@ export interface LabsWorkflowClusterView {
   /** Why a clustered view carries no fitness (the retained-run scan failed). */
   fitnessUnavailable?: string;
   templates?: LabsTemplateReport;
+  proposals?: LabsChildProposalView;
+  proposalsUnavailable?: string;
+}
+
+export interface LabsChildProposalView {
+  candidates: number;
+  overLimit: number;
+  excluded: number;
+  gaggles: LabsChildProposalGaggle[];
+}
+
+export interface LabsChildProposalGaggle {
+  gaggle: string;
+  status: "clustered" | "insufficient-data";
+  population: number;
+  minClusterSize: number;
+  model?: LabsClusterModel;
+  map: LabsClusterMapPoint[];
+  proposals: LabsChildProposalInsight[];
+}
+
+export interface LabsChildProposalInsight {
+  id: string;
+  gaggle: string;
+  sourceDigest: string;
+  parentRunId: string;
+  stageOccurrence: string;
+  effectiveVersion: string;
+  outcome: string;
+  clusterId?: string;
+  templateCandidateSignal: boolean;
+  novelty?: ChildNovelty;
 }
 
 export interface LabsTemplateProvenance {

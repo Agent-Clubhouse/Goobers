@@ -33,7 +33,7 @@ export function LabsClusterMap({
   medoids: ReadonlySet<string>;
   fitness?: ReadonlyMap<string, LabsClusterFitness>;
   highlightedIds?: ReadonlySet<string>;
-  unit?: "workflow" | "shape";
+  unit?: "workflow" | "shape" | "proposal";
 }) {
   if (points.length === 0) {
     return null;
@@ -42,7 +42,7 @@ export function LabsClusterMap({
   const colorOf = (cluster: string) =>
     cluster ? `labs-map-c${clusterIds.indexOf(cluster) % paletteSize}` : "labs-map-noise";
   const showLabels = placed.length <= 40;
-  const noun = unit === "shape" ? "workflow shape" : "workflow";
+  const noun = unit === "shape" ? "workflow shape" : unit === "proposal" ? "child proposal" : "workflow";
   return (
     <figure className="labs-map">
       <svg
@@ -80,7 +80,7 @@ export function LabsClusterMap({
               {content}
             </g>
           ) : (
-            <a key={dot.key} href={workflowHref(dot.ids[0])} className={className}>
+            <a key={dot.key} href={unit === "proposal" ? runHref(dot.ids[0]) : workflowHref(dot.ids[0])} className={className}>
               {content}
             </a>
           );
@@ -109,6 +109,11 @@ export function LabsClusterMap({
           <p>
             Closer dots are more similar workflow shapes. The layout is a 2-D approximation of the clustering, so
             distances are indicative only; the axes have no units.
+          </p>
+        ) : unit === "proposal" ? (
+          <p>
+            Closer dots are structurally similar agent-authored proposals. The layout is a 2-D visualization only and
+            is not used for clustering; the axes have no units. Click a dot to open the child run and its lineage.
           </p>
         ) : (
           <p>
@@ -170,5 +175,10 @@ function workflowHref(id: string): string {
   if (separator <= 0) {
     return routeHash({ page: "labs", feature: "workflow-clustering" });
   }
+
   return routeHash({ page: "workflow", id: id.slice(separator + 1), gaggle: id.slice(0, separator) });
+}
+
+function runHref(id: string): string {
+  return routeHash({ page: "run", id });
 }
