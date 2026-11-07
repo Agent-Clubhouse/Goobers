@@ -22,11 +22,15 @@ const (
 	// zero-dependency telemetry emission directory.
 	StageTelemetryEnv = "GOOBERS_TELEMETRY_DIR"
 
+	// EmissionKindAttribute marks span events ingested from a stage's
+	// agent-writable telemetry directory. Consumers that need runner-owned
+	// facts must ignore events carrying it.
+	EmissionKindAttribute = "goobers.telemetry.kind"
+
 	metricsFile  = "metrics.jsonl"
 	eventsFile   = "events.jsonl"
 	stageDirName = "telemetry"
 
-	emissionKindAttribute = "goobers.telemetry.kind"
 	metricValueAttribute  = "goobers.metric.value"
 	metricUnitAttribute   = "goobers.metric.unit"
 	warningFileAttribute  = "goobers.telemetry.file"
@@ -134,7 +138,7 @@ func IngestStageEmissions(dir string, result *apiv1.ResultEnvelope, span Span) {
 		}
 		attrs := emissionAttributes(metric.Attrs)
 		attrs = append(attrs,
-			attribute.String(emissionKindAttribute, emissionKindMetric),
+			attribute.String(EmissionKindAttribute, emissionKindMetric),
 			attribute.Float64(metricValueAttribute, *metric.Value),
 		)
 		if metric.Unit != "" {
@@ -145,7 +149,7 @@ func IngestStageEmissions(dir string, result *apiv1.ResultEnvelope, span Span) {
 	}
 
 	for _, event := range events {
-		attrs := append(emissionAttributes(event.Attrs), attribute.String(emissionKindAttribute, emissionKindEvent))
+		attrs := append(emissionAttributes(event.Attrs), attribute.String(EmissionKindAttribute, emissionKindEvent))
 		span.EventAt(event.Time, event.Name, attrs...)
 	}
 

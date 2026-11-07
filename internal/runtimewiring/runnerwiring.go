@@ -423,6 +423,7 @@ func CompileWorkflowMachines(set *instance.ConfigSet, goobers map[string]apiv1.G
 			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
+			workflow.WithLabels(wf.Labels),
 		}
 		if knownTelemetryConnectors != nil {
 			opts = append(opts, workflow.WithKnownExternalTelemetryConnectors(knownTelemetryConnectors))

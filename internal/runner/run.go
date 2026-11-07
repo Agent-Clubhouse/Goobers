@@ -848,6 +848,23 @@ func boundFailureMessage(s string) string {
 	return string(r[:maxFailureMessageLen]) + "...(truncated)"
 }
 
+// pinWorkflowLabels snapshots the machine's Workflow metadata.labels so
+// label-keyed readers (task cohorts) survive later config edits. Unlabeled
+// workflows pin nothing, keeping their run.yaml inputs unchanged.
+func pinWorkflowLabels(machine *workflow.Machine, inputs map[string][]byte, integrity map[string]apiv1.Integrity) error {
+	labels := machine.Labels()
+	if len(labels) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(labels)
+	if err != nil {
+		return fmt.Errorf("runner: marshal pinned workflow labels: %w", err)
+	}
+	inputs[journal.PinnedWorkflowLabelsInputName] = data
+	integrity[journal.PinnedWorkflowLabelsInputName] = apiv1.IntegrityTrusted
+	return nil
+}
+
 // Start creates a new run journal pinned to the compiled machine's identity,
 // snapshots Item as an immutable input, and walks the machine to a terminal
 // state (or a human-gate/drain pause). Start is synchronous — it returns once
@@ -900,6 +917,9 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: marshal pinned workflow definition: %w", err)
 	}
 	inputs[journal.PinnedWorkflowDefinitionInputName] = definition
+	if err := pinWorkflowLabels(in.Machine, inputs, inputIntegrity); err != nil {
+		return Result{}, err
+	}
 	if in.Item != nil {
 		b, err := json.Marshal(in.Item)
 		if err != nil {

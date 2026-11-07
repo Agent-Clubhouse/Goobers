@@ -50,8 +50,9 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"work-item kinds, the declared policy-action side-effect set, and repo:*\n" +
 	"capabilities. Workflow and stage names, goals, selectors, schedules, signals,\n" +
 	"and webhook payload text are excluded, making derivation deterministic and\n" +
-	"rename-invariant. --stratify cohort requires structural features and cannot\n" +
-	"be combined with --cohort.\n\n" +
+	"rename-invariant. Behavior summaries read the labels a run pinned at start;\n" +
+	"runs that predate the pin use the auto label. --stratify cohort requires\n" +
+	"structural features and cannot be combined with --cohort.\n\n" +
 	"--ablation refits after dropping each feature (the WL histogram is one\n" +
 	"group), reports stability and assignment change, and flags dominant\n" +
 	"features. Populations through 2,000 points are exact; larger populations\n" +
