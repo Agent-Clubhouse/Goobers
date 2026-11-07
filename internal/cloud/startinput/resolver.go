@@ -196,6 +196,7 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 		Version:                def.Version,
 		DSLVersion:             def.DSLVersion,
 		Annotations:            def.Annotations,
+		WorkflowLabels:         machine.Labels(),
 		WorkflowDigest:         machine.Digest(),
 		PreviewFeaturesEnabled: &preview,
 		ChildWorkflowsEnabled:  childrenEnabled,

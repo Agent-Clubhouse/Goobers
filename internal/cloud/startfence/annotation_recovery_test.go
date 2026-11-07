@@ -147,3 +147,47 @@ func TestAnnotatedPredecessorKeepsItsExactInput(t *testing.T) {
 		}
 	}
 }
+
+func TestLabeledPredecessorStartRemainsAdoptable(t *testing.T) {
+	for name, annotated := range map[string]bool{"labels only": false, "labels and annotations": true} {
+		t.Run(name, func(t *testing.T) {
+			started := cloudStartInput(7)
+			if annotated {
+				started.Annotations = map[string]string{"goobers.dev/allow-preview-features": "true"}
+			}
+			// The predecessor started before workflow labels were pinned.
+			in := started
+			in.WorkflowLabels = map[string]string{"goobers.dev/task-class": "review"}
+			starter := existingStartWithInput(t, started, StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: 6, StarterID: "predecessor"})
+			admission := &annotationRecoveryAdmission{}
+			starter.admission = admission
+			result, err := starter.Start(t.Context(), in)
+			if err != nil || !result.Adopt || result.NotMine {
+				t.Fatalf("label-less predecessor is not adoptable: %+v, %v", result, err)
+			}
+			startedDigest, err := InputDigest(started)
+			if err != nil {
+				t.Fatal(err)
+			}
+			confirmedDigest, err := InputDigest(admission.confirmed)
+			if err != nil || confirmedDigest != startedDigest || admission.confirmed.WorkflowLabels != nil {
+				t.Fatalf("confirmed a different input: %+v, %v", admission.confirmed, err)
+			}
+			if in.WorkflowLabels["goobers.dev/task-class"] != "review" {
+				t.Fatal("classification mutated the caller's workflow labels")
+			}
+		})
+	}
+}
+
+func TestLabeledPredecessorWithDifferentLabelsIsNotAdopted(t *testing.T) {
+	started := cloudStartInput(7)
+	started.WorkflowLabels = map[string]string{"goobers.dev/task-class": "build"}
+	in := started
+	in.WorkflowLabels = map[string]string{"goobers.dev/task-class": "review"}
+	starter := existingStartWithInput(t, started, StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: 6, StarterID: "predecessor"})
+	result, err := starter.Start(t.Context(), in)
+	if err != nil || !result.NotMine || result.Adopt {
+		t.Fatalf("differently labeled start adopted: %+v, %v", result, err)
+	}
+}
