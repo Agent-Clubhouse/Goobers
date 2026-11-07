@@ -15,6 +15,13 @@ const PinnedWorkflowGraphInputName = "workflow-graph"
 // snapshot used to reconstruct the exact compiled machine after process loss.
 const PinnedWorkflowDefinitionInputName = "workflow-definition"
 
+// PinnedWorkflowLabelsInputName is the immutable snapshot of the Workflow
+// object's metadata.labels at run start, a JSON map[string]string. Labels are
+// not part of the pinned Definition (or its digest), so readers that classify
+// runs by an explicit label must read it here. Absent when the workflow had no
+// labels or the run predates this pin.
+const PinnedWorkflowLabelsInputName = "workflow-labels"
+
 // PinnedGateGooberCapabilitiesInputName is the immutable snapshot of the
 // reviewer-goober capability map pinned into the run at start (#294): an
 // agentic gate's reviewer capabilities are instance policy, not part of the
