@@ -338,8 +338,8 @@ func TestCollectRetainedFleetPurgesMembersTheAssociationSetNoLongerScopes(t *tes
 	if !slices.Equal(fetched, []string{"kept"}) {
 		t.Fatalf("fetched unscoped targets: %v", fetched)
 	}
-	if want := []string{"left", "other-fleet", "revoked", "unscoped"}; !slices.Equal(result.Purged, want) {
-		t.Fatalf("purged = %v, want %v", result.Purged, want)
+	if result.Reconciled != 4 || len(result.Purged) != 0 {
+		t.Fatalf("reconciled = %d purged = %v, want 4 reconciled by the association set", result.Reconciled, result.Purged)
 	}
 	snapshots, err := store.Snapshots(context.Background(), "fleet-1")
 	if err != nil {
@@ -594,5 +594,191 @@ func TestFleetDriftKeepsClusterIdentityWhenMembershipGrows(t *testing.T) {
 	}
 	if change := report.Windows[1].Change; change == nil || change.OccupancyDistance > 0.05 {
 		t.Fatalf("change = %+v, want only the one new workflow's share to move", change)
+	}
+}
+
+func TestRetainedSnapshotStoreRejectsFutureDatedSnapshots(t *testing.T) {
+	store := newRetentionStore(t, t.TempDir(), FleetRetentionPolicy{
+		Enabled: true, MaxAge: 24 * time.Hour, MaxSnapshotsPerInstance: 2,
+	}, fleetT0)
+	future := snapshotOf(t, "test/v1", "inst-1", "fleet-1", fleetT0.Add(MaxRetainedClockSkew+time.Second), blob("a", 0, 0, 2))
+	if err := store.Write(context.Background(), "fleet-1", future); !errors.Is(err, ErrFleetSnapshotFromFuture) {
+		t.Fatalf("Write error = %v, want future-dated refusal", err)
+	}
+	skewed := snapshotOf(t, "test/v1", "inst-1", "fleet-1", fleetT0.Add(MaxRetainedClockSkew), blob("a", 0, 0, 2))
+	if err := store.Write(context.Background(), "fleet-1", skewed); err != nil {
+		t.Fatalf("Write within clock skew: %v", err)
+	}
+}
+
+// plantRetainedFile writes a file directly into an instance's retained
+// directory, bypassing Write validation as a tampered or stale file would.
+func plantRetainedFile(t *testing.T, store *FileRetainedSnapshotStore, instanceID, name string, data []byte) string {
+	t.Helper()
+	dir := store.instanceDir("fleet-1", instanceID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestRetainedSnapshotStoreDropsFutureDatedFilesWithoutEvictingCurrentOnes(t *testing.T) {
+	store := newRetentionStore(t, t.TempDir(), FleetRetentionPolicy{
+		Enabled: true, MaxAge: 24 * time.Hour, MaxSnapshotsPerInstance: 2,
+	}, fleetT0)
+	data, err := json.Marshal(snapshotOf(t, "test/v1", "inst-1", "fleet-1", fleetT0.AddDate(1, 0, 0), blob("z", 0, 0, 2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := plantRetainedFile(t, store, "inst-1", "future.json", data)
+	for _, at := range []time.Time{fleetT0.Add(-time.Minute), fleetT0} {
+		if err := store.Write(context.Background(), "fleet-1", snapshotOf(t, "test/v1", "inst-1", "fleet-1", at, blob("a", 0, 0, 2))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshots, err := store.Snapshots(context.Background(), "fleet-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 || !snapshots[0].GeneratedAt.Equal(fleetT0.Add(-time.Minute)) || !snapshots[1].GeneratedAt.Equal(fleetT0) {
+		t.Fatalf("future-dated file evicted current snapshots: %+v", snapshots)
+	}
+	if _, err := os.Stat(future); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("future-dated file kept: %v", err)
+	}
+	report, err := FleetDrift(context.Background(), store, "fleet-1", time.Minute, Options{MinClusterSize: 2, MinSamples: 1, Resamples: 5, Seed: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Windows) != 2 {
+		t.Fatalf("drift windows = %d, want only the two populated windows", len(report.Windows))
+	}
+}
+
+func TestCollectRetainedFleetExcludesFutureDatedSnapshots(t *testing.T) {
+	store := newRetentionStore(t, t.TempDir(), FleetRetentionPolicy{
+		Enabled: true, MaxAge: 24 * time.Hour, MaxSnapshotsPerInstance: 2,
+	}, fleetT0)
+	result, err := CollectRetainedFleet(context.Background(), store, "fleet-1",
+		[]fleet.Association{scopedAssociation("inst-1")}, []FleetTarget{{InstanceID: "inst-1"}},
+		func(context.Context, FleetTarget) (FleetSnapshot, error) {
+			return snapshotOf(t, "test/v1", "inst-1", "fleet-1", fleetT0.AddDate(1, 0, 0), blob("a", 0, 0, 2)), nil
+		}, FleetCollectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Retained) != 0 || !slices.Equal(result.Excluded, []FleetExclusion{{InstanceID: "inst-1", Reason: FleetExclusionInvalidSnapshot}}) {
+		t.Fatalf("future-dated collection = %+v", result)
+	}
+}
+
+func TestRetainedFleetPurgesAndReadsDespiteUntrustedFiles(t *testing.T) {
+	store := newRetentionStore(t, t.TempDir(), FleetRetentionPolicy{
+		Enabled: true, MaxAge: 24 * time.Hour, MaxSnapshotsPerInstance: 10,
+	}, fleetT0)
+	for _, instance := range []string{"kept", "left"} {
+		if err := store.Write(context.Background(), "fleet-1", snapshotOf(t, "test/v1", instance, "fleet-1", fleetT0, blob(instance, 0, 0, 2))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	misfiled, err := json.Marshal(snapshotOf(t, "test/v1", "left", "fleet-1", fleetT0, blob("m", 0, 0, 2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	untrusted := []string{
+		plantRetainedFile(t, store, "left", "corrupt.json", []byte("{not json")),
+		plantRetainedFile(t, store, "kept", "corrupt.json", []byte("{not json")),
+		plantRetainedFile(t, store, "kept", "version.json", []byte(`{"schemaVersion":99}`)),
+		plantRetainedFile(t, store, "kept", "misfiled.json", misfiled),
+		plantRetainedFile(t, store, "kept", "oversized.json", make([]byte, maxFleetSnapshotBytes+1)),
+	}
+
+	result, err := CollectRetainedFleet(context.Background(), store, "fleet-1",
+		[]fleet.Association{scopedAssociation("kept")}, nil,
+		func(context.Context, FleetTarget) (FleetSnapshot, error) {
+			t.Fatal("no targets to fetch")
+			return FleetSnapshot{}, nil
+		}, FleetCollectionOptions{})
+	if err != nil {
+		t.Fatalf("untrusted file blocked lifecycle purge: %v", err)
+	}
+	if result.Reconciled != 1 {
+		t.Fatalf("reconciled = %d, want the departed instance", result.Reconciled)
+	}
+	if _, err := os.Stat(store.instanceDir("fleet-1", "left")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("departed instance directory survived: %v", err)
+	}
+	snapshots, err := store.Snapshots(context.Background(), "fleet-1")
+	if err != nil {
+		t.Fatalf("untrusted file blocked read: %v", err)
+	}
+	if len(snapshots) != 1 || snapshots[0].InstanceID != "kept" {
+		t.Fatalf("retained snapshots = %+v", snapshots)
+	}
+	for _, path := range untrusted {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("untrusted file %s kept: %v", filepath.Base(path), err)
+		}
+	}
+}
+
+// staticSnapshotStore serves fixed snapshots to FleetDrift.
+type staticSnapshotStore struct {
+	RetainedSnapshotStore
+	snapshots []FleetSnapshot
+}
+
+func (s staticSnapshotStore) Snapshots(context.Context, string) ([]FleetSnapshot, error) {
+	return s.snapshots, nil
+}
+
+func TestFleetDriftRefusesUnboundedWindowCounts(t *testing.T) {
+	snapshots := make([]FleetSnapshot, 0, maxFleetDriftWindows+1)
+	for i := range maxFleetDriftWindows + 1 {
+		snapshots = append(snapshots, snapshotOf(t, "test/v1", "inst-1", "fleet-1", fleetT0.Add(time.Duration(i)*time.Minute), blob("a", 0, 0, 2)))
+	}
+	_, err := FleetDrift(context.Background(), staticSnapshotStore{snapshots: snapshots}, "fleet-1", time.Minute, Options{})
+	if err == nil || !strings.Contains(err.Error(), "windows") {
+		t.Fatalf("FleetDrift error = %v, want window-count refusal", err)
+	}
+}
+
+func TestFleetDriftSkipsEmptyAndIncomparableWindows(t *testing.T) {
+	var snapshots []FleetSnapshot
+	add := func(version, instance string, at time.Time, points []Point) {
+		snapshots = append(snapshots, snapshotOf(t, version, instance, "fleet-1", at, points))
+	}
+	add("test/v1", "inst-1", fleetT0, blob("a", 0, 0, 6))
+	add("test/v1", "inst-2", fleetT0, blob("b", 10, 10, 6))
+	// fleetT0+1h: missed collection. fleetT0+2h: a feature-version rollout.
+	add("test/v2", "inst-1", fleetT0.Add(2*time.Hour), blob("c", 0, 0, 6))
+	add("test/v2", "inst-2", fleetT0.Add(2*time.Hour), blob("d", 10, 10, 6))
+	add("test/v1", "inst-1", fleetT0.Add(3*time.Hour), blob("a", 0, 0, 6))
+	add("test/v1", "inst-2", fleetT0.Add(3*time.Hour), blob("b", 10, 10, 6))
+
+	report, err := FleetDrift(context.Background(), staticSnapshotStore{snapshots: snapshots}, "fleet-1", time.Hour, Options{
+		MinClusterSize: 4, MinSamples: 2, Resamples: 10, Seed: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Windows) != 3 || report.FeatureVersion != "test/v1" {
+		t.Fatalf("report = %+v", report)
+	}
+	for i, start := range []time.Time{fleetT0, fleetT0.Add(2 * time.Hour), fleetT0.Add(3 * time.Hour)} {
+		if !report.Windows[i].Start.Equal(start) {
+			t.Fatalf("window %d starts %v, want %v", i, report.Windows[i].Start, start)
+		}
+	}
+	if incomparable := report.Windows[1]; len(incomparable.Occupancy) != 0 || incomparable.Change != nil {
+		t.Fatalf("incomparable window reported drift: %+v", incomparable)
+	}
+	change := report.Windows[2].Change
+	if change == nil || !change.From.Equal(fleetT0) || change.OccupancyDistance != 0 || change.DiversityDelta != 0 {
+		t.Fatalf("unchanged fleet across a gap reported drift: %+v", change)
 	}
 }

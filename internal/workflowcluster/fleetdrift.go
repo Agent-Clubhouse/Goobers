@@ -3,6 +3,7 @@ package workflowcluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -15,10 +16,16 @@ type FleetDriftOccupancy struct {
 	Share     float64 `json:"share"`
 }
 
-// FleetDriftChange compares a window with its chronological predecessor.
+// maxFleetDriftWindows bounds how many populated windows one drift report
+// clusters, which bounds its memory and work regardless of the window size.
+const maxFleetDriftWindows = 1024
+
+// FleetDriftChange compares a window with the most recent earlier window that
+// has comparable occupancy. From is that earlier window's start.
 type FleetDriftChange struct {
-	OccupancyDistance float64 `json:"occupancyDistance"`
-	DiversityDelta    float64 `json:"diversityDelta"`
+	From              time.Time `json:"from"`
+	OccupancyDistance float64   `json:"occupancyDistance"`
+	DiversityDelta    float64   `json:"diversityDelta"`
 }
 
 // FleetDriftWindow is one window's fleet convergence and change.
@@ -44,10 +51,14 @@ type FleetDriftReport struct {
 	Windows        []FleetDriftWindow `json:"windows"`
 }
 
-// FleetDrift clusters each retained window and compares cluster occupancy and
-// Shannon diversity with the previous window. Each window's View is its own
-// independent convergence; Occupancy and Change use the shared reference
-// model's stable cluster IDs.
+// FleetDrift clusters each populated retained window and compares cluster
+// occupancy and Shannon diversity with the most recent earlier window that has
+// comparable occupancy. Windows without retained snapshots are omitted, and a
+// window without comparable occupancy (no workflows on the reference feature
+// version) reports no Change, so missed collections and feature-version
+// changes do not show up as drift. Each window's View is its own independent
+// convergence; Occupancy and Change use the shared reference model's stable
+// cluster IDs. More than maxFleetDriftWindows populated windows is an error.
 func FleetDrift(ctx context.Context, store RetainedSnapshotStore, fleetID string, window time.Duration, opts Options) (FleetDriftReport, error) {
 	if store == nil {
 		return FleetDriftReport{}, errors.New("workflowcluster: retained snapshot store is required")
@@ -67,60 +78,89 @@ func FleetDrift(ctx context.Context, store RetainedSnapshotStore, fleetID string
 		return report, nil
 	}
 	grouped := map[time.Time][]FleetSnapshot{}
-	var first, last time.Time
 	for _, snapshot := range snapshots {
 		start := snapshot.GeneratedAt.UTC().Truncate(window)
 		grouped[start] = append(grouped[start], snapshot)
-		if first.IsZero() || start.Before(first) {
-			first = start
-		}
-		if last.IsZero() || start.After(last) {
-			last = start
-		}
 	}
-	var windows []fleetDriftWindowInput
+	if len(grouped) > maxFleetDriftWindows {
+		return FleetDriftReport{}, fmt.Errorf("workflowcluster: fleet drift spans %d windows of %s; use a window of at least %s", len(grouped), window, minFleetDriftWindow(grouped))
+	}
+	starts := make([]time.Time, 0, len(grouped))
+	for start := range grouped {
+		starts = append(starts, start)
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
+	windows := make([]fleetDriftWindowInput, 0, len(starts))
 	versions := map[string]int{}
-	for start := first; !start.After(last); start = start.Add(window) {
+	for _, start := range starts {
 		if err := ctx.Err(); err != nil {
 			return FleetDriftReport{}, err
 		}
-		view, err := ClusterFleet(grouped[start], opts)
+		input, err := clusterFleetDriftWindow(start, grouped[start], opts)
 		if err != nil {
 			return FleetDriftReport{}, err
 		}
-		latest, _, err := latestFleetSnapshots(grouped[start])
-		if err != nil {
-			return FleetDriftReport{}, err
+		if input.view.FeatureVersion != "" {
+			versions[input.view.FeatureVersion]++
 		}
-		var workflows []FleetWorkflow
-		for _, snapshot := range latest {
-			if snapshot.FeatureVersion == view.FeatureVersion {
-				workflows = append(workflows, snapshot.Workflows...)
-			}
-		}
-		if view.FeatureVersion != "" {
-			versions[view.FeatureVersion]++
-		}
-		windows = append(windows, fleetDriftWindowInput{start: start, view: view, workflows: workflows})
+		windows = append(windows, input)
 	}
 	reference, err := fitFleetDriftReference(windows, mostCommonFeatureVersion(versions), opts)
 	if err != nil {
 		return FleetDriftReport{}, err
 	}
 	report.FeatureVersion, report.ModelID = reference.featureVersion, reference.modelID
+	var previous *FleetDriftWindow
 	for _, input := range windows {
 		current := FleetDriftWindow{Start: input.start, End: input.start.Add(window), View: input.view}
 		current.Occupancy, current.Diversity = reference.occupancy(input)
-		if len(report.Windows) > 0 {
-			previous := report.Windows[len(report.Windows)-1]
+		comparable := len(current.Occupancy) > 0
+		if comparable && previous != nil {
 			current.Change = &FleetDriftChange{
+				From:              previous.Start,
 				OccupancyDistance: occupancyDistance(previous.Occupancy, current.Occupancy),
 				DiversityDelta:    current.Diversity - previous.Diversity,
 			}
 		}
 		report.Windows = append(report.Windows, current)
+		if comparable {
+			previous = &report.Windows[len(report.Windows)-1]
+		}
 	}
 	return report, nil
+}
+
+func clusterFleetDriftWindow(start time.Time, snapshots []FleetSnapshot, opts Options) (fleetDriftWindowInput, error) {
+	view, err := ClusterFleet(snapshots, opts)
+	if err != nil {
+		return fleetDriftWindowInput{}, err
+	}
+	latest, _, err := latestFleetSnapshots(snapshots)
+	if err != nil {
+		return fleetDriftWindowInput{}, err
+	}
+	var workflows []FleetWorkflow
+	for _, snapshot := range latest {
+		if snapshot.FeatureVersion == view.FeatureVersion {
+			workflows = append(workflows, snapshot.Workflows...)
+		}
+	}
+	return fleetDriftWindowInput{start: start, view: view, workflows: workflows}, nil
+}
+
+// minFleetDriftWindow suggests a window size that would fit the retained span
+// into maxFleetDriftWindows windows.
+func minFleetDriftWindow(grouped map[time.Time][]FleetSnapshot) time.Duration {
+	var first, last time.Time
+	for start := range grouped {
+		if first.IsZero() || start.Before(first) {
+			first = start
+		}
+		if start.After(last) {
+			last = start
+		}
+	}
+	return (last.Sub(first)/maxFleetDriftWindows + time.Second).Truncate(time.Second)
 }
 
 type fleetDriftWindowInput struct {

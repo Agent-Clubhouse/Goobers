@@ -23,6 +23,16 @@ import (
 // retained snapshots.
 var ErrFleetRetentionDisabled = errors.New("workflowcluster: retained fleet snapshots are disabled")
 
+// ErrFleetSnapshotFromFuture is returned when a snapshot claims a generation
+// time beyond the store clock plus MaxRetainedClockSkew. Generation times come
+// from instances, so a future-dated snapshot would otherwise evade age pruning
+// and evict genuine snapshots from the per-instance count bound.
+var ErrFleetSnapshotFromFuture = errors.New("workflowcluster: retained snapshot is dated in the future")
+
+// MaxRetainedClockSkew is how far ahead of the store clock an instance's
+// snapshot generation time may be.
+const MaxRetainedClockSkew = 5 * time.Minute
+
 // FleetRetentionPolicy is the explicit retention contract for one fleet.
 type FleetRetentionPolicy struct {
 	Enabled                 bool
@@ -35,38 +45,29 @@ type RetainedSnapshotStore interface {
 	Write(context.Context, string, FleetSnapshot) error
 	Snapshots(context.Context, string) ([]FleetSnapshot, error)
 	PurgeInstance(context.Context, string, string) error
+	// RetainOnly deletes every instance's retained snapshots except those of
+	// the listed instances, without reading snapshot contents, and returns how
+	// many instances it purged.
+	RetainOnly(context.Context, string, []string) (int, error)
 }
 
 // ReconcileRetainedFleet purges every retained snapshot whose source is no
 // longer an active member of fleetID that grants labs.workflowFeatures in the
 // fleet's authoritative association set: the instance left (its association is
-// absent), was revoked, or removed the scope. It returns the purged instance
-// IDs in sorted order.
-func ReconcileRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association) ([]string, error) {
+// absent), was revoked, or removed the scope. Purging works from the store's
+// instance listing, so unreadable snapshot files cannot block it. It returns
+// the number of instances purged.
+func ReconcileRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association) (int, error) {
 	if store == nil {
-		return nil, errors.New("workflowcluster: retained snapshot store is required")
+		return 0, errors.New("workflowcluster: retained snapshot store is required")
 	}
 	active := retainableFleetMembers(fleetID, associations)
-	snapshots, err := store.Snapshots(ctx, fleetID)
-	if err != nil {
-		return nil, err
+	keep := make([]string, 0, len(active))
+	for instanceID := range active {
+		keep = append(keep, instanceID)
 	}
-	retained := make(map[string]bool, len(snapshots))
-	for _, snapshot := range snapshots {
-		retained[snapshot.InstanceID] = true
-	}
-	purged := []string{}
-	for instanceID := range retained {
-		if active[instanceID] {
-			continue
-		}
-		if err := store.PurgeInstance(ctx, fleetID, instanceID); err != nil {
-			return nil, err
-		}
-		purged = append(purged, instanceID)
-	}
-	sort.Strings(purged)
-	return purged, nil
+	sort.Strings(keep)
+	return store.RetainOnly(ctx, fleetID, keep)
 }
 
 func retainableFleetMembers(fleetID string, associations []fleet.Association) map[string]bool {
@@ -86,8 +87,11 @@ func retainableFleetMembers(fleetID string, associations []fleet.Association) ma
 type RetainedFleetCollection struct {
 	Retained []FleetSnapshot  `json:"retained"`
 	Excluded []FleetExclusion `json:"excluded"`
-	// Purged lists instances whose retained snapshots were deleted because
-	// they left, were revoked, or removed the labs.workflowFeatures scope.
+	// Reconciled counts instances purged because the association set no
+	// longer lists them as active scoped members.
+	Reconciled int `json:"reconciled"`
+	// Purged lists instances purged because their own scope gate refused the
+	// projection: they left, were revoked, or removed the scope.
 	Purged []string `json:"purged"`
 }
 
@@ -101,12 +105,12 @@ type RetainedFleetCollection struct {
 // and invalid responses are excluded without purging, so their earlier
 // snapshots remain until they age out.
 func CollectRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association, targets []FleetTarget, fetch SnapshotFetcher, opts FleetCollectionOptions) (RetainedFleetCollection, error) {
-	purged, err := ReconcileRetainedFleet(ctx, store, fleetID, associations)
+	reconciled, err := ReconcileRetainedFleet(ctx, store, fleetID, associations)
 	if err != nil {
 		return RetainedFleetCollection{}, err
 	}
 	active := retainableFleetMembers(fleetID, associations)
-	result := RetainedFleetCollection{Retained: []FleetSnapshot{}, Excluded: []FleetExclusion{}}
+	result := RetainedFleetCollection{Retained: []FleetSnapshot{}, Excluded: []FleetExclusion{}, Reconciled: reconciled, Purged: []string{}}
 	scoped := make([]FleetTarget, 0, len(targets))
 	for _, target := range targets {
 		if active[target.InstanceID] {
@@ -119,33 +123,28 @@ func CollectRetainedFleet(ctx context.Context, store RetainedSnapshotStore, flee
 	if err != nil {
 		return RetainedFleetCollection{}, err
 	}
-	purgedSet := make(map[string]bool, len(purged))
-	for _, instanceID := range purged {
-		purgedSet[instanceID] = true
-	}
 	for _, exclusion := range excluded {
 		result.Excluded = append(result.Excluded, exclusion)
-		if exclusion.Reason != FleetExclusionNotGranted || purgedSet[exclusion.InstanceID] {
+		if exclusion.Reason != FleetExclusionNotGranted {
 			continue
 		}
 		if err := store.PurgeInstance(ctx, fleetID, exclusion.InstanceID); err != nil {
 			return RetainedFleetCollection{}, err
 		}
-		purgedSet[exclusion.InstanceID] = true
+		result.Purged = append(result.Purged, exclusion.InstanceID)
 	}
 	for _, snapshot := range snapshots {
-		if err := store.Write(ctx, fleetID, snapshot); err != nil {
+		err := store.Write(ctx, fleetID, snapshot)
+		if errors.Is(err, ErrFleetSnapshotFromFuture) {
+			result.Excluded = append(result.Excluded, FleetExclusion{InstanceID: snapshot.InstanceID, Reason: FleetExclusionInvalidSnapshot})
+			continue
+		}
+		if err != nil {
 			return RetainedFleetCollection{}, err
 		}
 		result.Retained = append(result.Retained, snapshot)
 	}
-	for instanceID := range purgedSet {
-		result.Purged = append(result.Purged, instanceID)
-	}
 	sort.Strings(result.Purged)
-	if result.Purged == nil {
-		result.Purged = []string{}
-	}
 	sortFleetExclusions(result.Excluded)
 	return result, nil
 }
@@ -195,6 +194,9 @@ func (s *FileRetainedSnapshotStore) Write(ctx context.Context, fleetID string, s
 	if err := validateFleetSnapshot(snapshot); err != nil {
 		return err
 	}
+	if snapshot.GeneratedAt.After(s.now().Add(MaxRetainedClockSkew)) {
+		return fmt.Errorf("%w: %s from %q", ErrFleetSnapshotFromFuture, snapshot.GeneratedAt.UTC().Format(time.RFC3339), snapshot.InstanceID)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,10 +212,8 @@ func (s *FileRetainedSnapshotStore) Write(ctx context.Context, fleetID string, s
 	if err := journal.WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("workflowcluster: write retained snapshot: %w", err)
 	}
-	if err := s.pruneInstance(ctx, dir, policy); err != nil {
-		return err
-	}
-	return nil
+	_, err = s.pruneInstance(ctx, dir, policy)
+	return err
 }
 
 // Snapshots returns all retained snapshots for a fleet in generation order
@@ -252,11 +252,7 @@ func (s *FileRetainedSnapshotStore) Snapshots(ctx context.Context, fleetID strin
 		if !instanceDir.IsDir() {
 			continue
 		}
-		dir := filepath.Join(root, instanceDir.Name())
-		if err := s.pruneInstance(ctx, dir, policy); err != nil {
-			return nil, err
-		}
-		values, err := readRetainedSnapshots(dir)
+		values, err := s.pruneInstance(ctx, filepath.Join(root, instanceDir.Name()), policy)
 		if err != nil {
 			return nil, err
 		}
@@ -288,32 +284,101 @@ func (s *FileRetainedSnapshotStore) PurgeInstance(ctx context.Context, fleetID, 
 	return nil
 }
 
-func (s *FileRetainedSnapshotStore) pruneInstance(ctx context.Context, dir string, policy FleetRetentionPolicy) error {
-	snapshots, err := readRetainedSnapshotFiles(dir)
-	if err != nil {
-		return err
+// RetainOnly deletes the snapshot directory of every instance not in keep. It
+// matches hashed directory names from the listing and never reads snapshot
+// contents, so a corrupt or incompatible file cannot block a lifecycle purge.
+// A fleet without enabled retention keeps nothing and returns
+// ErrFleetRetentionDisabled after deleting its snapshots.
+func (s *FileRetainedSnapshotStore) RetainOnly(ctx context.Context, fleetID string, keep []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	cutoff := s.now().UTC().Add(-policy.MaxAge)
-	keep := make([]retainedSnapshotFile, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if err := ctx.Err(); err != nil {
-			return err
+	if strings.TrimSpace(fleetID) == "" {
+		return 0, errors.New("workflowcluster: fleet ID is required for retained snapshot purge")
+	}
+	policy, ok := s.policies[fleetID]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ok || !policy.Enabled {
+		if err := os.RemoveAll(s.fleetDir(fleetID)); err != nil {
+			return 0, fmt.Errorf("workflowcluster: delete retained snapshots for disabled fleet %q: %w", fleetID, err)
 		}
-		if snapshot.snapshot.GeneratedAt.Before(cutoff) {
-			if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("workflowcluster: prune expired retained snapshot %q: %w", snapshot.path, err)
-			}
+		return 0, fmt.Errorf("%w for fleet %q", ErrFleetRetentionDisabled, fleetID)
+	}
+	kept := make(map[string]bool, len(keep))
+	for _, instanceID := range keep {
+		kept[retainedPathKey(instanceID)] = true
+	}
+	root := s.fleetDir(fleetID)
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("workflowcluster: read retained fleet %q: %w", fleetID, err)
+	}
+	purged := 0
+	for _, entry := range entries {
+		if kept[entry.Name()] {
 			continue
 		}
-		keep = append(keep, snapshot)
+		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			return purged, fmt.Errorf("workflowcluster: purge retained snapshots %q: %w", entry.Name(), err)
+		}
+		if entry.IsDir() {
+			purged++
+		}
 	}
+	return purged, nil
+}
+
+// pruneInstance enforces the policy bounds on one instance directory and
+// returns the surviving snapshots in generation order. Files that cannot be
+// trusted, whether unreadable, oversized, undecodable, invalid, filed under
+// another instance, or dated beyond the allowed clock skew, are deleted rather
+// than failing the read.
+func (s *FileRetainedSnapshotStore) pruneInstance(ctx context.Context, dir string, policy FleetRetentionPolicy) ([]FleetSnapshot, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []FleetSnapshot{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("workflowcluster: read retained snapshot directory: %w", err)
+	}
+	now := s.now().UTC()
+	cutoff, latest := now.Add(-policy.MaxAge), now.Add(MaxRetainedClockSkew)
+	keep := make([]retainedSnapshotFile, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		snapshot, ok := readRetainedSnapshotFile(path, filepath.Base(dir))
+		if ok && !snapshot.GeneratedAt.Before(cutoff) && !snapshot.GeneratedAt.After(latest) {
+			keep = append(keep, retainedSnapshotFile{path: path, snapshot: snapshot})
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("workflowcluster: prune retained snapshot %q: %w", path, err)
+		}
+	}
+	sort.Slice(keep, func(i, j int) bool {
+		return keep[i].snapshot.GeneratedAt.Before(keep[j].snapshot.GeneratedAt)
+	})
 	for len(keep) > policy.MaxSnapshotsPerInstance {
 		if err := os.Remove(keep[0].path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("workflowcluster: prune excess retained snapshot %q: %w", keep[0].path, err)
+			return nil, fmt.Errorf("workflowcluster: prune excess retained snapshot %q: %w", keep[0].path, err)
 		}
 		keep = keep[1:]
 	}
-	return nil
+	snapshots := make([]FleetSnapshot, 0, len(keep))
+	for _, file := range keep {
+		snapshots = append(snapshots, file.snapshot)
+	}
+	return snapshots, nil
 }
 
 type retainedSnapshotFile struct {
@@ -321,59 +386,23 @@ type retainedSnapshotFile struct {
 	snapshot FleetSnapshot
 }
 
-func readRetainedSnapshots(dir string) ([]FleetSnapshot, error) {
-	files, err := readRetainedSnapshotFiles(dir)
+// readRetainedSnapshotFile decodes one retained file and reports whether it is
+// a valid snapshot belonging to the instance directory instanceKey.
+func readRetainedSnapshotFile(path, instanceKey string) (FleetSnapshot, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFleetSnapshotBytes {
+		return FleetSnapshot{}, false
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return FleetSnapshot{}, false
 	}
-	snapshots := make([]FleetSnapshot, 0, len(files))
-	for _, file := range files {
-		snapshots = append(snapshots, file.snapshot)
+	var snapshot FleetSnapshot
+	if json.Unmarshal(data, &snapshot) != nil || validateFleetSnapshot(snapshot) != nil ||
+		snapshot.GeneratedAt.IsZero() || retainedPathKey(snapshot.InstanceID) != instanceKey {
+		return FleetSnapshot{}, false
 	}
-	return snapshots, nil
-}
-
-func readRetainedSnapshotFiles(dir string) ([]retainedSnapshotFile, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return []retainedSnapshotFile{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("workflowcluster: read retained snapshot directory: %w", err)
-	}
-	files := make([]retainedSnapshotFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("workflowcluster: inspect retained snapshot %q: %w", path, err)
-		}
-		if info.Size() > maxFleetSnapshotBytes {
-			return nil, fmt.Errorf("workflowcluster: retained snapshot %q exceeds %d bytes", path, maxFleetSnapshotBytes)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("workflowcluster: read retained snapshot %q: %w", path, err)
-		}
-		var snapshot FleetSnapshot
-		if err := json.Unmarshal(data, &snapshot); err != nil {
-			return nil, fmt.Errorf("workflowcluster: decode retained snapshot %q: %w", path, err)
-		}
-		if err := validateFleetSnapshot(snapshot); err != nil {
-			return nil, fmt.Errorf("workflowcluster: invalid retained snapshot %q: %w", path, err)
-		}
-		if snapshot.GeneratedAt.IsZero() {
-			return nil, fmt.Errorf("workflowcluster: retained snapshot %q has no generation time", path)
-		}
-		files = append(files, retainedSnapshotFile{path: path, snapshot: snapshot})
-	}
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].snapshot.GeneratedAt.Before(files[j].snapshot.GeneratedAt)
-	})
-	return files, nil
+	return snapshot, true
 }
 
 func (s *FileRetainedSnapshotStore) fleetDir(fleetID string) string {
