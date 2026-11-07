@@ -186,31 +186,17 @@ func ClusterFleet(snapshots []FleetSnapshot, opts Options) (FleetView, error) {
 	opts = opts.withDefaults()
 	view := FleetView{MinClusterSize: opts.MinClusterSize, Instances: []FleetInstance{}, Excluded: []FleetExclusion{}, Shapes: []FleetShape{}, Clusters: []FleetCluster{}}
 
-	latest := map[string]FleetSnapshot{}
-	for _, s := range snapshots {
-		if err := validateFleetSnapshotEnvelope(s); err != nil {
-			return FleetView{}, err
-		}
-		prev, ok := latest[s.InstanceID]
-		if !ok {
-			latest[s.InstanceID] = s
-			continue
-		}
-		if s.GeneratedAt.After(prev.GeneratedAt) {
-			latest[s.InstanceID] = s
-		}
-		view.Excluded = append(view.Excluded, FleetExclusion{InstanceID: s.InstanceID, Reason: fleetReasonSuperseded})
+	latest, superseded, err := latestFleetSnapshots(snapshots)
+	if err != nil {
+		return FleetView{}, err
 	}
+	view.Excluded = append(view.Excluded, superseded...)
 
 	versions := map[string]int{}
 	for _, s := range latest {
 		versions[s.FeatureVersion]++
 	}
-	for v, n := range versions {
-		if n > versions[view.FeatureVersion] || (n == versions[view.FeatureVersion] && v > view.FeatureVersion) {
-			view.FeatureVersion = v
-		}
-	}
+	view.FeatureVersion = mostCommonFeatureVersion(versions)
 
 	ids := make([]string, 0, len(latest))
 	for id := range latest {
@@ -315,6 +301,40 @@ func ClusterFleet(snapshots []FleetSnapshot, opts Options) (FleetView, error) {
 		view.Instances = append(view.Instances, fi)
 	}
 	return view, nil
+}
+
+// latestFleetSnapshots keeps each instance's newest snapshot and reports the
+// superseded ones.
+func latestFleetSnapshots(snapshots []FleetSnapshot) (map[string]FleetSnapshot, []FleetExclusion, error) {
+	latest := map[string]FleetSnapshot{}
+	superseded := []FleetExclusion{}
+	for _, s := range snapshots {
+		if err := validateFleetSnapshotEnvelope(s); err != nil {
+			return nil, nil, err
+		}
+		prev, ok := latest[s.InstanceID]
+		if !ok {
+			latest[s.InstanceID] = s
+			continue
+		}
+		if s.GeneratedAt.After(prev.GeneratedAt) {
+			latest[s.InstanceID] = s
+		}
+		superseded = append(superseded, FleetExclusion{InstanceID: s.InstanceID, Reason: fleetReasonSuperseded})
+	}
+	return latest, superseded, nil
+}
+
+// mostCommonFeatureVersion picks the highest-count version, breaking ties
+// toward the lexically greater (newer) version.
+func mostCommonFeatureVersion(counts map[string]int) string {
+	chosen := ""
+	for v, n := range counts {
+		if n > counts[chosen] || (n == counts[chosen] && v > chosen) {
+			chosen = v
+		}
+	}
+	return chosen
 }
 
 func validateFleetSnapshot(snapshot FleetSnapshot) error {

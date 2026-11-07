@@ -15,7 +15,7 @@ import (
 )
 
 // CLIHelp documents `goobers workflow clusters`.
-const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|model|harness|skills|tools] [--ablation] [--json] [path]\n" +
+const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
 	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n" +
 	"       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]\n\n" +
@@ -36,10 +36,24 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"Node names, stage names, and goal text never contribute. Structural and\n" +
 	"behavior features are never mixed in one model. --cohort limits structural\n" +
 	"clustering to one privacy-safe task cohort. --stratify tests whether\n" +
-	"clusters merely track gaggle, task-cohort, model, harness, skill-set, or\n" +
-	"tool-set boundaries (a confound). Undefined provenance is excluded and\n" +
+	"clusters merely track gaggle, task-cohort, shipped-template, model, harness,\n" +
+	"skill-set, or tool-set boundaries (a confound). Undefined provenance is excluded and\n" +
 	"counted; that check is observational, not gym-controlled. Nothing is\n" +
 	"modified (default path \".\").\n\n" +
+	"Template provenance fingerprints the workflow templates embedded in this\n" +
+	"build: reference workflows, config examples, and the starter, demo,\n" +
+	"quickstart, and scaffold workflows. A workflow is template-derived only\n" +
+	"when it lies within 0.35 structural distance of a shipped template. The\n" +
+	"metadata.annotations[\"goobers.dev/template-provenance\"] written by init and\n" +
+	"scaffolding is reported as declared provenance; it names the attributed\n" +
+	"template while the workflow is still within 0.35 of it, and otherwise the\n" +
+	"nearest shipped template is shown. Cluster medoids farther than 0.35 from\n" +
+	"every shipped template are reported as convergence beyond templates, and\n" +
+	"--stratify template groups derived workflows by template and the rest as\n" +
+	"\"beyond-templates\". Provenance is reported even when too few\n" +
+	"workflows are configured to cluster. Bare --json stays the frozen model\n" +
+	"that --cluster-model reads; JSON carries the template report alongside\n" +
+	"any other requested report (for example --stratify template --json).\n\n" +
 	"--fitness joins retained terminal runs to the current structural clusters\n" +
 	"by workflow digest and reports sample size, success with a 95% Wilson\n" +
 	"interval, wall time, cost, human-gate, escalation, and retry/loop rates.\n" +
@@ -102,7 +116,7 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	minSamples := fs.Int("min-samples", cliMinSamples, "behavior: smallest EffectiveVersion cohort clustered")
 	minSize := fs.Int("min-cluster-size", cliMinClusterSize, "smallest group reported as a cluster")
 	seed := fs.Uint64("seed", 0, "seed for stability resampling")
-	stratify := fs.String("stratify", "", "confound axis (gaggle, cohort, model, harness, skills, or tools)")
+	stratify := fs.String("stratify", "", "confound axis (gaggle, cohort, template, model, harness, skills, or tools)")
 	asJSON := fs.Bool("json", false, "emit the fitted model as JSON")
 	fitness := fs.Bool("fitness", false, "structural: report retained-run fitness for each cluster")
 	ablation := fs.Bool("ablation", false, "report leave-one-feature-out cluster stability and assignment change")
@@ -191,6 +205,9 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	if *snapshot {
 		return runSnapshotCLI(root, featureVersion, *instanceID, *salt, saltSet, points, stdout, stderr)
 	}
+	if *features == featuresStructural && len(points) < *minSize {
+		return runInsufficientStructural(points, strata[StratifyTemplate], *minSize, *asJSON, stdout, stderr)
+	}
 	model, err := Fit(featureVersion, points, Options{MinClusterSize: *minSize, Seed: *seed})
 	if err != nil {
 		if behavior != nil {
@@ -200,6 +217,15 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var confounds *ConfoundReport
+	var templateReport *TemplateReport
+	if *features == featuresStructural {
+		report, templateStrata, analyzeErr := analyzeTemplates(points, strata[StratifyTemplate], &model)
+		if analyzeErr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", analyzeErr)
+			return 2
+		}
+		templateReport, strata[StratifyTemplate] = &report, templateStrata
+	}
 	if *stratify != "" {
 		report := ConfoundCheck(model, strata[*stratify], ConfoundOptions{Seed: *seed})
 		confounds = &report
@@ -227,16 +253,34 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		}
 		ablations = &report
 	}
-	if *asJSON {
+	return writeCLIReports(stdout, stderr, *asJSON, *stratify, model, cliReports{
+		confounds: confounds, behavior: behavior, ablation: ablations, fitness: fitnessReport, templates: templateReport,
+	})
+}
+
+// cliReports holds the optional reports RunCLI attaches to a fitted model.
+type cliReports struct {
+	confounds *ConfoundReport
+	behavior  *behaviorReport
+	ablation  *AblationReport
+	fitness   *FitnessReport
+	templates *TemplateReport
+}
+
+func writeCLIReports(stdout, stderr io.Writer, asJSON bool, stratify string, model Model, r cliReports) int {
+	if asJSON {
+		// Bare --json stays the frozen model LoadModel reads; template
+		// provenance rides along with any other requested report.
 		var out any = model
-		if behavior != nil || confounds != nil || ablations != nil || fitnessReport != nil {
+		if r.behavior != nil || r.confounds != nil || r.ablation != nil || r.fitness != nil {
 			out = struct {
 				Model     Model           `json:"model"`
 				Confounds *ConfoundReport `json:"confounds,omitempty"`
 				Behavior  *behaviorReport `json:"behavior,omitempty"`
 				Ablation  *AblationReport `json:"ablation,omitempty"`
 				Fitness   *FitnessReport  `json:"fitness,omitempty"`
-			}{model, confounds, behavior, ablations, fitnessReport}
+				Templates *TemplateReport `json:"templates,omitempty"`
+			}{model, r.confounds, r.behavior, r.ablation, r.fitness, r.templates}
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -247,17 +291,20 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		return 0
 	}
 	writeReport(stdout, model)
-	if behavior != nil {
-		writeBehaviorScan(stdout, *behavior)
+	if r.templates != nil {
+		writeWorkflowTemplateReport(stdout, *r.templates, true)
 	}
-	if confounds != nil {
-		writeConfounds(stdout, *stratify, *confounds)
+	if r.behavior != nil {
+		writeBehaviorScan(stdout, *r.behavior)
 	}
-	if fitnessReport != nil {
-		writeFitness(stdout, *fitnessReport)
+	if r.confounds != nil {
+		writeConfounds(stdout, stratify, *r.confounds)
 	}
-	if ablations != nil {
-		writeAblation(stdout, *ablations)
+	if r.fitness != nil {
+		writeFitness(stdout, *r.fitness)
+	}
+	if r.ablation != nil {
+		writeAblation(stdout, *r.ablation)
 	}
 	return 0
 }
@@ -274,7 +321,7 @@ type cliArgs struct {
 func (a cliArgs) invalid() bool {
 	return a.nargs > 1 || a.minSize < 2 || (a.stratify != "" && !validStratify(a.stratify)) ||
 		(a.features != featuresStructural && a.features != featuresBehavior) ||
-		((a.cohort != "" || a.stratify == StratifyCohort) && a.features != featuresStructural) ||
+		((a.cohort != "" || a.stratify == StratifyCohort || a.stratify == StratifyTemplate) && a.features != featuresStructural) ||
 		(a.cohort != "" && a.stratify == StratifyCohort) ||
 		(a.behaviorOnly && a.features != featuresBehavior) || a.since < 0 || a.maxRuns < 1 || a.minSamples < 1 ||
 		(a.fitness && a.features != featuresStructural) || (a.since > 0 && a.features != featuresBehavior && !a.fitness) ||
@@ -322,8 +369,66 @@ func writeBehaviorScan(w io.Writer, r behaviorReport) {
 }
 
 func validStratify(axis string) bool {
-	return axis == StratifyGaggle || axis == StratifyCohort || axis == StratifyModel || axis == StratifyHarness ||
+	return axis == StratifyGaggle || axis == StratifyCohort || axis == StratifyTemplate || axis == StratifyModel || axis == StratifyHarness ||
 		axis == StratifySkills || axis == StratifyTools
+}
+
+// runInsufficientStructural reports template provenance for a structural
+// population too small to fit, so starter, demo, and quickstart instances
+// still see it, then fails as Fit would.
+func runInsufficientStructural(points []Point, explicit Strata, minSize int, asJSON bool, stdout, stderr io.Writer) int {
+	report, _, err := analyzeTemplates(points, explicit, nil)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if asJSON {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(struct {
+			Status         string          `json:"status"`
+			Population     int             `json:"population"`
+			MinClusterSize int             `json:"minClusterSize"`
+			Templates      *TemplateReport `json:"templates"`
+		}{ViewInsufficientData, len(points), minSize, &report}); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+	} else {
+		_, _ = fmt.Fprintf(stdout, "Too few workflows to cluster: %d configured; clustering needs at least %d.\n", len(points), minSize)
+		writeWorkflowTemplateReport(stdout, report, false)
+	}
+	_, _ = fmt.Fprintf(stderr, "error: workflowcluster: population %d is below minimum cluster size %d\n", len(points), minSize)
+	return 1
+}
+
+func writeWorkflowTemplateReport(w io.Writer, report TemplateReport, clustered bool) {
+	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	p("\nTemplate provenance (%d shipped templates; derived at distance <= %.2f)\n",
+		len(report.Catalog), report.DistanceThreshold)
+	ids := sortedKeys(report.Workflows)
+	for _, id := range ids {
+		provenance := report.Workflows[id]
+		relation, declared := "nearest", ""
+		switch {
+		case provenance.Derived && provenance.DeclaredTemplateID == provenance.TemplateID:
+			relation = "declared from"
+		case provenance.Derived:
+			relation = "derived from"
+		}
+		if provenance.Explicit && provenance.DeclaredTemplateID != provenance.TemplateID {
+			declared = "; declared " + provenance.DeclaredTemplateID + ", diverged"
+		}
+		p("  %s  %s %s (distance %.3f%s)\n", id, relation, provenance.TemplateID, provenance.Distance, declared)
+	}
+	if !clustered {
+		return
+	}
+	p("Convergence beyond templates: %d clusters\n", len(report.BeyondTemplates))
+	for _, cluster := range report.BeyondTemplates {
+		p("  %s medoid %s (nearest %s, distance %.3f)\n",
+			cluster.ClusterID, cluster.MedoidID, cluster.NearestTemplate, cluster.Distance)
+	}
 }
 
 // gaggleStrata labels each "<gaggle>/<workflow>" point with its gaggle.

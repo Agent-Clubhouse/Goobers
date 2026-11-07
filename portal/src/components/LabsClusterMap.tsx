@@ -12,6 +12,7 @@ interface Placed {
   y: number;
   cluster: string;
   ids: string[];
+  templateDerived: boolean;
 }
 
 // A 2-D scatter of every workflow. Positions come from classical MDS of the
@@ -57,8 +58,8 @@ export function LabsClusterMap({
           const radius = clusterFitness ? Math.min(12, 6 + Math.sqrt(clusterFitness.runCount)) : dot.ids.length > 1 ? 9 : 7;
           const isHighlighted = highlightedIds === undefined || dot.ids.some((id) => highlightedIds.has(id));
           const label = dot.ids.length > 1 ? `${shortName(dot.ids[0])} +${dot.ids.length - 1}` : shortName(dot.ids[0]);
-          const title = `${dot.ids.join(", ")} — ${dot.cluster ? `cluster ${dot.cluster}` : "noise"}${isMedoid ? " (medoid)" : ""}`;
-          const className = `labs-map-dot ${colorOf(dot.cluster)}${isHighlighted ? "" : " labs-map-dot-dimmed"}`;
+          const title = `${dot.ids.join(", ")} — ${dot.cluster ? `cluster ${dot.cluster}` : "noise"}${isMedoid ? " (medoid)" : ""}${dot.templateDerived ? " (template-derived)" : ""}`;
+          const className = `labs-map-dot ${colorOf(dot.cluster)}${dot.templateDerived ? " labs-map-dot-template" : ""}${isHighlighted ? "" : " labs-map-dot-dimmed"}`;
           const content = (
             <>
               <title>{title}</title>
@@ -98,6 +99,11 @@ export function LabsClusterMap({
           <li>
             <span className="labs-map-swatch labs-map-swatch-medoid" aria-hidden="true" /> Medoid
           </li>
+          {points.some((point) => point.templateProvenance?.derived) && (
+            <li>
+              <span className="labs-map-swatch labs-map-swatch-template" aria-hidden="true" /> Template-derived
+            </li>
+          )}
         </ul>
         {unit === "shape" ? (
           <p>
@@ -139,8 +145,16 @@ function place(points: readonly LabsClusterMapPoint[]): Placed[] {
     const existing = byPosition.get(key);
     if (existing) {
       existing.ids.push(point.id);
+      existing.templateDerived ||= point.templateProvenance?.derived === true;
     } else {
-      byPosition.set(key, { key, x, y, cluster, ids: [point.id] });
+      byPosition.set(key, {
+        key,
+        x,
+        y,
+        cluster,
+        ids: [point.id],
+        templateDerived: point.templateProvenance?.derived === true,
+      });
     }
   }
   return [...byPosition.values()];
