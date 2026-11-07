@@ -201,10 +201,13 @@ type RunSummary struct {
 	// failed and aborted as well as escalated (#4246). A list view that only
 	// reported "failed" forced an operator to open the run and read raw events
 	// for a reason the journal already recorded.
-	TerminalReason string             `json:"terminalReason,omitempty"`
-	Operator       OperatorRunSummary `json:"operator"`
-	Stages         []string           `json:"-"`
-	stageAttempts  map[string][]StageAttempt
+	TerminalReason string `json:"terminalReason,omitempty"`
+	// TerminalSummary is the canonical terminal projection shared with bounded
+	// list and per-run telemetry readers. Absent while the run is active.
+	TerminalSummary *readmodel.TerminalSummary `json:"terminalSummary,omitempty"`
+	Operator        OperatorRunSummary         `json:"operator"`
+	Stages          []string                   `json:"-"`
+	stageAttempts   map[string][]StageAttempt
 	// reliabilityFacts feeds the #5313 reliability projection.
 	reliabilityFacts readmodel.ReliabilityFacts
 	// workspaceBranch and workspaceBranchSHA are the run's pinned workspace
@@ -383,20 +386,9 @@ func runTransitionsFrom(rows []readmodel.TransitionRow) []RunTransition {
 //
 // Deliberately not a fixed enum: Verdict/Target are the terminal gate's own
 // values (per-workflow vocabulary), matching #851's explicit implementation
-// latitude rather than inventing a cross-workflow taxonomy. Rollup/dashboard
-// propagation and the curated no-work-run disposition are intentionally left
-// as follow-up work — this is the read-model projection only.
-type RunOutcome struct {
-	// Gate is the last gate decision before completion. Empty when the run
-	// completed with no gate decision.
-	Gate string `json:"gate,omitempty"`
-	// Verdict is that gate's decision.
-	Verdict string `json:"verdict,omitempty"`
-	// Target is the branch/state the gate selected.
-	Target string `json:"target,omitempty"`
-	// CausalEventSeq is the deciding gate event's sequence number.
-	CausalEventSeq uint64 `json:"causalEventSeq,omitempty"`
-}
+// latitude rather than inventing a cross-workflow taxonomy. TerminalSummary
+// composes the same shape with useful-work evidence and terminal causes.
+type RunOutcome = readmodel.WorkflowOutcome
 
 // EscalationCause projects the durable event that selected escalation.
 type EscalationCause struct {

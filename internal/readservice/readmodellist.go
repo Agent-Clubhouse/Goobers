@@ -147,6 +147,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		Lineage:            lineage,
 		NoWork:             row.Disposition == readmodel.DispositionNoWork,
 		TerminalReason:     terminalReasonFromReadModel(row),
+		TerminalSummary:    row.Operator.Terminal.Summary(row.Phase, row.Operator.Reliability.TerminalCause),
 		Operator:           operatorFromReadModel(row, observedAt),
 		Stages:             row.Stages,
 		reliabilityFacts:   row.Operator.Reliability,

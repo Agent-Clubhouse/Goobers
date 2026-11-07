@@ -415,6 +415,14 @@ func newWireFixtures() wireFixtures {
 			HistoricalRepassCount: 2,
 		},
 		Operator: wireOperatorRunSummary(finishedAt),
+		TerminalSummary: &readmodel.TerminalSummary{
+			Phase: journal.PhaseEscalated, WorkDisposition: readmodel.DispositionProduced,
+			Reason:                &readmodel.TerminalReason{Source: "terminal-cause", Classification: journal.TerminalPolicyExhaustion, Code: "review_limit", Message: "review budget exhausted", CausalEventSeq: 15},
+			CausalEventSeq:        15,
+			PrimaryExternalResult: &readmodel.TerminalExternalResult{Ref: journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://github.com/acme/web/pull/42"}, Operation: "open", CausalEventSeq: 10},
+			RelatedExternalRefs:   []readmodel.TerminalExternalResult{{Ref: journal.ExternalRef{Provider: "github", Kind: "branch", ID: "goobers/implementation/run-123", CommitSHA: "abc123"}, CausalEventSeq: 2}},
+			Status:                "partial", RefsTruncated: true,
+		},
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",

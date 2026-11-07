@@ -11,6 +11,7 @@ type runOperationalObservations struct {
 	engineFallback *readmodel.EngineFallback
 	requiredMCP    *readmodel.RequiredMCPState
 	reliability    readmodel.ReliabilityFacts
+	terminal       readmodel.TerminalFacts
 }
 
 func (o *runOperationalObservations) after(event journal.Event) {
@@ -19,4 +20,5 @@ func (o *runOperationalObservations) after(event journal.Event) {
 	o.engineFallback = o.engineFallback.After(event)
 	o.requiredMCP = o.requiredMCP.After(event)
 	o.reliability = o.reliability.After(event)
+	o.terminal = o.terminal.After(event)
 }

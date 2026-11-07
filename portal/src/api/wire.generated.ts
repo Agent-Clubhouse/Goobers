@@ -1034,6 +1034,42 @@ export const goWireFixtures = {
           "historicalRepassCount": 2
         },
         "noWork": false,
+        "terminalSummary": {
+          "phase": "escalated",
+          "workDisposition": "produced",
+          "reason": {
+            "source": "terminal-cause",
+            "classification": "policy-exhaustion",
+            "code": "review_limit",
+            "message": "review budget exhausted",
+            "causalEventSeq": 15
+          },
+          "causalEventSeq": 15,
+          "primaryExternalResult": {
+            "ref": {
+              "provider": "github",
+              "kind": "pr",
+              "id": "42",
+              "url": "https://github.com/acme/web/pull/42"
+            },
+            "operation": "open",
+            "causalEventSeq": 10
+          },
+          "relatedExternalRefs": [
+            {
+              "ref": {
+                "provider": "github",
+                "kind": "branch",
+                "id": "goobers/implementation/run-123",
+                "commitSha": "abc123"
+              },
+              "causalEventSeq": 2
+            }
+          ],
+          "refsTruncated": true,
+          "status": "partial",
+          "legacy": false
+        },
         "operator": {
           "issue": {
             "number": "673",
@@ -1202,6 +1238,42 @@ export const goWireFixtures = {
       "historicalRepassCount": 2
     },
     "noWork": false,
+    "terminalSummary": {
+      "phase": "escalated",
+      "workDisposition": "produced",
+      "reason": {
+        "source": "terminal-cause",
+        "classification": "policy-exhaustion",
+        "code": "review_limit",
+        "message": "review budget exhausted",
+        "causalEventSeq": 15
+      },
+      "causalEventSeq": 15,
+      "primaryExternalResult": {
+        "ref": {
+          "provider": "github",
+          "kind": "pr",
+          "id": "42",
+          "url": "https://github.com/acme/web/pull/42"
+        },
+        "operation": "open",
+        "causalEventSeq": 10
+      },
+      "relatedExternalRefs": [
+        {
+          "ref": {
+            "provider": "github",
+            "kind": "branch",
+            "id": "goobers/implementation/run-123",
+            "commitSha": "abc123"
+          },
+          "causalEventSeq": 2
+        }
+      ],
+      "refsTruncated": true,
+      "status": "partial",
+      "legacy": false
+    },
     "operator": {
       "issue": {
         "number": "673",
