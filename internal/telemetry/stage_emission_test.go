@@ -85,7 +85,7 @@ func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
 	if len(events) != 5 {
 		t.Fatalf("span events = %d, want 5: %#v", len(events), events)
 	}
-	assertSpanEventAttribute(t, events[1].Attributes, emissionKindAttribute, emissionKindMetric)
+	assertSpanEventAttribute(t, events[1].Attributes, EmissionKindAttribute, emissionKindMetric)
 	assertSpanEventAttribute(t, events[1].Attributes, metricValueAttribute, "42")
 	assertSpanEventAttribute(t, events[1].Attributes, metricUnitAttribute, "count")
 	assertSpanEventAttribute(t, events[1].Attributes, "source", "scan")
@@ -98,7 +98,7 @@ func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
 	if events[2].Name != "scan.complete" || !events[2].Time.Equal(wantTime) {
 		t.Fatalf("custom event = {%q %s}, want {scan.complete %s}", events[2].Name, events[2].Time, wantTime)
 	}
-	assertSpanEventAttribute(t, events[2].Attributes, emissionKindAttribute, emissionKindEvent)
+	assertSpanEventAttribute(t, events[2].Attributes, EmissionKindAttribute, emissionKindEvent)
 	assertSpanEventAttribute(t, events[2].Attributes, "files", "42")
 
 	if events[3].Name != warningEventName || events[4].Name != warningEventName {
@@ -203,7 +203,7 @@ func TestIngestStageEmissionsRejectsOversizedAttributesWithoutTruncatingMetadata
 	if events[0].DroppedAttributeCount != 0 {
 		t.Fatalf("accepted metric dropped %d attributes", events[0].DroppedAttributeCount)
 	}
-	assertSpanEventAttribute(t, events[0].Attributes, emissionKindAttribute, emissionKindMetric)
+	assertSpanEventAttribute(t, events[0].Attributes, EmissionKindAttribute, emissionKindMetric)
 	assertSpanEventAttribute(t, events[0].Attributes, metricValueAttribute, "42")
 	assertSpanEventAttribute(t, events[0].Attributes, metricUnitAttribute, "count")
 	assertSpanEventAttribute(t, events[1].Attributes, warningCountAttribute, "1")

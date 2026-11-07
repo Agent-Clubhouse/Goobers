@@ -5799,8 +5799,9 @@ set. Otherwise an auto:<digest> label is derived only from trigger types,
 work-item kinds, the declared policy-action side-effect set, and repo:*
 capabilities. Workflow and stage names, goals, selectors, schedules, signals,
 and webhook payload text are excluded, making derivation deterministic and
-rename-invariant. --stratify cohort requires structural features and cannot
-be combined with --cohort.
+rename-invariant. Behavior summaries read the labels a run pinned at start;
+runs that predate the pin use the auto label. --stratify cohort requires
+structural features and cannot be combined with --cohort.
 
 --ablation refits after dropping each feature (the WL histogram is one
 group), reports stability and assignment change, and flags dominant

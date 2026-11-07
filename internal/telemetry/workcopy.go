@@ -53,7 +53,7 @@ func (c *Client) RecordWorkcopyUsage(ctx context.Context, measurement worktree.U
 	usageMetricAttrs := []attribute.KeyValue{attribute.String(AttrStorageOperation, string(measurement.Operation))}
 	if measurement.WorktreeMeasured {
 		span.Event(EventWorktreeDiskUsage, append(attrs,
-			attribute.String(emissionKindAttribute, emissionKindMetric),
+			attribute.String(EmissionKindAttribute, emissionKindMetric),
 			attribute.Int64(metricValueAttribute, measurement.WorktreeBytes),
 			attribute.String(metricUnitAttribute, "By"),
 		)...)
@@ -61,7 +61,7 @@ func (c *Client) RecordWorkcopyUsage(ctx context.Context, measurement worktree.U
 	}
 	if measurement.WorkcopyMeasured {
 		span.Event(EventWorkcopyDiskUsage, append(attrs,
-			attribute.String(emissionKindAttribute, emissionKindMetric),
+			attribute.String(EmissionKindAttribute, emissionKindMetric),
 			attribute.Int64(metricValueAttribute, measurement.WorkcopyBytes),
 			attribute.String(metricUnitAttribute, "By"),
 			attribute.Int(AttrUnmeasuredWorktrees, measurement.UnmeasuredWorktrees),

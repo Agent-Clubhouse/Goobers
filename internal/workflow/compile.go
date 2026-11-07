@@ -308,6 +308,15 @@ type compileConfig struct {
 	gaggleRequiredCapabilitiesSet       bool
 	gaggleRunsOn                        *apiv1.GaggleRunsOn
 	gaggleRunsOnSet                     bool
+	labels                              map[string]string
+}
+
+// WithLabels attaches the Workflow object's metadata.labels to the compiled
+// machine without folding them into the definition digest.
+func WithLabels(labels map[string]string) Option {
+	return func(config *compileConfig) {
+		config.labels = labels
+	}
 }
 
 // Option customizes compilation.
@@ -441,6 +450,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	if config.goobersSet {
 		machine.SetGoobers(materializeGoobersForDefinition(def, config.goobers))
 	}
+	machine.SetLabels(config.labels)
 	return machine, nil
 }
 
