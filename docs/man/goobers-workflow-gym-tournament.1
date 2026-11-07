@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW GYM TOURNAMENT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow-gym tournament \- compare candidates over an identical benchmark task suite
+.SH SYNOPSIS
+\fBgoobers workflow-gym tournament\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]
+
+Compare authoritative and candidate EffectiveVersion/genome result manifests
+over exactly the same task IDs and write a deterministic paired report as JSON.
+Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match
+the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a
+non-empty list of task results with evaluatorVersion (must match the task),
+status, costUsd, durationMs, and failureClass. The authoritative manifest must
+cover every task; omitted candidate results are recorded as failures.
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -162,9 +162,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
-| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, list, or replay Workflow Gym benchmark tasks |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, list, replay, or compare Workflow Gym benchmark tasks |
 | [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
 | [`goobers workflow-gym replay`](#goobers-workflow-gym-replay) | replay a historical benchmark task offline |
+| [`goobers workflow-gym tournament`](#goobers-workflow-gym-tournament) | compare candidates over an identical benchmark task suite |
 | [`goobers workflow-gym validate`](#goobers-workflow-gym-validate) | validate a file-backed benchmark dataset |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
 | [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
@@ -5945,14 +5946,15 @@ $ goobers workflow validate-child --gaggle example --parent implementation --sta
 
 ## `goobers workflow-gym`
 
-validate, list, or replay Workflow Gym benchmark tasks
+validate, list, replay, or compare Workflow Gym benchmark tasks
 
 ~~~text
-Usage: goobers workflow-gym <validate|list|replay> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
+Tournament compares candidate result manifests over one identical task roster.
 ~~~
 
 **Examples**
@@ -5961,6 +5963,7 @@ runs one task against historical fixture and journal inputs, entirely offline.
 $ goobers workflow-gym validate ./benchmark-tasks
 $ goobers workflow-gym list ./benchmark-tasks
 $ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
+$ goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
 ~~~
 
 ## `goobers workflow-gym list`
@@ -5998,6 +6001,28 @@ observed, as deterministic, virtualized, or unavailable.
 
 ~~~console
 $ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
+~~~
+
+## `goobers workflow-gym tournament`
+
+compare candidates over an identical benchmark task suite
+
+~~~text
+Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]
+
+Compare authoritative and candidate EffectiveVersion/genome result manifests
+over exactly the same task IDs and write a deterministic paired report as JSON.
+Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match
+the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a
+non-empty list of task results with evaluatorVersion (must match the task),
+status, costUsd, durationMs, and failureClass. The authoritative manifest must
+cover every task; omitted candidate results are recorded as failures.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
 ~~~
 
 ## `goobers workflow-gym validate`
