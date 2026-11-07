@@ -3,6 +3,7 @@ package workflowgym
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -123,12 +124,74 @@ func TestRunTournamentReportsPerSliceDeltas(t *testing.T) {
 func TestRunTournamentRejectsOutOfDatasetResult(t *testing.T) {
 	authoritative := tournamentCandidate("authoritative", []TournamentCandidateResult{
 		{TaskID: "task-a", Status: TournamentPass},
+		{TaskID: "task-b", Status: TournamentPass},
 	})
 	candidate := tournamentCandidate("candidate", []TournamentCandidateResult{
-		{TaskID: "other", Status: TournamentPass},
+		{TaskID: "other", Status: TournamentPass, EvaluatorVersion: "eval-1"},
 	})
-	if _, err := RunTournament(tournamentRegistry(), authoritative, []TournamentCandidateManifest{candidate}); err == nil {
-		t.Fatal("expected out-of-dataset result error")
+	if _, err := RunTournament(tournamentRegistry(), authoritative, []TournamentCandidateManifest{candidate}); err == nil ||
+		!strings.Contains(err.Error(), "outside dataset") {
+		t.Fatalf("err = %v, want out-of-dataset result error", err)
+	}
+}
+
+func TestRunTournamentRejectsIncompleteAuthoritativeResults(t *testing.T) {
+	authoritative := tournamentCandidate("authoritative", []TournamentCandidateResult{
+		{TaskID: "task-b", Status: TournamentPass},
+	})
+	candidate := tournamentCandidate("candidate", []TournamentCandidateResult{
+		{TaskID: "task-a", Status: TournamentPass},
+		{TaskID: "task-b", Status: TournamentPass},
+	})
+	_, err := RunTournament(tournamentRegistry(), authoritative, []TournamentCandidateManifest{candidate})
+	if err == nil || !strings.Contains(err.Error(), `no result for task "task-a"`) {
+		t.Fatalf("err = %v, want missing authoritative result error", err)
+	}
+}
+
+func TestRunTournamentRejectsEmptyResults(t *testing.T) {
+	full := []TournamentCandidateResult{
+		{TaskID: "task-a", Status: TournamentPass},
+		{TaskID: "task-b", Status: TournamentPass},
+	}
+	empty := tournamentCandidate("empty", nil)
+	if _, err := RunTournament(tournamentRegistry(), empty, []TournamentCandidateManifest{tournamentCandidate("candidate", full)}); err == nil ||
+		!strings.Contains(err.Error(), "results must not be empty") {
+		t.Fatalf("authoritative err = %v, want empty results error", err)
+	}
+	if _, err := RunTournament(tournamentRegistry(), tournamentCandidate("authoritative", full), []TournamentCandidateManifest{empty}); err == nil ||
+		!strings.Contains(err.Error(), "results must not be empty") {
+		t.Fatalf("candidate err = %v, want empty results error", err)
+	}
+}
+
+func TestRunTournamentRejectsDatasetDigestMismatch(t *testing.T) {
+	results := func() []TournamentCandidateResult {
+		return []TournamentCandidateResult{
+			{TaskID: "task-a", Status: TournamentPass},
+			{TaskID: "task-b", Status: TournamentPass},
+		}
+	}
+	candidate := tournamentCandidate("candidate", results())
+	candidate.DatasetDigest = "sha256:other"
+	_, err := RunTournament(tournamentRegistry(), tournamentCandidate("authoritative", results()), []TournamentCandidateManifest{candidate})
+	if err == nil || !strings.Contains(err.Error(), "datasetDigest") {
+		t.Fatalf("err = %v, want dataset digest mismatch", err)
+	}
+}
+
+func TestRunTournamentRejectsEvaluatorVersionMismatch(t *testing.T) {
+	authoritative := tournamentCandidate("authoritative", []TournamentCandidateResult{
+		{TaskID: "task-a", Status: TournamentPass},
+		{TaskID: "task-b", Status: TournamentPass},
+	})
+	candidate := tournamentCandidate("candidate", []TournamentCandidateResult{
+		{TaskID: "task-a", Status: TournamentPass, EvaluatorVersion: "eval-0"},
+		{TaskID: "task-b", Status: TournamentPass},
+	})
+	_, err := RunTournament(tournamentRegistry(), authoritative, []TournamentCandidateManifest{candidate})
+	if err == nil || !strings.Contains(err.Error(), "evaluatorVersion") {
+		t.Fatalf("err = %v, want evaluator version mismatch", err)
 	}
 }
 
@@ -143,10 +206,22 @@ func tournamentRegistry() Registry {
 	}
 }
 
+// tournamentCandidate builds a manifest bound to tournamentRegistry, filling
+// each result's evaluator version from the dataset unless already set.
 func tournamentCandidate(genome string, results []TournamentCandidateResult) TournamentCandidateManifest {
+	evaluators := make(map[string]string)
+	for _, task := range tournamentRegistry().Tasks {
+		evaluators[task.TaskID] = task.EvaluatorVersion
+	}
+	for i := range results {
+		if results[i].EvaluatorVersion == "" {
+			results[i].EvaluatorVersion = evaluators[results[i].TaskID]
+		}
+	}
 	return TournamentCandidateManifest{
-		APIVersion: apiv1.WorkflowGymTaskAPIVersion,
-		Kind:       TournamentCandidateKind,
+		APIVersion:    apiv1.WorkflowGymTaskAPIVersion,
+		Kind:          TournamentCandidateKind,
+		DatasetDigest: tournamentRegistry().Digest,
 		Identity: TournamentCandidateIdentity{
 			EffectiveVersion: rollup.EffectiveVersion{
 				WorkflowDigest: "sha256:workflow-" + genome,

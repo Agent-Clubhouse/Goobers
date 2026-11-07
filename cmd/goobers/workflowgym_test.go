@@ -80,11 +80,15 @@ func TestWorkflowGymReplayEmitsOfflineManifest(t *testing.T) {
 
 func TestWorkflowGymTournamentEmitsPairedReport(t *testing.T) {
 	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
-	authoritative := writeTournamentCandidate(t, "authoritative", []workflowgym.TournamentCandidateResult{
+	registry, err := workflowgym.Load(dataset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritative := writeTournamentCandidate(t, registry, "authoritative", []workflowgym.TournamentCandidateResult{
 		{TaskID: "task-alpha", Status: workflowgym.TournamentPass},
 		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
 	})
-	candidate := writeTournamentCandidate(t, "candidate", []workflowgym.TournamentCandidateResult{
+	candidate := writeTournamentCandidate(t, registry, "candidate", []workflowgym.TournamentCandidateResult{
 		{TaskID: "task-alpha", Status: workflowgym.TournamentFail, FailureClass: "evaluation"},
 	})
 	var stdout, stderr bytes.Buffer
@@ -102,11 +106,19 @@ func TestWorkflowGymTournamentEmitsPairedReport(t *testing.T) {
 	}
 }
 
-func writeTournamentCandidate(t *testing.T, genome string, results []workflowgym.TournamentCandidateResult) string {
+func writeTournamentCandidate(t *testing.T, registry workflowgym.Registry, genome string, results []workflowgym.TournamentCandidateResult) string {
 	t.Helper()
+	for i := range results {
+		for _, task := range registry.Tasks {
+			if task.TaskID == results[i].TaskID {
+				results[i].EvaluatorVersion = task.EvaluatorVersion
+			}
+		}
+	}
 	manifest := workflowgym.TournamentCandidateManifest{
-		APIVersion: apiv1.WorkflowGymTaskAPIVersion,
-		Kind:       workflowgym.TournamentCandidateKind,
+		APIVersion:    apiv1.WorkflowGymTaskAPIVersion,
+		Kind:          workflowgym.TournamentCandidateKind,
+		DatasetDigest: registry.Digest,
 		Identity: workflowgym.TournamentCandidateIdentity{
 			EffectiveVersion: rollup.EffectiveVersion{
 				WorkflowDigest: "sha256:workflow-" + genome,

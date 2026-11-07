@@ -34,9 +34,11 @@ const workflowGymReplayHelp = "Usage: goobers workflow-gym replay <task-manifest
 const workflowGymTournamentHelp = "Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]\n\n" +
 	"Compare authoritative and candidate EffectiveVersion/genome result manifests\n" +
 	"over exactly the same task IDs and write a deterministic paired report as JSON.\n" +
-	"Each WorkflowGymCandidate JSON/YAML manifest supplies identity.effectiveVersion,\n" +
-	"identity.genomeDigest, and task results with status, costUsd, durationMs, and\n" +
-	"failureClass. Omitted task results are recorded as failures.\n"
+	"Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match\n" +
+	"the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a\n" +
+	"non-empty list of task results with evaluatorVersion (must match the task),\n" +
+	"status, costUsd, durationMs, and failureClass. The authoritative manifest must\n" +
+	"cover every task; omitted candidate results are recorded as failures.\n"
 
 func workflowGymCLICommand() cliCommand {
 	return groupCommand(

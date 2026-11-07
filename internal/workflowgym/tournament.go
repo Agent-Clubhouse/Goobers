@@ -40,19 +40,23 @@ type TournamentCandidateIdentity struct {
 
 // TournamentCandidateManifest records one candidate's results over a task roster.
 type TournamentCandidateManifest struct {
-	APIVersion string                      `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string                      `json:"kind" yaml:"kind"`
-	Identity   TournamentCandidateIdentity `json:"identity" yaml:"identity"`
-	Results    []TournamentCandidateResult `json:"results" yaml:"results"`
+	APIVersion string `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string `json:"kind" yaml:"kind"`
+	// DatasetDigest binds the results to the exact dataset they were measured on.
+	DatasetDigest string                      `json:"datasetDigest" yaml:"datasetDigest"`
+	Identity      TournamentCandidateIdentity `json:"identity" yaml:"identity"`
+	Results       []TournamentCandidateResult `json:"results" yaml:"results"`
 }
 
 // TournamentCandidateResult is one candidate's measured task outcome.
 type TournamentCandidateResult struct {
-	TaskID       string           `json:"taskId" yaml:"taskId"`
-	Status       TournamentStatus `json:"status" yaml:"status"`
-	CostUSD      float64          `json:"costUsd" yaml:"costUsd"`
-	DurationMS   int64            `json:"durationMs" yaml:"durationMs"`
-	FailureClass string           `json:"failureClass,omitempty" yaml:"failureClass,omitempty"`
+	TaskID string `json:"taskId" yaml:"taskId"`
+	// EvaluatorVersion is the task evaluator version that produced Status.
+	EvaluatorVersion string           `json:"evaluatorVersion" yaml:"evaluatorVersion"`
+	Status           TournamentStatus `json:"status" yaml:"status"`
+	CostUSD          float64          `json:"costUsd" yaml:"costUsd"`
+	DurationMS       int64            `json:"durationMs" yaml:"durationMs"`
+	FailureClass     string           `json:"failureClass,omitempty" yaml:"failureClass,omitempty"`
 }
 
 // TournamentReport is the canonical paired comparison for a dataset.
@@ -177,8 +181,8 @@ func RunTournament(registry Registry, authoritative TournamentCandidateManifest,
 				EvaluatorVersion: task.EvaluatorVersion,
 				Authoritative:    authoritative.Identity,
 				Candidate:        candidate.Identity,
-				AuthoritativeRun: tournamentTaskResult(task.TaskID, authoritativeResults),
-				CandidateRun:     tournamentTaskResult(task.TaskID, candidateResults),
+				AuthoritativeRun: tournamentTaskResult(task.TaskID, task.EvaluatorVersion, authoritativeResults),
+				CandidateRun:     tournamentTaskResult(task.TaskID, task.EvaluatorVersion, candidateResults),
 			})
 		}
 		pairs := report.Results[start:]
@@ -194,11 +198,15 @@ func validateTournamentCandidate(manifest TournamentCandidateManifest) error {
 	if manifest.Kind != TournamentCandidateKind {
 		return fmt.Errorf("kind must be %q", TournamentCandidateKind)
 	}
+	if len(manifest.Results) == 0 {
+		return errors.New("results must not be empty")
+	}
 	identity := manifest.Identity
 	required := []struct {
 		name  string
 		value string
 	}{
+		{"datasetDigest", manifest.DatasetDigest},
 		{"identity.effectiveVersion.workflowDigest", identity.EffectiveVersion.WorkflowDigest},
 		{"identity.effectiveVersion.gooberDigest", identity.EffectiveVersion.GooberDigest},
 		{"identity.effectiveVersion.model", identity.EffectiveVersion.Model},
@@ -214,6 +222,9 @@ func validateTournamentCandidate(manifest TournamentCandidateManifest) error {
 	for i, result := range manifest.Results {
 		if strings.TrimSpace(result.TaskID) == "" {
 			return fmt.Errorf("results[%d].taskId is required", i)
+		}
+		if strings.TrimSpace(result.EvaluatorVersion) == "" {
+			return fmt.Errorf("task %q evaluatorVersion is required", result.TaskID)
 		}
 		if seen[result.TaskID] {
 			return fmt.Errorf("duplicate task result %q", result.TaskID)
@@ -238,21 +249,39 @@ func validateTournamentCandidate(manifest TournamentCandidateManifest) error {
 	return nil
 }
 
+// validateTournamentRoster binds every manifest to the loaded dataset and
+// requires the authoritative manifest (manifests[0]) to cover every task, so a
+// missing baseline result can never improve a candidate's verdict.
 func validateTournamentRoster(registry Registry, manifests []TournamentCandidateManifest) error {
-	tasks := make(map[string]bool, len(registry.Tasks))
+	evaluators := make(map[string]string, len(registry.Tasks))
 	for _, task := range registry.Tasks {
-		tasks[task.TaskID] = true
+		evaluators[task.TaskID] = task.EvaluatorVersion
 	}
 	identities := make(map[string]bool, len(manifests))
-	for _, manifest := range manifests {
+	for i, manifest := range manifests {
 		key := tournamentIdentityKey(manifest.Identity)
 		if identities[key] {
 			return fmt.Errorf("workflow gym tournament: duplicate candidate identity %q", key)
 		}
 		identities[key] = true
+		if manifest.DatasetDigest != registry.Digest {
+			return fmt.Errorf("workflow gym tournament: candidate %q datasetDigest %q does not match dataset digest %q", key, manifest.DatasetDigest, registry.Digest)
+		}
 		for _, result := range manifest.Results {
-			if !tasks[result.TaskID] {
+			evaluator, ok := evaluators[result.TaskID]
+			if !ok {
 				return fmt.Errorf("workflow gym tournament: candidate %q has result for task %q outside dataset", key, result.TaskID)
+			}
+			if result.EvaluatorVersion != evaluator {
+				return fmt.Errorf("workflow gym tournament: candidate %q task %q evaluatorVersion %q does not match dataset evaluator version %q", key, result.TaskID, result.EvaluatorVersion, evaluator)
+			}
+		}
+		if i == 0 && len(manifest.Results) != len(registry.Tasks) {
+			covered := tournamentResultIndex(manifest)
+			for _, task := range registry.Tasks {
+				if _, ok := covered[task.TaskID]; !ok {
+					return fmt.Errorf("workflow gym tournament: authoritative candidate %q has no result for task %q", key, task.TaskID)
+				}
 			}
 		}
 	}
@@ -271,14 +300,15 @@ func tournamentResultIndex(manifest TournamentCandidateManifest) map[string]Tour
 	return results
 }
 
-func tournamentTaskResult(taskID string, results map[string]TournamentCandidateResult) TournamentCandidateResult {
+func tournamentTaskResult(taskID, evaluatorVersion string, results map[string]TournamentCandidateResult) TournamentCandidateResult {
 	if result, ok := results[taskID]; ok {
 		return result
 	}
 	return TournamentCandidateResult{
-		TaskID:       taskID,
-		Status:       TournamentFail,
-		FailureClass: "missing-result",
+		TaskID:           taskID,
+		EvaluatorVersion: evaluatorVersion,
+		Status:           TournamentFail,
+		FailureClass:     "missing-result",
 	}
 }
 
