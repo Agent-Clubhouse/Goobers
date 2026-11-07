@@ -126,7 +126,7 @@ func LoadTournamentCandidate(path string) (TournamentCandidateManifest, error) {
 		return TournamentCandidateManifest{}, fmt.Errorf("decode tournament candidate %s: %w", path, err)
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("manifest contains multiple JSON values")
 		}
