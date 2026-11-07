@@ -10,14 +10,18 @@ import (
 
 func TestWalkDefinitionTreesRejectsSymlinkedSharedRoot(t *testing.T) {
 	parent := t.TempDir()
-	if err := os.Mkdir(filepath.Join(parent, "config"), 0o755); err != nil {
+	root := filepath.Join(parent, "config")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte("manifest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(t.TempDir(), filepath.Join(parent, "goobers")); err != nil {
 		t.Fatal(err)
 	}
 	visits := 0
-	err := WalkDefinitionTrees(filepath.Join(parent, "config"), func(string) error {
+	err := WalkDefinitionTrees(root, func(string) error {
 		visits++
 		return nil
 	})

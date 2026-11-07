@@ -83,7 +83,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	}
 	if isConfig {
 		if fs.NArg() == 0 {
-			dir = configRepoDir()
+			dir = configRepoWorkDir(configRepoDir(), configTarget)
 		}
 		factDir = "."
 		baseBranch = configTarget.Base
@@ -93,6 +93,14 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if isConfig {
+		if err := withWorkingDir(configRepoDir(), func() error {
+			return confineDiffToDirectory(baseBranch, configTarget.Directory)
+		}); err != nil {
+			pf(stderr, "error: config repository write-boundary: %v\n", err)
+			return 1
+		}
 	}
 	if isConfig {
 		env, err = configRepoPushAuth(dir, configTarget)

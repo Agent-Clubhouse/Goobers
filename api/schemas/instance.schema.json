@@ -829,7 +829,7 @@
       }
     },
     "workflowSource": {
-      "description": "Location of the definitions-as-code tree. A local-dir source reads a directory directly; a git source reads a committed ref from either a local repository path or a remote https URL.",
+      "description": "Location of the definitions-as-code tree. A local-dir source reads a directory directly; a git source reads a committed ref from either a local repository path or a remote https URL, optionally restricted to a repository-relative dir.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
@@ -838,6 +838,7 @@
         "path": { "type": "string", "minLength": 1, "description": "Directory (kind local-dir) or local repository (kind git) holding the definitions tree." },
         "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref or a github-app auth block." },
         "ref": { "type": "string", "minLength": 1, "description": "Committed git ref that is tracked. Empty defaults to main. Valid only for kind git." },
+        "dir": { "type": "string", "minLength": 1, "description": "Repository-relative directory to use from a git source. Defaults to the repository root. Absolute paths and parent traversal are refused." },
         "token": {
           "description": "Where the credential for a REMOTE git source is read from. This token reads the config repository, so it is deliberately not exposed to stages: an env name stages can also see is refused at load.",
           "$ref": "#/$defs/tokenRef"
@@ -850,7 +851,7 @@
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "local-dir" } }, "required": ["kind"] },
-          "then": { "required": ["path"] }
+          "then": { "required": ["path"], "not": { "required": ["dir"] } }
         },
         {
           "if": { "properties": { "kind": { "const": "git" } }, "required": ["kind"] },

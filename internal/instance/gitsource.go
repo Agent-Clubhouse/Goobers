@@ -45,6 +45,9 @@ type GitSourceOptions struct {
 	Repository string
 	// Ref is the branch to track. Empty defaults to main.
 	Ref string
+	// Directory is a repository-relative subdirectory. Empty selects the
+	// repository root.
+	Directory string
 	// TokenSource is required for a remote repository and must be nil for a
 	// local repository.
 	TokenSource GitTokenSource
@@ -56,8 +59,10 @@ type GitSourceOptions struct {
 type GitSource struct {
 	repository    string
 	ref           string
+	directory     string
 	local         bool
 	repositoryDir string
+	snapshotDir   string
 	mirror        string
 	tokenSource   GitTokenSource
 	askpass       string
@@ -92,6 +97,13 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 	if err != nil {
 		return nil, err
 	}
+	directory := opts.Directory
+	if directory == "" {
+		directory = "."
+	}
+	if err := validateWorkflowSourceDirectory(directory); err != nil {
+		return nil, fmt.Errorf("git config source: %w", err)
+	}
 
 	repository := opts.Repository
 	local := false
@@ -115,11 +127,14 @@ func NewGitSource(opts GitSourceOptions) (*GitSource, error) {
 
 	sum := sha256.Sum256([]byte(repository))
 	repositoryDir := filepath.Join(managedRoot, hex.EncodeToString(sum[:])[:16])
+	directorySum := sha256.Sum256([]byte(directory))
 	source := &GitSource{
 		repository:         repository,
 		ref:                ref,
+		directory:          directory,
 		local:              local,
 		repositoryDir:      repositoryDir,
+		snapshotDir:        filepath.Join(repositoryDir, "snapshots", hex.EncodeToString(directorySum[:])[:16]),
 		createSymlink:      os.Symlink,
 		warningsByRevision: make(map[string][]string),
 	}
@@ -230,6 +245,7 @@ func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, appTokens 
 		InstanceRoot: instanceRoot,
 		Repository:   repository,
 		Ref:          source.Ref,
+		Directory:    source.Directory(),
 		TokenSource:  tokenSource,
 	})
 }
@@ -279,7 +295,11 @@ func (s *GitSource) Resolve(ctx context.Context) (string, error) {
 	}
 	revision := strings.TrimSpace(string(revisionBytes))
 
-	destination, warnings, err := s.materializeRevision(ctx, repoArgs, revision)
+	tree, err := s.resolveDirectoryTree(ctx, repoArgs, revision)
+	if err != nil {
+		return "", err
+	}
+	destination, warnings, err := s.materializeRevision(ctx, repoArgs, revision, tree)
 	if err != nil {
 		return "", err
 	}
@@ -298,8 +318,8 @@ func (s *GitSource) Warnings() []string {
 	return append([]string(nil), s.warnings...)
 }
 
-func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, revision string) (string, []string, error) {
-	snapshotsDir := filepath.Join(s.repositoryDir, "snapshots")
+func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, revision, tree string) (string, []string, error) {
+	snapshotsDir := s.snapshotDir
 	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("git config source: create snapshots directory: %w", err)
 	}
@@ -317,7 +337,7 @@ func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, 
 	if err != nil {
 		return "", nil, fmt.Errorf("git config source: create snapshot: %w", err)
 	}
-	warnings, err := s.extractRevision(ctx, repoArgs, revision, staging)
+	warnings, err := s.extractRevision(ctx, repoArgs, tree, staging)
 	if err != nil {
 		return "", nil, errors.Join(err, os.RemoveAll(staging))
 	}
@@ -339,6 +359,55 @@ func (s *GitSource) materializeRevision(ctx context.Context, repoArgs []string, 
 	default:
 		return "", nil, errors.Join(renameErr, statErr, os.RemoveAll(staging))
 	}
+}
+
+func (s *GitSource) resolveDirectoryTree(ctx context.Context, repoArgs []string, revision string) (string, error) {
+	treeSpec := revision + "^{tree}"
+	if s.directory != "." {
+		treeSpec = revision + ":" + s.directory
+	}
+	output, err := s.gitOutput(
+		ctx,
+		"resolve configured directory",
+		append(repoArgs, "rev-parse", "--verify", "--end-of-options", treeSpec)...,
+	)
+	if err != nil {
+		return "", fmt.Errorf("git config source: directory %q is missing or is not a tree at revision %s: %w", s.directory, revision, err)
+	}
+	tree := strings.TrimSpace(string(output))
+	if s.directory != "." {
+		objectType, err := s.gitOutput(ctx, "verify configured directory tree", append(repoArgs, "cat-file", "-t", tree)...)
+		if err != nil || strings.TrimSpace(string(objectType)) != "tree" {
+			return "", fmt.Errorf("git config source: directory %q is missing or is not a tree at revision %s", s.directory, revision)
+		}
+	}
+	return tree, nil
+}
+
+// SameDirectoryTree reports whether two commits expose identical configured
+// source trees. Sibling-only commits therefore do not trigger config reloads.
+func (s *GitSource) SameDirectoryTree(ctx context.Context, first, second string) (bool, error) {
+	if first == second {
+		return true, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	repoArgs := []string{"-C", s.repository}
+	if !s.local {
+		repoArgs = []string{"--git-dir=" + s.mirror}
+	}
+	secondTree, err := s.resolveDirectoryTree(ctx, repoArgs, second)
+	if err != nil {
+		return false, err
+	}
+	firstTree, err := s.resolveDirectoryTree(ctx, repoArgs, first)
+	if err != nil {
+		if _, verifyErr := s.gitOutput(ctx, "verify prior revision", append(repoArgs, "cat-file", "-e", first+"^{commit}")...); verifyErr != nil {
+			return false, fmt.Errorf("git config source: verify prior revision %q: %w", first, verifyErr)
+		}
+		return false, nil
+	}
+	return firstTree == secondTree, nil
 }
 
 func normalizeGitSourceRef(ref string) (string, error) {

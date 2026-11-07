@@ -1435,6 +1435,20 @@ func (s *Scheduler) WorkflowCount() int {
 // The accepted change is journaled before it becomes active; a journal failure
 // leaves the current configuration untouched.
 func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest string, configGeneration ...string) error {
+	generation := ""
+	if len(configGeneration) > 0 {
+		generation = configGeneration[0]
+	}
+	return s.reload(entries, openPRs, now, oldDigest, newDigest, generation, nil)
+}
+
+// ReloadWithProvenance records the Git source that produced the accepted
+// generation alongside its digest and retained archive.
+func (s *Scheduler) ReloadWithProvenance(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest, configGeneration string, source *journal.WorkflowSourceProvenance) error {
+	return s.reload(entries, openPRs, now, oldDigest, newDigest, configGeneration, source)
+}
+
+func (s *Scheduler) reload(entries []WorkflowEntry, openPRs OpenPRCounter, now time.Time, oldDigest, newDigest, generation string, source *journal.WorkflowSourceProvenance) error {
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
@@ -1507,17 +1521,17 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		return err
 	}
 
-	generation := ""
-	if len(configGeneration) > 0 {
-		generation = configGeneration[0]
+	runner := map[string]any{
+		"oldDigest":        oldDigest,
+		"newDigest":        newDigest,
+		"configGeneration": generation,
+	}
+	if source != nil {
+		runner["workflowSource"] = source
 	}
 	if err := s.appendJournalEvent(journal.Event{
-		Type: journal.EventConfigReloaded,
-		Runner: map[string]any{
-			"oldDigest":        oldDigest,
-			"newDigest":        newDigest,
-			"configGeneration": generation,
-		},
+		Type:   journal.EventConfigReloaded,
+		Runner: runner,
 	}); err != nil {
 		return fmt.Errorf("localscheduler: journal config reload: %w", err)
 	}

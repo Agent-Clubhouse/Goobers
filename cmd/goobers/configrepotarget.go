@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -32,8 +33,9 @@ const (
 	// readable, and the installation token behind them is down-scoped to the
 	// config repository, so a wrong value fails at the forge rather than
 	// reaching another repo.
-	configRepoInput     = "configRepo"
-	configRepoBaseInput = "configRepoBase"
+	configRepoInput          = "configRepo"
+	configRepoBaseInput      = "configRepoBase"
+	configRepoSourceDirInput = "configRepoSourceDir"
 	// configRepoDirInput names the config-repo checkout directory, relative to
 	// the stage workspace.
 	configRepoDirInput   = "configRepoDir"
@@ -47,6 +49,8 @@ type configRepoTarget struct {
 	Repo providers.RepositoryRef
 	// Base is the branch PRs target and checkouts start from: workflowSource.ref.
 	Base string
+	// Directory is the repository-relative workflowSource.dir.
+	Directory string
 }
 
 // CloneURL is the repository's HTTPS clone URL (no credential embedded).
@@ -59,6 +63,13 @@ func configRepoDir() string {
 		return d
 	}
 	return defaultConfigRepoDir
+}
+
+func configRepoWorkDir(checkout string, target configRepoTarget) string {
+	if target.Directory == "." {
+		return checkout
+	}
+	return filepath.Join(checkout, filepath.FromSlash(target.Directory))
 }
 
 // configRepoFlag is the opt-in flag name push-branch and open-pr share. It is a
@@ -106,13 +117,17 @@ func configRepoTargetFromSource(source *instance.WorkflowSource) (configRepoTarg
 	if source.Kind != instance.WorkflowSourceKindGit || strings.TrimSpace(source.URL) == "" {
 		return configRepoTarget{}, fmt.Errorf("workflowSource kind %q is not a remote git repository, so it cannot be a config-repo target", source.Kind)
 	}
+	if err := source.ValidateDirectory(); err != nil {
+		return configRepoTarget{}, fmt.Errorf("workflowSource dir: %w", err)
+	}
 	owner, name, err := parseConfigRepoURL(source.URL)
 	if err != nil {
 		return configRepoTarget{}, err
 	}
 	return configRepoTarget{
-		Repo: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name},
-		Base: source.TrackedRef(),
+		Repo:      providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name},
+		Base:      source.TrackedRef(),
+		Directory: source.Directory(),
 	}, nil
 }
 
@@ -123,6 +138,7 @@ func configRepoTargetFromSource(source *instance.WorkflowSource) (configRepoTarg
 func resolveConfigRepoTarget(root string) (configRepoTarget, error) {
 	inputRepo := strings.TrimSpace(providerInput("configRepo", ""))
 	inputBase := strings.TrimSpace(providerInput("configRepoBase", ""))
+	inputDir := strings.TrimSpace(providerInput("configRepoSourceDir", ""))
 
 	cfg, loadErr := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
 	if loadErr == nil {
@@ -136,6 +152,9 @@ func resolveConfigRepoTarget(root string) (configRepoTarget, error) {
 		if inputBase != "" && inputBase != target.Base {
 			return configRepoTarget{}, fmt.Errorf("input %s %q does not match workflowSource ref %q", configRepoBaseInput, inputBase, target.Base)
 		}
+		if inputDir != "" && inputDir != target.Directory {
+			return configRepoTarget{}, fmt.Errorf("input %s %q does not match workflowSource dir %q", configRepoSourceDirInput, inputDir, target.Directory)
+		}
 		return target, nil
 	}
 	if inputRepo == "" {
@@ -148,9 +167,17 @@ func resolveConfigRepoTarget(root string) (configRepoTarget, error) {
 	if inputBase == "" {
 		inputBase = instance.DefaultWorkflowSourceRef
 	}
+	if inputDir == "" {
+		inputDir = "."
+	}
+	source := instance.WorkflowSource{Kind: instance.WorkflowSourceKindGit, Dir: inputDir}
+	if err := source.ValidateDirectory(); err != nil {
+		return configRepoTarget{}, fmt.Errorf("input %s: %w", configRepoSourceDirInput, err)
+	}
 	return configRepoTarget{
-		Repo: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name},
-		Base: inputBase,
+		Repo:      providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name},
+		Base:      inputBase,
+		Directory: inputDir,
 	}, nil
 }
 

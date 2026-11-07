@@ -27,6 +27,21 @@ func confineDiffToConfigRoot(base, configRoot string) error {
 	return configboundary.Confine(configRoot, changed)
 }
 
+func confineDiffToDirectory(base, directory string) error {
+	changed, err := changedFilesVsBase(base)
+	if err != nil {
+		return fmt.Errorf("compute changed files vs %q: %w", base, err)
+	}
+	configRoot := directory
+	if configRoot == "." {
+		configRoot = ""
+	}
+	if err := configboundary.Confine(configRoot, changed); err != nil {
+		return fmt.Errorf("workflow source directory %q: %w", directory, err)
+	}
+	return nil
+}
+
 // confineDiffToDocsRoots enforces the docs-updater write-boundary (#1016) on the
 // open-pr path: it lists every file this run's branch changes relative to base
 // and refuses the cycle unless each is within one of the declared in-repo docs
