@@ -377,7 +377,7 @@ _goobers_completion()
             ;;
         workflow-gym)
             if (( CURRENT == 3 )); then
-                candidates=(validate list)
+                candidates=(validate list replay)
                 _describe -V 'command' candidates
                 return
             fi

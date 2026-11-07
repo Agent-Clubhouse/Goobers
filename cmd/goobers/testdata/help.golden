@@ -180,7 +180,7 @@ Advanced operator commands:
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
-  workflow-gym      validate or list Workflow Gym benchmark tasks
+  workflow-gym      validate, list, or replay Workflow Gym benchmark tasks
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
@@ -3801,16 +3801,26 @@ from 'goobers workflow clusters --json'; it never changes validity or exit code.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ### workflow-gym
-Usage: goobers workflow-gym <validate|list> <path>
+Usage: goobers workflow-gym <validate|list|replay> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
-may name one JSON/YAML task manifest or a directory of manifests.
+may name one JSON/YAML task manifest or a directory of manifests. Replay
+runs one task against historical fixture and journal inputs, entirely offline.
 
 ### workflow-gym list
 Usage: goobers workflow-gym list <path>
 
 Validate a Workflow Gym dataset, print its version, deterministic digest,
 and task count, then list tasks in stable task ID order.
+
+### workflow-gym replay
+Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
+
+Replay one historical task twice through the offline benchmark harness and
+write its deterministic replay manifest as JSON. The replay reads the
+fixture's work item and re-issues the journal's recorded mutations through
+the side-effect sandbox; the manifest lists only effects the sandbox
+observed, as deterministic, virtualized, or unavailable.
 
 ### workflow-gym validate
 Usage: goobers workflow-gym validate <path>
