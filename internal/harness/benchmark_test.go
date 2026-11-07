@@ -164,6 +164,19 @@ func TestBenchmarkReplayIsByteStable(t *testing.T) {
 	}
 }
 
+func TestBenchmarkTaskSandboxRejectsUnknownInputs(t *testing.T) {
+	for _, env := range []map[string]string{
+		{benchmarkTaskFaultEnv: "unknown"},
+		{benchmarkTaskLureEnv: "unknown"},
+		{benchmarkTaskStepBudgetEnv: "-1"},
+	} {
+		task := apiv1.WorkflowGymTaskManifest{TaskID: "t", CandidateEnvironment: apiv1.WorkflowGymCandidateEnvironment{Environment: env}}
+		if _, err := NewBenchmarkTaskSandbox(loadBenchmarkTestFixture(t, nil), task); err == nil {
+			t.Errorf("task environment %v was accepted", env)
+		}
+	}
+}
+
 func TestBenchmarkProviderCallsAreInterceptedAndVirtualized(t *testing.T) {
 	_, report, err := runBenchmark(t, loadBenchmarkTestFixture(t, nil), triageAct)
 	if err != nil {

@@ -23,6 +23,10 @@
       }
     },
     "seed": { "type": "integer", "description": "Deterministic seed used to prepare and evaluate the task." },
+    "generatorVersion": { "type": "string", "minLength": 1, "description": "Version of the pure generator that produced this task." },
+    "taskClass": { "type": "string", "enum": ["normal", "incomplete", "ambiguous", "contradictory", "timeout", "dependency-failure", "tool-corruption", "malicious", "adversarial"], "description": "Synthetic or adversarial task class." },
+    "constraints": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "description": "Closed, generator-defined constraints applied to this task." },
+    "minimalReproductionId": { "type": "string", "minLength": 1, "description": "Stable identifier for the smallest reproduction of this generated task." },
     "expectedOutcome": { "type": "string", "minLength": 1, "description": "Outcome a successful candidate is expected to produce." },
     "expectedFailureMode": { "type": "string", "minLength": 1, "description": "Optional failure mode the evaluator is expected to detect." },
     "evaluatorVersion": { "type": "string", "minLength": 1, "description": "Pinned evaluator implementation version." },
