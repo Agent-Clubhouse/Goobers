@@ -19,6 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// ErrFleetRetentionDisabled is returned when a fleet has not opted in to
+// retained snapshots.
 var ErrFleetRetentionDisabled = errors.New("workflowcluster: retained fleet snapshots are disabled")
 
 // FleetRetentionPolicy is the explicit retention contract for one fleet.
@@ -35,38 +37,117 @@ type RetainedSnapshotStore interface {
 	PurgeInstance(context.Context, string, string) error
 }
 
-// ReconcileRetainedFleet removes snapshots whose source is no longer an active,
-// scoped member of an authoritative fleet association set.
-func ReconcileRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association) error {
+// ReconcileRetainedFleet purges every retained snapshot whose source is no
+// longer an active member of fleetID that grants labs.workflowFeatures in the
+// fleet's authoritative association set: the instance left (its association is
+// absent), was revoked, or removed the scope. It returns the purged instance
+// IDs in sorted order.
+func ReconcileRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association) ([]string, error) {
 	if store == nil {
-		return errors.New("workflowcluster: retained snapshot store is required")
+		return nil, errors.New("workflowcluster: retained snapshot store is required")
 	}
-	active := make(map[string]bool, len(associations))
-	for _, association := range associations {
-		if association.FleetID != fleetID || association.InstanceID == "" {
-			continue
-		}
-		if !association.Revoked && slices.Contains(association.Projections, fleet.ProjectionLabsWorkflowFeatures) {
-			active[association.InstanceID] = true
-		}
-	}
+	active := retainableFleetMembers(fleetID, associations)
 	snapshots, err := store.Snapshots(ctx, fleetID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	retained := make(map[string]bool, len(snapshots))
 	for _, snapshot := range snapshots {
 		retained[snapshot.InstanceID] = true
 	}
+	purged := []string{}
 	for instanceID := range retained {
 		if active[instanceID] {
 			continue
 		}
 		if err := store.PurgeInstance(ctx, fleetID, instanceID); err != nil {
-			return err
+			return nil, err
+		}
+		purged = append(purged, instanceID)
+	}
+	sort.Strings(purged)
+	return purged, nil
+}
+
+func retainableFleetMembers(fleetID string, associations []fleet.Association) map[string]bool {
+	active := make(map[string]bool, len(associations))
+	for _, association := range associations {
+		if association.FleetID != fleetID || association.InstanceID == "" {
+			continue
+		}
+		if slices.Contains(association.ActiveProjections(), fleet.ProjectionLabsWorkflowFeatures) {
+			active[association.InstanceID] = true
 		}
 	}
-	return nil
+	return active
+}
+
+// RetainedFleetCollection is the outcome of one retained collection pass.
+type RetainedFleetCollection struct {
+	Retained []FleetSnapshot  `json:"retained"`
+	Excluded []FleetExclusion `json:"excluded"`
+	// Purged lists instances whose retained snapshots were deleted because
+	// they left, were revoked, or removed the labs.workflowFeatures scope.
+	Purged []string `json:"purged"`
+}
+
+// CollectRetainedFleet is the retained counterpart of ClusterFleetOnDemand.
+// It refuses to run unless fleetID has opted in to retention, purges every
+// instance that is no longer an active scoped member of the authoritative
+// association set, fetches only from active scoped members, purges any
+// instance whose own scope gate now refuses the projection (it left, was
+// revoked, or removed the scope since the association set was read), and
+// retains the remaining snapshots under the store's bounds. Offline, timed-out,
+// and invalid responses are excluded without purging, so their earlier
+// snapshots remain until they age out.
+func CollectRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association, targets []FleetTarget, fetch SnapshotFetcher, opts FleetCollectionOptions) (RetainedFleetCollection, error) {
+	purged, err := ReconcileRetainedFleet(ctx, store, fleetID, associations)
+	if err != nil {
+		return RetainedFleetCollection{}, err
+	}
+	active := retainableFleetMembers(fleetID, associations)
+	result := RetainedFleetCollection{Retained: []FleetSnapshot{}, Excluded: []FleetExclusion{}}
+	scoped := make([]FleetTarget, 0, len(targets))
+	for _, target := range targets {
+		if active[target.InstanceID] {
+			scoped = append(scoped, target)
+			continue
+		}
+		result.Excluded = append(result.Excluded, FleetExclusion{InstanceID: target.InstanceID, Reason: FleetExclusionNotGranted})
+	}
+	snapshots, excluded, err := CollectFleetSnapshots(ctx, scoped, fetch, opts)
+	if err != nil {
+		return RetainedFleetCollection{}, err
+	}
+	purgedSet := make(map[string]bool, len(purged))
+	for _, instanceID := range purged {
+		purgedSet[instanceID] = true
+	}
+	for _, exclusion := range excluded {
+		result.Excluded = append(result.Excluded, exclusion)
+		if exclusion.Reason != FleetExclusionNotGranted || purgedSet[exclusion.InstanceID] {
+			continue
+		}
+		if err := store.PurgeInstance(ctx, fleetID, exclusion.InstanceID); err != nil {
+			return RetainedFleetCollection{}, err
+		}
+		purgedSet[exclusion.InstanceID] = true
+	}
+	for _, snapshot := range snapshots {
+		if err := store.Write(ctx, fleetID, snapshot); err != nil {
+			return RetainedFleetCollection{}, err
+		}
+		result.Retained = append(result.Retained, snapshot)
+	}
+	for instanceID := range purgedSet {
+		result.Purged = append(result.Purged, instanceID)
+	}
+	sort.Strings(result.Purged)
+	if result.Purged == nil {
+		result.Purged = []string{}
+	}
+	sortFleetExclusions(result.Excluded)
+	return result, nil
 }
 
 // FileRetainedSnapshotStore stores snapshots as private JSON files.
@@ -135,17 +216,25 @@ func (s *FileRetainedSnapshotStore) Write(ctx context.Context, fleetID string, s
 	return nil
 }
 
-// Snapshots returns all retained snapshots for a fleet in generation order.
+// Snapshots returns all retained snapshots for a fleet in generation order
+// after enforcing the policy bounds. A fleet without enabled retention retains
+// nothing: any snapshots left from when it was enabled are deleted and
+// ErrFleetRetentionDisabled is returned.
 func (s *FileRetainedSnapshotStore) Snapshots(ctx context.Context, fleetID string) ([]FleetSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	policy, ok := s.policies[fleetID]
-	if !ok {
-		return nil, fmt.Errorf("%w for fleet %q", ErrFleetRetentionDisabled, fleetID)
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !ok || !policy.Enabled {
+		if strings.TrimSpace(fleetID) != "" {
+			if err := os.RemoveAll(s.fleetDir(fleetID)); err != nil {
+				return nil, fmt.Errorf("workflowcluster: delete retained snapshots for disabled fleet %q: %w", fleetID, err)
+			}
+		}
+		return nil, fmt.Errorf("%w for fleet %q", ErrFleetRetentionDisabled, fleetID)
+	}
 
 	root := s.fleetDir(fleetID)
 	instanceDirs, err := os.ReadDir(root)
@@ -164,10 +253,8 @@ func (s *FileRetainedSnapshotStore) Snapshots(ctx context.Context, fleetID strin
 			continue
 		}
 		dir := filepath.Join(root, instanceDir.Name())
-		if policy.Enabled {
-			if err := s.pruneInstance(ctx, dir, policy); err != nil {
-				return nil, err
-			}
+		if err := s.pruneInstance(ctx, dir, policy); err != nil {
+			return nil, err
 		}
 		values, err := readRetainedSnapshots(dir)
 		if err != nil {

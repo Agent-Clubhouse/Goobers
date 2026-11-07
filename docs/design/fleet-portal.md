@@ -494,6 +494,21 @@ The fleet supports two distinct processing modes:
   when an instance leaves, is revoked, or removes the scope, and which principals may
   read the snapshots.
 
+The retained store ([#8378](https://github.com/Agent-Clubhouse/Goobers/issues/8378))
+is off by default: a fleet without an explicit, enabled retention policy refuses
+writes and reads and deletes anything left from an earlier opt-in. An enabled policy
+must set both a maximum age and a maximum number of snapshots per instance, and the
+store prunes to both bounds on every write and read. A retained collection first
+purges every instance that the fleet's association set no longer lists as an active
+member granting `labs.workflowFeatures`, fetches only from active scoped members, and
+purges any instance whose own scope gate now refuses the projection because it left,
+was revoked, or removed the scope. Offline and timed-out instances keep their earlier
+snapshots until those age out. Drift reports measure every window's cluster occupancy
+against one reference model fitted to all retained shapes, so a cluster keeps its
+identity across windows even when an independent per-window refit would change its
+medoid. The store has no reader of its own; which principals may read retained
+snapshots is enforced by the fleet service that hosts it.
+
 Offline, unscoped, timed-out, and incompatible instances are reported as excluded
 with a reason and are never silently dropped. Any retained result that is shown after
 its source goes offline is labeled stale consistently with [§5.3](#53-offline-behavior).
