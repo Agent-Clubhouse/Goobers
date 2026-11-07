@@ -37,19 +37,23 @@ const (
 // WorkflowGymTaskManifest is one reproducible benchmark task in a versioned
 // Workflow Gym dataset.
 type WorkflowGymTaskManifest struct {
-	APIVersion           string                          `json:"apiVersion" yaml:"apiVersion"`
-	Kind                 string                          `json:"kind" yaml:"kind"`
-	TaskID               string                          `json:"taskId" yaml:"taskId"`
-	DatasetVersion       string                          `json:"datasetVersion" yaml:"datasetVersion"`
-	Split                WorkflowGymSplit                `json:"split" yaml:"split"`
-	Provenance           WorkflowGymProvenance           `json:"provenance" yaml:"provenance"`
-	Seed                 int64                           `json:"seed" yaml:"seed"`
-	ExpectedOutcome      string                          `json:"expectedOutcome" yaml:"expectedOutcome"`
-	ExpectedFailureMode  string                          `json:"expectedFailureMode,omitempty" yaml:"expectedFailureMode,omitempty"`
-	EvaluatorVersion     string                          `json:"evaluatorVersion" yaml:"evaluatorVersion"`
-	Retention            WorkflowGymRetention            `json:"retention" yaml:"retention"`
-	Licensing            WorkflowGymLicensing            `json:"licensing" yaml:"licensing"`
-	CandidateEnvironment WorkflowGymCandidateEnvironment `json:"candidateEnvironment" yaml:"candidateEnvironment"`
+	APIVersion            string                          `json:"apiVersion" yaml:"apiVersion"`
+	Kind                  string                          `json:"kind" yaml:"kind"`
+	TaskID                string                          `json:"taskId" yaml:"taskId"`
+	DatasetVersion        string                          `json:"datasetVersion" yaml:"datasetVersion"`
+	Split                 WorkflowGymSplit                `json:"split" yaml:"split"`
+	Provenance            WorkflowGymProvenance           `json:"provenance" yaml:"provenance"`
+	Seed                  int64                           `json:"seed" yaml:"seed"`
+	GeneratorVersion      string                          `json:"generatorVersion,omitempty" yaml:"generatorVersion,omitempty"`
+	TaskClass             string                          `json:"taskClass,omitempty" yaml:"taskClass,omitempty"`
+	Constraints           []string                        `json:"constraints,omitempty" yaml:"constraints,omitempty"`
+	MinimalReproductionID string                          `json:"minimalReproductionId,omitempty" yaml:"minimalReproductionId,omitempty"`
+	ExpectedOutcome       string                          `json:"expectedOutcome" yaml:"expectedOutcome"`
+	ExpectedFailureMode   string                          `json:"expectedFailureMode,omitempty" yaml:"expectedFailureMode,omitempty"`
+	EvaluatorVersion      string                          `json:"evaluatorVersion" yaml:"evaluatorVersion"`
+	Retention             WorkflowGymRetention            `json:"retention" yaml:"retention"`
+	Licensing             WorkflowGymLicensing            `json:"licensing" yaml:"licensing"`
+	CandidateEnvironment  WorkflowGymCandidateEnvironment `json:"candidateEnvironment" yaml:"candidateEnvironment"`
 }
 
 // WorkflowGymProvenance identifies the immutable source material for a task.

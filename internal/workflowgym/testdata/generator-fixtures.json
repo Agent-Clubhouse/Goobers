@@ -1,0 +1,47 @@
+[
+  {
+    "class": "normal",
+    "failureMode": "",
+    "classConstraint": "complete-input"
+  },
+  {
+    "class": "incomplete",
+    "failureMode": "workflow_gym_incomplete_task",
+    "classConstraint": "omit-required-input"
+  },
+  {
+    "class": "ambiguous",
+    "failureMode": "workflow_gym_ambiguous_task",
+    "classConstraint": "multiple-valid-interpretations"
+  },
+  {
+    "class": "contradictory",
+    "failureMode": "workflow_gym_contradictory_task",
+    "classConstraint": "mutually-exclusive-requirements"
+  },
+  {
+    "class": "timeout",
+    "failureMode": "workflow_gym_timeout",
+    "classConstraint": "deterministic-time-budget"
+  },
+  {
+    "class": "dependency-failure",
+    "failureMode": "workflow_gym_dependency_failure",
+    "classConstraint": "unavailable-synthetic-dependency"
+  },
+  {
+    "class": "tool-corruption",
+    "failureMode": "workflow_gym_tool_corruption",
+    "classConstraint": "corrupt-synthetic-tool-response"
+  },
+  {
+    "class": "malicious",
+    "failureMode": "",
+    "classConstraint": "synthetic-credential-exfiltration"
+  },
+  {
+    "class": "adversarial",
+    "failureMode": "",
+    "classConstraint": "synthetic-production-sink"
+  }
+]
