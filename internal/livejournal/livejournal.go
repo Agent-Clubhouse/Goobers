@@ -189,6 +189,9 @@ type OpenHeader struct {
 	Item       *apiv1.BacklogItem  `json:"item,omitempty"`
 	Graph      json.RawMessage     `json:"graph,omitempty"`
 	Definition json.RawMessage     `json:"definition,omitempty"`
+	// WorkflowLabels is metadata.labels pinned separately from Definition so
+	// labels remain outside the workflow digest and EffectiveVersion.
+	WorkflowLabels json.RawMessage `json:"workflowLabels,omitempty"`
 	// GateGooberCapabilities is the reviewer-goober capability map pinned at
 	// run start (#294), carried here for the same reason Graph and Definition
 	// are: the closed-run projection writer's inputs never reach a live
@@ -1064,6 +1067,10 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 	inputIntegrity := map[string]apiv1.Integrity{
 		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
 		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}
+	if len(header.WorkflowLabels) > 0 {
+		inputs[journal.PinnedWorkflowLabelsInputName] = []byte(header.WorkflowLabels)
+		inputIntegrity[journal.PinnedWorkflowLabelsInputName] = apiv1.IntegrityTrusted
 	}
 	// Mirrors engine/projection.go's writeProjectedRun exactly: the same
 	// snapshot under the same name with the same integrity, so a live-authored
