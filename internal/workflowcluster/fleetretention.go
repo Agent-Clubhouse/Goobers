@@ -1,0 +1,267 @@
+package workflowcluster
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/goobers/goobers/internal/journal"
+)
+
+var ErrFleetRetentionDisabled = errors.New("workflowcluster: retained fleet snapshots are disabled")
+
+// FleetRetentionPolicy is the explicit retention contract for one fleet.
+type FleetRetentionPolicy struct {
+	Enabled                 bool
+	MaxAge                  time.Duration
+	MaxSnapshotsPerInstance int
+}
+
+// RetainedSnapshotStore retains the projection needed for fleet drift.
+type RetainedSnapshotStore interface {
+	Write(context.Context, string, FleetSnapshot) error
+	Snapshots(context.Context, string) ([]FleetSnapshot, error)
+	PurgeInstance(context.Context, string, string) error
+}
+
+// FileRetainedSnapshotStore stores snapshots as private JSON files.
+type FileRetainedSnapshotStore struct {
+	root     string
+	policies map[string]FleetRetentionPolicy
+	now      func() time.Time
+	mu       sync.Mutex
+}
+
+// NewFileRetainedSnapshotStore creates a store with explicit per-fleet
+// policies. Enabled fleets must set both retention bounds.
+func NewFileRetainedSnapshotStore(root string, policies map[string]FleetRetentionPolicy) (*FileRetainedSnapshotStore, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("workflowcluster: retained snapshot root is required")
+	}
+	copied := make(map[string]FleetRetentionPolicy, len(policies))
+	for fleetID, policy := range policies {
+		if strings.TrimSpace(fleetID) == "" {
+			return nil, errors.New("workflowcluster: retained snapshot policy needs a fleet ID")
+		}
+		if policy.MaxAge < 0 || policy.MaxSnapshotsPerInstance < 0 {
+			return nil, fmt.Errorf("workflowcluster: fleet %q retention bounds must not be negative", fleetID)
+		}
+		if policy.Enabled && (policy.MaxAge == 0 || policy.MaxSnapshotsPerInstance == 0) {
+			return nil, fmt.Errorf("workflowcluster: fleet %q retention requires max age and max snapshots per instance", fleetID)
+		}
+		copied[fleetID] = policy
+	}
+	return &FileRetainedSnapshotStore{root: root, policies: copied, now: time.Now}, nil
+}
+
+// Write validates and retains a snapshot, then enforces both policy bounds.
+func (s *FileRetainedSnapshotStore) Write(ctx context.Context, fleetID string, snapshot FleetSnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	policy, ok := s.policies[fleetID]
+	if !ok || !policy.Enabled {
+		return fmt.Errorf("%w for fleet %q", ErrFleetRetentionDisabled, fleetID)
+	}
+	if snapshot.GeneratedAt.IsZero() {
+		return errors.New("workflowcluster: retained snapshot generation time is required")
+	}
+	if err := validateFleetSnapshot(snapshot); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir := s.instanceDir(fleetID, snapshot.InstanceID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("workflowcluster: create retained snapshot directory: %w", err)
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Errorf("workflowcluster: encode retained snapshot: %w", err)
+	}
+	path := filepath.Join(dir, snapshot.GeneratedAt.UTC().Format("20060102T150405.000000000Z")+".json")
+	if err := journal.WriteFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("workflowcluster: write retained snapshot: %w", err)
+	}
+	if err := s.pruneInstance(ctx, dir, policy); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Snapshots returns all retained snapshots for a fleet in generation order.
+func (s *FileRetainedSnapshotStore) Snapshots(ctx context.Context, fleetID string) ([]FleetSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	policy, ok := s.policies[fleetID]
+	if !ok {
+		return nil, fmt.Errorf("%w for fleet %q", ErrFleetRetentionDisabled, fleetID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	root := s.fleetDir(fleetID)
+	instanceDirs, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []FleetSnapshot{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("workflowcluster: read retained fleet %q: %w", fleetID, err)
+	}
+	var snapshots []FleetSnapshot
+	for _, instanceDir := range instanceDirs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !instanceDir.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, instanceDir.Name())
+		if policy.Enabled {
+			if err := s.pruneInstance(ctx, dir, policy); err != nil {
+				return nil, err
+			}
+		}
+		values, err := readRetainedSnapshots(dir)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, values...)
+	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		if !snapshots[i].GeneratedAt.Equal(snapshots[j].GeneratedAt) {
+			return snapshots[i].GeneratedAt.Before(snapshots[j].GeneratedAt)
+		}
+		return snapshots[i].InstanceID < snapshots[j].InstanceID
+	})
+	return snapshots, nil
+}
+
+// PurgeInstance removes every retained snapshot when an instance leaves, is
+// revoked, or removes the workflow-features projection.
+func (s *FileRetainedSnapshotStore) PurgeInstance(ctx context.Context, fleetID, instanceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(fleetID) == "" || strings.TrimSpace(instanceID) == "" {
+		return errors.New("workflowcluster: fleet and instance IDs are required for retained snapshot purge")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.RemoveAll(s.instanceDir(fleetID, instanceID)); err != nil {
+		return fmt.Errorf("workflowcluster: purge retained snapshots for %q: %w", instanceID, err)
+	}
+	return nil
+}
+
+func (s *FileRetainedSnapshotStore) pruneInstance(ctx context.Context, dir string, policy FleetRetentionPolicy) error {
+	snapshots, err := readRetainedSnapshotFiles(dir)
+	if err != nil {
+		return err
+	}
+	cutoff := s.now().UTC().Add(-policy.MaxAge)
+	keep := make([]retainedSnapshotFile, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if snapshot.snapshot.GeneratedAt.Before(cutoff) {
+			if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("workflowcluster: prune expired retained snapshot %q: %w", snapshot.path, err)
+			}
+			continue
+		}
+		keep = append(keep, snapshot)
+	}
+	for len(keep) > policy.MaxSnapshotsPerInstance {
+		if err := os.Remove(keep[0].path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("workflowcluster: prune excess retained snapshot %q: %w", keep[0].path, err)
+		}
+		keep = keep[1:]
+	}
+	return nil
+}
+
+type retainedSnapshotFile struct {
+	path     string
+	snapshot FleetSnapshot
+}
+
+func readRetainedSnapshots(dir string) ([]FleetSnapshot, error) {
+	files, err := readRetainedSnapshotFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	snapshots := make([]FleetSnapshot, 0, len(files))
+	for _, file := range files {
+		snapshots = append(snapshots, file.snapshot)
+	}
+	return snapshots, nil
+}
+
+func readRetainedSnapshotFiles(dir string) ([]retainedSnapshotFile, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []retainedSnapshotFile{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("workflowcluster: read retained snapshot directory: %w", err)
+	}
+	files := make([]retainedSnapshotFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("workflowcluster: inspect retained snapshot %q: %w", path, err)
+		}
+		if info.Size() > maxFleetSnapshotBytes {
+			return nil, fmt.Errorf("workflowcluster: retained snapshot %q exceeds %d bytes", path, maxFleetSnapshotBytes)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("workflowcluster: read retained snapshot %q: %w", path, err)
+		}
+		var snapshot FleetSnapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return nil, fmt.Errorf("workflowcluster: decode retained snapshot %q: %w", path, err)
+		}
+		if err := validateFleetSnapshot(snapshot); err != nil {
+			return nil, fmt.Errorf("workflowcluster: invalid retained snapshot %q: %w", path, err)
+		}
+		if snapshot.GeneratedAt.IsZero() {
+			return nil, fmt.Errorf("workflowcluster: retained snapshot %q has no generation time", path)
+		}
+		files = append(files, retainedSnapshotFile{path: path, snapshot: snapshot})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].snapshot.GeneratedAt.Before(files[j].snapshot.GeneratedAt)
+	})
+	return files, nil
+}
+
+func (s *FileRetainedSnapshotStore) fleetDir(fleetID string) string {
+	return filepath.Join(s.root, retainedPathKey(fleetID))
+}
+
+func (s *FileRetainedSnapshotStore) instanceDir(fleetID, instanceID string) string {
+	return filepath.Join(s.fleetDir(fleetID), retainedPathKey(instanceID))
+}
+
+func retainedPathKey(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
