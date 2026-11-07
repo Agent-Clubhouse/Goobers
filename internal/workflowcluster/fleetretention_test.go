@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/fleet"
 )
 
 func newRetentionStore(t *testing.T, root string, policy FleetRetentionPolicy, now time.Time) *FileRetainedSnapshotStore {
@@ -53,8 +55,32 @@ func TestRetainedSnapshotStorePrunesAgeAndPerInstanceCount(t *testing.T) {
 }
 
 func TestRetainedSnapshotStorePurgesEverySnapshotForInstance(t *testing.T) {
-	for _, event := range []string{"leave", "revoke", "scope-removal"} {
-		t.Run(event, func(t *testing.T) {
+	active := func(instance string) fleet.Association {
+		return fleet.Association{
+			FleetID: "fleet-1", InstanceID: instance,
+			Projections: []string{fleet.ProjectionLabsWorkflowFeatures},
+		}
+	}
+	tests := []struct {
+		name         string
+		associations []fleet.Association
+	}{
+		{name: "leave", associations: []fleet.Association{active("kept")}},
+		{name: "revoke", associations: []fleet.Association{
+			func() fleet.Association {
+				association := active("gone")
+				association.Revoked = true
+				return association
+			}(),
+			active("kept"),
+		}},
+		{name: "scope-removal", associations: []fleet.Association{
+			{FleetID: "fleet-1", InstanceID: "gone"},
+			active("kept"),
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			store := newRetentionStore(t, t.TempDir(), FleetRetentionPolicy{
 				Enabled: true, MaxAge: 24 * time.Hour, MaxSnapshotsPerInstance: 10,
 			}, fleetT0)
@@ -66,19 +92,29 @@ func TestRetainedSnapshotStorePurgesEverySnapshotForInstance(t *testing.T) {
 					}
 				}
 			}
-			if err := store.PurgeInstance(context.Background(), "fleet-1", "gone"); err != nil {
+			if err := ReconcileRetainedFleet(context.Background(), store, "fleet-1", []fleet.Association{active("gone"), active("kept")}); err != nil {
 				t.Fatal(err)
 			}
 			snapshots, err := store.Snapshots(context.Background(), "fleet-1")
 			if err != nil {
 				t.Fatal(err)
 			}
+			if len(snapshots) != 6 {
+				t.Fatalf("snapshots before %s = %+v", test.name, snapshots)
+			}
+			if err := ReconcileRetainedFleet(context.Background(), store, "fleet-1", test.associations); err != nil {
+				t.Fatal(err)
+			}
+			snapshots, err = store.Snapshots(context.Background(), "fleet-1")
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(snapshots) != 3 {
-				t.Fatalf("snapshots after %s = %+v", event, snapshots)
+				t.Fatalf("snapshots after %s = %+v", test.name, snapshots)
 			}
 			for _, snapshot := range snapshots {
 				if snapshot.InstanceID != "kept" {
-					t.Fatalf("snapshot for purged instance survived %s: %+v", event, snapshot)
+					t.Fatalf("snapshot for purged instance survived %s: %+v", test.name, snapshot)
 				}
 			}
 		})
@@ -171,5 +207,25 @@ func TestFleetDriftReportsThreeWindowsOfOccupancyChange(t *testing.T) {
 		math.Abs(report.Windows[2].Change.OccupancyDistance-1) > 1e-9 ||
 		math.Abs(report.Windows[2].Change.DiversityDelta+mixedDiversity) > 1e-9 {
 		t.Fatalf("unexpected occupancy changes: %+v", report.Windows)
+	}
+}
+
+func TestFleetDriftOccupancyIgnoresMedoidChurnForUnchangedMembership(t *testing.T) {
+	shapes := []FleetShape{
+		{Shape: "shape-a", Cluster: "c0", Workflows: 2},
+		{Shape: "shape-b", Cluster: "c0", Workflows: 3},
+	}
+	before, _ := fleetWindowOccupancy(FleetView{
+		Workflows: 5,
+		Shapes:    shapes,
+		Clusters:  []FleetCluster{{ID: "c0", MedoidShape: "shape-a", Workflows: 5}},
+	})
+	after, _ := fleetWindowOccupancy(FleetView{
+		Workflows: 5,
+		Shapes:    shapes,
+		Clusters:  []FleetCluster{{ID: "c0", MedoidShape: "shape-b", Workflows: 5}},
+	})
+	if distance := occupancyDistance(before, after); distance != 0 {
+		t.Fatalf("occupancy distance after medoid churn = %v, want 0; before=%+v after=%+v", distance, before, after)
 	}
 }

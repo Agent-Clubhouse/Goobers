@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -31,6 +33,40 @@ type RetainedSnapshotStore interface {
 	Write(context.Context, string, FleetSnapshot) error
 	Snapshots(context.Context, string) ([]FleetSnapshot, error)
 	PurgeInstance(context.Context, string, string) error
+}
+
+// ReconcileRetainedFleet removes snapshots whose source is no longer an active,
+// scoped member of an authoritative fleet association set.
+func ReconcileRetainedFleet(ctx context.Context, store RetainedSnapshotStore, fleetID string, associations []fleet.Association) error {
+	if store == nil {
+		return errors.New("workflowcluster: retained snapshot store is required")
+	}
+	active := make(map[string]bool, len(associations))
+	for _, association := range associations {
+		if association.FleetID != fleetID || association.InstanceID == "" {
+			continue
+		}
+		if !association.Revoked && slices.Contains(association.Projections, fleet.ProjectionLabsWorkflowFeatures) {
+			active[association.InstanceID] = true
+		}
+	}
+	snapshots, err := store.Snapshots(ctx, fleetID)
+	if err != nil {
+		return err
+	}
+	retained := make(map[string]bool, len(snapshots))
+	for _, snapshot := range snapshots {
+		retained[snapshot.InstanceID] = true
+	}
+	for instanceID := range retained {
+		if active[instanceID] {
+			continue
+		}
+		if err := store.PurgeInstance(ctx, fleetID, instanceID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // FileRetainedSnapshotStore stores snapshots as private JSON files.

@@ -96,7 +96,7 @@ func fleetWindowOccupancy(view FleetView) ([]FleetDriftOccupancy, float64) {
 	counts := make(map[string]int, len(view.Clusters)+1)
 	clustered := 0
 	for _, cluster := range view.Clusters {
-		counts[cluster.MedoidShape] += cluster.Workflows
+		counts[fleetDriftClusterID(view, cluster.ID)] += cluster.Workflows
 		clustered += cluster.Workflows
 	}
 	if noise := view.Workflows - clustered; noise > 0 {
@@ -111,6 +111,17 @@ func fleetWindowOccupancy(view FleetView) ([]FleetDriftOccupancy, float64) {
 	}
 	sort.Slice(occupancy, func(i, j int) bool { return occupancy[i].Cluster < occupancy[j].Cluster })
 	return occupancy, diversity
+}
+
+func fleetDriftClusterID(view FleetView, clusterID string) string {
+	parts := []string{"drift-cluster"}
+	for _, shape := range view.Shapes {
+		if shape.Cluster == clusterID {
+			parts = append(parts, shape.Shape)
+		}
+	}
+	sort.Strings(parts[1:])
+	return fleetHash(parts...)
 }
 
 func occupancyDistance(before, after []FleetDriftOccupancy) float64 {
