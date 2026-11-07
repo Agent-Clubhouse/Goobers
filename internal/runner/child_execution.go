@@ -99,7 +99,7 @@ func (r *Runner) validateChildExecution(in StartInput) error {
 	if expected == nil {
 		return nil
 	}
-	if in.Child == nil || *in.Child != *expected.Child || in.RunID != expected.RunID || in.Gaggle != expected.Gaggle || in.Machine == nil || in.Machine.Digest() != expected.WorkflowDigest || in.GooberDigest != expected.GooberDigest || r.cfg.ConfigGeneration != expected.ConfigGeneration {
+	if in.Child == nil || expected.Child == nil || !in.Child.Equal(*expected.Child) || in.RunID != expected.RunID || in.Gaggle != expected.Gaggle || in.Machine == nil || in.Machine.Digest() != expected.WorkflowDigest || in.GooberDigest != expected.GooberDigest || r.cfg.ConfigGeneration != expected.ConfigGeneration {
 		return errors.New("runner: isolated driver cannot execute another child or source")
 	}
 	if !r.cfg.childTrustedLocal && len(in.RequiredCapabilities) != 0 {

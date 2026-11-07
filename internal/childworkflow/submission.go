@@ -1,6 +1,7 @@
 package childworkflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -141,6 +142,7 @@ func (s *SubmissionService) Submit(ctx context.Context, origin Origin, request S
 	if err != nil {
 		return Submission{}, err
 	}
+	envelope = s.retainedNovelty(ctx, envelope, authority.Actor)
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		return Submission{}, err
@@ -178,6 +180,32 @@ func (s *SubmissionService) Submit(ctx context.Context, origin Origin, request S
 		return Submission{}, err
 	}
 	return Submission{Child: child, Duplicate: duplicate, Envelope: envelope, Admission: admission}, nil
+}
+
+// retainedNovelty keeps the advisory evidence pinned by an earlier acceptance
+// of this exact start. Novelty comes from a model snapshot that may change
+// across daemon restarts, so it must not turn an exact retry into a conflict.
+// Any other difference is left for AcceptChild to refuse.
+func (s *SubmissionService) retainedNovelty(ctx context.Context, envelope ChildStartEnvelope, actor string) ChildStartEnvelope {
+	receipt, err := s.Queue.VerifiedChildStart(ctx, envelope.Identity(), actor)
+	if err != nil {
+		return envelope
+	}
+	retained, err := DecodeStartEnvelope(receipt.Payload)
+	if err != nil {
+		return envelope
+	}
+	candidate := envelope
+	candidate.Novelty = retained.Novelty
+	want, err := json.Marshal(candidate)
+	if err != nil {
+		return envelope
+	}
+	got, err := json.Marshal(retained)
+	if err != nil || !bytes.Equal(want, got) {
+		return envelope
+	}
+	return candidate
 }
 
 // HumanApprovalRequired reports whether the pinned advisory evidence requires

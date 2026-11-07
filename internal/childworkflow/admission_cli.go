@@ -25,7 +25,10 @@ const AdmissionHelp = "Usage: goobers workflow child-admission [--approve <child
 	"evidence. --approve releases the child to ordinary dispatch and journals the\n" +
 	"approval in its lineage; --reject settles it as a failed child result that the\n" +
 	"parent observes. Decisions are durable and immutable; repeating one is a no-op.\n" +
-	"--actor defaults to the invoking user. Operates on the instance's local queue\n" +
+	"--actor defaults to the invoking user: GITHUB_ACTOR, USER or USERNAME, then the\n" +
+	"OS account. The actor is self-asserted, matching the trusted-local model:\n" +
+	"anyone who can open the instance's local queue can decide, and the actor is\n" +
+	"recorded for audit, not authenticated. Operates on the instance's local queue\n" +
 	"(default path \".\").\n\n" +
 	"Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.\n"
 

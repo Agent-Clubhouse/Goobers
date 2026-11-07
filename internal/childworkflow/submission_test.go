@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -448,5 +449,30 @@ func TestSubmissionScopeAndOccupiedSlotCannotAccumulateArtifacts(t *testing.T) {
 	bindSubmissionOrigin(t, s, foreign, "")
 	if _, err := s.Get(t.Context(), foreign, "call"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("sibling read another occurrence=%v", err)
+	}
+}
+
+func TestSubmissionRetryKeepsOriginalNoveltyAfterModelChange(t *testing.T) {
+	s, resolver := oodSubmissionFixture(t, true)
+	request := SubmissionRequest{InvocationKey: "ood", Source: []byte(validProposal)}
+	first, err := s.Submit(t.Context(), resolver.current.Origin, request)
+	if err != nil || first.Envelope.Novelty == nil {
+		t.Fatalf("Submit = %+v, %v", first.Envelope.Novelty, err)
+	}
+	resolver.current.Admission.ClusterModel = &workflowcluster.Model{Version: workflowcluster.ModelVersion, ID: "sha256:restarted-model", FeatureVersion: workflowcluster.StructuralFeatureVersion}
+	if fresh, err := s.Validate(t.Context(), resolver.current.Origin, request.Source); err != nil || fresh.Novelty == nil || fresh.Novelty.ModelID == first.Envelope.Novelty.ModelID {
+		t.Fatalf("model change did not change live novelty: %+v, %v", fresh, err)
+	}
+	retry, err := s.Submit(t.Context(), resolver.current.Origin, request)
+	if err != nil || !retry.Duplicate || retry.Child.ChildID != first.Child.ChildID || retry.Envelope.Novelty == nil || retry.Envelope.Novelty.ModelID != "sha256:model" {
+		t.Fatalf("retry = %+v, %v", retry, err)
+	}
+	if retry.Admission == nil || retry.Admission.State != triggerqueue.ChildAdmissionPending {
+		t.Fatalf("retry admission = %+v", retry.Admission)
+	}
+	other := request
+	other.Source = []byte(strings.Replace(validProposal, "Run the local check", "Run another local check", 1))
+	if _, err := s.Submit(t.Context(), resolver.current.Origin, other); err == nil {
+		t.Fatal("different proposal reused the retained receipt")
 	}
 }

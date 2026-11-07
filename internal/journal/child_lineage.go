@@ -63,9 +63,22 @@ type ChildHistoricalOutcome struct {
 	InsufficientRuns bool    `json:"insufficientRuns"`
 }
 
-// Equal compares lineage by value, including pinned advisory evidence.
+// Equal compares lineage by value, including pinned advisory evidence. An
+// approval time is compared as an instant, so a decoded journal copy equals the
+// lineage it was written from regardless of time zone.
 func (c ChildLineage) Equal(other ChildLineage) bool {
-	return reflect.DeepEqual(c, other)
+	return reflect.DeepEqual(c.comparable(), other.comparable())
+}
+
+func (c ChildLineage) comparable() ChildLineage {
+	if c.Novelty == nil || c.Novelty.HumanApproval == nil {
+		return c
+	}
+	novelty, approval := *c.Novelty, *c.Novelty.HumanApproval
+	approval.ApprovedAt = approval.ApprovedAt.UTC().Round(0)
+	novelty.HumanApproval = &approval
+	c.Novelty = &novelty
+	return c
 }
 
 // ValidateChildLineage refuses malformed or cross-gaggle generated provenance.

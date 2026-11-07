@@ -3719,7 +3719,10 @@ Without --approve or --reject, list pending children with their pinned novelty
 evidence. --approve releases the child to ordinary dispatch and journals the
 approval in its lineage; --reject settles it as a failed child result that the
 parent observes. Decisions are durable and immutable; repeating one is a no-op.
---actor defaults to the invoking user. Operates on the instance's local queue
+--actor defaults to the invoking user: GITHUB_ACTOR, USER or USERNAME, then the
+OS account. The actor is self-asserted, matching the trusted-local model:
+anyone who can open the instance's local queue can decide, and the actor is
+recorded for audit, not authenticated. Operates on the instance's local queue
 (default path ".").
 
 Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.
