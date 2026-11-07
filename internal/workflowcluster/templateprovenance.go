@@ -24,6 +24,10 @@ const (
 	// DefaultTemplateDistanceThreshold is the maximum structural distance at
 	// which a workflow is considered template-derived.
 	DefaultTemplateDistanceThreshold = 0.35
+	// BeyondTemplatesStratum is the --stratify template label for workflows
+	// farther than DefaultTemplateDistanceThreshold from every shipped
+	// template, whatever their annotation declares.
+	BeyondTemplatesStratum = "beyond-templates"
 )
 
 // TemplateFingerprint identifies one shipped workflow template compiled into
@@ -34,13 +38,19 @@ type TemplateFingerprint struct {
 }
 
 // TemplateProvenance describes a configured workflow's relationship to a
-// shipped template.
+// shipped template. TemplateID is the declared template when the workflow is
+// still within the derivation threshold of it, and otherwise the nearest
+// shipped template. Derived is decided by structural distance alone: an
+// annotation is declared provenance, not proof that the shape still matches.
 type TemplateProvenance struct {
 	TemplateID  string  `json:"templateId"`
 	Fingerprint string  `json:"fingerprint,omitempty"`
 	Distance    float64 `json:"distance"`
-	Explicit    bool    `json:"explicit"`
-	Derived     bool    `json:"derived"`
+	// Explicit reports that the provenance annotation names a shipped
+	// template; DeclaredTemplateID is that template.
+	Explicit           bool   `json:"explicit"`
+	DeclaredTemplateID string `json:"declaredTemplateId,omitempty"`
+	Derived            bool   `json:"derived"`
 }
 
 // BeyondTemplateCluster is a cluster whose medoid is structurally far from
@@ -169,16 +179,21 @@ func analyzeTemplateCatalog(points []Point, explicit Strata, model *Model, templ
 	strata := make(Strata, len(points))
 	for _, point := range points {
 		provenance := nearestTemplate(schema, point, templates)
-		// An annotation naming a template this build does not ship falls back
-		// to the nearest shipped template rather than reporting a distance.
+		// An annotation naming a template this build does not ship is
+		// ignored. One naming a shipped template is kept as a label, and
+		// attributes the workflow to that template only while the shape is
+		// still within the threshold of it.
 		if template, ok := templateByID[explicit[point.ID]]; ok {
-			provenance = TemplateProvenance{
-				TemplateID: template.ID, Fingerprint: template.Fingerprint,
-				Distance: round6(schema.Distance(point, template.Point)), Explicit: true, Derived: true,
+			provenance.Explicit, provenance.DeclaredTemplateID = true, template.ID
+			if distance := round6(schema.Distance(point, template.Point)); distance <= DefaultTemplateDistanceThreshold {
+				provenance.TemplateID, provenance.Fingerprint, provenance.Distance = template.ID, template.Fingerprint, distance
 			}
 		}
 		report.Workflows[point.ID] = provenance
-		strata[point.ID] = provenance.TemplateID
+		strata[point.ID] = BeyondTemplatesStratum
+		if provenance.Derived {
+			strata[point.ID] = provenance.TemplateID
+		}
 	}
 	if model != nil {
 		for _, cluster := range model.Clusters {

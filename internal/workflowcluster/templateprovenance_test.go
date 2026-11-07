@@ -28,46 +28,65 @@ func TestShippedTemplatesHaveStableFingerprints(t *testing.T) {
 	}
 }
 
-func TestAnalyzeTemplateCatalogHonorsAnnotationsAndReportsBeyondTemplates(t *testing.T) {
-	templates := []shippedTemplate{{
-		TemplateFingerprint: TemplateFingerprint{ID: "reference/base", Fingerprint: "sha256:base"},
-		Point:               Point{ID: "reference/base", Numeric: map[string]float64{"nodes": 0}},
-	}}
-	points := []Point{
-		{ID: "g/declared", Numeric: map[string]float64{"nodes": 1}},
-		{ID: "g/near", Numeric: map[string]float64{"nodes": 0}},
-		{ID: "g/novel", Numeric: map[string]float64{"nodes": 1}},
-		{ID: "g/unknown", Numeric: map[string]float64{"nodes": 1}},
+func TestAnalyzeTemplateCatalogDecidesDerivationByDistance(t *testing.T) {
+	templates := []shippedTemplate{
+		{
+			TemplateFingerprint: TemplateFingerprint{ID: "reference/alt", Fingerprint: "sha256:alt"},
+			Point:               Point{ID: "reference/alt", Numeric: map[string]float64{"nodes": 2}},
+		},
+		{
+			TemplateFingerprint: TemplateFingerprint{ID: "reference/base", Fingerprint: "sha256:base"},
+			Point:               Point{ID: "reference/base", Numeric: map[string]float64{"nodes": 0}},
+		},
 	}
-	model := Model{Clusters: []Cluster{{ID: "novel", Medoid: points[2]}}}
+	points := []Point{
+		{ID: "g/declared-near", Numeric: map[string]float64{"nodes": 1}},
+		{ID: "g/declared-far", Numeric: map[string]float64{"nodes": 10}},
+		{ID: "g/near", Numeric: map[string]float64{"nodes": 0}},
+		{ID: "g/unknown", Numeric: map[string]float64{"nodes": 10}},
+	}
+	model := Model{Clusters: []Cluster{
+		{ID: "far", Medoid: points[1]},
+		{ID: "near", Medoid: points[0]},
+	}}
 
 	report, strata := analyzeTemplateCatalog(
 		points,
-		Strata{"g/declared": "reference/base", "g/unknown": "retired/template"},
+		Strata{"g/declared-near": "reference/alt", "g/declared-far": "reference/base", "g/unknown": "retired/template"},
 		&model,
 		templates,
 	)
 
-	declared := report.Workflows["g/declared"]
-	if !declared.Explicit || !declared.Derived || declared.TemplateID != "reference/base" ||
-		declared.Fingerprint != "sha256:base" || declared.Distance != 1 {
-		t.Fatalf("declared provenance = %+v", declared)
+	declaredNear := report.Workflows["g/declared-near"]
+	if !declaredNear.Explicit || !declaredNear.Derived || declaredNear.TemplateID != "reference/alt" ||
+		declaredNear.DeclaredTemplateID != "reference/alt" || declaredNear.Fingerprint != "sha256:alt" || declaredNear.Distance != 0.1 {
+		t.Fatalf("declared-near provenance = %+v, want derived from its declared template", declaredNear)
 	}
-	unknown := report.Workflows["g/unknown"]
-	if unknown.Explicit || unknown.Derived || unknown.TemplateID != "reference/base" || unknown.Distance != 1 {
-		t.Fatalf("unshipped annotation provenance = %+v, want nearest-template fallback", unknown)
+	declaredFar := report.Workflows["g/declared-far"]
+	if !declaredFar.Explicit || declaredFar.Derived || declaredFar.DeclaredTemplateID != "reference/base" ||
+		declaredFar.TemplateID != "reference/alt" || declaredFar.Distance != 0.8 {
+		t.Fatalf("declared-far provenance = %+v, want a declared but not derived nearest-template record", declaredFar)
 	}
 	near := report.Workflows["g/near"]
 	if near.Explicit || !near.Derived || near.TemplateID != "reference/base" || near.Distance != 0 {
 		t.Fatalf("nearest provenance = %+v", near)
 	}
-	novel := report.Workflows["g/novel"]
-	if novel.Derived || novel.Distance != 1 {
-		t.Fatalf("novel provenance = %+v", novel)
+	unknown := report.Workflows["g/unknown"]
+	if unknown.Explicit || unknown.DeclaredTemplateID != "" || unknown.Derived || unknown.TemplateID != "reference/alt" {
+		t.Fatalf("unshipped annotation provenance = %+v, want nearest-template fallback", unknown)
 	}
-	if strata["g/near"] != "reference/base" || len(report.BeyondTemplates) != 1 ||
-		report.BeyondTemplates[0].MedoidID != "g/novel" {
-		t.Fatalf("report = %+v, strata = %+v", report, strata)
+	wantStrata := Strata{
+		"g/declared-near": "reference/alt", "g/declared-far": BeyondTemplatesStratum,
+		"g/near": "reference/base", "g/unknown": BeyondTemplatesStratum,
+	}
+	for id, want := range wantStrata {
+		if strata[id] != want {
+			t.Errorf("stratum[%s] = %q, want %q", id, strata[id], want)
+		}
+	}
+	if len(report.BeyondTemplates) != 1 || report.BeyondTemplates[0].MedoidID != "g/declared-far" ||
+		report.BeyondTemplates[0].NearestTemplate != "reference/alt" || report.BeyondTemplates[0].Distance != 0.8 {
+		t.Fatalf("beyond templates = %+v, want only the annotated-but-far medoid", report.BeyondTemplates)
 	}
 }
 

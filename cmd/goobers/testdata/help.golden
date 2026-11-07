@@ -3736,12 +3736,15 @@ modified (default path ".").
 
 Template provenance fingerprints the workflow templates embedded in this
 build: reference workflows, config examples, and the starter, demo,
-quickstart, and scaffold workflows. Configured workflows use the explicit
+quickstart, and scaffold workflows. A workflow is template-derived only
+when it lies within 0.35 structural distance of a shipped template. The
 metadata.annotations["goobers.dev/template-provenance"] written by init and
-scaffolding when it names a shipped template, or else the nearest shipped
-template by structural distance. The report marks template-derived
-workflows and cluster medoids farther than 0.35 from every shipped template
-(convergence beyond templates). Provenance is reported even when too few
+scaffolding is reported as declared provenance; it names the attributed
+template while the workflow is still within 0.35 of it, and otherwise the
+nearest shipped template is shown. Cluster medoids farther than 0.35 from
+every shipped template are reported as convergence beyond templates, and
+--stratify template groups derived workflows by template and the rest as
+"beyond-templates". Provenance is reported even when too few
 workflows are configured to cluster. Bare --json stays the frozen model
 that --cluster-model reads; JSON carries the template report alongside
 any other requested report (for example --stratify template --json).

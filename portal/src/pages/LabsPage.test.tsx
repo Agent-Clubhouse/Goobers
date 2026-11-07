@@ -189,10 +189,12 @@ const clustered: LabsWorkflowClusterView = {
         derived: true,
       },
       "ops/triage": {
-        templateId: "scaffold/workflow",
-        distance: 0,
+        templateId: "reference/implementation",
+        fingerprint: "sha256:abc",
+        distance: 0.6,
         explicit: true,
-        derived: true,
+        derived: false,
+        declaredTemplateId: "scaffold/workflow",
       },
     },
     beyondTemplates: [
@@ -272,6 +274,9 @@ describe("LabsPage", () => {
     expect(within(card).getByText("capabilities=git")).toBeInTheDocument();
     expect(within(card).getByText("-0.40")).toBeInTheDocument();
     expect(within(card).getAllByText(/derived from reference\/implementation/).length).toBeGreaterThan(0);
+    expect(
+      within(card).getByText(/nearest reference\/implementation · 0\.60 · declared scaffold\/workflow, diverged/),
+    ).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Convergence beyond templates" })).toHaveTextContent(
       "core/novel is 0.72 from reference/implementation",
     );
@@ -358,6 +363,7 @@ describe("LabsPage", () => {
             distance: 0,
             explicit: true,
             derived: true,
+            declaredTemplateId: "starter/default-implement",
           },
         },
         beyondTemplates: null,

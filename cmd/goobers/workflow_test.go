@@ -708,7 +708,8 @@ func TestWorkflowClustersReportsShippedTemplateProvenance(t *testing.T) {
 				t.Fatal("no workflow provenance reported")
 			}
 			for id, provenance := range out.Templates.Workflows {
-				if !provenance.Explicit || provenance.Fingerprint == "" || catalog[provenance.TemplateID] != provenance.Fingerprint {
+				if !provenance.Explicit || !provenance.Derived || provenance.DeclaredTemplateID != provenance.TemplateID ||
+					provenance.Fingerprint == "" || catalog[provenance.TemplateID] != provenance.Fingerprint {
 					t.Errorf("%s provenance = %+v, want a declared, cataloged template", id, provenance)
 				}
 			}

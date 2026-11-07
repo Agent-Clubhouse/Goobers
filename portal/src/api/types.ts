@@ -2288,6 +2288,7 @@ export interface LabsTemplateProvenance {
   distance: number;
   explicit: boolean;
   derived: boolean;
+  declaredTemplateId?: string;
 }
 
 export interface LabsTemplateReport {

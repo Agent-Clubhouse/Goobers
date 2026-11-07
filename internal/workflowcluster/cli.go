@@ -42,12 +42,15 @@ const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavio
 	"modified (default path \".\").\n\n" +
 	"Template provenance fingerprints the workflow templates embedded in this\n" +
 	"build: reference workflows, config examples, and the starter, demo,\n" +
-	"quickstart, and scaffold workflows. Configured workflows use the explicit\n" +
+	"quickstart, and scaffold workflows. A workflow is template-derived only\n" +
+	"when it lies within 0.35 structural distance of a shipped template. The\n" +
 	"metadata.annotations[\"goobers.dev/template-provenance\"] written by init and\n" +
-	"scaffolding when it names a shipped template, or else the nearest shipped\n" +
-	"template by structural distance. The report marks template-derived\n" +
-	"workflows and cluster medoids farther than 0.35 from every shipped template\n" +
-	"(convergence beyond templates). Provenance is reported even when too few\n" +
+	"scaffolding is reported as declared provenance; it names the attributed\n" +
+	"template while the workflow is still within 0.35 of it, and otherwise the\n" +
+	"nearest shipped template is shown. Cluster medoids farther than 0.35 from\n" +
+	"every shipped template are reported as convergence beyond templates, and\n" +
+	"--stratify template groups derived workflows by template and the rest as\n" +
+	"\"beyond-templates\". Provenance is reported even when too few\n" +
 	"workflows are configured to cluster. Bare --json stays the frozen model\n" +
 	"that --cluster-model reads; JSON carries the template report alongside\n" +
 	"any other requested report (for example --stratify template --json).\n\n" +
@@ -405,14 +408,17 @@ func writeWorkflowTemplateReport(w io.Writer, report TemplateReport, clustered b
 	ids := sortedKeys(report.Workflows)
 	for _, id := range ids {
 		provenance := report.Workflows[id]
-		relation := "nearest"
-		if provenance.Derived {
+		relation, declared := "nearest", ""
+		switch {
+		case provenance.Derived && provenance.DeclaredTemplateID == provenance.TemplateID:
+			relation = "declared from"
+		case provenance.Derived:
 			relation = "derived from"
 		}
-		if provenance.Explicit {
-			relation = "declared from"
+		if provenance.Explicit && provenance.DeclaredTemplateID != provenance.TemplateID {
+			declared = "; declared " + provenance.DeclaredTemplateID + ", diverged"
 		}
-		p("  %s  %s %s (distance %.3f)\n", id, relation, provenance.TemplateID, provenance.Distance)
+		p("  %s  %s %s (distance %.3f%s)\n", id, relation, provenance.TemplateID, provenance.Distance, declared)
 	}
 	if !clustered {
 		return

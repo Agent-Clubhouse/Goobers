@@ -364,10 +364,12 @@ function TemplateLabel({
   provenance?: NonNullable<LabsWorkflowClusterView["templates"]>["workflows"][string];
 }) {
   if (!provenance) return null;
+  const declaredMatches = provenance.declaredTemplateId === provenance.templateId;
+  const relation = !provenance.derived ? "nearest" : declaredMatches ? "declared from" : "derived from";
   return (
     <span className={provenance.derived ? "labs-badge labs-badge-template" : "labs-template-nearest"}>
-      {provenance.explicit ? "declared from" : provenance.derived ? "derived from" : "nearest"}{" "}
-      {provenance.templateId} · {provenance.distance.toFixed(2)}
+      {relation} {provenance.templateId} · {provenance.distance.toFixed(2)}
+      {provenance.explicit && !declaredMatches ? ` · declared ${provenance.declaredTemplateId}, diverged` : null}
     </span>
   );
 }
