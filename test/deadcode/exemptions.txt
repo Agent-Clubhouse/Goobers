@@ -462,4 +462,3 @@ github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.DeleteB
 github.com/goobers/goobers/internal/terminalhooks/providerwriter.Pending.ReleaseClaimMarker # Provider-writer seam (#7818 group D, 3b-1) awaiting the 3b hooks and the #8093 implementation; exercised by providerwriter tests. expires=2026-12-15
 
 # Engine child parent capacity plane (#8085 d), composed when L1e hands the control scheduler to childengine as ParentSlots.
-
