@@ -255,3 +255,22 @@ func benchmarkErrorDetail(err error) journal.ErrorDetail {
 	// Callers pass only a non-nil session error, so ErrorDetailFor never returns nil.
 	return *journal.ErrorDetailFor(BenchmarkErrorSessionFailed, err)
 }
+
+// CheckBenchmarkExpectedFailure verifies that the fake harness observed the
+// failure mode declared by a Workflow Gym task.
+func CheckBenchmarkExpectedFailure(task apiv1.WorkflowGymTaskManifest, runErr error) error {
+	if task.ExpectedFailureMode == "" {
+		if runErr != nil {
+			return fmt.Errorf("workflow gym task %q unexpectedly failed: %w", task.TaskID, runErr)
+		}
+		return nil
+	}
+	if runErr == nil {
+		return fmt.Errorf("workflow gym task %q expected failure %q but succeeded", task.TaskID, task.ExpectedFailureMode)
+	}
+	observed := benchmarkErrorDetail(runErr).Code
+	if observed != task.ExpectedFailureMode {
+		return fmt.Errorf("workflow gym task %q failure mode = %q, want %q", task.TaskID, observed, task.ExpectedFailureMode)
+	}
+	return nil
+}

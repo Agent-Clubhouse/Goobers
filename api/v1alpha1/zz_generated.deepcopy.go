@@ -2763,6 +2763,11 @@ func (in *WorkflowGymRetention) DeepCopy() *WorkflowGymRetention {
 func (in *WorkflowGymTaskManifest) DeepCopyInto(out *WorkflowGymTaskManifest) {
 	*out = *in
 	out.Provenance = in.Provenance
+	if in.Constraints != nil {
+		in, out := &in.Constraints, &out.Constraints
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	out.Retention = in.Retention
 	out.Licensing = in.Licensing
 	in.CandidateEnvironment.DeepCopyInto(&out.CandidateEnvironment)

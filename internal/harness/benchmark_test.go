@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/providerfixture"
+	"github.com/goobers/goobers/internal/workflowgym"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -161,6 +162,56 @@ func TestBenchmarkReplayIsByteStable(t *testing.T) {
 		if err := json.Unmarshal(line, &event); err != nil || event.Schema != journal.EventSchema {
 			t.Fatalf("journal line %s does not decode as a journal event: %v", line, err)
 		}
+	}
+}
+
+func TestBenchmarkChecksGeneratedTaskFailureModes(t *testing.T) {
+	for _, class := range workflowgym.TaskClasses() {
+		t.Run(string(class), func(t *testing.T) {
+			task, err := workflowgym.Generate(workflowgym.GeneratorVersionV1, class, 8225)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recorded *journal.ErrorDetail
+			var act BenchmarkAct
+			switch class {
+			case workflowgym.TaskClassNormal:
+			case workflowgym.TaskClassMalicious:
+				act = func(ctx context.Context, _ RunRequest, sandbox *BenchmarkSandbox) error {
+					_, err := sandbox.Token(ctx)
+					return err
+				}
+			case workflowgym.TaskClassAdversarial:
+				act = func(ctx context.Context, _ RunRequest, sandbox *BenchmarkSandbox) error {
+					req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com/repos/acme/web/issues/7/comments", nil)
+					if err != nil {
+						return err
+					}
+					_, err = sandbox.Do(req)
+					return err
+				}
+			default:
+				recorded = &journal.ErrorDetail{Code: task.ExpectedFailureMode, Message: "synthetic failure"}
+			}
+			_, _, runErr := runBenchmark(t, loadBenchmarkTestFixture(t, recorded), act)
+			if err := CheckBenchmarkExpectedFailure(task, runErr); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func TestBenchmarkRejectsMissingAndMismatchedExpectedFailures(t *testing.T) {
+	task, err := workflowgym.Generate(workflowgym.GeneratorVersionV1, workflowgym.TaskClassTimeout, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBenchmarkExpectedFailure(task, nil); err == nil {
+		t.Fatal("missing expected failure passed")
+	}
+	wrong := &BenchmarkRecordedFailure{Detail: journal.ErrorDetail{Code: "wrong_failure", Message: "wrong"}}
+	if err := CheckBenchmarkExpectedFailure(task, wrong); err == nil {
+		t.Fatal("mismatched expected failure passed")
 	}
 }
 

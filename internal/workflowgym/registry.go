@@ -151,6 +151,27 @@ func validateTask(task apiv1.WorkflowGymTaskManifest) error {
 	default:
 		return fmt.Errorf("split must be train, eval, or holdout")
 	}
+	generated := task.GeneratorVersion != "" || task.TaskClass != "" || len(task.Constraints) != 0 || task.MinimalReproductionID != ""
+	if generated {
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"generatorVersion", task.GeneratorVersion},
+			{"taskClass", task.TaskClass},
+			{"minimalReproductionId", task.MinimalReproductionID},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return fmt.Errorf("%s is required for generated tasks", field.name)
+			}
+		}
+		if len(task.Constraints) == 0 {
+			return fmt.Errorf("constraints are required for generated tasks")
+		}
+		if !validTaskClass(TaskClass(task.TaskClass)) {
+			return fmt.Errorf("taskClass %q is not supported", task.TaskClass)
+		}
+	}
 	return nil
 }
 
