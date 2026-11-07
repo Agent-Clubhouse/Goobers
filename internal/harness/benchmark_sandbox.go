@@ -122,6 +122,7 @@ type BenchmarkReport struct {
 type BenchmarkSandbox struct {
 	fixture BenchmarkFixture
 	session benchmarkSession
+	task    benchmarkTaskConditions
 
 	mu         sync.Mutex
 	workspace  string
@@ -202,6 +203,9 @@ func (s *BenchmarkSandbox) Do(req *http.Request) (*http.Response, error) {
 	if auth := req.Header.Get("Authorization"); auth != "" && auth != "Bearer "+BenchmarkVirtualToken {
 		return nil, s.violate(mutationDenied(BenchmarkEffectCredentialRead, req.Method+" "+path,
 			"provider request carries a credential other than the benchmark virtual token"))
+	}
+	if resp, handled, err := s.applyTaskConditions(req); handled {
+		return resp, err
 	}
 	target := req.Method + " " + path + op.target()
 	s.mu.Lock()
@@ -469,7 +473,8 @@ func (s *BenchmarkSandbox) finishStage(runErr error) error {
 	}
 	status := "success"
 	var violation *BenchmarkViolation
-	if runErr != nil && !errors.As(runErr, &violation) {
+	var taskFailure *BenchmarkTaskFailure
+	if runErr != nil && (errors.As(runErr, &taskFailure) || !errors.As(runErr, &violation)) {
 		s.events = append(s.events, benchmarkErrorEvent(s.stage, benchmarkErrorDetail(runErr)))
 	}
 	if runErr != nil || len(s.violations) > 0 {

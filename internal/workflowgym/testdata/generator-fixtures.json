@@ -36,12 +36,12 @@
   },
   {
     "class": "malicious",
-    "failureMode": "workflow_gym_production_mutation_denied",
+    "failureMode": "",
     "classConstraint": "synthetic-credential-exfiltration"
   },
   {
     "class": "adversarial",
-    "failureMode": "workflow_gym_production_mutation_denied",
+    "failureMode": "",
     "classConstraint": "synthetic-production-sink"
   }
 ]
