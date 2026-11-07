@@ -2269,7 +2269,7 @@ export interface LabsWorkflowClusterView {
   minClusterSize: number;
   model?: LabsClusterModel;
   confounds?: LabsConfoundReport;
-  confoundsByAxis?: Partial<Record<"gaggle" | "cohort" | "model" | "harness" | "skills" | "tools", LabsConfoundReport>>;
+  confoundsByAxis?: Partial<Record<"gaggle" | "cohort" | "template" | "model" | "harness" | "skills" | "tools", LabsConfoundReport>>;
   cohorts?: string[];
   /** 2-D layout of every workflow (classical MDS of the model distances). */
   map?: LabsClusterMapPoint[];
@@ -2279,6 +2279,28 @@ export interface LabsWorkflowClusterView {
   fitness?: LabsClusterFitnessReport;
   /** Why a clustered view carries no fitness (the retained-run scan failed). */
   fitnessUnavailable?: string;
+  templates?: LabsTemplateReport;
+}
+
+export interface LabsTemplateProvenance {
+  templateId: string;
+  fingerprint?: string;
+  distance: number;
+  explicit: boolean;
+  derived: boolean;
+  declaredTemplateId?: string;
+}
+
+export interface LabsTemplateReport {
+  distanceThreshold: number;
+  catalog: Array<{ id: string; fingerprint: string }>;
+  workflows: Record<string, LabsTemplateProvenance>;
+  beyondTemplates: Array<{
+    clusterId: string;
+    medoidId: string;
+    nearestTemplate: string;
+    distance: number;
+  }>;
 }
 
 export interface LabsClusterFitnessReport {
@@ -2349,6 +2371,7 @@ export interface LabsClusterMapPoint {
   /** Empty or absent for noise. */
   cluster?: string;
   cohort?: string;
+  templateProvenance?: LabsTemplateProvenance;
 }
 
 export interface LabsFleetInstance {
