@@ -58,3 +58,17 @@ func TestConfiguredStrataCountsUndefinedModelProvenance(t *testing.T) {
 		t.Fatalf("harness = %q", got[StratifyHarness]["g/wf"])
 	}
 }
+
+func TestConfiguredStrataReadsExplicitTemplateProvenance(t *testing.T) {
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "wf",
+			Annotations: map[string]string{TemplateProvenanceAnnotation: "quickstart/v1"},
+		},
+		Spec: apiv1.WorkflowSpec{Gaggle: "g"},
+	}}
+	got := configuredStrata(workflows, nil)
+	if got[StratifyTemplate]["g/wf"] != "quickstart/v1" {
+		t.Fatalf("template stratum = %q", got[StratifyTemplate]["g/wf"])
+	}
+}

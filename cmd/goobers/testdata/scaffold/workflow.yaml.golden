@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: "my-flow"
+  annotations:
+    goobers.dev/template-provenance: scaffold/workflow
 spec:
   gaggle: "example"
   displayName: "my-flow"

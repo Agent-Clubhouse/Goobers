@@ -10,11 +10,12 @@ import (
 // nearby points are workflows the model considers similar. Cluster is empty
 // for noise.
 type MapPoint struct {
-	ID      string  `json:"id"`
-	X       float64 `json:"x"`
-	Y       float64 `json:"y"`
-	Cluster string  `json:"cluster,omitempty"`
-	Cohort  string  `json:"cohort,omitempty"`
+	ID                 string              `json:"id"`
+	X                  float64             `json:"x"`
+	Y                  float64             `json:"y"`
+	Cluster            string              `json:"cluster,omitempty"`
+	Cohort             string              `json:"cohort,omitempty"`
+	TemplateProvenance *TemplateProvenance `json:"templateProvenance,omitempty"`
 }
 
 const (

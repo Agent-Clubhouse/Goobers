@@ -105,10 +105,14 @@ type BenchmarkReceipt struct {
 // BenchmarkReport is the deterministic journal projection of one benchmark
 // task, using the production journal event structures.
 type BenchmarkReport struct {
-	Status     string
-	Events     []journal.Event
-	Journal    []byte
-	Receipts   []BenchmarkReceipt
+	Status   string
+	Events   []journal.Event
+	Journal  []byte
+	Receipts []BenchmarkReceipt
+	// Served lists, in observation order, every request a recorded exchange
+	// answered: reads as BenchmarkEffectProviderRead and mutations with their
+	// Receipts classification. Recorded exchanges nothing requested are absent.
+	Served     []BenchmarkReceipt
 	Violations []BenchmarkViolation
 }
 
@@ -122,15 +126,17 @@ type BenchmarkReport struct {
 type BenchmarkSandbox struct {
 	fixture BenchmarkFixture
 	session benchmarkSession
+	task    benchmarkTaskConditions
 
 	mu         sync.Mutex
 	workspace  string
 	stage      string
 	consumed   []bool
-	served     []int
+	reads      []int
 	variables  []string
 	events     []journal.Event
 	receipts   []BenchmarkReceipt
+	served     []BenchmarkReceipt
 	violations []*BenchmarkViolation
 	failed     bool
 }
@@ -153,7 +159,7 @@ func NewBenchmarkSandbox(fixture BenchmarkFixture) (*BenchmarkSandbox, error) {
 		fixture:   fixture,
 		session:   session,
 		consumed:  make([]bool, len(fixture.Provider.Exchanges)),
-		served:    make([]int, len(fixture.Provider.Exchanges)),
+		reads:     make([]int, len(fixture.Provider.Exchanges)),
 		variables: make([]string, len(fixture.Provider.Exchanges)),
 		events:    []journal.Event{benchmarkEvent(journal.EventRunStarted)},
 	}, nil
@@ -202,6 +208,9 @@ func (s *BenchmarkSandbox) Do(req *http.Request) (*http.Response, error) {
 	if auth := req.Header.Get("Authorization"); auth != "" && auth != "Bearer "+BenchmarkVirtualToken {
 		return nil, s.violate(mutationDenied(BenchmarkEffectCredentialRead, req.Method+" "+path,
 			"provider request carries a credential other than the benchmark virtual token"))
+	}
+	if resp, handled, err := s.applyTaskConditions(req); handled {
+		return resp, err
 	}
 	target := req.Method + " " + path + op.target()
 	s.mu.Lock()
@@ -256,15 +265,19 @@ func (s *BenchmarkSandbox) serveGraphQLReadLocked(req *http.Request, op benchmar
 // exchange has answered maxBenchmarkReadRepeats reads so a replay that never
 // converges cannot spin forever.
 func (s *BenchmarkSandbox) serveReadLocked(req *http.Request, i int, variables, target string) (*http.Response, error) {
-	if s.served[i] >= maxBenchmarkReadRepeats {
+	if s.reads[i] >= maxBenchmarkReadRepeats {
 		return nil, s.violateLocked(gapOrDenial(BenchmarkEffectProviderRead, target,
 			fmt.Sprintf("recorded exchange %q already answered %d reads; the replay is not converging",
 				s.fixture.Provider.Exchanges[i].Name, maxBenchmarkReadRepeats)))
 	}
-	s.served[i]++
+	s.reads[i]++
 	s.consumed[i] = true
 	s.variables[i] = variables
-	response := s.fixture.Provider.Exchanges[i].Response
+	exchange := s.fixture.Provider.Exchanges[i]
+	s.served = append(s.served, BenchmarkReceipt{
+		Effect: BenchmarkEffectProviderRead, Exchange: exchange.Name, Method: req.Method, Path: req.URL.RequestURI(),
+	})
+	response := exchange.Response
 	return benchmarkResponse(req, response.Status, response.Headers, response.Body), nil
 }
 
@@ -391,6 +404,13 @@ func (s *BenchmarkSandbox) refuseCommand(name string, args []string) error {
 		fmt.Sprintf("subprocess %q is not virtualized", command)))
 }
 
+// RefuseUnavailable reports an effect the caller cannot reconstruct offline,
+// such as a recorded mutation with no replayable request, as a
+// virtualization gap. The effect is never performed.
+func (s *BenchmarkSandbox) RefuseUnavailable(effect BenchmarkEffect, target, reason string) error {
+	return s.violate(virtualizationGap(effect, target, reason))
+}
+
 // RecordExternalRef projects a provider's mutation fact into a ref.touched
 // journal event. Only mutations served by a recorded exchange reach it.
 func (s *BenchmarkSandbox) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
@@ -469,7 +489,8 @@ func (s *BenchmarkSandbox) finishStage(runErr error) error {
 	}
 	status := "success"
 	var violation *BenchmarkViolation
-	if runErr != nil && !errors.As(runErr, &violation) {
+	var taskFailure *BenchmarkTaskFailure
+	if runErr != nil && (errors.As(runErr, &taskFailure) || !errors.As(runErr, &violation)) {
 		s.events = append(s.events, benchmarkErrorEvent(s.stage, benchmarkErrorDetail(runErr)))
 	}
 	if runErr != nil || len(s.violations) > 0 {
@@ -502,6 +523,7 @@ func (s *BenchmarkSandbox) violateLocked(v *BenchmarkViolation) error {
 
 func (s *BenchmarkSandbox) recordReceiptLocked(receipt BenchmarkReceipt) {
 	s.receipts = append(s.receipts, receipt)
+	s.served = append(s.served, receipt)
 	event := benchmarkEvent(journal.EventRunnerAnnotation)
 	event.Name = benchmarkVirtualSinkAnnotation
 	event.Runner = map[string]any{
@@ -543,7 +565,7 @@ func (s *BenchmarkSandbox) Report() (BenchmarkReport, error) {
 		out.Write(line)
 		out.WriteByte('\n')
 	}
-	report := BenchmarkReport{Status: status, Events: events, Journal: out.Bytes(), Receipts: slices.Clone(s.receipts)}
+	report := BenchmarkReport{Status: status, Events: events, Journal: out.Bytes(), Receipts: slices.Clone(s.receipts), Served: slices.Clone(s.served)}
 	for _, violation := range s.violations {
 		report.Violations = append(report.Violations, *violation)
 	}

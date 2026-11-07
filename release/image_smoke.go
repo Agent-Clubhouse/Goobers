@@ -64,10 +64,31 @@ const linuxImageDSL3Prepare = `demo="${GOOBERS_DSL3_SMOKE_DIR:-/tmp/dsl3-demo}"
 goobers init --allow-ephemeral --demo --insecure "$demo"
 workflow="$demo"/config/gaggles/demo/workflows/demo.yaml
 preview_workflow="$demo"/config/gaggles/demo/workflows/demo-preview.yaml
+# Shipped workflows already declare metadata.annotations (template
+# provenance): add the opt-in to that map, or append the map at the end of
+# metadata, so the key is never duplicated.
+preview_entry='    goobers.dev/allow-preview-features: "true"'
+state=
 while IFS= read -r line; do
+  if [ "$state" = metadata ]; then
+    case "$line" in
+      ' '*)
+        printf '%s\n' "$line"
+        if [ "$line" = '  annotations:' ]; then
+          printf '%s\n' "$preview_entry"
+          state=done
+        fi
+        continue
+        ;;
+      *)
+        printf '  annotations:\n%s\n' "$preview_entry"
+        state=done
+        ;;
+    esac
+  fi
   printf '%s\n' "$line"
-  if [ "$line" = 'metadata:' ]; then
-    printf '  annotations:\n    goobers.dev/allow-preview-features: "true"\n'
+  if [ -z "$state" ] && [ "$line" = 'metadata:' ]; then
+    state=metadata
   fi
 done < "$workflow" > "$preview_workflow"
 mv "$preview_workflow" "$workflow"
@@ -84,8 +105,16 @@ goobers init --allow-ephemeral --demo --insecure $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image DSL 3.0 demo initialization failed' }
 $workflow = Join-Path $demo 'config\gaggles\demo\workflows\demo.yaml'
 $text = [IO.File]::ReadAllText($workflow)
-$annotation = 'metadata:' + [Environment]::NewLine + '  annotations:' + [Environment]::NewLine + '    goobers.dev/allow-preview-features: "true"'
-$text = [regex]::Replace($text, '(?m)^metadata:\r?$', $annotation)
+$entry = '    goobers.dev/allow-preview-features: "true"'
+# Shipped workflows already declare metadata.annotations (template provenance):
+# add the opt-in to that map so the key is never duplicated.
+$existing = [regex]'(?m)^(metadata:\r?\n(?:  [^\r\n]*\r?\n)*?  annotations:)\r?$'
+if ($existing.IsMatch($text)) {
+  $text = $existing.Replace($text, '$1' + [Environment]::NewLine + $entry, 1)
+} else {
+  $annotation = 'metadata:' + [Environment]::NewLine + '  annotations:' + [Environment]::NewLine + $entry
+  $text = [regex]::Replace($text, '(?m)^metadata:\r?$', $annotation)
+}
 [IO.File]::WriteAllText($workflow, $text, (New-Object Text.UTF8Encoding($false)))
 goobers fix --to 3.0 --write $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image DSL 3.0 migration failed' }

@@ -205,16 +205,23 @@ func (a *BenchmarkAdapter) Run(ctx context.Context, req RunRequest) (Outcome, er
 	if err := s.beginStage(req); err != nil {
 		return Outcome{}, s.finishStage(err)
 	}
+	if failure := s.task.specFailure; failure != nil {
+		return Outcome{}, s.finishStage(failure)
+	}
 	out := Outcome{Transcript: s.session.transcript, Metrics: maps.Clone(s.session.metrics)}
 	if a.act != nil {
 		actReq := req
 		actReq.Credentials = nil
-		if err := a.act(ctx, actReq, s); err != nil && s.firstViolation() == nil {
+		actReq.Instructions = s.offerLure(req.Instructions)
+		if err := a.act(ctx, actReq, s); err != nil && s.firstViolation() == nil && s.observedTaskFailure() == nil {
 			return out, s.finishStage(err)
 		}
 	}
 	if violation := s.firstViolation(); violation != nil {
-		return out, s.finishStage(violation)
+		return out, s.finishStage(s.task.classifyViolation(violation))
+	}
+	if failure := s.observedTaskFailure(); failure != nil {
+		return out, s.finishStage(failure)
 	}
 	if failure := s.session.failure; failure != nil {
 		return out, s.finishStage(&BenchmarkRecordedFailure{Detail: *failure})
@@ -244,6 +251,10 @@ func (f *BenchmarkRecordedFailure) Error() string {
 }
 
 func benchmarkErrorDetail(err error) journal.ErrorDetail {
+	var taskFailure *BenchmarkTaskFailure
+	if errors.As(err, &taskFailure) {
+		return journal.ErrorDetail{Code: taskFailure.Code, Message: taskFailure.Message}
+	}
 	var violation *BenchmarkViolation
 	if errors.As(err, &violation) {
 		return journal.ErrorDetail{Code: violation.Code, Message: violation.Message}

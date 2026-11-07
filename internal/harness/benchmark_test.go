@@ -164,6 +164,19 @@ func TestBenchmarkReplayIsByteStable(t *testing.T) {
 	}
 }
 
+func TestBenchmarkTaskSandboxRejectsUnknownInputs(t *testing.T) {
+	for _, env := range []map[string]string{
+		{benchmarkTaskFaultEnv: "unknown"},
+		{benchmarkTaskLureEnv: "unknown"},
+		{benchmarkTaskStepBudgetEnv: "-1"},
+	} {
+		task := apiv1.WorkflowGymTaskManifest{TaskID: "t", CandidateEnvironment: apiv1.WorkflowGymCandidateEnvironment{Environment: env}}
+		if _, err := NewBenchmarkTaskSandbox(loadBenchmarkTestFixture(t, nil), task); err == nil {
+			t.Errorf("task environment %v was accepted", env)
+		}
+	}
+}
+
 func TestBenchmarkProviderCallsAreInterceptedAndVirtualized(t *testing.T) {
 	_, report, err := runBenchmark(t, loadBenchmarkTestFixture(t, nil), triageAct)
 	if err != nil {
@@ -172,6 +185,13 @@ func TestBenchmarkProviderCallsAreInterceptedAndVirtualized(t *testing.T) {
 	if len(report.Receipts) != 1 || report.Receipts[0].Effect != BenchmarkEffectComment ||
 		report.Receipts[0].Exchange != "comment-on-issue" {
 		t.Fatalf("receipts = %+v, want the comment served by its recorded sink", report.Receipts)
+	}
+	var served []string
+	for _, receipt := range report.Served {
+		served = append(served, string(receipt.Effect)+" "+receipt.Exchange)
+	}
+	if got := strings.Join(served, ","); got != "provider-read list-open-issues,provider-read get-issue,comment comment-on-issue" {
+		t.Fatalf("served = %s, want every answered exchange in observation order", got)
 	}
 	var touched *journal.ExternalRef
 	for _, event := range report.Events {

@@ -41,6 +41,9 @@ type View struct {
 	FitnessUnavailable string `json:"fitnessUnavailable,omitempty"`
 	// FitnessErr is the scan failure behind FitnessUnavailable.
 	FitnessErr error `json:"-"`
+	// Templates identifies shipped templates, configured workflow provenance,
+	// and clusters converging beyond those templates.
+	Templates *TemplateReport `json:"templates,omitempty"`
 }
 
 // ConfiguredSource serves the cluster View of the instance rooted at Root.
@@ -60,6 +63,11 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	}
 	view := View{Status: ViewInsufficientData, Population: len(points), MinClusterSize: cliMinClusterSize}
 	if len(points) < cliMinClusterSize {
+		templates, _, err := analyzeTemplates(points, strata[StratifyTemplate], nil)
+		if err != nil {
+			return View{}, err
+		}
+		view.Templates = &templates
 		return view, nil
 	}
 	model, err := Fit(StructuralFeatureVersion, points, Options{MinClusterSize: cliMinClusterSize})
@@ -67,7 +75,12 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 		return View{}, err
 	}
 	confoundsByAxis := map[string]ConfoundReport{}
-	for _, axis := range append([]string{StratifyGaggle, StratifyCohort}, provenanceAxes...) {
+	templates, templateStrata, err := analyzeTemplates(points, strata[StratifyTemplate], &model)
+	if err != nil {
+		return View{}, err
+	}
+	strata[StratifyTemplate] = templateStrata
+	for _, axis := range append([]string{StratifyGaggle, StratifyCohort, StratifyTemplate}, provenanceAxes...) {
 		confoundsByAxis[axis] = ConfoundCheck(model, strata[axis], ConfoundOptions{})
 	}
 	confounds := confoundsByAxis[StratifyGaggle]
@@ -77,6 +90,11 @@ func (s ConfiguredSource) WorkflowClusters(ctx context.Context) (View, error) {
 	view.ConfoundsByAxis = confoundsByAxis
 	view.Cohorts = cohortLabels(points)
 	view.Map = Project(model, points)
+	for i := range view.Map {
+		provenance := templates.Workflows[view.Map[i].ID]
+		view.Map[i].TemplateProvenance = &provenance
+	}
+	view.Templates = &templates
 	scan, fitnessErr := ScanBehavior(s.Root, BehaviorScanOptions{})
 	if fitnessErr == nil {
 		fitness := EvaluateFitness(model, digests, scan, DefaultFitnessMinRuns)
