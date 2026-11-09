@@ -41,6 +41,11 @@ _goobers_completion()
                 stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
             esac
             ;;
+        workflow-gym)
+            case "${COMP_WORDS[2]:-}" in
+                evaluate) flags+=" --min-samples --regression-threshold" ;;
+            esac
+            ;;
         scaffold)
             case "${COMP_WORDS[2]:-}" in
                 goober) flags+=" --force" ;;
@@ -342,7 +347,7 @@ _goobers_completion()
             ;;
         workflow-gym)
             if (( COMP_CWORD == 2 )); then
-                candidates="validate list replay tournament"
+                candidates="validate list replay tournament evaluate"
             fi
             ;;
         scaffold)

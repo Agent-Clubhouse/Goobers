@@ -162,7 +162,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
-| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, list, replay, or compare Workflow Gym benchmark tasks |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, replay, compare, or evaluate Workflow Gym benchmark tasks |
+| [`goobers workflow-gym evaluate`](#goobers-workflow-gym-evaluate) | gate and rank paired tournament results |
 | [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
 | [`goobers workflow-gym replay`](#goobers-workflow-gym-replay) | replay a historical benchmark task offline |
 | [`goobers workflow-gym tournament`](#goobers-workflow-gym-tournament) | compare candidates over an identical benchmark task suite |
@@ -5953,15 +5954,16 @@ $ goobers workflow validate-child --gaggle example --parent implementation --sta
 
 ## `goobers workflow-gym`
 
-validate, list, replay, or compare Workflow Gym benchmark tasks
+validate, replay, compare, or evaluate Workflow Gym benchmark tasks
 
 ~~~text
-Usage: goobers workflow-gym <validate|list|replay|tournament> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
 Tournament compares candidate result manifests over one identical task roster.
+Evaluate applies confidence and regression gates to tournament JSON output.
 ~~~
 
 **Examples**
@@ -5971,6 +5973,36 @@ $ goobers workflow-gym validate ./benchmark-tasks
 $ goobers workflow-gym list ./benchmark-tasks
 $ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 $ goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
+$ goobers workflow-gym evaluate ./tasks ./tournament.json
+~~~
+
+## `goobers workflow-gym evaluate`
+
+gate and rank paired tournament results
+
+~~~text
+Usage: goobers workflow-gym evaluate [--min-samples N] [--regression-threshold RATE]
+       <dataset> <tournament-report>
+
+Evaluate paired tournament JSON with per-slice sample floors, 95% confidence
+intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train
+and eval tasks determine the gate and ranking; holdout results are reported but
+never used for selection. Missing candidate results never count as measured
+evidence. The command writes a machine-readable JSON report to stdout.
+
+Options:
+  --min-samples N              Required samples in each selection slice (default 10)
+  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)
+
+Exit codes: 0 = pass, 1 = fail (regression meets the threshold), 2 = usage
+error, 3 = inconclusive (insufficient or missing evidence), 4 = input or
+processing error (unreadable or inconsistent dataset or tournament report).
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym evaluate --min-samples 20 --regression-threshold 0.05 ./tasks ./tournament.json
 ~~~
 
 ## `goobers workflow-gym list`

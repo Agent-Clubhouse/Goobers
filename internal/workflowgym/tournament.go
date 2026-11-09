@@ -20,6 +20,10 @@ const (
 	TournamentCandidateKind = "WorkflowGymCandidate"
 	// TournamentReportKind is the kind of paired tournament reports.
 	TournamentReportKind = "WorkflowGymTournament"
+
+	// tournamentMissingResultFailureClass marks a failure synthesized for an
+	// omitted candidate result; it records absent evidence, not a measured outcome.
+	tournamentMissingResultFailureClass = "missing-result"
 )
 
 // TournamentStatus is one candidate's evaluator outcome for one task.
@@ -308,7 +312,7 @@ func tournamentTaskResult(taskID, evaluatorVersion string, results map[string]To
 		TaskID:           taskID,
 		EvaluatorVersion: evaluatorVersion,
 		Status:           TournamentFail,
-		FailureClass:     "missing-result",
+		FailureClass:     tournamentMissingResultFailureClass,
 	}
 }
 
