@@ -113,6 +113,52 @@ read the CD repo with `CODE_PAT`; a misconfiguration that crosses the streams **
 both an automated integration test (against real scoped tokens in a CI secret, or recorded fixtures) and
 a runbook for a manual adversarial check.
 
+### 3.5 Workflow Gym promotion-evidence boundary
+
+`goobers workflow-gym promotion-validate <evidence> <policy>` is the read-only
+handoff from Workflow Gym to Workflow CD. A `WorkflowGymPromotionEvidence`
+artifact binds one candidate `EffectiveVersion`, genome and rendered-config
+digest, last-known-good identity, dataset version/digest, and
+evaluator/environment manifest digests to `benchmark`, `shadow` and `holdout`
+slots. Each slot carries:
+
+- `stage` — must name the slot it occupies;
+- `report` — path to a `WorkflowGymEvaluation` JSON report produced by
+  `goobers workflow-gym evaluate`, relative to the evidence file unless absolute;
+- `artifactDigest` — the report's canonical digest (SHA-256 of its compact JSON
+  encoding); no two slots may reference the same artifact.
+
+Verdicts, sample counts and manifest digests are never self-reported: they are
+derived from the loaded report. The `WorkflowGymPromotionPolicy` supplies CD's
+current values and pins, per stage, what each report must contain:
+
+- `evaluation` — the gate configuration (`minSamples`, `regressionThreshold`).
+  Every report's `config` must equal it and its `confidenceLevel` must be the
+  slice-6 level, so a report gated with a looser threshold is rejected.
+- `digests` — the benchmark dataset/evaluator/environment manifests.
+- `shadowDigests` — the shadow manifests; its environment must differ from the
+  benchmark environment. Required when `requireShadow` is set.
+- `holdoutDigests` — the holdout manifests; its dataset must differ from the
+  benchmark and shadow datasets. Required when `requireHoldout` is set.
+
+Because a report's digests come from the dataset it evaluated, one tournament
+re-evaluated with different flags cannot fill several slots: stages are
+distinguished by report content, not by the evidence label. Each report must
+also use the last-known-good identity as its authoritative baseline and
+evaluate the evidence candidate. Validation does not trust recorded slice
+verdicts: it re-applies the slice-6 slice gate with the policy configuration to
+the train/eval selection slices for benchmark and shadow (which also require the
+report's own candidate gate to pass) and to the holdout slice for holdout.
+
+Validation fails closed and always writes a deterministic
+`WorkflowGymPromotionValidation` receipt with `verdict` (`pass`, `fail`, or
+`inconclusive`), `reasons`, the candidate and LKG identities, per-stage results
+and evidence/policy digests for audit. Exit codes match `workflow-gym evaluate`:
+0 pass; 1 fail (regressed, mismatched, stale, tampered or reused evidence); 2
+usage; 3 inconclusive (missing required evidence or too few samples); 4
+unreadable or malformed evidence, policy or report (no receipt). This command
+does not reconcile config, mutate production, or perform promotion.
+
 ## 4. Issue breakdown (milestone #15)
 
 - **[EPIC]** Workflow CD.
