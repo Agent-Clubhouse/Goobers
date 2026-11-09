@@ -3885,8 +3885,15 @@ and task count, then list tasks in stable task ID order.
 Usage: goobers workflow-gym promotion-validate <evidence> <policy>
 
 Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
-WorkflowGymPromotionPolicy. Validation is read-only, rejects stale, incomplete,
-regressed, or mismatched evidence, and writes a deterministic JSON receipt.
+WorkflowGymPromotionPolicy. Each benchmark, shadow, or holdout slot names its
+stage, an evaluate JSON report path (relative to the evidence file), and that
+report's canonical artifactDigest; verdicts and samples come from the report.
+Validation is read-only and writes a WorkflowGymPromotionValidation receipt
+with verdict, reasons, and digests to stdout, on rejection as well as success.
+
+Exit codes: 0 = pass, 1 = fail (regressed, mismatched, stale, or reused
+evidence), 2 = usage error, 3 = inconclusive (missing required evidence or too
+few samples), 4 = input error (unreadable or malformed evidence, policy, or report).
 
 ### workflow-gym replay
 Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>

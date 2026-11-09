@@ -60,8 +60,14 @@ const workflowGymEvaluateHelp = "Usage: goobers workflow-gym evaluate [--min-sam
 
 const workflowGymPromotionValidateHelp = "Usage: goobers workflow-gym promotion-validate <evidence> <policy>\n\n" +
 	"Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current\n" +
-	"WorkflowGymPromotionPolicy. Validation is read-only, rejects stale, incomplete,\n" +
-	"regressed, or mismatched evidence, and writes a deterministic JSON receipt.\n"
+	"WorkflowGymPromotionPolicy. Each benchmark, shadow, or holdout slot names its\n" +
+	"stage, an evaluate JSON report path (relative to the evidence file), and that\n" +
+	"report's canonical artifactDigest; verdicts and samples come from the report.\n" +
+	"Validation is read-only and writes a WorkflowGymPromotionValidation receipt\n" +
+	"with verdict, reasons, and digests to stdout, on rejection as well as success.\n\n" +
+	"Exit codes: 0 = pass, 1 = fail (regressed, mismatched, stale, or reused\n" +
+	"evidence), 2 = usage error, 3 = inconclusive (missing required evidence or too\n" +
+	"few samples), 4 = input error (unreadable or malformed evidence, policy, or report).\n"
 
 // Exit codes for goobers workflow-gym evaluate, distinct per gate outcome so
 // automation can tell a regression from missing evidence or a broken input.
@@ -236,7 +242,27 @@ func runWorkflowGymEvaluate(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: write evaluation report: %v\n", err)
 		return workflowGymEvaluateExitInputError
 	}
-	switch report.Gate.Verdict {
+	return workflowGymVerdictExit(report.Gate.Verdict)
+}
+
+func runWorkflowGymPromotionValidate(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		pf(stderr, "%s", workflowGymPromotionValidateHelp)
+		return workflowGymEvaluateExitUsage
+	}
+	validation, err := workflowgym.ValidatePromotionFiles(args[0], args[1])
+	if err == nil {
+		err = workflowgym.WritePromotionValidation(stdout, validation)
+	}
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return workflowGymEvaluateExitInputError
+	}
+	return workflowGymVerdictExit(validation.Verdict)
+}
+
+func workflowGymVerdictExit(verdict workflowgym.EvaluationVerdict) int {
+	switch verdict {
 	case workflowgym.EvaluationPass:
 		return workflowGymEvaluateExitPass
 	case workflowgym.EvaluationFail:
@@ -244,35 +270,6 @@ func runWorkflowGymEvaluate(args []string, stdout, stderr io.Writer) int {
 	default:
 		return workflowGymEvaluateExitInconclusive
 	}
-}
-
-func runWorkflowGymPromotionValidate(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 2 {
-		pf(stderr, "%s", workflowGymPromotionValidateHelp)
-		return 2
-	}
-	evidence, err := workflowgym.LoadPromotionEvidence(args[0])
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	policy, err := workflowgym.LoadPromotionPolicy(args[1])
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	receipt, err := workflowgym.ValidatePromotionEvidence(evidence, policy)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(receipt); err != nil {
-		pf(stderr, "error: write promotion validation: %v\n", err)
-		return 1
-	}
-	return 0
 }
 
 func evaluateWorkflowGymTournament(datasetPath, reportPath string, config workflowgym.EvaluationConfig) (workflowgym.EvaluationReport, error) {

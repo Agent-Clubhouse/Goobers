@@ -116,18 +116,35 @@ a runbook for a manual adversarial check.
 ### 3.5 Workflow Gym promotion-evidence boundary
 
 `goobers workflow-gym promotion-validate <evidence> <policy>` is the read-only
-handoff from Workflow Gym to Workflow CD. A promotion evidence artifact binds
-benchmark, shadow and holdout results to one `EffectiveVersion`, genome and
-rendered-config digest, last-known-good identity, dataset version/digest, and
-evaluator/environment manifest digests. The policy supplies CD's current values
-and whether shadow and holdout evidence are mandatory.
+handoff from Workflow Gym to Workflow CD. A `WorkflowGymPromotionEvidence`
+artifact binds one candidate `EffectiveVersion`, genome and rendered-config
+digest, last-known-good identity, dataset version/digest, and
+evaluator/environment manifest digests to `benchmark`, `shadow` and `holdout`
+slots. Each slot carries:
 
-Validation fails closed when evidence is incomplete or regressed, names another
-candidate or dataset, or was measured with stale evaluator/environment
-manifests. Success writes a deterministic `WorkflowGymPromotionValidation`
-receipt containing the candidate and LKG identities plus evidence and policy
-digests for audit. This command does not reconcile config, mutate production, or
-perform promotion.
+- `stage` — must name the slot it occupies;
+- `report` — path to a `WorkflowGymEvaluation` JSON report produced by
+  `goobers workflow-gym evaluate`, relative to the evidence file unless absolute;
+- `artifactDigest` — the report's canonical digest (SHA-256 of its compact JSON
+  encoding); no two slots may reference the same artifact.
+
+Verdicts, sample counts and manifest digests are never self-reported: they are
+derived from the loaded report. Each report must match the evidence dataset,
+evaluator and environment digests, use the last-known-good identity as its
+authoritative baseline, and evaluate the evidence candidate. Benchmark and
+shadow stages use the candidate's gate over train/eval slices; the holdout stage
+re-applies the report's slice gate to its holdout slice. The
+`WorkflowGymPromotionPolicy` supplies CD's current values, a `minSamples` floor
+applied to every stage, and whether shadow and holdout evidence are mandatory.
+
+Validation fails closed and always writes a deterministic
+`WorkflowGymPromotionValidation` receipt with `verdict` (`pass`, `fail`, or
+`inconclusive`), `reasons`, the candidate and LKG identities, per-stage results
+and evidence/policy digests for audit. Exit codes match `workflow-gym evaluate`:
+0 pass; 1 fail (regressed, mismatched, stale, tampered or reused evidence); 2
+usage; 3 inconclusive (missing required evidence or too few samples); 4
+unreadable or malformed evidence, policy or report (no receipt). This command
+does not reconcile config, mutate production, or perform promotion.
 
 ## 4. Issue breakdown (milestone #15)
 
