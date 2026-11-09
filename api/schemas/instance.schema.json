@@ -196,6 +196,15 @@
         "publicationLeakScreen": { "type": "boolean", "default": false, "description": "Separately opts shadow mode into sending proposed public PR and nominated issue text to the decision model for advisory leak screening. Omitted means publication text is never sent." },
         "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
         "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
+        "agentTool": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optionally exposes a budgeted `decide` MCP tool to named agent tasks. Denied by default: only listed tasks see the tool.",
+          "properties": {
+            "tasks": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Task ids granted the tool. Wildcards are not allowed." },
+            "maxCalls": { "type": "integer", "minimum": 0, "maximum": 50, "description": "Model calls allowed per stage invocation; 0 means 5." }
+          }
+        },
         "handoffSchemas": {
           "type": "array",
           "description": "Binds a producer stage's sole JSON result to a JSON Schema so consumers' handoff validity (the shadow record's inputValid) is checked for workflows that cannot declare schema-bound artifactSlots. Inert while the gate is off.",

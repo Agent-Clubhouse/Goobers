@@ -24,6 +24,7 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 	cfg := mcpio.Config{
 		Workspace:            req.Workspace,
 		ChildWorkflows:       req.ChildWorkflows,
+		Decide:               req.Decide,
 		ArtifactFile:         artifactFile,
 		ArtifactManifestFile: artifactManifestFile,
 		PublicationSchemas:   req.PublicationSchemas,
