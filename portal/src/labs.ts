@@ -71,12 +71,19 @@ export const labsFeatures: readonly LabsFeature[] = [
       "At least three configured workflows for the cluster map (more give more stable clusters)",
       "Agent-authored child workflows enabled (preview DSL 3.1) for dynamic-workflow analysis",
       "Retained run journals for behavior clustering",    ],
-    issues: [8302, 8303, 8304, 8305, 8306, 8307, 8308, 8309, 8310, 8311, 8340, 8341, 8342, 8343, 8344, 8345],
+    issues: [8302, 8303, 8304, 8305, 8306, 8307, 8308, 8309, 8310, 8311, 8340, 8341, 8342, 8343, 8344, 8345, 8373, 8374, 8375, 8376, 8377, 8378],
     surfaces: [
       {
         kind: "cli",
-        command: "goobers workflow clusters [--stratify gaggle] [--json]",
-        description: "Fit and inspect structural clusters, with an optional gaggle confound check.",
+        command: "goobers workflow clusters [--fitness] [--cohort <label>] [--stratify <axis>] [--ablation] [--json]",
+        description:
+          "Fit structural clusters, score how well each cluster's runs go, and check clusters against gaggle, task, " +
+          "template, model, harness, skills, and tool confounds.",
+      },
+      {
+        kind: "cli",
+        command: "goobers fleet join --projection labs.workflowFeatures ...",
+        description: "Let the fleet collect this instance's privacy-safe workflow features for fleet-wide convergence.",
       },
       {
         kind: "cli",
@@ -109,6 +116,43 @@ export const labsFeatures: readonly LabsFeature[] = [
           "If cluster membership simply mirrors which gaggle a workflow belongs to, the clusters tell you about " +
           "organization, not convergence. The confound check reports Cramér's V and a permutation p-value.",
         code: "goobers workflow clusters --stratify gaggle ./instance",
+      },
+      {
+        title: "See which shapes actually work",
+        detail:
+          "Fitness joins retained runs to each cluster: run count, success rate with a 95% interval, wall time, cost, " +
+          "and how often a human gate, escalation, or retry loop was hit. Clusters with fewer than 5 runs are marked " +
+          "insufficient and never ranked, so convergence toward a good shape is distinguishable from the model's habits.",
+        code: "goobers workflow clusters --fitness --since 720h ./instance",
+      },
+      {
+        title: "Compare like with like",
+        detail:
+          "Workflows are grouped into task cohorts from triggers, work-item kinds, and side effects (never names or goal " +
+          "text), or from an explicit goobers.dev/task-class label. Cluster one cohort at a time, or check whether clusters " +
+          "just mirror the task.",
+        code: "goobers workflow clusters --cohort <label> ./instance\ngoobers workflow clusters --stratify cohort ./instance",
+      },
+      {
+        title: "Is it the model, not the workflow?",
+        detail:
+          "Stratify by the model, harness, skill set, or tool set that ran each workflow. A strong association means the " +
+          "cluster reflects the runtime rather than a converged shape.",
+        code: "goobers workflow clusters --stratify model ./instance",
+      },
+      {
+        title: "Look beyond the starter templates",
+        detail:
+          "Workflows within 0.35 structural distance of a shipped template are marked template-derived. Clusters whose " +
+          "typical workflow is farther than that from every template are reported as convergence beyond templates.",
+        code: "goobers workflow clusters --stratify template ./instance",
+      },
+      {
+        title: "Find what drives the clusters",
+        detail:
+          "Ablation refits with each feature dropped and reports how much the clusters move, flagging features that " +
+          "dominate. Large populations use a deterministic sample, so thousands of workflows stay fast.",
+        code: "goobers workflow clusters --ablation ./instance",
       },
       {
         title: "Cluster by how runs behave",
@@ -148,58 +192,28 @@ export const labsFeatures: readonly LabsFeature[] = [
           "Refit after adding or changing workflows. The model hash changes whenever the feature schema or inputs change, " +
           "so compare hashes to know whether two reports are comparable.",
       },
-    ],
-    roadmap: [
-      {
-        title: "Which shapes actually work",
-        detail:
-          "Per-cluster success rate, cost, and how often a human had to step in, so you can tell convergence toward a " +
-          "good shape from convergence toward the model's habits.",
-        issue: 8340,
-      },
-      {
-        title: "Compare like with like",
-        detail:
-          "Cluster within a task cohort (for example PR review vs. deploy) derived from triggers and side effects, never " +
-          "from goal text, so similar-looking workflows for different jobs are not lumped together.",
-        issue: 8341,
-      },
-      {
-        title: "Is it the model, not the workflow?",
-        detail:
-          "Confound checks for model family, harness, skills, and MCP tool set, so clusters that only reflect which " +
-          "model ran are flagged.",
-        issue: 8342,
-      },
-      {
-        title: "Beyond the starter templates",
-        detail:
-          "Mark workflows derived from shipped templates and report clusters that are genuinely new, rather than " +
-          "rediscovering the templates everyone copied.",
-        issue: 8343,
-      },
-      {
-        title: "Better distances at scale",
-        detail:
-          "Feature ablation to show which features drive clusters, less noisy features, and an approximate path for " +
-          "thousands of workflows.",
-        issue: 8344,
-      },
-      {
-        title: "Fleet convergence across cloud instances",
-        detail:
-          "Run convergence over every cloud instance in your fleet: see which workflow shapes the whole fleet settles on, " +
-          "which instances drift from the norm, and where the same shape succeeds on one instance and fails on another. " +
-          "Ready today from the CLI: each instance runs 'goobers workflow clusters --snapshot' (feature vectors only, no " +
-          "workflow text), and 'goobers workflow clusters --fleet <dir>' clusters them, counting cloned workflows once. " +
-          "Next: the fleet service collects snapshots automatically and shows the map in the fleet portal.",
-        issue: 8345,
-      },
       {
         title: "Turn recurring shapes into templates",
-        detail: "Recurring, successful agent-authored shapes become reviewed, reusable templates.",
-        issue: 8310,
+        detail:
+          "Given joined child-proposal evidence and a saved model, each stable cluster that clears the evidence bar " +
+          "(stability, support across parent runs and repositories, no policy findings, outcomes no worse than " +
+          "alternatives) is proposed as a review-required template. Nothing is written or registered.",
+        code: "goobers workflow clusters --templates evidence.json --cluster-model clusters.json",
       },
+      {
+        title: "Run convergence across your fleet",
+        detail:
+          "Grant the workflow-features projection when an instance joins the fleet. The fleet collects feature vectors " +
+          "only (no workflow, gaggle, goober, or goal text; names are salted hashes) and its portal shows which shapes " +
+          "the whole fleet settles on, which clusters are shared or private, and which instances are outliers. Cloned " +
+          "workflows count once. Without a fleet service, collect snapshots by hand and cluster them.",
+        code:
+          "goobers fleet join --url <fleet-url> --projection labs.workflowFeatures ./instance\n" +
+          "goobers workflow clusters --snapshot ./instance > snapshots/<instance>.json\n" +
+          "goobers workflow clusters --fleet snapshots",
+      },
+    ],
+    roadmap: [
       {
         title: "Keep self-improvement diverse",
         detail:
