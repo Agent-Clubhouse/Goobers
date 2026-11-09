@@ -10,10 +10,11 @@ import (
 	"github.com/goobers/goobers/internal/workflowgym"
 )
 
-const workflowGymHelp = "Usage: goobers workflow-gym <validate|list|replay> <args>\n\n" +
+const workflowGymHelp = "Usage: goobers workflow-gym <validate|list|replay|tournament> <args>\n\n" +
 	"Validate or list a file-backed Workflow Gym benchmark dataset. The path\n" +
 	"may name one JSON/YAML task manifest or a directory of manifests. Replay\n" +
-	"runs one task against historical fixture and journal inputs, entirely offline.\n"
+	"runs one task against historical fixture and journal inputs, entirely offline.\n" +
+	"Tournament compares candidate result manifests over one identical task roster.\n"
 
 const workflowGymValidateHelp = "Usage: goobers workflow-gym validate <path>\n\n" +
 	"Validate a Workflow Gym dataset and print its version, deterministic\n" +
@@ -30,6 +31,15 @@ const workflowGymReplayHelp = "Usage: goobers workflow-gym replay <task-manifest
 	"the side-effect sandbox; the manifest lists only effects the sandbox\n" +
 	"observed, as deterministic, virtualized, or unavailable.\n"
 
+const workflowGymTournamentHelp = "Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]\n\n" +
+	"Compare authoritative and candidate EffectiveVersion/genome result manifests\n" +
+	"over exactly the same task IDs and write a deterministic paired report as JSON.\n" +
+	"Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match\n" +
+	"the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a\n" +
+	"non-empty list of task results with evaluatorVersion (must match the task),\n" +
+	"status, costUsd, durationMs, and failureClass. The authoritative manifest must\n" +
+	"cover every task; omitted candidate results are recorded as failures.\n"
+
 func workflowGymCLICommand() cliCommand {
 	return groupCommand(
 		"workflow-gym",
@@ -43,11 +53,15 @@ func workflowGymCLICommand() cliCommand {
 		subcommand("workflow-gym replay", "replay", apicontract.ActionReadOnlyNavigation, runWorkflowGymReplay).
 			withHelp("replay a historical benchmark task offline", workflowGymReplayHelp).
 			withExamples("goobers workflow-gym replay ./task.yaml ./provider.json ./journal"),
+		subcommand("workflow-gym tournament", "tournament", apicontract.ActionReadOnlyNavigation, runWorkflowGymTournament).
+			withHelp("compare candidates over an identical benchmark task suite", workflowGymTournamentHelp).
+			withExamples("goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml"),
 	).
-		withSynopsis("workflow-gym <validate|list|replay> <args>").
-		withHelp("validate, list, or replay Workflow Gym benchmark tasks", workflowGymHelp).
+		withSynopsis("workflow-gym <validate|list|replay|tournament> <args>").
+		withHelp("validate, list, replay, or compare Workflow Gym benchmark tasks", workflowGymHelp).
 		withExamples("goobers workflow-gym validate ./benchmark-tasks", "goobers workflow-gym list ./benchmark-tasks",
-			"goobers workflow-gym replay ./task.yaml ./provider.json ./journal")
+			"goobers workflow-gym replay ./task.yaml ./provider.json ./journal",
+			"goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml")
 }
 
 func runWorkflowGym(args []string, _, stderr io.Writer) int {
@@ -111,6 +125,44 @@ func runWorkflowGymReplay(args []string, stdout, stderr io.Writer) int {
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(manifest); err != nil {
 		pf(stderr, "error: write replay manifest: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runWorkflowGymTournament(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 3 {
+		pf(stderr, "%s", workflowGymTournamentHelp)
+		return 2
+	}
+	registry, err := workflowgym.Load(args[0])
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	authoritative, err := workflowgym.LoadTournamentCandidate(args[1])
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	candidates := make([]workflowgym.TournamentCandidateManifest, 0, len(args)-2)
+	for _, path := range args[2:] {
+		candidate, err := workflowgym.LoadTournamentCandidate(path)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		candidates = append(candidates, candidate)
+	}
+	report, err := workflowgym.RunTournament(registry, authoritative, candidates)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		pf(stderr, "error: write tournament report: %v\n", err)
 		return 1
 	}
 	return 0

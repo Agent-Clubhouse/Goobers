@@ -183,7 +183,7 @@ Advanced operator commands:
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
-  workflow-gym      validate, list, or replay Workflow Gym benchmark tasks
+  workflow-gym      validate, list, replay, or compare Workflow Gym benchmark tasks
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
@@ -3847,11 +3847,12 @@ from 'goobers workflow clusters --json'; it never changes validity or exit code.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ### workflow-gym
-Usage: goobers workflow-gym <validate|list|replay> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
+Tournament compares candidate result manifests over one identical task roster.
 
 ### workflow-gym list
 Usage: goobers workflow-gym list <path>
@@ -3867,6 +3868,17 @@ write its deterministic replay manifest as JSON. The replay reads the
 fixture's work item and re-issues the journal's recorded mutations through
 the side-effect sandbox; the manifest lists only effects the sandbox
 observed, as deterministic, virtualized, or unavailable.
+
+### workflow-gym tournament
+Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]
+
+Compare authoritative and candidate EffectiveVersion/genome result manifests
+over exactly the same task IDs and write a deterministic paired report as JSON.
+Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match
+the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a
+non-empty list of task results with evaluatorVersion (must match the task),
+status, costUsd, durationMs, and failureClass. The authoritative manifest must
+cover every task; omitted candidate results are recorded as failures.
 
 ### workflow-gym validate
 Usage: goobers workflow-gym validate <path>
