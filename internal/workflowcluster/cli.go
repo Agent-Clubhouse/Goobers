@@ -166,48 +166,12 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		asJSON: *asJSON, snapshot: *snapshot, ablation: *ablation, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
 		fitness: *fitness,
 	}
-	if (!*proposals && (parsed.invalid() || *gaggle != "")) || (*proposals && fs.NArg() > 1) {
+	if *proposals {
+		return runProposalsCLI(fs, *maxRuns, *gaggle, *asJSON, stdout, stderr)
+	}
+	if parsed.invalid() || *gaggle != "" {
 		fs.Usage()
 		return 2
-	}
-	if *proposals {
-		invalid := !*asJSON
-		fs.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "proposals", "gaggle", "json", "max-runs":
-			default:
-				invalid = true
-			}
-		})
-		if invalid {
-			fs.Usage()
-			return 2
-		}
-		root := "."
-		if fs.NArg() == 1 {
-			root = fs.Arg(0)
-		}
-		view, err := ScanChildProposalInsights(context.Background(), root, *maxRuns)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
-			return 2
-		}
-		if *gaggle != "" {
-			filtered := view.Gaggles[:0]
-			for _, group := range view.Gaggles {
-				if group.Gaggle == *gaggle {
-					filtered = append(filtered, group)
-				}
-			}
-			view.Gaggles = filtered
-		}
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(view); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
-			return 2
-		}
-		return 0
 	}
 	if *fleetDir != "" {
 		return runFleetCLI(*fleetDir, Options{MinClusterSize: *minSize, Seed: *seed}, *asJSON, stdout, stderr)
@@ -303,6 +267,48 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	return writeCLIReports(stdout, stderr, *asJSON, *stratify, model, cliReports{
 		confounds: confounds, behavior: behavior, ablation: ablations, fitness: fitnessReport, templates: templateReport,
 	})
+}
+
+// runProposalsCLI emits the retained child proposal insight view as JSON,
+// optionally narrowed to one gaggle. It accepts only proposal-mode flags.
+func runProposalsCLI(fs *flag.FlagSet, maxRuns int, gaggle string, asJSON bool, stdout, stderr io.Writer) int {
+	invalid := !asJSON || fs.NArg() > 1
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "proposals", "gaggle", "json", "max-runs":
+		default:
+			invalid = true
+		}
+	})
+	if invalid {
+		fs.Usage()
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+	view, err := ScanChildProposalInsights(context.Background(), root, maxRuns)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if gaggle != "" {
+		filtered := view.Gaggles[:0]
+		for _, group := range view.Gaggles {
+			if group.Gaggle == gaggle {
+				filtered = append(filtered, group)
+			}
+		}
+		view.Gaggles = filtered
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(view); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	return 0
 }
 
 // cliReports holds the optional reports RunCLI attaches to a fitted model.
