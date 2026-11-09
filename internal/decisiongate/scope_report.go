@@ -83,9 +83,10 @@ func (t *ScopeTally) Add(r ScopeRecord) {
 		return
 	}
 	t.Labeled++
-	if r.Outcome == r.Reference {
+	switch {
+	case r.Outcome == r.Reference:
 		t.Agree++
-	} else if r.Outcome == ScopeWouldDemote {
+	case r.Outcome == ScopeWouldDemote:
 		t.WouldDemoteInScope++
 	}
 }

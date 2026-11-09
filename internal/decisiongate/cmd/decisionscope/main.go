@@ -30,7 +30,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	recs, err := decisiongate.ReadScopeRecords(f)
 	if err != nil {
 		return err
