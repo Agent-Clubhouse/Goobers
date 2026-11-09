@@ -113,6 +113,22 @@ read the CD repo with `CODE_PAT`; a misconfiguration that crosses the streams **
 both an automated integration test (against real scoped tokens in a CI secret, or recorded fixtures) and
 a runbook for a manual adversarial check.
 
+### 3.5 Workflow Gym promotion-evidence boundary
+
+`goobers workflow-gym promotion-validate <evidence> <policy>` is the read-only
+handoff from Workflow Gym to Workflow CD. A promotion evidence artifact binds
+benchmark, shadow and holdout results to one `EffectiveVersion`, genome and
+rendered-config digest, last-known-good identity, dataset version/digest, and
+evaluator/environment manifest digests. The policy supplies CD's current values
+and whether shadow and holdout evidence are mandatory.
+
+Validation fails closed when evidence is incomplete or regressed, names another
+candidate or dataset, or was measured with stale evaluator/environment
+manifests. Success writes a deterministic `WorkflowGymPromotionValidation`
+receipt containing the candidate and LKG identities plus evidence and policy
+digests for audit. This command does not reconcile config, mutate production, or
+perform promotion.
+
 ## 4. Issue breakdown (milestone #15)
 
 - **[EPIC]** Workflow CD.

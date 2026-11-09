@@ -11,12 +11,14 @@ import (
 	"github.com/goobers/goobers/internal/workflowgym"
 )
 
-const workflowGymHelp = "Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate> <args>\n\n" +
+const workflowGymHelp = "Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate|promotion-validate> <args>\n\n" +
 	"Validate or list a file-backed Workflow Gym benchmark dataset. The path\n" +
 	"may name one JSON/YAML task manifest or a directory of manifests. Replay\n" +
 	"runs one task against historical fixture and journal inputs, entirely offline.\n" +
 	"Tournament compares candidate result manifests over one identical task roster.\n" +
-	"Evaluate applies confidence and regression gates to tournament JSON output.\n"
+	"Evaluate applies confidence and regression gates to tournament JSON output.\n" +
+	"Promotion-validate checks promotion evidence against Workflow CD policy without\n" +
+	"mutating production and emits an auditable validation receipt.\n"
 
 const workflowGymValidateHelp = "Usage: goobers workflow-gym validate <path>\n\n" +
 	"Validate a Workflow Gym dataset and print its version, deterministic\n" +
@@ -56,6 +58,11 @@ const workflowGymEvaluateHelp = "Usage: goobers workflow-gym evaluate [--min-sam
 	"error, 3 = inconclusive (insufficient or missing evidence), 4 = input or\n" +
 	"processing error (unreadable or inconsistent dataset or tournament report).\n"
 
+const workflowGymPromotionValidateHelp = "Usage: goobers workflow-gym promotion-validate <evidence> <policy>\n\n" +
+	"Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current\n" +
+	"WorkflowGymPromotionPolicy. Validation is read-only, rejects stale, incomplete,\n" +
+	"regressed, or mismatched evidence, and writes a deterministic JSON receipt.\n"
+
 // Exit codes for goobers workflow-gym evaluate, distinct per gate outcome so
 // automation can tell a regression from missing evidence or a broken input.
 const (
@@ -85,13 +92,17 @@ func workflowGymCLICommand() cliCommand {
 		subcommand("workflow-gym evaluate", "evaluate", apicontract.ActionReadOnlyNavigation, runWorkflowGymEvaluate).
 			withHelp("gate and rank paired tournament results", workflowGymEvaluateHelp).
 			withExamples("goobers workflow-gym evaluate --min-samples 20 --regression-threshold 0.05 ./tasks ./tournament.json"),
+		subcommand("workflow-gym promotion-validate", "promotion-validate", apicontract.ActionReadOnlyNavigation, runWorkflowGymPromotionValidate).
+			withHelp("validate promotion evidence for Workflow CD", workflowGymPromotionValidateHelp).
+			withExamples("goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml"),
 	).
-		withSynopsis("workflow-gym <validate|list|replay|tournament|evaluate> <args>").
-		withHelp("validate, replay, compare, or evaluate Workflow Gym benchmark tasks", workflowGymHelp).
+		withSynopsis("workflow-gym <validate|list|replay|tournament|evaluate|promotion-validate> <args>").
+		withHelp("validate, replay, compare, evaluate, or hand off Workflow Gym evidence", workflowGymHelp).
 		withExamples("goobers workflow-gym validate ./benchmark-tasks", "goobers workflow-gym list ./benchmark-tasks",
 			"goobers workflow-gym replay ./task.yaml ./provider.json ./journal",
 			"goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml",
-			"goobers workflow-gym evaluate ./tasks ./tournament.json")
+			"goobers workflow-gym evaluate ./tasks ./tournament.json",
+			"goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml")
 }
 
 func runWorkflowGym(args []string, _, stderr io.Writer) int {
@@ -233,6 +244,35 @@ func runWorkflowGymEvaluate(args []string, stdout, stderr io.Writer) int {
 	default:
 		return workflowGymEvaluateExitInconclusive
 	}
+}
+
+func runWorkflowGymPromotionValidate(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		pf(stderr, "%s", workflowGymPromotionValidateHelp)
+		return 2
+	}
+	evidence, err := workflowgym.LoadPromotionEvidence(args[0])
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	policy, err := workflowgym.LoadPromotionPolicy(args[1])
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	receipt, err := workflowgym.ValidatePromotionEvidence(evidence, policy)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(receipt); err != nil {
+		pf(stderr, "error: write promotion validation: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func evaluateWorkflowGymTournament(datasetPath, reportPath string, config workflowgym.EvaluationConfig) (workflowgym.EvaluationReport, error) {

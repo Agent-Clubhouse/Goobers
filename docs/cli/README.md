@@ -162,9 +162,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
-| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, replay, compare, or evaluate Workflow Gym benchmark tasks |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, replay, compare, evaluate, or hand off Workflow Gym evidence |
 | [`goobers workflow-gym evaluate`](#goobers-workflow-gym-evaluate) | gate and rank paired tournament results |
 | [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
+| [`goobers workflow-gym promotion-validate`](#goobers-workflow-gym-promotion-validate) | validate promotion evidence for Workflow CD |
 | [`goobers workflow-gym replay`](#goobers-workflow-gym-replay) | replay a historical benchmark task offline |
 | [`goobers workflow-gym tournament`](#goobers-workflow-gym-tournament) | compare candidates over an identical benchmark task suite |
 | [`goobers workflow-gym validate`](#goobers-workflow-gym-validate) | validate a file-backed benchmark dataset |
@@ -5954,16 +5955,18 @@ $ goobers workflow validate-child --gaggle example --parent implementation --sta
 
 ## `goobers workflow-gym`
 
-validate, replay, compare, or evaluate Workflow Gym benchmark tasks
+validate, replay, compare, evaluate, or hand off Workflow Gym evidence
 
 ~~~text
-Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate|promotion-validate> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
 Tournament compares candidate result manifests over one identical task roster.
 Evaluate applies confidence and regression gates to tournament JSON output.
+Promotion-validate checks promotion evidence against Workflow CD policy without
+mutating production and emits an auditable validation receipt.
 ~~~
 
 **Examples**
@@ -5974,6 +5977,7 @@ $ goobers workflow-gym list ./benchmark-tasks
 $ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 $ goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
 $ goobers workflow-gym evaluate ./tasks ./tournament.json
+$ goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml
 ~~~
 
 ## `goobers workflow-gym evaluate`
@@ -6020,6 +6024,24 @@ and task count, then list tasks in stable task ID order.
 
 ~~~console
 $ goobers workflow-gym list ./benchmark-tasks
+~~~
+
+## `goobers workflow-gym promotion-validate`
+
+validate promotion evidence for Workflow CD
+
+~~~text
+Usage: goobers workflow-gym promotion-validate <evidence> <policy>
+
+Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
+WorkflowGymPromotionPolicy. Validation is read-only, rejects stale, incomplete,
+regressed, or mismatched evidence, and writes a deterministic JSON receipt.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml
 ~~~
 
 ## `goobers workflow-gym replay`

@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW GYM PROMOTION VALIDATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow-gym promotion-validate \- validate promotion evidence for Workflow CD
+.SH SYNOPSIS
+\fBgoobers workflow-gym promotion-validate\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow-gym promotion-validate <evidence> <policy>
+
+Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
+WorkflowGymPromotionPolicy. Validation is read-only, rejects stale, incomplete,
+regressed, or mismatched evidence, and writes a deterministic JSON receipt.
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

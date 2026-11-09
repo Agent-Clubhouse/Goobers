@@ -183,7 +183,7 @@ Advanced operator commands:
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
-  workflow-gym      validate, replay, compare, or evaluate Workflow Gym benchmark tasks
+  workflow-gym      validate, replay, compare, evaluate, or hand off Workflow Gym evidence
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
@@ -3847,13 +3847,15 @@ from 'goobers workflow clusters --json'; it never changes validity or exit code.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ### workflow-gym
-Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate|promotion-validate> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
 Tournament compares candidate result manifests over one identical task roster.
 Evaluate applies confidence and regression gates to tournament JSON output.
+Promotion-validate checks promotion evidence against Workflow CD policy without
+mutating production and emits an auditable validation receipt.
 
 ### workflow-gym evaluate
 Usage: goobers workflow-gym evaluate [--min-samples N] [--regression-threshold RATE]
@@ -3878,6 +3880,13 @@ Usage: goobers workflow-gym list <path>
 
 Validate a Workflow Gym dataset, print its version, deterministic digest,
 and task count, then list tasks in stable task ID order.
+
+### workflow-gym promotion-validate
+Usage: goobers workflow-gym promotion-validate <evidence> <policy>
+
+Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
+WorkflowGymPromotionPolicy. Validation is read-only, rejects stale, incomplete,
+regressed, or mismatched evidence, and writes a deterministic JSON receipt.
 
 ### workflow-gym replay
 Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>

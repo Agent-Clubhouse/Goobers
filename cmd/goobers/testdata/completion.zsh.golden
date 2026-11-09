@@ -383,7 +383,7 @@ _goobers_completion()
             ;;
         workflow-gym)
             if (( CURRENT == 3 )); then
-                candidates=(validate list replay tournament evaluate)
+                candidates=(validate list replay tournament evaluate promotion-validate)
                 _describe -V 'command' candidates
                 return
             fi

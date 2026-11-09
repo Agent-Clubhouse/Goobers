@@ -159,6 +159,73 @@ func TestWorkflowGymEvaluateSeparatesInputErrorsFromUsage(t *testing.T) {
 	}
 }
 
+func TestWorkflowGymPromotionValidateEmitsReceipt(t *testing.T) {
+	candidate := workflowgym.TournamentCandidateIdentity{
+		EffectiveVersion: rollup.EffectiveVersion{
+			WorkflowDigest: "sha256:workflow-candidate",
+			GooberDigest:   "sha256:goober-candidate",
+			Model:          "model-candidate",
+			HarnessVersion: "harness-1",
+		},
+		GenomeDigest: "sha256:genome-candidate",
+	}
+	lkg := candidate
+	lkg.EffectiveVersion.WorkflowDigest = "sha256:workflow-lkg"
+	digests := workflowgym.EvaluationDigests{
+		Dataset:     "sha256:dataset",
+		Evaluator:   "sha256:evaluator",
+		Environment: "sha256:environment",
+	}
+	result := workflowgym.PromotionResult{
+		ArtifactDigest:    "sha256:benchmark",
+		CandidateDigest:   workflowgym.CandidateIdentityDigest(candidate),
+		DatasetVersion:    "dataset-1",
+		DatasetDigest:     digests.Dataset,
+		EvaluatorDigest:   digests.Evaluator,
+		EnvironmentDigest: digests.Environment,
+		Verdict:           workflowgym.EvaluationPass,
+		Samples:           20,
+	}
+	shadow, holdout := result, result
+	shadow.ArtifactDigest = "sha256:shadow"
+	holdout.ArtifactDigest = "sha256:holdout"
+	evidence := workflowgym.PromotionEvidence{
+		APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.PromotionEvidenceKind,
+		Candidate: candidate, CandidateDigest: result.CandidateDigest, ConfigDigest: "sha256:config",
+		LastKnownGood: lkg, DatasetVersion: "dataset-1", Digests: digests,
+		Benchmark: result, Shadow: &shadow, Holdout: &holdout,
+	}
+	policy := workflowgym.PromotionPolicy{
+		APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.PromotionPolicyKind,
+		Candidate: candidate, ConfigDigest: evidence.ConfigDigest, LastKnownGood: lkg,
+		DatasetVersion: evidence.DatasetVersion, Digests: digests, RequireShadow: true, RequireHoldout: true,
+	}
+	write := func(name string, value any) string {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "promotion-validate", write("evidence.json", evidence), write("policy.json", policy)}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var receipt workflowgym.PromotionValidation
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+		t.Fatalf("decode receipt: %v\n%s", err, stdout.String())
+	}
+	if receipt.Kind != workflowgym.PromotionValidationKind || receipt.Verdict != workflowgym.EvaluationPass ||
+		len(receipt.AcceptedResults) != 3 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+}
+
 // writeWorkflowGymEvaluationTournament writes a tournament over the valid
 // dataset where the authoritative run passes every task and the candidate
 // reports alphaStatus for task-alpha and passes task-beta.
