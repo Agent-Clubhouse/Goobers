@@ -80,6 +80,10 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"workflow-gym evaluate": {
+		{name: "min-samples", takesArg: true, desc: "Required samples in each selection slice"},
+		{name: "regression-threshold", takesArg: true, desc: "Tolerated pass-rate regression from 0 to 1"},
+	},
 	"advisory-pr-reset": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle name"},
 		{name: "owner", takesArg: true, desc: "GitHub owner"},

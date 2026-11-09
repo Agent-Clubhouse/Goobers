@@ -106,6 +106,62 @@ func TestWorkflowGymTournamentEmitsPairedReport(t *testing.T) {
 	}
 }
 
+func TestWorkflowGymEvaluateEmitsMachineReadableFailGate(t *testing.T) {
+	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	registry, err := workflowgym.Load(dataset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritativePath := writeTournamentCandidate(t, registry, "authoritative", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentPass},
+		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
+	})
+	candidatePath := writeTournamentCandidate(t, registry, "candidate", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentFail, FailureClass: "evaluation"},
+		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
+	})
+	authoritative, err := workflowgym.LoadTournamentCandidate(authoritativePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := workflowgym.LoadTournamentCandidate(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tournament, err := workflowgym.RunTournament(registry, authoritative, []workflowgym.TournamentCandidateManifest{candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(tournament)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportPath := filepath.Join(t.TempDir(), "tournament.json")
+	if err := os.WriteFile(reportPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"workflow-gym", "evaluate",
+		"--min-samples", "1",
+		"--regression-threshold", "0.25",
+		dataset, reportPath,
+	}, &stdout, &stderr)
+	if code != 1 || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.EvaluationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode evaluation report: %v\n%s", err, stdout.String())
+	}
+	if report.Gate.Verdict != workflowgym.EvaluationFail ||
+		report.Digests.Dataset != registry.Digest ||
+		len(report.Leaderboard) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func writeTournamentCandidate(t *testing.T, registry workflowgym.Registry, genome string, results []workflowgym.TournamentCandidateResult) string {
 	t.Helper()
 	for i := range results {

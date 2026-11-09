@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKFLOW GYM EVALUATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workflow-gym evaluate \- gate and rank paired tournament results
+.SH SYNOPSIS
+\fBgoobers workflow-gym evaluate\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workflow-gym evaluate [OPTIONS] <dataset> <tournament-report>
+
+Evaluate paired tournament JSON with per-slice sample floors, 95% confidence
+intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train
+and eval tasks determine the gate and ranking; holdout results are reported but
+never used for selection. The command writes a machine-readable JSON report and
+exits non-zero for fail or inconclusive verdicts.
+
+Options:
+  --min-samples N              Required samples in each selection slice (default 10)
+  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)
+.fi
+.SH EXAMPLES
+.nf
+goobers workflow-gym evaluate --min-samples 20 --regression-threshold 0.05 ./tasks ./tournament.json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

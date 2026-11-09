@@ -1,0 +1,75 @@
+{
+  "gate": "inconclusive",
+  "candidate": {
+    "verdict": "inconclusive",
+    "reasons": [
+      "train: confidence interval crosses the regression threshold"
+    ]
+  },
+  "slices": [
+    {
+      "split": "train",
+      "selection": true,
+      "samples": 2,
+      "authoritativeRate": 1,
+      "candidateRate": 0.5,
+      "delta": -0.5,
+      "confidenceInterval": {
+        "lower": -1,
+        "upper": 0.479981992270027
+      },
+      "verdict": "inconclusive",
+      "reason": "confidence interval crosses the regression threshold"
+    },
+    {
+      "split": "eval",
+      "selection": true,
+      "samples": 2,
+      "authoritativeRate": 1,
+      "candidateRate": 1,
+      "delta": 0,
+      "confidenceInterval": {
+        "lower": 0,
+        "upper": 0
+      },
+      "verdict": "pass"
+    },
+    {
+      "split": "holdout",
+      "selection": false,
+      "samples": 1,
+      "authoritativeRate": 1,
+      "candidateRate": 1,
+      "delta": 0,
+      "confidenceInterval": {
+        "lower": 0,
+        "upper": 0
+      }
+    }
+  ],
+  "leaderboard": [
+    {
+      "rank": 1,
+      "candidate": {
+        "effectiveVersion": {
+          "workflowDigest": "sha256:workflow-candidate",
+          "gooberDigest": "sha256:goober-candidate",
+          "model": "model-candidate",
+          "harnessVersion": "harness-1"
+        },
+        "genomeDigest": "sha256:candidate"
+      },
+      "candidateDigest": "sha256:c7368d79f0b2bd4e5b740cea4c1a9b579b53907e4b02a41c340610d435234395",
+      "passRate": 0.75,
+      "costUsd": 4,
+      "durationMs": 40,
+      "paretoFrontier": true,
+      "heldOut": {
+        "samples": 1,
+        "passRate": 1,
+        "costUsd": 1,
+        "durationMs": 10
+      }
+    }
+  ]
+}

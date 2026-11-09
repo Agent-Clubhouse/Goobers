@@ -1,17 +1,18 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS WORKFLOW GYM" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers workflow-gym \- validate, list, replay, or compare Workflow Gym benchmark tasks
+goobers workflow-gym \- validate, replay, compare, or evaluate Workflow Gym benchmark tasks
 .SH SYNOPSIS
 \fBgoobers workflow-gym\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers workflow-gym <validate|list|replay|tournament> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
 Tournament compares candidate result manifests over one identical task roster.
+Evaluate applies confidence and regression gates to tournament JSON output.
 .fi
 .SH EXAMPLES
 .nf
@@ -19,6 +20,7 @@ goobers workflow-gym validate ./benchmark-tasks
 goobers workflow-gym list ./benchmark-tasks
 goobers workflow-gym replay ./task.yaml ./provider.json ./journal
 goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
+goobers workflow-gym evaluate ./tasks ./tournament.json
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

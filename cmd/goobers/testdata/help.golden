@@ -183,7 +183,7 @@ Advanced operator commands:
   temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
-  workflow-gym      validate, list, replay, or compare Workflow Gym benchmark tasks
+  workflow-gym      validate, replay, compare, or evaluate Workflow Gym benchmark tasks
   workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
@@ -3840,12 +3840,26 @@ from 'goobers workflow clusters --json'; it never changes validity or exit code.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ### workflow-gym
-Usage: goobers workflow-gym <validate|list|replay|tournament> <args>
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate> <args>
 
 Validate or list a file-backed Workflow Gym benchmark dataset. The path
 may name one JSON/YAML task manifest or a directory of manifests. Replay
 runs one task against historical fixture and journal inputs, entirely offline.
 Tournament compares candidate result manifests over one identical task roster.
+Evaluate applies confidence and regression gates to tournament JSON output.
+
+### workflow-gym evaluate
+Usage: goobers workflow-gym evaluate [OPTIONS] <dataset> <tournament-report>
+
+Evaluate paired tournament JSON with per-slice sample floors, 95% confidence
+intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train
+and eval tasks determine the gate and ranking; holdout results are reported but
+never used for selection. The command writes a machine-readable JSON report and
+exits non-zero for fail or inconclusive verdicts.
+
+Options:
+  --min-samples N              Required samples in each selection slice (default 10)
+  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)
 
 ### workflow-gym list
 Usage: goobers workflow-gym list <path>
