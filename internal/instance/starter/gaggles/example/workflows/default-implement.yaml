@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: default-implement
+  annotations:
+    goobers.dev/template-provenance: starter/default-implement
 spec:
   gaggle: example
   displayName: Default (implement + PR)

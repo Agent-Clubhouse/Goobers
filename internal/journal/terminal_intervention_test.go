@@ -33,6 +33,14 @@ func TestTerminalInterventionChecksGenerationAndExactPrefix(t *testing.T) {
 		skip int
 	}{
 		{name: "new"},
+		{name: "deterministic retry", edit: func(r *TerminalIntervention, _ *[]Event) {
+			r.Events[0].Runner["action"] = "retry"
+			r.Events[1] = Event{
+				Type: EventStageRerunRequested, Stage: "build", Attempt: 2,
+				AttemptClass: AttemptHuman, Actor: "operator",
+				Runner: map[string]any{"emitKey": "request-retry"},
+			}
+		}},
 		{name: "completed terminal", edit: func(_ *TerminalIntervention, h *[]Event) { (*h)[1].Status = string(PhaseCompleted) }, want: ErrInterventionStale},
 		{name: "aborted terminal", edit: func(_ *TerminalIntervention, h *[]Event) { (*h)[1].Status = string(PhaseAborted) }, want: ErrInterventionStale},
 		{name: "partial", edit: func(r *TerminalIntervention, h *[]Event) { *h = append(*h, stampedPrefix(*r, 1)...) }, skip: 1},

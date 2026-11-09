@@ -63,6 +63,9 @@ type ChildAcceptance struct {
 	Payload     []byte
 	MaxChildren int
 	Proposal    *ChildProposal
+	// AdmissionHold, when set, retains custody but fences dispatch until a
+	// durable operator decision approves or rejects the start.
+	AdmissionHold *ChildAdmissionHold
 }
 
 // ChildState describes observed child custody, independently of queue claims.
@@ -304,6 +307,9 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 	if err := reserveChildStorage(ctx, tx, identity, childStorageReservation(req)); err != nil {
 		return ChildRecord{}, false, err
 	}
+	if err := insertChildAdmissionHold(ctx, tx, acceptanceID, req.AdmissionHold, now); err != nil {
+		return ChildRecord{}, false, err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE child_occurrences SET accepted_count=accepted_count+1 WHERE gaggle=? AND parent_run=? AND occurrence=?`, identity.Gaggle, identity.ParentRunID, identity.StageOccurrence); err != nil {
 		return ChildRecord{}, false, err
 	}
@@ -320,6 +326,9 @@ func (s *Store) AcceptChild(ctx context.Context, req ChildAcceptance, now time.T
 func (req ChildAcceptance) validate(now time.Time) error {
 	if !req.Identity.valid() || !validChildText(req.Actor, 1024, true) || len(req.Payload) == 0 || len(req.Payload) > MaxPayloadBytes || req.MaxChildren < 1 || req.MaxChildren > MaxChildrenPerOccurrence || now.IsZero() {
 		return errors.New("triggerqueue: invalid child acceptance")
+	}
+	if err := req.AdmissionHold.validate(); err != nil {
+		return err
 	}
 	return req.Proposal.validate()
 }

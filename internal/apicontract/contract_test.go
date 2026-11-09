@@ -265,20 +265,20 @@ func TestValidateRuntimeParityRejectsMisclassifiedSurfaceActions(t *testing.T) {
 	}
 }
 
-// TestV1MutationRegistryIsApproveOverrideRerun pins V1's first runtime
-// mutations (HITL-7/#469): approve, override, and rerun, each requiring
+// TestV1MutationRegistry pins V1's runtime mutations, each requiring
 // full CLI/API/UI registration. It intentionally uses empty registries and
 // expects the resulting error to name a missing registration rather than
 // succeed — the actual cross-surface registration is proven against real
 // CLI/API/UI registries by cmd/goobers's TestRuntimeMutationCapabilityParity,
 // which this package cannot import (it would create an import cycle back
 // into cmd/goobers).
-func TestV1MutationRegistryIsApproveOverrideRerun(t *testing.T) {
+func TestV1MutationRegistry(t *testing.T) {
 	capabilities := V1RuntimeCapabilities()
 	want := []Capability{
 		{ID: "approve", Class: ActionRuntimeMutation},
 		{ID: "override", Class: ActionRuntimeMutation},
 		{ID: "rerun", Class: ActionRuntimeMutation},
+		{ID: "retry", Class: ActionRuntimeMutation},
 	}
 	if len(capabilities) != len(want) {
 		t.Fatalf("V1 registry = %+v, want %+v", capabilities, want)

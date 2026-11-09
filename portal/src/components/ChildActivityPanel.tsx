@@ -2,6 +2,7 @@ import type { ChildActivity } from "../api/types";
 import type { Navigate } from "../routing";
 import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
+import { describeChildNovelty } from "./childNovelty";
 
 export function ChildActivityPanel({ activity, navigate }: { activity?: ChildActivity; navigate: Navigate }) {
   if (!activity) return null;
@@ -13,10 +14,13 @@ export function ChildActivityPanel({ activity, navigate }: { activity?: ChildAct
       ) : (
         <>
           {activity.parent && (
-            <p>
-              Created by <Action onClick={() => navigate({ page: "run", id: activity.parent!.runId })}>{activity.parent.workflow}</Action>
-              {" · "}<span className="mono">{activity.parent.stageOccurrence}</span>
-            </p>
+            <>
+              <p>
+                Created by <Action onClick={() => navigate({ page: "run", id: activity.parent!.runId })}>{activity.parent.workflow}</Action>
+                {" · "}<span className="mono">{activity.parent.stageOccurrence}</span>
+              </p>
+              {activity.parent.novelty && <p>Advisory novelty: {describeChildNovelty(activity.parent.novelty)}</p>}
+            </>
           )}
           {activity.waits.length > 0 && (
             <>

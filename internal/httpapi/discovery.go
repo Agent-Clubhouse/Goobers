@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -282,7 +283,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.events != nil
 	case apicontract.RouteRunReveal:
 		available = config.runRevealer != nil
-	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage:
+	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage, apicontract.RouteRetryStage:
 		available = config.interventions != nil
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil
@@ -330,6 +331,14 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteLabsWorkflowFeatures:
+		if config.labsWorkflowFeatures == nil {
+			return false, "labs_unavailable", "Labs workflow features are not configured on this daemon"
+		}
+		if err := config.labsWorkflowFeatures.WorkflowFeaturesAvailability(context.Background()); err != nil {
+			return labsWorkflowFeaturesUnavailable(err)
+		}
+		return true, "", ""
 	case apicontract.RouteClaimsActive:
 		available = config.activeClaimsAvailable
 	case apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats,

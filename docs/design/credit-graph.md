@@ -24,7 +24,8 @@ For an operator walkthrough of enabling Backprop, reading attribution and
 fault-audit findings, and verifying fixes, see the
 [Backprop user guide](../guides/backprop.md).
 
-Backprop is opt-in per workflow on DSL 3.0 and 3.1 (preview):
+Backprop is opt-in per workflow, or through gaggle defaults (see
+[Gaggle defaults](#shadow-mode)), on DSL 3.0 and 3.1 (preview):
 
 ```yaml
 dslVersion: "3.0"
@@ -44,7 +45,7 @@ spec:
 
 The legacy `enabled` switch remains supported: `enabled: true` without a mode
 means `active`, and omitting `backprop` or setting `enabled: false` without a
-mode performs no attribution work. When `mode` is set it is authoritative;
+mode performs no attribution work unless the gaggle sets a default. When `mode` is set it is authoritative;
 `enabled: true` is accepted only with `mode: active`; combining it with `off`
 or `shadow` is rejected, because binaries that predate `mode` read only
 `enabled` and would otherwise publish a shadow run's record as active.
@@ -154,14 +155,78 @@ write `attribution.json` and enter the fault audit; earlier shadow runs are
 never backfilled into the active namespace, so promotion does not
 retroactively file findings. Demote by setting `mode: shadow` or `off`.
 
-**Gaggle override.** `gaggle.spec.backprop.mode: off|shadow` observes every
-workflow in the gaggle that does not declare its own mode. Precedence:
-workflow `mode`, then workflow `enabled: true`, then the gaggle override, then
-off. Like a workflow-declared shadow run, an override run writes nothing at
-terminalization; `goobers telemetry shadow` analyzes both kinds from the
-journal on request and compares the findings the
-fault audit would have filed with actual run phases and actual filings. That
-report is read-only and is not read by any gate, filing pass, or default view.
+**Gaggle defaults (#7120).** `gaggle.spec.backprop` sets `mode`
+(`off|shadow|active`), `version` (default `v1`), `granularity`, and
+`groundTruth.sources` for every workflow in the gaggle; `apiv1.ResolveBackprop` is the single resolver.
+Precedence: workflow `mode` (so `mode: off` is the explicit opt-out), then
+workflow `enabled: true`, then the gaggle default, then off. `enabled: false`
+without a mode inherits. A workflow that keeps its own mode still inherits an
+omitted `granularity`, `version`, and `groundTruth`. A workflow's own
+`groundTruth` always wins over the gaggle's, and `sources: []` is the explicit
+opt-out from ground-truth labels.
+
+The two inherited modes take different paths, so neither changes what the
+terminal path reads:
+
+- **Active** is materialized at config load (`instance.ApplyGaggleDefaults`,
+  beside the gaggle CI command and outbox mirror). The resolved config is
+  written into the workflow definition before compile, with `enabled: true`
+  alongside `mode: active` so older readers of `enabled` agree. The
+  definition each run pins therefore records the config it was attributed
+  under, and the runner and engine terminal hooks need no gaggle lookup. Only
+  workflows that can compile Backprop are materialized: `dslVersion` 3.0 or
+  later and the per-workflow preview acknowledgement. Other workflows keep
+  their definition, and read surfaces resolve them as off
+  (`instance.InheritedGaggleBackprop`).
+- **Shadow** stays read-time, as in #7117. It reaches every workflow. Like a
+  workflow-declared shadow run, a run observed through the gaggle default
+  writes nothing at terminalization. `goobers telemetry shadow` analyzes both
+  kinds from the journal on request, reports the source (`workflow` or
+  `gaggle-override`), and compares the findings the fault audit would have
+  filed with actual run phases and actual filings. That report is read-only
+  and is not read by any gate, filing pass, or default view.
+
+Changing a gaggle default from shadow to active promotes only runs that start
+afterwards; a run whose pinned definition predates the change resolves as
+active at read time, so it is no longer shadow-observed, and it has no record.
+Nothing is backfilled.
+
+## Cross-workflow links and gaggle report
+
+`goobers telemetry gaggle --gaggle=<name>` (`readservice.StoredGaggleBackprop`,
+schema `goobers.dev/backprop/gaggle-report/v1`) reads the active records of one
+gaggle's terminal runs over a run-start window (default seven days) and the
+previous window of the same length. It reports per-workflow and per-stage
+credit and blame shares, the top recurring `(workflow, stage, class)` causes
+seen in at least two runs, and per-workflow trends (runs, failure rate, and
+blame share against the previous window). Each window reads at most 500 records
+under the fault audit's scan budget and reports `truncated` (current window)
+or `previousTruncated` (previous window) when either bound is reached. A
+neutral outcome (an escalated run) carries neither credit nor blame, and a
+run whose journal cannot be read is listed in `linkEvidenceUnavailable`
+instead of silently contributing no links.
+
+Each workflow entry also reports its runs' accepted label sources
+(`groundTruthSources`), a `groundTruth` summary over accepted labels only, and
+`ignoredLabelRuns` for runs whose labels their pinned contract refused.
+
+Cross-workflow links follow the credit graph's no-guessed-edges rule (see
+[Why](#why)). An edge
+exists only when two runs recorded the same identifier:
+
+- `shared-external-ref`: both runs recorded a successful reference touch
+  (`journal.Event.IsReferenceTouch`) of the same normative
+  `(provider, kind, id)`. The edge runs from the nearest earlier run of
+  another workflow to the later run, so a handoff chain is a chain rather than
+  a clique. URLs, titles, and content digests are never compared.
+- `continued-from-run`: the later run's identity records `continuedFromRunId`
+  naming an earlier run of a different workflow. A continuation within one
+  workflow is a retry, not a cross-workflow handoff, and is not linked.
+
+There are no timing, similarity, or name-based edges. A workflow's
+`downstreamFailures` counts distinct failed runs of other workflows that such
+an edge places after one of its runs. The report is the gaggle-level input for
+#4664 and #5139; the portal does not consume it yet.
 
 ## Cross-workflow fault audit
 
@@ -284,8 +349,16 @@ change fault-domain classification, finding IDs, or verification state.
 Labels are read-only inputs. Recording one never touches the run journal, the
 attribution record, the run's phase, or any gate verdict.
 
-Not yet implemented (follow-ups under #7121): declaring ground-truth sources in
-workflow or gaggle config, deferred signal sources (reverted PR, R-SZZ traced
+**Accepted sources (#7120).** `backprop.groundTruth.sources` on a workflow or
+its gaggle (workflow wins; see [Gaggle defaults](#shadow-mode)) lists the label
+sources a run accepts; `[]` accepts none and an omitted list accepts every
+supported source. The resolved list is pinned with the run's definition
+(`creditgraph.PinnedGroundTruth`). `RecordLabel` rejects a label whose source
+the run does not accept, and the read path drops such labels before choosing
+the effective label, so a label written outside the CLI cannot weight an
+aggregate either.
+
+Not yet implemented (follow-ups under #7121): deferred signal sources (reverted PR, R-SZZ traced
 bug, reopened issue, main CI breakage), user-provided checker commands, and
 feeding labels into per-run credit propagation (`attribution.json` itself).
 
@@ -443,6 +516,155 @@ correct and total counts.
 
 Not yet implemented (follow-ups under #7121): a `goobers backprop eval`
 command and counterfactual fault-injection generators.
+
+## Reviewer recall eval (R-SZZ)
+
+The attribution eval scores Backprop's blame; the reviewer eval scores
+merge-review itself. It asks: of the bugs this repository later fixed, how many
+would merge-review have flagged on the change that introduced them, and how
+many of its findings pointed at a real bug? `test/reviewereval` answers with
+three subcommands.
+
+`build -range=A..B -version=V -out=FILE` finds bug fixes in the range's
+first-parent, non-merge history: commits listed in `-fixes` (for example those
+recorded with `goobers telemetry mark-fix`), commits whose message closes an
+issue listed in `-bug-issues` (issues labeled bug or flake), and conventional
+`fix:` commits unless `-no-conventional`. For each fix it runs
+refactoring-aware SZZ (R-SZZ): the fix's deleted lines are blamed (`-w -M -C`)
+in its parent, after filtering out blank-line deletions (`whitespace`), lines
+re-added in the same hunk with only whitespace changed (`format`), and lines
+re-added elsewhere in the fix (`move`). A line blamed on a pure-refactor commit
+(non-blank deleted and added lines are the same multiset ignoring whitespace)
+is traced through it to the deleted line with the same text and blamed again
+in the refactor's parent, up to three refactors deep (`pure-refactor`). The
+commit holding the most traced lines is the introducing commit. A fix is
+dropped, by reason, when it deletes nothing (`no-traceable-lines`), when every
+line is filtered (`all-lines-filtered`), when the culprit is the root or a
+boundary commit (`root-commit`), or when the top candidate holds under half
+the traced lines or ties with the runner-up (`ambiguous`). The dataset header records how many lines each
+filter removed and how many fixes each reason dropped, so filter impact is
+reported rather than hidden. A case whose fix mostly changes non-test files the
+introducing commit never touched is tagged `out-of-diff`: its cause lay outside
+the diff a reviewer would have seen.
+
+The dataset (schema `goobers.dev/backprop/reviewer-eval-dataset/v1`) is JSONL:
+a header with the version, range, resolved commits, filter and drop counts,
+and an order-independent content digest, then one case per line. Rebuilding
+the same range yields the same bytes. Each case is assigned `train` or `eval`
+from a hash of its introducing commit, so every fix of one offending change
+lands in the same split; loading rejects a dataset whose digest does not match
+its cases, whose split assignment departs from the rule, or whose fix appears
+twice. `-hand-labels` attaches a hand-labeled introducing commit to matching
+cases, and a fix that two labels name is rejected as ambiguous; replay
+reports how often R-SZZ agrees with them (`szzCalibration`). The builder runs only read-only git commands against the repository (archive,
+blame, diff, log, rev-list, rev-parse, show, with no `--output`) and never
+writes to it.
+
+`replay -dataset=FILE -variant=NAME -reviewer-cmd=CMD -sandbox-cmd=PREFIX
+-allow-real-reviewer -max-cases=N -budget-usd=X` replays one split (`eval` by default) through a
+reviewer. It samples at most N cases (never more than 200) of that split
+ordered by a seeded hash (`-seed`), so the same dataset and seed always replay
+the same cases; out-of-diff cases are counted, not replayed or scored as
+misses. Each offending commit is reconstructed in a fresh repository from
+`git archive` exports of its parent and itself: two commits, no remote, no
+objects shared with the live repository, so the fix and all later history are
+unreachable. The reviewer adapter runs in that repository, and the judge in an
+empty scratch directory, both under `-work-dir` (which may not lie inside the
+live repository). Each adapter's environment starts from the same default-deny
+ambient allowlist every stage and harness subprocess gets (`internal/procenv`),
+plus only the names given to `-adapter-env` (for example a model API key), so
+no forge token is inherited: not `GH_TOKEN` or `GITHUB_TOKEN`, an instance's
+configured repository token variable (`GOOBERS_GITHUB_TOKEN`, `GITEA_TOKEN`, or
+any other), nor a minted `GOOBERS_CRED_*` credential. `-adapter-env` refuses
+names that look like forge credentials (`GH_*`, `GOOBERS_*`, names containing
+a forge such as `GITHUB` or `GITEA`, any `*_TOKEN` or `*_PAT`, git, credential
+manager, and SSH configuration such as `GIT_CONFIG_PARAMETERS`, and the home
+variables below). Each
+adapter also gets fresh empty home and configuration directories (`HOME`,
+`USERPROFILE`, `APPDATA`, `XDG_*`, `GH_CONFIG_DIR`), global and system git
+config ignored, git credential helpers disabled, and git restricted to the
+local file transport (`GIT_ALLOW_PROTOCOL=file`, `GIT_TERMINAL_PROMPT=0`;
+`-adapter-env` cannot override either), so stored gh and git credentials are
+unreachable and a `git fetch` or `git clone` over https, ssh, or git fails.
+
+The threat this isolation answers is an adapter (or the model behind it)
+seeing the fix or any later history, which would turn a recall measurement
+into a lookup. What is enforced:
+
+- the frozen two-commit repository, with no remotes and no objects shared with
+  the live repository;
+- the `internal/procenv` default-deny environment plus refused credential-like
+  `-adapter-env` names;
+- isolated home and configuration directories, and no git credential helper;
+- git limited to local transport;
+- no egress to the forge: every adapter runs through `-sandbox-cmd`, a
+  required command prefix (for example a container or network namespace whose
+  egress allowlist admits only the model provider), and before any review
+  replay runs its own `egress-probe` subcommand through that sandbox with the
+  adapter environment. Replay refuses to start unless the probe ran (it must
+  print its token) and reached none of `-forbidden-hosts`, neither directly
+  nor, when the adapter environment's `HTTPS_PROXY`/`NO_PROXY` route the host
+  through a proxy as curl, gh, node, and python would, by an HTTP `CONNECT`
+  through that proxy (by default
+  `github.com:443`, `api.github.com:443`, `codeload.github.com:443`, and
+  `raw.githubusercontent.com:443`; add the forge's endpoints when the
+  repository lives elsewhere). A blanket `network:none` would also cut off the
+  model provider, so the sandbox, not replay, chooses what the model may reach;
+  replay only proves the forge is not on that list. The sandbox must be able
+  to run the reviewereval binary at its host path (build it with
+  `go build ./test/reviewereval` and bind-mount it when the sandbox is a
+  container).
+
+The reviewer receives the request (an opaque case
+ID, base and head SHAs, title, diff, remaining budget) as JSON on stdin, and
+prints the verdict and its cost. Dataset case IDs name the fix commit, so the
+reviewer only ever sees its case's position in the sampled order; the mapping
+back to the fix stays on the scoring side. Nothing is posted to a pull request. A real review is always
+opt-in: replay refuses to run without both flags and a verified sandbox.
+
+The budget caps reviewer and judge spend together, including spend on failed
+cases. Every reviewer and judge request carries the budget it has left, and
+an adapter that reports spending more stops the replay with an error rather
+than produce an over-budget report. Once the budget is spent, findings still
+awaiting the judge are recorded as skipped for budget (and count as not
+matching) and the remaining cases as `budget-exhausted`. A synthesized or
+failed review, a verdict that breaks the merge-review verdict contract (an
+unknown decision, a finding with an invalid severity or class, no message, or a
+cross-PR blocker naming no PR, checked by the same validation production uses),
+or a judge failure, is recorded as `failed` with its spend kept and is never
+scored; `compare` and `publish` refuse a report whose reviewed verdicts break
+that contract.
+A reviewer or judge call that fails after reporting a cost still counts that
+cost, is checked against the budget it was given like any other call, and a
+failed judge call is recorded with its error and cost but no verdict.
+Neither counts toward recall.
+
+A finding matches its case's bug when its location names a bug file and a line
+within three lines of a bug line. If `-judge-cmd` is given, a finding that does
+not overlap is sent to that semantic judge, and every judge decision,
+rationale, and cost is recorded in the report. The report (schema
+`goobers.dev/backprop/reviewer-eval-report/v1`) holds each case's verdict and
+scored findings, overall and per-finding-class recall (bugs caught over bugs
+reviewed) and precision (matching findings over all findings), and total cost
+(failed cases included) and cost per bug.
+
+`compare` and `publish` re-validate every report they load: case IDs must be
+unique and in seeded sampling order, each case's scoring must agree with its
+verdict and judge decisions, spend must stay within the budget, and the counts,
+recall, precision, and costs must equal what the per-case results recompute
+to, so a hand-edited aggregate is rejected.
+
+`compare -baseline=FILE -candidate=FILE` compares a candidate reviewer variant
+with the baseline. Both reports must come from the same frozen dataset (version
+and digest), the same split, and the same reviewed cases, and must name
+different variants. It prints the candidate's summary with recall, precision,
+and cost-per-bug deltas, and exits 1 when overall recall or precision, or any
+baseline class's recall, drops. `-publish=<instance-root>` (or
+`publish -report=FILE -instance=ROOT` for a single report) writes the summary
+(schema `goobers.dev/backprop/reviewer-eval-summary/v1`) to
+`scheduler/backprop-audit/reviewer-eval.json`. Only the `eval` split may be
+published, and counts, ratios, costs, and comparison deltas must agree. The
+telemetry stats API returns it as `reviewerEval`.
 
 ## Why
 
@@ -656,3 +878,96 @@ No credit data migrates between the two stores, and none needs to:
 - If a later change makes the two failure signals agree, that change belongs
   in `readmodel.ProjectRun` and must update the pinned divergence cases in the
   conformance test in the same commit.
+
+## Evidence fidelity ablation (#7317)
+
+An offline experiment, not a production feature. It asks whether Backprop's
+diagnoses depend on the tool evidence in agent transcripts, and whether lossy
+or missing evidence makes Backprop abstain instead of looking as if the run
+had been fully observed. It changes nothing in Build, Attribute, scoring, or
+the fault audit, and makes no network or model calls.
+
+`go run ./test/attributioneval -ablation [-report=PATH]` attributes every
+case of the attribution eval set (the labels above, so there is no second
+taxonomy) at four fidelity levels:
+
+| Level | What changes in each canonical transcript |
+|---|---|
+| `full` | nothing |
+| `outcome-ablated` | each tool result's `success` is removed; call and result records and their IDs stay |
+| `results-truncated` | records from the first tool result on are dropped, and an explicit `truncated` marker record (the harness's truncation shape) is appended |
+| `transcript-missing` | the content is withheld; the `span.recorded` event stays, the shape of a recorded span whose content cannot be retrieved |
+
+Levels only remove recorded observations or mark them as missing. The journal
+is never changed and no observation is fabricated; a test holds every
+fixture at every level to that. A case is *affected* at a level when the
+level changed its evidence. The report pairs each level with `full` case by
+case and gives:
+
+- accuracy per granularity over all cases and over affected cases, with 95%
+  Wilson intervals, and paired lost/gained counts with an exact McNemar
+  p-value;
+- abstention (no cause, or an `unknown` top cause), overall and on affected
+  cases;
+- unsupported attribution: a committed top cause whose blamed node or a cited
+  node does not resolve in the graph built at that fidelity;
+- citation validity over every cause: cited nodes that resolve, where a cited
+  tool result must also still record its outcome;
+- misattributions: affected cases whose top cause commits to a different
+  class than at full fidelity;
+- the domain Brier score, and the confidence shift on affected cases;
+- coverage by adapter: transcripts, tool calls, results, and results with an
+  outcome per adapter, named from the `<adapter>.transcript` span name
+  (`unidentified` otherwise), plus cases with no transcript.
+
+Confidence protocol: an `unknown` cause's confidence is confidence in the
+refusal, not in a cause, so abstaining cases are counted as abstentions and
+not compared numerically. A committed cause where `full` abstained counts as
+a confidence gain. The canonical transcript records no tool start, end,
+duration, result digest, or evidence source for any adapter; the report
+lists those as unrecorded instead of measuring them, so long-running tools,
+polling, and repeated unchanged results cannot be told apart here.
+
+Predeclared success criteria, each reported with a verdict:
+
+1. `full-matches-eval`: full-fidelity accuracy equals the attribution eval's
+   at every granularity (the harness does not perturb attribution).
+2. `no-silent-misattribution`: at every ablated level, every affected case
+   abstains or keeps its full-fidelity class.
+3. `no-confidence-gain`: at every ablated level, no affected case that still
+   commits to a cause gains confidence.
+4. `citations-supported`: at every level, every citation resolves and no
+   committed cause is unsupported.
+5. `outcome-evidence-useful` (the hypothesis): removing tool outcomes loses
+   more class-correct cases than it gains, exact McNemar p < 0.05, over at
+   least 10 affected cases; fewer affected cases report
+   `insufficient-sample`, and a negative result is a valid result.
+
+Criteria 1–4 are safety properties that fail on a single violation at any
+sample size; `TestEvidenceAblationOnTheEvalSet` holds them in CI. Criterion 4
+is a self-consistency check only: citations are resolved against the same
+graph the attribution was built from, and the attributor cites only tool
+results that record an outcome, so with today's attributor it cannot fail. It
+guards against a future attributor that cites evidence the graph lacks; it is
+not evidence that ablated causes are correct, which criterion 2 measures.
+
+Result on eval set v1 (18 cases): only 4 cases carry a transcript, all from
+`copilot-cli` with every tool result recording an outcome; the other 14 have
+no transcript. Criteria 1–4 pass. At each ablated level all 4 affected cases
+abstain (4/4, 95% interval 0.51–1.00), no case is misattributed, and class
+accuracy falls from 9/18 to 7/18 (2 lost, 0 gained, p = 0.5). Criterion 5 is
+`insufficient-sample`. Removing only the outcome already produces the same
+abstention as withholding the whole transcript, so in today's representation
+the per-result outcome is the smallest evidence addition that changes
+diagnoses; its overhead is one boolean per tool result. Failure cases: the two
+cases whose class was right at full fidelity become abstentions, and Build
+does not read the `truncated` marker, so truncation is visible to Backprop only
+as tool calls with no result.
+
+Not covered yet: labeled transcripts from `claude-code` (which records tool
+results with outcomes) and `codex` (whose composed transcript records no tool
+calls), real trajectories with tool evidence beyond v1, the enriched tool
+observations listed above (no adapter emits them), successful trajectories
+(every v1 case ends `failed`, so the report cannot yet show whether ablation
+blames a healthy run), and an opt-in shadow run.
+These need new labeled cases, not changes to the harness.

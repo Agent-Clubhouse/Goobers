@@ -175,6 +175,14 @@
       "default": false,
       "description": "Opts `goobers up` into native desktop notifications for escalated and failed runs. The one-shot daemon override is `goobers up --notify` (`--notify=all` adds completed and aborted runs)."
     },
+    "workflowClustering": {
+      "description": "Optional Labs frozen cluster model used for advisory child-workflow novelty evidence. Missing, invalid, or stale models leave admission unchanged and report proposals as unscored.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "modelPath": { "type": "string", "minLength": 1, "description": "Frozen model JSON path, relative to the instance root or absolute." }
+      }
+    },
     "decisionGate": {
       "description": "Opt-in decision-model (System One) layer. Omitted means off and nothing is sent to any endpoint. The *Env fields name environment variables; secrets are never stored here.",
       "type": "object",
@@ -195,6 +203,20 @@
           "properties": {
             "tasks": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Task ids granted the tool. Wildcards are not allowed." },
             "maxCalls": { "type": "integer", "minimum": 0, "maximum": 50, "description": "Model calls allowed per stage invocation; 0 means 5." }
+          }
+        },
+        "handoffSchemas": {
+          "type": "array",
+          "description": "Binds a producer stage's sole JSON result to a JSON Schema so consumers' handoff validity (the shadow record's inputValid) is checked for workflows that cannot declare schema-bound artifactSlots. Inert while the gate is off.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["workflow", "stage", "schemaPath"],
+            "properties": {
+              "workflow": { "type": "string", "minLength": 1, "description": "Name of the workflow that declares the producer stage." },
+              "stage": { "type": "string", "minLength": 1, "description": "Name of the producer stage whose JSON result is validated." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "JSON Schema (draft 2020-12) path, relative to and contained within the config directory." }
+            }
           }
         },
         "gate": {

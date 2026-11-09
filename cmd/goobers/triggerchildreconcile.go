@@ -32,7 +32,7 @@ func acceptedChildObserver(layout instance.Layout) childStartObserver {
 			return false, err
 		}
 		e := ref.Envelope
-		if id.Child == nil || *id.Child != ref.Lineage || id.RunID != ref.Child.RunID || id.Gaggle != e.Gaggle || id.Workflow != e.Workflow || id.WorkflowDigest != e.WorkflowDigest || id.ConfigGeneration != e.ConfigGeneration {
+		if id.Child == nil || !id.Child.Equal(ref.Lineage) || id.RunID != ref.Child.RunID || id.Gaggle != e.Gaggle || id.Workflow != e.Workflow || id.WorkflowDigest != e.WorkflowDigest || id.ConfigGeneration != e.ConfigGeneration {
 			return false, fmt.Errorf("accepted child %s has a mismatched run identity", ref.Child.AcceptanceID)
 		}
 		return true, nil

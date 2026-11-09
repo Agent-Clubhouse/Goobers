@@ -144,6 +144,11 @@ func TestTerminalInterventionsRequireCapabilityAndDurableAcknowledgement(t *test
 		"rerun": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 			return s.RerunStage(t.Context(), r)
 		},
+		"retry": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+			r.InstructionAddendum = ""
+			r.DeterministicRetry = true
+			return s.RerunStage(t.Context(), r)
+		},
 		"deny": func(s *Service, r httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 			return s.AcceptDenyEscalation(t.Context(), t.Context(), r)
 		},
@@ -166,6 +171,10 @@ func TestTerminalInterventionsRequireCapabilityAndDurableAcknowledgement(t *test
 			if action == "rerun" {
 				if intent.Kind != engine.HITLRerunStage || intent.Stage != "review" {
 					t.Fatalf("rerun=%+v", intent)
+				}
+			} else if action == "retry" {
+				if intent.Kind != engine.HITLRetryStage || intent.Stage != "review" || intent.InstructionAddendum != "" {
+					t.Fatalf("retry=%+v", intent)
 				}
 			} else if intent.Resolution != action || intent.Gate != "review" {
 				t.Fatalf("resolution=%+v", intent)

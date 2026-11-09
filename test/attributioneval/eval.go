@@ -351,6 +351,16 @@ func fullTaxonomy() []taxonomyEntry {
 }
 
 func predict(input evalInput) (prediction, error) {
+	_, attribution, err := attribute(input)
+	if err != nil {
+		return prediction{}, err
+	}
+	return predictionOf(input, attribution), nil
+}
+
+// attribute builds the case's graph from its journal and span content and
+// attributes it.
+func attribute(input evalInput) (*creditgraph.Graph, creditgraph.Attribution, error) {
 	spans := make(map[string][]byte, len(input.SpanData))
 	for digest, content := range input.SpanData {
 		spans[digest] = []byte(content)
@@ -360,11 +370,17 @@ func predict(input evalInput) (prediction, error) {
 		Events: input.Events, SpanData: spans,
 	})
 	if err != nil {
-		return prediction{}, err
+		return nil, creditgraph.Attribution{}, err
 	}
-	cause, ok := topCause(creditgraph.Attribute(graph).Causes)
+	return graph, creditgraph.Attribute(graph), nil
+}
+
+// predictionOf projects the attribution's most confident cause onto the
+// label's granularities.
+func predictionOf(input evalInput, attribution creditgraph.Attribution) prediction {
+	cause, ok := topCause(attribution.Causes)
 	if !ok {
-		return prediction{}, nil
+		return prediction{}
 	}
 	predicted := prediction{
 		Attributed: true,
@@ -378,7 +394,7 @@ func predict(input evalInput) (prediction, error) {
 	if cause.Stage != "" {
 		predicted.Workflow = input.Workflow
 	}
-	return predicted, nil
+	return predicted
 }
 
 // topCause is the most confident cause; ties keep graph order.

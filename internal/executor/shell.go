@@ -812,6 +812,10 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 //
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
+	verificationEnabled, err := e.verificationEnabled(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	if err := validateShellChildWorkspace(ctx, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -1045,22 +1049,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	stdoutRef, err := e.Journal.RecordArtifact(env.TaskID+"/stdout.log", outBytes)
+	stdoutRef, stderrRef, err := e.recordCapturedOutput(env.TaskID, stdout, stderr, outBytes, errBytes, &result)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stdout: %w", err)
+		return apiv1.ResultEnvelope{}, err
 	}
-	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
-	if stdout.Truncated() {
-		result.Outputs[StdoutTruncatedOutput] = true
-	}
-
-	stderrRef, err := e.Journal.RecordArtifact(env.TaskID+"/stderr.log", errBytes)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stderr: %w", err)
-	}
-	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
-	if stderr.Truncated() {
-		result.Outputs[StderrTruncatedOutput] = true
+	if verificationEnabled {
+		defer e.publishVerificationReport(env, outBytes, stdout.Truncated(), stdoutRef, &outcome, &retErr)
 	}
 
 	if timedOut {
@@ -1392,6 +1386,26 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+func (e *ShellExecutor) recordCapturedOutput(stage string, stdout, stderr *capturingWriter, outBytes, errBytes []byte, result *apiv1.ResultEnvelope) (journal.Ref, journal.Ref, error) {
+	stdoutRef, err := e.Journal.RecordArtifact(stage+"/stdout.log", outBytes)
+	if err != nil {
+		return journal.Ref{}, journal.Ref{}, fmt.Errorf("executor: record stdout: %w", err)
+	}
+	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
+	if stdout.Truncated() {
+		result.Outputs[StdoutTruncatedOutput] = true
+	}
+	stderrRef, err := e.Journal.RecordArtifact(stage+"/stderr.log", errBytes)
+	if err != nil {
+		return journal.Ref{}, journal.Ref{}, fmt.Errorf("executor: record stderr: %w", err)
+	}
+	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
+	if stderr.Truncated() {
+		result.Outputs[StderrTruncatedOutput] = true
+	}
+	return stdoutRef, stderrRef, nil
 }
 
 // MergeResultFileOutputs best-effort-parses a declared result file's bytes as

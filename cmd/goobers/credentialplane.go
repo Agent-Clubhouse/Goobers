@@ -197,6 +197,7 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 		response.Grant = s.mintPodStageGrant(request, resolved)
 	}
 	response.PublicationLeakScreen = s.publicationLeakScreenDelivery(request, resolved)
+	response.DecisionShadow = s.decisionShadowDelivery(resolved)
 	return response, nil
 }
 

@@ -179,31 +179,14 @@ func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInp
 	}
 	if owner.InstanceID == expected.InstanceID && owner.InputDigest != expected.InputDigest &&
 		owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch > 0 && owner.OwnerEpoch < in.OwnerEpoch && owner.StarterID != "" {
-		// A predecessor may carry either of the explicitly supported encodings:
-		// annotation-less input from before annotations were pinned, or the
-		// opposite child-workflow posture from before a config rollback/re-enable.
-		// Every other input field remains covered by the digest.
-		candidates := make([]engine.RunInput, 0, 3)
-		if len(in.Annotations) > 0 {
-			legacy := in
-			legacy.Annotations = nil
-			candidates = append(candidates, legacy)
-		}
-		opposite := in
-		opposite.ChildWorkflowsEnabled = !in.ChildWorkflowsEnabled
-		candidates = append(candidates, opposite)
-		if len(in.Annotations) > 0 {
-			opposite.Annotations = nil
-			candidates = append(candidates, opposite)
-		}
-		for _, candidate := range candidates {
+		for _, candidate := range legacyStartCandidates(in) {
 			candidateOwner, candidateErr := startOwner(candidate)
 			if candidateErr != nil {
 				return engine.StartResult{}, in, candidateErr
 			}
 			if owner.InputDigest == candidateOwner.InputDigest {
 				// Confirm the input actually running, so persisted pins keep its
-				// original posture, annotations, and memo digest during adoption.
+				// original posture, annotations, labels, and memo digest during adoption.
 				in, expected = candidate, candidateOwner
 				break
 			}
@@ -223,6 +206,37 @@ func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInp
 	default:
 		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
 	}
+}
+
+// legacyStartCandidates lists the explicitly supported predecessor encodings
+// of in: annotation-less input from before annotations were pinned,
+// label-less input from before workflow labels were pinned, the opposite
+// child-workflow posture from before a config rollback/re-enable, and every
+// combination of those. Every other input field remains covered by the digest.
+func legacyStartCandidates(in engine.RunInput) []engine.RunInput {
+	candidates := make([]engine.RunInput, 0, 7)
+	for _, flipPosture := range []bool{false, true} {
+		base := in
+		if flipPosture {
+			base.ChildWorkflowsEnabled = !in.ChildWorkflowsEnabled
+			candidates = append(candidates, base)
+		}
+		if len(in.Annotations) > 0 {
+			stripped := base
+			stripped.Annotations = nil
+			candidates = append(candidates, stripped)
+		}
+		if len(in.WorkflowLabels) > 0 {
+			stripped := base
+			stripped.WorkflowLabels = nil
+			candidates = append(candidates, stripped)
+			if len(in.Annotations) > 0 {
+				stripped.Annotations = nil
+				candidates = append(candidates, stripped)
+			}
+		}
+	}
+	return candidates
 }
 
 // isAlreadyStarted reports whether err is Temporal's "already started" error.

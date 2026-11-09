@@ -126,6 +126,21 @@ func TestExplainResolvesNestedArraySelectors(t *testing.T) {
 	}
 }
 
+func TestExplainVerificationReportIncludesConclusiveEvidence(t *testing.T) {
+	got, err := Explain("backprop-verification-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, ok := got.Example.(map[string]any)
+	if !ok {
+		t.Fatalf("report example is not an object: %T", got.Example)
+	}
+	evidence, ok := report["evidence"].([]any)
+	if !ok || len(evidence) == 0 {
+		t.Fatalf("conclusive report example has no evidence: %#v", report)
+	}
+}
+
 func TestMinimalPatternExampleAllowsEmptyString(t *testing.T) {
 	pattern := `^(?:|https?://example\.invalid)$`
 	got, err := minimalPatternExample(pattern)

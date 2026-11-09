@@ -181,7 +181,7 @@ func testProductionChildFactory(t *testing.T, options childFactoryTestOptions) {
 				return engine.ChildDispatchResult{}, fmt.Errorf("provider key escaped contract: %+v", key)
 			}
 		}
-		if contract.Identity.Child == nil || *contract.Identity.Child != *f.writer.identity.Child || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
+		if contract.Identity.Child == nil || !contract.Identity.Child.Equal(*f.writer.identity.Child) || contract.Stage != "check" || contract.KitDigest != a.KitDigest {
 			return engine.ChildDispatchResult{}, fmt.Errorf("custody changed: %+v", contract)
 		}
 		owned, stop, err := remoteChildExecutionFenceWithOptions(ctx, server.URL, workerToken, contract,

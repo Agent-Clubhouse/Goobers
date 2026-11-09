@@ -769,6 +769,10 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return configSeedFile{}, fmt.Errorf("decode canonical workflow %s: %w", name, err)
 	}
+	if workflow.Annotations == nil {
+		workflow.Annotations = map[string]string{}
+	}
+	workflow.Annotations[TemplateProvenanceAnnotation] = ExampleTemplateProvenance(name)
 	workflow.Spec.Gaggle = opts.GaggleName
 	if name == GuidedWorkflowImplementation && opts.PullRequestCI {
 		tasks := workflow.Spec.Tasks[:0]

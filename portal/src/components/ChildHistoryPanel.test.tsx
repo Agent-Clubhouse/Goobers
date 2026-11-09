@@ -50,6 +50,21 @@ describe("child acceptance history", () => {
     expect(screen.getByRole("button", { name: "Previous children" })).toBeDisabled();
   });
 
+  it("shows a pending admission hold with its pinned evidence and the decision commands", async () => {
+    const novelty = { scored: true, modelVersion: "workflowcluster.model/v1", nearest: "c2", distance: 0.42, outOfDistribution: true, humanApprovalRequired: true };
+    mount({ ...page(), nextCursor: "", items: [
+      { childId: "held", runId: "child-held", stageOccurrence: "stage-3", invocationKey: "inspect-novel", state: "queued", cancellationRequested: false, acceptedAt: time, updatedAt: time,
+        admission: { state: "pending", reason: "out-of-distribution", requestedAt: time, novelty } },
+      { childId: "done", runId: "child-done", stageOccurrence: "stage-4", invocationKey: "inspect-rejected", state: "failed", cancellationRequested: false, acceptedAt: time, updatedAt: time, terminalAt: time,
+        admission: { state: "rejected", reason: "out-of-distribution", requestedAt: time, decidedAt: time, actor: "operator" } },
+    ] });
+    const hold = await screen.findByRole("note", { name: "Admission review for inspect-novel" });
+    expect(hold).toHaveTextContent("Awaiting human admission approval");
+    expect(hold).toHaveTextContent("novel shape; nearest c2 at distance 0.42 · Model workflowcluster.model/v1 · Human approval required");
+    expect(hold).toHaveTextContent("goobers workflow child-admission --approve held");
+    expect(screen.getByText(/Human admission rejected by operator/)).toHaveTextContent("Advisory evidence is unavailable.");
+  });
+
   it("distinguishes an unavailable source from an empty history", async () => {
     mount({ ...page(), status: "unavailable", items: [], nextCursor: "" });
     await screen.findByText("Child history is unavailable from this daemon.");

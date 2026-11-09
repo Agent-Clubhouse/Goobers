@@ -132,6 +132,9 @@ func deliverTerminalIntent(ctx context.Context, router terminalDecisions, action
 	if action == "rerun" {
 		intent.Kind, intent.Stage, intent.Gate, intent.Resolution = engine.HITLRerunStage, input.Stage, "", ""
 	}
+	if action == "retry" {
+		intent.Kind, intent.Stage, intent.Gate, intent.Resolution = engine.HITLRetryStage, input.Stage, "", ""
+	}
 	// Keep the caller's raw fields in the payload-bound identity. The workflow
 	// defaults an absent decision to pass when choosing the branch and recording
 	// run.resumed, just as the local runner does after hashing the request.

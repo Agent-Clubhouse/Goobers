@@ -534,6 +534,9 @@ func BuildDeterministicExecutor(input DeterministicExecutorInput) (invoke.Determ
 	if err := kinds.Register(executor.KindShell, shell); err != nil {
 		return nil, err
 	}
+	if err := kinds.Register(executor.KindTLC, &executor.TLCExecutor{Shell: shell}); err != nil {
+		return nil, err
+	}
 	var adoRepo *instance.RepoRef
 	if repo, ok := AdoRepoForGaggle(input.Config, input.GaggleProject); ok {
 		adoRepo = &repo

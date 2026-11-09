@@ -243,7 +243,58 @@
       ]
     },
     {
+      "name": "gaggle.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
+    },
+    {
+      "name": "gaggle.spec.backprop.groundTruth.sources",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
+    },
+    {
       "name": "gaggle.spec.backprop.mode",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
+    },
+    {
+      "name": "gaggle.spec.backprop.version",
       "stability": "ga",
       "sinceVersion": "dev",
       "runtimes": [
@@ -2436,6 +2487,23 @@
       ]
     },
     {
+      "name": "task.childWorkflows.requireHumanApprovalForOutOfDistribution",
+      "stability": "preview",
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
+    },
+    {
       "name": "task.commitsRepo",
       "stability": "ga",
       "sinceVersion": "v0.4.0",
@@ -3372,6 +3440,23 @@
     },
     {
       "name": "workflow.spec.backprop.granularity",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "runtimes": [
+        {
+          "runtime": "runner",
+          "level": "supported",
+          "since": "dev"
+        },
+        {
+          "runtime": "engine",
+          "level": "supported",
+          "since": "dev"
+        }
+      ]
+    },
+    {
+      "name": "workflow.spec.backprop.groundTruth.sources",
       "stability": "ga",
       "sinceVersion": "dev",
       "runtimes": [

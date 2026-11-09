@@ -250,6 +250,11 @@ func (s *Store) prepareChildAcceptance(
 		now.IsZero() {
 		return "", "", "", errors.New("cloud acceptance: invalid child acceptance")
 	}
+	if request.AdmissionHold != nil {
+		// Cloud custody has no reviewable hold yet; never accept a start that
+		// would otherwise dispatch without the required human approval.
+		return "", "", "", errors.New("cloud acceptance: human admission holds are unsupported")
+	}
 	if request.Authority != nil &&
 		(!childAuthorityValid(*request.Authority) ||
 			request.Authority.ChildParent != request.Identity.ChildParent ||

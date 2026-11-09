@@ -238,7 +238,7 @@ func (p Publisher) confirmedPRBranch(ctx context.Context, t Target) (triggerqueu
 	if err = json.Unmarshal(branch.Intent, &source); err != nil {
 		return branch, source, err
 	}
-	if source.Repository != t.Repository || source.Remote != t.Remote || source.Head != t.Head || source.Base != t.Base || source.RunID != t.Identity.RunID || source.Lineage != *t.Identity.Child {
+	if source.Repository != t.Repository || source.Remote != t.Remote || source.Head != t.Head || source.Base != t.Base || source.RunID != t.Identity.RunID || !source.Lineage.Equal(*t.Identity.Child) {
 		return branch, source, errors.New("child PR target differs from confirmed branch")
 	}
 	return branch, source, nil

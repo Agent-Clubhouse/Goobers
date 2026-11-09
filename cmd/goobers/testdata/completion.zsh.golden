@@ -70,6 +70,11 @@ _goobers_completion()
                 stub-agent-instructions) flags+=(--source-tree --harness --json) ;;
             esac
             ;;
+        workflow-gym)
+            case "${words[3]:-}" in
+                evaluate) flags+=(--min-samples --regression-threshold) ;;
+            esac
+            ;;
         scaffold)
             case "${words[3]:-}" in
                 goober) flags+=(--force) ;;
@@ -131,7 +136,7 @@ _goobers_completion()
             ;;
         fleet)
             case "${words[3]:-}" in
-                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin) ;;
+                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin --projection) ;;
                 status) flags+=(--json) ;;
             esac
             ;;
@@ -171,13 +176,18 @@ _goobers_completion()
         rerun-stage)
             flags+=(--addendum --actor --api)
             ;;
+        retry-stage)
+            flags+=(--actor --api)
+            ;;
         signal)
             flags+=(--request-id)
             ;;
         workflow)
             case "${words[3]:-}" in
                 show) flags+=(--dot) ;;
-                validate-child) flags+=(--gaggle --parent --stage --backend --json) ;;
+                validate-child) flags+=(--gaggle --parent --stage --backend --cluster-model --json) ;;
+                child-admission) flags+=(--approve --reject --actor --note --json) ;;
+                clusters) flags+=(--features --cohort --fitness --since --max-runs --min-samples --min-cluster-size --seed --stratify --ablation --json --snapshot --instance-id --salt --fleet --proposals --gaggle --templates --cluster-model) ;;
             esac
             ;;
         runs)
@@ -256,6 +266,7 @@ _goobers_completion()
                 label) flags+=(--run --outcome --reason --by --labeled-at) ;;
                 claim) flags+=(--kind --stage --attempt --agent --artifact --statement --evidence --confidence) ;;
                 shadow) flags+=(--json --gaggle --workflow --since --until) ;;
+                gaggle) flags+=(--json --gaggle --since --until) ;;
                 prune) flags+=(--dry-run) ;;
                 prune-orphans) flags+=(--delete --min-age) ;;
                 compact) flags+=(--dry-run) ;;
@@ -370,6 +381,13 @@ _goobers_completion()
                 return
             fi
             ;;
+        workflow-gym)
+            if (( CURRENT == 3 )); then
+                candidates=(validate list replay tournament evaluate promotion-validate)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow gaggle)
@@ -474,7 +492,7 @@ _goobers_completion()
             ;;
         workflow)
             if (( CURRENT == 3 )); then
-                candidates=(show validate-child)
+                candidates=(show validate-child child-admission clusters)
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
@@ -553,7 +571,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( CURRENT == 3 )); then
-                candidates=(configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact)
+                candidates=(configure test merges stats errors export mark-fix label claim claims shadow gaggle prune prune-orphans compact)
                 _describe -V 'command' candidates
                 return
             fi

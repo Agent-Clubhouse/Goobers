@@ -75,6 +75,12 @@ print build version, commit, and date (--json for structured output)
 \fBgoobers workflow\fR
 inspect workflows and validate child proposals
 .TP
+\fBgoobers workflow child-admission\fR
+Labs: review children held for human admission approval
+.TP
+\fBgoobers workflow clusters\fR
+Labs: cluster workflows by structural shape or run behavior
+.TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .TP
@@ -310,6 +316,9 @@ rerun a stage with a recorded instruction addendum
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
 .TP
+\fBgoobers retry-stage\fR
+retry a previously-run deterministic task
+.TP
 \fBgoobers roots\fR
 inspect and manage instance roots
 .TP
@@ -409,6 +418,9 @@ recent errors across runs, by class, with run/stage refs
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
 .TP
+\fBgoobers telemetry gaggle\fR
+report gaggle-wide Backprop credit, recurring findings, trends, and links
+.TP
 \fBgoobers telemetry label\fR
 record a ground-truth verdict for a Backprop-enrolled run
 .TP
@@ -444,6 +456,27 @@ print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured
 .TP
 \fBgoobers work-items\fR
 list pull requests and issues changed by Goobers
+.TP
+\fBgoobers workflow-gym\fR
+validate, replay, compare, evaluate, or hand off Workflow Gym evidence
+.TP
+\fBgoobers workflow-gym evaluate\fR
+gate and rank paired tournament results
+.TP
+\fBgoobers workflow-gym list\fR
+list a file-backed benchmark dataset
+.TP
+\fBgoobers workflow-gym promotion-validate\fR
+validate promotion evidence for Workflow CD
+.TP
+\fBgoobers workflow-gym replay\fR
+replay a historical benchmark task offline
+.TP
+\fBgoobers workflow-gym tournament\fR
+compare candidates over an identical benchmark task suite
+.TP
+\fBgoobers workflow-gym validate\fR
+validate a file-backed benchmark dataset
 .TP
 \fBgoobers workspace\fR
 explicitly recover pinned repository workspaces
@@ -735,6 +768,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
+\fBgoobers-retry-stage\fR(1),
 \fBgoobers-roots\fR(1),
 \fBgoobers-roots-decommission\fR(1),
 \fBgoobers-roots-discover\fR(1),
@@ -777,6 +811,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-gaggle\fR(1),
 \fBgoobers-telemetry-label\fR(1),
 \fBgoobers-telemetry-mark-fix\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
@@ -797,7 +832,16 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-versions\fR(1),
 \fBgoobers-work-items\fR(1),
 \fBgoobers-workflow\fR(1),
+\fBgoobers-workflow-child-admission\fR(1),
+\fBgoobers-workflow-clusters\fR(1),
 \fBgoobers-workflow-show\fR(1),
 \fBgoobers-workflow-validate-child\fR(1),
+\fBgoobers-workflow-gym\fR(1),
+\fBgoobers-workflow-gym-evaluate\fR(1),
+\fBgoobers-workflow-gym-list\fR(1),
+\fBgoobers-workflow-gym-promotion-validate\fR(1),
+\fBgoobers-workflow-gym-replay\fR(1),
+\fBgoobers-workflow-gym-tournament\fR(1),
+\fBgoobers-workflow-gym-validate\fR(1),
 \fBgoobers-workspace\fR(1),
 \fBgoobers-workspace-reset\fR(1)

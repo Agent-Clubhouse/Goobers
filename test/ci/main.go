@@ -705,7 +705,7 @@ func codegenChecks(tools toolchain) []check {
 			label:   "deepcopy-generate",
 			command: tools.goCommand,
 			args: []string{
-				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3",
 				"object", "paths=./api/v1alpha1/...",
 			},
 			group: groupChecks,
@@ -720,14 +720,14 @@ func codegenChecks(tools toolchain) []check {
 		// Go API types but absent from config/crd/bases is a contract that
 		// silently lies about the DSL, and the manifests have drifted before
 		// with nothing going red. Mirrors portal-contract-generate/-diff: a
-		// pinned-tool regen (controller-gen@v0.16.5, matching Makefile's
+		// pinned-tool regen (controller-gen@v0.17.3, matching Makefile's
 		// CONTROLLER_GEN_VERSION — keep both in sync) followed by a git diff
 		// that fails the gate on any drift.
 		{
 			label:   "manifests-generate",
 			command: tools.goCommand,
 			args: []string{
-				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3",
 				"crd:allowDangerousTypes=true", "paths=./api/v1alpha1/...", "output:crd:dir=config/crd/bases",
 			},
 			group: groupChecks,
@@ -752,10 +752,12 @@ func shippedWorkflowChecks(tools toolchain, environment []string) []check {
 }
 
 func newShippedWorkflowCheck(tools toolchain, environment []string) check {
+	// JSON preserves the timeout panic and active-test stacks while adding
+	// elapsed events for every completed workflow and scenario.
 	return check{
 		label:   "shipped-workflows",
 		command: tools.goCommand,
-		args:    []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
+		args:    []string{"test", "-json", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"},
 		env:     environment,
 		group:   groupShipped,
 	}

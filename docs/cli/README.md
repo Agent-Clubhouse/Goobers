@@ -28,6 +28,8 @@
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
+| [`goobers workflow child-admission`](#goobers-workflow-child-admission) | Labs: review children held for human admission approval |
+| [`goobers workflow clusters`](#goobers-workflow-clusters) | Labs: cluster workflows by structural shape or run behavior |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
 | [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
@@ -113,6 +115,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers recovery-restore`](#goobers-recovery-restore) | restore retained implementation onto current main |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers retry-stage`](#goobers-retry-stage) | retry a previously-run deterministic task |
 | [`goobers roots`](#goobers-roots) | inspect and manage instance roots |
 | [`goobers roots decommission`](#goobers-roots-decommission) | mark a stopped instance root as historical |
 | [`goobers roots discover`](#goobers-roots-discover) | discover likely instance roots and daemon ownership |
@@ -146,6 +149,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry gaggle`](#goobers-telemetry-gaggle) | report gaggle-wide Backprop credit, recurring findings, trends, and links |
 | [`goobers telemetry label`](#goobers-telemetry-label) | record a ground-truth verdict for a Backprop-enrolled run |
 | [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
@@ -158,6 +162,13 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
+| [`goobers workflow-gym`](#goobers-workflow-gym) | validate, replay, compare, evaluate, or hand off Workflow Gym evidence |
+| [`goobers workflow-gym evaluate`](#goobers-workflow-gym-evaluate) | gate and rank paired tournament results |
+| [`goobers workflow-gym list`](#goobers-workflow-gym-list) | list a file-backed benchmark dataset |
+| [`goobers workflow-gym promotion-validate`](#goobers-workflow-gym-promotion-validate) | validate promotion evidence for Workflow CD |
+| [`goobers workflow-gym replay`](#goobers-workflow-gym-replay) | replay a historical benchmark task offline |
+| [`goobers workflow-gym tournament`](#goobers-workflow-gym-tournament) | compare candidates over an identical benchmark task suite |
+| [`goobers workflow-gym validate`](#goobers-workflow-gym-validate) | validate a file-backed benchmark dataset |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
 | [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
 
@@ -2141,7 +2152,7 @@ $ goobers fleet leave
 discover and enroll this instance with a Fleet service (experimental; superseded)
 
 ~~~text
-Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [--projection <name>] [path]
 
 Experimental and superseded embedded Fleet connector. Discover and enroll an
 instance with a Fleet service. By default the one-time enrollment grant is read
@@ -2153,6 +2164,9 @@ When discovery advertises a local administrator principal, interactive use
 offers an explicit instance:read self-grant. Noninteractive use must choose
 --grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
 explicit opt-out or interactive confirmation.
+
+--projection grants a data projection to the Fleet association and may be
+repeated. Supported projections: labs.workflowFeatures.
 ~~~
 
 **Examples**
@@ -2188,7 +2202,7 @@ show durable Fleet registration and connection state (experimental; superseded)
 Usage: goobers fleet status [--json] [path]
 
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
-registration, connection, heartbeat, ACL version, and credential expiry state.
+registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
 ~~~
 
@@ -4039,6 +4053,29 @@ processed, 1 = business error, 2 = usage/IO error.
 $ goobers respond-to-findings
 ~~~
 
+## `goobers retry-stage`
+
+retry a previously-run deterministic task
+
+~~~text
+Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
+
+Retry one previously-run deterministic task on an escalated run without
+replaying earlier stages or supplying agent instructions. The actor, target,
+terminal generation, and retry attempt are recorded in the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers retry-stage <run-id> <stage>
+~~~
+
 ## `goobers roots`
 
 inspect and manage instance roots
@@ -4959,7 +4996,7 @@ $ goobers status --agents --json
 configure, test, query, export, mark fixes, label runs, record or read claims, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|label|claim|claims|shadow|gaggle|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4972,6 +5009,7 @@ label:   record a ground-truth verdict for a Backprop-enrolled run
 claim:   append a Backprop claim from inside an agentic stage
 claims:  print the Backprop claims earlier stages of this run recorded
 shadow:  compare Backprop shadow-mode findings with actual run outcomes
+gaggle:  gaggle-wide Backprop credit, recurring findings, trends, and links
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -5123,6 +5161,30 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry gaggle`
+
+report gaggle-wide Backprop credit, recurring findings, trends, and links
+
+~~~text
+Usage: goobers telemetry gaggle --gaggle=name [--json] [--since=RFC3339] [--until=RFC3339] [path]
+
+Summarize one gaggle's active Backprop attribution across its workflows:
+per-workflow and per-stage credit and blame share, the top recurring
+findings, each workflow's trend against the previous window of the same
+length, and cross-workflow links. A link exists only where two runs
+recorded the same identifier (an external reference touched by both, or a
+run continuation); nothing is inferred. The window defaults to the seven
+days before --until (default now). Shadow records are never read. Exit
+codes: 0 = OK, 1 = query error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry gaggle --gaggle=goobers
+$ goobers telemetry gaggle --gaggle=goobers --json --since=2026-01-01T00:00:00Z
 ~~~
 
 ## `goobers telemetry label`
@@ -5686,13 +5748,162 @@ $ goobers work-items --provider=github --kind=pr --id=4398
 inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow <show | validate-child> [flags]
+Usage: goobers workflow <show | validate-child | child-admission | clusters> [flags]
 
-Show a workflow DAG or validate a generated child proposal against its configured parent.
+Show a workflow DAG, validate a generated child proposal against its configured parent,
+(Labs) review children held for human admission approval, or (Labs) cluster
+workflows by structural shape or run behavior.
 
 Workflow
 
 A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
+~~~
+
+## `goobers workflow child-admission`
+
+Labs: review children held for human admission approval
+
+~~~text
+Usage: goobers workflow child-admission [--approve <child-id> | --reject <child-id>] [--actor <identity>] [--note <text>] [--json] [path]
+
+Review generated child workflows held for human admission approval because
+the parent's childWorkflows.requireHumanApprovalForOutOfDistribution policy
+(Labs) found them outside every cluster of the frozen model. A held child keeps
+durable custody but is never dispatched until approved.
+
+Without --approve or --reject, list pending children with their pinned novelty
+evidence. --approve releases the child to ordinary dispatch and journals the
+approval in its lineage; --reject settles it as a failed child result that the
+parent observes. Decisions are durable and immutable; repeating one is a no-op.
+--actor defaults to the invoking user: GITHUB_ACTOR, USER or USERNAME, then the
+OS account. The actor is self-asserted, matching the trusted-local model:
+anyone who can open the instance's local queue can decide, and the actor is
+recorded for audit, not authenticated. Operates on the instance's local queue
+(default path ".").
+
+Exit codes: 0 = listed or decided, 1 = decision refused, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow child-admission
+$ goobers workflow child-admission --approve child-0123 --note "reviewed shape"
+$ goobers workflow child-admission --reject child-0123 --json
+~~~
+
+## `goobers workflow clusters`
+
+Labs: cluster workflows by structural shape or run behavior
+
+~~~text
+Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]
+       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
+       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
+       goobers workflow clusters --proposals [--gaggle <name>] [--max-runs <n>] --json [path]
+       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
+
+Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
+and report each cluster's medoid, members, stability, and distinguishing
+features. Points that fit no dense group are reported as noise.
+
+--proposals emits the same read contract as the Portal's primary child
+workflow pattern map. Retained proposals are clustered independently per
+gaggle and include only identifiers, digests, structural features, pinned
+novelty, outcomes, EffectiveVersions, and parent/child journal lineage.
+Proposal and prompt text are never emitted. --gaggle selects one partition.
+
+--features structural (default) clusters configured workflows by structural
+shape (node kinds, gates, retries, parallelism, graph topology).
+
+--features behavior clusters what runs actually did: it reads terminal run
+journals (agent-authored child runs included), derives a behavior
+descriptor per run (stage-visit patterns, attempts and retries, gate,
+escalation and human hits, fan-out, child spawns and dispositions, usage,
+duration, outcome, near misses), and clusters one point per workflow
+EffectiveVersion cohort from each feature's mean and p90. Runs without a
+defined EffectiveVersion are excluded. --since keeps runs started within
+that Go duration, --max-runs bounds the journals read (newest first), and
+cohorts with fewer than --min-samples runs are dropped.
+
+Node names, stage names, and goal text never contribute. Structural and
+behavior features are never mixed in one model. --cohort limits structural
+clustering to one privacy-safe task cohort. --stratify tests whether
+clusters merely track gaggle, task-cohort, shipped-template, model, harness,
+skill-set, or tool-set boundaries (a confound). Undefined provenance is excluded and
+counted; that check is observational, not gym-controlled. Nothing is
+modified (default path ".").
+
+Template provenance fingerprints the workflow templates embedded in this
+build: reference workflows, config examples, and the starter, demo,
+quickstart, and scaffold workflows. A workflow is template-derived only
+when it lies within 0.35 structural distance of a shipped template. The
+metadata.annotations["goobers.dev/template-provenance"] written by init and
+scaffolding is reported as declared provenance; it names the attributed
+template while the workflow is still within 0.35 of it, and otherwise the
+nearest shipped template is shown. Cluster medoids farther than 0.35 from
+every shipped template are reported as convergence beyond templates, and
+--stratify template groups derived workflows by template and the rest as
+"beyond-templates". Provenance is reported even when too few
+workflows are configured to cluster. Bare --json stays the frozen model
+that --cluster-model reads; JSON carries the template report alongside
+any other requested report (for example --stratify template --json).
+
+--fitness joins retained terminal runs to the current structural clusters
+by workflow digest and reports sample size, success with a 95% Wilson
+interval, wall time, cost, human-gate, escalation, and retry/loop rates.
+Clusters with fewer than 5 runs are marked insufficient and are never
+ranked. --since limits the retained runs included.
+
+Task cohorts use metadata.labels["goobers.dev/task-class"] when explicitly
+set. Otherwise an auto:<digest> label is derived only from trigger types,
+work-item kinds, the declared policy-action side-effect set, and repo:*
+capabilities. Workflow and stage names, goals, selectors, schedules, signals,
+and webhook payload text are excluded, making derivation deterministic and
+rename-invariant. Behavior summaries read the labels a run pinned at start;
+runs that predate the pin use the auto label. --stratify cohort requires
+structural features and cannot be combined with --cohort.
+
+--ablation refits after dropping each feature (the WL histogram is one
+group), reports stability and assignment change, and flags dominant
+features. Populations through 2,000 points are exact; larger populations
+use a deterministic 1,000-point HDBSCAN sample and radius assignment.
+
+Fleet convergence: --snapshot prints this instance's feature vectors as a
+fleet snapshot (JSON) with no workflow, gaggle, goober, or goal text;
+workflows become salted keys and goober names salted hashes. The instance
+ID and salt default to the fleet association (salt = fleet ID), so every
+instance in a fleet hashes alike. --fleet <dir> pools the *.json snapshots
+in dir and clusters distinct workflow shapes across instances: a shape
+cloned onto many instances counts once, only the most common feature
+version is clustered (others are listed as excluded), each instance is
+scored aligned/private/outlier, and clusters are tested for an instance
+confound.
+
+Reusable templates: --templates <evidence.json> reads a JSON array of
+joined child-proposal evidence (proposalId, proposalDigest, runId,
+parentRunId, repository, taskCohort, succeeded, findings, parameters) and
+--cluster-model a frozen structural model whose point IDs are those
+proposal IDs. It reports each stable cluster that clears the evidence bar
+(stability, parent-run and repository support, no policy or safety
+findings, outcomes no worse than comparable alternatives per task cohort,
+a parameterized medoid) as a review-required config change request for
+the child-authoring catalog, and lists why every other cluster was
+suppressed. Advisory only: nothing is written or registered.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow clusters
+$ goobers workflow clusters --min-cluster-size 4 --json
+$ goobers workflow clusters --cohort review
+$ goobers workflow clusters --stratify cohort
+$ goobers workflow clusters --features behavior --since 720h --json
+$ goobers workflow clusters --fitness --since 720h
+$ goobers workflow clusters --snapshot > snapshots/$(hostname).json
+$ goobers workflow clusters --fleet snapshots
+$ goobers workflow clusters --templates evidence.json --cluster-model model.json
 ~~~
 
 ## `goobers workflow show`
@@ -5719,7 +5930,7 @@ $ goobers workflow show default-implement --dot
 validate a child proposal against its configured parent
 
 ~~~text
-Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--cluster-model <model.json>] [--json] <proposal.yaml> [path]
 
 Validate one generated child Workflow against an opted-in parent stage in
 the instance's current active config/ tree (default path "."). The parent
@@ -5730,6 +5941,8 @@ This is advisory current-config validation, not durable run admission. It
 does not start or queue work, resolve credentials, invoke a model, or refresh
 workflowSource. --backend selects the validation target (default runner).
 Config digests identify declarative validation inputs, not an execution archive.
+--cluster-model (Labs) adds advisory novelty evidence against a frozen model
+from 'goobers workflow clusters --json'; it never changes validity or exit code.
 --json emits child-workflow-validation/v1 diagnostics and digests.
 Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 ~~~
@@ -5738,6 +5951,163 @@ Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
 
 ~~~console
 $ goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
+~~~
+
+## `goobers workflow-gym`
+
+validate, replay, compare, evaluate, or hand off Workflow Gym evidence
+
+~~~text
+Usage: goobers workflow-gym <validate|list|replay|tournament|evaluate|promotion-validate> <args>
+
+Validate or list a file-backed Workflow Gym benchmark dataset. The path
+may name one JSON/YAML task manifest or a directory of manifests. Replay
+runs one task against historical fixture and journal inputs, entirely offline.
+Tournament compares candidate result manifests over one identical task roster.
+Evaluate applies confidence and regression gates to tournament JSON output.
+Promotion-validate checks promotion evidence against Workflow CD policy without
+mutating production and emits an auditable validation receipt.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym validate ./benchmark-tasks
+$ goobers workflow-gym list ./benchmark-tasks
+$ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
+$ goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
+$ goobers workflow-gym evaluate ./tasks ./tournament.json
+$ goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml
+~~~
+
+## `goobers workflow-gym evaluate`
+
+gate and rank paired tournament results
+
+~~~text
+Usage: goobers workflow-gym evaluate [--min-samples N] [--regression-threshold RATE]
+       <dataset> <tournament-report>
+
+Evaluate paired tournament JSON with per-slice sample floors, 95% confidence
+intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train
+and eval tasks determine the gate and ranking; holdout results are reported but
+never used for selection. Missing candidate results never count as measured
+evidence. The command writes a machine-readable JSON report to stdout.
+
+Options:
+  --min-samples N              Required samples in each selection slice (default 10)
+  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)
+
+Exit codes: 0 = pass, 1 = fail (regression meets the threshold), 2 = usage
+error, 3 = inconclusive (insufficient or missing evidence), 4 = input or
+processing error (unreadable or inconsistent dataset or tournament report).
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym evaluate --min-samples 20 --regression-threshold 0.05 ./tasks ./tournament.json
+~~~
+
+## `goobers workflow-gym list`
+
+list a file-backed benchmark dataset
+
+~~~text
+Usage: goobers workflow-gym list <path>
+
+Validate a Workflow Gym dataset, print its version, deterministic digest,
+and task count, then list tasks in stable task ID order.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym list ./benchmark-tasks
+~~~
+
+## `goobers workflow-gym promotion-validate`
+
+validate promotion evidence for Workflow CD
+
+~~~text
+Usage: goobers workflow-gym promotion-validate <evidence> <policy>
+
+Validate a WorkflowGymPromotionEvidence JSON/YAML artifact against the current
+WorkflowGymPromotionPolicy. Each benchmark, shadow, or holdout slot names its
+stage, an evaluate JSON report path (relative to the evidence file), and that
+report's canonical artifactDigest; verdicts and samples come from the report.
+Validation is read-only and writes a WorkflowGymPromotionValidation receipt
+with verdict, reasons, and digests to stdout, on rejection as well as success.
+
+Exit codes: 0 = pass, 1 = fail (regressed, mismatched, stale, or reused
+evidence), 2 = usage error, 3 = inconclusive (missing required evidence or too
+few samples), 4 = input error (unreadable or malformed evidence, policy, or report).
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym promotion-validate ./evidence.yaml ./policy.yaml
+~~~
+
+## `goobers workflow-gym replay`
+
+replay a historical benchmark task offline
+
+~~~text
+Usage: goobers workflow-gym replay <task-manifest> <provider-fixture> <journal-dir>
+
+Replay one historical task twice through the offline benchmark harness and
+write its deterministic replay manifest as JSON. The replay reads the
+fixture's work item and re-issues the journal's recorded mutations through
+the side-effect sandbox; the manifest lists only effects the sandbox
+observed, as deterministic, virtualized, or unavailable.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym replay ./task.yaml ./provider.json ./journal
+~~~
+
+## `goobers workflow-gym tournament`
+
+compare candidates over an identical benchmark task suite
+
+~~~text
+Usage: goobers workflow-gym tournament <dataset> <authoritative> <candidate> [candidate...]
+
+Compare authoritative and candidate EffectiveVersion/genome result manifests
+over exactly the same task IDs and write a deterministic paired report as JSON.
+Each WorkflowGymCandidate JSON/YAML manifest supplies datasetDigest (must match
+the loaded dataset), identity.effectiveVersion, identity.genomeDigest, and a
+non-empty list of task results with evaluatorVersion (must match the task),
+status, costUsd, durationMs, and failureClass. The authoritative manifest must
+cover every task; omitted candidate results are recorded as failures.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym tournament ./tasks ./authoritative.yaml ./candidate.yaml
+~~~
+
+## `goobers workflow-gym validate`
+
+validate a file-backed benchmark dataset
+
+~~~text
+Usage: goobers workflow-gym validate <path>
+
+Validate a Workflow Gym dataset and print its version, deterministic
+digest, and task count.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow-gym validate ./benchmark-tasks
 ~~~
 
 ## `goobers workspace`

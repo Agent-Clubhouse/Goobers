@@ -699,6 +699,8 @@ type handlerConfig struct {
 	workflowMutations         WorkflowMutationService
 	gaggleBundles             GaggleBundleService
 	gaggleHealth              GaggleHealthService
+	labsWorkflowClusters      LabsWorkflowClusterService
+	labsWorkflowFeatures      LabsWorkflowFeaturesService
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
 	workflowParentExecution   ChildExecutionObserver
@@ -1415,6 +1417,8 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
+	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
+	registerLabsWorkflowFeaturesRoute(router, config.labsWorkflowFeatures, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)

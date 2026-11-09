@@ -1,6 +1,8 @@
 package mcpio
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +34,12 @@ const (
 	RejectUnreadableOutput = "output_unreadable"
 	// RejectSchemaViolation: the payload is not JSON or violates its schema.
 	RejectSchemaViolation = "output_schema_violation"
+	// RejectTargetUnresolved: every slot validated, but the declared manifest
+	// target could not be resolved inside the workspace.
+	RejectTargetUnresolved = "output_target_unresolved"
+	// RejectWriteFailed: every slot validated and the target resolved, but the
+	// manifest could not be written.
+	RejectWriteFailed = "output_write_failed"
 )
 
 // PublicationRepairInstructions is returned with every rejection so the
@@ -87,12 +95,12 @@ func compilePublicationSchemas(declared []PublicationSchema) (map[string]*handof
 // checkPublication validates a manifest-mode publication against the stage's
 // schema-bound slots before anything is written, so a refused publication
 // leaves the previously accepted manifest (if any) untouched.
-func (t *Toolset) checkPublication(content string) error {
+func (t *Toolset) checkPublication(content string) ([]PublicationReceiptOutput, error) {
 	if t.schemaErr != nil {
-		return fmt.Errorf("publication schemas unavailable: %w", t.schemaErr)
+		return nil, fmt.Errorf("publication schemas unavailable: %w", t.schemaErr)
 	}
 	if len(t.schemas) == 0 {
-		return nil
+		return nil, nil
 	}
 	slots := make([]string, 0, len(t.schemas))
 	for slot := range t.schemas {
@@ -100,57 +108,64 @@ func (t *Toolset) checkPublication(content string) error {
 	}
 	sort.Strings(slots)
 	if verdict := handoffcheck.CheckSyntax([]byte(content)); !verdict.Valid {
-		return rejectAll(slots, t.schemas, RejectInvalidManifest, redactIssues(verdict.Issues))
+		return nil, rejectAll(slots, t.schemas, RejectInvalidManifest, redactIssues(verdict.Issues))
 	}
 	// The same canonical validation Prepare applies at completion, so a
 	// manifest this tool accepts (schemaVersion, unique names, media types,
 	// paths, no unknown members) is never rejected later.
 	manifest, err := artifactset.ParseManifest([]byte(content))
 	if err != nil {
-		return rejectAll(slots, t.schemas, RejectInvalidManifest, []handoffcheck.Issue{{Code: RejectInvalidManifest, Message: err.Error()}})
+		return nil, rejectAll(slots, t.schemas, RejectInvalidManifest, []handoffcheck.Issue{{Code: RejectInvalidManifest, Message: err.Error()}})
 	}
 	entries := make(map[string]artifactset.ManifestEntry, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		entries[entry.Name] = entry
 	}
 	rejection := &PublicationRejection{Status: "rejected", Instructions: PublicationRepairInstructions}
+	var accepted []PublicationReceiptOutput
 	for _, slot := range slots {
-		if out, ok := t.checkSlot(slot, t.schemas[slot], entries); !ok {
+		out, digest, ok := t.checkSlot(slot, t.schemas[slot], entries)
+		if !ok {
 			rejection.Outputs = append(rejection.Outputs, out)
+			continue
 		}
+		accepted = append(accepted, PublicationReceiptOutput{Slot: slot, SchemaID: out.SchemaID, PayloadDigest: digest})
 	}
 	if len(rejection.Outputs) > 0 {
-		return rejection
+		return nil, rejection
 	}
-	return nil
+	return accepted, nil
 }
 
-func (t *Toolset) checkSlot(slot string, schema *handoffcheck.Schema, entries map[string]artifactset.ManifestEntry) (RejectedOutput, bool) {
+// checkSlot validates one schema-bound slot. An accepted payload also returns
+// the digest of the exact bytes that were validated.
+func (t *Toolset) checkSlot(slot string, schema *handoffcheck.Schema, entries map[string]artifactset.ManifestEntry) (RejectedOutput, string, bool) {
 	out := RejectedOutput{Slot: slot, SchemaID: schema.ID()}
 	entry, ok := entries[slot]
 	if !ok {
 		out.Category = RejectMissingOutput
 		out.Issues = []handoffcheck.Issue{{Code: RejectMissingOutput, Message: fmt.Sprintf("manifest has no entry named %q; add one with mediaType application/json", slot)}}
-		return out, false
+		return out, "", false
 	}
 	if entry.MediaType != "application/json" {
 		out.Category = RejectInvalidManifest
 		out.Issues = []handoffcheck.Issue{{Code: "media_type_mismatch", Message: "entry mediaType must be application/json"}}
-		return out, false
+		return out, "", false
 	}
 	data, err := t.readStagedPayload(entry.Path)
 	if err != nil {
 		out.Category = RejectUnreadableOutput
 		out.Issues = []handoffcheck.Issue{{Code: RejectUnreadableOutput, Message: fmt.Sprintf("payload file %q could not be read from the workspace", entry.Path)}}
-		return out, false
+		return out, "", false
 	}
 	verdict := schema.Check(data)
 	if verdict.Valid {
-		return RejectedOutput{}, true
+		sum := sha256.Sum256(data)
+		return out, "sha256:" + hex.EncodeToString(sum[:]), true
 	}
 	out.Category = RejectSchemaViolation
 	out.Issues = redactIssues(verdict.Issues)
-	return out, false
+	return out, "", false
 }
 
 func (t *Toolset) readStagedPayload(rel string) ([]byte, error) {

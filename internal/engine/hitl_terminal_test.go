@@ -10,10 +10,12 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/temporaltest"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 type terminalTestJournal struct {
@@ -65,6 +67,72 @@ func terminalTestEnvironment(t *testing.T) (*testsuite.TestWorkflowEnvironment, 
 	input.RunID, input.LiveJournal = strings.Repeat("9", 32), true
 	input.HITL.WaitSeconds = 10
 	return env, seam, root, input
+}
+
+// TestLiveTerminalDeterministicRetryDispatchesHumanAttempt pins that a
+// retry-stage intent, which carries no addendum, still dispatches the retried
+// task as the human attempt its stage.rerun.requested recorded.
+func TestLiveTerminalDeterministicRetryDispatchesHumanAttempt(t *testing.T) {
+	root := t.TempDir()
+	writer, err := livejournal.NewWriter(func(string) (string, bool) { return root, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(writer.Close)
+	spec := fixtureSpec("build", []apiv1.Task{{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		Run:  &apiv1.DeterministicRun{Command: []string{"build"}, Workspace: apiv1.WorkspaceScratch},
+		Next: wf.TerminalComplete,
+	}}, nil)
+	exec := newScriptedExec(map[string][]scriptedCall{
+		"build": {
+			{result: apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Summary: "transient failure"}},
+			{result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "built"}},
+		},
+	})
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.RegisterActivity(&Activities{Journal: &terminalTestJournal{writer: writer}, Det: exec, Goober: exec, Auto: gate.NewAutomatedEvaluator(), Workspaces: testWorkspaces(t)})
+	input := hitlInputFor(t, spec)
+	input.RunID, input.LiveJournal = strings.Repeat("8", 32), true
+	input.HITL.WaitSeconds = 10
+
+	intent := baseIntent(HITLRetryStage, "terminal-retry")
+	intent.RunID, intent.Stage, intent.ExpectedTerminalGeneration = input.RunID, "build", 1
+	var ack HITLAck
+	atTerminalHold(t, env, func() {
+		env.UpdateWorkflow(HITLUpdateName, HITLIntentUpdateID(intent), &testsuite.TestUpdateCallback{OnReject: func(err error) { t.Error(err) }, OnComplete: func(value any, err error) {
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			ack = value.(HITLAck)
+		}}, intent)
+	})
+	env.ExecuteWorkflow(Run, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if !ack.Resumed || ack.Attempt != 2 || exec.calls["build"] != 2 {
+		t.Fatalf("ack=%+v build calls=%d, want resumed attempt 2 and two dispatches", ack, exec.calls["build"])
+	}
+	var starts []journal.Event
+	requested := false
+	for _, event := range liveEvents(t, root, input.RunID) {
+		switch {
+		case event.Type == journal.EventStageRerunRequested && event.Stage == "build":
+			requested = event.Attempt == 2 && event.AttemptClass == journal.AttemptHuman && event.InstructionAddendum == ""
+		case event.Type == journal.EventStageStarted && event.Stage == "build":
+			starts = append(starts, event)
+		}
+	}
+	if !requested || len(starts) != 2 {
+		t.Fatalf("requested=%v build starts=%d, want a human attempt-2 request and two starts", requested, len(starts))
+	}
+	if retried := starts[1]; retried.Attempt != 2 || retried.AttemptClass != journal.AttemptHuman {
+		t.Fatalf("retried build stage.started attempt=%d class=%q, want attempt=2 class=%q",
+			retried.Attempt, retried.AttemptClass, journal.AttemptHuman)
+	}
 }
 
 func terminalApproveIntent(input RunInput) HITLIntent {

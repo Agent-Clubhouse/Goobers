@@ -8,11 +8,32 @@ import type { Navigate } from "../routing";
 import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
 import { ChildPublicationSummary } from "./ChildPublicationSummary";
+import { describeChildNovelty } from "./childNovelty";
 
 const stateLabels: Record<ChildHistoryItem["state"], string> = {
   queued: "Queued", running: "Started", awaiting_human: "Needs human",
   completed: "Completed", failed: "Failed", cancelled: "Cancelled",
 };
+
+function ChildAdmissionSummary({ child }: { child: ChildHistoryItem }) {
+  const admission = child.admission;
+  if (!admission) return null;
+  const evidence = admission.novelty ? <> Advisory novelty: {describeChildNovelty(admission.novelty)}.</> : <> Advisory evidence is unavailable.</>;
+  if (admission.state === "pending") {
+    return (
+      <div role="note" aria-label={`Admission review for ${child.invocationKey}`}>
+        <p><strong>Awaiting human admission approval</strong> ({admission.reason}) since <Timestamp value={admission.requestedAt} />. This child will not start until an operator decides.{evidence}</p>
+        <p>Review with <code>goobers workflow child-admission</code>, then run <code>{`goobers workflow child-admission --approve ${child.childId}`}</code> or <code>{`--reject ${child.childId}`}</code>.</p>
+      </div>
+    );
+  }
+  return (
+    <p>
+      Human admission {admission.state}{admission.actor ? ` by ${admission.actor}` : ""}
+      {admission.decidedAt && <> <Timestamp value={admission.decidedAt} /></>} ({admission.reason}).{evidence}
+    </p>
+  );
+}
 
 export function ChildHistoryPanel({ client, runId, gaggle, navigate }: {
   client: DaemonClient; runId: string; gaggle: string; navigate: Navigate;
@@ -51,6 +72,7 @@ export function ChildHistoryPanel({ client, runId, gaggle, navigate }: {
           <div>Accepted <Timestamp value={child.acceptedAt} /> · Updated <Timestamp value={child.updatedAt} /></div>
           {child.cancellationRequested && !child.terminalAt && <p>Cancellation requested; stopping is not yet confirmed.</p>}
           {child.acknowledgedAt && <p>Parent acknowledged the outcome <Timestamp value={child.acknowledgedAt} />.</p>}
+          <ChildAdmissionSummary child={child} />
           <ChildPublicationSummary publication={child.publication} />
           {child.expiredAt ? <p>Saved child result expired <Timestamp value={child.expiredAt} />. This result is no longer recoverable.</p> :
             child.state !== "queued" && <Action onClick={() => navigate({ page: "run", id: child.runId })} aria-label={`Open child run ${child.runId}`}>Open child run</Action>}

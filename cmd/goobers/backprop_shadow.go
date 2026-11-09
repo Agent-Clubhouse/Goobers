@@ -11,35 +11,38 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
 // withStatusBackpropOverrides resolves each summarized workflow's Backprop
-// mode against its gaggle's override (#7117).
+// mode against the gaggle defaults it inherits (#7117, #7120).
 func withStatusBackpropOverrides(load statusFleetSummaryLoader, gaggles []apiv1.Gaggle) statusFleetSummaryLoader {
 	overrides := readservice.GaggleBackpropOverrides(gaggles)
 	if len(overrides) == 0 {
 		return load
 	}
 	return func(
-		workflows []apiv1.Workflow,
+		definitions []apiv1.Workflow,
 		runs []runSummary,
 		status readservice.SchedulerStatus,
 		now time.Time,
 	) (statusFleetSummary, error) {
-		summary, err := load(workflows, runs, status, now)
+		summary, err := load(definitions, runs, status, now)
 		if err != nil {
 			return summary, err
 		}
-		configs := make(map[statusWorkflowKey]*apiv1.BackpropConfig, len(workflows))
-		for i := range workflows {
-			configs[statusWorkflowKey{gaggle: workflows[i].Spec.Gaggle, workflow: workflows[i].Name}] = workflows[i].Spec.Backprop
+		workflows := make(map[statusWorkflowKey]*apiv1.Workflow, len(definitions))
+		for i := range definitions {
+			workflows[statusWorkflowKey{gaggle: definitions[i].Spec.Gaggle, workflow: definitions[i].Name}] = &definitions[i]
 		}
 		for i := range summary.Workflows {
 			workflow := &summary.Workflows[i]
-			config := configs[statusWorkflowKey{gaggle: workflow.Gaggle, workflow: workflow.Workflow}]
-			workflow.Backprop = readservice.WorkflowBackpropFor(config, overrides[workflow.Gaggle])
+			definition := workflows[statusWorkflowKey{gaggle: workflow.Gaggle, workflow: workflow.Workflow}]
+			if definition == nil {
+				continue
+			}
+			inherited := instance.InheritedGaggleBackprop(definition, overrides[workflow.Gaggle])
+			workflow.Backprop = readservice.WorkflowBackpropFor(definition.Spec.Backprop, inherited)
 		}
 		return summary, nil
 	}
@@ -94,19 +97,12 @@ func runTelemetryShadow(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect config directory: %v\n", statErr)
 		return 2
 	}
-	var reads readmodel.Reader
-	if _, statErr := os.Stat(l.ReadDB()); statErr == nil {
-		store, openErr := readmodel.Open(l.ReadDB())
-		if openErr != nil {
-			pf(stderr, "error: open run read model %s: %v\n", l.ReadDB(), openErr)
-			return 1
-		}
-		defer func() { _ = store.Close() }()
-		reads = store
-	} else if !os.IsNotExist(statErr) {
-		pf(stderr, "error: inspect run read model %s: %v\n", l.ReadDB(), statErr)
+	reads, closeReads, err := openOptionalReadModel(l)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	defer closeReads()
 	report, err := readservice.StoredShadowBackprop(context.Background(), root, reads, readservice.StoredAttributionQuery{
 		Gaggle: *gaggle, Workflow: *workflow, Since: since, Until: until,
 	}, overrides, creditgraph.FaultAuditConfig{})

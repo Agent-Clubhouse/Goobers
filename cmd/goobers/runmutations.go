@@ -110,6 +110,31 @@ func runRerunStage(args []string, stdout, stderr io.Writer) int {
 	)
 }
 
+const retryStageHelp = "Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]\n\n" +
+	"Retry one previously-run deterministic task on an escalated run without\n" +
+	"replaying earlier stages or supplying agent instructions. The actor, target,\n" +
+	"terminal generation, and retry attempt are recorded in the run journal.\n" +
+	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and\n" +
+	"--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this\n" +
+	"filesystem, such as one running in another pod.\n\n" +
+	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
+
+func runRetryStage(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("retry-stage", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "retry-stage")
+	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	return runInterventionCLI(
+		fs, apicontract.RouteRetryStage, "retry-stage", *api,
+		httpapi.InterventionRequest{Actor: *actor},
+		stdout, stderr,
+	)
+}
+
 func runInterventionCLI(
 	fs *flag.FlagSet,
 	routeID apicontract.RouteID,
@@ -263,6 +288,7 @@ func daemonMutationClientTimeout(routeID apicontract.RouteID) time.Duration {
 	case apicontract.RouteApproveStage,
 		apicontract.RouteOverrideStage,
 		apicontract.RouteRerunStage,
+		apicontract.RouteRetryStage,
 		apicontract.RouteResolveEscalation:
 		return interventionClientTimeout
 	default:

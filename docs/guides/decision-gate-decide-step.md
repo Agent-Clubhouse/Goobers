@@ -43,6 +43,11 @@ Cognitive Services User role).
 The result file contains `decision` (`yes`, `no`, `uncertain` or
 `unavailable`), `probability`, `mode`, `fallback` and `stateDigest`.
 
+The optional `--true` and `--false` flags describe what each answer means.
+Either flag can be supplied independently; omitted, empty, or whitespace-only
+values are not sent as criteria. With neither flag, the question's instructions
+alone define the decision.
+
 - In `shadow` mode the model is called and recorded, but the reported decision
   is always `uncertain`, so the step never changes a run's outcome.
 - `uncertain` follows `decisionGate.fallback`: `fail` exits 1, while `agent`
@@ -86,3 +91,28 @@ decisionGate:
   `callsRemaining` and, when uncertain, `fallback`. In `shadow` mode the
   decision is always `uncertain`.
 - This applies to the local runner. Worker pods do not receive the grant.
+
+## PR description vs diff (advisory)
+
+`decisiongate.Gate.EvaluateDescription` scores whether a pull request title
+and body agree with its diff. Code computes the facts (changed files, line
+counts and a size bucket) and skips the model for an empty title or diff. The
+model judges one yes/no question behind the `description_matches_diff`
+threshold. The result is `match`, `mismatch` or `unsure`; `unsure` and any error
+leave publishing untouched. It is advisory: a caller may add a review note on
+`mismatch` and must never block on it. The result carries the size bucket and
+probability, not the text, so shadow scores can be compared across diff sizes.
+
+## Review comment severity (advisory)
+
+`decisiongate.Gate.EvaluateSeverity` labels a review comment `blocking`,
+`nit`, `question` or `unsure`. Code decides first: an explicit `nit:`,
+`question:` or `blocking:` prefix, or a short comment that is only a question,
+never reaches the model. Otherwise the model judges one yes/no question (must
+this be fixed before merge) behind the `review_comment_blocking` threshold;
+`uncertain` and any error return `unsure`, and the caller keeps its existing
+behavior of treating the comment as actionable.
+
+`ShadowSeverity` and `SeverityTally` record the model's label next to a human
+or reviewer-agent label and report agreement only above a minimum sample.
+Nothing is enforced until those measured counts justify it.

@@ -32,8 +32,8 @@ var localBaselineDigests = map[string]string{
 	"retry-artifact-inputs-and-gates": "sha256:65afb97a5cc6ea3e3c49d5e5226db8f26c1db206976648adcb92819fd0361976",
 	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
 	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
-	"gate-fail-rerun":                 "sha256:e11b00332fd1152519db1885f347c3c23590183261a72e2abb37cb66accfdb1b",
-	"gate-override":                   "sha256:ef2f0a80211678180d27ef081f69f7f94cded5e42b6df20954f5324d2b367efa",
+	"gate-fail-rerun":                 "sha256:c49cb78862f4c72d045834b540ef497f58e369c566efddd41ed9903c14a8a3b4",
+	"gate-override":                   "sha256:b1c6975d2255780667ab87de332c2124766d203e92bb637fe0acbddb794a7ed5",
 	"infrastructure-retry":            "sha256:4020c3810b2d63ea427856a7952211490e4f134d71f87bfc2cccbccd4d612dbc",
 }
 

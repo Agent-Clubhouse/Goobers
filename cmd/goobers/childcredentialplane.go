@@ -161,7 +161,7 @@ func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, i
 	if err != nil {
 		return childExecutionRef{}, err
 	}
-	if ref.Child.RunID != id.RunID || ref.Lineage != *id.Child || ref.Envelope.WorkflowDigest != id.WorkflowDigest || ref.Envelope.Workflow != id.Workflow || ref.Envelope.ConfigGeneration != id.ConfigGeneration {
+	if ref.Child.RunID != id.RunID || !ref.Lineage.Equal(*id.Child) || ref.Envelope.WorkflowDigest != id.WorkflowDigest || ref.Envelope.Workflow != id.Workflow || ref.Envelope.ConfigGeneration != id.ConfigGeneration {
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
 	if requireCurrent && (ref.Child.CancellationRequested || ref.Child.State.Terminal()) {

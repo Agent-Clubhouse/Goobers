@@ -147,8 +147,7 @@ func (r *Resolver) Resolve(ctx context.Context, record triggerqueue.Record) (eng
 func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Config, envelope startintent.Envelope, record triggerqueue.Record) (engine.RunInput, error) {
 	target := envelope.Target
 	set := generation.Set
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	instance.ApplyGaggleDefaults(set)
 	compiled, err := r.compile(target.ConfigGeneration, generation.Directory, cfg, set)
 	if err != nil {
 		return engine.RunInput{}, err
@@ -197,6 +196,7 @@ func (r *Resolver) build(generation childworkflow.Generation, cfg *instance.Conf
 		Version:                def.Version,
 		DSLVersion:             def.DSLVersion,
 		Annotations:            def.Annotations,
+		WorkflowLabels:         machine.Labels(),
 		WorkflowDigest:         machine.Digest(),
 		PreviewFeaturesEnabled: &preview,
 		ChildWorkflowsEnabled:  childrenEnabled,

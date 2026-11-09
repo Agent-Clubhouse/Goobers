@@ -1492,6 +1492,65 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 	}
 }
 
+func TestRunnerPinsWorkflowLabelsOutsideDefinitionDigest(t *testing.T) {
+	plain := inputsFromFixtureMachine(t)
+	labeled, err := workflow.Compile(plain.Def, workflow.WithPreviewFeatures(true),
+		workflow.WithLabels(map[string]string{"goobers.dev/task-class": "review"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labeled.Digest() != plain.Digest() {
+		t.Fatalf("labels changed the definition digest: %s != %s", labeled.Digest(), plain.Digest())
+	}
+	byTask := map[string]stubTaskResult{
+		"run-labels:open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"prNumber": "1"}},
+		"run-labels:ci-poll": {status: apiv1.ResultSuccess},
+		"run-plain:open-pr":  {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"prNumber": "1"}},
+		"run-plain:ci-poll":  {status: apiv1.ResultSuccess},
+	}
+	det := &outputCapturingDeterministic{byTask: byTask}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+	pinnedLabels := func(runID string, machine *workflow.Machine) []byte {
+		t.Helper()
+		if _, err := r.Start(context.Background(), StartInput{
+			RunID: runID, Machine: machine, Gaggle: "acme-web",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := rd.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, input := range identity.Inputs {
+			if input.Name == journal.PinnedWorkflowLabelsInputName {
+				if input.Integrity != apiv1.IntegrityTrusted {
+					t.Fatalf("labels integrity = %q", input.Integrity)
+				}
+				data, err := rd.ArtifactBytes(input.Ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return data
+			}
+		}
+		return nil
+	}
+	if got := string(pinnedLabels("run-labels", labeled)); got != `{"goobers.dev/task-class":"review"}` {
+		t.Fatalf("pinned labels = %q", got)
+	}
+	if got := pinnedLabels("run-plain", plain); got != nil {
+		t.Fatalf("unlabeled workflow pinned labels %q", got)
+	}
+}
+
 func TestRunnerInputsFromCannotReplaceGaggleBacklogScope(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",
