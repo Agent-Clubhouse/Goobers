@@ -235,6 +235,9 @@ func writeWorkflowGymPromotionFixture(t *testing.T, mutate func(string, *workflo
 	}
 	candidate, lkg := identity("candidate"), identity("lkg")
 	digests := workflowgym.EvaluationDigests{Dataset: "sha256:dataset", Evaluator: "sha256:evaluator", Environment: "sha256:environment"}
+	shadowDigests := workflowgym.EvaluationDigests{Dataset: "sha256:dataset-shadow", Evaluator: digests.Evaluator, Environment: "sha256:environment-shadow"}
+	holdoutDigests := workflowgym.EvaluationDigests{Dataset: "sha256:dataset-holdout", Evaluator: digests.Evaluator, Environment: digests.Environment}
+	config := workflowgym.EvaluationConfig{MinSamples: 10, RegressionThreshold: 0.05}
 	dir := t.TempDir()
 	write := func(name string, value any) string {
 		t.Helper()
@@ -250,12 +253,13 @@ func writeWorkflowGymPromotionFixture(t *testing.T, mutate func(string, *workflo
 	}
 	results := map[workflowgym.PromotionStage]*workflowgym.PromotionResult{}
 	for i, stage := range []workflowgym.PromotionStage{workflowgym.PromotionStageBenchmark, workflowgym.PromotionStageShadow, workflowgym.PromotionStageHoldout} {
+		stageDigests := []workflowgym.EvaluationDigests{digests, shadowDigests, holdoutDigests}[i]
 		interval := workflowgym.EvaluationInterval{Lower: -0.01, Upper: 0.01}
 		report := workflowgym.EvaluationReport{
 			APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.EvaluationReportKind,
-			Config:  workflowgym.EvaluationConfig{MinSamples: 10, RegressionThreshold: 0.05},
-			Digests: digests, Gate: workflowgym.EvaluationGate{Verdict: workflowgym.EvaluationPass, Reasons: []string{}},
-			Baseline: workflowgym.EvaluationBaseline{Authoritative: lkg, AuthoritativeDigest: workflowgym.CandidateIdentityDigest(lkg), DurationMS: int64(i)},
+			Config: config, ConfidenceLevel: workflowgym.EvaluationConfidenceLevel,
+			Digests: stageDigests, Gate: workflowgym.EvaluationGate{Verdict: workflowgym.EvaluationPass, Reasons: []string{}},
+			Baseline: workflowgym.EvaluationBaseline{Authoritative: lkg, AuthoritativeDigest: workflowgym.CandidateIdentityDigest(lkg)},
 			Candidates: []workflowgym.EvaluationCandidateReport{{
 				Candidate: candidate, CandidateDigest: workflowgym.CandidateIdentityDigest(candidate),
 				Gate: workflowgym.EvaluationGate{Verdict: workflowgym.EvaluationPass, Reasons: []string{}},
@@ -277,7 +281,8 @@ func writeWorkflowGymPromotionFixture(t *testing.T, mutate func(string, *workflo
 	policy := workflowgym.PromotionPolicy{
 		APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.PromotionPolicyKind,
 		Candidate: candidate, ConfigDigest: evidence.ConfigDigest, LastKnownGood: lkg, DatasetVersion: evidence.DatasetVersion,
-		Digests: digests, MinSamples: 20, RequireShadow: true, RequireHoldout: true,
+		Digests: digests, ShadowDigests: &shadowDigests, HoldoutDigests: &holdoutDigests, Evaluation: config,
+		RequireShadow: true, RequireHoldout: true,
 	}
 	if mutate != nil {
 		mutate(dir, &evidence, &policy)

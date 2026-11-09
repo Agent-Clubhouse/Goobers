@@ -154,18 +154,67 @@ func TestValidatePromotionEvidenceIsInconclusiveWithoutEnoughEvidence(t *testing
 	assertPromotionRejected(t, receipt, EvaluationInconclusive, "required holdout evidence is missing")
 
 	evidence, policy, reports = validPromotionInputs()
-	policy.MinSamples = 21
+	rebindReport(&evidence.Benchmark, reports, func(report *EvaluationReport) { report.Candidates[0].Slices[0].Samples = 5 })
 	assertPromotionRejected(t, mustValidatePromotion(t, evidence, policy, reports), EvaluationInconclusive,
-		"insufficient evidence: 20 measured samples, policy requires 21")
+		"train: insufficient evidence: 5 measured samples, require 10")
+}
+
+func TestValidatePromotionEvidenceRejectsReportGatedWithLooserConfig(t *testing.T) {
+	evidence, policy, reports := validPromotionInputs()
+	loosen := func(report *EvaluationReport) {
+		report.Config.RegressionThreshold = 0.99
+		report.Candidates[0].Slices[0].Delta = -0.3
+		report.Candidates[0].Slices[0].ConfidenceInterval = EvaluationInterval{Lower: -0.4, Upper: -0.2}
+		report.Candidates[0].Slices[1].Delta = -0.3
+		report.Candidates[0].Slices[1].ConfidenceInterval = EvaluationInterval{Lower: -0.4, Upper: -0.2}
+	}
+	rebindReport(&evidence.Benchmark, reports, loosen)
+	rebindReport(evidence.Holdout, reports, loosen)
+	receipt := mustValidatePromotion(t, evidence, policy, reports)
+	assertPromotionRejected(t, receipt, EvaluationFail, "benchmark report gate config")
+	assertPromotionRejected(t, receipt, EvaluationFail, "holdout report gate config")
+
+	// Even a report whose config matches policy is re-gated rather than
+	// trusted: a recorded pass over a regressed holdout slice still fails.
+	evidence, policy, reports = validPromotionInputs()
+	rebindReport(evidence.Holdout, reports, func(report *EvaluationReport) {
+		report.Candidates[0].Slices[1].Delta = -0.3
+		report.Candidates[0].Slices[1].Verdict = EvaluationPass
+	})
+	assertPromotionRejected(t, mustValidatePromotion(t, evidence, policy, reports), EvaluationFail,
+		"holdout: pass-rate delta -0.3 meets regression threshold -0.05")
+}
+
+func TestValidatePromotionEvidenceRejectsStagesFromOneTournament(t *testing.T) {
+	evidence, policy, reports := validPromotionInputs()
+	benchmark := reports[PromotionStageBenchmark]
+	for i, result := range []*PromotionResult{evidence.Shadow, evidence.Holdout} {
+		report := benchmark
+		report.Config.MinSamples += i + 1
+		reports[result.Stage] = report
+		result.ArtifactDigest = EvaluationReportDigest(report)
+	}
+	receipt := mustValidatePromotion(t, evidence, policy, reports)
+	assertPromotionRejected(t, receipt, EvaluationFail, "shadow report is for the wrong dataset")
+	assertPromotionRejected(t, receipt, EvaluationFail, "shadow report uses a stale environment manifest")
+	assertPromotionRejected(t, receipt, EvaluationFail, "holdout report is for the wrong dataset")
 }
 
 func TestValidatePromotionEvidenceRejectsMalformedInput(t *testing.T) {
-	evidence, policy, reports := validPromotionInputs()
-	policy.MinSamples = 0
-	if _, err := ValidatePromotionEvidence(evidence, policy, reports); err == nil || !strings.Contains(err.Error(), "minSamples") {
-		t.Fatalf("error = %v", err)
+	for name, mutate := range map[string]func(*PromotionPolicy){
+		"minSamples":                         func(p *PromotionPolicy) { p.Evaluation.MinSamples = 0 },
+		"shadowDigests is required":          func(p *PromotionPolicy) { p.ShadowDigests = nil },
+		"holdoutDigests is required":         func(p *PromotionPolicy) { p.HoldoutDigests = nil },
+		"shadowDigests.environment must":     func(p *PromotionPolicy) { p.ShadowDigests.Environment = p.Digests.Environment },
+		"holdoutDigests.dataset must differ": func(p *PromotionPolicy) { p.HoldoutDigests.Dataset = p.Digests.Dataset },
+	} {
+		evidence, policy, reports := validPromotionInputs()
+		mutate(&policy)
+		if _, err := ValidatePromotionEvidence(evidence, policy, reports); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: error = %v", name, err)
+		}
 	}
-	evidence, policy, reports = validPromotionInputs()
+	evidence, policy, reports := validPromotionInputs()
 	evidence.Shadow.Report = ""
 	if _, err := ValidatePromotionEvidence(evidence, policy, reports); err == nil || !strings.Contains(err.Error(), "shadow evidence report is required") {
 		t.Fatalf("error = %v", err)
@@ -250,10 +299,16 @@ func validPromotionInputs() (PromotionEvidence, PromotionPolicy, map[PromotionSt
 		Evaluator:   "sha256:evaluator",
 		Environment: "sha256:environment",
 	}
+	stageDigests := map[PromotionStage]EvaluationDigests{
+		PromotionStageBenchmark: digests,
+		PromotionStageShadow:    {Dataset: "sha256:dataset-shadow", Evaluator: digests.Evaluator, Environment: "sha256:environment-shadow"},
+		PromotionStageHoldout:   {Dataset: "sha256:dataset-holdout", Evaluator: digests.Evaluator, Environment: digests.Environment},
+	}
+	shadowDigests, holdoutDigests := stageDigests[PromotionStageShadow], stageDigests[PromotionStageHoldout]
 	reports := map[PromotionStage]EvaluationReport{}
 	results := map[PromotionStage]PromotionResult{}
-	for i, stage := range []PromotionStage{PromotionStageBenchmark, PromotionStageShadow, PromotionStageHoldout} {
-		report := promotionReport(candidate, lkg, digests, int64(i))
+	for _, stage := range []PromotionStage{PromotionStageBenchmark, PromotionStageShadow, PromotionStageHoldout} {
+		report := promotionReport(candidate, lkg, stageDigests[stage])
 		reports[stage] = report
 		results[stage] = PromotionResult{Stage: stage, Report: "reports/" + string(stage) + ".json", ArtifactDigest: EvaluationReportDigest(report)}
 	}
@@ -279,25 +334,31 @@ func validPromotionInputs() (PromotionEvidence, PromotionPolicy, map[PromotionSt
 		LastKnownGood:  lkg,
 		DatasetVersion: evidence.DatasetVersion,
 		Digests:        digests,
-		MinSamples:     20,
+		ShadowDigests:  &shadowDigests,
+		HoldoutDigests: &holdoutDigests,
+		Evaluation:     promotionEvaluationConfig(),
 		RequireShadow:  true,
 		RequireHoldout: true,
 	}
 	return evidence, policy, reports
 }
 
-func promotionReport(candidate, lkg TournamentCandidateIdentity, digests EvaluationDigests, run int64) EvaluationReport {
+func promotionEvaluationConfig() EvaluationConfig {
+	return EvaluationConfig{MinSamples: DefaultEvaluationMinSamples, RegressionThreshold: DefaultRegressionThreshold}
+}
+
+func promotionReport(candidate, lkg TournamentCandidateIdentity, digests EvaluationDigests) EvaluationReport {
 	interval := EvaluationInterval{Lower: -0.01, Upper: 0.01}
 	return EvaluationReport{
 		APIVersion:      apiv1.WorkflowGymTaskAPIVersion,
 		Kind:            EvaluationReportKind,
-		Config:          EvaluationConfig{MinSamples: 10, RegressionThreshold: DefaultRegressionThreshold},
+		Config:          promotionEvaluationConfig(),
 		ConfidenceLevel: EvaluationConfidenceLevel,
 		Digests:         digests,
 		Gate:            EvaluationGate{Verdict: EvaluationPass, Reasons: []string{}},
 		Baseline: EvaluationBaseline{
 			Authoritative: lkg, AuthoritativeDigest: CandidateIdentityDigest(lkg),
-			Samples: 20, PassRate: 0.9, DurationMS: 1000 + run,
+			Samples: 20, PassRate: 0.9,
 		},
 		Candidates: []EvaluationCandidateReport{{
 			Candidate:       candidate,

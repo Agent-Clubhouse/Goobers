@@ -129,13 +129,26 @@ slots. Each slot carries:
   encoding); no two slots may reference the same artifact.
 
 Verdicts, sample counts and manifest digests are never self-reported: they are
-derived from the loaded report. Each report must match the evidence dataset,
-evaluator and environment digests, use the last-known-good identity as its
-authoritative baseline, and evaluate the evidence candidate. Benchmark and
-shadow stages use the candidate's gate over train/eval slices; the holdout stage
-re-applies the report's slice gate to its holdout slice. The
-`WorkflowGymPromotionPolicy` supplies CD's current values, a `minSamples` floor
-applied to every stage, and whether shadow and holdout evidence are mandatory.
+derived from the loaded report. The `WorkflowGymPromotionPolicy` supplies CD's
+current values and pins, per stage, what each report must contain:
+
+- `evaluation` — the gate configuration (`minSamples`, `regressionThreshold`).
+  Every report's `config` must equal it and its `confidenceLevel` must be the
+  slice-6 level, so a report gated with a looser threshold is rejected.
+- `digests` — the benchmark dataset/evaluator/environment manifests.
+- `shadowDigests` — the shadow manifests; its environment must differ from the
+  benchmark environment. Required when `requireShadow` is set.
+- `holdoutDigests` — the holdout manifests; its dataset must differ from the
+  benchmark and shadow datasets. Required when `requireHoldout` is set.
+
+Because a report's digests come from the dataset it evaluated, one tournament
+re-evaluated with different flags cannot fill several slots: stages are
+distinguished by report content, not by the evidence label. Each report must
+also use the last-known-good identity as its authoritative baseline and
+evaluate the evidence candidate. Validation does not trust recorded slice
+verdicts: it re-applies the slice-6 slice gate with the policy configuration to
+the train/eval selection slices for benchmark and shadow (which also require the
+report's own candidate gate to pass) and to the holdout slice for holdout.
 
 Validation fails closed and always writes a deterministic
 `WorkflowGymPromotionValidation` receipt with `verdict` (`pass`, `fail`, or

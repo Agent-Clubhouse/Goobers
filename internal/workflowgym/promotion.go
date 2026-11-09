@@ -62,7 +62,10 @@ type PromotionResult struct {
 }
 
 // PromotionPolicy is the Workflow CD state and evidence policy at validation
-// time. Exact digest matching makes stale evidence fail closed.
+// time. Exact digest matching makes stale evidence fail closed. Digests pins
+// the benchmark manifests; ShadowDigests and HoldoutDigests pin distinct
+// manifests for those stages, so one tournament cannot fill several slots.
+// Evaluation pins the gate configuration every report must have used.
 type PromotionPolicy struct {
 	APIVersion     string                      `json:"apiVersion" yaml:"apiVersion"`
 	Kind           string                      `json:"kind" yaml:"kind"`
@@ -71,7 +74,9 @@ type PromotionPolicy struct {
 	LastKnownGood  TournamentCandidateIdentity `json:"lastKnownGood" yaml:"lastKnownGood"`
 	DatasetVersion string                      `json:"datasetVersion" yaml:"datasetVersion"`
 	Digests        EvaluationDigests           `json:"digests" yaml:"digests"`
-	MinSamples     int                         `json:"minSamples" yaml:"minSamples"`
+	ShadowDigests  *EvaluationDigests          `json:"shadowDigests,omitempty" yaml:"shadowDigests,omitempty"`
+	HoldoutDigests *EvaluationDigests          `json:"holdoutDigests,omitempty" yaml:"holdoutDigests,omitempty"`
+	Evaluation     EvaluationConfig            `json:"evaluation" yaml:"evaluation"`
 	RequireShadow  bool                        `json:"requireShadow" yaml:"requireShadow"`
 	RequireHoldout bool                        `json:"requireHoldout" yaml:"requireHoldout"`
 }
@@ -100,6 +105,7 @@ type PromotionValidation struct {
 type PromotionResultReceipt struct {
 	Stage          PromotionStage    `json:"stage"`
 	ArtifactDigest string            `json:"artifactDigest"`
+	Digests        EvaluationDigests `json:"digests"`
 	Verdict        EvaluationVerdict `json:"verdict"`
 	Samples        int               `json:"samples"`
 }
@@ -239,22 +245,35 @@ func (v *PromotionValidation) checkPolicy(evidence PromotionEvidence, policy Pro
 }
 
 type promotionSlot struct {
-	stage    PromotionStage
-	result   *PromotionResult
-	required func(PromotionPolicy) bool
+	stage  PromotionStage
+	result *PromotionResult
 }
 
 func promotionSlots(evidence PromotionEvidence) []promotionSlot {
 	return []promotionSlot{
-		{stage: PromotionStageBenchmark, result: &evidence.Benchmark, required: func(PromotionPolicy) bool { return true }},
-		{stage: PromotionStageShadow, result: evidence.Shadow, required: func(p PromotionPolicy) bool { return p.RequireShadow }},
-		{stage: PromotionStageHoldout, result: evidence.Holdout, required: func(p PromotionPolicy) bool { return p.RequireHoldout }},
+		{stage: PromotionStageBenchmark, result: &evidence.Benchmark},
+		{stage: PromotionStageShadow, result: evidence.Shadow},
+		{stage: PromotionStageHoldout, result: evidence.Holdout},
+	}
+}
+
+// stagePolicy returns whether the policy requires a stage and the manifests
+// its report must have been measured with; nil means the stage is unpinned.
+func (p PromotionPolicy) stagePolicy(stage PromotionStage) (bool, *EvaluationDigests) {
+	switch stage {
+	case PromotionStageShadow:
+		return p.RequireShadow, p.ShadowDigests
+	case PromotionStageHoldout:
+		return p.RequireHoldout, p.HoldoutDigests
+	default:
+		return true, &p.Digests
 	}
 }
 
 func (v *PromotionValidation) checkSlot(slot promotionSlot, evidence PromotionEvidence, policy PromotionPolicy, reports map[PromotionStage]EvaluationReport, seen map[string]PromotionStage) error {
+	required, digests := policy.stagePolicy(slot.stage)
 	if slot.result == nil {
-		if slot.required(policy) {
+		if required {
 			v.reject(EvaluationInconclusive, "required %s evidence is missing", slot.stage)
 		}
 		return nil
@@ -282,10 +301,15 @@ func (v *PromotionValidation) checkSlot(slot promotionSlot, evidence PromotionEv
 		v.reject(EvaluationFail, "%s report digest %s does not match artifactDigest %s", slot.stage, digest, result.ArtifactDigest)
 		return nil
 	}
-	if !v.checkReportProvenance(slot.stage, report, evidence) {
+	receipt.Digests = report.Digests
+	if digests == nil {
+		v.reject(EvaluationFail, "policy pins no %s manifests", slot.stage)
 		return nil
 	}
-	receipt.Verdict, receipt.Samples = v.checkReportOutcome(slot.stage, report, evidence, policy)
+	if !v.checkReportProvenance(slot.stage, report, evidence, *digests, policy.Evaluation) {
+		return nil
+	}
+	receipt.Verdict, receipt.Samples = v.checkReportOutcome(slot.stage, report, evidence, policy.Evaluation)
 	return nil
 }
 
@@ -305,20 +329,25 @@ func requirePromotionResultFields(stage PromotionStage, result PromotionResult) 
 	return nil
 }
 
-// checkReportProvenance binds a report to the evidence header and the
-// last-known-good baseline. It reports whether the report can be trusted.
-func (v *PromotionValidation) checkReportProvenance(stage PromotionStage, report EvaluationReport, evidence PromotionEvidence) bool {
+// checkReportProvenance binds a report to its stage's pinned manifests, the
+// policy gate configuration, and the last-known-good baseline. It reports
+// whether the report can be trusted.
+func (v *PromotionValidation) checkReportProvenance(stage PromotionStage, report EvaluationReport, evidence PromotionEvidence, digests EvaluationDigests, config EvaluationConfig) bool {
 	before := len(v.Reasons)
 	if report.APIVersion != apiv1.WorkflowGymTaskAPIVersion || report.Kind != EvaluationReportKind {
 		v.reject(EvaluationFail, "%s report is not a %s", stage, EvaluationReportKind)
 	}
-	if report.Digests.Dataset != evidence.Digests.Dataset {
+	if report.Config != config || report.ConfidenceLevel != EvaluationConfidenceLevel {
+		v.reject(EvaluationFail, "%s report gate config %+v at confidence %g does not match policy %+v at confidence %g",
+			stage, report.Config, report.ConfidenceLevel, config, EvaluationConfidenceLevel)
+	}
+	if report.Digests.Dataset != digests.Dataset {
 		v.reject(EvaluationFail, "%s report is for the wrong dataset", stage)
 	}
-	if report.Digests.Evaluator != evidence.Digests.Evaluator {
+	if report.Digests.Evaluator != digests.Evaluator {
 		v.reject(EvaluationFail, "%s report uses a stale evaluator manifest", stage)
 	}
-	if report.Digests.Environment != evidence.Digests.Environment {
+	if report.Digests.Environment != digests.Environment {
 		v.reject(EvaluationFail, "%s report uses a stale environment manifest", stage)
 	}
 	if report.Baseline.AuthoritativeDigest != CandidateIdentityDigest(evidence.LastKnownGood) ||
@@ -329,18 +358,15 @@ func (v *PromotionValidation) checkReportProvenance(stage PromotionStage, report
 }
 
 // checkReportOutcome derives the stage verdict and measured samples from the
-// report's evaluation of the evidence candidate.
-func (v *PromotionValidation) checkReportOutcome(stage PromotionStage, report EvaluationReport, evidence PromotionEvidence, policy PromotionPolicy) (EvaluationVerdict, int) {
+// report's evaluation of the evidence candidate, re-gated with the policy
+// configuration.
+func (v *PromotionValidation) checkReportOutcome(stage PromotionStage, report EvaluationReport, evidence PromotionEvidence, config EvaluationConfig) (EvaluationVerdict, int) {
 	candidate, ok := findEvaluationCandidate(report, evidence)
 	if !ok {
 		v.reject(EvaluationFail, "%s report does not evaluate the evidence candidate", stage)
 		return EvaluationFail, 0
 	}
-	verdict, samples, reasons := promotionStageOutcome(stage, candidate, report.Config)
-	if samples < policy.MinSamples {
-		verdict = worseEvaluationVerdict(verdict, EvaluationInconclusive)
-		reasons = append(reasons, fmt.Sprintf("insufficient evidence: %d measured samples, policy requires %d", samples, policy.MinSamples))
-	}
+	verdict, samples, reasons := promotionStageOutcome(stage, candidate, config)
 	for _, reason := range reasons {
 		v.reject(verdict, "%s evidence verdict is %q: %s", stage, verdict, reason)
 	}
@@ -356,38 +382,42 @@ func findEvaluationCandidate(report EvaluationReport, evidence PromotionEvidence
 	return EvaluationCandidateReport{}, false
 }
 
-// promotionStageOutcome uses the candidate gate for benchmark and shadow
-// reports. Holdout slices never drive the slice-6 gate, so a holdout report is
-// gated by re-applying the report's own slice verdict to its holdout slice.
+// promotionStageOutcome re-applies the slice-6 slice gate with the policy
+// configuration rather than trusting recorded slice verdicts. Benchmark and
+// shadow stages are gated on their train/eval selection slices (and never pass
+// when the report's own candidate gate did not); the holdout stage, which never
+// drives selection, is gated on its holdout slice.
 func promotionStageOutcome(stage PromotionStage, candidate EvaluationCandidateReport, config EvaluationConfig) (EvaluationVerdict, int, []string) {
-	if stage != PromotionStageHoldout {
-		samples := 0
-		for _, slice := range candidate.Slices {
-			if slice.Selection {
-				samples += slice.Samples
-			}
-		}
-		verdict := candidate.Gate.Verdict
-		reasons := append([]string{}, candidate.Gate.Reasons...)
-		if verdict != EvaluationPass && len(reasons) == 0 {
-			reasons = append(reasons, "candidate gate did not pass")
-		}
-		return verdict, samples, reasons
-	}
+	holdout := stage == PromotionStageHoldout
+	verdict, samples, gated, reasons := EvaluationPass, 0, 0, []string{}
 	for _, slice := range candidate.Slices {
-		if slice.Split != apiv1.WorkflowGymSplitHoldout {
+		if holdout != (slice.Split == apiv1.WorkflowGymSplitHoldout) {
 			continue
 		}
+		gated++
+		samples += slice.Samples
 		counts := evaluationCounts{samples: slice.Samples, missing: slice.MissingResults}
-		verdict, reason := evaluationSliceVerdict(counts, slice.Delta, slice.ConfidenceInterval, config)
-		if reason == "" {
-			return verdict, slice.Samples, nil
+		sliceVerdict, reason := evaluationSliceVerdict(counts, slice.Delta, slice.ConfidenceInterval, config)
+		verdict = worseEvaluationVerdict(verdict, sliceVerdict)
+		if reason != "" {
+			reasons = append(reasons, string(slice.Split)+": "+reason)
 		}
-		return verdict, slice.Samples, []string{reason}
 	}
-	return EvaluationInconclusive, 0, []string{"no holdout slice"}
+	if gated == 0 {
+		if holdout {
+			return EvaluationInconclusive, 0, []string{"no holdout slice"}
+		}
+		return EvaluationInconclusive, 0, []string{"no train or eval slice"}
+	}
+	if !holdout && candidate.Gate.Verdict != EvaluationPass {
+		verdict = worseEvaluationVerdict(verdict, candidate.Gate.Verdict)
+		reasons = append(reasons, candidate.Gate.Reasons...)
+		if len(candidate.Gate.Reasons) == 0 {
+			reasons = append(reasons, "candidate gate did not pass")
+		}
+	}
+	return verdict, samples, reasons
 }
-
 func validatePromotionPolicy(policy PromotionPolicy) error {
 	if policy.APIVersion != apiv1.WorkflowGymTaskAPIVersion || policy.Kind != PromotionPolicyKind {
 		return errors.New("invalid apiVersion or kind")
@@ -398,10 +428,60 @@ func validatePromotionPolicy(policy PromotionPolicy) error {
 	if err := validateEvaluationIdentity(policy.LastKnownGood); err != nil {
 		return fmt.Errorf("lastKnownGood: %w", err)
 	}
-	if policy.MinSamples < 1 {
-		return errors.New("minSamples must be at least 1")
+	if err := validateEvaluationConfig(policy.Evaluation); err != nil {
+		return fmt.Errorf("evaluation: %w", err)
 	}
-	return requirePromotionFields(policy.ConfigDigest, policy.DatasetVersion, policy.Digests)
+	if err := requirePromotionFields(policy.ConfigDigest, policy.DatasetVersion, policy.Digests); err != nil {
+		return err
+	}
+	return validatePromotionStageDigests(policy)
+}
+
+// validatePromotionStageDigests requires shadow and holdout manifests whenever
+// those stages are required, and keeps every stage distinguishable by report
+// content: shadow runs in its own environment and holdout on its own dataset.
+func validatePromotionStageDigests(policy PromotionPolicy) error {
+	if policy.RequireShadow && policy.ShadowDigests == nil {
+		return errors.New("shadowDigests is required when requireShadow is set")
+	}
+	if policy.RequireHoldout && policy.HoldoutDigests == nil {
+		return errors.New("holdoutDigests is required when requireHoldout is set")
+	}
+	datasets := map[string]string{policy.Digests.Dataset: "digests"}
+	if shadow := policy.ShadowDigests; shadow != nil {
+		if err := requirePromotionDigests("shadowDigests", *shadow); err != nil {
+			return err
+		}
+		if shadow.Environment == policy.Digests.Environment {
+			return errors.New("shadowDigests.environment must differ from digests.environment")
+		}
+		datasets[shadow.Dataset] = "shadowDigests"
+	}
+	if holdout := policy.HoldoutDigests; holdout != nil {
+		if err := requirePromotionDigests("holdoutDigests", *holdout); err != nil {
+			return err
+		}
+		if other, reused := datasets[holdout.Dataset]; reused {
+			return fmt.Errorf("holdoutDigests.dataset must differ from %s.dataset", other)
+		}
+	}
+	return nil
+}
+
+func requirePromotionDigests(name string, digests EvaluationDigests) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"dataset", digests.Dataset},
+		{"evaluator", digests.Evaluator},
+		{"environment", digests.Environment},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("%s.%s is required", name, field.name)
+		}
+	}
+	return nil
 }
 
 func validatePromotionEvidenceHeader(evidence PromotionEvidence) error {
