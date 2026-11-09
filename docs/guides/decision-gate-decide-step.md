@@ -167,3 +167,27 @@ model-decided and code-decided predictions, plus `pending` (no outcome yet),
 environment and the cause was real, the costly miss). `modelAccuracy` appears
 only once `modelJudged` reaches `minSample` (30). Graduating from shadow to
 enforce should wait for those counts, not intuition.
+
+## Stall and loop detection (advisory, shadow)
+
+Set `decisionGate.stallDetection: true` with `mode: shadow` to score running
+agentic stages. The harness already checkpoints a stage's transcript about once
+a minute; each checkpoint now also hands a bounded (32 KiB), redacted tail of
+that stream to the observer, so there is no per-turn cost. The tail is redacted
+as a whole, so a secret split across two checkpoints is still caught before any
+model call.
+
+Code decides facts first: a short line cycle repeating back to back with no
+file-change line in the window is a `stalled` verdict with basis `code` and no
+model call. Otherwise a window with enough lines goes to the model, which judges
+one yes/no question (no meaningful progress) behind the `transcript_no_progress`
+threshold, at most eight times per stream. `unsure` and any error change
+nothing. Bursts are coalesced to the latest window per stream, so a fast loop is
+never lost behind earlier snapshots.
+
+When the stage ends the harness labels the stream with whether it hit its time
+budget, and the log carries `decisiongate.stall-shadow` (per window) and
+`decisiongate.stall-outcome` (flagged window vs budget hit). `StallTally` turns
+outcomes into flagged-and-hit, flagged-and-completed and missed counts, and
+`Precision` refuses a figure below a minimum sample. Nothing is enforced until
+those counts justify it. Only the local runner is wired; pod stages are not.
