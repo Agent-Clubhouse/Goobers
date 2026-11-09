@@ -5797,11 +5797,18 @@ Labs: cluster workflows by structural shape or run behavior
 Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]
        goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]
        goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]
+       goobers workflow clusters --proposals [--gaggle <name>] [--max-runs <n>] --json [path]
        goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]
 
 Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN
 and report each cluster's medoid, members, stability, and distinguishing
 features. Points that fit no dense group are reported as noise.
+
+--proposals emits the same read contract as the Portal's primary child
+workflow pattern map. Retained proposals are clustered independently per
+gaggle and include only identifiers, digests, structural features, pinned
+novelty, outcomes, EffectiveVersions, and parent/child journal lineage.
+Proposal and prompt text are never emitted. --gaggle selects one partition.
 
 --features structural (default) clusters configured workflows by structural
 shape (node kinds, gates, retries, parallelism, graph topology).

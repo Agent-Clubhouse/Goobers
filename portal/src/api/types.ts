@@ -2349,7 +2349,8 @@ export interface LabsChildProposalInsight {
   effectiveVersion: string;
   outcome: string;
   clusterId?: string;
-  templateCandidateSignal: boolean;
+  /** Medoid of a stable cluster; a structural observation, not template candidacy. */
+  stableClusterMedoid: boolean;
   novelty?: ChildNovelty;
 }
 

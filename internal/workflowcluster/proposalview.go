@@ -13,16 +13,19 @@ import (
 // ChildProposalInsight is the privacy-safe read model for one retained,
 // agent-authored child workflow. It intentionally contains no proposal text.
 type ChildProposalInsight struct {
-	ID                      string                `json:"id"`
-	Gaggle                  string                `json:"gaggle"`
-	SourceDigest            string                `json:"sourceDigest"`
-	ParentRunID             string                `json:"parentRunId"`
-	StageOccurrence         string                `json:"stageOccurrence"`
-	EffectiveVersion        string                `json:"effectiveVersion"`
-	Outcome                 journal.RunPhase      `json:"outcome"`
-	ClusterID               string                `json:"clusterId,omitempty"`
-	TemplateCandidateSignal bool                  `json:"templateCandidateSignal"`
-	Novelty                 *journal.ChildNovelty `json:"novelty,omitempty"`
+	ID               string           `json:"id"`
+	Gaggle           string           `json:"gaggle"`
+	SourceDigest     string           `json:"sourceDigest"`
+	ParentRunID      string           `json:"parentRunId"`
+	StageOccurrence  string           `json:"stageOccurrence"`
+	EffectiveVersion string           `json:"effectiveVersion"`
+	Outcome          journal.RunPhase `json:"outcome"`
+	ClusterID        string           `json:"clusterId,omitempty"`
+	// StableClusterMedoid marks the medoid of a stable cluster. It is a
+	// structural observation only, not a reusable-template candidacy claim;
+	// candidacy requires the joined evidence bar in ProposeTemplates.
+	StableClusterMedoid bool                  `json:"stableClusterMedoid"`
+	Novelty             *journal.ChildNovelty `json:"novelty,omitempty"`
 }
 
 // ChildProposalGaggle is one independently fitted, per-gaggle proposal map.
@@ -165,7 +168,7 @@ func analyzeChildProposalObservations(observations []childProposalObservation, m
 				}
 				group.Proposals[i].ClusterID = assignment.ClusterID
 				cluster, found := clusters[assignment.ClusterID]
-				group.Proposals[i].TemplateCandidateSignal = found && cluster.Stable && cluster.Medoid.ID == points[i].ID
+				group.Proposals[i].StableClusterMedoid = found && cluster.Stable && cluster.Medoid.ID == points[i].ID
 			}
 		}
 		gaggles = append(gaggles, group)

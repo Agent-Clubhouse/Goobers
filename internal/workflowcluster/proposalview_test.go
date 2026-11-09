@@ -99,3 +99,44 @@ func TestAnalyzeChildProposalObservationsPartitionsGagglesAndLinksEvidence(t *te
 		t.Fatalf("ops = %+v", ops)
 	}
 }
+
+func TestChildProposalStableMedoidMakesNoTemplateCandidacyClaim(t *testing.T) {
+	var observations []childProposalObservation
+	for _, point := range append(blob("f", 0, 0, 8), blob("g", 10, 0, 8)...) {
+		observations = append(observations, childProposalObservation{
+			insight: ChildProposalInsight{
+				ID: point.ID, Gaggle: "core", SourceDigest: "sha256:" + point.ID,
+				ParentRunID: "parent-" + point.ID, StageOccurrence: "author/0/visit/1",
+				EffectiveVersion: "sha256:effective", Outcome: journal.PhaseFailed,
+			},
+			point: point,
+		})
+	}
+	observations = append(observations, childProposalObservation{
+		insight: ChildProposalInsight{
+			ID: "far", Gaggle: "core", SourceDigest: "sha256:far", ParentRunID: "parent-far",
+			StageOccurrence: "author/0/visit/1", EffectiveVersion: "sha256:effective", Outcome: journal.PhaseFailed,
+		},
+		point: Point{ID: "far", Numeric: map[string]float64{"x": 40, "y": 40}},
+	})
+	gaggles, err := analyzeChildProposalObservations(observations, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(gaggles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(bytes.ToLower(raw), []byte("templatecandidate")) {
+		t.Fatalf("all-failed proposals claim template candidacy: %s", raw)
+	}
+	medoids := 0
+	for _, proposal := range gaggles[0].Proposals {
+		if proposal.StableClusterMedoid {
+			medoids++
+		}
+	}
+	if medoids != 2 {
+		t.Fatalf("stable-cluster medoids = %d, want 2: %s", medoids, raw)
+	}
+}

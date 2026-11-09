@@ -86,7 +86,7 @@ function ChildProposalPatterns({ view }: { view: LabsChildProposalView }) {
       <h3>Child workflow pattern map</h3>
       <p>
         Read-only proposal patterns for one gaggle. Proposal source and prompt text are never included.
-        Stable-cluster candidate badges are advisory signals; promotion still requires the reviewed template-candidate path.
+        Stable-cluster medoid badges mark structural cluster centers only; they are not template candidates.
       </p>
       {view.gaggles.length > 1 && (
         <label>
@@ -142,7 +142,7 @@ function ProposalGaggle({ group }: { group: LabsChildProposalGaggle }) {
           <li className="labs-card labs-cluster" key={proposal.id}>
             <div className="labs-card-heading">
               <h4><a className="mono" href={routeHash({ page: "run", id: proposal.id })}>{proposal.id}</a></h4>
-              {proposal.templateCandidateSignal && <span className="labs-badge labs-badge-stable">Template candidate signal</span>}
+              {proposal.stableClusterMedoid && <span className="labs-badge labs-badge-stable">Stable-cluster medoid</span>}
               {proposal.novelty?.outOfDistribution && <span className="labs-badge labs-badge-pending">Novel / out of distribution</span>}
             </div>
             <dl className="labs-cluster-facts">
@@ -552,6 +552,28 @@ function shortModelId(id: string): string {
   return digest.slice(0, 12);
 }
 
+// Proposal maps ride on both view statuses; a gaggle whose fit is all noise
+// may still arrive with null clusters, so normalize in one place.
+function normalizeProposalView(view: LabsChildProposalView | undefined): LabsChildProposalView | undefined {
+  return view && {
+    ...view,
+    gaggles: (view.gaggles ?? []).map((group) => ({
+      ...group,
+      map: group.map ?? [],
+      proposals: group.proposals ?? [],
+      model: group.model && {
+        ...group.model,
+        clusters: (group.model.clusters ?? []).map((cluster) => ({
+          ...cluster,
+          members: cluster.members ?? [],
+          distinguishing: cluster.distinguishing ?? [],
+        })),
+        noise: group.model.noise ?? [],
+      },
+    })),
+  };
+}
+
 // The daemon encodes empty Go slices as null; normalize so rendering never
 // has to guess, and reject shapes this view cannot render honestly.
 function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
@@ -576,19 +598,7 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
         workflows: view.templates.workflows ?? {},
         beyondTemplates: view.templates.beyondTemplates ?? [],
       },
-      proposals: view.proposals && {
-        ...view.proposals,
-        gaggles: (view.proposals.gaggles ?? []).map((group) => ({
-          ...group,
-          map: group.map ?? [],
-          proposals: group.proposals ?? [],
-          model: group.model && {
-            ...group.model,
-            clusters: group.model.clusters ?? [],
-            noise: group.model.noise ?? [],
-          },
-        })),
-      },
+      proposals: normalizeProposalView(view.proposals),
     };
   }
   if (!isRecord(view.model)) {
@@ -596,6 +606,7 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
   }
   return {
     ...view,
+    proposals: normalizeProposalView(view.proposals),
     model: {
       ...view.model,
       clusters: (view.model.clusters ?? []).map((cluster) => ({

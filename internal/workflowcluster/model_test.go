@@ -1,6 +1,7 @@
 package workflowcluster
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -100,6 +101,23 @@ func TestFitHandlesIdenticalPopulation(t *testing.T) {
 	}
 	if len(split.Clusters)+len(split.Noise) == 0 {
 		t.Fatal("identical population lost every point")
+	}
+}
+
+func TestFitAllNoiseEncodesEmptyClusters(t *testing.T) {
+	model, err := Fit("test/v1", blob("a", 0, 0, 4), Options{MinClusterSize: 4, Resamples: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Clusters == nil || len(model.Clusters) != 0 || len(model.Noise) != 4 {
+		t.Fatalf("all-noise model clusters = %#v, noise = %v", model.Clusters, model.Noise)
+	}
+	raw, err := json.Marshal(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"clusters":[]`) {
+		t.Fatalf("all-noise model JSON = %s", raw)
 	}
 }
 
