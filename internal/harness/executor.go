@@ -711,10 +711,8 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
-	e.teeTranscriptWindows(env, &req)
 
-	out, runErr = e.runSettled(ctx, env, req, nestedAdapter, postcondition, publication)
-	e.finishTranscriptWindows(env, runErr)
+	out, runErr = e.runSettledWindowed(ctx, env, req, nestedAdapter, postcondition, publication)
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(req, out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {

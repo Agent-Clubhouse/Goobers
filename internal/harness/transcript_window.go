@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -58,6 +59,13 @@ func (f *transcriptWindowFeed) add(delta InvocationTranscriptDelta) {
 func (f *transcriptWindowFeed) safeAdd(delta InvocationTranscriptDelta) {
 	defer func() { _ = recover() }()
 	f.add(delta)
+}
+
+func (e *Executor) runSettledWindowed(ctx context.Context, env apiv1.InvocationEnvelope, req RunRequest, nested NestedPolicyCapability, commit *commitPostcondition, publication *publicationPostcondition) (Outcome, error) {
+	e.teeTranscriptWindows(env, &req)
+	out, err := e.runSettled(ctx, env, req, nested, commit, publication)
+	e.finishTranscriptWindows(env, err)
+	return out, err
 }
 
 func (e *Executor) teeTranscriptWindows(env apiv1.InvocationEnvelope, req *RunRequest) {
