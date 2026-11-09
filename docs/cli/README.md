@@ -1309,6 +1309,16 @@ Flags:
   --accept <p>        yes at or above this probability (default from config, else 0.9)
   --reject <p>        no at or below this probability (default from config, else 0.1)
   --optional          when the gate is off or unreachable, report "unavailable" and exit 0
+
+Advisory CI failure triage (opt-in, shadow first; the existing path is the fallback):
+  --ci-log <path>     classify a failed CI log as flaky, real, infra or environment. Code
+                      decides known facts first; otherwise the model sees only a redacted,
+                      size-bounded excerpt. Result keys: class (unsure keeps today's path;
+                      always unsure in shadow mode), predicted, source, digest.
+  --ci-baseline <v>   code fact: pr-introduced or shared-baseline-failure
+  --run-key <id>      record the prediction (or outcome) under this run identity
+  --ci-outcome <c>    record the eventual cause (flaky|real|infra|environment) for --run-key
+  --ci-matrix         report the confusion matrix of predictions joined to outcomes
 Exit codes: 0 = decision written, 1 = failed, 2 = usage error.
 ~~~
 

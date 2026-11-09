@@ -199,6 +199,9 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	if _, ok := cfg.Thresholds[PublicationLeakQuestion]; !ok {
 		cfg.Thresholds[PublicationLeakQuestion] = DefaultPublicationLeakThreshold
 	}
+	if _, ok := cfg.Thresholds[CIFailureThresholdKey]; !ok {
+		cfg.Thresholds[CIFailureThresholdKey] = DefaultCIFailureThreshold
+	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second
 	}
