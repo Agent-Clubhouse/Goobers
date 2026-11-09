@@ -3,6 +3,8 @@ import type {
   DaemonClient,
   LabsConfoundReport,
   LabsClusterFitness,
+  LabsChildProposalGaggle,
+  LabsChildProposalView,
   LabsWorkflowCluster,
   LabsWorkflowClusterView,
 } from "../api/types";
@@ -61,9 +63,113 @@ export function LabsWorkflowClusters({ client }: { client: DaemonClient }) {
       {view && view.status === "insufficient-data" && view.templates && (
         <WorkflowTemplateProvenance report={view.templates} />
       )}
+      {view?.proposals && <ChildProposalPatterns view={view.proposals} />}
+      {!view?.proposals && view?.proposalsUnavailable && <p role="status">{view.proposalsUnavailable}.</p>}
       {view?.model && <ClusterModel view={view} />}
     </section>
   );
+}
+
+function ChildProposalPatterns({ view }: { view: LabsChildProposalView }) {
+  const [selected, setSelected] = useState(view.gaggles[0]?.gaggle ?? "");
+  const group = view.gaggles.find((item) => item.gaggle === selected) ?? view.gaggles[0];
+  if (!group) {
+    return (
+      <section aria-label="Child workflow pattern map">
+        <h3>Child workflow pattern map</h3>
+        <p>No retained agent-authored child proposals are available.</p>
+      </section>
+    );
+  }
+  return (
+    <section aria-label="Child workflow pattern map">
+      <h3>Child workflow pattern map</h3>
+      <p>
+        Read-only proposal patterns for one gaggle. Proposal source and prompt text are never included.
+        Stable-cluster medoid badges mark structural cluster centers only; they are not template candidates.
+      </p>
+      {view.gaggles.length > 1 && (
+        <label>
+          Gaggle{" "}
+          <select value={group.gaggle} onChange={(event) => setSelected(event.target.value)}>
+            {view.gaggles.map((item) => (
+              <option value={item.gaggle} key={item.gaggle}>{item.gaggle}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      <ProposalGaggle group={group} />
+    </section>
+  );
+}
+
+function ProposalGaggle({ group }: { group: LabsChildProposalGaggle }) {
+  const medoids = new Set(group.model?.clusters.map((cluster) => cluster.medoid.id) ?? []);
+  const outcomes = proposalOutcomes(group);
+  return (
+    <>
+      <p>
+        {group.population} retained proposal{group.population === 1 ? "" : "s"} ·{" "}
+        {group.model?.clusters.length ?? 0} cluster{group.model?.clusters.length === 1 ? "" : "s"}
+      </p>
+      {group.map.length > 0 && (
+        <LabsClusterMap
+          points={group.map}
+          clusterIds={group.model?.clusters.map((cluster) => cluster.id) ?? []}
+          medoids={medoids}
+          unit="proposal"
+        />
+      )}
+      {group.status === "insufficient-data" && (
+        <p>At least {group.minClusterSize} retained proposals are needed to fit this gaggle’s map.</p>
+      )}
+      {outcomes.length > 0 && (
+        <table aria-label="Child proposal outcomes by cluster">
+          <thead><tr><th>Cluster</th><th>Proposals</th><th>Completed</th></tr></thead>
+          <tbody>
+            {outcomes.map((outcome) => (
+              <tr key={outcome.cluster}>
+                <td>{outcome.cluster}</td>
+                <td>{outcome.total}</td>
+                <td>{outcome.completed} ({percent(outcome.completed / outcome.total)})</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <ul className="labs-cluster-list">
+        {group.proposals.map((proposal) => (
+          <li className="labs-card labs-cluster" key={proposal.id}>
+            <div className="labs-card-heading">
+              <h4><a className="mono" href={routeHash({ page: "run", id: proposal.id })}>{proposal.id}</a></h4>
+              {proposal.stableClusterMedoid && <span className="labs-badge labs-badge-stable">Stable-cluster medoid</span>}
+              {proposal.novelty?.outOfDistribution && <span className="labs-badge labs-badge-pending">Novel / out of distribution</span>}
+            </div>
+            <dl className="labs-cluster-facts">
+              <dt>Outcome</dt><dd>{proposal.outcome}</dd>
+              <dt>Cluster</dt><dd>{proposal.clusterId ?? "noise / unclustered"}</dd>
+              <dt>EffectiveVersion</dt><dd className="mono">{proposal.effectiveVersion}</dd>
+              <dt>Parent run</dt><dd><a className="mono" href={routeHash({ page: "run", id: proposal.parentRunId })}>{proposal.parentRunId}</a></dd>
+              <dt>Child lineage</dt><dd className="mono">{proposal.stageOccurrence}</dd>
+              <dt>Proposal digest</dt><dd className="mono">{proposal.sourceDigest}</dd>
+            </dl>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function proposalOutcomes(group: LabsChildProposalGaggle) {
+  const outcomes = new Map<string, { cluster: string; total: number; completed: number }>();
+  for (const proposal of group.proposals) {
+    const cluster = proposal.clusterId ?? "noise / unclustered";
+    const outcome = outcomes.get(cluster) ?? { cluster, total: 0, completed: 0 };
+    outcome.total += 1;
+    if (proposal.outcome === "completed") outcome.completed += 1;
+    outcomes.set(cluster, outcome);
+  }
+  return [...outcomes.values()].sort((a, b) => a.cluster.localeCompare(b.cluster));
 }
 
 function ClusterModel({ view }: { view: LabsWorkflowClusterView }) {
@@ -446,6 +552,28 @@ function shortModelId(id: string): string {
   return digest.slice(0, 12);
 }
 
+// Proposal maps ride on both view statuses; a gaggle whose fit is all noise
+// may still arrive with null clusters, so normalize in one place.
+function normalizeProposalView(view: LabsChildProposalView | undefined): LabsChildProposalView | undefined {
+  return view && {
+    ...view,
+    gaggles: (view.gaggles ?? []).map((group) => ({
+      ...group,
+      map: group.map ?? [],
+      proposals: group.proposals ?? [],
+      model: group.model && {
+        ...group.model,
+        clusters: (group.model.clusters ?? []).map((cluster) => ({
+          ...cluster,
+          members: cluster.members ?? [],
+          distinguishing: cluster.distinguishing ?? [],
+        })),
+        noise: group.model.noise ?? [],
+      },
+    })),
+  };
+}
+
 // The daemon encodes empty Go slices as null; normalize so rendering never
 // has to guess, and reject shapes this view cannot render honestly.
 function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
@@ -463,12 +591,14 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
       status: view.status,
       population: view.population,
       minClusterSize: view.minClusterSize,
+      proposalsUnavailable: view.proposalsUnavailable,
       templates: view.templates && {
         ...view.templates,
         catalog: view.templates.catalog ?? [],
         workflows: view.templates.workflows ?? {},
         beyondTemplates: view.templates.beyondTemplates ?? [],
       },
+      proposals: normalizeProposalView(view.proposals),
     };
   }
   if (!isRecord(view.model)) {
@@ -476,6 +606,7 @@ function normalizeClusterView(value: unknown): LabsWorkflowClusterView {
   }
   return {
     ...view,
+    proposals: normalizeProposalView(view.proposals),
     model: {
       ...view.model,
       clusters: (view.model.clusters ?? []).map((cluster) => ({

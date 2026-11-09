@@ -187,7 +187,7 @@ _goobers_completion()
                 show) flags+=(--dot) ;;
                 validate-child) flags+=(--gaggle --parent --stage --backend --cluster-model --json) ;;
                 child-admission) flags+=(--approve --reject --actor --note --json) ;;
-                clusters) flags+=(--features --cohort --fitness --since --max-runs --min-samples --min-cluster-size --seed --stratify --ablation --json --snapshot --instance-id --salt --fleet --templates --cluster-model) ;;
+                clusters) flags+=(--features --cohort --fitness --since --max-runs --min-samples --min-cluster-size --seed --stratify --ablation --json --snapshot --instance-id --salt --fleet --proposals --gaggle --templates --cluster-model) ;;
             esac
             ;;
         runs)

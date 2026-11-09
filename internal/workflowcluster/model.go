@@ -257,7 +257,7 @@ func fitExact(featureVersion string, sorted []Point, schema Schema, opts Options
 func buildModel(featureVersion string, sorted []Point, schema Schema, opts Options, dist [][]float64, labels []int, groups [][]int, stability []float64) (Model, error) {
 	model := Model{
 		Version: ModelVersion, FeatureVersion: featureVersion, Options: opts,
-		Schema: schema, Population: len(sorted), Noise: []string{},
+		Schema: schema, Population: len(sorted), Clusters: []Cluster{}, Noise: []string{},
 	}
 	for g, members := range groups {
 		medoid, radius := medoidOf(dist, members)
@@ -343,7 +343,7 @@ func fitSampled(featureVersion string, sorted []Point, schema Schema, opts Optio
 
 	model := Model{
 		Version: ModelVersion, FeatureVersion: featureVersion, Options: opts,
-		Schema: schema, Population: len(sorted), Noise: []string{},
+		Schema: schema, Population: len(sorted), Clusters: []Cluster{}, Noise: []string{},
 	}
 	for g, members := range groups {
 		ids := make([]string, len(members))
