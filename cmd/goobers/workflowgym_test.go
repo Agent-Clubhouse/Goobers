@@ -107,6 +107,63 @@ func TestWorkflowGymTournamentEmitsPairedReport(t *testing.T) {
 }
 
 func TestWorkflowGymEvaluateEmitsMachineReadableFailGate(t *testing.T) {
+	dataset, registry, reportPath := writeWorkflowGymEvaluationTournament(t, workflowgym.TournamentFail)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"workflow-gym", "evaluate",
+		"--min-samples", "1",
+		"--regression-threshold", "0.25",
+		dataset, reportPath,
+	}, &stdout, &stderr)
+	if code != workflowGymEvaluateExitFail || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.EvaluationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode evaluation report: %v\n%s", err, stdout.String())
+	}
+	if report.Gate.Verdict != workflowgym.EvaluationFail ||
+		report.Digests.Dataset != registry.Digest ||
+		len(report.Leaderboard) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestWorkflowGymEvaluateExitsInconclusiveOnInsufficientEvidence(t *testing.T) {
+	dataset, _, reportPath := writeWorkflowGymEvaluationTournament(t, workflowgym.TournamentPass)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"workflow-gym", "evaluate", "--min-samples", "1", dataset, reportPath}, &stdout, &stderr)
+	if code != workflowGymEvaluateExitInconclusive || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.EvaluationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode evaluation report: %v\n%s", err, stdout.String())
+	}
+	if report.Gate.Verdict != workflowgym.EvaluationInconclusive {
+		t.Fatalf("verdict = %s", report.Gate.Verdict)
+	}
+}
+
+func TestWorkflowGymEvaluateSeparatesInputErrorsFromUsage(t *testing.T) {
+	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "evaluate", dataset}, &stdout, &stderr); code != workflowGymEvaluateExitUsage {
+		t.Fatalf("usage code = %d", code)
+	}
+	stderr.Reset()
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if code := run([]string{"workflow-gym", "evaluate", dataset, missing}, &stdout, &stderr); code != workflowGymEvaluateExitInputError ||
+		!strings.Contains(stderr.String(), "read tournament report") || stdout.Len() != 0 {
+		t.Fatalf("input error code = %d, stderr = %s, stdout = %s", code, stderr.String(), stdout.String())
+	}
+}
+
+// writeWorkflowGymEvaluationTournament writes a tournament over the valid
+// dataset where the authoritative run passes every task and the candidate
+// reports alphaStatus for task-alpha and passes task-beta.
+func writeWorkflowGymEvaluationTournament(t *testing.T, alphaStatus workflowgym.TournamentStatus) (string, workflowgym.Registry, string) {
+	t.Helper()
 	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
 	registry, err := workflowgym.Load(dataset)
 	if err != nil {
@@ -116,8 +173,12 @@ func TestWorkflowGymEvaluateEmitsMachineReadableFailGate(t *testing.T) {
 		{TaskID: "task-alpha", Status: workflowgym.TournamentPass},
 		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
 	})
+	alpha := workflowgym.TournamentCandidateResult{TaskID: "task-alpha", Status: alphaStatus}
+	if alphaStatus == workflowgym.TournamentFail {
+		alpha.FailureClass = "evaluation"
+	}
 	candidatePath := writeTournamentCandidate(t, registry, "candidate", []workflowgym.TournamentCandidateResult{
-		{TaskID: "task-alpha", Status: workflowgym.TournamentFail, FailureClass: "evaluation"},
+		alpha,
 		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
 	})
 	authoritative, err := workflowgym.LoadTournamentCandidate(authoritativePath)
@@ -140,26 +201,7 @@ func TestWorkflowGymEvaluateEmitsMachineReadableFailGate(t *testing.T) {
 	if err := os.WriteFile(reportPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	var stdout, stderr bytes.Buffer
-	code := run([]string{
-		"workflow-gym", "evaluate",
-		"--min-samples", "1",
-		"--regression-threshold", "0.25",
-		dataset, reportPath,
-	}, &stdout, &stderr)
-	if code != 1 || stderr.Len() != 0 {
-		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
-	}
-	var report workflowgym.EvaluationReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode evaluation report: %v\n%s", err, stdout.String())
-	}
-	if report.Gate.Verdict != workflowgym.EvaluationFail ||
-		report.Digests.Dataset != registry.Digest ||
-		len(report.Leaderboard) != 1 {
-		t.Fatalf("report = %+v", report)
-	}
+	return dataset, registry, reportPath
 }
 
 func writeTournamentCandidate(t *testing.T, registry workflowgym.Registry, genome string, results []workflowgym.TournamentCandidateResult) string {

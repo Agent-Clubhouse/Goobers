@@ -3849,17 +3849,22 @@ Tournament compares candidate result manifests over one identical task roster.
 Evaluate applies confidence and regression gates to tournament JSON output.
 
 ### workflow-gym evaluate
-Usage: goobers workflow-gym evaluate [OPTIONS] <dataset> <tournament-report>
+Usage: goobers workflow-gym evaluate [--min-samples N] [--regression-threshold RATE]
+       <dataset> <tournament-report>
 
 Evaluate paired tournament JSON with per-slice sample floors, 95% confidence
 intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train
 and eval tasks determine the gate and ranking; holdout results are reported but
-never used for selection. The command writes a machine-readable JSON report and
-exits non-zero for fail or inconclusive verdicts.
+never used for selection. Missing candidate results never count as measured
+evidence. The command writes a machine-readable JSON report to stdout.
 
 Options:
   --min-samples N              Required samples in each selection slice (default 10)
   --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)
+
+Exit codes: 0 = pass, 1 = fail (regression meets the threshold), 2 = usage
+error, 3 = inconclusive (insufficient or missing evidence), 4 = input or
+processing error (unreadable or inconsistent dataset or tournament report).
 
 ### workflow-gym list
 Usage: goobers workflow-gym list <path>

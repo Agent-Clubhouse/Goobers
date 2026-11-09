@@ -1,52 +1,100 @@
 {
-  "gate": "inconclusive",
-  "candidate": {
+  "apiVersion": "goobers.dev/v1alpha1",
+  "kind": "WorkflowGymEvaluation",
+  "config": {
+    "minSamples": 25,
+    "regressionThreshold": 0.25
+  },
+  "confidenceLevel": 0.95,
+  "digests": {
+    "dataset": "sha256:evaluation-dataset",
+    "evaluator": "sha256:97a0acdbf204784b8db16cd8405601211b263db2cf210daf3f91554114cfcc5d",
+    "environment": "sha256:5ff5800ff2a53e90ff0c2dcb60fb03ae7ed5cdd8a30bb24e34f96db7ac610692"
+  },
+  "gate": {
     "verdict": "inconclusive",
     "reasons": [
-      "train: insufficient evidence: 2 samples, require 3",
-      "eval: insufficient evidence: 2 samples, require 3"
+      "sha256:c7368d79f0b2bd4e5b740cea4c1a9b579b53907e4b02a41c340610d435234395: train: insufficient evidence: 20 measured samples, require 25",
+      "sha256:c7368d79f0b2bd4e5b740cea4c1a9b579b53907e4b02a41c340610d435234395: eval: insufficient evidence: 20 measured samples, require 25"
     ]
   },
-  "slices": [
-    {
-      "split": "train",
-      "selection": true,
-      "samples": 2,
-      "authoritativeRate": 1,
-      "candidateRate": 1,
-      "delta": 0,
-      "confidenceInterval": {
-        "lower": 0,
-        "upper": 0
+  "baseline": {
+    "authoritative": {
+      "effectiveVersion": {
+        "workflowDigest": "sha256:workflow-authoritative",
+        "gooberDigest": "sha256:goober-authoritative",
+        "model": "model-authoritative",
+        "harnessVersion": "harness-1"
       },
-      "verdict": "inconclusive",
-      "reason": "insufficient evidence: 2 samples, require 3"
+      "genomeDigest": "sha256:authoritative"
     },
+    "authoritativeDigest": "sha256:5fd80428121b68a67a11b1abb5a2c1b16428b95ced03bde55a4f1b4679bec37b",
+    "samples": 40,
+    "passRate": 1,
+    "costUsd": 40,
+    "durationMs": 400
+  },
+  "candidates": [
     {
-      "split": "eval",
-      "selection": true,
-      "samples": 2,
-      "authoritativeRate": 1,
-      "candidateRate": 1,
-      "delta": 0,
-      "confidenceInterval": {
-        "lower": 0,
-        "upper": 0
+      "candidate": {
+        "effectiveVersion": {
+          "workflowDigest": "sha256:workflow-candidate",
+          "gooberDigest": "sha256:goober-candidate",
+          "model": "model-candidate",
+          "harnessVersion": "harness-1"
+        },
+        "genomeDigest": "sha256:candidate"
       },
-      "verdict": "inconclusive",
-      "reason": "insufficient evidence: 2 samples, require 3"
-    },
-    {
-      "split": "holdout",
-      "selection": false,
-      "samples": 1,
-      "authoritativeRate": 1,
-      "candidateRate": 1,
-      "delta": 0,
-      "confidenceInterval": {
-        "lower": 0,
-        "upper": 0
-      }
+      "candidateDigest": "sha256:c7368d79f0b2bd4e5b740cea4c1a9b579b53907e4b02a41c340610d435234395",
+      "gate": {
+        "verdict": "inconclusive",
+        "reasons": [
+          "train: insufficient evidence: 20 measured samples, require 25",
+          "eval: insufficient evidence: 20 measured samples, require 25"
+        ]
+      },
+      "slices": [
+        {
+          "split": "train",
+          "selection": true,
+          "samples": 20,
+          "authoritativeRate": 1,
+          "candidateRate": 1,
+          "delta": 0,
+          "confidenceInterval": {
+            "lower": -0.200764,
+            "upper": 0.200764
+          },
+          "verdict": "inconclusive",
+          "reason": "insufficient evidence: 20 measured samples, require 25"
+        },
+        {
+          "split": "eval",
+          "selection": true,
+          "samples": 20,
+          "authoritativeRate": 1,
+          "candidateRate": 1,
+          "delta": 0,
+          "confidenceInterval": {
+            "lower": -0.200764,
+            "upper": 0.200764
+          },
+          "verdict": "inconclusive",
+          "reason": "insufficient evidence: 20 measured samples, require 25"
+        },
+        {
+          "split": "holdout",
+          "selection": false,
+          "samples": 2,
+          "authoritativeRate": 1,
+          "candidateRate": 1,
+          "delta": 0,
+          "confidenceInterval": {
+            "lower": -0.715258,
+            "upper": 0.715258
+          }
+        }
+      ]
     }
   ],
   "leaderboard": [
@@ -62,15 +110,22 @@
         "genomeDigest": "sha256:candidate"
       },
       "candidateDigest": "sha256:c7368d79f0b2bd4e5b740cea4c1a9b579b53907e4b02a41c340610d435234395",
+      "verdict": "inconclusive",
+      "samples": 40,
       "passRate": 1,
-      "costUsd": 4,
-      "durationMs": 40,
-      "paretoFrontier": true,
+      "delta": 0,
+      "confidenceInterval": {
+        "lower": -0.111583,
+        "upper": 0.111583
+      },
+      "costUsd": 40,
+      "durationMs": 400,
+      "paretoFrontier": false,
       "heldOut": {
-        "samples": 1,
+        "samples": 2,
         "passRate": 1,
-        "costUsd": 1,
-        "durationMs": 10
+        "costUsd": 2,
+        "durationMs": 20
       }
     }
   ]

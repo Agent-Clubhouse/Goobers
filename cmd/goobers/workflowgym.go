@@ -42,15 +42,29 @@ const workflowGymTournamentHelp = "Usage: goobers workflow-gym tournament <datas
 	"status, costUsd, durationMs, and failureClass. The authoritative manifest must\n" +
 	"cover every task; omitted candidate results are recorded as failures.\n"
 
-const workflowGymEvaluateHelp = "Usage: goobers workflow-gym evaluate [OPTIONS] <dataset> <tournament-report>\n\n" +
+const workflowGymEvaluateHelp = "Usage: goobers workflow-gym evaluate [--min-samples N] [--regression-threshold RATE]\n" +
+	"       <dataset> <tournament-report>\n\n" +
 	"Evaluate paired tournament JSON with per-slice sample floors, 95% confidence\n" +
 	"intervals, a pass-rate regression threshold, and a Pareto leaderboard. Train\n" +
 	"and eval tasks determine the gate and ranking; holdout results are reported but\n" +
-	"never used for selection. The command writes a machine-readable JSON report and\n" +
-	"exits non-zero for fail or inconclusive verdicts.\n\n" +
+	"never used for selection. Missing candidate results never count as measured\n" +
+	"evidence. The command writes a machine-readable JSON report to stdout.\n\n" +
 	"Options:\n" +
 	"  --min-samples N              Required samples in each selection slice (default 10)\n" +
-	"  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)\n"
+	"  --regression-threshold RATE  Tolerated pass-rate regression from 0 to 1 (default 0.05)\n\n" +
+	"Exit codes: 0 = pass, 1 = fail (regression meets the threshold), 2 = usage\n" +
+	"error, 3 = inconclusive (insufficient or missing evidence), 4 = input or\n" +
+	"processing error (unreadable or inconsistent dataset or tournament report).\n"
+
+// Exit codes for goobers workflow-gym evaluate, distinct per gate outcome so
+// automation can tell a regression from missing evidence or a broken input.
+const (
+	workflowGymEvaluateExitPass         = 0
+	workflowGymEvaluateExitFail         = 1
+	workflowGymEvaluateExitUsage        = 2
+	workflowGymEvaluateExitInconclusive = 3
+	workflowGymEvaluateExitInputError   = 4
+)
 
 func workflowGymCLICommand() cliCommand {
 	return groupCommand(
@@ -185,46 +199,52 @@ func runWorkflowGymTournament(args []string, stdout, stderr io.Writer) int {
 }
 
 func runWorkflowGymEvaluate(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("workflow-gym evaluate", flag.ContinueOnError)
+	flags := newCLIFlagSet("workflow-gym evaluate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	minSamples := flags.Int("min-samples", workflowgym.DefaultEvaluationMinSamples, "")
 	regressionThreshold := flags.Float64("regression-threshold", workflowgym.DefaultRegressionThreshold, "")
 	flags.Usage = func() { pf(stderr, "%s", workflowGymEvaluateHelp) }
 	if err := flags.Parse(args); err != nil {
-		return 2
+		return workflowGymEvaluateExitUsage
 	}
 	if flags.NArg() != 2 {
 		flags.Usage()
-		return 2
+		return workflowGymEvaluateExitUsage
 	}
-	registry, err := workflowgym.Load(flags.Arg(0))
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	tournament, err := workflowgym.LoadTournamentReport(flags.Arg(1))
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	report, err := workflowgym.EvaluateTournament(registry, tournament, workflowgym.EvaluationConfig{
+	report, err := evaluateWorkflowGymTournament(flags.Arg(0), flags.Arg(1), workflowgym.EvaluationConfig{
 		MinSamples:          *minSamples,
 		RegressionThreshold: *regressionThreshold,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 1
+		return workflowGymEvaluateExitInputError
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(report); err != nil {
 		pf(stderr, "error: write evaluation report: %v\n", err)
-		return 1
+		return workflowGymEvaluateExitInputError
 	}
-	if report.Gate.Verdict != workflowgym.EvaluationPass {
-		return 1
+	switch report.Gate.Verdict {
+	case workflowgym.EvaluationPass:
+		return workflowGymEvaluateExitPass
+	case workflowgym.EvaluationFail:
+		return workflowGymEvaluateExitFail
+	default:
+		return workflowGymEvaluateExitInconclusive
 	}
-	return 0
+}
+
+func evaluateWorkflowGymTournament(datasetPath, reportPath string, config workflowgym.EvaluationConfig) (workflowgym.EvaluationReport, error) {
+	registry, err := workflowgym.Load(datasetPath)
+	if err != nil {
+		return workflowgym.EvaluationReport{}, err
+	}
+	tournament, err := workflowgym.LoadTournamentReport(reportPath)
+	if err != nil {
+		return workflowgym.EvaluationReport{}, err
+	}
+	return workflowgym.EvaluateTournament(registry, tournament, config)
 }
 
 func loadWorkflowGymCLI(args []string, stderr io.Writer) (workflowgym.Registry, int) {
