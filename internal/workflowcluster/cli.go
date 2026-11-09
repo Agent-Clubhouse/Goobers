@@ -1,6 +1,7 @@
 package workflowcluster
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,10 +19,16 @@ import (
 const CLIHelp = "Usage: goobers workflow clusters [--features structural|behavior] [--cohort <label>] [--fitness] [--since <duration>] [--max-runs <n>] [--min-samples <n>] [--min-cluster-size <n>] [--seed <n>] [--stratify gaggle|cohort|template|model|harness|skills|tools] [--ablation] [--json] [path]\n" +
 	"       goobers workflow clusters --snapshot [--features structural|behavior] [--instance-id <id>] [--salt <s>] [path]\n" +
 	"       goobers workflow clusters --fleet <dir> [--min-cluster-size <n>] [--seed <n>] [--json]\n" +
+	"       goobers workflow clusters --proposals [--gaggle <name>] [--max-runs <n>] --json [path]\n" +
 	"       goobers workflow clusters --templates <evidence.json> --cluster-model <model.json> [--json]\n\n" +
 	"Labs (experimental, advisory). Cluster the instance's workflows with HDBSCAN\n" +
 	"and report each cluster's medoid, members, stability, and distinguishing\n" +
 	"features. Points that fit no dense group are reported as noise.\n\n" +
+	"--proposals emits the same read contract as the Portal's primary child\n" +
+	"workflow pattern map. Retained proposals are clustered independently per\n" +
+	"gaggle and include only identifiers, digests, structural features, pinned\n" +
+	"novelty, outcomes, EffectiveVersions, and parent/child journal lineage.\n" +
+	"Proposal and prompt text are never emitted. --gaggle selects one partition.\n\n" +
 	"--features structural (default) clusters configured workflows by structural\n" +
 	"shape (node kinds, gates, retries, parallelism, graph topology).\n\n" +
 	"--features behavior clusters what runs actually did: it reads terminal run\n" +
@@ -126,6 +133,8 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	fleetDir := fs.String("fleet", "", "cluster the *.json fleet snapshots in this directory")
 	templates := fs.String("templates", "", "propose reusable templates from this joined evidence JSON")
 	clusterModel := fs.String("cluster-model", "", "templates: frozen structural cluster model JSON")
+	proposals := fs.Bool("proposals", false, "emit the retained child proposal insight view")
+	gaggle := fs.String("gaggle", "", "proposals: include only this gaggle")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -157,7 +166,10 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 		asJSON: *asJSON, snapshot: *snapshot, ablation: *ablation, behaviorOnly: behaviorOnly, snapshotOnly: snapshotOnly,
 		fitness: *fitness,
 	}
-	if parsed.invalid() {
+	if *proposals {
+		return runProposalsCLI(fs, *maxRuns, *gaggle, *asJSON, stdout, stderr)
+	}
+	if parsed.invalid() || *gaggle != "" {
 		fs.Usage()
 		return 2
 	}
@@ -168,7 +180,6 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
 	}
-
 	featureVersion := StructuralFeatureVersion
 	var behavior *behaviorReport
 	var workflowDigests map[string]string
@@ -256,6 +267,48 @@ func RunCLI(args []string, fs *flag.FlagSet, stdout, stderr io.Writer) int {
 	return writeCLIReports(stdout, stderr, *asJSON, *stratify, model, cliReports{
 		confounds: confounds, behavior: behavior, ablation: ablations, fitness: fitnessReport, templates: templateReport,
 	})
+}
+
+// runProposalsCLI emits the retained child proposal insight view as JSON,
+// optionally narrowed to one gaggle. It accepts only proposal-mode flags.
+func runProposalsCLI(fs *flag.FlagSet, maxRuns int, gaggle string, asJSON bool, stdout, stderr io.Writer) int {
+	invalid := !asJSON || fs.NArg() > 1
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "proposals", "gaggle", "json", "max-runs":
+		default:
+			invalid = true
+		}
+	})
+	if invalid {
+		fs.Usage()
+		return 2
+	}
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+	view, err := ScanChildProposalInsights(context.Background(), root, maxRuns)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if gaggle != "" {
+		filtered := view.Gaggles[:0]
+		for _, group := range view.Gaggles {
+			if group.Gaggle == gaggle {
+				filtered = append(filtered, group)
+			}
+		}
+		view.Gaggles = filtered
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(view); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	return 0
 }
 
 // cliReports holds the optional reports RunCLI attaches to a fitted model.

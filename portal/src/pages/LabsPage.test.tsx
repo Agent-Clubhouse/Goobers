@@ -332,6 +332,90 @@ describe("LabsPage", () => {
     ]);
   });
 
+  it("maps retained child proposals per gaggle with lineage, outcomes, and novelty", async () => {
+    const user = userEvent.setup();
+    const proposals: LabsWorkflowClusterView = {
+      ...clustered,
+      proposals: {
+        candidates: 3,
+        overLimit: 0,
+        excluded: 0,
+        gaggles: [
+          {
+            gaggle: "core",
+            status: "clustered",
+            population: 2,
+            minClusterSize: 2,
+            model: {
+              ...clustered.model!,
+              population: 2,
+              clusters: [{ ...clustered.model!.clusters[0], medoid: { id: "child-a" }, members: ["child-a", "child-b"] }],
+              noise: [],
+            },
+            map: [
+              { id: "child-a", x: 0, y: 0, cluster: "c0" },
+              { id: "child-b", x: 1, y: 1, cluster: "c0" },
+            ],
+            proposals: [{
+              id: "child-a", gaggle: "core", sourceDigest: "sha256:source", parentRunId: "parent-a",
+              stageOccurrence: "author/0/visit/1", effectiveVersion: "sha256:effective", outcome: "completed",
+              clusterId: "c0", stableClusterMedoid: true,
+            }, {
+              id: "child-b", gaggle: "core", sourceDigest: "sha256:other", parentRunId: "parent-b",
+              stageOccurrence: "author/0/visit/1", effectiveVersion: "sha256:other", outcome: "failed",
+              clusterId: "c0", stableClusterMedoid: false,
+              novelty: { scored: true, modelId: "model", modelVersion: "v1", featureVersion: "f1", distance: 0.9, outOfDistribution: true },
+            }],
+          },
+          {
+            gaggle: "ops", status: "insufficient-data", population: 1, minClusterSize: 2, map: [],
+            proposals: [{
+              id: "child-ops", gaggle: "ops", sourceDigest: "sha256:ops", parentRunId: "parent-ops",
+              stageOccurrence: "author/0/visit/1", effectiveVersion: "sha256:ops", outcome: "completed",
+              stableClusterMedoid: false,
+            }],
+          },
+        ],
+      },
+    };
+    renderLabs(fixtureClient(proposals), "workflow-clustering");
+
+    expect(await screen.findByRole("img", { name: "Scatter map of 2 child proposals in 1 cluster" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "child-a" })[0]).toHaveAttribute("href", "#/run/child-a");
+    expect(screen.getByRole("link", { name: "parent-a" })).toHaveAttribute("href", "#/run/parent-a");
+    expect(screen.getByText("Stable-cluster medoid")).toBeInTheDocument();
+    expect(screen.getByText("Novel / out of distribution")).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Child proposal outcomes by cluster" })).toHaveTextContent("1 (50%)");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Gaggle" }), "ops");
+    expect(screen.getByRole("link", { name: "child-ops" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "child-a" })).not.toBeInTheDocument();
+  });
+
+  it("renders a clustered view whose proposal gaggle fit is all noise with null clusters", async () => {
+    const allNoiseGaggle = {
+      ...clustered,
+      proposals: {
+        candidates: 2, overLimit: 0, excluded: 0,
+        gaggles: [{
+          gaggle: "core", status: "clustered", population: 2, minClusterSize: 2,
+          model: { ...clustered.model!, population: 2, clusters: null, noise: ["child-a", "child-b"] },
+          map: [{ id: "child-a", x: 0, y: 0 }, { id: "child-b", x: 1, y: 1 }],
+          proposals: [{
+            id: "child-a", gaggle: "core", sourceDigest: "sha256:source", parentRunId: "parent-a",
+            stageOccurrence: "author/0/visit/1", effectiveVersion: "sha256:effective", outcome: "failed",
+            stableClusterMedoid: false,
+          }],
+        }],
+      },
+    } as unknown as LabsWorkflowClusterView;
+    renderLabs(fixtureClient(allNoiseGaggle), "workflow-clustering");
+
+    const map = await screen.findByRole("region", { name: "Child workflow pattern map" });
+    expect(map).toHaveTextContent("2 retained proposals · 0 clusters");
+    expect(within(map).getAllByRole("link", { name: "child-a" }).length).toBeGreaterThan(0);
+    expect(within(map).queryByText("Stable-cluster medoid")).not.toBeInTheDocument();
+  });
+
   it("shows advisory fitness and sample sizes on cluster cards", async () => {
     renderLabs(fixtureClient(clustered), "workflow-clustering");
 
