@@ -191,3 +191,19 @@ budget, and the log carries `decisiongate.stall-shadow` (per window) and
 outcomes into flagged-and-hit, flagged-and-completed and missed counts, and
 `Precision` refuses a figure below a minimum sample. Nothing is enforced until
 those counts justify it. Only the local runner is wired; pod stages are not.
+
+## Intake duplicate and dependency check (advisory, shadow)
+
+Set `decisionGate.mode: shadow` and `decisionGate.intakeDetection: true` to
+have `goobers backlog-query --claim` read each non-curation claimed item (at
+most three) against the repository's open issues. Code goes first: a
+`blocked by #N` / `depends on #N` / `requires #N` link to an open issue, or an
+identical normalized title, settles the verdict without a model. Otherwise code
+retrieves up to five open issues (from at most 200) with similar titles, trims
+their bodies, and one pick-one question (`intake_relation` threshold) judges
+`none`, `dup-<id>` or `dep-<id>`. Low confidence and any error are `unsure`.
+
+The result is a `runner.annotation` named `intake-shadow` holding the item id,
+repository key, verdict, related id and basis, never issue text. The claim is
+never changed. `IntakeTally` joins flagged and unflagged items against later
+escalation and reports rates only above a minimum sample.

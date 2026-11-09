@@ -1046,6 +1046,9 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		}
 		return writeNoWorkResult(stdout, stderr, reason)
 	}
+	if !curationRun {
+		recordIntakeShadow(ctx, env, opts.runID, claimed)
+	}
 	if code := writeClaimedBacklogResult(ctx, env, claimed, readOnlyResweep, claimedBacklogResultOptions{
 		maxItems:            maxItems,
 		curationRun:         curationRun,

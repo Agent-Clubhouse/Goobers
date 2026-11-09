@@ -43,6 +43,10 @@ type Settings struct {
 	// transcript windows for repetition and no-progress against later
 	// budget exhaustion. Advisory only; inert unless the mode is shadow.
 	StallDetection bool `json:"stallDetection,omitempty" yaml:"stallDetection,omitempty"`
+	// IntakeDetection opts backlog claims in to shadow duplicate/dependency
+	// checks of claimed items against open issues. Advisory only; inert
+	// unless the mode is shadow.
+	IntakeDetection bool `json:"intakeDetection,omitempty" yaml:"intakeDetection,omitempty"`
 	// Fallback is what a caller does on Uncertain or exhausted retries.
 	Fallback string `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 	// ShadowSample is the fraction (0..1) of eligible handoffs scored in shadow
@@ -265,6 +269,9 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	}
 	if _, ok := cfg.Thresholds[StallThresholdKey]; !ok {
 		cfg.Thresholds[StallThresholdKey] = DefaultStallThreshold
+	}
+	if _, ok := cfg.Thresholds[IntakeThresholdKey]; !ok {
+		cfg.Thresholds[IntakeThresholdKey] = DefaultIntakeThreshold
 	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second
