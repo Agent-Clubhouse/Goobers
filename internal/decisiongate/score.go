@@ -27,7 +27,7 @@ type ScoreOutcome struct {
 func (g *Gate) JudgeScore(ctx context.Context, name string, state any, q decider.Question) (ScoreOutcome, error) {
 	start := g.now()
 	fail := func(digest string, err error) (ScoreOutcome, error) {
-		g.finish(name, digest, Outcome{Name: name, Decision: Uncertain}, err, start)
+		_, _ = g.finish(name, digest, Outcome{Name: name, Decision: Uncertain}, err, start)
 		return ScoreOutcome{Name: name}, err
 	}
 	if q.Type != decider.KindScore {
@@ -38,7 +38,7 @@ func (g *Gate) JudgeScore(ctx context.Context, name string, state any, q decider
 		return fail("", err)
 	}
 	if o, hit := g.lookup(digest); hit {
-		g.finish(name, digest, o, nil, start)
+		_, _ = g.finish(name, digest, o, nil, start)
 		return ScoreOutcome{Name: name, Score: o.Probability, Confidence: o.Confidence, Cached: true, Model: o.Choice}, nil
 	}
 	select {
@@ -62,6 +62,6 @@ func (g *Gate) JudgeScore(ctx context.Context, name string, state any, q decider
 		out.Confidence = *ans.Confidence
 	}
 	g.store(digest, Outcome{Name: name, Decision: Uncertain, Probability: out.Score, Confidence: out.Confidence, Choice: out.Model})
-	g.finish(name, digest, Outcome{Name: name, Decision: Uncertain, Probability: out.Score, Confidence: out.Confidence}, nil, start)
+	_, _ = g.finish(name, digest, Outcome{Name: name, Decision: Uncertain, Probability: out.Score, Confidence: out.Confidence}, nil, start)
 	return out, nil
 }
