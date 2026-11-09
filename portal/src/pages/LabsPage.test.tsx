@@ -498,11 +498,14 @@ describe("LabsPage", () => {
     expect(screen.getByRole("heading", { name: "Use it in your workflows" })).toBeInTheDocument();
     expect(screen.getByText("goobers workflow clusters --stratify gaggle ./instance")).toBeInTheDocument();
     expect(screen.getByText(/--cluster-model clusters\.json proposal\.yaml/)).toBeInTheDocument();
+    expect(screen.getByText("goobers workflow clusters --fitness --since 720h ./instance")).toBeInTheDocument();
+    expect(screen.getByText(/--projection labs\.workflowFeatures \.\/instance/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "What's next" })).toBeInTheDocument();
-    expect(screen.getByText("Which shapes actually work")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: "#8345" })[0]).toHaveAttribute(
+    expect(screen.getByText("Keep self-improvement diverse")).toBeInTheDocument();
+    expect(screen.queryByText("Fleet convergence across cloud instances")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "#8308" })[0]).toHaveAttribute(
       "href",
-      "https://github.com/Agent-Clubhouse/Goobers/issues/8345",
+      "https://github.com/Agent-Clubhouse/Goobers/issues/8308",
     );
   });
   it("falls back to the catalog for an unknown feature", () => {
