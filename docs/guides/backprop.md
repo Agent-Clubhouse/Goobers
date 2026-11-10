@@ -808,7 +808,12 @@ The additive read endpoint is
 `GET /api/v1/runs/{run}/attribution?gaggle={gaggle}`. The required gaggle selects
 only its scoped and legacy run locations; the journal and record identities must
 agree. Ordinary Portal read authorization applies. Stage-pod principals cannot
-use this endpoint. Older readers may return `attribution_unavailable`.
+use this endpoint. Older readers may return `attribution_unavailable`. The
+record restates a run's own words (claim statements, failures), so it follows
+the run-content privacy of [Labs Fluid UI](../labs-fluid-ui.md#privacy): for a
+private run, every viewer other than the requester and admins gets
+`403 run_content_private`, and responses are marked
+`Cache-Control: private, no-store`.
 
 Reads are pure: they neither migrate journals nor rewrite records. The initial
 ceilings are 8 MiB per record/serialized response, 1 MiB each for identity and

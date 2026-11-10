@@ -169,7 +169,8 @@ its own words can reflect the request. Exact-text scrubbing (below) cannot
 catch escaped, truncated, or paraphrased forms, so access is restricted too.
 For a `fluid-ui-customize` run, every user other than you and admins:
 
-- gets `403 run_content_private` for the run's artifacts and transcripts;
+- gets `403 run_content_private` for the run's artifacts, transcripts, and
+  persisted Backprop attribution record;
 - sees run detail, events, and stage attempts with agent progress text,
   agent objectives, gate rationale, instruction addenda, reasons, error
   messages, and terminal-cause messages removed;

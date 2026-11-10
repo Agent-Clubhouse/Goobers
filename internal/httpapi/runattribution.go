@@ -8,7 +8,10 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 )
 
-func registerRunAttributionRoute(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+// registerRunAttributionRoute serves a run's persisted Backprop record, which
+// restates the run's private content (claim statements, failures), under the
+// same requester/admin policy as its artifacts and transcripts.
+func registerRunAttributionRoute(router *Router, reader readservice.Reader, privacy runPrivacy, errorLog *log.Logger) {
 	attribution, available := reader.(readservice.RunAttributionReader)
 	router.Handle(apicontract.RouteRunAttribution, func(w http.ResponseWriter, r *http.Request) {
 		if !available {
@@ -20,9 +23,15 @@ func registerRunAttributionRoute(router *Router, reader readservice.Reader, erro
 			writeReadError(w, errorLog, "read attribution", readservice.ErrInvalidArgument)
 			return
 		}
-		result, err := attribution.RunAttribution(r.Context(), r.PathValue("run"), gaggle)
+		run := r.PathValue("run")
+		result, err := attribution.RunAttribution(r.Context(), run, gaggle)
 		if err != nil {
 			writeReadError(w, errorLog, "read attribution", err)
+			return
+		}
+		privacy.private(w)
+		if !privacy.allowed(r, run, "") {
+			writeRunContentPrivate(w)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
