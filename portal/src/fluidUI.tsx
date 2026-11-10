@@ -174,7 +174,7 @@ function identifierListProblem(field: string, ids: unknown, limit: number): stri
 }
 
 /** Lists page, panel, and phase IDs this Portal does not render; they are ignored. */
-export function unknownFluidUIIdentifiers(customization: FluidUICustomization): string[] {
+function unknownFluidUIIdentifiers(customization: FluidUICustomization): string[] {
   const unknown: string[] = [];
   for (const [page, layout] of Object.entries(customization.pages ?? {})) {
     const panels = isFluidUIPage(page) ? new Set<string>(fluidUIPanels[page].map(({ id }) => id)) : undefined;
@@ -192,7 +192,7 @@ export function unknownFluidUIIdentifiers(customization: FluidUICustomization): 
   return unknown;
 }
 
-export function isFluidUIPage(page: string): page is FluidUIPage {
+function isFluidUIPage(page: string): page is FluidUIPage {
   return Object.hasOwn(fluidUIPanels, page);
 }
 
@@ -259,7 +259,7 @@ export function sortRunsForFluidUI(runs: readonly RunSummary[], sort: FluidUIRun
 }
 
 /** Drops empty fields so previews and saved documents stay minimal. */
-export function normalizeFluidUICustomization(customization: FluidUICustomization): FluidUICustomization {
+function normalizeFluidUICustomization(customization: FluidUICustomization): FluidUICustomization {
   const pages: Record<string, FluidUIPageLayout> = {};
   for (const [page, layout] of Object.entries(customization.pages ?? {})) {
     const next: FluidUIPageLayout = {};
