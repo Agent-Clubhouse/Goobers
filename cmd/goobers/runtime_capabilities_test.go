@@ -83,7 +83,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true, "retryStage": true}
 	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true, "labsFluidUICustomizationPut": true, "labsFluidUICustomizationReset": true, "labsFluidUICustomizationUndo": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		// Child tools run under the exact parent-stage grant. Validation and
 		// status are execution-plane operations, like claims/list, rather than

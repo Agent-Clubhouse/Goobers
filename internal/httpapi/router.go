@@ -441,7 +441,9 @@ func authorizeIssuerBoundRoute(request *http.Request, principal Principal) (hand
 }
 
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
-// view or stronger and every other method for operate or stronger. Requests
+// view or stronger and every other method for operate or stronger. The Labs
+// Fluid UI customization routes are the one exception: their writes change
+// only the caller's own presentation, so view suffices (#8415). Requests
 // without an authenticated principal are denied, so this authorizer must be
 // paired with a real Authenticator — under NullAuthenticator every request
 // stays anonymous and would be refused.
@@ -533,7 +535,7 @@ func RequireRoles() Authorizer {
 			return nil
 		}
 		required := RoleView
-		if request.Method != http.MethodGet && request.Method != http.MethodHead || recoveryPlanePath(request.URL.Path) {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead && !labsFluidUIPath(request.URL.Path) || recoveryPlanePath(request.URL.Path) {
 			required = RoleOperate
 		}
 		if !principal.HasRole(required) {
@@ -701,6 +703,7 @@ type handlerConfig struct {
 	gaggleHealth              GaggleHealthService
 	labsWorkflowClusters      LabsWorkflowClusterService
 	labsWorkflowFeatures      LabsWorkflowFeaturesService
+	labsFluidUI               LabsFluidUIService
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
 	workflowParentExecution   ChildExecutionObserver
@@ -1419,6 +1422,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
 	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
 	registerLabsWorkflowFeaturesRoute(router, config.labsWorkflowFeatures, errorLog)
+	registerLabsFluidUIRoutes(router, config.labsFluidUI, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)

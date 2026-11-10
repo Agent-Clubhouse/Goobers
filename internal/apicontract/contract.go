@@ -93,6 +93,12 @@ const (
 	// LabsWorkflowFeaturesPath serves a privacy-safe fleet feature snapshot to
 	// associations that grant the labs.workflowFeatures projection.
 	LabsWorkflowFeaturesPath = V1Prefix + "/labs/workflow-features"
+	// LabsFluidUICustomizationPath reads and writes the calling user's own
+	// Portal presentation customization (Labs Fluid UI, #8415). The document
+	// is typed presentation data, never code, and never affects runtime.
+	LabsFluidUICustomizationPath = V1Prefix + "/labs/fluid-ui/customization"
+	// LabsFluidUICustomizationUndoPath restores the user's previous revision.
+	LabsFluidUICustomizationUndoPath = LabsFluidUICustomizationPath + "/undo"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -379,6 +385,12 @@ const (
 	RouteTelemetryDefectAggregates RouteID = "telemetryDefectAggregates"
 	RouteLabsWorkflowClusters      RouteID = "labsWorkflowClusters"
 	RouteLabsWorkflowFeatures      RouteID = "labsWorkflowFeatures"
+	// The Fluid UI customization routes share one path across methods, so
+	// each method has its own RouteID (like the blob plane).
+	RouteLabsFluidUIGet   RouteID = "labsFluidUICustomizationGet"
+	RouteLabsFluidUIPut   RouteID = "labsFluidUICustomizationPut"
+	RouteLabsFluidUIReset RouteID = "labsFluidUICustomizationReset"
+	RouteLabsFluidUIUndo  RouteID = "labsFluidUICustomizationUndo"
 
 	RouteEvents RouteID = "events"
 
@@ -647,6 +659,12 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteLabsWorkflowClusters, Method: http.MethodGet, Path: LabsWorkflowClustersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteLabsWorkflowFeatures, Method: http.MethodGet, Path: LabsWorkflowFeaturesPath, ActionClass: ActionReadOnlyNavigation, Capability: "labs.workflowFeatures", Cost: CostAggregate, Budget: BoundedBudget},
+	// Fluid UI writes are maintenance: they change only the caller's own
+	// presentation preferences, never a run, gate, or instance configuration.
+	{ID: RouteLabsFluidUIGet, Method: http.MethodGet, Path: LabsFluidUICustomizationPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteLabsFluidUIPut, Method: http.MethodPut, Path: LabsFluidUICustomizationPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIReset, Method: http.MethodDelete, Path: LabsFluidUICustomizationPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIUndo, Method: http.MethodPost, Path: LabsFluidUICustomizationUndoPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},

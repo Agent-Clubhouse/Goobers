@@ -237,6 +237,10 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("WorkflowEnabledRequest")
 	case RouteGaggleBundleImport:
 		schema = schemaRef("GaggleBundleImportRequest")
+	case RouteLabsFluidUIPut:
+		schema = schemaRef("PortalCustomization")
+	case RouteLabsFluidUIReset, RouteLabsFluidUIUndo:
+		schema = map[string]any{"type": "object", "additionalProperties": false}
 	}
 	return map[string]any{
 		"required": true,
@@ -316,6 +320,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("GaggleBundle")
 	case RouteGaggleBundleImport:
 		successSchema = schemaRef("GaggleBundleImportResult")
+	case RouteLabsFluidUIGet, RouteLabsFluidUIPut, RouteLabsFluidUIReset, RouteLabsFluidUIUndo:
+		successSchema = schemaRef("PortalCustomizationState")
 	}
 	successResponse := jsonResponse("Successful response", successSchema)
 	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {
@@ -402,7 +408,7 @@ func mergeSchemaProperties(left, right map[string]any) map[string]any {
 
 func openAPISchemas(authenticated bool) map[string]any {
 	return mergeSchemaProperties(
-		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
+		mergeSchemaProperties(openAPIDiscoverySchemas(), mergeSchemaProperties(openAPIRemoteReadSchemas(), openAPILabsFluidUISchemas())),
 		mergeSchemaProperties(openAPIOperationSchemas(authenticated), openAPIChildWorkflowSchemas()),
 	)
 }

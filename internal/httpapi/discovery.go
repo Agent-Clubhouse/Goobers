@@ -331,6 +331,9 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo:
+		available = config.labsFluidUI != nil
 	case apicontract.RouteLabsWorkflowFeatures:
 		if config.labsWorkflowFeatures == nil {
 			return false, "labs_unavailable", "Labs workflow features are not configured on this daemon"
@@ -376,7 +379,7 @@ func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool 
 }
 
 func requiredRole(route apicontract.Route) string {
-	if route.Method == http.MethodGet && route.ID != apicontract.RouteRunRecovery {
+	if route.Method == http.MethodGet && route.ID != apicontract.RouteRunRecovery || labsFluidUIPath(route.Path) {
 		return string(RoleView)
 	}
 	return string(RoleOperate)
