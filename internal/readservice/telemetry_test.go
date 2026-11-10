@@ -878,7 +878,7 @@ func seedStoredAttributionRunWithBackprop(t *testing.T, backprop map[string]any)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = run.Close() })
+	defer func() { _ = run.Close() }()
 	now := startedAt.Add(time.Minute)
 	if err := run.Append(journal.Event{
 		Type:  journal.EventStageStarted,

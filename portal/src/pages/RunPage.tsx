@@ -15,6 +15,7 @@ import type {
   WorkflowGraph,
 } from "../api/types";
 import { newestFirst } from "../chronology";
+import { RunAttributionPanel } from "../components/RunAttributionPanel";
 import { ContinuationLineagePanel } from "../components/ContinuationLineagePanel";
 import { ChildHistoryPanel } from "../components/ChildHistoryPanel";
 import { ChildActivityPanel } from "../components/ChildActivityPanel";
@@ -739,6 +740,7 @@ function RunDetailWorkspace({
         </section>
       )}
 
+      {activeTab === "backprop" && <RunAttributionPanel key={runId} client={client} runId={runId} gaggle={run.gaggle} navigate={navigate} />}
       {activeTab === "journal" && (
         <section aria-labelledby="run-tab-journal" id="run-panel-journal" role="tabpanel">
           <div className="run-journal-column">
@@ -777,6 +779,7 @@ const RUN_DETAIL_TABS: Array<{ id: RunDetailTab; label: string }> = [
   { id: "artifacts", label: "Artifacts" },
   { id: "diagnostics", label: "Diagnostics" },
   { id: "journal", label: "Journal" },
+  { id: "backprop", label: "Backprop" },
 ];
 
 function RunDetailTabs({

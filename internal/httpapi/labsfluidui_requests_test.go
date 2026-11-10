@@ -1,13 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/fluidui"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
@@ -161,10 +164,34 @@ func TestLabsFluidUIRequestsArePrivateAndAuthorized(t *testing.T) {
 
 const fluidUIPrivatePrompt = "make the \"Runs\" panel <compact> & dense\nthen hide the activity feed"
 
+// privateRunReader adds the persisted Backprop record route to fakeReader,
+// whose plain form deliberately lacks it, and can fail the run lookup the
+// privacy check depends on.
+type privateRunReader struct {
+	*fakeReader
+	record    *creditgraph.RunRecord
+	getRunErr error
+}
+
+func (r *privateRunReader) GetRun(ctx context.Context, runID string) (readservice.RunDetail, error) {
+	if r.getRunErr != nil {
+		return readservice.RunDetail{}, r.getRunErr
+	}
+	return r.fakeReader.GetRun(ctx, runID)
+}
+
+func (r *privateRunReader) RunAttribution(_ context.Context, runID, gaggle string) (readservice.RunAttributionResult, error) {
+	out := readservice.RunAttributionResult{RunID: runID, Gaggle: gaggle, Availability: "absent", Record: r.record, Evidence: []readservice.AttributionEvidenceCheck{}}
+	if r.record != nil {
+		out.Availability = "available"
+	}
+	return out, nil
+}
+
 // fluidUIPrivateRunReader serves one Fluid UI run whose transcript, artifact,
-// and agent progress all restate fluidUIPrivatePrompt, including the
-// doubly-escaped form a JSONL transcript embeds tool output in.
-func fluidUIPrivateRunReader(t *testing.T, runID string) *fakeReader {
+// agent progress, and Backprop claim log all restate fluidUIPrivatePrompt,
+// including the doubly-escaped form a JSONL transcript embeds tool output in.
+func fluidUIPrivateRunReader(t *testing.T, runID string) *privateRunReader {
 	t.Helper()
 	encoded, err := json.Marshal(fluidUIPrivatePrompt)
 	if err != nil {
@@ -191,7 +218,12 @@ func fluidUIPrivateRunReader(t *testing.T, runID string) *fakeReader {
 			Blockers:          []readservice.OperatorBlocker{{Code: "agent_failed", Source: "error", Message: "agent_failed: " + fluidUIPrivatePrompt}},
 		},
 	}
-	return &fakeReader{
+	claim := creditgraph.ClaimRecord{ID: "claim-1", Seq: 2, Writer: creditgraph.ClaimWriter{Stage: "propose", Attempt: 1}, Claim: creditgraph.Claim{Statement: "Implemented: " + fluidUIPrivatePrompt}}
+	record := &creditgraph.RunRecord{
+		Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordComplete, RunID: runID, Gaggle: "goobers", Workflow: fluidui.Workflow,
+		Attribution: creditgraph.Attribution{RunID: runID, Claims: []creditgraph.ClaimRecord{claim}},
+	}
+	return &privateRunReader{record: record, fakeReader: &fakeReader{
 		runs: readservice.RunList{Runs: []readservice.RunSummary{summary}},
 		errors: readservice.TelemetryErrorsPage{Items: []readservice.TelemetryError{
 			{RunID: runID, Workflow: fluidui.Workflow, Stage: "propose", Attempt: 1, Code: "agent_failed", Message: fluidUIPrivatePrompt},
@@ -213,19 +245,20 @@ func fluidUIPrivateRunReader(t *testing.T, runID string) *fakeReader {
 			Bytes:    []byte(`{"request":{"text":` + string(encoded) + `}}`),
 		},
 		transcript: readservice.TranscriptContent{Seq: 1, Stage: "propose", Name: "transcript", Bytes: []byte(transcript)},
-	}
+	}}
 }
 
 func fluidUIRunPaths(runID string) map[string]string {
 	run := strings.ReplaceAll(apicontract.RunDetailPath, "{run}", runID)
 	return map[string]string{
-		"runs":       apicontract.RunsPath,
-		"errors":     apicontract.TelemetryErrorsPath,
-		"detail":     run,
-		"events":     strings.ReplaceAll(apicontract.RunEventsPath, "{run}", runID),
-		"attempts":   strings.ReplaceAll(strings.ReplaceAll(apicontract.StageAttemptsPath, "{run}", runID), "{stage}", "propose"),
-		"artifact":   strings.ReplaceAll(strings.ReplaceAll(apicontract.RunArtifactPath, "{run}", runID), "{digest}", "sha256:prompt"),
-		"transcript": strings.ReplaceAll(strings.ReplaceAll(apicontract.RunTranscriptPath, "{run}", runID), "{seq}", "1"),
+		"runs":        apicontract.RunsPath,
+		"errors":      apicontract.TelemetryErrorsPath,
+		"detail":      run,
+		"events":      strings.ReplaceAll(apicontract.RunEventsPath, "{run}", runID),
+		"attempts":    strings.ReplaceAll(strings.ReplaceAll(apicontract.StageAttemptsPath, "{run}", runID), "{stage}", "propose"),
+		"artifact":    strings.ReplaceAll(strings.ReplaceAll(apicontract.RunArtifactPath, "{run}", runID), "{digest}", "sha256:prompt"),
+		"transcript":  strings.ReplaceAll(strings.ReplaceAll(apicontract.RunTranscriptPath, "{run}", runID), "{seq}", "1"),
+		"attribution": strings.ReplaceAll(apicontract.RunAttributionPath, "{run}", runID) + "?gaggle=goobers",
 	}
 }
 
@@ -249,7 +282,7 @@ func assertFluidUIRunContent(t *testing.T, handler http.Handler, runID, who stri
 			continue
 		}
 		wantCode := http.StatusOK
-		if name == "artifact" || name == "transcript" {
+		if name == "artifact" || name == "transcript" || name == "attribution" {
 			wantCode = http.StatusForbidden
 		}
 		if response.Code != wantCode {
@@ -263,7 +296,7 @@ func assertFluidUIRunContent(t *testing.T, handler http.Handler, runID, who stri
 	}
 }
 
-func newFluidUIPrivateRunHandler(t *testing.T, f *fluidUIRequestFixture, reader *fakeReader, auth *fakeAuthenticator) http.Handler {
+func newFluidUIPrivateRunHandler(t *testing.T, f *fluidUIRequestFixture, reader readservice.Reader, auth *fakeAuthenticator) http.Handler {
 	t.Helper()
 	handler, err := NewHandler(reader, RequireRoles(), discardLogger(),
 		WithAuthenticator(auth), WithLabsFluidUI(f.store), WithLabsFluidUIRequests(f.requests), WithTriggerService(f.triggers))
@@ -307,6 +340,32 @@ func TestLabsFluidUIRunWithoutBindingIsPrivateToAdmins(t *testing.T) {
 	assertFluidUIRunContent(t, handler, unbound, "non-admin", false)
 	auth.principal = &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleAdmin}}
 	assertFluidUIRunContent(t, handler, unbound, "admin", true)
+}
+
+// TestLabsFluidUIRunAttributionFailsClosed pins that the Backprop record route
+// withholds an unbound run from non-admins even when it has no record, and
+// when the run's workflow cannot be read to decide.
+func TestLabsFluidUIRunAttributionFailsClosed(t *testing.T) {
+	const unbound = "fedcba9876543210fedcba9876543210"
+	path := fluidUIRunPaths(unbound)["attribution"]
+	for name, mutate := range map[string]func(*privateRunReader){
+		"no record": func(r *privateRunReader) { r.record = nil },
+		"workflow lookup failed": func(r *privateRunReader) {
+			r.run.Workflow = "implement"
+			r.getRunErr = errors.New("journal unreadable")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reader := fluidUIPrivateRunReader(t, unbound)
+			mutate(reader)
+			auth := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleView}}}
+			response := httptest.NewRecorder()
+			newFluidUIPrivateRunHandler(t, newFluidUIRequestFixture(t), reader, auth).ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusForbidden || response.Header().Get("Cache-Control") != "private, no-store" || strings.Contains(response.Body.String(), "compact") {
+				t.Fatalf("attribution = %d %q %s, want private 403", response.Code, response.Header().Get("Cache-Control"), response.Body)
+			}
+		})
+	}
 }
 
 func TestRunContentOfOtherWorkflowsStaysReadable(t *testing.T) {

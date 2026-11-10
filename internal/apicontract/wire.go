@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gaggletemplate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
@@ -41,6 +42,7 @@ type wireFixtures struct {
 	Workflows                readservice.WorkflowPage                   `json:"workflows"`
 	WorkflowDetail           readservice.WorkflowDetail                 `json:"workflowDetail"`
 	Runs                     readservice.RunList                        `json:"runs"`
+	RunAttribution           readservice.RunAttributionResult           `json:"runAttribution"`
 	RunDetail                readservice.RunDetail                      `json:"runDetail"`
 	RunChildren              readservice.ChildHistoryPage               `json:"runChildren"`
 	RunEvents                readservice.EventList                      `json:"runEvents"`
@@ -88,6 +90,7 @@ var wireFixtureTypes = []struct {
 	{name: "workflows", scriptType: "WorkflowPage"},
 	{name: "workflowDetail", scriptType: "WorkflowDetail"},
 	{name: "runs", scriptType: "RunList"},
+	{name: "runAttribution", scriptType: "RunAttributionResult"},
 	{name: "runDetail", scriptType: "RunDetail"},
 	{name: "runChildren", scriptType: "ChildHistoryPage"},
 	{name: "runEvents", scriptType: "EventList"},
@@ -593,73 +596,10 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-run",
 		},
-		RunDetail:   wireRunDetail(runSummary, graph, timestamp),
-		RunChildren: readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}, {ChildID: "child-held", RunID: "child-held-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect-novel", State: "queued", AcceptedAt: timestamp, UpdatedAt: timestamp, Admission: &readservice.ChildAdmissionHistory{State: "pending", Reason: "out-of-distribution", RequestedAt: timestamp, Novelty: &journal.ChildNovelty{Scored: true, ModelID: "model-1", ModelVersion: "workflowcluster.model/v1", FeatureVersion: "workflowcluster.features/v1", Nearest: "c2", NearestMedoid: "medoid-2", NearestSize: 41, NearestStable: true, Distance: 0.42, OutOfDistribution: true, HistoricalOutcome: &journal.ChildHistoricalOutcome{RunCount: 41, SuccessRate: 0.94}, HumanApprovalRequired: true}}}}},
-		RunEvents: readservice.EventList{
-			RunID: "run-123",
-			Events: []readservice.RunEvent{{
-				Schema:        "goobers.dev/run-event/v1",
-				Seq:           9,
-				Type:          journal.EventStageFinished,
-				Branch:        0,
-				Time:          finishedAt,
-				KnownSchema:   true,
-				Category:      readservice.RunEventTransition,
-				ReplayChapter: true,
-				Stage:         "implement",
-				Attempt:       2,
-				AttemptClass:  string(journal.AttemptPolicy),
-				Gate:          "review",
-				Verdict:       "needs-changes",
-				Target:        "implement",
-				Escalated:     true,
-				Status:        string(apiv1.ResultSuccess),
-				Outputs:       map[string]any{"approved": true, "score": 0.98},
-				Artifacts:     []readservice.ArtifactMetadata{artifact},
-				Artifact:      &artifact,
-				Name:          "result",
-				ExternalRef: &journal.ExternalRef{
-					Provider: "github",
-					Kind:     "issue",
-					ID:       "673",
-					URL:      "https://github.com/Agent-Clubhouse/Goobers/issues/673",
-				},
-				Error: &journal.ErrorDetail{
-					Code:    "review_failed",
-					Message: "review requested changes",
-					Causes: []journal.ErrorCause{
-						{Message: "review gate failed"},
-						{Code: "review_rejected", Message: "review requested changes"},
-					},
-				},
-				Redaction: &journal.RedactionInfo{
-					Target:    "artifacts/result.json",
-					OldDigest: "sha256:old",
-					NewDigest: "sha256:new",
-					Reason:    "secret remediation",
-				},
-				Runner:       map[string]any{"worker": "local"},
-				Workflow:     "implementation",
-				RunID:        "run-123",
-				Reason:       "fixture",
-				Parallel:     "fanout",
-				BranchName:   "security-lens",
-				BranchStatus: journal.BranchSucceeded,
-				Completeness: []journal.BranchOutcome{
-					{Branch: 1, Name: "security-lens", Status: journal.BranchSucceeded, Artifacts: 1, Reason: "touches internal/auth"},
-					{Branch: 2, Name: "perf-lens", Status: journal.BranchFailed, Artifacts: 0},
-					{Branch: 3, Name: "unit-a", Status: journal.BranchSucceeded, Artifacts: 1, MapItemIdentity: "unit-a", MapItemDigest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"},
-				},
-				MapItemIdentity: "unit-a",
-				MapItemDigest:   "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102",
-				MapRoster: &readservice.MapRosterSummary{
-					SourceTask: "plan", SourceSlot: "shards", SourceDigest: "sha256:roster", Integrity: apiv1.IntegrityDerived,
-					FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 1800, MaxConcurrent: 4,
-					Items: []readservice.MapItemSummary{{Branch: 1, Identity: "unit-a", Digest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"}},
-				},
-				Raw: json.RawMessage(`{"futureField":"preserved"}`),
-			}},
-		},
+		RunAttribution: runAttributionFixture(timestamp),
+		RunDetail:      wireRunDetail(runSummary, graph, timestamp),
+		RunChildren:    readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}, {ChildID: "child-held", RunID: "child-held-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect-novel", State: "queued", AcceptedAt: timestamp, UpdatedAt: timestamp, Admission: &readservice.ChildAdmissionHistory{State: "pending", Reason: "out-of-distribution", RequestedAt: timestamp, Novelty: &journal.ChildNovelty{Scored: true, ModelID: "model-1", ModelVersion: "workflowcluster.model/v1", FeatureVersion: "workflowcluster.features/v1", Nearest: "c2", NearestMedoid: "medoid-2", NearestSize: 41, NearestStable: true, Distance: 0.42, OutOfDistribution: true, HistoricalOutcome: &journal.ChildHistoricalOutcome{RunCount: 41, SuccessRate: 0.94}, HumanApprovalRequired: true}}}}},
+		RunEvents:      wireRunEvents(finishedAt, artifact),
 		StageAttempts: readservice.AttemptList{
 			RunID: "run-123",
 			Stage: "implement",
@@ -1047,6 +987,74 @@ func newWireFixtures() wireFixtures {
 		},
 	})
 }
+func wireRunEvents(finishedAt time.Time, artifact readservice.ArtifactMetadata) readservice.EventList {
+	return readservice.EventList{
+		RunID: "run-123",
+		Events: []readservice.RunEvent{{
+			Schema:        "goobers.dev/run-event/v1",
+			Seq:           9,
+			Type:          journal.EventStageFinished,
+			Branch:        0,
+			Time:          finishedAt,
+			KnownSchema:   true,
+			Category:      readservice.RunEventTransition,
+			ReplayChapter: true,
+			Stage:         "implement",
+			Attempt:       2,
+			AttemptClass:  string(journal.AttemptPolicy),
+			Gate:          "review",
+			Verdict:       "needs-changes",
+			Target:        "implement",
+			Escalated:     true,
+			Status:        string(apiv1.ResultSuccess),
+			Outputs:       map[string]any{"approved": true, "score": 0.98},
+			Artifacts:     []readservice.ArtifactMetadata{artifact},
+			Artifact:      &artifact,
+			Name:          "result",
+			ExternalRef: &journal.ExternalRef{
+				Provider: "github",
+				Kind:     "issue",
+				ID:       "673",
+				URL:      "https://github.com/Agent-Clubhouse/Goobers/issues/673",
+			},
+			Error: &journal.ErrorDetail{
+				Code:    "review_failed",
+				Message: "review requested changes",
+				Causes: []journal.ErrorCause{
+					{Message: "review gate failed"},
+					{Code: "review_rejected", Message: "review requested changes"},
+				},
+			},
+			Redaction: &journal.RedactionInfo{
+				Target:    "artifacts/result.json",
+				OldDigest: "sha256:old",
+				NewDigest: "sha256:new",
+				Reason:    "secret remediation",
+			},
+			Runner:       map[string]any{"worker": "local"},
+			Workflow:     "implementation",
+			RunID:        "run-123",
+			Reason:       "fixture",
+			Parallel:     "fanout",
+			BranchName:   "security-lens",
+			BranchStatus: journal.BranchSucceeded,
+			Completeness: []journal.BranchOutcome{
+				{Branch: 1, Name: "security-lens", Status: journal.BranchSucceeded, Artifacts: 1, Reason: "touches internal/auth"},
+				{Branch: 2, Name: "perf-lens", Status: journal.BranchFailed, Artifacts: 0},
+				{Branch: 3, Name: "unit-a", Status: journal.BranchSucceeded, Artifacts: 1, MapItemIdentity: "unit-a", MapItemDigest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"},
+			},
+			MapItemIdentity: "unit-a",
+			MapItemDigest:   "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102",
+			MapRoster: &readservice.MapRosterSummary{
+				SourceTask: "plan", SourceSlot: "shards", SourceDigest: "sha256:roster", Integrity: apiv1.IntegrityDerived,
+				FailurePolicy: apiv1.BranchContinueOnError, ItemTimeoutSeconds: 1800, MaxConcurrent: 4,
+				Items: []readservice.MapItemSummary{{Branch: 1, Identity: "unit-a", Digest: "sha256:4f0b0c8a1a3a7f0e2b3d5c6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809102"}},
+			},
+			Raw: json.RawMessage(`{"futureField":"preserved"}`),
+		}},
+	}
+}
+
 func int64Pointer(value int64) *int64 {
 	return &value
 }
@@ -1166,4 +1174,12 @@ func wireRunDetail(runSummary readservice.RunSummary, graph workflow.Graph, time
 		},
 		TransitionsStatus: "projected",
 	}
+}
+
+func runAttributionFixture(at time.Time) readservice.RunAttributionResult {
+	return readservice.RunAttributionResult{Schema: "goobers.dev/backprop/read/v1", RunID: "run-123", Gaggle: "core", ObservedAt: at, Availability: "recorded", RunPhase: journal.PhaseFailed, SourceDigest: "sha256:record", LabelRevision: "sha256:labels", InputBytes: 1024,
+		Record: &creditgraph.RunRecord{Schema: creditgraph.RecordSchemaVersion, Status: creditgraph.RecordComplete, ContractVersion: creditgraph.AttributionSchemaVersion, Mode: apiv1.BackpropModeActive, RunID: "run-123", Gaggle: "core", Workflow: "implementation", WorkflowVersion: 1, WorkflowDigest: "sha256:workflow", EffectiveVersion: "sha256:effective", Workload: "manual", StageComposition: &creditgraph.StageComposition{Checkpoints: 1, ThroughSequence: 8, Error: "tail analyzed"},
+			Attribution: creditgraph.Attribution{Schema: creditgraph.AttributionSchemaVersion, RunID: "run-123", RootID: "run", Outcome: "failed", OutcomeSign: -1, Contributions: []creditgraph.Contribution{{NodeID: "stage", Kind: creditgraph.KindStage, Label: "Implement", Stage: "implement", Attempt: 1, Path: []string{"run", "stage"}, Share: 0.6, Score: -0.6, Confidence: 0.8, Uncertainty: 0.2, Provenance: creditgraph.ProvenanceRecorded}}, Causes: []creditgraph.CauseFinding{{Class: creditgraph.ClassBadToolResult, NodeID: "stage", Stage: "implement", ErrorCode: "tool_failed", Confidence: 0.8, Summary: "tool failed", Assumptions: []string{"recorded"}, Evidence: []string{"sequence 9"}}}, Assumptions: []string{"correlational estimate"}, DroppedClaims: 1},
+			Evidence:    []creditgraph.AttributionEvidenceLink{{RunID: "run-123", NodeID: "stage", Stage: "implement", Source: "contribution", Detail: "recorded", JournalSequence: 9, JournalPath: "events.jsonl"}}},
+		GroundTruth: &creditgraph.GroundTruthLabel{ID: "label-1", RunID: "run-123", Outcome: creditgraph.LabelIncorrect, Source: creditgraph.LabelSourceHuman, LabeledBy: "operator", Reason: "incorrect output", LabeledAt: at, RecordedAt: at}, Evidence: []readservice.AttributionEvidenceCheck{{Index: 0, Kind: "journal", Status: "verified"}}}
 }

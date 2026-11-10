@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { activeArea, parseRoute, routeHash } from "./routing";
 
 describe("definition routing", () => {
+  it("round-trips the Backprop run view", () => {
+    const route = { page: "run" as const, id: "run-123", tab: "backprop" as const };
+    expect(parseRoute(routeHash(route))).toMatchObject(route);
+  });
+
   it("round-trips a scoped Backprop Insights deep link", () => {
     const route = {
       page: "insight" as const,
