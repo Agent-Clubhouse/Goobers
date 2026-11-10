@@ -2,7 +2,7 @@ import { PageHeading, SectionHeading } from "../ui/Heading";
 import { formatTimestamp, formatPreciseTimestamp } from "../dateTime";
 import { Action } from "../ui/Action";
 import { Timestamp } from "../ui/Timestamp";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
 import { RunWorkTitle } from "../components/RunWorkTitle";
 import type {
@@ -36,6 +36,12 @@ import { StatusBadge } from "../ui/StatusBadge";
 import type { FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
 import { reliabilitySummary } from "../reliability";
+import {
+  arrangeFluidUIPanels,
+  fluidUIPanels,
+  fluidUIReordersPanels,
+  useFluidUICustomization,
+} from "../fluidUI";
 
 const attentionSelectionStorageKey = "goobers-overview-attention-selection";
 const emptyFailureReasons: FailureReasons = new Map();
@@ -126,6 +132,9 @@ function Overview({
       : 0;
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
+  // Fluid UI (#8416): the caller's layout hides or orders the panels below.
+  const layout = useFluidUICustomization()?.pages?.overview;
+  const hiddenPanels = fluidUIPanels.overview.filter(({ id }) => layout?.hidden?.includes(id));
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
   const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(readAttentionSelection);
   const [expandedAttentionGroups, setExpandedAttentionGroups] = useState<ReadonlySet<string>>(
@@ -222,7 +231,10 @@ function Overview({
   };
 
   return (
-    <div className="overview-page">
+    <div
+      className="overview-page"
+      data-panel-order={fluidUIReordersPanels("overview", layout) ? "custom" : undefined}
+    >
       <PageHeading
         title={
           <>
@@ -345,312 +357,341 @@ function Overview({
             Inspect the Runs page for the full list.
           </p>
         )}
-      </div>
-
-      <InstanceSummaryPanel
-        configurationWarningCount={activeConfigurationWarningCount}
-        overview={overview}
-        retry={retry}
-        standalone={standalone}
-      />
-
-      {groups.attention.length > 0 && (
-        <section className="content-section attention-section">
-          <SectionHeading
-            title="Needs attention"
-            className=""
-            actions={
-              <>
-                <div className="attention-actions">
-                  {activeAttention.length > 0 && (
-                    <label className="attention-select-all">
-                      <SelectionCheckbox
-                        ariaLabel="Select all visible attention runs"
-                        checked={allVisibleSelected}
-                        indeterminate={
-                          visibleSelectedRunIds.length > 0 &&
-                          visibleSelectedRunIds.length < activeAttention.length
-                        }
-                        onChange={toggleAllVisible}
-                      />
-                      Select all
-                    </label>
-                  )}
-                  {visibleSelectedRunIds.length > 0 && (
-                    <Action
-                      variant="text"
-                      className="text-button"
-                      onClick={() => dismissRuns(visibleSelectedRunIds)}
-                      type="button"
-                    >
-                      Dismiss {visibleSelectedRunIds.length} selected
-                    </Action>
-                  )}
-                  {dismissedAttention.length > 0 && (
-                    <Action
-                      variant="text"
-                      className="text-button"
-                      onClick={() => setShowDismissed((current) => !current)}
-                      type="button"
-                    >
-                      {showDismissed
-                        ? "Hide dismissed"
-                        : `Show dismissed (${dismissedAttention.length})`}
-                    </Action>
-                  )}
-                  <span className="section-count">
-                    {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
-                  </span>
-                  <button
-                    aria-controls="attention-section-body"
-                    aria-expanded={!attentionCollapsed}
-                    className="attention-collapse-toggle"
-                    onClick={() => setAttentionCollapsed(!attentionCollapsed)}
-                    type="button"
-                  >
-                    <span className="sr-only">
-                      {attentionCollapsed ? "Expand needs attention" : "Collapse needs attention"}
-                    </span>
-                    <span aria-hidden="true" className="attention-collapse-chevron">
-                      <Icon name="chevron" size={14} />
-                    </span>
-                  </button>
-                </div>
-              </>
-            }
-          />
-          <div hidden={attentionCollapsed} id="attention-section-body">
-            {activeAttention.length === 0 ? (
-              <p className="inline-empty">Nothing needs attention right now.</p>
-            ) : (
-              <div className="attention-list">
-                {attentionSections.map((section) => (
-                  <div
-                    className={`attention-severity-section attention-severity-section-${section.key}`}
-                    key={section.key}
-                  >
-                    <div className="attention-severity-heading">
-                      <strong>{section.label}</strong>
-                      <span>
-                        {section.runCount} {section.runCount === 1 ? "run" : "runs"}
-                      </span>
-                    </div>
-                    {section.groups.map((group) => {
-                      const selectedCount = group.runs.filter((run) =>
-                        selectedRunIds.has(run.id),
-                      ).length;
-                      const expanded = expandedAttentionGroups.has(group.key);
-                      return (
-                        <div
-                          className={`attention-group attention-group-${group.severity}`}
-                          key={group.key}
-                        >
-                          <div className="attention-row attention-group-summary">
-                            <SelectionCheckbox
-                              ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
-                              checked={selectedCount === group.runs.length}
-                              indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
-                              onChange={() => {
-                                const shouldSelect = selectedCount !== group.runs.length;
-                                setSelectedRunIds((current) => {
-                                  const next = new Set(current);
-                                  for (const run of group.runs) {
-                                    if (shouldSelect) {
-                                      next.add(run.id);
-                                    } else {
-                                      next.delete(run.id);
-                                    }
-                                  }
-                                  return next;
-                                });
-                              }}
-                            />
-                            <span className="attention-icon">
-                              <Icon name="alert" />
-                            </span>
-                            <span className="attention-copy">
-                              <strong title={group.label}>{group.label}</strong>
-                              <span
-                                className={`attention-severity-badge attention-severity-${group.severity}`}
-                              >
-                                {attentionSeverityLabel(group.severity)}
-                              </span>
-                              <span title={group.diagnosis}>
-                                {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
-                                {group.diagnosis}
-                              </span>
-                            </span>
-                            <span className="attention-meta">
-                              <span title={group.context}>{group.context}</span>
-                              <Timestamp value={group.latest.lastActivityAt} prefix="Latest " />
-                            </span>
-                            <button
-                              aria-controls={`attention-group-${group.domId}`}
-                              aria-expanded={expanded}
-                              className="attention-expand"
-                              onClick={() => toggleGroupExpanded(group.key)}
-                              type="button"
-                            >
-                              {expanded ? "Hide runs" : "Show runs"}
-                            </button>
-                            <button
-                              aria-label={`Dismiss all runs in ${group.label}`}
-                              className="attention-dismiss"
-                              onClick={() => dismissRuns(group.runs.map((run) => run.id))}
-                              type="button"
-                            >
-                              Dismiss group
-                            </button>
-                          </div>
-                          <div
-                            className="attention-group-runs"
-                            hidden={!expanded}
-                            id={`attention-group-${group.domId}`}
-                          >
-                            {group.runs.map((run) => {
-                              const severity = attentionSeverity(
-                                run,
-                                overviewRuns,
-                                failureReasons.get(run.id),
-                              );
-                              return (
-                                <div className="attention-run-row" key={run.id}>
-                                  <input
-                                    aria-label={`Select run ${run.id} for bulk actions`}
-                                    checked={selectedRunIds.has(run.id)}
-                                    className="attention-select"
-                                    onChange={() => toggleSelected(run.id)}
-                                    type="checkbox"
-                                  />
-                                  <a
-                                    className="attention-run-link"
-                                    href={routeHash({ page: "run", id: run.id })}
-                                    title={run.id}
-                                  >
-                                    <strong>{run.id}</strong>
-                                    <span
-                                      className={`attention-severity-badge attention-severity-${severity}`}
-                                    >
-                                      {attentionSeverityLabel(severity)}
-                                    </span>
-                                    <span>
-                                      {attentionDiagnosis(run, failureReasons, severity)}
-                                    </span>
-                                  </a>
-                                  <ScopePivot
-                                    label={workflowIdentity(run)}
-                                    scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                                  />
-                                  <Timestamp value={run.lastActivityAt} />
-                                  <button
-                                    aria-label={`Dismiss run ${run.id}`}
-                                    className="attention-dismiss"
-                                    onClick={() => dismissRuns([run.id])}
-                                    type="button"
-                                  >
-                                    Dismiss
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            )}
-            {showDismissed && dismissedAttention.length > 0 && (
-              <div className="attention-dismissed-list">
-                <div className="section-heading">
-                  <p className="section-kicker">Dismissed</p>
-                  <Action
-                    variant="text"
-                    className="text-button"
-                    onClick={() => restore(dismissedAttention.map((run) => run.id))}
-                    type="button"
-                  >
-                    Restore all
-                  </Action>
-                </div>
-                {dismissedAttention.map((run) => (
-                  <div className="attention-row attention-row-dismissed" key={run.id}>
-                    <span className="attention-copy">
-                      <strong>{runLabel(run)}</strong>
-                      <span>{workflowIdentity(run)}</span>
-                    </span>
-                    <Action
-                      variant="text"
-                      aria-label={`Undo dismiss for run ${run.id}`}
-                      className="text-button"
-                      onClick={() => restore([run.id])}
-                      type="button"
-                    >
-                      Undo
-                    </Action>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      <div className="overview-activity">
-        {!inventoryLoaded ? null : emptyInstance ? (
-          <section className="empty-state">
-            <img alt="" src="/goober-mascot.png" />
-            <div>
-              <h2>No gaggles configured</h2>
-              <p>
-                No configuration is available to the Portal yet. New to Goobers? The guided
-                walkthrough builds a working instance step by step.
-              </p>
-              <RecoveryCommand command="goobers init --guided" />
-            </div>
-          </section>
-        ) : emptyWorkflows ? (
-          <section className="empty-state">
-            <img alt="" src="/goober-mascot.png" />
-            <div>
-              <h2>No workflows configured</h2>
-              <p>
-                Add a workflow definition, then validate the instance before reloading the Portal.
-              </p>
-              <RecoveryCommand command="goobers validate <instance>" />
-            </div>
-          </section>
-        ) : emptyRuns ? (
-          <section className="empty-state">
-            <img alt="" src="/goober-mascot.png" />
-            <div>
-              <h2>No runs recorded</h2>
-              <p>Start a configured workflow to create the first run journal.</p>
-              <RecoveryCommand command="goobers run <workflow> <instance>" />
-            </div>
-          </section>
-        ) : (
-          <>
-            <RunSection
-              ariaLabel="Active runs"
-              overview={overview}
-              runs={groups.active}
-              title="Active runs"
-            />
-            <RunSection
-              ariaLabel="Recent outcomes"
-              overview={overview}
-              runs={groups.recent}
-              title="Recent outcomes"
-            />
-          </>
+        {hiddenPanels.length > 0 && (
+          <p className="fluid-ui-hidden-panels">
+            Hidden by your Fluid UI customization:{" "}
+            {hiddenPanels.map(({ label }) => label).join(", ")}.{" "}
+            <a href={routeHash({ page: "labs", feature: "fluid-ui" })}>Change</a>
+          </p>
         )}
       </div>
 
-      <div className="overview-configuration">
-        <ConfigurationWarnings context="instance" {...configurationWarnings} />
-      </div>
+      {arrangeFluidUIPanels(
+        [
+          {
+            id: "summary",
+            node: (
+              <InstanceSummaryPanel
+                configurationWarningCount={activeConfigurationWarningCount}
+                overview={overview}
+                retry={retry}
+                standalone={standalone}
+              />
+            ),
+          },
+          {
+            id: "attention",
+            node: groups.attention.length > 0 && (
+              <section className="content-section attention-section">
+                <SectionHeading
+                  title="Needs attention"
+                  className=""
+                  actions={
+                    <>
+                      <div className="attention-actions">
+                        {activeAttention.length > 0 && (
+                          <label className="attention-select-all">
+                            <SelectionCheckbox
+                              ariaLabel="Select all visible attention runs"
+                              checked={allVisibleSelected}
+                              indeterminate={
+                                visibleSelectedRunIds.length > 0 &&
+                                visibleSelectedRunIds.length < activeAttention.length
+                              }
+                              onChange={toggleAllVisible}
+                            />
+                            Select all
+                          </label>
+                        )}
+                        {visibleSelectedRunIds.length > 0 && (
+                          <Action
+                            variant="text"
+                            className="text-button"
+                            onClick={() => dismissRuns(visibleSelectedRunIds)}
+                            type="button"
+                          >
+                            Dismiss {visibleSelectedRunIds.length} selected
+                          </Action>
+                        )}
+                        {dismissedAttention.length > 0 && (
+                          <Action
+                            variant="text"
+                            className="text-button"
+                            onClick={() => setShowDismissed((current) => !current)}
+                            type="button"
+                          >
+                            {showDismissed
+                              ? "Hide dismissed"
+                              : `Show dismissed (${dismissedAttention.length})`}
+                          </Action>
+                        )}
+                        <span className="section-count">
+                          {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
+                        </span>
+                        <button
+                          aria-controls="attention-section-body"
+                          aria-expanded={!attentionCollapsed}
+                          className="attention-collapse-toggle"
+                          onClick={() => setAttentionCollapsed(!attentionCollapsed)}
+                          type="button"
+                        >
+                          <span className="sr-only">
+                            {attentionCollapsed ? "Expand needs attention" : "Collapse needs attention"}
+                          </span>
+                          <span aria-hidden="true" className="attention-collapse-chevron">
+                            <Icon name="chevron" size={14} />
+                          </span>
+                        </button>
+                      </div>
+                    </>
+                  }
+                />
+                <div hidden={attentionCollapsed} id="attention-section-body">
+                  {activeAttention.length === 0 ? (
+                    <p className="inline-empty">Nothing needs attention right now.</p>
+                  ) : (
+                    <div className="attention-list">
+                      {attentionSections.map((section) => (
+                        <div
+                          className={`attention-severity-section attention-severity-section-${section.key}`}
+                          key={section.key}
+                        >
+                          <div className="attention-severity-heading">
+                            <strong>{section.label}</strong>
+                            <span>
+                              {section.runCount} {section.runCount === 1 ? "run" : "runs"}
+                            </span>
+                          </div>
+                          {section.groups.map((group) => {
+                            const selectedCount = group.runs.filter((run) =>
+                              selectedRunIds.has(run.id),
+                            ).length;
+                            const expanded = expandedAttentionGroups.has(group.key);
+                            return (
+                              <div
+                                className={`attention-group attention-group-${group.severity}`}
+                                key={group.key}
+                              >
+                                <div className="attention-row attention-group-summary">
+                                  <SelectionCheckbox
+                                    ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
+                                    checked={selectedCount === group.runs.length}
+                                    indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
+                                    onChange={() => {
+                                      const shouldSelect = selectedCount !== group.runs.length;
+                                      setSelectedRunIds((current) => {
+                                        const next = new Set(current);
+                                        for (const run of group.runs) {
+                                          if (shouldSelect) {
+                                            next.add(run.id);
+                                          } else {
+                                            next.delete(run.id);
+                                          }
+                                        }
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                  <span className="attention-icon">
+                                    <Icon name="alert" />
+                                  </span>
+                                  <span className="attention-copy">
+                                    <strong title={group.label}>{group.label}</strong>
+                                    <span
+                                      className={`attention-severity-badge attention-severity-${group.severity}`}
+                                    >
+                                      {attentionSeverityLabel(group.severity)}
+                                    </span>
+                                    <span title={group.diagnosis}>
+                                      {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
+                                      {group.diagnosis}
+                                    </span>
+                                  </span>
+                                  <span className="attention-meta">
+                                    <span title={group.context}>{group.context}</span>
+                                    <Timestamp value={group.latest.lastActivityAt} prefix="Latest " />
+                                  </span>
+                                  <button
+                                    aria-controls={`attention-group-${group.domId}`}
+                                    aria-expanded={expanded}
+                                    className="attention-expand"
+                                    onClick={() => toggleGroupExpanded(group.key)}
+                                    type="button"
+                                  >
+                                    {expanded ? "Hide runs" : "Show runs"}
+                                  </button>
+                                  <button
+                                    aria-label={`Dismiss all runs in ${group.label}`}
+                                    className="attention-dismiss"
+                                    onClick={() => dismissRuns(group.runs.map((run) => run.id))}
+                                    type="button"
+                                  >
+                                    Dismiss group
+                                  </button>
+                                </div>
+                                <div
+                                  className="attention-group-runs"
+                                  hidden={!expanded}
+                                  id={`attention-group-${group.domId}`}
+                                >
+                                  {group.runs.map((run) => {
+                                    const severity = attentionSeverity(
+                                      run,
+                                      overviewRuns,
+                                      failureReasons.get(run.id),
+                                    );
+                                    return (
+                                      <div className="attention-run-row" key={run.id}>
+                                        <input
+                                          aria-label={`Select run ${run.id} for bulk actions`}
+                                          checked={selectedRunIds.has(run.id)}
+                                          className="attention-select"
+                                          onChange={() => toggleSelected(run.id)}
+                                          type="checkbox"
+                                        />
+                                        <a
+                                          className="attention-run-link"
+                                          href={routeHash({ page: "run", id: run.id })}
+                                          title={run.id}
+                                        >
+                                          <strong>{run.id}</strong>
+                                          <span
+                                            className={`attention-severity-badge attention-severity-${severity}`}
+                                          >
+                                            {attentionSeverityLabel(severity)}
+                                          </span>
+                                          <span>
+                                            {attentionDiagnosis(run, failureReasons, severity)}
+                                          </span>
+                                        </a>
+                                        <ScopePivot
+                                          label={workflowIdentity(run)}
+                                          scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                                        />
+                                        <Timestamp value={run.lastActivityAt} />
+                                        <button
+                                          aria-label={`Dismiss run ${run.id}`}
+                                          className="attention-dismiss"
+                                          onClick={() => dismissRuns([run.id])}
+                                          type="button"
+                                        >
+                                          Dismiss
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {showDismissed && dismissedAttention.length > 0 && (
+                    <div className="attention-dismissed-list">
+                      <div className="section-heading">
+                        <p className="section-kicker">Dismissed</p>
+                        <Action
+                          variant="text"
+                          className="text-button"
+                          onClick={() => restore(dismissedAttention.map((run) => run.id))}
+                          type="button"
+                        >
+                          Restore all
+                        </Action>
+                      </div>
+                      {dismissedAttention.map((run) => (
+                        <div className="attention-row attention-row-dismissed" key={run.id}>
+                          <span className="attention-copy">
+                            <strong>{runLabel(run)}</strong>
+                            <span>{workflowIdentity(run)}</span>
+                          </span>
+                          <Action
+                            variant="text"
+                            aria-label={`Undo dismiss for run ${run.id}`}
+                            className="text-button"
+                            onClick={() => restore([run.id])}
+                            type="button"
+                          >
+                            Undo
+                          </Action>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+            ),
+          },
+          {
+            id: "activity",
+            node: (
+              <div className="overview-activity">
+                {!inventoryLoaded ? null : emptyInstance ? (
+                  <section className="empty-state">
+                    <img alt="" src="/goober-mascot.png" />
+                    <div>
+                      <h2>No gaggles configured</h2>
+                      <p>
+                        No configuration is available to the Portal yet. New to Goobers? The guided
+                        walkthrough builds a working instance step by step.
+                      </p>
+                      <RecoveryCommand command="goobers init --guided" />
+                    </div>
+                  </section>
+                ) : emptyWorkflows ? (
+                  <section className="empty-state">
+                    <img alt="" src="/goober-mascot.png" />
+                    <div>
+                      <h2>No workflows configured</h2>
+                      <p>
+                        Add a workflow definition, then validate the instance before reloading the Portal.
+                      </p>
+                      <RecoveryCommand command="goobers validate <instance>" />
+                    </div>
+                  </section>
+                ) : emptyRuns ? (
+                  <section className="empty-state">
+                    <img alt="" src="/goober-mascot.png" />
+                    <div>
+                      <h2>No runs recorded</h2>
+                      <p>Start a configured workflow to create the first run journal.</p>
+                      <RecoveryCommand command="goobers run <workflow> <instance>" />
+                    </div>
+                  </section>
+                ) : (
+                  <>
+                    <RunSection
+                      ariaLabel="Active runs"
+                      overview={overview}
+                      runs={groups.active}
+                      title="Active runs"
+                    />
+                    <RunSection
+                      ariaLabel="Recent outcomes"
+                      overview={overview}
+                      runs={groups.recent}
+                      title="Recent outcomes"
+                    />
+                  </>
+                )}
+              </div>
+            ),
+          },
+          {
+            id: "warnings",
+            node: (
+              <div className="overview-configuration">
+                <ConfigurationWarnings context="instance" {...configurationWarnings} />
+              </div>
+            ),
+          },
+        ],
+        layout,
+      ).map((panel) => (
+        <Fragment key={panel.id}>{panel.node}</Fragment>
+      ))}
     </div>
   );
 }
