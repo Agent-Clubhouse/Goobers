@@ -4,7 +4,9 @@ import { createPortal } from "react-dom";
 import type { BuildMetadata, DaemonClient, Instance } from "../api/types";
 import { useCobrand } from "../cobrand";
 import { UpdateNotice } from "../components/UpdateNotice";
+import { FluidUISavedViews, FluidUIStatus } from "../components/FluidUIStatus";
 import { dataCacheKey } from "../dataCache";
+import { useFluidUICustomization } from "../fluidUI";
 import {
   useLiveData,
   type DataFreshness,
@@ -92,6 +94,7 @@ export function PortalShell({
   const { admissionState, dataFreshness, freshness, lastSSEFailure, liveUpdateDetails } =
     useLiveData();
   const updateNotice = useUpdateNotice();
+  const density = useFluidUICustomization()?.density;
   const compactShell = useMediaQuery(compactShellQuery);
   const mainContent = useRef<HTMLElement>(null);
   const mobileMenu = useRef<HTMLDialogElement>(null);
@@ -332,6 +335,7 @@ export function PortalShell({
         .filter(Boolean)
         .join(" ")}
       data-host={hostContext}
+      data-density={density === "compact" ? "compact" : undefined}
     >
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
@@ -422,6 +426,7 @@ export function PortalShell({
         </nav>
 
         <div className="sidebar-secondary" id="portal-secondary-navigation">
+          <FluidUISavedViews className="sidebar-saved-views" />
           <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
           <SupportFooter />
         </div>
@@ -438,6 +443,7 @@ export function PortalShell({
           {updateNotice.update && (
             <UpdateNotice onDismiss={updateNotice.dismiss} update={updateNotice.update} />
           )}
+          <FluidUIStatus />
           {children}
         </main>
       </div>

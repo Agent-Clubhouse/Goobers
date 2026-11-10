@@ -2518,6 +2518,37 @@ export interface LabsFluidUIUnmetNeed {
   users: number;
 }
 
+/** A per-user Portal presentation document (`portal.customization/v1`, docs/labs-fluid-ui.md). */
+export interface FluidUICustomization {
+  version: string;
+  density?: "comfortable" | "compact";
+  pages?: Record<string, FluidUIPageLayout>;
+  runList?: {
+    sort?: "newest" | "oldest" | "failing-first";
+    phases?: string[];
+  };
+  savedViews?: FluidUISavedView[];
+}
+
+export interface FluidUIPageLayout {
+  hidden?: string[];
+  order?: string[];
+}
+
+export interface FluidUISavedView {
+  name: string;
+  route: string;
+}
+
+/** The caller's stored customization; `customization: null` means the standard Portal. */
+export interface FluidUICustomizationState {
+  customization: FluidUICustomization | null;
+  revision: number;
+  updatedAt?: string;
+  incompatible?: boolean;
+  undoDepth: number;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2536,6 +2567,15 @@ export interface DaemonClient {
   getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
   getLabsFleetConvergence?(options?: RequestOptions): Promise<LabsFleetConvergenceView>;
   getLabsFluidUIReport?(options?: RequestOptions): Promise<LabsFluidUIReport>;
+  // Labs Fluid UI (#8415, #8416). Optional so hosts without the per-user
+  // store simply keep the standard Portal.
+  getLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
+  putLabsFluidUICustomization?(
+    customization: FluidUICustomization,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState>;
+  resetLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
+  undoLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;

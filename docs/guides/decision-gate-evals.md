@@ -99,3 +99,37 @@ model would drop. Percentages print only when there are at least
 `-min-samples` report tasks (default 20). The bundled fixture is synthetic and
 illustrates the format; it is not evidence. Enforce is not implemented and
 needs a real labelled sample first.
+## Reviewer-finding scope check (shadow)
+
+`decisiongate.Gate.ScopeCheck` records, per reviewer finding, whether it looks
+in scope for the change. It is advisory and never edits a verdict: the library
+returns `ScopeRecord` values and acting on them is a later, separate step.
+Nothing calls it until a stage opts in, and it needs the gate enabled
+(`decisionGate.mode: shadow`).
+
+Code decides first, in this order:
+
+1. A `critical` finding is in scope. It is never a would-demote.
+2. A `rebase-needed` or `cross-pr-blocked` category is a would-demote: the
+   implementer cannot fix either.
+3. A finding whose file, or a path in its text, is in the diff is in scope.
+
+Only the remainder goes to the model, as a noul question behind the
+`review_finding_in_scope` threshold (default accept 0.8, reject 0.1, so only a
+confident out-of-scope answer is a would-demote). An uncertain answer, a model
+error, a timeout, or a finding past `MaxScopeModelCalls` (20 per verdict) is
+`unsure` and leaves the verdict untouched. Records hold a digest, the code
+facts (including `unchangedFromPrior` and `outsideDiff`), outcome, probability
+and cache flag, error text, and an optional hand `reference` label. They never
+hold the finding text or the criteria.
+
+Print counts and rates from a JSON-lines file of records:
+
+```text
+go run ./internal/decisiongate/cmd/decisionscope -records scope-records.jsonl
+```
+
+Percentages print only when the denominator is at least `-min-sample` (default
+30); below that they read `n/a`. Enforce (demoting out-of-scope findings so
+they stop forcing a repass) is not implemented and needs measured agreement
+against a hand-labeled sample first.

@@ -565,6 +565,7 @@ const responses = new Map([
   ],
   ["/api/v1/telemetry/stats", telemetryStats],
   ["/api/v1/telemetry/error-signatures", { items: [] }],
+  ["/api/v1/labs/fluid-ui/customization", { customization: null, revision: 0, undoDepth: 0 }],
   ["/api/v1/labs/workflow-clusters", {
     status: "clustered",
     population: 4,

@@ -1,9 +1,9 @@
 # Labs: Fluid UI customizations
 
 Fluid UI (#8338) lets each Portal user keep their own presentation
-customization. This page documents the store and API (#8415) and the
-aggregate promotion report (#8419). The Portal does not apply customizations
-yet (#8416).
+customization. This page documents the store and API (#8415), how the
+Portal applies a customization (#8416), and the aggregate promotion report
+(#8419).
 
 ## Safety model
 
@@ -40,6 +40,32 @@ yet (#8416).
 IDs are lowercase slugs matching `^[a-z][a-z0-9-]{0,63}$` and may not repeat
 within a list. The Portal ignores IDs it does not render.
 
+## In the Portal
+
+Open **Labs → Fluid UI** (`#/labs/fluid-ui`) to see your saved document and
+edit it with structured controls. **Preview** applies the draft in the current
+browser tab only; nothing is saved, and stopping the preview or reloading
+returns to your applied customization. **Apply** saves it (`PUT`), and **Undo**
+and **Reset** call the routes below.
+
+The Portal loads your customization once per session and applies:
+
+| Field | Effect |
+|---|---|
+| `density` | `compact` tightens page padding, section spacing, and list rows |
+| `pages.overview` | Hides or orders the Overview panels `summary`, `attention`, `activity`, and `warnings`. Unlisted panels keep their standard order after the listed ones. |
+| `runList.sort` | Orders the loaded runs on the Runs page. `failing-first` puts `failed`, `aborted`, and `escalated` runs first. |
+| `runList.phases` | Shows only these phases (`running`, `completed`, `failed`, `aborted`, `escalated`) on the Runs page unless the URL sets a status filter |
+| `savedViews` | Quick links in the sidebar and on the Fluid UI page |
+
+Run-list sort and phases are defaults: they apply to the runs already loaded,
+and you can dismiss either one for the current visit from the note above the
+list.
+
+The Portal never breaks a page because of a customization. If the version is
+unknown, the document fails validation, or the server marks it `incompatible`,
+the Portal shows the standard UI with a notice. Pages, panel IDs, and phases
+that the Portal does not render are ignored, and the notice lists them.
 ## API
 
 | Method and path | Effect |

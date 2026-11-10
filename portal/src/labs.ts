@@ -419,14 +419,15 @@ export const labsFeatures: readonly LabsFeature[] = [
       "lets you preview, apply, revise, or reset it. Customizations never change other users' experience, global " +
       "defaults, authorization, or workflow gates. Recurring, well-adopted customizations (ranked by distinct users, " +
       "not raw requests) become candidates for the standard Portal.",
-    maturity: "concept",
-    availability: "coming-soon",
+    maturity: "experimental",
+    availability: "available",
     prerequisites: [
       "A running Goobers daemon or dashboard (the per-user customization store is built in)",
       "Authenticated Portal users on shared instances; local dashboards use one local profile",
     ],
     issues: [8338, 8415, 8416, 8417, 8418, 8419],
     surfaces: [
+      { kind: "portal", label: "Labs → Fluid UI", route: { page: "labs", feature: "fluid-ui" } },
       { kind: "docs", label: "Fluid UI customization API", path: "docs/labs-fluid-ui.md" },
       {
         kind: "cli",
@@ -436,17 +437,29 @@ export const labsFeatures: readonly LabsFeature[] = [
     ],
     tryIt: [
       {
-        title: "Save a customization through the API",
+        title: "Edit and preview",
         detail:
-          "The Portal does not apply customizations yet. You can already store, read, undo, and reset your own " +
-          "validated customization document; it affects nobody else and never touches configuration or gates.",
+          "Use the editor below to choose density, run-list sort and phases, which Overview panels show and in what " +
+          "order, and saved views. Preview applies the draft in this browser only; nothing is saved.",
+      },
+      {
+        title: "Apply, undo, or reset",
+        detail:
+          "Apply saves your customization so it survives a reload. Undo restores your previous revision; reset " +
+          "returns you to the standard Portal. It affects nobody else and never touches configuration or gates.",
+      },
+      {
+        title: "Or save a customization through the API",
+        detail:
+          "The same validated document can be stored directly. An invalid or incompatible document falls back to " +
+          "the standard Portal with a notice.",
         code:
           "curl -X PUT \"$GOOBERS_API/api/v1/labs/fluid-ui/customization\" \\\n" +
           "  -H 'Content-Type: application/json' \\\n" +
           "  -d '{\"version\":\"portal.customization/v1\",\"density\":\"compact\",\"runList\":{\"sort\":\"failing-first\"}}'",
       },
       {
-        title: "Undo or reset",
+        title: "Undo or reset through the API",
         detail: "Undo restores your previous revision; reset returns you to the standard Portal and can itself be undone.",
         code:
           "curl -X POST \"$GOOBERS_API/api/v1/labs/fluid-ui/customization/undo\" -H 'Content-Type: application/json' -d '{}'\n" +
@@ -473,11 +486,6 @@ export const labsFeatures: readonly LabsFeature[] = [
       },
     ],
     roadmap: [
-      {
-        title: "Portal applies your customization",
-        detail: "Density, panel order, run-list defaults, and saved views take effect with preview, undo, and a safe fallback.",
-        issue: 8416,
-      },
       {
         title: "Ask in plain language",
         detail: "Describe the change you want and follow its progress in a Feedback tab.",

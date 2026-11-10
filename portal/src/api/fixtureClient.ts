@@ -42,6 +42,8 @@ import type {
   LabsWorkflowClusterView,
   LabsFleetConvergenceView,
   LabsFluidUIReport,
+  FluidUICustomization,
+  FluidUICustomizationState,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -75,6 +77,8 @@ export interface DaemonFixtures {
   labsWorkflowClusters?: LabsWorkflowClusterView;
   labsFleetConvergence?: LabsFleetConvergenceView;
   labsFluidUIReport?: LabsFluidUIReport;
+  /** Seeds the in-memory per-user Fluid UI store; omitted means the standard Portal. */
+  fluidUICustomization?: FluidUICustomizationState;
 }
 
 export interface FixtureStageUsage {
@@ -137,9 +141,13 @@ function fixtureReadiness(fixtures: DaemonFixtures): InstanceReadiness {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+  private fluidUI: FluidUICustomizationState;
+  private readonly fluidUIHistory: (FluidUICustomization | null)[] = [];
+
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
     assertSupportedContractVersion(fixtures.instance);
+    this.fluidUI = fixtures.fluidUICustomization ?? { customization: null, revision: 0, undoDepth: 0 };
   }
 
   connectEvents(
@@ -248,6 +256,56 @@ export class FixtureDaemonClient implements DaemonClient {
       },
       options,
     );
+  }
+
+  // An in-memory stand-in for the daemon's per-user store (internal/fluidui):
+  // every write records the previous document for undo.
+  getLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  putLabsFluidUICustomization(
+    customization: FluidUICustomization,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState> {
+    throwIfCancelled(options);
+    return this.writeFluidUI(structuredClone(customization), options);
+  }
+
+  resetLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    throwIfCancelled(options);
+    return this.writeFluidUI(null, options);
+  }
+
+  undoLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    throwIfCancelled(options);
+    if (this.fluidUIHistory.length === 0) {
+      return Promise.reject(
+        new DaemonApiError(409, "nothing_to_undo", "there is no earlier customization to restore"),
+      );
+    }
+    const previous = this.fluidUIHistory.pop() ?? null;
+    this.fluidUI = this.nextFluidUIState(previous);
+    return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  private writeFluidUI(
+    customization: FluidUICustomization | null,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState> {
+    this.fluidUIHistory.push(this.fluidUI.customization);
+    if (this.fluidUIHistory.length > 20) this.fluidUIHistory.shift();
+    this.fluidUI = this.nextFluidUIState(customization);
+    return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  private nextFluidUIState(customization: FluidUICustomization | null): FluidUICustomizationState {
+    return {
+      customization,
+      revision: this.fluidUI.revision + 1,
+      updatedAt: "2026-09-08T00:00:00Z",
+      undoDepth: this.fluidUIHistory.length,
+    };
   }
 
   // Emulates the daemon's deterministic run listing so filtered and paginated

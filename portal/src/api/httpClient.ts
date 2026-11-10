@@ -56,6 +56,8 @@ import type {
   QueueEligibilityView,
   LabsWorkflowClusterView,
   LabsFluidUIReport,
+  FluidUICustomization,
+  FluidUICustomizationState,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -276,6 +278,25 @@ export class HttpDaemonClient implements DaemonClient {
 
   getLabsFluidUIReport(options?: RequestOptions): Promise<LabsFluidUIReport> {
     return this.getJSON(clientRoutes.labsFluidUIReport, undefined, options);
+  }
+
+  getLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    return this.getJSON(clientRoutes.labsFluidUICustomizationGet, undefined, options);
+  }
+
+  putLabsFluidUICustomization(
+    customization: FluidUICustomization,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState> {
+    return this.sendJSON(clientRoutes.labsFluidUICustomizationPut, customization, options);
+  }
+
+  resetLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    return this.sendJSON(clientRoutes.labsFluidUICustomizationReset, {}, options);
+  }
+
+  undoLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    return this.sendJSON(clientRoutes.labsFluidUICustomizationUndo, {}, options);
   }
 
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
@@ -551,6 +572,25 @@ export class HttpDaemonClient implements DaemonClient {
     );
   }
 
+  // Writes are never coalesced: each one is a distinct user intent.
+  private sendJSON<T>(route: ApiRoute, body: unknown, options?: RequestOptions): Promise<T> {
+    return this.withResponse(
+      route,
+      undefined,
+      options,
+      "application/json",
+      async (response) => {
+        try {
+          return JSON.parse(await response.text()) as T;
+        } catch (error) {
+          throw new MalformedResponseError(undefined, { cause: error });
+        }
+      },
+      undefined,
+      JSON.stringify(body),
+    );
+  }
+
   private coalesceJSON<T>(
     key: string,
     signal: AbortSignal | undefined,
@@ -648,6 +688,7 @@ export class HttpDaemonClient implements DaemonClient {
     accept: string,
     read: (response: Response) => Promise<T>,
     pathParameters?: PathParameters,
+    jsonBody?: string,
   ): Promise<T> {
     if (options?.signal?.aborted) {
       throw new RequestCancelledError();
@@ -677,7 +718,11 @@ export class HttpDaemonClient implements DaemonClient {
         try {
           const next = await this.fetch(requestUrl, {
             method: route.method,
-            headers: { Accept: accept },
+            headers:
+              jsonBody === undefined
+                ? { Accept: accept }
+                : { Accept: accept, "Content-Type": "application/json" },
+            ...(jsonBody === undefined ? {} : { body: jsonBody }),
             signal: controller.signal,
           });
           responseStatus = next.status;
