@@ -329,6 +329,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "mirror", takesArg: true, desc: "Read-only rendered config mirror path"},
 		{name: "instance", takesArg: true, desc: "Private worker instance path"},
 	},
+	"labs fluid-ui report": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
 	},

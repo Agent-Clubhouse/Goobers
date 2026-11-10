@@ -332,7 +332,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
 	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
-		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo:
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport:
 		available = config.labsFluidUI != nil
 	case apicontract.RouteLabsWorkflowFeatures:
 		if config.labsWorkflowFeatures == nil {

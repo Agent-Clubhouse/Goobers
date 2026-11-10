@@ -97,6 +97,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers harness auth copilot status`](#goobers-harness-auth-copilot-status) | report Copilot harness authentication without exposing credentials |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
+| [`goobers labs`](#goobers-labs) | Labs: experimental, advisory reports |
+| [`goobers labs fluid-ui`](#goobers-labs-fluid-ui) | Labs: Fluid UI customization reports |
+| [`goobers labs fluid-ui report`](#goobers-labs-fluid-ui-report) | Labs: rank Fluid UI customization shapes as advisory promotion candidates |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
 | [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
@@ -2800,6 +2803,68 @@ Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO er
 
 ~~~console
 $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.env --reason 'leak'
+~~~
+
+## `goobers labs`
+
+Labs: experimental, advisory reports
+
+~~~text
+Usage: goobers labs fluid-ui report [--json] [path]
+
+Labs (experimental) reports. Results are advisory and never change
+configuration, gates, global defaults, or any user's customization.
+
+Commands:
+  fluid-ui report  rank Fluid UI customization shapes as promotion candidates
+~~~
+
+**Examples**
+
+~~~console
+$ goobers labs fluid-ui report
+~~~
+
+## `goobers labs fluid-ui`
+
+Labs: Fluid UI customization reports
+
+~~~text
+Usage: goobers labs fluid-ui report [--json] [path]
+
+Labs (experimental) reports. Results are advisory and never change
+configuration, gates, global defaults, or any user's customization.
+
+Commands:
+  fluid-ui report  rank Fluid UI customization shapes as promotion candidates
+~~~
+
+## `goobers labs fluid-ui report`
+
+Labs: rank Fluid UI customization shapes as advisory promotion candidates
+
+~~~text
+Usage: goobers labs fluid-ui report [--json] [path]
+
+Labs (experimental): rank the Fluid UI customization shapes users apply as
+candidates for the standard Portal (#8419). Shapes are ranked by distinct
+users who kept them applied for at least 7 days, then by a lower reversion
+rate, then by distinct users. One user's repeated revisions count once.
+Unmet needs list request categories the customization schema cannot express.
+
+The report reads the learning log under <path>/labs/fluid-ui (default path
+"."). It holds only counts, shapes, and category labels: never prompt text,
+identities, panel IDs, saved-view names, or routes.
+
+Candidates are advisory product proposals. They never change global defaults
+or any user's customization.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers labs fluid-ui report
+$ goobers labs fluid-ui report --json ./instance
 ~~~
 
 ## `goobers lint`

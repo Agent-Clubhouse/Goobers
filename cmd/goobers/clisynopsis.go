@@ -37,6 +37,7 @@ var synopsisByID = map[string]string{
 	"netpol-render":          "  goobers netpol-render [--out <dir>] [--check] [--baseline <path>] [--write-baseline] [--timeout <duration>] [--print-blob-endpoint] [--keep-dns-for-network-none] [path]\n                                render per-runner-class NetworkPolicy reference manifests from the runners: inventory\n",
 	"config":                 "  goobers config show|materialize|diff [flags] [path]\n                                inspect, materialize, or compare instance configuration\n",
 	"speech":                 "  goobers speech preflight|test [flags] [path]\n                                preflight or test local speech notifications\n",
+	"labs":                   "  goobers labs fluid-ui report [--json] [path]\n                                Labs: rank Fluid UI customization shapes as advisory promotion candidates\n",
 	"fleet":                  "  goobers fleet join|status|leave [flags] [path]\n                                associate this instance with a Fleet service (experimental; superseded)\n",
 	"up":                     "  goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--recover-config-generation <digest>] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
 	"down":                   "  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal\n",

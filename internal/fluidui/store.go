@@ -59,6 +59,8 @@ type Store struct {
 	Dir string
 	Now func() time.Time
 	mu  sync.Mutex
+	// salt caches the learning-log pseudonymization salt (events.go).
+	salt []byte
 }
 
 // NewStore roots a store at dir.
@@ -109,13 +111,13 @@ func (s *Store) Put(user string, doc Customization) (State, error) {
 	if err != nil {
 		return State{}, fmt.Errorf("fluidui: encode customization: %w", err)
 	}
-	return s.replace(user, data)
+	return s.replace(user, data, false)
 }
 
 // Reset returns user to the standard UI. The previous customization stays in
 // history, so Undo restores it.
 func (s *Store) Reset(user string) (State, error) {
-	return s.replace(user, json.RawMessage("null"))
+	return s.replace(user, json.RawMessage("null"), true)
 }
 
 // Undo restores user's previous revision.
@@ -130,15 +132,19 @@ func (s *Store) Undo(user string) (State, error) {
 		return State{}, ErrNothingToUndo
 	}
 	previous := rec.History[len(rec.History)-1]
+	from := rec.Current.Document
 	rec.History = rec.History[:len(rec.History)-1]
 	rec.Current = revision{Document: previous.Document, Revision: rec.Current.Revision + 1, UpdatedAt: s.now()}
 	if err := s.save(user, rec); err != nil {
 		return State{}, err
 	}
+	s.recordTransition(user, from, rec.Current, true)
 	return rec.state(), nil
 }
 
-func (s *Store) replace(user string, document json.RawMessage) (State, error) {
+// replace makes document user's current revision. revert marks a reset,
+// which the learning log records as a reversion of the previous shape.
+func (s *Store) replace(user string, document json.RawMessage, revert bool) (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, err := s.load(user)
@@ -151,10 +157,12 @@ func (s *Store) replace(user string, document json.RawMessage) (State, error) {
 			rec.History = append([]revision(nil), rec.History[len(rec.History)-MaxHistory:]...)
 		}
 	}
+	from := rec.Current.Document
 	rec.Current = revision{Document: document, Revision: rec.Current.Revision + 1, UpdatedAt: s.now()}
 	if err := s.save(user, rec); err != nil {
 		return State{}, err
 	}
+	s.recordTransition(user, from, rec.Current, revert)
 	return rec.state(), nil
 }
 

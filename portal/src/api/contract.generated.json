@@ -488,6 +488,17 @@
       "recoverySafe": false
     },
     {
+      "id": "labsFluidUIReport",
+      "method": "GET",
+      "path": "/api/v1/labs/fluid-ui/report",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "aggregate",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "events",
       "method": "GET",
       "path": "/api/v1/events",

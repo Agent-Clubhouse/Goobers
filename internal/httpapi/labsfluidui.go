@@ -19,6 +19,9 @@ type LabsFluidUIService interface {
 	Put(user string, doc fluidui.Customization) (fluidui.State, error)
 	Reset(user string) (fluidui.State, error)
 	Undo(user string) (fluidui.State, error)
+	// Report ranks customization shapes across all users (#8419). It is
+	// aggregate and identity-free, so it is not keyed by user.
+	Report() (fluidui.Report, error)
 }
 
 // WithLabsFluidUI enables the Labs Fluid UI customization routes.
@@ -53,6 +56,19 @@ func registerLabsFluidUIRoutes(router *Router, service LabsFluidUIService, error
 		},
 	)
 	router.Handle(apicontract.RouteLabsFluidUIUndo, labsFluidUIHandler(service, errorLog, true, labsFluidUIEmptyBody(LabsFluidUIService.Undo)))
+	router.Handle(apicontract.RouteLabsFluidUIReport, func(w http.ResponseWriter, _ *http.Request) {
+		if service == nil {
+			writeError(w, http.StatusServiceUnavailable, "labs_unavailable", "Labs Fluid UI is not configured on this daemon")
+			return
+		}
+		report, err := service.Report()
+		if err != nil {
+			errorLog.Printf("labs fluid UI report failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "read_error", "the Fluid UI report could not be read")
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	})
 }
 
 type labsFluidUIOperation func(LabsFluidUIService, string, *http.Request) (fluidui.State, error)

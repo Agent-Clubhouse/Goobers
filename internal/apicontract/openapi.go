@@ -322,6 +322,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("GaggleBundleImportResult")
 	case RouteLabsFluidUIGet, RouteLabsFluidUIPut, RouteLabsFluidUIReset, RouteLabsFluidUIUndo:
 		successSchema = schemaRef("PortalCustomizationState")
+	case RouteLabsFluidUIReport:
+		successSchema = schemaRef("PortalCustomizationReport")
 	}
 	successResponse := jsonResponse("Successful response", successSchema)
 	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {
