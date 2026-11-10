@@ -158,11 +158,30 @@ The workflow ships in the `goobers` reference gaggle with the
 
 ### Privacy
 
-The request text is stored in your private request file and a private run
-binding used to protect every attempt. It is not part of the trigger key or
-the run's outputs, and it never enters any aggregate. The workflow can read
-the text while proposing a candidate, but artifact and transcript reads
-redact it for every user except the requester and admins. When a request ends
+The request text is stored only in your private request file. A private run
+binding, which names you by your hashed user key and never holds the text,
+maps each attempt's run to your request and is kept after the run ends. The
+text is not part of the trigger key or the run's outputs, and it never enters
+any aggregate.
+
+The workflow reads the text while proposing a candidate, so it can appear in
+the run's artifacts, its agent transcripts, and anything the agent writes in
+its own words. That content is not scrubbed by matching the text, because an
+agent can quote it in escaped, truncated, or paraphrased form. Instead, for a
+`fluid-ui-customize` run, every user other than you and admins:
+
+- gets `403 run_content_private` for the run's artifacts and transcripts;
+- sees run detail, events, and stage attempts with agent progress text,
+  agent objectives, gate rationale, instruction addenda, reasons, error
+  messages, and terminal-cause messages removed; and
+- sees run lists without that run's terminal reason.
+
+A `fluid-ui-customize` run with no binding (one not bound yet, or one whose
+binding an earlier version removed when it finished) is treated as private to
+admins. These responses are sent `Cache-Control: private, no-store`. The live
+event stream carries only cursors, read-model names, and run and workflow\nidentifiers, never run content.
+
+When a request ends
 as `unsupported`, only its normalized unmet-need label is recorded for the
 aggregate report; a label that echoes the request text is not recorded.
 

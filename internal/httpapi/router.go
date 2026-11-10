@@ -1419,7 +1419,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
-	registerRunRoutes(router, reader, config.runContentPrivacy, errorLog)
+	registerRunRoutes(router, reader, runPrivacy{service: config.runContentPrivacy, reader: reader, errorLog: errorLog}, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
 	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
@@ -1517,7 +1517,7 @@ func registerRunRevealRoute(router *Router, reveal func(context.Context, string)
 	})
 }
 
-func registerRunRoutes(router *Router, reader readservice.Reader, privacy runContentPrivacy, errorLog *log.Logger) {
+func registerRunRoutes(router *Router, reader readservice.Reader, privacy runPrivacy, errorLog *log.Logger) {
 	registerChildHistoryRoute(router, reader, errorLog)
 	router.Handle(apicontract.RouteRuns, func(w http.ResponseWriter, request *http.Request) {
 		options, err := runListOptions(request)
@@ -1530,7 +1530,8 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 			writeReadError(w, errorLog, "list runs", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, runs)
+		privacy.private(w)
+		writeJSON(w, http.StatusOK, withholdRunList(request, privacy, runs))
 	})
 	router.Handle(apicontract.RouteRunDetail, func(w http.ResponseWriter, request *http.Request) {
 		var run readservice.RunDetail
@@ -1550,6 +1551,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 			writeReadError(w, errorLog, "get run", err)
 			return
 		}
+		if !privacy.allowed(request, run.ID, run.Workflow) {
+			run = withholdRunDetail(run)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, run)
 	})
 	router.Handle(apicontract.RouteRunEvents, func(w http.ResponseWriter, request *http.Request) {
@@ -1562,6 +1567,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 			writeReadError(w, errorLog, "read run events", err)
 			return
 		}
+		if !privacy.allowed(request, run, "") {
+			events = withholdEvents(events)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, events)
 	})
 	router.Handle(apicontract.RouteStageAttempts, func(w http.ResponseWriter, request *http.Request) {
@@ -1578,6 +1587,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 			writeReadError(w, errorLog, "read stage attempts", err)
 			return
 		}
+		if !privacy.allowed(request, run, "") {
+			attempts = withholdAttempts(attempts)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, attempts)
 	})
 	router.Handle(apicontract.RouteRunArtifact, func(w http.ResponseWriter, request *http.Request) {
@@ -1594,22 +1607,16 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 			writeReadError(w, errorLog, "read artifact", err)
 			return
 		}
-		artifact.Bytes, err = redactPrivateRunContent(request, privacy, run, artifact.Bytes)
-		if err != nil {
-			errorLog.Printf("redact private run artifact failed: %v", err)
-			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
+		privacy.private(w)
+		if !privacy.allowed(request, run, "") {
+			writeRunContentPrivate(w)
 			return
-		}
-		responseDigest := artifact.Metadata.Digest
-		if privacy != nil {
-			w.Header().Set("Cache-Control", "private, no-store")
-			responseDigest = journal.Digest(artifact.Bytes)
 		}
 		w.Header().Set("Content-Type", artifact.Metadata.MediaType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
-		w.Header().Set("ETag", `"`+responseDigest+`"`)
+		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set(apicontract.DigestHeader, responseDigest)
+		w.Header().Set(apicontract.DigestHeader, artifact.Metadata.Digest)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(artifact.Bytes)
 	})
@@ -1629,14 +1636,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 			writeReadError(w, errorLog, "read transcript", err)
 			return
 		}
-		transcript.Bytes, err = redactPrivateRunContent(request, privacy, run, transcript.Bytes)
-		if err != nil {
-			errorLog.Printf("redact private run transcript failed: %v", err)
-			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
+		privacy.private(w)
+		if !privacy.allowed(request, run, "") {
+			writeRunContentPrivate(w)
 			return
-		}
-		if privacy != nil {
-			w.Header().Set("Cache-Control", "private, no-store")
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Length", strconv.Itoa(len(transcript.Bytes)))
@@ -1647,16 +1650,6 @@ func registerRunRoutes(router *Router, reader readservice.Reader, privacy runCon
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(transcript.Bytes)
 	})
-}
-
-func redactPrivateRunContent(request *http.Request, privacy runContentPrivacy, runID string, content []byte) ([]byte, error) {
-	if privacy == nil {
-		return content, nil
-	}
-	if principal, ok := PrincipalFromRequest(request); ok && principal.HasRole(RoleAdmin) {
-		return content, nil
-	}
-	return privacy.RedactRunContent(runID, labsFluidUIUser(request), content)
 }
 
 func runListOptions(request *http.Request) (readservice.RunListOptions, error) {

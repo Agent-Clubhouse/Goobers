@@ -24,10 +24,6 @@ type LabsFluidUIRequestService interface {
 	Revert(ctx context.Context, user, id string) (fluidui.Request, fluidui.State, error)
 }
 
-type runContentPrivacy interface {
-	RedactRunContent(runID, viewer string, content []byte) ([]byte, error)
-}
-
 // WithLabsFluidUIRequests enables the Labs Fluid UI request routes. Submit and
 // retry also need the daemon's trigger plane (WithTriggerService).
 func WithLabsFluidUIRequests(service LabsFluidUIRequestService) HandlerOption {
