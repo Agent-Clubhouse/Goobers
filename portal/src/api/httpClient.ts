@@ -57,6 +57,8 @@ import type {
   LabsWorkflowClusterView,
   FluidUICustomization,
   FluidUICustomizationState,
+  FluidUIRequest,
+  FluidUIRequestApplication,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -292,6 +294,31 @@ export class HttpDaemonClient implements DaemonClient {
 
   undoLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
     return this.sendJSON(clientRoutes.labsFluidUICustomizationUndo, {}, options);
+  }
+
+  async listLabsFluidUIRequests(options?: RequestOptions): Promise<FluidUIRequest[]> {
+    const list = await this.getJSON<{ requests: FluidUIRequest[] }>(
+      clientRoutes.labsFluidUIRequestsList,
+      undefined,
+      options,
+    );
+    return list.requests;
+  }
+
+  submitLabsFluidUIRequest(prompt: string, options?: RequestOptions): Promise<FluidUIRequest> {
+    return this.sendJSON(clientRoutes.labsFluidUIRequestSubmit, { prompt }, options);
+  }
+
+  retryLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequest> {
+    return this.sendJSON(clientRoutes.labsFluidUIRequestRetry, {}, options, { request: id });
+  }
+
+  applyLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication> {
+    return this.sendJSON(clientRoutes.labsFluidUIRequestApply, {}, options, { request: id });
+  }
+
+  revertLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication> {
+    return this.sendJSON(clientRoutes.labsFluidUIRequestRevert, {}, options, { request: id });
   }
 
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
@@ -568,7 +595,12 @@ export class HttpDaemonClient implements DaemonClient {
   }
 
   // Writes are never coalesced: each one is a distinct user intent.
-  private sendJSON<T>(route: ApiRoute, body: unknown, options?: RequestOptions): Promise<T> {
+  private sendJSON<T>(
+    route: ApiRoute,
+    body: unknown,
+    options?: RequestOptions,
+    pathParameters?: PathParameters,
+  ): Promise<T> {
     return this.withResponse(
       route,
       undefined,
@@ -581,7 +613,7 @@ export class HttpDaemonClient implements DaemonClient {
           throw new MalformedResponseError(undefined, { cause: error });
         }
       },
-      undefined,
+      pathParameters,
       JSON.stringify(body),
     );
   }

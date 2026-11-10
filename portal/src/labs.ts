@@ -423,6 +423,7 @@ export const labsFeatures: readonly LabsFeature[] = [
     availability: "available",
     prerequisites: [
       "A running Goobers daemon or dashboard (the per-user customization store is built in)",
+      "Natural-language requests need a running daemon with the goobers reference gaggle (fluid-ui-customize)",
       "Authenticated Portal users on shared instances; local dashboards use one local profile",
     ],
     issues: [8338, 8415, 8416, 8417, 8418, 8419],
@@ -431,6 +432,31 @@ export const labsFeatures: readonly LabsFeature[] = [
       { kind: "docs", label: "Fluid UI customization API", path: "docs/labs-fluid-ui.md" },
     ],
     tryIt: [
+      {
+        title: "Ask in plain language",
+        detail:
+          "Open the Feedback tab below and describe the change you want. The shipped fluid-ui-customize workflow " +
+          "turns it into a validated customization; follow its run from the request. Only you can see your requests.",
+      },
+      {
+        title: "Preview, then apply",
+        detail:
+          "\"Your UX is ready\" appears only once the run has produced a validated candidate. Preview it in this " +
+          "browser, then Apply it; nothing is applied automatically. Revert or Undo restores your previous " +
+          "customization. A failed request shows why and can be retried; a request Fluid UI cannot do yet is " +
+          "marked unsupported.",
+      },
+      {
+        title: "Or submit a request through the API",
+        detail:
+          "Submitting starts a workflow run through trigger ingest, so it needs a running daemon (goobers up). " +
+          "Status always reflects that run.",
+        code:
+          "curl -X POST \"$GOOBERS_API/api/v1/labs/fluid-ui/requests\" \\\n" +
+          "  -H 'Content-Type: application/json' -d '{\"prompt\":\"make my run list compact, failing runs first\"}'\n" +
+          "curl \"$GOOBERS_API/api/v1/labs/fluid-ui/requests\"\n" +
+          "curl -X POST \"$GOOBERS_API/api/v1/labs/fluid-ui/requests/<id>/apply\" -H 'Content-Type: application/json' -d '{}'",
+      },
       {
         title: "Edit and preview",
         detail:
@@ -463,23 +489,20 @@ export const labsFeatures: readonly LabsFeature[] = [
     ],
     integrate: [
       {
-        title: "Planned: request, preview, apply",
+        title: "Request, preview, apply",
         detail:
-          "Enter a request in Labs, follow it in a Feedback tab while an agent builds it, then preview and apply. " +
-          "Undo or reset at any time.",
+          "Enter a request in the Feedback tab, follow its run while the fluid-ui-customize workflow builds a " +
+          "validated customization document (never code), then preview and apply. Undo, revert, or reset at any time.",
+      },
+      {
+        title: "Run the shipped workflow in your gaggle",
+        detail:
+          "The goobers reference gaggle ships fluid-ui-customize and its fluid-ui-designer goober. The daemon " +
+          "validates every candidate with the same rules as the store, gives invalid output one retry with the " +
+          "errors, and records out-of-surface requests as unsupported with a short unmet-need label.",
       },
     ],
     roadmap: [
-      {
-        title: "Ask in plain language",
-        detail: "Describe the change you want and follow its progress in a Feedback tab.",
-        issue: 8417,
-      },
-      {
-        title: "An agent builds it",
-        detail: "A shipped workflow turns your request into a validated customization document, never code.",
-        issue: 8418,
-      },
       {
         title: "Popular customizations become defaults",
         detail: "Customizations adopted by many distinct users are ranked as candidates for the standard Portal.",

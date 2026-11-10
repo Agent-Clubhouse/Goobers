@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { DaemonClient } from "../api/types";
 import { LabsFleetConvergence } from "../components/LabsFleetConvergence";
 import { LabsFluidUI } from "../components/LabsFluidUI";
+import { LabsFluidUIFeedback } from "../components/LabsFluidUIFeedback";
 import { LabsWorkflowClusters } from "../components/LabsWorkflowClusters";
 import {
   findLabsFeature,
@@ -15,13 +16,46 @@ import {
 } from "../labs";
 import { routeHash } from "../routing";
 import { PageHeading } from "../ui/Heading";
+import { Tab, TabList } from "../ui/Tabs";
 
 // Views for features whose availability is "available", keyed by feature id.
 const labsViews: Record<string, (client: DaemonClient, fleet: boolean) => ReactNode> = {
   "workflow-clustering": (client, fleet) =>
     fleet ? <LabsFleetConvergence client={client} /> : <LabsWorkflowClusters client={client} />,
-  "fluid-ui": () => <LabsFluidUI />,
+  "fluid-ui": (client) => <LabsFluidUITabs client={client} />,
 };
+
+type FluidUITab = "customize" | "feedback";
+
+// Fluid UI has two tabs: the structured editor (#8416) and natural-language
+// requests with their lifecycle (#8417).
+function LabsFluidUITabs({ client }: { client: DaemonClient }) {
+  const [tab, setTab] = useState<FluidUITab>("customize");
+  const tabs: { id: FluidUITab; label: string }[] = [
+    { id: "customize", label: "Customize" },
+    { id: "feedback", label: "Feedback" },
+  ];
+  return (
+    <>
+      <TabList aria-label="Fluid UI" className="fluid-ui-tabs">
+        {tabs.map(({ id, label }) => (
+          <Tab
+            aria-controls={`fluid-ui-tab-${id}`}
+            aria-selected={tab === id}
+            id={`fluid-ui-tab-button-${id}`}
+            key={id}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </Tab>
+        ))}
+      </TabList>
+      <div aria-labelledby={`fluid-ui-tab-button-${tab}`} id={`fluid-ui-tab-${tab}`} role="tabpanel">
+        {tab === "customize" ? <LabsFluidUI /> : <LabsFluidUIFeedback client={client} />}
+      </div>
+    </>
+  );
+}
 
 export function LabsPage({ client, feature, fleet = false }: { client: DaemonClient; feature?: string; fleet?: boolean }) {
   const selected = findLabsFeature(feature);

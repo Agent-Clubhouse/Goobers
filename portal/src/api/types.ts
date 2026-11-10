@@ -2524,6 +2524,37 @@ export interface FluidUICustomizationState {
   undoDepth: number;
 }
 
+/** Where a natural-language Fluid UI request stands (#8417); always derived from its run. */
+export type FluidUIRequestStatus =
+  | "queued"
+  | "implementing"
+  | "ready_to_preview"
+  | "applied"
+  | "failed"
+  | "unsupported"
+  | "reverted";
+
+/** One of the caller's own Fluid UI requests. Other users' requests are never visible. */
+export interface FluidUIRequest {
+  id: string;
+  prompt: string;
+  status: FluidUIRequestStatus;
+  attempt: number;
+  runId?: string;
+  candidate?: FluidUICustomization;
+  unmetNeed?: string;
+  errors?: string[];
+  detail?: string;
+  appliedRevision?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FluidUIRequestApplication {
+  request: FluidUIRequest;
+  customization: FluidUICustomizationState;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2550,6 +2581,12 @@ export interface DaemonClient {
   ): Promise<FluidUICustomizationState>;
   resetLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
   undoLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;
+  // Labs Fluid UI requests (#8417): the caller's own natural-language requests.
+  listLabsFluidUIRequests?(options?: RequestOptions): Promise<FluidUIRequest[]>;
+  submitLabsFluidUIRequest?(prompt: string, options?: RequestOptions): Promise<FluidUIRequest>;
+  retryLabsFluidUIRequest?(id: string, options?: RequestOptions): Promise<FluidUIRequest>;
+  applyLabsFluidUIRequest?(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication>;
+  revertLabsFluidUIRequest?(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;
