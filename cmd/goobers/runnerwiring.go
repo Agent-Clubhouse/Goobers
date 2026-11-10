@@ -36,6 +36,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		input.ExecutionFence = localSharedExecutionFence(input.Layout)
 	}
 	decisionObserver := newDecisionShadowObserver(cfg, nil)
+	stallObserver := runtimewiring.DecisionStallObserver(cfg, nil)
 	input.Diagnostics, input.DiagnosticsMaxBytes = diagnosticsMode, diagnosticsMaxOutputBytes
 	input.LookPath = runnerLookPath
 	input.ConfigureWorktree = func(manager *worktree.Manager) error {
@@ -60,6 +61,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	input.BuildAgentic = func(stage runtimewiring.AgenticExecutorInput) (invoke.Goober, error) {
 		stage.Observer = decisionObserver
+		stage.TranscriptWindows = stallObserver
 		stage.ChildWorkflows = childWorkflowAccessFor(instanceRoot, stage.SecretRegistrar)
 		ordinary := func() (invoke.Goober, error) { return runtimewiring.BuildAgenticExecutor(stage) }
 		return bindParentRouting(instanceRoot, stage.GooberName, stage.ArtifactRecorder, ordinary, stage.Assets[stage.GooberName] != nil)
