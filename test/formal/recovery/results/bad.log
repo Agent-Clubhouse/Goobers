@@ -1,0 +1,61 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 0 and seed 1 with 1 worker on 16 cores with 14553MB heap and 64MB offheap memory [pid: 52904] (Windows 11 10.0 amd64, Eclipse Adoptium 21.0.13 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file <MODEL_DIR>\TerminalRecovery.tla
+Parsing file <TLC_MODULE_DIR>\Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module TerminalRecovery
+Starting... (2026-11-05 17:14:48)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 4 distinct states generated at 2026-11-05 17:14:48.
+Error: Invariant TerminalReplayStable is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ crashes = 0
+/\ outcome = "completed"
+/\ tail = "none"
+/\ checkpoint = "running"
+/\ pc = "ready"
+/\ replayPhase = "running"
+/\ logPhase = "running"
+
+State 2: <BeginAppend line 22, col 5 to line 25, col 72 of module TerminalRecovery>
+/\ crashes = 0
+/\ outcome = "completed"
+/\ tail = "partial"
+/\ checkpoint = "running"
+/\ pc = "partial"
+/\ replayPhase = "running"
+/\ logPhase = "running"
+
+State 3: <CompleteWrite line 28, col 5 to line 31, col 72 of module TerminalRecovery>
+/\ crashes = 0
+/\ outcome = "completed"
+/\ tail = "complete"
+/\ checkpoint = "running"
+/\ pc = "written"
+/\ replayPhase = "running"
+/\ logPhase = "running"
+
+State 4: <Crash line 48, col 5 to line 58, col 40 of module TerminalRecovery>
+/\ crashes = 1
+/\ outcome = "completed"
+/\ tail = "none"
+/\ checkpoint = "running"
+/\ pc = "down"
+/\ replayPhase = "running"
+/\ logPhase = "completed"
+
+State 5: <Recover line 62, col 5 to line 66, col 59 of module TerminalRecovery>
+/\ crashes = 1
+/\ outcome = "completed"
+/\ tail = "none"
+/\ checkpoint = "running"
+/\ pc = "replayed"
+/\ replayPhase = "running"
+/\ logPhase = "completed"
+
+51 states generated, 42 distinct states found, 15 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-11-05 17:14:48)

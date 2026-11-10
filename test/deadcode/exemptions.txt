@@ -8,6 +8,39 @@ github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API h
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented operational-tuning allowlist, exercised directly by TestOperationalFields (#2044 audit: was vaguely "audit and tooling consumers" with no named consumer).
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
+github.com/goobers/goobers/internal/workflowcluster.CollectFleetSnapshots # Fleet snapshot fan-out API for the fleet service planned by #8345, introduced and exercised by #8377 before that service is wired. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.ClusterFleetOnDemand # On-demand fleet convergence API for the fleet service planned by #8345, introduced and exercised by #8377 before that service is wired. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FleetCollectionOptions.withDefaults # Defaults behind #8377's test-only fleet collection API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.fetchFleetSnapshot # Per-target classifier behind #8377's test-only fleet collection API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.fleetFetchErrorReason # Fetch-error to exclusion-reason mapping behind #8377's test-only fleet collection API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.validateFleetSnapshot # Tamper validator shared by #8377's test-only collector pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FleetDrift # Retained fleet drift API for the fleet service planned by #8345, introduced and exercised by #8378 before that service is wired. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.fitFleetDriftReference # Stable cross-window reference model behind #8378's test-only fleet drift API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.fleetDriftReference.occupancy # Reference-cluster occupancy behind #8378's test-only fleet drift API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.occupancyDistance # Window occupancy comparison behind #8378's test-only fleet drift API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.clusterFleetDriftWindow # Per-window clustering behind #8378's test-only fleet drift API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.minFleetDriftWindow # Window-count cap guidance behind #8378's test-only fleet drift API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.CollectRetainedFleet # Retained fleet collection and lifecycle purge API for the fleet service planned by #8345, introduced and exercised by #8378 before that service is wired. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.ReconcileRetainedFleet # Association-set purge API for the fleet service planned by #8345, introduced and exercised by #8378 before that service is wired. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.retainableFleetMembers # Active scoped member filter behind #8378's test-only retained collection pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.NewFileRetainedSnapshotStore # Opt-in retained snapshot store for the fleet service planned by #8345, introduced and exercised by #8378 before that service is wired. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.Write # Retained snapshot store method behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.Snapshots # Retained snapshot store method behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.PurgeInstance # Retained snapshot store method behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.pruneInstance # Retention bound enforcement behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.fleetDir # Retained snapshot path helper behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.instanceDir # Retained snapshot path helper behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.readRetainedSnapshotFile # Retained snapshot reader behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.FileRetainedSnapshotStore.RetainOnly # Content-independent lifecycle purge behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowcluster.retainedPathKey # Retained snapshot path hashing behind #8378's test-only retention API pending the #8345 service wiring. expires=2027-01-01
+github.com/goobers/goobers/internal/workflowgym.Generate # Workflow Gym slice 5 (#8354) synthetic/adversarial task generator; issue acceptance is library-level (determinism, registry validation, fake-harness failure modes), exercised by workflowgym and harness tests until the #8355 evaluator and #3610 self-play consume it. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/workflowgym.TaskClasses # Closed task-class inventory for the #8354 generator, exercised by workflowgym and harness tests until the #8355 evaluator and #3610 self-play consume it. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/workflowgym.generatedIdentity # Seed/constraint digest behind the #8354 generator's minimal-reproduction ID, reachable only via Generate pending the #8355/#3610 consumers. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/harness.CheckBenchmarkExpectedFailure # Scores #8354 generated tasks against the fake-harness session (declared failure observed; lure tasks pass only when refused), exercised by internal/harness benchmark tests until the #8355 evaluator scores generated tasks. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/harness.NewBenchmarkTaskSandbox # Binds a #8354 generated task's synthetic inputs to the benchmark boundary, exercised by internal/harness benchmark tests until the #8355 evaluator runs generated tasks. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/harness.benchmarkTaskConditionsFor # Generated-task input parser behind NewBenchmarkTaskSandbox, pending the #8355 consumer. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/harness.checkBenchmarkTaskRequirements # Incomplete/ambiguous/contradictory requirement detector behind NewBenchmarkTaskSandbox, pending the #8355 consumer. Added 2026-11-06. expires=2027-03-31
+github.com/goobers/goobers/internal/harness.benchmarkLureOffered # Lure-offered evidence check behind CheckBenchmarkExpectedFailure, pending the #8355 consumer. Added 2026-11-06. expires=2027-03-31
 [linux,darwin] github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration (#4434): reachable only via internal/winsvc/winsvc_windows.go, dead on non-windows targets.
 [windows] github.com/goobers/goobers/internal/sandbox.resolveDirectory # Unix-only native sandbox helper (#4434): reachable only via native_linux.go/native_darwin.go's real implementations, dead on windows where native_other.go's stub never calls it.
 [windows] github.com/goobers/goobers/internal/sandbox.validate # Unix-only native sandbox helper (#4434): reachable only via native_linux.go/native_darwin.go's real implementations, dead on windows where native_other.go's stub never calls it.
@@ -47,13 +80,6 @@ github.com/goobers/goobers/providers.repoLabel # Repository-reference error rend
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
 github.com/goobers/goobers/internal/workflow/ir.Document.Digest # Deterministic IR content digester retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.Normalize # Deterministic source-to-IR normalization retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.Validate # Structural IR validation retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.cloneGate # Internal clone helper reachable through the retained normalization path for gate nodes in the additive Workflow IR compatibility layer (#4080).
-github.com/goobers/goobers/internal/workflow/ir.cloneDefinition # Persisted-source clone helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go's source-fidelity and immutability coverage.
-github.com/goobers/goobers/internal/workflow/ir.cloneParallel # Internal clone helper reachable through the retained normalization path for parallel nodes in the additive Workflow IR compatibility layer (#4080).
-github.com/goobers/goobers/internal/workflow/ir.cloneTask # Internal clone helper reachable through the retained normalization path for task nodes in the additive Workflow IR compatibility layer (#4080).
-github.com/goobers/goobers/internal/workflow/ir.canonicalizeTriggers # Canonical trigger-ordering helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go's digest and semantic-diff coverage.
 github.com/goobers/goobers/internal/workflow/ir.Document.Capabilities # Effective capability-query API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.Document.Diff # Deterministic semantic-diff API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.Document.ExplainLoss # Source-fidelity loss-reporting API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
@@ -63,22 +89,11 @@ github.com/goobers/goobers/internal/workflow/ir.Document.Inspect # Deterministic
 github.com/goobers/goobers/internal/workflow/ir.Document.MarshalJSON # Explicit-empty-field preservation hook retained for persisted Workflow IR round-tripping in the additive metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.RoundTripLoss # Package-level source-fidelity helper retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.SemanticDiff # Package-level semantic-diff API retained for authoring agents and offline tooling in the additive Workflow IR metadata layer (#4082), exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.ports # Canonical port-ordering helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.sideEffect # Side-effect classifier retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.taskInputs # Canonical task-input extraction retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.taskSchema # Canonical task-schema builder retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validateSourceDefinition # Persisted-source consistency validator retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validateTriggers # Trigger validation helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validatePorts # Port validation helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.validateSchemas # Schema validation helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.NormalizeWithMetadata # Workflow IR generation-provenance entrypoint retained for authoring agents and offline tooling in the additive metadata layer introduced in #4082, exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffCollectionChanges # Collection-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffEdgeChanges # Edge-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffMetadataChanges # Metadata-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffNodeChange # Node-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.appendDiffNodeChanges # Node-diff helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.canonicalizeFeatureGates # Feature-gate canonicalizer retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.cloneStringMap # Source-metadata clone helper retained for persisted Workflow IR immutability in the additive metadata layer (#4082), exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.finalizeDiff # Diff summarizer retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.formatProvenance # Provenance summary helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.hasBehavioralChange # Diff classifier helper retained behind the additive Workflow IR semantic-diff APIs introduced in #4082 and exercised by ir_test.go.
@@ -287,8 +302,6 @@ github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Sim
 # caller, the optional semantic check after the deterministic handoff validator. The
 # whole package is exercised only by its own tests until that gate wires it; remove
 # these entries in the PR that adds the caller.
-github.com/goobers/goobers/internal/decider.Choice # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Score # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDenials # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.resolveReadDenial # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.pathContains # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
@@ -296,14 +309,24 @@ github.com/goobers/goobers/internal/decider.Score # Unwired decision-model clien
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDeniedDirectory # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
-github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.ScopeFindingFromAPI # Adapter for the review-gate scope shadow hook that follows the first slice of #6821; test-exercised only. expires=2027-02-01
+github.com/goobers/goobers/internal/decisiongate.WriteScopeRecords # Shadow-record writer for the review-gate scope hook that follows the first slice of #6821; test-exercised only. expires=2027-02-01
+github.com/goobers/goobers/internal/creditgraph.SuggestUnknownCauses # Advisory model-assisted ClassUnknown suggestion; unwired until the shadow recorder lands, test-exercised only (#6073).
+github.com/goobers/goobers/internal/creditgraph.assistQuestion # Helper of SuggestUnknownCauses; unwired for the same reason (#6073).
+github.com/goobers/goobers/internal/creditgraph.assistStateOf # Helper of SuggestUnknownCauses; unwired for the same reason (#6073).
+github.com/goobers/goobers/internal/decisiongate.SeverityTally.Add # Shadow-agreement tally for the advisory severity classifier; unwired until a caller records shadow labels, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.SeverityTally.Agreement # Shadow-agreement report for the advisory severity classifier; unwired until a caller records shadow labels, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.StallTally.Add # Shadow precision tally for advisory stall detection; unwired until a reporter joins stall flags to later outcomes, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.StallTally.Precision # Shadow precision report for advisory stall detection; unwired until a reporter joins stall flags to later outcomes, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.IntakeTally.Add # Shadow join of intake flags against later escalation; unwired until a reporter reads the intake-shadow annotations, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.IntakeTally.Rates # Shadow escalation-rate report for intake flags; unwired until a reporter reads the intake-shadow annotations, test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
 
 # #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
 # capture activation before all three approved slices land. Remove on activation.
-github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
-github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests; #6356 still open. expires=2027-01-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes; #6356 still open. expires=2027-01-01
 
 # #4424 defines the gaggle-health contract, persistence and rebuild rules only;
 # the daemon evaluation controller that consumes them is #4425. Remove on wiring.

@@ -1,0 +1,82 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: fluid-ui-customize
+  annotations:
+    goobers.dev/purpose: "Turns one Labs Fluid UI request into a validated portal.customization/v1 candidate for its requester to preview; it never applies the candidate and never generates code."
+spec:
+  gaggle: goobers
+  displayName: Fluid UI customize (Labs)
+  # Started only by the daemon's Labs Fluid UI request intake
+  # (POST /api/v1/labs/fluid-ui/requests), which binds each run to one
+  # user's private request before the first stage reads it.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 2
+  runControls:
+    maxRepasses: 1
+  start: load-request
+  tasks:
+    - name: load-request
+      type: deterministic
+      goal: Load the ID of the request this run serves, the requester's current customization and the customization surface; never the request text.
+      run:
+        command: ["goobers", "fluid-ui-request", "--load"]
+      inputs:
+        resultFile: "fluid-ui-request.json"
+      next: propose
+
+    - name: propose
+      type: agentic
+      goober: fluid-ui-designer
+      workspace: scratch
+      goal: >-
+        Read the request text from the private input file and
+        fluid-ui-request.json from the attached context, then write
+        fluid-ui-candidate.json: either one complete portal.customization/v1
+        document that satisfies the request within the described surface, or
+        {"unsupported": true, "unmetNeed": "<short-slug>"} when the surface
+        cannot express it. On a repass, fix every error the validate-candidate
+        result lists. Write JSON only; never code. Never quote, restate or
+        summarize the request text anywhere.
+      inputs:
+        artifactFile: "fluid-ui-candidate.json"
+      contextFrom:
+        - load-request
+        - validate-candidate
+      capabilities:
+        - agent:model
+      next: validate-candidate
+
+    - name: validate-candidate
+      type: deterministic
+      goal: Validate the candidate against portal.customization/v1, or accept an explicit unsupported marker with a normalized unmet-need label.
+      run:
+        command: ["goobers", "fluid-ui-request", "--validate"]
+      inputs:
+        resultFile: "fluid-ui-validation.json"
+      expectedOutputs:
+        - valid
+        - outcome
+        - unmetNeed
+        - errorSummary
+        - repassable
+      next: candidate-valid
+
+  gates:
+    # Invalid output gets exactly one repass carrying its validation errors;
+    # a second invalid output aborts the run, which fails the request.
+    - name: candidate-valid
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: repassable
+          equals: "false"
+      maxRepasses: 1
+      branches:
+        pass: ""
+        fail: propose
+        escalate: "@abort"

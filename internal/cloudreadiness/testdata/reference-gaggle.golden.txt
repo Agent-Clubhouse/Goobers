@@ -68,6 +68,16 @@ goobers/docs-updater (DSL 2.0)
   - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
     unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
 
+goobers/fluid-ui-customize (DSL 2.0)
+  - RUNTIME002 stage "load-request" /spec/tasks/0/runsOn: stage "load-request" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "propose" /spec/tasks/1/runsOn: stage "propose" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME002 stage "validate-candidate" /spec/tasks/2/runsOn: stage "validate-candidate" is pinned to the control-plane host
+    unblock: add runsOn that selects a non-self runner
+  - RUNTIME003 /dslVersion: DSL 2.0 is local-runner-only and cannot run in cloud
+    unblock: migrate the workflow to DSL 3.0 (`goobers fix --to 3.0`)
+
 goobers/implementation (DSL 2.0)
   - RUNTIME002 stage "preflight-repo-write" /spec/tasks/0/runsOn: stage "preflight-repo-write" is pinned to the control-plane host
     unblock: add runsOn that selects a non-self runner
@@ -385,6 +395,9 @@ Blockers grouped by remedy:
     - goobers/docs-updater stage "validate" /spec/tasks/2/runsOn
     - goobers/docs-updater stage "push-branch" /spec/tasks/3/runsOn
     - goobers/docs-updater stage "open-pr" /spec/tasks/4/runsOn
+    - goobers/fluid-ui-customize stage "load-request" /spec/tasks/0/runsOn
+    - goobers/fluid-ui-customize stage "propose" /spec/tasks/1/runsOn
+    - goobers/fluid-ui-customize stage "validate-candidate" /spec/tasks/2/runsOn
     - goobers/implementation stage "preflight-repo-write" /spec/tasks/0/runsOn
     - goobers/implementation stage "query-backlog" /spec/tasks/1/runsOn
     - goobers/implementation stage "recovery-resume" /spec/tasks/2/runsOn
@@ -511,6 +524,7 @@ Blockers grouped by remedy:
     - goobers/curate-resweep /dslVersion
     - goobers/decomposition /dslVersion
     - goobers/docs-updater /dslVersion
+    - goobers/fluid-ui-customize /dslVersion
     - goobers/implementation /dslVersion
     - goobers/implementation-pre-review-experiment /dslVersion
     - goobers/implementation-recovery /dslVersion
@@ -523,4 +537,4 @@ Blockers grouped by remedy:
     - goobers/tutor /dslVersion
     - goobers/work-nomination /dslVersion
 
-blocked: 17 workflows, 161 blockers (159 config fixes, 2 waiting on P4 items: #7753)
+blocked: 18 workflows, 165 blockers (163 config fixes, 2 waiting on P4 items: #7753)

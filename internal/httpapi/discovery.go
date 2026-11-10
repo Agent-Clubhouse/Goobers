@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -282,7 +283,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.events != nil
 	case apicontract.RouteRunReveal:
 		available = config.runRevealer != nil
-	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage:
+	case apicontract.RouteApproveStage, apicontract.RouteOverrideStage, apicontract.RouteRerunStage, apicontract.RouteRetryStage:
 		available = config.interventions != nil
 	case apicontract.RouteWorkflowEnabled:
 		available = config.workflowMutations != nil
@@ -330,6 +331,20 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport,
+		apicontract.RouteLabsFluidUIRequestsList, apicontract.RouteLabsFluidUIRequestGet,
+		apicontract.RouteLabsFluidUIRequestApply, apicontract.RouteLabsFluidUIRequestRevert,
+		apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		available = labsFluidUIRouteAvailable(id, config)
+	case apicontract.RouteLabsWorkflowFeatures:
+		if config.labsWorkflowFeatures == nil {
+			return false, "labs_unavailable", "Labs workflow features are not configured on this daemon"
+		}
+		if err := config.labsWorkflowFeatures.WorkflowFeaturesAvailability(context.Background()); err != nil {
+			return labsWorkflowFeaturesUnavailable(err)
+		}
+		return true, "", ""
 	case apicontract.RouteClaimsActive:
 		available = config.activeClaimsAvailable
 	case apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats,
@@ -359,6 +374,19 @@ func routeExtensionAvailable(id apicontract.RouteID, config handlerConfig) bool 
 	return available
 }
 
+func labsFluidUIRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
+	switch id {
+	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport:
+		return config.labsFluidUI != nil
+	case apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		// Submitting and retrying start a workflow run through trigger ingest.
+		return config.labsFluidUIRequests != nil && config.triggers != nil
+	default:
+		return config.labsFluidUIRequests != nil
+	}
+}
+
 func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
 	if id == apicontract.RouteWorkItems || id == apicontract.RouteWorkItemDetail {
 		return config.telemetryReadsAvailable && config.workItemsAvailable
@@ -367,7 +395,7 @@ func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool 
 }
 
 func requiredRole(route apicontract.Route) string {
-	if route.Method == http.MethodGet && route.ID != apicontract.RouteRunRecovery {
+	if route.Method == http.MethodGet && route.ID != apicontract.RouteRunRecovery || labsFluidUIPath(route.Path) {
 		return string(RoleView)
 	}
 	return string(RoleOperate)

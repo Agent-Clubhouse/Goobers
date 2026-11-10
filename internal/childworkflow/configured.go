@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/runtimewiring"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 // GooberAdmission reuses the host's normal offline harness/model/MCP admission.
@@ -38,6 +39,9 @@ type ConfiguredRequest struct {
 	ParentStage    string
 	ProposalPath   string
 	Backend        Backend
+	// ClusterModelPath optionally names a frozen Labs cluster model used only
+	// for advisory novelty evidence; it never changes Valid or diagnostics.
+	ClusterModelPath string
 }
 
 // ParentSelection identifies a stage within a gaggle-scoped workflow.
@@ -64,6 +68,8 @@ type ConfiguredReport struct {
 	WorkflowDigest  string          `json:"workflowDigest,omitempty"`
 	Diagnostics     []Diagnostic    `json:"diagnostics"`
 	Warnings        []string        `json:"warnings,omitempty"`
+	// Novelty is present only when a cluster model was requested.
+	Novelty *workflowcluster.Novelty `json:"novelty,omitempty"`
 }
 
 // ValidateConfigured loads the existing active config/ tree without fetching or
@@ -118,6 +124,15 @@ func ValidateConfigured(request ConfiguredRequest, admit GooberAdmission) (Confi
 	}
 	report.Warnings = append(report.Warnings, warnings...)
 	report.ConfigDigest = context.ConfigDigest
+	if request.ClusterModelPath != "" {
+		context.ClusterModelConfigured = true
+		model, modelErr := workflowcluster.LoadModel(request.ClusterModelPath)
+		if modelErr != nil {
+			report.Warnings = append(report.Warnings, "cluster model unavailable; novelty unscored: "+bounded(modelErr.Error()))
+		} else {
+			context.ClusterModel = &model
+		}
+	}
 	v, err := NewValidator(context)
 	if err != nil {
 		return configuredRefusal(report, "parent_config", err.Error()), nil
@@ -136,6 +151,9 @@ func ValidateConfigured(request ConfiguredRequest, admit GooberAdmission) (Confi
 	report.CanonicalDigest = proposal.CanonicalDigest
 	report.PolicyDigest = proposal.PolicyDigest
 	report.WorkflowDigest = proposal.Machine.Digest()
+	if request.ClusterModelPath != "" {
+		report.Novelty = proposal.Novelty
+	}
 	return report, nil
 }
 

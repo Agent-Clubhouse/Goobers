@@ -16,6 +16,7 @@ func openAPIChildWorkflowSchemas() map[string]any {
 	validation := mergeSchemaProperties(digests, map[string]any{
 		"valid": map[string]any{"type": "boolean"}, "advisory": map[string]any{"type": "boolean", "const": true},
 		"diagnostics": map[string]any{"type": "array", "items": schemaRef("ChildWorkflowDiagnostic")},
+		"novelty":     schemaRef("ChildWorkflowNovelty"),
 	})
 	custody := mergeSchemaProperties(digests, map[string]any{
 		"childId": stringSchema(), "acceptanceId": stringSchema(), "runId": stringSchema(), "invocationKey": key,
@@ -24,7 +25,12 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"duplicate": map[string]any{"type": "boolean"}, "cancellationRequested": map[string]any{"type": "boolean"},
 		"acknowledged": map[string]any{"type": "boolean"}, "disposition": schemaRef("ChildWorkflowResolutionResponse"),
 		"resultRef": stringSchema(), "workspaceRef": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
+		"novelty": schemaRef("ChildWorkflowNovelty"), "admission": schemaRef("ChildWorkflowAdmission"),
 	})
+	boolean := map[string]any{"type": "boolean"}
+	unit := map[string]any{"type": "number", "minimum": 0, "maximum": 1}
+	evidence := map[string]any{"type": "string", "maxLength": 256}
+	count := map[string]any{"type": "integer", "minimum": 0}
 	return map[string]any{
 		"ChildWorkflowAccessRequest":  closedChildObject([]string{"contractDigest"}, map[string]any{"contractDigest": digest}),
 		"ChildWorkflowAccessResponse": closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "description": "Short-lived secret delivered only to the authenticated parent attempt"}}),
@@ -37,6 +43,19 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"ChildWorkflowResolutionResponse": closedChildObject([]string{"invocationKey", "action", "resultRef", "requestedAt", "applied", "requestDigest", "planPublished"}, map[string]any{"invocationKey": key, "action": action, "resultRef": digest, "requestedAt": dateTimeSchema(), "applied": map[string]any{"type": "boolean"}, "appliedAt": dateTimeSchema(), "requestDigest": digest, "planPublished": map[string]any{"type": "boolean"}}),
 		"ChildWorkflowDiagnostic": closedChildObject([]string{"code", "message"}, map[string]any{
 			"code": stringSchema(), "stage": stringSchema(), "field": stringSchema(), "message": stringSchema(),
+		}),
+		"ChildWorkflowNovelty": closedChildObject([]string{"scored", "distance", "outOfDistribution", "summary"}, map[string]any{
+			"scored": boolean, "reason": evidence, "modelId": evidence, "modelVersion": evidence, "featureVersion": evidence,
+			"clusterId": evidence, "nearest": evidence, "nearestMedoid": evidence, "nearestSize": count, "nearestStable": boolean,
+			"distance": unit, "outOfDistribution": boolean, "historicalOutcome": schemaRef("ChildWorkflowHistoricalOutcome"),
+			"humanApprovalRequired": boolean, "summary": stringSchema(),
+		}),
+		"ChildWorkflowHistoricalOutcome": closedChildObject([]string{"runCount", "successRate", "insufficientRuns"}, map[string]any{
+			"runCount": count, "successRate": unit, "insufficientRuns": boolean,
+		}),
+		"ChildWorkflowAdmission": closedChildObject([]string{"state", "reason", "requestedAt"}, map[string]any{
+			"state":  map[string]any{"type": "string", "enum": []string{"pending", "approved", "rejected"}},
+			"reason": stringSchema(), "requestedAt": dateTimeSchema(), "decidedAt": dateTimeSchema(),
 		}),
 		"ChildWorkflowValidationResponse": closedChildObject([]string{"valid", "advisory", "diagnostics"}, validation),
 		"ChildWorkflowResponse":           closedChildObject([]string{"childId", "acceptanceId", "runId", "invocationKey", "sequence", "state", "sourceDigest", "canonicalDigest", "configDigest", "policyDigest", "workflowDigest", "cancellationRequested", "acknowledged", "acceptedAt", "updatedAt"}, custody),

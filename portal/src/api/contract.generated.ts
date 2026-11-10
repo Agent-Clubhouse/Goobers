@@ -39,10 +39,24 @@ export const apiRoutes = {
   "workItemDetail": { method: "GET", path: "/api/v1/work-items/{provider}/{kind}/{id}", actionClass: "read-only-navigation" },
   "telemetryImplementationOutcomes": { method: "GET", path: "/api/v1/telemetry/implementation-outcomes", actionClass: "read-only-navigation" },
   "telemetryDefectAggregates": { method: "GET", path: "/api/v1/telemetry/defect-aggregates", actionClass: "read-only-navigation" },
+  "labsWorkflowClusters": { method: "GET", path: "/api/v1/labs/workflow-clusters", actionClass: "read-only-navigation" },
+  "labsWorkflowFeatures": { method: "GET", path: "/api/v1/labs/workflow-features", actionClass: "read-only-navigation", capability: "labs.workflowFeatures" },
+  "labsFluidUICustomizationGet": { method: "GET", path: "/api/v1/labs/fluid-ui/customization", actionClass: "read-only-navigation" },
+  "labsFluidUICustomizationPut": { method: "PUT", path: "/api/v1/labs/fluid-ui/customization", actionClass: "maintenance" },
+  "labsFluidUICustomizationReset": { method: "DELETE", path: "/api/v1/labs/fluid-ui/customization", actionClass: "maintenance" },
+  "labsFluidUICustomizationUndo": { method: "POST", path: "/api/v1/labs/fluid-ui/customization/undo", actionClass: "maintenance" },
+  "labsFluidUIRequestsList": { method: "GET", path: "/api/v1/labs/fluid-ui/requests", actionClass: "read-only-navigation" },
+  "labsFluidUIRequestSubmit": { method: "POST", path: "/api/v1/labs/fluid-ui/requests", actionClass: "workflow-execution" },
+  "labsFluidUIRequestGet": { method: "GET", path: "/api/v1/labs/fluid-ui/requests/{request}", actionClass: "read-only-navigation" },
+  "labsFluidUIRequestRetry": { method: "POST", path: "/api/v1/labs/fluid-ui/requests/{request}/retry", actionClass: "workflow-execution" },
+  "labsFluidUIRequestApply": { method: "POST", path: "/api/v1/labs/fluid-ui/requests/{request}/apply", actionClass: "maintenance" },
+  "labsFluidUIRequestRevert": { method: "POST", path: "/api/v1/labs/fluid-ui/requests/{request}/revert", actionClass: "maintenance" },
+  "labsFluidUIReport": { method: "GET", path: "/api/v1/labs/fluid-ui/report", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
   "rerunStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/rerun", actionClass: "runtime-mutation", capability: "rerun" },
+  "retryStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/retry", actionClass: "runtime-mutation", capability: "retry" },
   "workflowEnabled": { method: "PUT", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}/enabled", actionClass: "maintenance" },
   "claimAcquire": { method: "POST", path: "/api/v1/claims/acquire", actionClass: "workflow-execution" },
   "claimRenew": { method: "POST", path: "/api/v1/claims/renew", actionClass: "workflow-execution" },
@@ -110,7 +124,7 @@ export const configAuthoringErrorCodes = ["config_source_not_found", "config_doc
 export type ConfigAuthoringErrorCode =
   (typeof configAuthoringErrorCodes)[number];
 
-export const runtimeMutationCapabilities = ["approve", "override", "rerun"] as const;
+export const runtimeMutationCapabilities = ["approve", "override", "rerun", "retry"] as const;
 
 export type RuntimeMutationCapabilityId =
   (typeof runtimeMutationCapabilities)[number];

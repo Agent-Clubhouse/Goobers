@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -73,8 +74,64 @@ func TestDecideShadowNeverChangesOutcome(t *testing.T) {
 	if code, _, stderr := runArgs(t, "decide", "--name", "q", "--question", "x", "--state-file", state, root); code != 0 {
 		t.Fatalf("code %d: %s", code, stderr)
 	}
-	if got := decideOutput(t, result); got["decision"] != "uncertain" || got["mode"] != "shadow" {
+	if got := decideOutput(t, result); got["decision"] != "uncertain" || got["mode"] != "shadow" || got["probability"] != "0.9900" {
 		t.Errorf("shadow must report uncertain: %v", got)
+	}
+}
+
+func TestDecideOptionalCriteriaRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want map[string]string
+	}{
+		{name: "omitted"},
+		{name: "true-only", args: []string{"--true", "Supported"}, want: map[string]string{"true": "Supported"}},
+		{name: "false-only", args: []string{"--false", "Unsupported"}, want: map[string]string{"false": "Unsupported"}},
+		{name: "both", args: []string{"--true", "Supported", "--false", "Unsupported"}, want: map[string]string{"true": "Supported", "false": "Unsupported"}},
+		{name: "explicit-empty", args: []string{"--true", "", "--false", ""}},
+		{name: "empty-true", args: []string{"--true", "", "--false", "Unsupported"}, want: map[string]string{"false": "Unsupported"}},
+		{name: "blank", args: []string{"--true", " \t", "--false", "\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, state, result := decideFixture(t, "shadow", "agent", 0.97)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Questions map[string]struct {
+						Criteria json.RawMessage `json:"criteria"`
+					} `json:"questions"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode request: %v", err)
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				raw := request.Questions["q"].Criteria
+				var criteria map[string]string
+				if len(raw) != 0 {
+					if err := json.Unmarshal(raw, &criteria); err != nil {
+						t.Errorf("decode criteria: %v", err)
+					}
+				}
+				if !reflect.DeepEqual(criteria, tc.want) || (tc.want == nil && len(raw) != 0) {
+					t.Errorf("criteria = %s, want %v", raw, tc.want)
+					http.Error(w, "criteria must omit empty values", http.StatusUnprocessableEntity)
+					return
+				}
+				_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"noul","noul":0.97}}}`))
+			}))
+			defer srv.Close()
+			t.Setenv("DECIDE_TEST_URL", srv.URL)
+			args := append([]string{"decide", "--name", "q", "--question", "Is it supported?", "--state-file", state}, tc.args...)
+			code, _, stderr := runArgs(t, append(args, root)...)
+			if code != 0 {
+				t.Fatalf("code %d: %s", code, stderr)
+			}
+			got := decideOutput(t, result)
+			if got["decision"] != "uncertain" || got["mode"] != "shadow" || got["probability"] != "0.9700" {
+				t.Errorf("shadow must retain a real probability without enforcing: %v; stderr: %s", got, stderr)
+			}
+		})
 	}
 }
 

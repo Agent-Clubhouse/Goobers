@@ -175,6 +175,14 @@
       "default": false,
       "description": "Opts `goobers up` into native desktop notifications for escalated and failed runs. The one-shot daemon override is `goobers up --notify` (`--notify=all` adds completed and aborted runs)."
     },
+    "workflowClustering": {
+      "description": "Optional Labs frozen cluster model used for advisory child-workflow novelty evidence. Missing, invalid, or stale models leave admission unchanged and report proposals as unscored.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "modelPath": { "type": "string", "minLength": 1, "description": "Frozen model JSON path, relative to the instance root or absolute." }
+      }
+    },
     "decisionGate": {
       "description": "Opt-in decision-model (System One) layer. Omitted means off and nothing is sent to any endpoint. The *Env fields name environment variables; secrets are never stored here.",
       "type": "object",
@@ -185,9 +193,34 @@
         "keyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the API key." },
         "auth": { "type": "string", "enum": ["key", "entra"], "default": "key", "description": "Credential kind. `key` reads keyEnv; `entra` uses the ambient Azure identity (workload or managed identity) and requires keyEnv to be omitted." },
         "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
+        "stallDetection": { "type": "boolean", "default": false, "description": "Opts local agentic stages in to shadow scoring of transcript windows for repetition and no-progress against later budget exhaustion. Advisory only; inert unless mode is shadow." },
+        "intakeDetection": { "type": "boolean", "default": false, "description": "Opts backlog claims in to shadow duplicate/dependency checks of claimed items against open issues. Advisory only; inert unless mode is shadow." },
         "publicationLeakScreen": { "type": "boolean", "default": false, "description": "Separately opts shadow mode into sending proposed public PR and nominated issue text to the decision model for advisory leak screening. Omitted means publication text is never sent." },
         "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
         "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
+        "agentTool": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optionally exposes a budgeted `decide` MCP tool to named agent tasks. Denied by default: only listed tasks see the tool.",
+          "properties": {
+            "tasks": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Task ids granted the tool. Wildcards are not allowed." },
+            "maxCalls": { "type": "integer", "minimum": 0, "maximum": 50, "description": "Model calls allowed per stage invocation; 0 means 5." }
+          }
+        },
+        "handoffSchemas": {
+          "type": "array",
+          "description": "Binds a producer stage's sole JSON result to a JSON Schema so consumers' handoff validity (the shadow record's inputValid) is checked for workflows that cannot declare schema-bound artifactSlots. Inert while the gate is off.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["workflow", "stage", "schemaPath"],
+            "properties": {
+              "workflow": { "type": "string", "minLength": 1, "description": "Name of the workflow that declares the producer stage." },
+              "stage": { "type": "string", "minLength": 1, "description": "Name of the producer stage whose JSON result is validated." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "JSON Schema (draft 2020-12) path, relative to and contained within the config directory." }
+            }
+          }
+        },
         "gate": {
           "type": "object",
           "additionalProperties": false,

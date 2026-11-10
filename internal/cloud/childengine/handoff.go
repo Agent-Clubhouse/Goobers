@@ -100,7 +100,7 @@ func observeHandoff(ctx context.Context, queue handoffQueue, authority childwork
 	if _, err := childworkflow.ValidateRetainedStart(authority, envelope, source.Source); err != nil {
 		return nil, err
 	}
-	handoff := journal.ChildHandoffRequest{Gaggle: o.Gaggle, ParentRunID: o.RunID, Action: "wait", ChildRunID: child.RunID, AcceptanceID: child.AcceptanceID, InvocationKey: child.Identity.InvocationKey, SourceDigest: child.ProposalDigest, Origin: request.Origin}
+	handoff := journal.ChildHandoffRequest{Gaggle: o.Gaggle, ParentRunID: o.RunID, Action: "wait", ChildRunID: child.RunID, AcceptanceID: child.AcceptanceID, InvocationKey: child.Identity.InvocationKey, SourceDigest: child.ProposalDigest, Origin: request.Origin, Novelty: envelope.JournalNovelty()}
 	handoff.RequestID = engine.ChildHandoffDigest(handoff)
 	if err := handoff.Validate(&request.Origin); err != nil {
 		return nil, err

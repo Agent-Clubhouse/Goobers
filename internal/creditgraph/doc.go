@@ -22,4 +22,9 @@
 // what is absent; no link is inferred to fill the hole. A partially
 // instrumented run therefore produces a smaller, honest graph rather than a
 // complete-looking, fabricated one.
+//
+// SuggestUnknownCauses is the one place a model is consulted: it offers an
+// advisory, separately labeled class for ClassUnknown causes through the
+// decision gate. Its answers are statistical, recorded with probability and an
+// evidence digest, and never alter an Attribution.
 package creditgraph

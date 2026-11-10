@@ -170,6 +170,30 @@ func TestResolvePreservesDefinitionAnnotations(t *testing.T) {
 	f.balanced(t, "annotated start")
 }
 
+func TestResolveCarriesWorkflowLabelsOutsideTheWorkflowDigest(t *testing.T) {
+	f := newFixture(t)
+	baseDigest := f.pins(t, "gen-1")["goobers/implementation"].WorkflowDigest
+	f.src.variants["labeled"] = func(set *instance.ConfigSet) {
+		for i := range set.Workflows {
+			if set.Workflows[i].Name == "implementation" {
+				set.Workflows[i].Labels = map[string]string{"goobers.dev/task-class": "review"}
+			}
+		}
+	}
+
+	in, err := f.resolver.Resolve(t.Context(), f.record(t, "labeled", "implementation", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.WorkflowLabels["goobers.dev/task-class"] != "review" {
+		t.Fatalf("workflow labels = %v, want task class review", in.WorkflowLabels)
+	}
+	if in.WorkflowDigest != baseDigest {
+		t.Fatalf("labels changed workflow digest: %s != %s", in.WorkflowDigest, baseDigest)
+	}
+	f.balanced(t, "labeled start")
+}
+
 // TestResolveMapsEverySourceToLocalProvenance covers each source kind with the
 // local scheduler's exact mapping (SourceTrigger.Trigger): the engine defers
 // run-branch provenance for schedule and item, so a wrong kind journals it wrong.

@@ -65,6 +65,8 @@ func (s *hitlSession) terminalIntent(intent HITLIntent, plan *hitlResumePlan) (j
 	switch intent.Kind {
 	case HITLRerunStage:
 		action, stage = "rerun", intent.Stage
+	case HITLRetryStage:
+		action, stage = "retry", intent.Stage
 	case HITLResolveEscalation:
 		action = intent.Resolution
 	}
@@ -72,7 +74,11 @@ func (s *hitlSession) terminalIntent(intent HITLIntent, plan *hitlResumePlan) (j
 	if err != nil {
 		return journal.TerminalIntervention{}, err
 	}
-	marker := journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{"kind": "intervention.idempotency", "idempotencyKey": intent.RequestID, "fingerprint": fingerprint, "action": action, "stage": stage}}
+	marker := journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{
+		"kind": "intervention.idempotency", "idempotencyKey": intent.RequestID,
+		"fingerprint": fingerprint, "action": action, "stage": stage,
+		"expectedTerminalSeq": s.terminalSeq, "expectedTerminalGeneration": s.generation,
+	}}
 	if plan == nil {
 		marker.Runner = map[string]any{"kind": HITLEscalationResolutionMarker, "resolution": "deny", "idempotencyKey": intent.RequestID, "fingerprint": fingerprint, "actor": intent.Actor, "rationale": strings.TrimSpace(intent.Rationale)}
 	}

@@ -72,6 +72,7 @@ func (s *fakeSocket) Close(websocket.StatusCode, string) error {
 
 func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	store, publicKey := connectorTestStorage(t)
+	store.record.Association.Projections = []string{ProjectionLabsWorkflowFeatures}
 	store.record.Association.LastHeartbeatAt = time.Now().Add(-time.Hour)
 	challenge := Challenge{
 		Type:            "challenge",
@@ -109,7 +110,8 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for hello")
 	}
-	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" {
+	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" ||
+		len(hello.Projections) != 1 || hello.Projections[0] != ProjectionLabsWorkflowFeatures {
 		t.Fatalf("hello = %+v", hello)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -172,6 +174,25 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	}
 	if record.Association.HeartbeatSeconds != 30 {
 		t.Fatalf("heartbeat seconds = %d, want 30", record.Association.HeartbeatSeconds)
+	}
+	if record.Association.Projections != nil || len(record.Association.ActiveProjections()) != 0 {
+		t.Fatalf("projections after revoke = %v, active = %v",
+			record.Association.Projections, record.Association.ActiveProjections())
+	}
+}
+
+func TestRevokedAssociationHasNoActiveProjections(t *testing.T) {
+	association := Association{Projections: []string{ProjectionLabsWorkflowFeatures}}
+	if got := association.ActiveProjections(); len(got) != 1 || got[0] != ProjectionLabsWorkflowFeatures {
+		t.Fatalf("active projections = %v", got)
+	}
+	association.Revoked = true
+	association.RevokeReason = "operator removed registration"
+	if got := association.ActiveProjections(); got == nil || len(got) != 0 {
+		t.Fatalf("revoked active projections = %#v, want empty", got)
+	}
+	if !association.Revoked || association.RevokeReason != "operator removed registration" {
+		t.Fatalf("association = %+v", association)
 	}
 }
 

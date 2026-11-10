@@ -84,10 +84,11 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	//
 	// The credential is resolved first because the checkout authenticates with
 	// it, and resolving twice would mint two credentials for one stage.
-	minted, mintedScheme, err := resolveStageCredentialsWithScheme(ctx)
+	resolution, err := resolveStageCredentialResolution(ctx)
 	if err != nil {
 		return fail("credential_resolve_failed", err)
 	}
+	minted, mintedScheme := resolution.Credentials, resolution.RepoAuthScheme
 	workspace, err := os.Getwd()
 	if err != nil {
 		return fail("workspace_provision_failed", fmt.Errorf("resolve workspace: %w", err))
@@ -180,7 +181,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) (out stageOu
 	}
 
 	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
-	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, checkoutCreds, runsDir)
+	exec, scrubber, err := buildPodAgenticExecutor(kit, stderr, checkoutCreds, runsDir, resolution.DecisionShadow)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
@@ -500,11 +501,11 @@ func podAgenticExecutorInput(w runtimewiring.PodExecutorWiring) runtimewiring.Ag
 // buildPodAgenticExecutor also returns the scrubber chained over the
 // executor's own secret registry, so the outbox export redacts every value the
 // executor registered (minted credentials included).
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, journal.Scrubber, error) {
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string, shadow *dispatcher.DecisionShadow) (invoke.Goober, journal.Scrubber, error) {
 	var scrubber journal.Scrubber
 	exec, err := runtimewiring.BuildPodAgenticExecutor(kit, stderr, minted, runsDir, func(input runtimewiring.AgenticExecutorInput) runtimewiring.AgenticExecutorInput {
 		scrubber = journal.Chain(input.SharedRegistry, journal.NewPatternScrubber())
-		return podAgenticExecutorInput(runtimewiring.PodExecutorWiring{Kit: kit, RunsDir: runsDir, Stderr: stderr, Scrubber: input.SharedRegistry, Registry: input.SharedRegistry, Resolver: input.Resolver, Grants: input.Grants, AdapterRegistry: input.AdapterRegistry, HarnessInfo: input.HarnessInfo})
+		return podAgenticExecutorInput(runtimewiring.PodExecutorWiring{Kit: kit, RunsDir: runsDir, Stderr: stderr, Scrubber: input.SharedRegistry, Registry: input.SharedRegistry, Resolver: input.Resolver, Grants: input.Grants, AdapterRegistry: input.AdapterRegistry, HarnessInfo: input.HarnessInfo, Observer: runtimewiring.PodDecisionShadowObserver(shadow, input.SharedRegistry, stderr)})
 	})
 	return exec, scrubber, err
 }

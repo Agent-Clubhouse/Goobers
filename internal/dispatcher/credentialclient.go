@@ -82,6 +82,15 @@ type CredentialResolution struct {
 	RepoAuthScheme        string
 	Grant                 *CredentialGrant
 	PublicationLeakScreen *PublicationLeakScreen
+	DecisionShadow        *DecisionShadow
+}
+
+// DecisionShadow mirrors httpapi.DecisionShadowDelivery.
+type DecisionShadow struct {
+	Settings decisiongate.Settings `json:"settings"`
+	BaseURL  string                `json:"baseUrl"`
+	APIKey   string                `json:"apiKey"`
+	Model    string                `json:"model"`
 }
 
 // PublicationLeakScreen mirrors httpapi.PublicationLeakScreenDelivery.
@@ -277,6 +286,7 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 		RepoAuthScheme        string                 `json:"repoAuthScheme"`
 		Grant                 *CredentialGrant       `json:"grant"`
 		PublicationLeakScreen *PublicationLeakScreen `json:"publicationLeakScreen"`
+		DecisionShadow        *DecisionShadow        `json:"decisionShadow"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		return CredentialResolution{}, false, &CredentialResponseError{err: fmt.Errorf("dispatcher: decode credential resolve response: %w", err)}
@@ -292,6 +302,7 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 	return CredentialResolution{
 		Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme,
 		Grant: decoded.Grant, PublicationLeakScreen: decoded.PublicationLeakScreen,
+		DecisionShadow: decoded.DecisionShadow,
 	}, false, nil
 }
 

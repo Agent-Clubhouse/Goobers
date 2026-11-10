@@ -586,6 +586,10 @@ func StageRequiresInstanceConfig(command []string) bool {
 // stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
 // list is still complete.
 var stageCommandsRequiringInstanceRoot = map[string]bool{
+	// fluid-ui-request --load reads the requester's private Labs Fluid UI
+	// request and customization records under <root>/labs/fluid-ui, which no
+	// plane serves; they stay on the daemon host by design.
+	"fluid-ui-request": true,
 	// pr-select is NOT here any more (Goobers#3988). Its claims are on the
 	// claims plane and the last thing that held it — the FAIRNESS LEASE at
 	// SchedulerDir()/pr-select-fairness.json, #1336's aging plus the one-hour
@@ -812,6 +816,10 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 //
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
+	verificationEnabled, err := e.verificationEnabled(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
 	if err := validateShellChildWorkspace(ctx, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -1045,22 +1053,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	stdoutRef, err := e.Journal.RecordArtifact(env.TaskID+"/stdout.log", outBytes)
+	stdoutRef, stderrRef, err := e.recordCapturedOutput(env.TaskID, stdout, stderr, outBytes, errBytes, &result)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stdout: %w", err)
+		return apiv1.ResultEnvelope{}, err
 	}
-	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
-	if stdout.Truncated() {
-		result.Outputs[StdoutTruncatedOutput] = true
-	}
-
-	stderrRef, err := e.Journal.RecordArtifact(env.TaskID+"/stderr.log", errBytes)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record stderr: %w", err)
-	}
-	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
-	if stderr.Truncated() {
-		result.Outputs[StderrTruncatedOutput] = true
+	if verificationEnabled {
+		defer e.publishVerificationReport(env, outBytes, stdout.Truncated(), stdoutRef, &outcome, &retErr)
 	}
 
 	if timedOut {
@@ -1392,6 +1390,26 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+func (e *ShellExecutor) recordCapturedOutput(stage string, stdout, stderr *capturingWriter, outBytes, errBytes []byte, result *apiv1.ResultEnvelope) (journal.Ref, journal.Ref, error) {
+	stdoutRef, err := e.Journal.RecordArtifact(stage+"/stdout.log", outBytes)
+	if err != nil {
+		return journal.Ref{}, journal.Ref{}, fmt.Errorf("executor: record stdout: %w", err)
+	}
+	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
+	if stdout.Truncated() {
+		result.Outputs[StdoutTruncatedOutput] = true
+	}
+	stderrRef, err := e.Journal.RecordArtifact(stage+"/stderr.log", errBytes)
+	if err != nil {
+		return journal.Ref{}, journal.Ref{}, fmt.Errorf("executor: record stderr: %w", err)
+	}
+	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
+	if stderr.Truncated() {
+		result.Outputs[StderrTruncatedOutput] = true
+	}
+	return stdoutRef, stderrRef, nil
 }
 
 // MergeResultFileOutputs best-effort-parses a declared result file's bytes as

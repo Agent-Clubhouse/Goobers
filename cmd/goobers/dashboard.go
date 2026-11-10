@@ -34,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/startuphint"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 const (
@@ -825,7 +826,11 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	streamOpts := []httpapi.HandlerOption{
 		httpapi.WithTelemetryReadAvailability(telemetry != nil),
 		httpapi.WithTrustedProxies(config.API.TrustedProxies),
+		// Same read-only Labs source `goobers up` wires (#8309).
+		httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: layout.Root}),
 	}
+	streamOpts = append(streamOpts, labsWorkflowFeaturesOptions(layout.Root, errorLog.Writer())...)
+	streamOpts = append(streamOpts, labsFluidUIOptions(layout)...)
 	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
 		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
 	} else {

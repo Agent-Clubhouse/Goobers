@@ -68,7 +68,7 @@ func TestChildLineageRoundTripAndTamper(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := reader.Identity()
-	if err != nil || got.Child == nil || *got.Child != *id.Child {
+	if err != nil || got.Child == nil || !got.Child.Equal(*id.Child) {
 		t.Fatalf("lineage: %+v %v", got.Child, err)
 	}
 	got.Child.Gaggle = "another"

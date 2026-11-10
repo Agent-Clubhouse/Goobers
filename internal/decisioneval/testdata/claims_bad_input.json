@@ -1,0 +1,528 @@
+{
+  "question": "claims_bad_input",
+  "instructions": "Does this reply claim that its input was corrupted, incomplete, truncated, malformed or unreadable, instead of producing the requested result?",
+  "items": [
+    {
+      "id": "tune-pos-00",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-0).",
+      "label": true,
+      "systemOne": 0.95,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-pos-01",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-1).",
+      "label": true,
+      "systemOne": 0.95,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-pos-02",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-2).",
+      "label": true,
+      "systemOne": 0.95,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-pos-03",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-3).",
+      "label": true,
+      "systemOne": 0.95,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-pos-04",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-4).",
+      "label": true,
+      "systemOne": 0.95,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-pos-05",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-5).",
+      "label": true,
+      "systemOne": 0.95,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-pos-06",
+      "split": "tune",
+      "text": "The input file was truncated so I cannot continue (sample tune-6).",
+      "label": true,
+      "systemOne": 0.7,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-00",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-0).",
+      "label": false,
+      "systemOne": 0.05,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-01",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-1).",
+      "label": false,
+      "systemOne": 0.05,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-02",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-2).",
+      "label": false,
+      "systemOne": 0.05,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-03",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-3).",
+      "label": false,
+      "systemOne": 0.05,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-04",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-4).",
+      "label": false,
+      "systemOne": 0.05,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-05",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-5).",
+      "label": false,
+      "systemOne": 0.05,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "tune-neg-06",
+      "split": "tune",
+      "text": "Implemented the change and the tests pass (sample tune-6).",
+      "label": false,
+      "systemOne": 0.6,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-00",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-0).",
+      "label": true,
+      "systemOne": 0.6,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-01",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-1).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-02",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-2).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-03",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-3).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-04",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-4).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-05",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-5).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-06",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-6).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-07",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-7).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-08",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-8).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-09",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-9).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-10",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-10).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-11",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-11).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-12",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-12).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-13",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-13).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-14",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-14).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-15",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-15).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-16",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-16).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-17",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-17).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-18",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-18).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-19",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-19).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-20",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-20).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-pos-21",
+      "split": "report",
+      "text": "The input file was truncated so I cannot continue (sample report-21).",
+      "label": true,
+      "systemOne": 0.97,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-00",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-0).",
+      "label": false,
+      "systemOne": 0.5,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-01",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-1).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-02",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-2).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "yes",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-03",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-3).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-04",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-4).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-05",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-5).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-06",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-6).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-07",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-7).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-08",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-8).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-09",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-9).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-10",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-10).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-11",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-11).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-12",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-12).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-13",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-13).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-14",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-14).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-15",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-15).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-16",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-16).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-17",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-17).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-18",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-18).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-19",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-19).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-20",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-20).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    },
+    {
+      "id": "report-neg-21",
+      "split": "report",
+      "text": "Implemented the change and the tests pass (sample report-21).",
+      "label": false,
+      "systemOne": 0.02,
+      "judge": "no",
+      "source": "handoffcheck"
+    }
+  ]
+}

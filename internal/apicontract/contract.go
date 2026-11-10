@@ -87,12 +87,43 @@ const (
 	// aggregates never cross the boundary.
 	TelemetryDefectAggregatesPath = V1Prefix + "/telemetry/defect-aggregates"
 	EventsPath                    = V1Prefix + "/events"
+	// LabsWorkflowClustersPath is the experimental, advisory cluster map of the
+	// instance's configured workflows (#8309).
+	LabsWorkflowClustersPath = V1Prefix + "/labs/workflow-clusters"
+	// LabsWorkflowFeaturesPath serves a privacy-safe fleet feature snapshot to
+	// associations that grant the labs.workflowFeatures projection.
+	LabsWorkflowFeaturesPath = V1Prefix + "/labs/workflow-features"
+	// LabsFluidUICustomizationPath reads and writes the calling user's own
+	// Portal presentation customization (Labs Fluid UI, #8415). The document
+	// is typed presentation data, never code, and never affects runtime.
+	LabsFluidUICustomizationPath = V1Prefix + "/labs/fluid-ui/customization"
+	// LabsFluidUICustomizationUndoPath restores the user's previous revision.
+	LabsFluidUICustomizationUndoPath = LabsFluidUICustomizationPath + "/undo"
+	// LabsFluidUIPrefix covers every Labs Fluid UI route. Each acts only on
+	// the caller's own records.
+	LabsFluidUIPrefix = V1Prefix + "/labs/fluid-ui/"
+	// LabsFluidUIRequestsPath lists and submits the caller's own
+	// natural-language customization requests (#8417).
+	LabsFluidUIRequestsPath = V1Prefix + "/labs/fluid-ui/requests"
+	// LabsFluidUIRequestPath reads one of the caller's requests.
+	LabsFluidUIRequestPath = LabsFluidUIRequestsPath + "/{request}"
+	// LabsFluidUIRequestRetryPath starts a fresh attempt for a failed request.
+	LabsFluidUIRequestRetryPath = LabsFluidUIRequestPath + "/retry"
+	// LabsFluidUIRequestApplyPath applies a ready_to_preview candidate.
+	LabsFluidUIRequestApplyPath = LabsFluidUIRequestPath + "/apply"
+	// LabsFluidUIRequestRevertPath undoes an applied request.
+	LabsFluidUIRequestRevertPath = LabsFluidUIRequestPath + "/revert"
+	// LabsFluidUIReportPath ranks customization shapes across users as
+	// advisory promotion candidates (#8419). It reports counts and shapes
+	// only, never identities, prompt text, or saved-view content.
+	LabsFluidUIReportPath = V1Prefix + "/labs/fluid-ui/report"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
 	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
+	RunStageRetryPath    = V1Prefix + "/runs/{run}/stages/{stage}/retry"
 
 	// WorkflowEnabledPath is the write-plane route that toggles the
 	// scheduler's honor bit for every non-manual trigger of a workflow. The
@@ -370,12 +401,29 @@ const (
 	// because what it serves is exactly one lane's fixed evidence set and
 	// widening it is a ruling amendment, not a parameter change.
 	RouteTelemetryDefectAggregates RouteID = "telemetryDefectAggregates"
+	RouteLabsWorkflowClusters      RouteID = "labsWorkflowClusters"
+	RouteLabsWorkflowFeatures      RouteID = "labsWorkflowFeatures"
+	// The Fluid UI customization routes share one path across methods, so
+	// each method has its own RouteID (like the blob plane).
+	RouteLabsFluidUIGet    RouteID = "labsFluidUICustomizationGet"
+	RouteLabsFluidUIPut    RouteID = "labsFluidUICustomizationPut"
+	RouteLabsFluidUIReset  RouteID = "labsFluidUICustomizationReset"
+	RouteLabsFluidUIUndo   RouteID = "labsFluidUICustomizationUndo"
+	RouteLabsFluidUIReport RouteID = "labsFluidUIReport"
+
+	RouteLabsFluidUIRequestsList  RouteID = "labsFluidUIRequestsList"
+	RouteLabsFluidUIRequestSubmit RouteID = "labsFluidUIRequestSubmit"
+	RouteLabsFluidUIRequestGet    RouteID = "labsFluidUIRequestGet"
+	RouteLabsFluidUIRequestRetry  RouteID = "labsFluidUIRequestRetry"
+	RouteLabsFluidUIRequestApply  RouteID = "labsFluidUIRequestApply"
+	RouteLabsFluidUIRequestRevert RouteID = "labsFluidUIRequestRevert"
 
 	RouteEvents RouteID = "events"
 
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
 	RouteRerunStage    RouteID = "rerunStage"
+	RouteRetryStage    RouteID = "retryStage"
 
 	// RouteWorkflowEnabled toggles the scheduler's honor bit for a workflow's
 	// non-manual triggers atomically. It is classed as a maintenance action
@@ -635,11 +683,27 @@ var v1Routes = []Route{
 	// This route derives four families from rollups and causal-credit data.
 	// Its window, response and cardinality remain bounded server-side.
 	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
+	{ID: RouteLabsWorkflowClusters, Method: http.MethodGet, Path: LabsWorkflowClustersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteLabsWorkflowFeatures, Method: http.MethodGet, Path: LabsWorkflowFeaturesPath, ActionClass: ActionReadOnlyNavigation, Capability: "labs.workflowFeatures", Cost: CostAggregate, Budget: BoundedBudget},
+	// Fluid UI writes are maintenance: they change only the caller's own
+	// presentation preferences, never a run, gate, or instance configuration.
+	{ID: RouteLabsFluidUIGet, Method: http.MethodGet, Path: LabsFluidUICustomizationPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteLabsFluidUIPut, Method: http.MethodPut, Path: LabsFluidUICustomizationPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIReset, Method: http.MethodDelete, Path: LabsFluidUICustomizationPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIUndo, Method: http.MethodPost, Path: LabsFluidUICustomizationUndoPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestsList, Method: http.MethodGet, Path: LabsFluidUIRequestsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteLabsFluidUIRequestSubmit, Method: http.MethodPost, Path: LabsFluidUIRequestsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestGet, Method: http.MethodGet, Path: LabsFluidUIRequestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteLabsFluidUIRequestRetry, Method: http.MethodPost, Path: LabsFluidUIRequestRetryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestApply, Method: http.MethodPost, Path: LabsFluidUIRequestApplyPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestRevert, Method: http.MethodPost, Path: LabsFluidUIRequestRevertPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIReport, Method: http.MethodGet, Path: LabsFluidUIReportPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},
 	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: InterventionBudget},
 	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: InterventionBudget},
+	{ID: RouteRetryStage, Method: http.MethodPost, Path: RunStageRetryPath, ActionClass: ActionRuntimeMutation, Capability: "retry", Cost: CostMutation, Budget: InterventionBudget},
 
 	// RouteWorkflowEnabled edits a workflow definition source atomically to
 	// toggle the scheduler's honor bit for its non-manual triggers. It is
@@ -765,10 +829,11 @@ var v1Routes = []Route{
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{
-	RouteHealth:   {},
-	RouteInstance: {},
-	RouteRuns:     {},
-	RouteEvents:   {},
+	RouteHealth:               {},
+	RouteInstance:             {},
+	RouteRuns:                 {},
+	RouteEvents:               {},
+	RouteLabsWorkflowFeatures: {},
 }
 
 // InitiallyRemoteInvocable identifies the bounded first remote-read profile.
@@ -959,7 +1024,8 @@ type Capability struct {
 }
 
 // SurfaceAction attaches parity classification to an actual adapter
-// registration. Capability is required only for runtime mutations.
+// registration. Capability is required for runtime mutations and may also
+// scope an explicitly remote-invocable read.
 type SurfaceAction struct {
 	ID         ActionID     `json:"id"`
 	Class      ActionClass  `json:"class"`
@@ -992,10 +1058,11 @@ var v1RuntimeCapabilities = []Capability{
 	{ID: "approve", Class: ActionRuntimeMutation},
 	{ID: "override", Class: ActionRuntimeMutation},
 	{ID: "rerun", Class: ActionRuntimeMutation},
+	{ID: "retry", Class: ActionRuntimeMutation},
 }
 
 // V1RuntimeCapabilities returns V1's registered runtime mutation
-// capabilities (HITL-7/#469): approve, override, and rerun.
+// capabilities (HITL-7/#469): approve, override, rerun, and retry.
 func V1RuntimeCapabilities() []Capability {
 	return slices.Clone(v1RuntimeCapabilities)
 }
@@ -1092,6 +1159,9 @@ func validateActionShape(action SurfaceAction) error {
 		if action.Capability == "" {
 			return fmt.Errorf("runtime mutation action %q has no capability", action.ID)
 		}
+		return nil
+	}
+	if action.Class == ActionReadOnlyNavigation && InitiallyRemoteInvocable(RouteID(action.ID)) {
 		return nil
 	}
 	if action.Capability != "" {

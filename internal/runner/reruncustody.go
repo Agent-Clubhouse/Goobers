@@ -22,7 +22,7 @@ func (r *Runner) PreflightRerunStage(ctx context.Context, in RerunStageInput) er
 	if in.Machine == nil {
 		return fmt.Errorf("runner: Machine is required")
 	}
-	isGate, err := validateRerunTarget(in.Machine, in.Stage)
+	isGate, err := validateRerunTarget(in.Machine, in.Stage, in.DeterministicRetry)
 	if err != nil {
 		return err
 	}

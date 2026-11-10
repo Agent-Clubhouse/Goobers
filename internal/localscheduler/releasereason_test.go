@@ -64,7 +64,9 @@ func TestReleaseRecordsReasonOnHistoryAndJournalEvent(t *testing.T) {
 	if len(history) != 1 || history[0].ReleaseReason != want {
 		t.Fatalf("history = %+v, want one entry with reason %+v", history, want)
 	}
-	reopened, err := OpenClaimLedger(path)
+	// Reopen on the same fixed clock: the real clock would age the fixed
+	// release past ClaimHistoryTTL and prune it (#8278).
+	reopened, err := OpenClaimLedger(path, WithLedgerClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}

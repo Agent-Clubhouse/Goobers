@@ -39,12 +39,117 @@ type Settings struct {
 	Auth                  string `json:"auth,omitempty" yaml:"auth,omitempty"`
 	ModelEnv              string `json:"modelEnv,omitempty" yaml:"modelEnv,omitempty"`
 	PublicationLeakScreen bool   `json:"publicationLeakScreen,omitempty" yaml:"publicationLeakScreen,omitempty"`
+	// StallDetection opts local agentic stages in to shadow scoring of
+	// transcript windows for repetition and no-progress against later
+	// budget exhaustion. Advisory only; inert unless the mode is shadow.
+	StallDetection bool `json:"stallDetection,omitempty" yaml:"stallDetection,omitempty"`
+	// IntakeDetection opts backlog claims in to shadow duplicate/dependency
+	// checks of claimed items against open issues. Advisory only; inert
+	// unless the mode is shadow.
+	IntakeDetection bool `json:"intakeDetection,omitempty" yaml:"intakeDetection,omitempty"`
 	// Fallback is what a caller does on Uncertain or exhausted retries.
 	Fallback string `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 	// ShadowSample is the fraction (0..1) of eligible handoffs scored in shadow
 	// mode. Zero means 1.
 	ShadowSample float64 `json:"shadowSample,omitempty" yaml:"shadowSample,omitempty"`
 	Gate         Config  `json:"gate,omitempty" yaml:"gate,omitempty"`
+	// AgentTool optionally exposes a budgeted decide tool to named agent tasks.
+	// Absent or with no tasks means no agent stage can call the model.
+	AgentTool *AgentTool `json:"agentTool,omitempty" yaml:"agentTool,omitempty"`
+	// HandoffSchemas binds legacy producer results to JSON Schemas so shadow
+	// records carry a real inputValid. Inert while the gate is off.
+	HandoffSchemas []HandoffSchemaBinding `json:"handoffSchemas,omitempty" yaml:"handoffSchemas,omitempty"`
+}
+
+// AgentTool grants the decide MCP tool to specific agent tasks. Denied by
+// default: only tasks listed here ever see the tool.
+type AgentTool struct {
+	// Tasks are the task IDs granted the tool.
+	Tasks []string `json:"tasks,omitempty" yaml:"tasks,omitempty"`
+	// MaxCalls bounds model calls per stage invocation. Zero means 5.
+	MaxCalls int `json:"maxCalls,omitempty" yaml:"maxCalls,omitempty"`
+}
+
+// Agent-tool call budget bounds.
+const (
+	DefaultAgentToolMaxCalls = 5
+	MaxAgentToolMaxCalls     = 50
+)
+
+// Granted reports whether taskID may use the decide tool.
+func (a *AgentTool) Granted(taskID string) bool {
+	if a == nil || taskID == "" {
+		return false
+	}
+	for _, t := range a.Tasks {
+		if t == taskID {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveMaxCalls applies the default budget.
+func (a *AgentTool) EffectiveMaxCalls() int {
+	if a == nil || a.MaxCalls == 0 {
+		return DefaultAgentToolMaxCalls
+	}
+	return a.MaxCalls
+}
+
+func (a *AgentTool) validate() error {
+	if a == nil {
+		return nil
+	}
+	if a.MaxCalls < 0 || a.MaxCalls > MaxAgentToolMaxCalls {
+		return fmt.Errorf("decisionGate.agentTool.maxCalls must be within 0..%d", MaxAgentToolMaxCalls)
+	}
+	for _, t := range a.Tasks {
+		if t == "" || t == "*" {
+			return errors.New("decisionGate.agentTool.tasks must name specific task ids")
+		}
+	}
+	return nil
+}
+
+// HandoffSchemaBinding validates one producer stage's sole JSON result, for
+// workflows that cannot declare schema-bound artifactSlots (pre-DSL 3.1).
+type HandoffSchemaBinding struct {
+	Workflow string `json:"workflow" yaml:"workflow"`
+	Stage    string `json:"stage" yaml:"stage"`
+	// SchemaPath is a JSON Schema path relative to the config directory.
+	SchemaPath string `json:"schemaPath" yaml:"schemaPath"`
+}
+
+// ResultSchemas indexes the bindings by workflow then stage. It returns nil
+// when the gate is off so an inert block never changes runner behavior.
+func (s *Settings) ResultSchemas() map[string]map[string]string {
+	if s.EffectiveMode() == ModeOff || len(s.HandoffSchemas) == 0 {
+		return nil
+	}
+	out := map[string]map[string]string{}
+	for _, b := range s.HandoffSchemas {
+		if out[b.Workflow] == nil {
+			out[b.Workflow] = map[string]string{}
+		}
+		out[b.Workflow][b.Stage] = b.SchemaPath
+	}
+	return out
+}
+
+func validateHandoffSchemas(bindings []HandoffSchemaBinding) error {
+	seen := map[[2]string]bool{}
+	for i, b := range bindings {
+		if strings.TrimSpace(b.Workflow) == "" || strings.TrimSpace(b.Stage) == "" || strings.TrimSpace(b.SchemaPath) == "" {
+			return fmt.Errorf("decisionGate.handoffSchemas[%d]: workflow, stage and schemaPath are required", i)
+		}
+		key := [2]string{b.Workflow, b.Stage}
+		if seen[key] {
+			return fmt.Errorf("decisionGate.handoffSchemas[%d]: duplicate binding for %s/%s", i, b.Workflow, b.Stage)
+		}
+		seen[key] = true
+	}
+	return nil
 }
 
 // Credential kinds for Settings.Auth.
@@ -73,6 +178,9 @@ func (s *Settings) EffectiveMode() Mode {
 func (s *Settings) Validate() error {
 	if s == nil {
 		return nil
+	}
+	if err := validateHandoffSchemas(s.HandoffSchemas); err != nil {
+		return err
 	}
 	switch s.EffectiveMode() {
 	case ModeOff:
@@ -108,6 +216,9 @@ func (s *Settings) Validate() error {
 	}
 	if s.ShadowSample < 0 || s.ShadowSample > 1 {
 		return errors.New("decisionGate.shadowSample must be within 0..1")
+	}
+	if err := s.AgentTool.validate(); err != nil {
+		return err
 	}
 	return s.Gate.Validate()
 }
@@ -152,6 +263,18 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	}
 	if _, ok := cfg.Thresholds[PublicationLeakQuestion]; !ok {
 		cfg.Thresholds[PublicationLeakQuestion] = DefaultPublicationLeakThreshold
+	}
+	if _, ok := cfg.Thresholds[CIFailureThresholdKey]; !ok {
+		cfg.Thresholds[CIFailureThresholdKey] = DefaultCIFailureThreshold
+	}
+	if _, ok := cfg.Thresholds[StallThresholdKey]; !ok {
+		cfg.Thresholds[StallThresholdKey] = DefaultStallThreshold
+	}
+	if _, ok := cfg.Thresholds[IntakeThresholdKey]; !ok {
+		cfg.Thresholds[IntakeThresholdKey] = DefaultIntakeThreshold
+	}
+	if _, ok := cfg.Thresholds[ScopeThresholdKey]; !ok {
+		cfg.Thresholds[ScopeThresholdKey] = DefaultScopeThreshold
 	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second

@@ -151,6 +151,9 @@ type Config struct {
 	// DecisionGate is the opt-in decision-model (System One) layer. Absent means off.
 	// It names environment variables for the endpoint and key; it never holds them.
 	DecisionGate *decisiongate.Settings `json:"decisionGate,omitempty" yaml:"decisionGate,omitempty"`
+	// WorkflowClustering optionally supplies a frozen advisory model for child
+	// proposal validation and admission.
+	WorkflowClustering *WorkflowClusteringConfig `json:"workflowClustering,omitempty" yaml:"workflowClustering,omitempty"`
 	// UpdateCheck configures the daemon's notify-only release check (#4903).
 	// Nil keeps the defaults: enabled, the stable channel, once a day. The
 	// check only tells the operator a newer release exists — applying it stays
@@ -222,6 +225,11 @@ type Config struct {
 	// default — leaves every CI failure routed exactly as before, because the
 	// comparison costs one extra CI run per newly observed red base.
 	BaselineHealth *BaselineHealthConfig `json:"baselineHealth,omitempty" yaml:"baselineHealth,omitempty"`
+}
+
+// WorkflowClusteringConfig locates a frozen Labs clustering artifact.
+type WorkflowClusteringConfig struct {
+	ModelPath string `json:"modelPath,omitempty" yaml:"modelPath,omitempty"`
 }
 
 // BaselineHealthConfig tunes shared-baseline-failure detection.

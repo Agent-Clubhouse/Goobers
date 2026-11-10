@@ -24,6 +24,7 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 	cfg := mcpio.Config{
 		Workspace:            req.Workspace,
 		ChildWorkflows:       req.ChildWorkflows,
+		Decide:               req.Decide,
 		ArtifactFile:         artifactFile,
 		ArtifactManifestFile: artifactManifestFile,
 		PublicationSchemas:   req.PublicationSchemas,
@@ -33,6 +34,10 @@ func prepareGoobersIOMCPRuntime(req RunRequest, selfBin string) (goobersIOMCPRun
 		WorkflowID:           req.Envelope.WorkflowID,
 		TaskID:               req.Envelope.TaskID,
 		Gaggle:               req.Envelope.Gaggle,
+	}
+	if len(req.PublicationSchemas) > 0 {
+		// The executor resets and journals this log around the invocation.
+		cfg.PublicationReceiptFile = goobersIOPublicationReceiptFile()
 	}
 	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)

@@ -76,10 +76,11 @@ func TestChildActivityDoesNotParkQueuedSiblingOrTrustMismatchedOwner(t *testing.
 
 func TestChildActivityUsesValidatedRecordedParent(t *testing.T) {
 	digest := journal.Digest([]byte("pin"))
+	novelty := &journal.ChildNovelty{Scored: true, ModelID: digest, ModelVersion: "workflowcluster.model/v1", FeatureVersion: "workflowcluster.structural/v1", Nearest: "c0", Distance: 0.25, OutOfDistribution: true}
 	id := journal.RunIdentity{RunID: "child", Gaggle: "web", ConfigGeneration: digest, WorkflowDigest: digest, GooberDigest: digest,
-		Child: &journal.ChildLineage{Gaggle: "web", ParentRunID: "parent", ParentWorkflow: "plan", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", AcceptanceID: "trigger-child", SourceDigest: digest, EnvelopeDigest: digest}}
+		Child: &journal.ChildLineage{Gaggle: "web", ParentRunID: "parent", ParentWorkflow: "plan", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", AcceptanceID: "trigger-child", SourceDigest: digest, EnvelopeDigest: digest, Novelty: novelty}}
 	got := recordedChildActivity(id, nil)
-	if got == nil || got.Status != "recorded" || got.Parent == nil || got.Parent.RunID != "parent" || got.Parked {
+	if got == nil || got.Status != "recorded" || got.Parent == nil || got.Parent.RunID != "parent" || got.Parent.Novelty != novelty || got.Parked {
 		t.Fatal("child parent link lost", got)
 	}
 	id.Child.Gaggle = "other"

@@ -36,8 +36,7 @@ func Compile(configDir string, cfg *instance.Config, set *instance.ConfigSet) (*
 	// AFTER these overlays; a digest computed without them would never be the
 	// one a worker resolves. Both are idempotent, so applying them here is safe
 	// for a caller that already did.
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	instance.ApplyGaggleDefaults(set)
 	instructions, skillPackages, err := runtimewiring.LoadSnapshotGooberInputs(configDir, set)
 	if err != nil {
 		return nil, fmt.Errorf("startpin: load goober kit content: %w", err)

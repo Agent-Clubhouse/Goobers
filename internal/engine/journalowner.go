@@ -130,7 +130,7 @@ func (o *journalCommitOwner) request(pending int) livejournal.EmitRequest {
 		req.Ops = append(req.Ops, liveOpFrom(entry.recorder.proj.Ops[entry.index]))
 	}
 	if o.emitted == 0 {
-		req.Open = &livejournal.OpenHeader{Identity: root.proj.Identity, Item: root.proj.Item, Graph: root.proj.Graph, Definition: root.proj.Definition, GateGooberCapabilities: root.proj.GateGooberCapabilities}
+		req.Open = &livejournal.OpenHeader{Identity: root.proj.Identity, Item: root.proj.Item, Graph: root.proj.Graph, Definition: root.proj.Definition, WorkflowLabels: root.proj.WorkflowLabels, GateGooberCapabilities: root.proj.GateGooberCapabilities}
 	}
 	return req
 }

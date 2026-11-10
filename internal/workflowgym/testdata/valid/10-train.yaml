@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: WorkflowGymTask
+taskId: task-alpha
+datasetVersion: "2026.1"
+split: train
+provenance:
+  source: https://example.invalid/tasks
+  revision: sha256:aaaa
+seed: 11
+expectedOutcome: candidate restores the expected artifact
+evaluatorVersion: evaluator-v3
+retention:
+  policy: 30d
+licensing:
+  license: Apache-2.0
+  attribution: Example fixtures
+candidateEnvironment:
+  image: example.invalid/workflow-gym@sha256:aaaa
+  os: linux
+  architecture: amd64
+  environment:
+    MODE: benchmark

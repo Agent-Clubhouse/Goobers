@@ -227,6 +227,7 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 			Item:                   r.proj.Item,
 			Graph:                  r.proj.Graph,
 			Definition:             r.proj.Definition,
+			WorkflowLabels:         r.proj.WorkflowLabels,
 			GateGooberCapabilities: r.proj.GateGooberCapabilities,
 		}
 	}

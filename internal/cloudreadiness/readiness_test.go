@@ -139,8 +139,8 @@ func TestReferenceGaggleCloudReadinessGolden(t *testing.T) {
 			}
 		}
 	}
-	if counts[CodeDSL] != 16 {
-		t.Errorf("RUNTIME003 count = %d, want 16", counts[CodeDSL])
+	if counts[CodeDSL] != 17 {
+		t.Errorf("RUNTIME003 count = %d, want 17", counts[CodeDSL])
 	}
 	wantFeatureWorkflows := map[string]bool{"quality-sprint": true, "quality-spot-check": true}
 	if !reflect.DeepEqual(featureWorkflows, wantFeatureWorkflows) {

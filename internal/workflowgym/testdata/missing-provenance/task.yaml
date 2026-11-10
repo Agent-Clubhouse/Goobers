@@ -1,0 +1,14 @@
+apiVersion: goobers.dev/v1alpha1
+kind: WorkflowGymTask
+taskId: task-missing-provenance
+datasetVersion: "2026.1"
+split: holdout
+seed: 33
+expectedOutcome: candidate completes the task
+evaluatorVersion: evaluator-v3
+retention:
+  policy: 30d
+licensing:
+  license: MIT
+candidateEnvironment:
+  image: example.invalid/workflow-gym@sha256:cccc
