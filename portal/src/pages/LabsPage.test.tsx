@@ -242,6 +242,15 @@ describe("LabsPage", () => {
     expect(screen.queryByRole("heading", { name: "Not available yet" })).not.toBeInTheDocument();
   });
 
+  it("makes Fluid UI available with its portal editor surface", () => {
+    renderLabs(fixtureClient(), "fluid-ui");
+
+    expect(screen.getByRole("note")).toHaveTextContent("Labs: experimental.");
+    expect(screen.getByRole("link", { name: "Labs → Fluid UI" })).toHaveAttribute("href", "#/labs/fluid-ui");
+    expect(screen.getByText("Edit and preview")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Not available yet" })).not.toBeInTheDocument();
+  });
+
   it("shows the experimental banner, prerequisites, and tracking issues for a feature", () => {
     renderLabs(fixtureClient(), "workflow-clustering");
 

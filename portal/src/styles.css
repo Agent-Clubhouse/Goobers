@@ -13328,3 +13328,154 @@ select {
 .labs-fleet-instance {
   margin: 16px 0;
 }
+
+/* Labs Fluid UI (#8416): per-user density, panel order, status, and editor. */
+.portal-frame[data-density="compact"] .page-content {
+  padding: 20px 28px 40px;
+}
+
+.portal-frame[data-density="compact"] .content-section {
+  margin-top: 28px;
+}
+
+.portal-frame[data-density="compact"] .data-row {
+  min-height: 48px;
+  padding: 6px 10px;
+}
+
+/* A customized order replaces the responsive reordering of overview panels. */
+.overview-page.overview-page[data-panel-order="custom"] > * {
+  order: 0;
+}
+
+.fluid-ui-status {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-ui);
+  gap: 8px 14px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+}
+
+.fluid-ui-status > span {
+  flex: 1 1 280px;
+}
+
+.fluid-ui-notice-fallback,
+.fluid-ui-notice-ignored {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.fluid-ui-hidden-panels,
+.fluid-ui-meta,
+.fluid-ui-run-defaults {
+  color: var(--muted);
+  font-size: var(--font-meta);
+  margin: 8px 0;
+}
+
+.fluid-ui-saved-views {
+  font-size: var(--font-ui);
+  margin: 8px 0;
+}
+
+.fluid-ui-saved-views-title {
+  color: var(--muted);
+  display: block;
+  font-size: var(--font-label);
+  margin-bottom: 4px;
+}
+
+.fluid-ui-saved-views ul,
+.fluid-ui-panels,
+.fluid-ui-views {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fluid-ui-saved-views li {
+  margin: 2px 0;
+}
+
+.sidebar-saved-views {
+  padding: 0 12px;
+}
+
+.fluid-ui-document {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: var(--font-meta);
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+.fluid-ui-form label {
+  display: inline-flex;
+  flex-direction: column;
+  font-size: var(--font-label);
+  gap: 4px;
+}
+
+.fluid-ui-form .fluid-ui-check {
+  align-items: center;
+  flex-direction: row;
+  font-size: var(--font-ui);
+  gap: 6px;
+  margin-right: 14px;
+}
+
+.fluid-ui-row,
+.fluid-ui-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 12px 0;
+}
+
+.fluid-ui-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 14px 0;
+  padding: 10px 14px;
+}
+
+.fluid-ui-panels li,
+.fluid-ui-views li {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.fluid-ui-error {
+  color: var(--danger);
+  font-size: var(--font-ui);
+}
+
+.fluid-ui-message {
+  color: var(--success);
+  font-size: var(--font-ui);
+}
+
+.fluid-ui-run-defaults {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.fluid-ui-run-default {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}

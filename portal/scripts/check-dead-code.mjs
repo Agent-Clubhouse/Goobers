@@ -78,6 +78,7 @@ const testOnlyExports = {
     "readStoredAttentionDismissals",
   ],
   "src/components/GaggleWorkflowExplorer.tsx": ["WorkflowPicker"],
+  "src/fluidUI.tsx": ["validateFluidUICustomization"],
   "src/components/RunStageInspector.tsx": ["TranscriptView"],
   "src/dataCache.ts": ["DATA_CACHE_TTL_MS"],
   "src/insightData.ts": [
