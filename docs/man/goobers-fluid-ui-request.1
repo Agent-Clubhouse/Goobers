@@ -1,0 +1,34 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FLUID UI REQUEST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers fluid-ui-request \- load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers fluid-ui-request\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers fluid-ui-request (--load | --validate) [path]
+
+fluid-ui-request is the fluid-ui-customize workflow's deterministic stage
+(Labs Fluid UI, docs/labs-fluid-ui.md).
+
+--load writes the request this run serves, the requester's current
+portal.customization/v1 document and the customization surface to the
+result file, for the propose stage to read. The daemon binds the run to
+its request when the trigger is accepted; --load waits briefly for that
+binding.
+
+--validate reads the propose stage's candidate and classifies it as a
+valid customization, an explicit unsupported request, or invalid output
+(repassable once, with its validation errors). It never applies anything:
+the daemon re-validates the candidate and the user applies it.
+
+Exit codes: 0 = result written (an invalid candidate is not an error) /
+1 = IO or binding error / 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers fluid-ui-request --load
+goobers fluid-ui-request --validate
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

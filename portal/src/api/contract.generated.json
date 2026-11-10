@@ -488,6 +488,72 @@
       "recoverySafe": false
     },
     {
+      "id": "labsFluidUIRequestsList",
+      "method": "GET",
+      "path": "/api/v1/labs/fluid-ui/requests",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUIRequestSubmit",
+      "method": "POST",
+      "path": "/api/v1/labs/fluid-ui/requests",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUIRequestGet",
+      "method": "GET",
+      "path": "/api/v1/labs/fluid-ui/requests/{request}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUIRequestRetry",
+      "method": "POST",
+      "path": "/api/v1/labs/fluid-ui/requests/{request}/retry",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUIRequestApply",
+      "method": "POST",
+      "path": "/api/v1/labs/fluid-ui/requests/{request}/apply",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUIRequestRevert",
+      "method": "POST",
+      "path": "/api/v1/labs/fluid-ui/requests/{request}/revert",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "labsFluidUIReport",
       "method": "GET",
       "path": "/api/v1/labs/fluid-ui/report",

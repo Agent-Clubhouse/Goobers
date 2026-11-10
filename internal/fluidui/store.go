@@ -86,10 +86,16 @@ func (s *Store) now() time.Time {
 	return time.Now().UTC()
 }
 
-func (s *Store) path(user string) string {
+// userHash is the on-disk identity of a user: the first 16 bytes of the
+// SHA-256 of their key, so no file name reveals who the user is.
+func userHash(user string) string {
 	sum := sha256.Sum256([]byte(user))
-	return filepath.Join(s.Dir, hex.EncodeToString(sum[:16])+".json")
+	return hex.EncodeToString(sum[:16])
 }
+
+func (s *Store) path(user string) string { return s.hashPath(userHash(user)) }
+
+func (s *Store) hashPath(hash string) string { return filepath.Join(s.Dir, hash+".json") }
 
 // Get returns user's current customization state.
 func (s *Store) Get(user string) (State, error) {
@@ -166,8 +172,10 @@ func (s *Store) replace(user string, document json.RawMessage, revert bool) (Sta
 	return rec.state(), nil
 }
 
-func (s *Store) load(user string) (record, error) {
-	data, err := os.ReadFile(s.path(user))
+func (s *Store) load(user string) (record, error) { return s.loadPath(s.path(user)) }
+
+func (s *Store) loadPath(path string) (record, error) {
+	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return record{Schema: recordSchema}, nil
 	}

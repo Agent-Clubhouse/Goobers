@@ -194,6 +194,47 @@ describe("HttpDaemonClient", () => {
     ]);
   });
 
+  it("submits Fluid UI requests and posts empty bodies to the per-request actions", async () => {
+    const request = {
+      id: "req-1",
+      prompt: "compact please",
+      status: "queued",
+      attempt: 1,
+      createdAt: "2026-09-08T00:00:00Z",
+      updatedAt: "2026-09-08T00:00:00Z",
+    };
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) =>
+      Response.json(String(url).endsWith("/requests") ? { requests: [request] } : request),
+    );
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    await expect(client.listLabsFluidUIRequests()).resolves.toEqual([request]);
+    await client.submitLabsFluidUIRequest("compact please");
+    await client.retryLabsFluidUIRequest("req/1");
+    await client.applyLabsFluidUIRequest("req-1");
+    await client.revertLabsFluidUIRequest("req-1");
+
+    const json = expect.objectContaining({ "Content-Type": "application/json" });
+    expect(fetcher.mock.calls.slice(1)).toEqual([
+      [
+        "/api/v1/labs/fluid-ui/requests",
+        expect.objectContaining({ method: "POST", headers: json, body: '{"prompt":"compact please"}' }),
+      ],
+      [
+        "/api/v1/labs/fluid-ui/requests/req%2F1/retry",
+        expect.objectContaining({ method: "POST", headers: json, body: "{}" }),
+      ],
+      [
+        "/api/v1/labs/fluid-ui/requests/req-1/apply",
+        expect.objectContaining({ method: "POST", headers: json, body: "{}" }),
+      ],
+      [
+        "/api/v1/labs/fluid-ui/requests/req-1/revert",
+        expect.objectContaining({ method: "POST", headers: json, body: "{}" }),
+      ],
+    ]);
+  });
+
   it("uses the same origin by default", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(health));
     const client = new HttpDaemonClient({ fetch: fetcher });

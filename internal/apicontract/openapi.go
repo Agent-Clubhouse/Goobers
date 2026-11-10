@@ -239,8 +239,10 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("GaggleBundleImportRequest")
 	case RouteLabsFluidUIPut:
 		schema = schemaRef("PortalCustomization")
-	case RouteLabsFluidUIReset, RouteLabsFluidUIUndo:
+	case RouteLabsFluidUIReset, RouteLabsFluidUIUndo, RouteLabsFluidUIRequestRetry, RouteLabsFluidUIRequestApply, RouteLabsFluidUIRequestRevert:
 		schema = map[string]any{"type": "object", "additionalProperties": false}
+	case RouteLabsFluidUIRequestSubmit:
+		schema = schemaRef("FluidUIRequestSubmit")
 	}
 	return map[string]any{
 		"required": true,
@@ -322,6 +324,12 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("GaggleBundleImportResult")
 	case RouteLabsFluidUIGet, RouteLabsFluidUIPut, RouteLabsFluidUIReset, RouteLabsFluidUIUndo:
 		successSchema = schemaRef("PortalCustomizationState")
+	case RouteLabsFluidUIRequestsList:
+		successSchema = schemaRef("FluidUIRequestList")
+	case RouteLabsFluidUIRequestSubmit, RouteLabsFluidUIRequestGet, RouteLabsFluidUIRequestRetry:
+		successSchema = schemaRef("FluidUIRequest")
+	case RouteLabsFluidUIRequestApply, RouteLabsFluidUIRequestRevert:
+		successSchema = schemaRef("FluidUIRequestApplication")
 	case RouteLabsFluidUIReport:
 		successSchema = schemaRef("PortalCustomizationReport")
 	}

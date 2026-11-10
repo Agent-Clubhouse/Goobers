@@ -332,8 +332,11 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
 	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
-		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport:
-		available = config.labsFluidUI != nil
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport,
+		apicontract.RouteLabsFluidUIRequestsList, apicontract.RouteLabsFluidUIRequestGet,
+		apicontract.RouteLabsFluidUIRequestApply, apicontract.RouteLabsFluidUIRequestRevert,
+		apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		available = labsFluidUIRouteAvailable(id, config)
 	case apicontract.RouteLabsWorkflowFeatures:
 		if config.labsWorkflowFeatures == nil {
 			return false, "labs_unavailable", "Labs workflow features are not configured on this daemon"
@@ -369,6 +372,19 @@ func routeExtensionAvailable(id apicontract.RouteID, config handlerConfig) bool 
 		_, available = config.recovery.(RecoveryPublisher)
 	}
 	return available
+}
+
+func labsFluidUIRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
+	switch id {
+	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport:
+		return config.labsFluidUI != nil
+	case apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		// Submitting and retrying start a workflow run through trigger ingest.
+		return config.labsFluidUIRequests != nil && config.triggers != nil
+	default:
+		return config.labsFluidUIRequests != nil
+	}
 }
 
 func telemetryRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {

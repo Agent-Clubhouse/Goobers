@@ -63,6 +63,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"checkissuestaleness.go":         {command: "check-issue-staleness"},
 	"demo_provider.go":               {command: "__demo-provider"},
 	"docchurn.go":                    {command: "docs-churn"},
+	"fluiduirequest.go":              {command: "fluid-ui-request"},
 	"electlander.go":                 {command: "elect-lander"},
 	"fileissues.go":                  {command: "file-issues"},
 	"decide.go":                      {command: "decide"},

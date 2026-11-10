@@ -196,6 +196,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers file-issues`](#goobers-file-issues) | file a validated nominations artifact as deduped, budgeted issues (a workflow stage) |
+| [`goobers fluid-ui-request`](#goobers-fluid-ui-request) | load a Labs Fluid UI request or validate its customization candidate (a workflow stage) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
@@ -2224,6 +2225,38 @@ Private key and bearer credential material are never printed.
 ~~~console
 $ goobers fleet status
 $ goobers fleet status --json
+~~~
+
+## `goobers fluid-ui-request`
+
+load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
+
+~~~text
+Usage: goobers fluid-ui-request (--load | --validate) [path]
+
+fluid-ui-request is the fluid-ui-customize workflow's deterministic stage
+(Labs Fluid UI, docs/labs-fluid-ui.md).
+
+--load writes the request this run serves, the requester's current
+portal.customization/v1 document and the customization surface to the
+result file, for the propose stage to read. The daemon binds the run to
+its request when the trigger is accepted; --load waits briefly for that
+binding.
+
+--validate reads the propose stage's candidate and classifies it as a
+valid customization, an explicit unsupported request, or invalid output
+(repassable once, with its validation errors). It never applies anything:
+the daemon re-validates the candidate and the user applies it.
+
+Exit codes: 0 = result written (an invalid candidate is not an error) /
+1 = IO or binding error / 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fluid-ui-request --load
+$ goobers fluid-ui-request --validate
 ~~~
 
 ## `goobers gaggle`

@@ -586,6 +586,10 @@ func StageRequiresInstanceConfig(command []string) bool {
 // stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
 // list is still complete.
 var stageCommandsRequiringInstanceRoot = map[string]bool{
+	// fluid-ui-request --load reads the requester's private Labs Fluid UI
+	// request and customization records under <root>/labs/fluid-ui, which no
+	// plane serves; they stay on the daemon host by design.
+	"fluid-ui-request": true,
 	// pr-select is NOT here any more (Goobers#3988). Its claims are on the
 	// claims plane and the last thing that held it — the FAIRNESS LEASE at
 	// SchedulerDir()/pr-select-fairness.json, #1336's aging plus the one-hour

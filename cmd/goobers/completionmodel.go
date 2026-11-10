@@ -718,6 +718,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "min-age", takesArg: true, desc: "Minimum terminal run age required for deletion"},
 		{name: "after", takesArg: true, desc: "Resume after this branch name in lexical order"},
 	},
+	"fluid-ui-request": {
+		{name: "load", desc: "Write the bound request and current customization"},
+		{name: "validate", desc: "Validate the propose stage's candidate"},
+	},
 	"diagnostics bundle": {
 		{name: "run", takesArg: true, desc: "Limit the bundle to one run id"},
 		{name: "pr", takesArg: true, desc: "Limit the bundle to runs that touched one pull request"},

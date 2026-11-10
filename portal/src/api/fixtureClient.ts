@@ -44,6 +44,8 @@ import type {
   LabsFluidUIReport,
   FluidUICustomization,
   FluidUICustomizationState,
+  FluidUIRequest,
+  FluidUIRequestApplication,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -79,6 +81,8 @@ export interface DaemonFixtures {
   labsFluidUIReport?: LabsFluidUIReport;
   /** Seeds the in-memory per-user Fluid UI store; omitted means the standard Portal. */
   fluidUICustomization?: FluidUICustomizationState;
+  /** Seeds the caller's Fluid UI requests (#8417); submissions stay queued. */
+  fluidUIRequests?: FluidUIRequest[];
 }
 
 export interface FixtureStageUsage {
@@ -143,11 +147,13 @@ function fixtureReadiness(fixtures: DaemonFixtures): InstanceReadiness {
 export class FixtureDaemonClient implements DaemonClient {
   private fluidUI: FluidUICustomizationState;
   private readonly fluidUIHistory: (FluidUICustomization | null)[] = [];
+  private fluidUIRequests: FluidUIRequest[];
 
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
     assertSupportedContractVersion(fixtures.instance);
     this.fluidUI = fixtures.fluidUICustomization ?? { customization: null, revision: 0, undoDepth: 0 };
+    this.fluidUIRequests = structuredClone(fixtures.fluidUIRequests ?? []);
   }
 
   connectEvents(
@@ -297,6 +303,86 @@ export class FixtureDaemonClient implements DaemonClient {
     if (this.fluidUIHistory.length > 20) this.fluidUIHistory.shift();
     this.fluidUI = this.nextFluidUIState(customization);
     return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  // Fixture requests never run a workflow: a submission stays queued, and
+  // apply/revert follow the daemon's transition rules (internal/fluidui).
+  listLabsFluidUIRequests(options?: RequestOptions): Promise<FluidUIRequest[]> {
+    return fixture(structuredClone(this.fluidUIRequests), options);
+  }
+
+  submitLabsFluidUIRequest(prompt: string, options?: RequestOptions): Promise<FluidUIRequest> {
+    throwIfCancelled(options);
+    const request: FluidUIRequest = {
+      id: `req-fixture-${this.fluidUIRequests.length + 1}`,
+      prompt,
+      status: "queued",
+      attempt: 1,
+      createdAt: "2026-09-08T00:00:00Z",
+      updatedAt: "2026-09-08T00:00:00Z",
+    };
+    this.fluidUIRequests = [request, ...this.fluidUIRequests];
+    return fixture(structuredClone(request), options);
+  }
+
+  retryLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequest> {
+    throwIfCancelled(options);
+    return this.transitionFluidUIRequest(id, ["failed", "unsupported"], (request) => ({
+      ...request,
+      status: "queued",
+      attempt: request.attempt + 1,
+      errors: undefined,
+      detail: undefined,
+    })).then((request) => fixture(request, options));
+  }
+
+  async applyLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication> {
+    throwIfCancelled(options);
+    const current = this.fluidUIRequests.find((request) => request.id === id);
+    if (!current) {
+      throw new DaemonApiError(404, "not_found", "request not found");
+    }
+    if (current.status !== "ready_to_preview" || !current.candidate) {
+      throw new DaemonApiError(409, "invalid_transition", `request is ${current.status}`);
+    }
+    const customization = await this.writeFluidUI(structuredClone(current.candidate), options);
+    const request = await this.transitionFluidUIRequest(id, ["ready_to_preview"], (entry) => ({
+      ...entry,
+      status: "applied",
+      appliedRevision: customization.revision,
+    }));
+    return { request, customization };
+  }
+
+  async revertLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication> {
+    throwIfCancelled(options);
+    const request = await this.transitionFluidUIRequest(id, ["applied"], (entry) => ({
+      ...entry,
+      status: "reverted",
+    }));
+    const previous = this.fluidUIHistory.pop() ?? null;
+    this.fluidUI = this.nextFluidUIState(previous);
+    return { request, customization: structuredClone(this.fluidUI) };
+  }
+
+  private transitionFluidUIRequest(
+    id: string,
+    from: FluidUIRequest["status"][],
+    next: (request: FluidUIRequest) => FluidUIRequest,
+  ): Promise<FluidUIRequest> {
+    const index = this.fluidUIRequests.findIndex((request) => request.id === id);
+    if (index < 0) {
+      return Promise.reject(new DaemonApiError(404, "not_found", "request not found"));
+    }
+    const current = this.fluidUIRequests[index];
+    if (!from.includes(current.status)) {
+      return Promise.reject(
+        new DaemonApiError(409, "invalid_transition", `request is ${current.status}`),
+      );
+    }
+    const updated = next(current);
+    this.fluidUIRequests[index] = updated;
+    return Promise.resolve(structuredClone(updated));
   }
 
   private nextFluidUIState(customization: FluidUICustomization | null): FluidUICustomizationState {

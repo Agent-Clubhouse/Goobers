@@ -704,6 +704,7 @@ type handlerConfig struct {
 	labsWorkflowClusters      LabsWorkflowClusterService
 	labsWorkflowFeatures      LabsWorkflowFeaturesService
 	labsFluidUI               LabsFluidUIService
+	labsFluidUIRequests       LabsFluidUIRequestService
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
 	workflowParentExecution   ChildExecutionObserver
@@ -1423,6 +1424,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
 	registerLabsWorkflowFeaturesRoute(router, config.labsWorkflowFeatures, errorLog)
 	registerLabsFluidUIRoutes(router, config.labsFluidUI, errorLog)
+	registerLabsFluidUIRequestRoutes(router, config.labsFluidUIRequests, config.triggers, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)

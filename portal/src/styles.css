@@ -13479,3 +13479,51 @@ select {
   display: inline-flex;
   gap: 6px;
 }
+.fluid-ui-tabs {
+  margin-bottom: 12px;
+}
+
+.fluid-ui-prompt textarea {
+  font: inherit;
+  min-width: min(560px, 100%);
+}
+
+.fluid-ui-requests {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fluid-ui-request {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.fluid-ui-request-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.fluid-ui-request-status {
+  font-weight: 600;
+}
+
+.fluid-ui-request-ready_to_preview .fluid-ui-request-status,
+.fluid-ui-request-applied .fluid-ui-request-status {
+  color: var(--success);
+}
+
+.fluid-ui-request-failed .fluid-ui-request-status,
+.fluid-ui-request-problem {
+  color: var(--danger);
+}
+
+.fluid-ui-request-prompt {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}

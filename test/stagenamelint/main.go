@@ -43,6 +43,7 @@ var exceptions = []exception{
 	{Path: "internal/providerstage/inputs.go", Value: "self-update", Reason: "provider-stage input registry key; names the CLI subcommand, not a workflow"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
 	{Path: "cmd/goobers/prretry.go", Value: "merge-review", Reason: "pr retry --route value naming the merge-review lane, not a workflow lookup"},
+	{Path: "internal/fluidui/requests.go", Value: "fluid-ui-customize", Reason: "Labs Fluid UI request intake (#8417) names the shipped workflow it triggers; no stage branches on it"},
 
 	// Existing telemetry projections still infer roles from shipped names.
 	// #2494 tracks replacing these with a config-sourced workflow role marker.

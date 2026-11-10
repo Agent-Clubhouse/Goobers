@@ -203,6 +203,7 @@ Workflow-stage and connector commands:
   docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
   elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
   file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+  fluid-ui-request  load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
   gate-removal-guard block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   gather-ci-failures add failing CI diagnostics to a remediation brief (a workflow stage)
   gather-implement-context load first-pass implementation review and hot-file context (a workflow stage)
@@ -265,6 +266,7 @@ Usage:
   docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
   elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
   file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+  fluid-ui-request  load a Labs Fluid UI request or validate its customization candidate (a workflow stage)
   gate-removal-guard block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   gather-ci-failures add failing CI diagnostics to a remediation brief (a workflow stage)
   gather-implement-context load first-pass implementation review and hot-file context (a workflow stage)
@@ -1572,6 +1574,26 @@ Usage: goobers fleet status [--json] [path]
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
 registration, connection, heartbeat, projection, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
+
+### fluid-ui-request
+Usage: goobers fluid-ui-request (--load | --validate) [path]
+
+fluid-ui-request is the fluid-ui-customize workflow's deterministic stage
+(Labs Fluid UI, docs/labs-fluid-ui.md).
+
+--load writes the request this run serves, the requester's current
+portal.customization/v1 document and the customization surface to the
+result file, for the propose stage to read. The daemon binds the run to
+its request when the trigger is accepted; --load waits briefly for that
+binding.
+
+--validate reads the propose stage's candidate and classifies it as a
+valid customization, an explicit unsupported request, or invalid output
+(repassable once, with its validation errors). It never applies anything:
+the daemon re-validates the candidate and the user applies it.
+
+Exit codes: 0 = result written (an invalid candidate is not an error) /
+1 = IO or binding error / 2 = usage error.
 
 ### gaggle
 Usage: goobers gaggle export|import [flags]

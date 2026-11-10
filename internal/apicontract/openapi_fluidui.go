@@ -44,6 +44,40 @@ func openAPILabsFluidUISchemas() map[string]any {
 				"undoDepth":     map[string]any{"type": "integer", "minimum": 0},
 			},
 		),
+		"FluidUIRequestSubmit": strictObjectSchema(
+			[]string{"prompt"},
+			map[string]any{"prompt": map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}},
+		),
+		"FluidUIRequest": objectSchema(
+			[]string{"id", "prompt", "status", "attempt", "createdAt", "updatedAt"},
+			map[string]any{
+				"id":     map[string]any{"type": "string", "pattern": "^fr-[0-9a-f]{16}$"},
+				"prompt": map[string]any{"type": "string"},
+				"status": map[string]any{"type": "string", "enum": []string{
+					"queued", "implementing", "ready_to_preview", "applied", "failed", "unsupported", "reverted",
+				}},
+				"attempt":         map[string]any{"type": "integer", "minimum": 1},
+				"runId":           map[string]any{"type": "string"},
+				"candidate":       schemaRef("PortalCustomization"),
+				"unmetNeed":       map[string]any{"type": "string", "pattern": "^[a-z0-9-]{1,48}$"},
+				"errors":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"detail":          map[string]any{"type": "string"},
+				"appliedRevision": map[string]any{"type": "integer", "minimum": 0},
+				"createdAt":       dateTimeSchema(),
+				"updatedAt":       dateTimeSchema(),
+			},
+		),
+		"FluidUIRequestList": objectSchema(
+			[]string{"requests"},
+			map[string]any{"requests": map[string]any{"type": "array", "items": schemaRef("FluidUIRequest")}},
+		),
+		"FluidUIRequestApplication": objectSchema(
+			[]string{"request", "customization"},
+			map[string]any{
+				"request":       schemaRef("FluidUIRequest"),
+				"customization": schemaRef("PortalCustomizationState"),
+			},
+		),
 		"PortalCustomizationReport": openAPILabsFluidUIReportSchema(),
 	}
 }
