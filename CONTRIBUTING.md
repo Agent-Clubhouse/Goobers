@@ -17,9 +17,17 @@ and [`docs/VISION.md`](docs/VISION.md).
 All development requires the Go toolchain declared in [`go.mod`](go.mod)
 (currently Go 1.26.10), Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
-[`.golangci.yml`](.golangci.yml)). Node.js 24 with npm is required only for
+[`.golangci.yml`](.golangci.yml)). Node.js 24.22.1 with npm is required only for
 Portal work, complete dashboard-enabled binaries, and the merge/full validation
 tiers; ordinary Go builds, tests, vet, and `make verify-fast` remain Node-free.
+
+Use the root `.nvmrc` to select the patched development runtime. Container
+images and CI select exact versions independently. Runner capabilities are
+exact routing claims; known toolchains also check the declared version prefix.
+The Node.js scaffolding default is `node@24`, which requires a Node 24 runner
+but neither installs Node nor guarantees a patched version. When changing a
+runner major, update its matching workflow capabilities together; keep the
+actual runtime on a supported security patch.
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
@@ -399,9 +407,9 @@ not make the complete merge tier offline-capable.
 
 | Platform | Required tools | Merge-tier invocation |
 |---|---|---|
-| Linux | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
-| macOS | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
-| Windows | Go from `go.mod`, Node.js 24 with npm, Git for Windows, `golangci-lint` v2.12.2, 64-bit MinGW-w64 GCC | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
+| Linux | Go from `go.mod`, Node.js 24.22.1 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
+| macOS | Go from `go.mod`, Node.js 24.22.1 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
+| Windows | Go from `go.mod`, Node.js 24.22.1 with npm, Git for Windows, `golangci-lint` v2.12.2, 64-bit MinGW-w64 GCC | `go run ./test/ci` from PowerShell or Command Prompt; Bash and GNU Make are not required |
 
 The Windows compiler is required by Go's race detector, not by the CI task
 runner. Install a 64-bit MinGW-w64 GCC with runtime version 8 or newer, put its

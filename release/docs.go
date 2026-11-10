@@ -125,17 +125,17 @@ const (
 		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
 		"for a full claude-code gaggle reference).\n\n" +
 		"### Check prerequisites\n\n" +
-		"The sample's CI command requires Node.js 20 or newer and npm. Confirm both are\n" +
+		"The sample's CI command uses Node.js 24.22.1 and npm. Confirm both are\n" +
 		"available on the same `PATH` Goobers will use before materializing the sample:\n\n" +
 		"```sh\n" +
 		"node --version\n" +
 		"npm --version\n" +
 		"```\n\n" +
-		"The first command must report `v20.0.0` or newer, and both commands must\n" +
+		"The first command should report `v24.22.1`, and both commands must\n" +
 		"succeed. At run start, Goobers preflights the configured `npm` CI executable\n" +
 		"before any workflow stage executes. If npm is missing, the run fails before it\n" +
 		"claims or changes an issue with a `ciCommand executable \"npm\" not found` error;\n" +
-		"install Node.js 20+ and npm, then run the command again. The preflight checks\n" +
+		"install Node.js 24.22.1 and npm, then run the command again. The preflight checks\n" +
 		"that npm exists, not the Node.js major version, so do not skip the literal\n" +
 		"version checks above.\n\n" +
 		"### Materialize the sample and the instance\n\n" +
