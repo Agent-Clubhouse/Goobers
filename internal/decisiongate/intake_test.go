@@ -3,30 +3,8 @@ package decisiongate
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
-
-	"github.com/goobers/goobers/internal/decider"
 )
-
-type choiceFake struct {
-	choice string
-	prob   float64
-	err    error
-	calls  atomic.Int32
-}
-
-func (f *choiceFake) Decide(_ context.Context, r decider.Request) (decider.Response, error) {
-	f.calls.Add(1)
-	if f.err != nil {
-		return decider.Response{}, f.err
-	}
-	out := decider.Response{Answers: map[string]decider.Answer{}}
-	for id := range r.Questions {
-		out.Answers[id] = decider.Answer{Type: decider.KindChoice, Choice: f.choice, Probabilities: map[string]float64{f.choice: f.prob}}
-	}
-	return out, nil
-}
 
 func intakeGate(t *testing.T, f *choiceFake) *Gate {
 	t.Helper()
