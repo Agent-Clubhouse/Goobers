@@ -113,6 +113,10 @@ const (
 	LabsFluidUIRequestApplyPath = LabsFluidUIRequestPath + "/apply"
 	// LabsFluidUIRequestRevertPath undoes an applied request.
 	LabsFluidUIRequestRevertPath = LabsFluidUIRequestPath + "/revert"
+	// LabsFluidUIReportPath ranks customization shapes across users as
+	// advisory promotion candidates (#8419). It reports counts and shapes
+	// only, never identities, prompt text, or saved-view content.
+	LabsFluidUIReportPath = V1Prefix + "/labs/fluid-ui/report"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -401,10 +405,11 @@ const (
 	RouteLabsWorkflowFeatures      RouteID = "labsWorkflowFeatures"
 	// The Fluid UI customization routes share one path across methods, so
 	// each method has its own RouteID (like the blob plane).
-	RouteLabsFluidUIGet   RouteID = "labsFluidUICustomizationGet"
-	RouteLabsFluidUIPut   RouteID = "labsFluidUICustomizationPut"
-	RouteLabsFluidUIReset RouteID = "labsFluidUICustomizationReset"
-	RouteLabsFluidUIUndo  RouteID = "labsFluidUICustomizationUndo"
+	RouteLabsFluidUIGet    RouteID = "labsFluidUICustomizationGet"
+	RouteLabsFluidUIPut    RouteID = "labsFluidUICustomizationPut"
+	RouteLabsFluidUIReset  RouteID = "labsFluidUICustomizationReset"
+	RouteLabsFluidUIUndo   RouteID = "labsFluidUICustomizationUndo"
+	RouteLabsFluidUIReport RouteID = "labsFluidUIReport"
 
 	RouteLabsFluidUIRequestsList  RouteID = "labsFluidUIRequestsList"
 	RouteLabsFluidUIRequestSubmit RouteID = "labsFluidUIRequestSubmit"
@@ -692,6 +697,7 @@ var v1Routes = []Route{
 	{ID: RouteLabsFluidUIRequestRetry, Method: http.MethodPost, Path: LabsFluidUIRequestRetryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteLabsFluidUIRequestApply, Method: http.MethodPost, Path: LabsFluidUIRequestApplyPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteLabsFluidUIRequestRevert, Method: http.MethodPost, Path: LabsFluidUIRequestRevertPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIReport, Method: http.MethodGet, Path: LabsFluidUIReportPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},

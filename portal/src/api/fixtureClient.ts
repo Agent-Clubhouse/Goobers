@@ -41,6 +41,7 @@ import type {
   QueueEligibilityView,
   LabsWorkflowClusterView,
   LabsFleetConvergenceView,
+  LabsFluidUIReport,
   FluidUICustomization,
   FluidUICustomizationState,
   FluidUIRequest,
@@ -77,6 +78,7 @@ export interface DaemonFixtures {
   workItemDetails?: Record<string, WorkItemDetail>;
   labsWorkflowClusters?: LabsWorkflowClusterView;
   labsFleetConvergence?: LabsFleetConvergenceView;
+  labsFluidUIReport?: LabsFluidUIReport;
   /** Seeds the in-memory per-user Fluid UI store; omitted means the standard Portal. */
   fluidUICustomization?: FluidUICustomizationState;
   /** Seeds the caller's Fluid UI requests (#8417); submissions stay queued. */
@@ -243,6 +245,20 @@ export class FixtureDaemonClient implements DaemonClient {
         excluded: [],
         shapes: [],
         clusters: [],
+      },
+      options,
+    );
+  }
+
+  async getLabsFluidUIReport(options?: RequestOptions): Promise<LabsFluidUIReport> {
+    return fixture(
+      this.fixtures.labsFluidUIReport ?? {
+        advisory: "Advisory product proposals only. Candidates never change global defaults or any user's customization.",
+        generatedAt: "2026-09-08T00:00:00Z",
+        sustainedAfterDays: 7,
+        users: 0,
+        candidates: [],
+        unmetNeeds: [],
       },
       options,
     );

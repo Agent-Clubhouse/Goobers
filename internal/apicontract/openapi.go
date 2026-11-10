@@ -330,6 +330,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("FluidUIRequest")
 	case RouteLabsFluidUIRequestApply, RouteLabsFluidUIRequestRevert:
 		successSchema = schemaRef("FluidUIRequestApplication")
+	case RouteLabsFluidUIReport:
+		successSchema = schemaRef("PortalCustomizationReport")
 	}
 	successResponse := jsonResponse("Successful response", successSchema)
 	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {

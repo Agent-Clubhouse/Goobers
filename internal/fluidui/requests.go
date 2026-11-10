@@ -155,7 +155,7 @@ func (r *Requests) Submit(ctx context.Context, user, actor, prompt string, trigg
 	if err != nil {
 		return Request{}, err
 	}
-	r.refreshAll(ctx, hash, &file, trigger)
+	r.refreshAll(ctx, user, &file, trigger)
 	if err := admit(&file); err != nil {
 		return Request{}, err
 	}
@@ -179,7 +179,7 @@ func (r *Requests) List(ctx context.Context, user string, trigger Trigger) ([]Re
 	if err != nil {
 		return nil, err
 	}
-	if r.refreshAll(ctx, hash, &file, trigger) {
+	if r.refreshAll(ctx, user, &file, trigger) {
 		if err := r.save(hash, file); err != nil {
 			return nil, err
 		}
@@ -276,7 +276,7 @@ func (r *Requests) mutate(ctx context.Context, user, id string, trigger Trigger,
 		return Request{}, ErrRequestNotFound
 	}
 	rec := &file.Requests[index]
-	dirty := r.refresh(ctx, hash, rec, trigger)
+	dirty := r.refresh(ctx, user, rec, trigger)
 	changed, err := change(rec)
 	if changed {
 		rec.UpdatedAt = r.now()

@@ -51,6 +51,7 @@ export const apiRoutes = {
   "labsFluidUIRequestRetry": { method: "POST", path: "/api/v1/labs/fluid-ui/requests/{request}/retry", actionClass: "workflow-execution" },
   "labsFluidUIRequestApply": { method: "POST", path: "/api/v1/labs/fluid-ui/requests/{request}/apply", actionClass: "maintenance" },
   "labsFluidUIRequestRevert": { method: "POST", path: "/api/v1/labs/fluid-ui/requests/{request}/revert", actionClass: "maintenance" },
+  "labsFluidUIReport": { method: "GET", path: "/api/v1/labs/fluid-ui/report", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },

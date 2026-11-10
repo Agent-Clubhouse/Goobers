@@ -505,6 +505,17 @@ _goobers_completion()
                 return
             fi
             ;;
+        labs)
+            if (( CURRENT == 3 )); then
+                candidates=(fluid-ui)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "fluid-ui" ]] && (( CURRENT == 4 )); then
+                candidates=(report)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         runs)
             if (( CURRENT == 3 )); then
                 candidates=(list du)

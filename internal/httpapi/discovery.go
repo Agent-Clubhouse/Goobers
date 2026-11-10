@@ -332,7 +332,7 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
 	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
-		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo,
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport,
 		apicontract.RouteLabsFluidUIRequestsList, apicontract.RouteLabsFluidUIRequestGet,
 		apicontract.RouteLabsFluidUIRequestApply, apicontract.RouteLabsFluidUIRequestRevert,
 		apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
@@ -377,7 +377,7 @@ func routeExtensionAvailable(id apicontract.RouteID, config handlerConfig) bool 
 func labsFluidUIRouteAvailable(id apicontract.RouteID, config handlerConfig) bool {
 	switch id {
 	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
-		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo:
+		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo, apicontract.RouteLabsFluidUIReport:
 		return config.labsFluidUI != nil
 	case apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
 		// Submitting and retrying start a workflow run through trigger ingest.

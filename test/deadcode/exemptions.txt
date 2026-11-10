@@ -310,6 +310,8 @@ github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Sim
 github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.ScopeFindingFromAPI # Adapter for the review-gate scope shadow hook that follows the first slice of #6821; test-exercised only. expires=2027-02-01
+github.com/goobers/goobers/internal/decisiongate.WriteScopeRecords # Shadow-record writer for the review-gate scope hook that follows the first slice of #6821; test-exercised only. expires=2027-02-01
 github.com/goobers/goobers/internal/creditgraph.SuggestUnknownCauses # Advisory model-assisted ClassUnknown suggestion; unwired until the shadow recorder lands, test-exercised only (#6073).
 github.com/goobers/goobers/internal/creditgraph.assistQuestion # Helper of SuggestUnknownCauses; unwired for the same reason (#6073).
 github.com/goobers/goobers/internal/creditgraph.assistStateOf # Helper of SuggestUnknownCauses; unwired for the same reason (#6073).

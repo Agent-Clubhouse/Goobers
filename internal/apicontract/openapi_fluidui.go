@@ -78,5 +78,37 @@ func openAPILabsFluidUISchemas() map[string]any {
 				"customization": schemaRef("PortalCustomizationState"),
 			},
 		),
+		"PortalCustomizationReport": openAPILabsFluidUIReportSchema(),
 	}
+}
+
+// openAPILabsFluidUIReportSchema describes the aggregate promotion-candidate
+// report (#8419): counts, shapes, and need labels only.
+func openAPILabsFluidUIReportSchema() map[string]any {
+	count := map[string]any{"type": "integer", "minimum": 0}
+	return objectSchema(
+		[]string{"advisory", "generatedAt", "sustainedAfterDays", "users", "candidates", "unmetNeeds"},
+		map[string]any{
+			"advisory":           map[string]any{"type": "string"},
+			"generatedAt":        dateTimeSchema(),
+			"sustainedAfterDays": count,
+			"users":              count,
+			"candidates": map[string]any{"type": "array", "items": objectSchema(
+				[]string{"rank", "shape", "users", "activeUsers", "sustainedUsers", "revertedUsers", "reversionRate"},
+				map[string]any{
+					"rank":           map[string]any{"type": "integer", "minimum": 1},
+					"shape":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"users":          count,
+					"activeUsers":    count,
+					"sustainedUsers": count,
+					"revertedUsers":  count,
+					"reversionRate":  map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+				},
+			)},
+			"unmetNeeds": map[string]any{"type": "array", "items": objectSchema(
+				[]string{"label", "users"},
+				map[string]any{"label": map[string]any{"type": "string"}, "users": count},
+			)},
+		},
+	)
 }

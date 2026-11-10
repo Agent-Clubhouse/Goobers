@@ -62,10 +62,10 @@ func JournalRuns(layout instance.Layout) RunReader {
 	}
 }
 
-func (r *Requests) refreshAll(ctx context.Context, hash string, file *requestFile, trigger Trigger) bool {
+func (r *Requests) refreshAll(ctx context.Context, user string, file *requestFile, trigger Trigger) bool {
 	changed := false
 	for i := range file.Requests {
-		if r.refresh(ctx, hash, &file.Requests[i], trigger) {
+		if r.refresh(ctx, user, &file.Requests[i], trigger) {
 			changed = true
 		}
 	}
@@ -74,7 +74,7 @@ func (r *Requests) refreshAll(ctx context.Context, hash string, file *requestFil
 
 // refresh derives an in-flight request's status from its run. Statuses past
 // the run (ready_to_preview and later) are never touched here.
-func (r *Requests) refresh(ctx context.Context, hash string, rec *storedRequest, trigger Trigger) bool {
+func (r *Requests) refresh(ctx context.Context, user string, rec *storedRequest, trigger Trigger) bool {
 	if rec.Status != StatusQueued && rec.Status != StatusImplementing || r.runs == nil {
 		return false
 	}
@@ -92,7 +92,7 @@ func (r *Requests) refresh(ctx context.Context, hash string, rec *storedRequest,
 		rec.Status, rec.UpdatedAt = StatusImplementing, r.now()
 		return true
 	case journal.PhaseCompleted:
-		r.conclude(rec, state.Result)
+		r.conclude(user, rec, state.Result)
 	default:
 		r.fail(rec, fmt.Sprintf("the customization run ended %s", state.Phase))
 		if state.Result != nil {
@@ -120,7 +120,7 @@ func (r *Requests) refreshAcceptance(ctx context.Context, rec *storedRequest, tr
 
 // conclude re-validates a completed run's result in the daemon: the stage's
 // verdict is evidence, not authority.
-func (r *Requests) conclude(rec *storedRequest, result *CandidateResult) {
+func (r *Requests) conclude(user string, rec *storedRequest, result *CandidateResult) {
 	if result == nil {
 		r.fail(rec, "the customization run completed without a validated result")
 		return
@@ -146,6 +146,10 @@ func (r *Requests) conclude(rec *storedRequest, result *CandidateResult) {
 			label = UnmetNeedUnlabeled
 		}
 		rec.Status, rec.UnmetNeed = StatusUnsupported, label
+		if label != UnmetNeedUnlabeled {
+			// Only the normalized label reaches the aggregate report (#8419).
+			_ = r.store.RecordUnsupported(user, label)
+		}
 	default:
 		r.fail(rec, "the customization run completed with invalid output")
 		rec.Errors = result.Errors

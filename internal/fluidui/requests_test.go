@@ -187,6 +187,17 @@ func TestRequestOutcomes(t *testing.T) {
 			if tc.status == StatusFailed && got.Detail == "" {
 				t.Fatal("failure has no detail")
 			}
+			report, err := requests.store.Report()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want []UnmetNeed
+			if tc.unmet != "" && tc.unmet != UnmetNeedUnlabeled {
+				want = []UnmetNeed{{Label: tc.unmet, Users: 1}}
+			}
+			if fmt.Sprint(report.UnmetNeeds) != fmt.Sprint(want) {
+				t.Fatalf("report unmet needs = %+v, want %+v", report.UnmetNeeds, want)
+			}
 		})
 	}
 }

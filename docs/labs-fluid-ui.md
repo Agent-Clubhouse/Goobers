@@ -3,8 +3,9 @@
 Fluid UI (#8338) lets each Portal user keep their own presentation
 customization. This page documents the store and API (#8415), how the
 Portal applies a customization (#8416), natural-language requests and their
-lifecycle (#8417), and the shipped workflow that turns a request into a
-validated customization (#8418).
+lifecycle (#8417), the shipped workflow that turns a request into a
+validated customization (#8418), and the aggregate promotion report
+(#8419).
 
 ## Safety model
 
@@ -159,7 +160,55 @@ The workflow ships in the `goobers` reference gaggle with the
 
 The request text is stored only in your private request file and is passed to
 the run that serves it. It is not part of the trigger key or the run's
-outputs, and it never enters any aggregate; only normalized unmet-need labels
-are meant to be counted across users. The request text does appear in that
-run's `load-request` artifact and in the agent transcript, which anyone who
-can read the run can see.
+outputs, and it never enters any aggregate. When a request ends as
+`unsupported`, only its normalized unmet-need label is recorded for the
+aggregate report; a label that echoes the request text is not recorded. The
+request text does appear in that run's `load-request` artifact and in the
+agent transcript, which anyone who can read the run can see.
+
+## Aggregate learning and promotion candidates (#8419)
+
+Every time the store applies, revises, resets, or undoes a customization, it
+appends one event to `<instance root>/labs/fluid-ui/events.jsonl`. The log
+rotates to `events.1.jsonl` after 1 MiB, so at most two files are kept.
+
+Each event records only:
+
+- `kind`: `applied` (from the standard UI), `revised` (one customization
+  replaced by another), `reverted` (back to the standard UI, or a reset or
+  undo to a different shape), or `unsupported` (an unmet need).
+- `shape` and `from`: which controls differ from the defaults after and
+  before the change, for example `density:compact`, `runs.hidden`,
+  `overview.order`, `runs.sort:failing-first`, `runs.phase`, or `savedViews`.
+  Closed enum values are kept. Panel IDs, phase IDs, saved-view names, and
+  routes are never recorded. Pages outside the Portal's own page list are
+  recorded as `other`.
+- `at`: the event time.
+- `user`: a pseudonymous token, an HMAC-SHA256 of the user key under a random
+  salt. The token is used only to count distinct users. The salt is created
+  once in `events.salt` (mode 0600) and never leaves the instance. Issuers,
+  subjects, and request text are never written.
+
+### Ranking
+
+The report replays the log and groups users by their shape. A user counts
+once per shape, however often they revise it. A user is **sustained** on a
+shape when their latest state still has that shape at least 7 days after
+they first entered it. A user has **reverted** a shape when they left it with
+a `reverted` event. Candidates are ordered by sustained users, then lowest
+reversion rate, then users currently on the shape, then all users who ever
+held it. Unmet needs (short slugs such as `dark-mode`, recorded by the request
+workflow, #8418) are listed with distinct-user counts.
+
+Candidates are advisory product proposals. They never change global defaults
+or any user's customization; maintainers decide what to promote.
+
+```text
+goobers labs fluid-ui report [--json] [path]
+```
+
+`path` is the instance root (default `.`). The same report is served at
+`GET /api/v1/labs/fluid-ui/report` to any principal with the `view` role.
+The report holds only shapes and counts, never tokens. On instances with very
+few users, a shape count of one can still reveal that some user chose that
+shape, but never which user or what panel, phase, or view names they used.

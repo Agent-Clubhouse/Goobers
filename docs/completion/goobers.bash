@@ -431,6 +431,13 @@ _goobers_completion()
                 candidates="$(command goobers __complete workflows 2>/dev/null)"
             fi
             ;;
+        labs)
+            if (( COMP_CWORD == 2 )); then
+                candidates="fluid-ui"
+            elif [[ "${COMP_WORDS[2]:-}" == "fluid-ui" ]] && (( COMP_CWORD == 3 )); then
+                candidates="report"
+            fi
+            ;;
         runs)
             if (( COMP_CWORD == 2 )); then
                 candidates="list du"
