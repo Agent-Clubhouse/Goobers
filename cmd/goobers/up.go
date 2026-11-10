@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/ephemeraltmp"
+	"github.com/goobers/goobers/internal/fluidui"
 	"github.com/goobers/goobers/internal/hostsuspend"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -1005,6 +1006,7 @@ func (u *upSession) configureAPI() int {
 	u.apiHandlerOpts = daemonReadHandlerOptions(u.l.Root, u.setup)
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithGaggleHealth(u.gaggleHealth), httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: u.root}))
 	u.apiHandlerOpts = append(u.apiHandlerOpts, labsWorkflowFeaturesOptions(u.root, u.stderr)...)
+	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithLabsFluidUI(fluidui.ForInstance(u.root)))
 	configReader, err := newConfigAuthoringReader(u.ctx, u.l, u.setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize configuration source reader", err)

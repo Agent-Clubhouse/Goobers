@@ -1,7 +1,9 @@
 // Labs is the Portal's single home for experimental features (#8320). Each
 // feature is one registry entry plus, once it has a UI, one page component.
-// Labs features are read-only and advisory: they never write configuration
-// or bypass validation, promotion, or approval gates.
+// Labs features are advisory: they never write configuration or bypass
+// validation, promotion, or approval gates. The only Labs writes are opt-in,
+// per-user presentation data (Fluid UI customizations, #8415) that affect
+// nobody else and never reach runtime state.
 
 import type { Route } from "./routing";
 
@@ -419,12 +421,29 @@ export const labsFeatures: readonly LabsFeature[] = [
       "not raw requests) become candidates for the standard Portal.",
     maturity: "concept",
     availability: "coming-soon",
-    prerequisites: ["Authenticated Portal users", "A per-user customization store"],
-    issues: [8338],
+    prerequisites: [
+      "A running Goobers daemon or dashboard (the per-user customization store is built in)",
+      "Authenticated Portal users on shared instances; local dashboards use one local profile",
+    ],
+    issues: [8338, 8415, 8416, 8417, 8418, 8419],
+    surfaces: [{ kind: "docs", label: "Fluid UI customization API", path: "docs/labs-fluid-ui.md" }],
     tryIt: [
       {
-        title: "Not implemented yet",
-        detail: "There is nothing to try today. Follow the tracking issue for the first layout and density customizations.",
+        title: "Save a customization through the API",
+        detail:
+          "The Portal does not apply customizations yet. You can already store, read, undo, and reset your own " +
+          "validated customization document; it affects nobody else and never touches configuration or gates.",
+        code:
+          "curl -X PUT \"$GOOBERS_API/api/v1/labs/fluid-ui/customization\" \\\n" +
+          "  -H 'Content-Type: application/json' \\\n" +
+          "  -d '{\"version\":\"portal.customization/v1\",\"density\":\"compact\",\"runList\":{\"sort\":\"failing-first\"}}'",
+      },
+      {
+        title: "Undo or reset",
+        detail: "Undo restores your previous revision; reset returns you to the standard Portal and can itself be undone.",
+        code:
+          "curl -X POST \"$GOOBERS_API/api/v1/labs/fluid-ui/customization/undo\" -H 'Content-Type: application/json' -d '{}'\n" +
+          "curl -X DELETE \"$GOOBERS_API/api/v1/labs/fluid-ui/customization\" -H 'Content-Type: application/json' -d '{}'",
       },
     ],
     integrate: [
@@ -433,6 +452,28 @@ export const labsFeatures: readonly LabsFeature[] = [
         detail:
           "Enter a request in Labs, follow it in a Feedback tab while an agent builds it, then preview and apply. " +
           "Undo or reset at any time.",
+      },
+    ],
+    roadmap: [
+      {
+        title: "Portal applies your customization",
+        detail: "Density, panel order, run-list defaults, and saved views take effect with preview, undo, and a safe fallback.",
+        issue: 8416,
+      },
+      {
+        title: "Ask in plain language",
+        detail: "Describe the change you want and follow its progress in a Feedback tab.",
+        issue: 8417,
+      },
+      {
+        title: "An agent builds it",
+        detail: "A shipped workflow turns your request into a validated customization document, never code.",
+        issue: 8418,
+      },
+      {
+        title: "Popular customizations become defaults",
+        detail: "Customizations adopted by many distinct users are ranked as candidates for the standard Portal.",
+        issue: 8419,
       },
     ],
   },

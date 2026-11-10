@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/fluidui"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -830,6 +831,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		httpapi.WithLabsWorkflowClusters(workflowcluster.ConfiguredSource{Root: layout.Root}),
 	}
 	streamOpts = append(streamOpts, labsWorkflowFeaturesOptions(layout.Root, errorLog.Writer())...)
+	streamOpts = append(streamOpts, httpapi.WithLabsFluidUI(fluidui.ForInstance(layout.Root)))
 	if identity := daemonDiscoveryIdentity(layout.Root); identity.DaemonInstanceID != "" {
 		streamOpts = append(streamOpts, httpapi.WithDiscoveryIdentity(identity))
 	} else {

@@ -444,6 +444,50 @@
       "recoverySafe": false
     },
     {
+      "id": "labsFluidUICustomizationGet",
+      "method": "GET",
+      "path": "/api/v1/labs/fluid-ui/customization",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUICustomizationPut",
+      "method": "PUT",
+      "path": "/api/v1/labs/fluid-ui/customization",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUICustomizationReset",
+      "method": "DELETE",
+      "path": "/api/v1/labs/fluid-ui/customization",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "labsFluidUICustomizationUndo",
+      "method": "POST",
+      "path": "/api/v1/labs/fluid-ui/customization/undo",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "events",
       "method": "GET",
       "path": "/api/v1/events",
