@@ -8,7 +8,7 @@ import (
 	"github.com/goobers/goobers/internal/fluidui"
 )
 
-const labsHelp = "Usage: goobers labs fluid-ui report [--json] [path]\n\n" +
+const labsHelp = "Usage: goobers labs fluid-ui report [flags] [path]\n\n" +
 	"Labs (experimental) reports. Results are advisory and never change\n" +
 	"configuration, gates, global defaults, or any user's customization.\n\n" +
 	"Commands:\n" +

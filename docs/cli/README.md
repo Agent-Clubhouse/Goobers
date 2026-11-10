@@ -2810,7 +2810,7 @@ $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.en
 Labs: experimental, advisory reports
 
 ~~~text
-Usage: goobers labs fluid-ui report [--json] [path]
+Usage: goobers labs fluid-ui report [flags] [path]
 
 Labs (experimental) reports. Results are advisory and never change
 configuration, gates, global defaults, or any user's customization.
@@ -2830,7 +2830,7 @@ $ goobers labs fluid-ui report
 Labs: Fluid UI customization reports
 
 ~~~text
-Usage: goobers labs fluid-ui report [--json] [path]
+Usage: goobers labs fluid-ui report [flags] [path]
 
 Labs (experimental) reports. Results are advisory and never change
 configuration, gates, global defaults, or any user's customization.

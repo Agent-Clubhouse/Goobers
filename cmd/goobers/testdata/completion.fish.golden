@@ -51,6 +51,8 @@ complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (comman
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show validate-child child-admission clusters'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_workflows)'
+complete -c goobers -n '__fish_seen_subcommand_from labs; and test (count (commandline -opc)) -eq 2' -f -a 'fluid-ui'
+complete -c goobers -n '__fish_seen_subcommand_from labs; and __fish_seen_subcommand_from fluid-ui; and test (count (commandline -opc)) -eq 3' -f -a 'report'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and test (count (commandline -opc)) -eq 2' -f -a 'list du'
 complete -c goobers -n '__fish_seen_subcommand_from workspace; and test (count (commandline -opc)) -eq 2' -f -a 'reset'
 complete -c goobers -n '__fish_seen_subcommand_from blocked; and test (count (commandline -opc)) -eq 2' -f -a 'list clear'

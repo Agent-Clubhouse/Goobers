@@ -152,6 +152,7 @@ Advanced operator commands:
   gaggle            export or import sanitized portable gaggle bundles
   harness           inspect or manage harness lifecycle operations
   journal redact    remove a leaked secret from a stored blob (SEC-041)
+  labs              Labs: experimental, advisory reports
   lint              lint config via the single authoritative validation engine (alias for validate)
   netpol-render     render per-runner-class NetworkPolicy reference manifests from the runners: inventory
   onboarding        run non-interactive onboarding actions
@@ -1919,6 +1920,40 @@ the leaked bytes exactly (no trailing newline unless the secret has one):
       --path inputs/creds.env --reason 'token pasted into the issue body'
 
 Exit codes: 0 = redacted, 1 = nothing redacted / business error, 2 = usage/IO error.
+
+### labs
+Usage: goobers labs fluid-ui report [flags] [path]
+
+Labs (experimental) reports. Results are advisory and never change
+configuration, gates, global defaults, or any user's customization.
+
+Commands:
+  fluid-ui report  rank Fluid UI customization shapes as promotion candidates
+
+### labs fluid-ui
+Usage: goobers labs fluid-ui report [flags] [path]
+
+Labs (experimental) reports. Results are advisory and never change
+configuration, gates, global defaults, or any user's customization.
+
+Commands:
+  fluid-ui report  rank Fluid UI customization shapes as promotion candidates
+
+### labs fluid-ui report
+Usage: goobers labs fluid-ui report [--json] [path]
+
+Labs (experimental): rank the Fluid UI customization shapes users apply as
+candidates for the standard Portal (#8419). Shapes are ranked by distinct
+users who kept them applied for at least 7 days, then by a lower reversion
+rate, then by distinct users. One user's repeated revisions count once.
+Unmet needs list request categories the customization schema cannot express.
+
+The report reads the learning log under <path>/labs/fluid-ui (default path
+"."). It holds only counts, shapes, and category labels: never prompt text,
+identities, panel IDs, saved-view names, or routes.
+
+Candidates are advisory product proposals. They never change global defaults
+or any user's customization.
 
 ### lint
 Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--target local|cloud [--format text|json]] [--strict] [path]
