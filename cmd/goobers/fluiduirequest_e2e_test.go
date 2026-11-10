@@ -37,8 +37,15 @@ const fluidUIPrincipalHeader = "X-Test-Principal"
 
 func (fluidUITestAuthenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	subject := cmp.Or(request.Header.Get(fluidUIPrincipalHeader), "fluid-ui-user")
-	return &httpapi.Principal{Issuer: "oidc", Subject: subject, Roles: []httpapi.Role{httpapi.RoleView}}, nil
+	roles := []httpapi.Role{httpapi.RoleView}
+	if subject == fluidUIAdmin {
+		roles = append(roles, httpapi.RoleAdmin)
+	}
+	return &httpapi.Principal{Issuer: "oidc", Subject: subject, Roles: roles}, nil
 }
+
+// fluidUIAdmin is an admin principal, who may read any run's content.
+const fluidUIAdmin = "an-admin"
 
 // fluidUIEchoingAgent stands in for an agent that reads the private request
 // text and then repeats it everywhere it can: its transcript, its stderr and
@@ -269,6 +276,47 @@ func (d *fluidUIDaemon) getAs(principal, path string) (int, string) {
 	return response.Code, response.Body.String()
 }
 
+// scanRunContent reads the run's detail, events, artifacts and transcripts as
+// viewer, failing on any body that shows prompt. It reports whether the
+// load-request result and redacted transcripts were readable, and how many
+// artifact and transcript reads were refused as private.
+func (d *fluidUIDaemon) scanRunContent(t *testing.T, viewer string, got fluidui.Request, prompt string) (bool, int, int) {
+	t.Helper()
+	refused := 0
+	read := func(path string) (int, string) {
+		t.Helper()
+		code, body := d.getAs(viewer, path)
+		if strings.Contains(body, prompt) {
+			t.Fatalf("%s shows the prompt to %s: %s", path, viewer, body)
+		}
+		if code == http.StatusForbidden && strings.Contains(body, "run_content_private") {
+			refused++
+		}
+		return code, body
+	}
+	run := strings.NewReplacer("{run}", got.RunID)
+	code, detail := read(run.Replace(apicontract.RunDetailPath))
+	if code != http.StatusOK {
+		t.Fatalf("run detail as %s = %d: %s", viewer, code, detail)
+	}
+	code, events := read(run.Replace(apicontract.RunEventsPath))
+	if code != http.StatusOK {
+		t.Fatalf("run events as %s = %d: %s", viewer, code, events)
+	}
+	loadResult, transcripts := false, 0
+	for _, digest := range slices.Compact(slices.Sorted(slices.Values(regexp.MustCompile(`sha256:[0-9a-f]{64}`).FindAllString(detail+events, -1)))) {
+		code, body := read(strings.NewReplacer("{run}", got.RunID, "{digest}", digest).Replace(apicontract.RunArtifactPath))
+		loadResult = loadResult || code == http.StatusOK && strings.Contains(body, `"request":{"id":"`+got.ID+`"}`)
+	}
+	for _, seq := range regexp.MustCompile(`"seq":([0-9]+)`).FindAllStringSubmatch(events, -1) {
+		path := strings.NewReplacer("{run}", got.RunID, "{seq}", seq[1]).Replace(apicontract.RunTranscriptPath)
+		if code, body := read(path); code == http.StatusOK && strings.Contains(body, "the user asked: "+journal.Redacted) {
+			transcripts++
+		}
+	}
+	return loadResult, transcripts, refused
+}
+
 func TestFluidUIRequestPromptStaysOutOfTheRun(t *testing.T) {
 	const prompt = "make the run list denser and hide the cost column"
 	d := newFluidUIDaemon(t, func(int) string {
@@ -293,36 +341,16 @@ func TestFluidUIRequestPromptStaysOutOfTheRun(t *testing.T) {
 	if code, body := d.getAs(other, apicontract.LabsFluidUIRequestsPath+"/"+got.ID); code != http.StatusNotFound || strings.Contains(body, prompt) {
 		t.Fatalf("another user reading the request = %d: %s", code, body)
 	}
-	run := strings.NewReplacer("{run}", got.RunID)
-	read := func(path string) (int, string) {
-		t.Helper()
-		code, body := d.getAs(other, path)
-		if strings.Contains(body, prompt) {
-			t.Fatalf("%s shows the prompt to another user: %s", path, body)
+	// Another viewer is refused the run's content outright (#8426); an admin
+	// can read it, and must find the prompt kept out of it at the source.
+	for _, viewer := range []string{other, fluidUIAdmin} {
+		loadResult, transcripts, refused := d.scanRunContent(t, viewer, got, prompt)
+		switch {
+		case viewer == other && (loadResult || transcripts != 0 || refused == 0):
+			t.Fatalf("another viewer read the run content: load-request %v, transcripts %d, refused %d", loadResult, transcripts, refused)
+		case viewer == fluidUIAdmin && (!loadResult || transcripts == 0):
+			t.Fatalf("admin load-request result read: %v, redacted transcripts read: %d; the scan did not reach them", loadResult, transcripts)
 		}
-		return code, body
-	}
-	code, detail := read(run.Replace(apicontract.RunDetailPath))
-	if code != http.StatusOK {
-		t.Fatalf("run detail = %d: %s", code, detail)
-	}
-	code, events := read(run.Replace(apicontract.RunEventsPath))
-	if code != http.StatusOK {
-		t.Fatalf("run events = %d: %s", code, events)
-	}
-	loadResult, transcripts := false, 0
-	for _, digest := range slices.Compact(slices.Sorted(slices.Values(regexp.MustCompile(`sha256:[0-9a-f]{64}`).FindAllString(detail+events, -1)))) {
-		code, body := read(strings.NewReplacer("{run}", got.RunID, "{digest}", digest).Replace(apicontract.RunArtifactPath))
-		loadResult = loadResult || code == http.StatusOK && strings.Contains(body, `"request":{"id":"`+got.ID+`"}`)
-	}
-	for _, seq := range regexp.MustCompile(`"seq":([0-9]+)`).FindAllStringSubmatch(events, -1) {
-		path := strings.NewReplacer("{run}", got.RunID, "{seq}", seq[1]).Replace(apicontract.RunTranscriptPath)
-		if code, body := read(path); code == http.StatusOK && strings.Contains(body, "the user asked: "+journal.Redacted) {
-			transcripts++
-		}
-	}
-	if !loadResult || transcripts == 0 {
-		t.Fatalf("load-request result read: %v, redacted transcripts read: %d; the scan did not reach them", loadResult, transcripts)
 	}
 
 	private := filepath.Join(d.root, "labs", "fluid-ui")

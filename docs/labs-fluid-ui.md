@@ -158,12 +158,39 @@ The workflow ships in the `goobers` reference gaggle with the
 
 ### Privacy
 
-The request text is stored only in your private request file. Only you can
-read it back, through the Feedback tab and the request routes above. Other
-people who can read the run that serves it see the run but not the text.
+The request text is stored only in your private request file. A private run
+binding, which names you by your hashed user key and never holds the text,
+maps each attempt's run to your request and is kept after the run ends. The
+text is not part of the trigger key or the run's outputs, and it never enters
+any aggregate.
 
-The text never enters the run's trigger key, inputs or outputs, the
-`load-request` artifact, or any aggregate. The daemon hands it to the
+The agent reads the text while proposing a candidate, so anything it writes in
+its own words can reflect the request. Exact-text scrubbing (below) cannot
+catch escaped, truncated, or paraphrased forms, so access is restricted too.
+For a `fluid-ui-customize` run, every user other than you and admins:
+
+- gets `403 run_content_private` for the run's artifacts and transcripts;
+- sees run detail, events, and stage attempts with agent progress text,
+  agent objectives, gate rationale, instruction addenda, reasons, error
+  messages, and terminal-cause messages removed;
+- sees run lists and run detail without the run's terminal reason, latest
+  error message, or review rationale and findings, and with each blocker
+  reduced to its code; and
+- sees `/telemetry/errors` entries for the run with an empty message.
+
+A `fluid-ui-customize` run with no binding (one not bound yet, or one whose
+binding an earlier version removed when it finished) is treated as private to
+admins. These responses are sent `Cache-Control: private, no-store`. The live
+event stream carries only cursors, read-model names, and run and workflow
+identifiers, never run content.
+
+When a request ends
+as `unsupported`, only its normalized unmet-need label is recorded for the
+aggregate report; a label that echoes the request text is not recorded.
+
+The text is also kept out of the run itself, so the protections above do not
+have to catch every path. It never enters the run's inputs or the
+`load-request` artifact. The daemon hands it to the
 `propose` agent as a private input instead:
 
 - When the agentic stage of a `fluid-ui-customize` run starts, the daemon looks
@@ -183,7 +210,8 @@ The text never enters the run's trigger key, inputs or outputs, the
 A request must be at least 6 bytes, the shortest value the scrubber redacts,
 so every accepted request can be protected.
 
-What remains visible to people who can read the run:
+What remains visible to you, admins, and anyone with filesystem access to
+the daemon host:
 
 - **Paraphrases.** Redaction matches exact text. The agent is told never to
   quote, restate or summarize the request. If it paraphrases anyway, or

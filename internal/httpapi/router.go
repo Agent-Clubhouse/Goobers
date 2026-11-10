@@ -705,6 +705,7 @@ type handlerConfig struct {
 	labsWorkflowFeatures      LabsWorkflowFeaturesService
 	labsFluidUI               LabsFluidUIService
 	labsFluidUIRequests       LabsFluidUIRequestService
+	runContentPrivacy         runContentPrivacy
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
 	workflowParentExecution   ChildExecutionObserver
@@ -1416,9 +1417,10 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		config.portalAssets.ServeHTTP(w, request)
 	})
-	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
+	privacy := runPrivacy{service: config.runContentPrivacy, reader: reader, errorLog: errorLog}
+	registerTelemetryRoutes(router, reader, privacy, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
-	registerRunRoutes(router, reader, errorLog)
+	registerRunRoutes(router, reader, privacy, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
 	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
@@ -1516,7 +1518,7 @@ func registerRunRevealRoute(router *Router, reveal func(context.Context, string)
 	})
 }
 
-func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+func registerRunRoutes(router *Router, reader readservice.Reader, privacy runPrivacy, errorLog *log.Logger) {
 	registerChildHistoryRoute(router, reader, errorLog)
 	router.Handle(apicontract.RouteRuns, func(w http.ResponseWriter, request *http.Request) {
 		options, err := runListOptions(request)
@@ -1529,7 +1531,8 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "list runs", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, runs)
+		privacy.private(w)
+		writeJSON(w, http.StatusOK, withholdRunList(request, privacy, runs))
 	})
 	router.Handle(apicontract.RouteRunDetail, func(w http.ResponseWriter, request *http.Request) {
 		var run readservice.RunDetail
@@ -1549,6 +1552,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "get run", err)
 			return
 		}
+		if !privacy.allowed(request, run.ID, run.Workflow) {
+			run = withholdRunDetail(run)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, run)
 	})
 	router.Handle(apicontract.RouteRunEvents, func(w http.ResponseWriter, request *http.Request) {
@@ -1561,6 +1568,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read run events", err)
 			return
 		}
+		if !privacy.allowed(request, run, "") {
+			events = withholdEvents(events)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, events)
 	})
 	router.Handle(apicontract.RouteStageAttempts, func(w http.ResponseWriter, request *http.Request) {
@@ -1577,6 +1588,10 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read stage attempts", err)
 			return
 		}
+		if !privacy.allowed(request, run, "") {
+			attempts = withholdAttempts(attempts)
+		}
+		privacy.private(w)
 		writeJSON(w, http.StatusOK, attempts)
 	})
 	router.Handle(apicontract.RouteRunArtifact, func(w http.ResponseWriter, request *http.Request) {
@@ -1593,6 +1608,11 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read artifact", err)
 			return
 		}
+		privacy.private(w)
+		if !privacy.allowed(request, run, "") {
+			writeRunContentPrivate(w)
+			return
+		}
 		w.Header().Set("Content-Type", artifact.Metadata.MediaType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
 		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
@@ -1607,13 +1627,19 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read transcript", fmt.Errorf("%w: invalid transcript sequence", readservice.ErrInvalidArgument))
 			return
 		}
+		run := request.PathValue("run")
 		transcript, err := reader.Transcript(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			seq,
 		)
 		if err != nil {
 			writeReadError(w, errorLog, "read transcript", err)
+			return
+		}
+		privacy.private(w)
+		if !privacy.allowed(request, run, "") {
+			writeRunContentPrivate(w)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
