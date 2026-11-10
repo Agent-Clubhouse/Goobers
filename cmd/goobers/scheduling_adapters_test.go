@@ -33,7 +33,7 @@ func executionGenerationPinsReader(layout instance.Layout) func(context.Context)
 }
 
 func retainExecutionGeneration(ctx context.Context, layout instance.Layout, retainer *configgeneration.Retainer) (instance.Layout, string, error) {
-	return generationService().Retain(ctx, layout, retainer)
+	return generationService().Retain(ctx, layout, retainer, nil)
 }
 
 func schedulerStateLock(l instance.Layout) func(string, string, func() error) error {

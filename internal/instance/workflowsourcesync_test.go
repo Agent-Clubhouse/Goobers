@@ -55,7 +55,6 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
 	first, _, _, err := commitPreparedWorkflowSource(context.Background(), root, source, "")
 	if err != nil {
@@ -75,6 +74,75 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 		t.Fatalf("revision did not advance after new commit: %s", second)
 	}
 	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "manifest-v2\n")
+}
+
+func TestSyncGitWorkflowSourceScopesSubdirectoryAndSkipsSiblingChanges(t *testing.T) {
+	repo := t.TempDir()
+	runWorkflowSourceSyncTestGit(t, repo, "init", "-b", "main")
+	runWorkflowSourceSyncTestGit(t, repo, "config", "user.email", "test@example.com")
+	runWorkflowSourceSyncTestGit(t, repo, "config", "user.name", "Test")
+	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "macmini-octo", "manifest.yaml"), "manifest-v1\n")
+	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "macmini-octo", "gaggles", "example", "gaggle.yaml"), "apiVersion: goobers.dev/v1alpha1\nkind: Gaggle\n")
+	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "build-server", "manifest.yaml"), "other-instance\n")
+	runWorkflowSourceSyncTestGit(t, repo, "add", ".")
+	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "initial")
+
+	root := t.TempDir()
+	layout := NewLayout(root)
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo, Dir: "instances/macmini-octo"}
+	first, changed, _, err := commitPreparedWorkflowSource(context.Background(), root, source, "")
+	if err != nil || !changed {
+		t.Fatalf("initial sync = (%q, %t), err %v", first, changed, err)
+	}
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "manifest-v1\n")
+	if _, err := os.Stat(filepath.Join(layout.ConfigDir(), "instances")); !os.IsNotExist(err) {
+		t.Fatalf("sibling source paths leaked into config tree: %v", err)
+	}
+
+	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "build-server", "manifest.yaml"), "other-instance-v2\n")
+	runWorkflowSourceSyncTestGit(t, repo, "add", ".")
+	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "other instance changed")
+	siblingRevision, changed, _, err := commitPreparedWorkflowSource(context.Background(), root, source, first)
+	if err != nil || changed || siblingRevision != first {
+		t.Fatalf("sibling-only sync = (%q, %t), want (%q, false), err %v", siblingRevision, changed, first, err)
+	}
+
+	writeWorkflowSourceSyncTestFile(t, repo, filepath.Join("instances", "macmini-octo", "manifest.yaml"), "manifest-v2\n")
+	runWorkflowSourceSyncTestGit(t, repo, "add", ".")
+	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "selected instance changed")
+	second, changed, _, err := commitPreparedWorkflowSource(context.Background(), root, source, first)
+	if err != nil || !changed || second == first {
+		t.Fatalf("selected-directory sync = (%q, %t), want new revision, err %v", second, changed, err)
+	}
+	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "manifest-v2\n")
+}
+
+func TestSyncGitWorkflowSourceFailsWhenConfiguredDirectoryIsMissing(t *testing.T) {
+	repo := newWorkflowSourceSyncTestRepo(t, "manifest-v1\n")
+	_, _, _, err := commitPreparedWorkflowSource(context.Background(), t.TempDir(), WorkflowSource{
+		Kind: WorkflowSourceKindGit, Path: repo, Dir: "missing",
+	}, "")
+	if err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("sync error = %v, want missing configured directory refusal", err)
+	}
+}
+
+func TestWorkflowSourceDirectoryValidation(t *testing.T) {
+	for _, directory := range []string{"../outside", "instances/../../outside", "/absolute", `C:\outside`, `instances\macmini`, "instances/foo:bar", "instances/NUL"} {
+		t.Run(directory, func(t *testing.T) {
+			_, err := NewGitSource(GitSourceOptions{
+				InstanceRoot: t.TempDir(),
+				Repository:   t.TempDir(),
+				Directory:    directory,
+			})
+			if err == nil || !strings.Contains(err.Error(), "dir") {
+				t.Fatalf("NewGitSource directory %q error = %v, want rejection", directory, err)
+			}
+		})
+	}
 }
 
 func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T) {

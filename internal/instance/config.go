@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -298,14 +300,15 @@ type WorkcopiesConfig struct {
 
 // WorkflowSource locates the workflow configuration independently of Repos.
 // A local-dir source reads Path directly. A git source reads a committed Ref
-// from either a local repository Path or a remote HTTPS URL; remote sources
-// authenticate through their own token reference or a github-app auth block
-// (#3274) — exactly one of the two.
+// from either a local repository Path or a remote HTTPS URL, optionally
+// restricted to a repository-relative Dir; remote sources authenticate
+// through their own token reference or a github-app auth block (#3274).
 type WorkflowSource struct {
 	Kind  string    `json:"kind" yaml:"kind"`
 	Path  string    `json:"path,omitempty" yaml:"path,omitempty"`
 	URL   string    `json:"url,omitempty" yaml:"url,omitempty"`
 	Ref   string    `json:"ref,omitempty" yaml:"ref,omitempty"`
+	Dir   string    `json:"dir,omitempty" yaml:"dir,omitempty"`
 	Token *TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
 	// Auth selects GitHub App installation-token minting for a REMOTE git
 	// source (#3274), reusing repos[]' RepoAuthConfig shape (kind github-app
@@ -333,6 +336,21 @@ func (s WorkflowSource) TrackedRef() string {
 		return DefaultWorkflowSourceRef
 	}
 	return s.Ref
+}
+
+// Directory returns the repository-relative directory selected by a git
+// workflow source, defaulting to the repository root.
+func (s WorkflowSource) Directory() string {
+	if s.Dir == "" {
+		return "."
+	}
+	return s.Dir
+}
+
+// ValidateDirectory checks a source-directory value carried separately from
+// the source configuration, such as a workflow stage input.
+func (s WorkflowSource) ValidateDirectory() error {
+	return validateWorkflowSourceDirectory(s.Directory())
 }
 
 // RunnerConfig declares the local runner's static, advertised capability set
@@ -2882,12 +2900,17 @@ func (s WorkflowSource) validate() error {
 		if !hasPath {
 			return fmt.Errorf("path is required for kind %q", s.Kind)
 		}
-		if hasURL || s.Ref != "" || s.Token != nil || s.Auth != nil {
+		if hasURL || s.Ref != "" || s.Dir != "" || s.Token != nil || s.Auth != nil {
 			return fmt.Errorf("kind %q accepts only path", s.Kind)
 		}
 	case WorkflowSourceKindGit:
 		if hasPath == hasURL {
 			return fmt.Errorf("kind %q must set exactly one of path or url", s.Kind)
+		}
+		if s.Dir != "" {
+			if err := validateWorkflowSourceDirectory(s.Dir); err != nil {
+				return err
+			}
 		}
 		if hasURL {
 			if err := validateRemoteGitURL(s.URL); err != nil {
@@ -2919,9 +2942,37 @@ func (s WorkflowSource) validate() error {
 		{name: "path", value: s.Path},
 		{name: "url", value: s.URL},
 		{name: "ref", value: s.Ref},
+		{name: "dir", value: s.Dir},
 	} {
 		if field.value != "" && strings.TrimSpace(field.value) != field.value {
 			return fmt.Errorf("%s must not contain leading or trailing whitespace", field.name)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowSourceDirectory(dir string) error {
+	if strings.TrimSpace(dir) != dir || dir == "" {
+		return errors.New("dir must be a non-empty, trimmed repository-relative path")
+	}
+	if strings.ContainsRune(dir, '\\') || path.IsAbs(dir) || filepath.IsAbs(filepath.FromSlash(dir)) {
+		return fmt.Errorf("dir %q must be a repository-relative path using forward slashes", dir)
+	}
+	if path.Clean(dir) != dir || dir == ".." || strings.HasPrefix(dir, "../") {
+		return fmt.Errorf("dir %q must not contain parent traversal or non-canonical path components", dir)
+	}
+	if dir == "." {
+		return nil
+	}
+	for _, part := range strings.Split(dir, "/") {
+		if strings.TrimRight(part, ". ") != part || strings.ContainsAny(part, `:*?"<>|`) ||
+			strings.IndexFunc(part, func(r rune) bool { return r < 32 || r == 127 }) >= 0 {
+			return fmt.Errorf("dir %q contains a path component that is not portable", dir)
+		}
+		base := strings.ToUpper(strings.SplitN(part, ".", 2)[0])
+		switch base {
+		case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+			return fmt.Errorf("dir %q contains a path component that is not portable", dir)
 		}
 	}
 	return nil

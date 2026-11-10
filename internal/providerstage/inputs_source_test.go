@@ -32,9 +32,10 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"configrepotarget.go": {
 		command: "push-branch",
 		shared: map[string][]string{
-			"configRepo":     {"open-pr", "config-checkout", "gate-removal-guard"},
-			"configRepoBase": {"open-pr", "config-checkout", "gate-removal-guard"},
-			"configRepoDir":  {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepo":          {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoBase":      {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoDir":       {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoSourceDir": {"open-pr", "config-checkout", "gate-removal-guard"},
 		},
 	},
 	// The shared comment classifier (#6494): every stage that acts on human

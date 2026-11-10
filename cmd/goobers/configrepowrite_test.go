@@ -187,6 +187,14 @@ func TestConfigRepoTargetFromSource(t *testing.T) {
 	if target, _ = configRepoTargetFromSource(def); target.Base != instance.DefaultWorkflowSourceRef {
 		t.Fatalf("default base = %q", target.Base)
 	}
+	def.Dir = "instances/macmini-octo"
+	if target, err = configRepoTargetFromSource(def); err != nil || target.Directory != def.Dir {
+		t.Fatalf("directory target = %+v, err %v", target, err)
+	}
+	def.Dir = "../outside"
+	if _, err := configRepoTargetFromSource(def); err == nil {
+		t.Fatal("escaping workflow source directory accepted as a config-repo target")
+	}
 	for name, source := range map[string]*instance.WorkflowSource{
 		"nil":      nil,
 		"local":    {Kind: instance.WorkflowSourceKindLocalDir, Path: "/x"},
@@ -263,6 +271,22 @@ func TestResolveConfigRepoTargetPodFallbackFromInputs(t *testing.T) {
 	t.Setenv(executor.InputEnvVar(configRepoBaseInput), "dev")
 	if target, _ = resolveConfigRepoTarget(root); target.Base != "dev" {
 		t.Fatalf("base = %q", target.Base)
+	}
+	t.Setenv(executor.InputEnvVar(configRepoSourceDirInput), "instances/macmini-octo")
+	if target, err = resolveConfigRepoTarget(root); err != nil || target.Directory != "instances/macmini-octo" {
+		t.Fatalf("directory target = %+v, err %v", target, err)
+	}
+	t.Setenv(executor.InputEnvVar(configRepoSourceDirInput), "../outside")
+	if _, err := resolveConfigRepoTarget(root); err == nil {
+		t.Fatal("escaping configRepoSourceDir accepted")
+	}
+}
+
+func TestConfigRepoTargetChecksSourceDirectoryInput(t *testing.T) {
+	root := writeConfigRepoInstance(t, "  kind: git\n  url: https://github.com/acme/workflows.git\n  dir: instances/macmini-octo\n  token:\n    env: CFG_READ\n")
+	t.Setenv(executor.InputEnvVar(configRepoSourceDirInput), "instances/build-server")
+	if _, err := resolveConfigRepoTarget(root); err == nil || !strings.Contains(err.Error(), "does not match workflowSource dir") {
+		t.Fatalf("err = %v, want a mismatched directory refusal", err)
 	}
 }
 

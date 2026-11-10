@@ -48,6 +48,48 @@ func gitRepoWithRunBranchChanges(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+func TestConfineDiffToDirectory(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		dir     string
+		wantErr bool
+	}{
+		{
+			name: "changes within selected directory",
+			dir:  "instances/macmini-octo",
+			files: map[string]string{
+				"instances/macmini-octo/manifest.yaml": "manifest\n",
+			},
+		},
+		{
+			name: "sibling change",
+			dir:  "instances/macmini-octo",
+			files: map[string]string{
+				"instances/build-server/manifest.yaml": "manifest\n",
+			},
+			wantErr: true,
+		},
+		{
+			name: "repository root",
+			dir:  ".",
+			files: map[string]string{
+				"README.md": "updated\n",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace := gitRepoWithRunBranchChanges(t, tt.files)
+			t.Chdir(workspace)
+			err := confineDiffToDirectory("main", tt.dir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("confineDiffToDirectory error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestOpenPRWriteBoundaryRejectsOutOfRootChange is #223's core negative test,
 // exercised through the REAL open-pr stage: with confinement on and the config
 // root "reference-workflows", a run branch that touches a platform path is refused — the

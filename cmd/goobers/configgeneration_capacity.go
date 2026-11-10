@@ -100,10 +100,12 @@ func generationCapacityMessage(err error) string {
 	return fmt.Sprintf("%v (limits: %d generations, %d bytes); candidate configuration was not admitted. Restore configuration matching a verified retained generation, or use normal retention after its owners no longer require recovery; do not delete protected owners", err, configgeneration.MaxGenerations, configgeneration.MaxStoredBytes)
 }
 
-func journalStartupGeneration(log *journal.InstanceLog, generation, digest string) error {
-	if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: map[string]any{
-		"kind": appliedGenerationAnnotation, "configGeneration": generation, "configDigest": digest,
-	}}); err != nil {
+func journalStartupGeneration(log *journal.InstanceLog, generation, digest string, source *journal.WorkflowSourceProvenance) error {
+	runner := map[string]any{"kind": appliedGenerationAnnotation, "configGeneration": generation, "configDigest": digest}
+	if source != nil {
+		runner["workflowSource"] = source
+	}
+	if err := log.Append(journal.Event{Type: journal.EventRunnerAnnotation, Runner: runner}); err != nil {
 		return fmt.Errorf("journal startup generation: %w", err)
 	}
 	return nil

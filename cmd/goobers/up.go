@@ -1738,7 +1738,14 @@ func (u *upSession) configureSource() int {
 	}
 
 	if source := u.setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		appliedRevision, err := appliedWorkflowSourceRevision(u.l, u.setup.Config)
+		if err != nil {
+			pf(u.stderr, "error: read applied workflow source provenance: %v\n", err)
+			return 1
+		}
+		u.reloader.RestoreWorkflowSourceRevision(appliedRevision)
 		u.sourceApplier = newWorkflowSourceApplier(u.root, *source, workflowSourceAppTokens, u.setup, u.reloader)
+		u.sourceApplier.RestoreRevision(appliedRevision)
 	}
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
 		if u.sourceApplier != nil {

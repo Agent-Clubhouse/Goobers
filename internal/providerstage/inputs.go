@@ -165,8 +165,11 @@ var inputSchemas = map[string][]Input{
 		stringListsIn("headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
-	"decide":             schema(pathsIn("resultFile")),
-	"gate-removal-guard": schema(stringsIn("base", "configRepo", "configRepoBase", "configRepoDir"), pathsIn("resultFile")),
+	"decide": schema(pathsIn("resultFile")),
+	"gate-removal-guard": schema(
+		stringsIn("base", "configRepo", "configRepoBase", "configRepoDir", "configRepoSourceDir"),
+		pathsIn("resultFile"),
+	),
 	"issue-close-out": schema(
 		stringsIn("base", "comment", "head", "reason", "reasonFromGate", "status"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -179,7 +182,7 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
-		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
+		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRepoSourceDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
 		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "draft", "recordLiveVerification", "runIdFooter"),
 		stringListsIn("actionRoots", "docsRoots", "reviewers"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -251,8 +254,8 @@ var inputSchemas = map[string][]Input{
 	// an explicit empty schema distinguishes them from external/unknown
 	// commands and makes a newly added consumer fail the structural parity
 	// test until its contract is declared here.
-	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir")),
-	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "head")),
+	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "configRepoSourceDir")),
+	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "configRepoSourceDir", "head")),
 	"recovery-restore":   {},
 	"recovery-resume":    schema(pathsIn("resultFile")),
 	"ios-simulator-test": schema(integersIn("maxOutputBytes"), pathsIn("resultFile")),

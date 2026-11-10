@@ -38,8 +38,14 @@ func PrepareGitWorkflowSourceIfChanged(ctx context.Context, root string, source 
 	}
 	revision = filepath.Base(snapshot)
 	warnings = gitSource.Warnings()
-	if revision == currentRevision {
-		return revision, false, warnings, nil, nil
+	if currentRevision != "" {
+		sameTree, err := gitSource.SameDirectoryTree(ctx, currentRevision, revision)
+		if err != nil {
+			return "", false, nil, nil, fmt.Errorf("compare workflow source directory revisions: %w", err)
+		}
+		if sameTree {
+			return currentRevision, false, warnings, nil, nil
+		}
 	}
 
 	layout := NewLayout(root)

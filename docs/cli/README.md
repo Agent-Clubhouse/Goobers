@@ -1119,14 +1119,15 @@ Usage: goobers config-checkout [dir]
 Clone the instance CONFIG repository (the workflowSource repository) at
 its tracked ref into [dir] (default: the configRepoDir input, else
 "config-repo", relative to the stage workspace) and check out the run's
-branch there, so a stage can edit the config tree and push-branch/open-pr
-(--config-repo) can publish it. Requires the stage to declare
+branch there, so a stage can edit the configured workflowSource.dir and
+push-branch/open-pr (--config-repo) can publish only changes under that
+directory. Requires the stage to declare
 configrepo:write. The credential authenticates the clone through the git
 environment only; it is never written to .git/config.
 
 Inputs: head (branch to create/reuse; default the run's stable branch),
 configRepoDir, and for stage pods without instance config, configRepo
-(owner/name) and configRepoBase.
+(owner/name), configRepoBase, and configRepoSourceDir.
 A pre-existing branch on the remote (a repass) is checked out and
 continued rather than recreated. A non-empty [dir] is refused.
 Exit codes: 0 = checked out, 1 = business error, 2 = usage/IO error.

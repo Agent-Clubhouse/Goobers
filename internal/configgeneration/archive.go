@@ -20,6 +20,7 @@ import (
 
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
@@ -42,19 +43,27 @@ type file struct {
 // Archive is one complete immutable generation of configuration definitions,
 // instructions, skills, and assets. Credentials and instance.yaml are absent.
 type Archive struct {
-	Version    int    `json:"version"`
-	InstanceID string `json:"instanceID,omitempty"`
-	Files      []file `json:"files"`
+	Version        int                               `json:"version"`
+	InstanceID     string                            `json:"instanceID,omitempty"`
+	WorkflowSource *journal.WorkflowSourceProvenance `json:"workflowSource,omitempty"`
+	Files          []file                            `json:"files"`
 }
 
 // CaptureForInstance namespaces archive ownership by the admitting instance.
 // Identical definitions from separate instances must not share a deletable pin.
 func CaptureForInstance(ctx context.Context, configDir, instanceID string) ([]byte, string, error) {
+	return CaptureForInstanceWithWorkflowSource(ctx, configDir, instanceID, nil)
+}
+
+// CaptureForInstanceWithWorkflowSource records the Git provenance associated
+// with the captured execution tree when it came from a workflowSource Git
+// repository.
+func CaptureForInstanceWithWorkflowSource(ctx context.Context, configDir, instanceID string, source *journal.WorkflowSourceProvenance) ([]byte, string, error) {
 	absolute, err := filepath.Abs(configDir)
 	if err != nil {
 		return nil, "", err
 	}
-	a := Archive{Version: 1, InstanceID: instanceID}
+	a := Archive{Version: 1, InstanceID: instanceID, WorkflowSource: source}
 	total := int64(0)
 	err = configtree.WalkDefinitionTrees(absolute, func(tree string) error {
 		root, err := os.OpenRoot(tree)
@@ -164,6 +173,9 @@ func Decode(data []byte, digest string) (*Archive, error) {
 	}
 	if a.Version != 1 || len(a.Files) > MaxFiles {
 		return nil, errors.New("unsupported config generation or file count")
+	}
+	if source := a.WorkflowSource; source != nil && (source.URL == "" || source.Dir == "" || source.Commit == "") {
+		return nil, errors.New("config generation has incomplete workflow source provenance")
 	}
 	seen := make(map[string]bool, len(a.Files))
 	spelling := make(map[string]string, len(a.Files))

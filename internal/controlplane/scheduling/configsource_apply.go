@@ -19,6 +19,17 @@ type WorkflowSourceApplier struct {
 	revision string
 }
 
+type workflowSourceRevisionSetter interface {
+	SetWorkflowSourceRevision(string)
+}
+
+// RestoreRevision seeds reconcile comparisons from durable source provenance.
+func (a *WorkflowSourceApplier) RestoreRevision(revision string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.revision = revision
+}
+
 // Apply applies the configured source and reports the resulting revision.
 func (a *WorkflowSourceApplier) Apply(ctx context.Context, now time.Time) ApplyResponse {
 	a.mu.Lock()
@@ -30,7 +41,7 @@ func (a *WorkflowSourceApplier) Apply(ctx context.Context, now time.Time) ApplyR
 	}
 	if err != nil {
 		response.Error = err.Error()
-	} else if revision != "" {
+	} else if revision != "" && response.Rejected == "" {
 		a.revision = revision
 	}
 	return response
@@ -40,11 +51,11 @@ func (a *WorkflowSourceApplier) Apply(ctx context.Context, now time.Time) ApplyR
 func (a *WorkflowSourceApplier) Reconcile(ctx context.Context, now time.Time) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, revision, changed, err := a.sync(ctx, a.revision, now)
+	result, revision, changed, err := a.sync(ctx, a.revision, now)
 	if err != nil {
 		return err
 	}
-	if changed {
+	if changed && result.Rejected == "" {
 		a.revision = revision
 	}
 	return nil
@@ -58,7 +69,15 @@ func (a *WorkflowSourceApplier) sync(ctx context.Context, currentRevision string
 	if !changed {
 		return SourceReloadResult{}, revision, false, nil
 	}
+	revisionSetter, canSetRevision := a.Reloader.(workflowSourceRevisionSetter)
+	previousRevision := a.revision
+	if canSetRevision {
+		revisionSetter.SetWorkflowSourceRevision(revision)
+	}
 	result, err := ApplyPreparedConfigSource(a.Reloader, swap, now)
+	if canSetRevision && !result.Applied {
+		revisionSetter.SetWorkflowSourceRevision(previousRevision)
+	}
 	return result, revision, true, err
 }
 

@@ -17,13 +17,14 @@ const configCheckoutHelp = "Usage: goobers config-checkout [dir]\n\n" +
 	"Clone the instance CONFIG repository (the workflowSource repository) at\n" +
 	"its tracked ref into [dir] (default: the configRepoDir input, else\n" +
 	"\"config-repo\", relative to the stage workspace) and check out the run's\n" +
-	"branch there, so a stage can edit the config tree and push-branch/open-pr\n" +
-	"(--config-repo) can publish it. Requires the stage to declare\n" +
+	"branch there, so a stage can edit the configured workflowSource.dir and\n" +
+	"push-branch/open-pr (--config-repo) can publish only changes under that\n" +
+	"directory. Requires the stage to declare\n" +
 	"configrepo:write. The credential authenticates the clone through the git\n" +
 	"environment only; it is never written to .git/config.\n\n" +
 	"Inputs: head (branch to create/reuse; default the run's stable branch),\n" +
 	"configRepoDir, and for stage pods without instance config, configRepo\n" +
-	"(owner/name) and configRepoBase.\n" +
+	"(owner/name), configRepoBase, and configRepoSourceDir.\n" +
 	"A pre-existing branch on the remote (a repass) is checked out and\n" +
 	"continued rather than recreated. A non-empty [dir] is refused.\n" +
 	"Exit codes: 0 = checked out, 1 = business error, 2 = usage/IO error.\n"
@@ -97,10 +98,18 @@ func checkoutConfigRepo(ctx context.Context, dir string, target configRepoTarget
 		if out, err := git(nil, "checkout", "--quiet", "-B", head, "FETCH_HEAD"); err != nil {
 			return fmt.Errorf("check out existing branch %q: %w: %s", head, err, strings.TrimSpace(string(out)))
 		}
-		return nil
+	} else {
+		if out, err := git(nil, "checkout", "--quiet", "-b", head); err != nil {
+			return fmt.Errorf("create branch %q: %w: %s", head, err, strings.TrimSpace(string(out)))
+		}
 	}
-	if out, err := git(nil, "checkout", "--quiet", "-b", head); err != nil {
-		return fmt.Errorf("create branch %q: %w: %s", head, err, strings.TrimSpace(string(out)))
+	if target.Directory != "." {
+		if out, err := git(nil, "sparse-checkout", "init", "--cone"); err != nil {
+			return fmt.Errorf("initialize sparse config checkout: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		if out, err := git(nil, "sparse-checkout", "set", target.Directory); err != nil {
+			return fmt.Errorf("select workflow source directory %q: %w: %s", target.Directory, err, strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }

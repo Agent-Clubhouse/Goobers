@@ -77,8 +77,10 @@ Introduce a **ConfigSource** seam behind the current directory loader:
   `git` plumbing reads the ref, not the workdir). For remote, clones/fetches into an instance-managed
   mirror under the instance root (never the code worktree).
 - Instance config gains a **separate, explicit integration point** for the workflow-config location
-  (property #4), e.g. `instance.yaml: workflowSource: {kind: local-dir|git, path|url, ref: main, token: <ref>}`.
-  This is distinct from the code `repos:` list.
+  (property #4), e.g. `instance.yaml: workflowSource: {kind: local-dir|git, path|url, ref: main, dir: instances/macmini-octo, token: <ref>}`.
+  `dir` is optional, repository-relative, and defaults to `.` for Git sources; the selected directory
+  and resolved commit are retained with the source URL in journals and run-config generations. This
+  is distinct from the code `repos:` list.
 
 ### 3.2 Reconciliation loop (WCD) — extends #337/#154
 

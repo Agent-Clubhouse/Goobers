@@ -23,6 +23,7 @@ func unixGenerationFixture(t *testing.T, instanceIDs ...string) (Store, string, 
 	}
 	archive := Archive{Version: 1, InstanceID: instanceID, Files: []file{
 		{Path: "config", Mode: 0755, Directory: true},
+		{Path: "config/manifest.yaml", Mode: 0644, Data: []byte("version: 1\n")},
 		{Path: "config/run.sh", Mode: 0755, Data: []byte("echo original\n")},
 		{Path: "goobers", Mode: 0755, Directory: true},
 		{Path: "goobers/instructions.md", Mode: 0640, Data: []byte("original instructions\n")},

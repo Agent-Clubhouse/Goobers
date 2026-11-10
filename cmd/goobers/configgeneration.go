@@ -92,7 +92,18 @@ func schedulerExecutionGeneration(input schedulerDefinitionsInput) (instance.Lay
 	if input.PinnedGeneration != "" {
 		return input.Layout, input.PinnedGeneration, nil
 	}
-	return retainOptionalExecutionGeneration(input.Layout, input.Generations)
+	return retainOptionalExecutionGeneration(input.Layout, input.Generations, workflowSourceProvenance(input.Config, input.WorkflowSourceRevision))
+}
+
+func workflowSourceProvenance(cfg *instance.Config, revision string) *journal.WorkflowSourceProvenance {
+	if cfg == nil || cfg.WorkflowSource == nil || cfg.WorkflowSource.Kind != instance.WorkflowSourceKindGit || cfg.WorkflowSource.URL == "" || revision == "" {
+		return nil
+	}
+	return &journal.WorkflowSourceProvenance{
+		URL:    cfg.WorkflowSource.URL,
+		Dir:    cfg.WorkflowSource.Directory(),
+		Commit: revision,
+	}
 }
 
 func generationService() scheduling.Generations {
@@ -103,12 +114,61 @@ var executionGenerationStore = scheduling.ExecutionGenerationStore
 var verifyStageExecutionGeneration = scheduling.VerifyStageExecutionGeneration
 var firstGenerationRetainer = scheduling.FirstGenerationRetainer
 
+func lastAppliedWorkflowSource(layout instance.Layout) (*journal.WorkflowSourceProvenance, error) {
+	latest := journal.NewInstanceLatest(layout.SchedulerDir(), journal.IsConfigGenerationAuthority)
+	event, found, err := latest.Read(context.Background())
+	if err != nil || !found {
+		return nil, err
+	}
+	fields, ok := event.Runner["workflowSource"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	source := &journal.WorkflowSourceProvenance{}
+	source.URL, _ = fields["url"].(string)
+	source.Dir, _ = fields["dir"].(string)
+	source.Commit, _ = fields["commit"].(string)
+	if source.URL == "" || source.Dir == "" || source.Commit == "" {
+		return nil, errors.New("latest config generation has incomplete workflow source provenance")
+	}
+	return source, nil
+}
+
+// startupWorkflowSource returns the journaled provenance only when the latest
+// authoritative event applied the same generation, so a restart annotation
+// never attributes a source to a different generation.
+func startupWorkflowSource(layout instance.Layout, generation string) (*journal.WorkflowSourceProvenance, error) {
+	latest := journal.NewInstanceLatest(layout.SchedulerDir(), journal.IsConfigGenerationAuthority)
+	event, found, err := latest.Read(context.Background())
+	if err != nil || !found {
+		return nil, err
+	}
+	if applied, _ := event.Runner["configGeneration"].(string); applied != generation {
+		return nil, nil
+	}
+	return lastAppliedWorkflowSource(layout)
+}
+
+func appliedWorkflowSourceRevision(layout instance.Layout, cfg *instance.Config) (string, error) {
+	if cfg == nil || cfg.WorkflowSource == nil || cfg.WorkflowSource.Kind != instance.WorkflowSourceKindGit || cfg.WorkflowSource.URL == "" {
+		return "", nil
+	}
+	source, err := lastAppliedWorkflowSource(layout)
+	if err != nil {
+		return "", err
+	}
+	if source == nil || source.URL != cfg.WorkflowSource.URL || source.Dir != cfg.WorkflowSource.Directory() {
+		return "", nil
+	}
+	return source.Commit, nil
+}
+
 func newExecutionGenerationRetainer(layout instance.Layout) (*configgeneration.Retainer, error) {
 	return generationService().NewRetainer(layout)
 }
 
-func retainOptionalExecutionGeneration(layout instance.Layout, retainers []*configgeneration.Retainer) (instance.Layout, string, error) {
-	return generationService().RetainOptional(layout, retainers)
+func retainOptionalExecutionGeneration(layout instance.Layout, retainers []*configgeneration.Retainer, source *journal.WorkflowSourceProvenance) (instance.Layout, string, error) {
+	return generationService().RetainOptional(layout, retainers, source)
 }
 
 func generationResolverFor(layout instance.Layout, retainer *configgeneration.Retainer, build generationDefinitionBuilder) executionGenerationResolver {
