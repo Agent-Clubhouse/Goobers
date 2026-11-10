@@ -167,6 +167,33 @@ describe("HttpDaemonClient", () => {
     expect(observed).toEqual([withUpdate.update]);
   });
 
+  it("writes the Fluid UI customization as JSON and posts empty bodies for undo and reset", async () => {
+    const state = { customization: null, revision: 2, undoDepth: 1 };
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(state));
+    const client = new HttpDaemonClient({ fetch: fetcher });
+    const customization = { version: "portal.customization/v1", density: "compact" as const };
+
+    await expect(client.putLabsFluidUICustomization(customization)).resolves.toEqual(state);
+    await client.undoLabsFluidUICustomization();
+    await client.resetLabsFluidUICustomization();
+
+    const json = expect.objectContaining({ "Content-Type": "application/json" });
+    expect(fetcher.mock.calls).toEqual([
+      [
+        "/api/v1/labs/fluid-ui/customization",
+        expect.objectContaining({ method: "PUT", headers: json, body: JSON.stringify(customization) }),
+      ],
+      [
+        "/api/v1/labs/fluid-ui/customization/undo",
+        expect.objectContaining({ method: "POST", headers: json, body: "{}" }),
+      ],
+      [
+        "/api/v1/labs/fluid-ui/customization",
+        expect.objectContaining({ method: "DELETE", headers: json, body: "{}" }),
+      ],
+    ]);
+  });
+
   it("uses the same origin by default", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(health));
     const client = new HttpDaemonClient({ fetch: fetcher });

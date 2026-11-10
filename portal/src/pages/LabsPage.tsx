@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { DaemonClient } from "../api/types";
 import { LabsFleetConvergence } from "../components/LabsFleetConvergence";
+import { LabsFluidUI } from "../components/LabsFluidUI";
 import { LabsWorkflowClusters } from "../components/LabsWorkflowClusters";
 import {
   findLabsFeature,
@@ -19,6 +20,7 @@ import { PageHeading } from "../ui/Heading";
 const labsViews: Record<string, (client: DaemonClient, fleet: boolean) => ReactNode> = {
   "workflow-clustering": (client, fleet) =>
     fleet ? <LabsFleetConvergence client={client} /> : <LabsWorkflowClusters client={client} />,
+  "fluid-ui": () => <LabsFluidUI />,
 };
 
 export function LabsPage({ client, feature, fleet = false }: { client: DaemonClient; feature?: string; fleet?: boolean }) {

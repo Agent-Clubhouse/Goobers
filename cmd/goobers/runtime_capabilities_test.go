@@ -164,6 +164,10 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	}
 	assertActionClass(t, uiActions, "navigate", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, uiActions, "revealRun", apicontract.ActionMaintenance)
+	for _, id := range []apicontract.ActionID{"applyFluidUI", "undoFluidUI", "resetFluidUI"} {
+		// Fluid UI writes change only the caller's own presentation (#8416).
+		assertActionClass(t, uiActions, id, apicontract.ActionMaintenance)
+	}
 }
 
 func TestRuntimeCommandRegistersTypedCapability(t *testing.T) {

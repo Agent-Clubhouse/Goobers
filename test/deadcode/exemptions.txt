@@ -317,6 +317,8 @@ github.com/goobers/goobers/internal/decisiongate.SeverityTally.Add # Shadow-agre
 github.com/goobers/goobers/internal/decisiongate.SeverityTally.Agreement # Shadow-agreement report for the advisory severity classifier; unwired until a caller records shadow labels, test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.StallTally.Add # Shadow precision tally for advisory stall detection; unwired until a reporter joins stall flags to later outcomes, test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.StallTally.Precision # Shadow precision report for advisory stall detection; unwired until a reporter joins stall flags to later outcomes, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.IntakeTally.Add # Shadow join of intake flags against later escalation; unwired until a reporter reads the intake-shadow annotations, test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.IntakeTally.Rates # Shadow escalation-rate report for intake flags; unwired until a reporter reads the intake-shadow annotations, test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
 
 # #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
