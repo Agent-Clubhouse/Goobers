@@ -198,6 +198,7 @@ type Executor struct {
 	transcriptLimit int64
 	sandboxEnforced bool
 	observer        Observer
+	windows         TranscriptWindowObserver
 	childAccess     ChildWorkflowAccessProvider
 	decisionGate    *decisiongate.Settings
 	newSandbox      func() (sandbox.Sandbox, error)
@@ -711,7 +712,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, err
 	}
 
-	out, runErr = e.runSettled(ctx, env, req, nestedAdapter, postcondition, publication)
+	out, runErr = e.runSettledWindowed(ctx, env, req, nestedAdapter, postcondition, publication)
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(req, out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {

@@ -589,6 +589,10 @@ type AgenticExecutorInput struct {
 	MCPServers    []apiv1.MCPServer
 	MCPServersSet bool
 
+	// TranscriptWindows is the advisory stall-detection window observer; nil
+	// unless the instance opted in.
+	TranscriptWindows harness.TranscriptWindowObserver
+
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
 }
@@ -672,6 +676,9 @@ func BuildAgenticExecutor(input AgenticExecutorInput) (invoke.Goober, error) {
 	}
 	if input.Observer != nil {
 		opts = append(opts, harness.WithObserver(input.Observer))
+	}
+	if input.TranscriptWindows != nil {
+		opts = append(opts, harness.WithTranscriptWindowObserver(input.TranscriptWindows))
 	}
 	return harness.NewExecutor(
 		adapter,

@@ -59,3 +59,43 @@ report.
 sample, System One's false-block rate is at most 2% of negatives, and its
 recall is at least the baseline judge's. Treat it as necessary evidence, not a
 substitute for review.
+
+## Knowledge reranking (shadow)
+
+`internal/knowledgerank` shadow-ranks already-eligible knowledge candidates
+with the gate's score question (`JudgeScore`: irrelevant, related, directly
+needed, scored 0 to 2). It is advisory: `Ranker.Shadow` returns a record next
+to the selection the caller keeps using and never changes it. Code decides
+eligibility first; the model only judges relevance.
+
+- **Off by default.** `Settings.Enabled` is false, and a disabled or nil
+  `Ranker` scores nothing.
+- **Internal knowledge needs its own opt-in.** A candidate marked `Internal`
+  is never sent to the model unless `AllowInternalKnowledge` is true, because
+  the decider may be a third-party endpoint. `Sources` limits scoring to an
+  allowlist; only the first `TopN` (default 10) eligible candidates are scored.
+- **Fallback is inclusion.** Only a scored `irrelevant` item (score at or below
+  `DropAtOrBelow`, default 0.5) is a would-drop. A borderline score, a model
+  error, a timeout, or an unscored candidate stays in the hypothetical
+  selection.
+- **Reproducible records.** Each record has a task digest, the model version
+  the decider reported, `TopN`, both thresholds, per-candidate score,
+  confidence and class, the existing order, the hypothetical ranking and the
+  would-drops. It holds no knowledge or task text.
+
+Print the offline precision-at-k report for a labelled fixture:
+
+```text
+go run ./internal/decisioneval/cmd/decisioneval -rank-fixture internal/decisioneval/testdata/knowledge_rank.json
+```
+
+Tasks carry a graded `label` per candidate (0 irrelevant, 1 related, 2
+directly needed), a `split`, and recorded `score` values for replay. The drop
+threshold is chosen on `tune` tasks only (the highest cut that drops no needed
+item, never above 0.95), and all numbers use `report` tasks. The report compares
+the existing order with the model ranking on precision at 1, 3 and 5 for
+directly needed items, with hit and slot counts, and counts needed items the
+model would drop. Percentages print only when there are at least
+`-min-samples` report tasks (default 20). The bundled fixture is synthetic and
+illustrates the format; it is not evidence. Enforce is not implemented and
+needs a real labelled sample first.

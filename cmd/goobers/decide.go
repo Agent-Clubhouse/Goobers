@@ -38,6 +38,15 @@ const decideHelp = "Usage: goobers decide --name <id> --question <text> --state-
 	"  --accept <p>        yes at or above this probability (default from config, else 0.9)\n" +
 	"  --reject <p>        no at or below this probability (default from config, else 0.1)\n" +
 	"  --optional          when the gate is off or unreachable, report \"unavailable\" and exit 0\n" +
+	"\nAdvisory CI failure triage (opt-in, shadow first; the existing path is the fallback):\n" +
+	"  --ci-log <path>     classify a failed CI log as flaky, real, infra or environment. Code\n" +
+	"                      decides known facts first; otherwise the model sees only a redacted,\n" +
+	"                      size-bounded excerpt. Result keys: class (unsure keeps today's path;\n" +
+	"                      always unsure in shadow mode), predicted, source, digest.\n" +
+	"  --ci-baseline <v>   code fact: pr-introduced or shared-baseline-failure\n" +
+	"  --run-key <id>      record the prediction (or outcome) under this run identity\n" +
+	"  --ci-outcome <c>    record the eventual cause (flaky|real|infra|environment) for --run-key\n" +
+	"  --ci-matrix         report the confusion matrix of predictions joined to outcomes\n" +
 	"Exit codes: 0 = decision written, 1 = failed, 2 = usage error.\n"
 
 const (
@@ -66,12 +75,25 @@ func runDecide(args []string, stdout, stderr io.Writer) int {
 	accept := fs.Float64("accept", -1, "yes at or above this probability")
 	reject := fs.Float64("reject", -1, "no at or below this probability")
 	optional := fs.Bool("optional", false, "report unavailable instead of failing when the gate is off or unreachable")
+	var ci decideCIArgs
+	fs.StringVar(&ci.logFile, "ci-log", "", "triage a failed CI log file instead of asking a yes/no question")
+	fs.StringVar(&ci.baseline, "ci-baseline", "", "baseline attribution of the failure (pr-introduced or shared-baseline-failure)")
+	fs.StringVar(&ci.runKey, "run-key", "", "run identity the CI triage prediction or outcome is recorded under")
+	fs.StringVar(&ci.outcome, "ci-outcome", "", "record the eventual cause (flaky, real, infra, environment) for --run-key")
+	fs.BoolVar(&ci.matrix, "ci-matrix", false, "report the shadow confusion matrix of CI triage predictions against outcomes")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	root, ok := providerStageRootArg(fs)
 	if !ok {
 		return 2
+	}
+	if ci.active() {
+		if ci.modes() != 1 || *name != "" || *question != "" || *stateFile != "" {
+			pf(stderr, "error: --ci-log, --ci-outcome and --ci-matrix are separate modes and cannot be combined with each other or --name/--question/--state-file\n")
+			return 2
+		}
+		return runDecideCI(ci, root, stdout, stderr, *optional)
 	}
 	if !validDecideName(*name) || strings.TrimSpace(*question) == "" || *stateFile == "" {
 		pf(stderr, "error: --name, --question and --state-file are required (name: letters, digits, - _ . up to 64)\n")
