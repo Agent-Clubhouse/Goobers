@@ -198,6 +198,13 @@ func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32,
 		}
 		result := any(map[string]any{})
 		switch req.Method {
+		case "session.sendAndWait":
+			// Newer SDKs try the completion RPC first; a native CLI without it
+			// answers method-not-found and the SDK falls back to session.send.
+			if err := writeReadinessFrame(conn, map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32601, "message": "method not found"}}); err != nil {
+				return err
+			}
+			continue
 		case "connect":
 			result = map[string]any{"protocolVersion": copilot.GetSDKProtocolVersion()}
 		case "session.create":
@@ -282,7 +289,7 @@ func serveCopilotReadinessFixtureWithOptions(conn net.Conn, sends *atomic.Int32,
 			if isParent {
 				answer = `{"status":"success","outputs":{"summary":"Child disposition acknowledged"}}`
 			}
-			for _, event := range []map[string]any{{"type": "assistant.message", "data": map[string]any{"messageId": "message", "content": answer}}, {"type": "session.idle", "data": map[string]any{}}} {
+			for _, event := range []map[string]any{{"type": "assistant.message", "data": map[string]any{"messageId": "message", "originatingMessageId": "message", "content": answer}}, {"type": "session.idle", "data": map[string]any{}}} {
 				event["id"] = "fixture-event"
 				event["timestamp"] = time.Now().UTC().Format(time.RFC3339Nano)
 				if err := writeReadinessFrame(conn, map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": "owned-test-session", "event": event}}); err != nil {

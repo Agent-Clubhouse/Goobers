@@ -128,7 +128,7 @@ async function dispatch(socket, method, params) {
         prompt:params.prompt,
         request:(method, params) => authorizedRequest(socket, method, params),
         complete:result => {
-          event(socket, 'assistant.message', {messageId:'answer',content:JSON.stringify(result)});
+          event(socket, 'assistant.message', {messageId:'answer',originatingMessageId:'answer',content:JSON.stringify(result)});
           event(socket, 'session.idle', {});
         }
       }).catch(fail));
@@ -159,6 +159,11 @@ const server = net.createServer(socket => {
         if (buffer.length < end + 4 + length) break;
         const request = JSON.parse(buffer.subarray(end+4,end+4+length));
         buffer = buffer.subarray(end+4+length);
+        // Exercise the SDK's legacy send fallback when the completion RPC is absent.
+        if (request.method === 'session.sendAndWait') {
+          send(socket, {jsonrpc:'2.0',id:request.id,error:{code:-32601,message:'method not found'}});
+          continue;
+        }
         // Permission replies arrive while the tool request awaits approval.
         dispatch(socket, request.method, request.params || {}).then(result => {
           if (request.id !== undefined) send(socket, {jsonrpc:'2.0',id:request.id,result});
