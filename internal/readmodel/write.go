@@ -16,9 +16,8 @@ import (
 // journals. Daemon startup re-projects every row older than this before it
 // attaches the store (EnsureReady).
 //
-// 10: operator facts carry LatestErrorAt and ReviewAt, the observed-at times
-// of the blockers status derives from them (#5404).
-const currentProjectionVersion = 10
+// 11: operator facts carry the bounded canonical terminal summary (#1429).
+const currentProjectionVersion = 11
 
 // UpsertRun writes a projection in ONE transaction.
 //

@@ -6,7 +6,9 @@ The cloud leg executes the engine with a PostgreSQL journal and explicitly
 asserts `current_user = goobers_controller`. The local leg uses the real runner
 and file journal. Both use one canonicalizer for complete event bytes, artifact
 digests, and the A2 read-model projection; the checked-in local SHA-256 values
-remain the reference.
+remain the reference. Projection bytes include the additive
+`Run.Operator.Terminal` outcome-summary fold; event bytes and artifact digests
+are unchanged from the pre-summary baseline.
 
 | Fixture | Contract |
 | --- | --- |

@@ -13,7 +13,9 @@
 > open: ordering, the writer set, request budgeting, in-process isolation,
 > topology, authorization, and the hosted shape.
 > Supersedes: docs/design/unified-index-backed-run-reads.md
-> Delivered-by: #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952
+> Delivered-by: #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952, #1429
+> Scope-delta: The canonical terminal summary contract ships under #1429; its Portal consumer remains separately scoped in #1434. The original wave delivery scope is unchanged.
+> Verified: 4e6c7d1e3 (2026-10-17)
 >
 > **Revision history is in §18** — nine errors in the first pass, seven
 > correctness holes in the second, ten state-boundary findings in the third. The
@@ -713,8 +715,9 @@ name/version/digest, goober digest, trigger, `started_at`); execution state
 (**`phase`** stored, `terminal`, `current_stage`, `finished_at`,
 `last_activity_at`, `last_seq`, repass/retry/policy-retry/infra-retry counts);
 terminal business outcome (verdict, target); and `disposition`
-(`produced`/`no-work`/`unknown`), reserved so #1429's definition and #1439's
-filter are index-pushable rather than a new scan.
+(`produced`/`no-work`/`unknown`) for the existing accounting and no-work filters.
+The evidence-based terminal summary below is stored with the row's operator
+facts and does not reinterpret those accounting buckets.
 
 `duration` is **not** stored for a running run — computed at query time, so a
 quiet in-flight run ages as the journal-derived path makes it age.
@@ -731,6 +734,61 @@ last-completed-cycle time; the **projection floor** (§6.3); rebuild state and
 last error. This replaces `IndexedRunIDs()` (`query.go:329`), which materializes
 every run id into a Go map on the request path, and it is what lets a read
 *establish* completeness rather than assume it.
+
+### 5.3a Canonical terminal summary (#1429)
+
+Run detail, run-list items, and per-run `TelemetryImplementationOutcome` items
+expose an additive `terminalSummary`. Active runs omit it. The shared
+`readmodel.TerminalFacts` fold supplies all three surfaces; list and telemetry
+reads use the persisted facts without reopening each run's journal.
+
+| Field | Meaning |
+| --- | --- |
+| `phase` | Execution phase, independent of the workflow's business decision |
+| `outcome` | The completed run's last gate decision: gate, verdict, target, and causal event sequence; an empty object means no gate decision was recorded |
+| `workDisposition` | `produced`, `no-work`, or `unknown`, based on recorded evidence |
+| `reason` | A durable terminal cause or explicitly identified fallback error, with code, safe journal message, and causal sequence when available |
+| `causalEventSeq` | The selected reason's sequence, the completed outcome's gate sequence, or the terminal event sequence when no more specific cause is recorded |
+| `primaryExternalResult`, `relatedExternalRefs` | Structured external references, operation metadata, and provenance |
+| `status`, `legacy` | Completeness (`complete`, `partial`, or `unavailable`) and whether current terminal metadata is missing |
+| `refsTruncated` | The bounded reference projection omitted lower-priority entries |
+
+A successful stage result is evidence of produced work under the stage-result
+contract. Confirmed PR creation, a positive merge receipt, or a recorded push
+also supplies evidence. An explicit no-work terminal disposition, or the
+supported legacy first-step no-work short circuit, supplies semantic no-work
+evidence. Duration never determines this classification. The historical
+`produced` accounting bucket alone supplies no proof; a terminal run without
+sufficient evidence reports `unknown`.
+
+The typed terminal-cause record takes precedence over fallback errors for
+failed, aborted, or escalated runs. A fallback retains its provenance and does
+not invent a terminal classification. Recovered attempt errors and cleanup
+errors after the terminal event must not displace the deciding cause. A
+completed execution with an unfavorable gate verdict remains completed and
+exposes that verdict on the separate outcome axis.
+
+Reference priority is: confirmed merge, PR opened, commit or branch pushed,
+other PR touch, other commit touch, issue claim, other issue touch, then other
+references. Within a priority, the latest causal sequence wins, followed by
+stable provider/kind/ID/URL/operation ordering. A bare merge operation, queue
+admission, or landing intent does not prove that this run merged a PR; the
+provider's structured merge receipt is required. At most 16 references are
+retained, including the primary result, and truncation is explicit. Raw journal
+and telemetry retention remain unchanged.
+
+`complete` requires current terminal metadata, a known work disposition, a
+typed cause for an adverse phase, and an untruncated reference set. Otherwise
+the summary states partial or unavailable evidence rather than manufacturing a
+success explanation. Resume, override, and rerun boundaries invalidate stale
+terminal evidence. Projection version 11 rebuilds older persisted rows from
+retained journals before the daemon serves them.
+
+The telemetry addition decorates the existing implementation-outcomes items;
+aggregate metric definitions and default populations are unchanged. A
+rollup-only reader, missing projection, or lifecycle mismatch returns an
+explicit unavailable summary. This contract does not implement the Portal
+banner or filters tracked by #1434.
 
 ### 5.4 Run phase becomes a stored fact
 
