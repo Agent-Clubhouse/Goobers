@@ -1,14 +1,18 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runtimewiring"
@@ -27,17 +32,50 @@ import (
 
 type fluidUITestAuthenticator struct{}
 
-func (fluidUITestAuthenticator) Authenticate(*http.Request) (*httpapi.Principal, error) {
-	return &httpapi.Principal{Issuer: "oidc", Subject: "fluid-ui-user", Roles: []httpapi.Role{httpapi.RoleView}}, nil
+// fluidUIPrincipalHeader names another view-role user for one request.
+const fluidUIPrincipalHeader = "X-Test-Principal"
+
+func (fluidUITestAuthenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
+	subject := cmp.Or(request.Header.Get(fluidUIPrincipalHeader), "fluid-ui-user")
+	roles := []httpapi.Role{httpapi.RoleView}
+	if subject == fluidUIAdmin {
+		roles = append(roles, httpapi.RoleAdmin)
+	}
+	return &httpapi.Principal{Issuer: "oidc", Subject: subject, Roles: roles}, nil
+}
+
+// fluidUIAdmin is an admin principal, who may read any run's content.
+const fluidUIAdmin = "an-admin"
+
+// fluidUIEchoingAgent stands in for an agent that reads the private request
+// text and then repeats it everywhere it can: its transcript, its stderr and
+// its completion summary.
+type fluidUIEchoingAgent struct {
+	*harnesstest.FakeAdapter
+	received func(string)
+}
+
+func (a fluidUIEchoingAgent) Run(ctx context.Context, req harness.RunRequest) (harness.Outcome, error) {
+	prompt, err := os.ReadFile(filepath.Join(req.Workspace, req.PrivatePaths[fluidui.PrivatePromptFile]))
+	if err != nil {
+		return harness.Outcome{}, err
+	}
+	a.received(string(prompt))
+	out, err := a.FakeAdapter.Run(ctx, req)
+	out.Transcript = append(append([]byte(nil), out.Transcript...), "the user asked: "+string(prompt)+"\n"...)
+	out.Stderr = append(append([]byte(nil), out.Stderr...), "request: "+string(prompt)+"\n"...)
+	return out, err
 }
 
 // fluidUIDaemon runs the shipped fluid-ui-customize workflow behind the
 // ordinary trigger plane and the Labs request routes. propose answers each
 // propose-stage call (1-based) with the candidate file body to write.
 type fluidUIDaemon struct {
-	handler http.Handler
-	settle  func()
-	calls   func() int
+	root     string
+	handler  http.Handler
+	settle   func()
+	calls    func() int
+	received func() []string
 }
 
 func newFluidUIDaemon(t *testing.T, propose func(call int) string) *fluidUIDaemon {
@@ -59,9 +97,14 @@ func newFluidUIDaemon(t *testing.T, propose func(call int) string) *fluidUIDaemo
 
 	var mu sync.Mutex
 	calls := 0
+	var received []string
 	prevAdapter := runtimewiring.NewAgenticAdapter
 	runtimewiring.NewAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harnesstest.FakeAdapter{
+		return fluidUIEchoingAgent{received: func(prompt string) {
+			mu.Lock()
+			defer mu.Unlock()
+			received = append(received, prompt)
+		}, FakeAdapter: &harnesstest.FakeAdapter{
 			Transcript: []byte("fake fluid UI designer session\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
 				mu.Lock()
@@ -78,9 +121,13 @@ func newFluidUIDaemon(t *testing.T, propose func(call int) string) *fluidUIDaemo
 				if err := os.WriteFile(artifact, []byte(propose(n)), 0o644); err != nil {
 					return err
 				}
-				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "proposed"})
+				prompt, err := os.ReadFile(filepath.Join(req.Workspace, req.PrivatePaths[fluidui.PrivatePromptFile]))
+				if err != nil {
+					return err
+				}
+				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "proposed for: " + string(prompt)})
 			},
-		}
+		}}
 	}
 	t.Cleanup(func() { runtimewiring.NewAgenticAdapter = prevAdapter })
 
@@ -108,11 +155,16 @@ func newFluidUIDaemon(t *testing.T, propose func(call int) string) *fluidUIDaemo
 		t.Fatal(err)
 	}
 	opts := append([]httpapi.HandlerOption{httpapi.WithAuthenticator(fluidUITestAuthenticator{}), httpapi.WithTriggerService(service)}, labsFluidUIOptions(layout)...)
-	handler, err := httpapi.NewHandler(&readservice.Local{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
+	reads, err := readservice.NewLocal(readservice.LocalSources{Layout: layout, Config: setup.Config, Definitions: setup.Definitions}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(reads, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &fluidUIDaemon{
+		root:    root,
 		handler: handler,
 		settle: func() {
 			t.Helper()
@@ -122,7 +174,8 @@ func newFluidUIDaemon(t *testing.T, propose func(call int) string) *fluidUIDaemo
 			sched.Wait()
 			wg.Wait()
 		},
-		calls: func() int { mu.Lock(); defer mu.Unlock(); return calls },
+		calls:    func() int { mu.Lock(); defer mu.Unlock(); return calls },
+		received: func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(received) },
 	}
 }
 
@@ -211,5 +264,107 @@ func TestFluidUIRequestOutsideTheSurfaceIsLabeledUnsupported(t *testing.T) {
 	got := d.submitAndSettle(t, "show me a chart of my token spend")
 	if got.Status != fluidui.StatusUnsupported || got.UnmetNeed != "cost-charts" || got.Candidate != nil {
 		t.Fatalf("request = %+v", got)
+	}
+}
+
+// get reads path as another view-role user and returns the status and body.
+func (d *fluidUIDaemon) getAs(principal, path string) (int, string) {
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Set(fluidUIPrincipalHeader, principal)
+	response := httptest.NewRecorder()
+	d.handler.ServeHTTP(response, request)
+	return response.Code, response.Body.String()
+}
+
+// scanRunContent reads the run's detail, events, artifacts and transcripts as
+// viewer, failing on any body that shows prompt. It reports whether the
+// load-request result and redacted transcripts were readable, and how many
+// artifact and transcript reads were refused as private.
+func (d *fluidUIDaemon) scanRunContent(t *testing.T, viewer string, got fluidui.Request, prompt string) (bool, int, int) {
+	t.Helper()
+	refused := 0
+	read := func(path string) (int, string) {
+		t.Helper()
+		code, body := d.getAs(viewer, path)
+		if strings.Contains(body, prompt) {
+			t.Fatalf("%s shows the prompt to %s: %s", path, viewer, body)
+		}
+		if code == http.StatusForbidden && strings.Contains(body, "run_content_private") {
+			refused++
+		}
+		return code, body
+	}
+	run := strings.NewReplacer("{run}", got.RunID)
+	code, detail := read(run.Replace(apicontract.RunDetailPath))
+	if code != http.StatusOK {
+		t.Fatalf("run detail as %s = %d: %s", viewer, code, detail)
+	}
+	code, events := read(run.Replace(apicontract.RunEventsPath))
+	if code != http.StatusOK {
+		t.Fatalf("run events as %s = %d: %s", viewer, code, events)
+	}
+	loadResult, transcripts := false, 0
+	for _, digest := range slices.Compact(slices.Sorted(slices.Values(regexp.MustCompile(`sha256:[0-9a-f]{64}`).FindAllString(detail+events, -1)))) {
+		code, body := read(strings.NewReplacer("{run}", got.RunID, "{digest}", digest).Replace(apicontract.RunArtifactPath))
+		loadResult = loadResult || code == http.StatusOK && strings.Contains(body, `"request":{"id":"`+got.ID+`"}`)
+	}
+	for _, seq := range regexp.MustCompile(`"seq":([0-9]+)`).FindAllStringSubmatch(events, -1) {
+		path := strings.NewReplacer("{run}", got.RunID, "{seq}", seq[1]).Replace(apicontract.RunTranscriptPath)
+		if code, body := read(path); code == http.StatusOK && strings.Contains(body, "the user asked: "+journal.Redacted) {
+			transcripts++
+		}
+	}
+	return loadResult, transcripts, refused
+}
+
+func TestFluidUIRequestPromptStaysOutOfTheRun(t *testing.T) {
+	const prompt = "make the run list denser and hide the cost column"
+	d := newFluidUIDaemon(t, func(int) string {
+		return `{"version":"portal.customization/v1","density":"compact"}`
+	})
+	got := d.submitAndSettle(t, prompt)
+	if got.Status != fluidui.StatusReadyToPreview || got.Prompt != prompt {
+		t.Fatalf("requester's request = %+v", got)
+	}
+	if received := d.received(); len(received) != 1 || received[0] != prompt {
+		t.Fatalf("agent received %q, want the request text once", received)
+	}
+	var list struct {
+		Requests []fluidui.Request `json:"requests"`
+	}
+	d.call(t, http.MethodGet, apicontract.LabsFluidUIRequestsPath, "", http.StatusOK, &list)
+	if len(list.Requests) != 1 || list.Requests[0].Prompt != prompt {
+		t.Fatalf("requester's Feedback list = %+v", list)
+	}
+
+	const other = "another-viewer"
+	if code, body := d.getAs(other, apicontract.LabsFluidUIRequestsPath+"/"+got.ID); code != http.StatusNotFound || strings.Contains(body, prompt) {
+		t.Fatalf("another user reading the request = %d: %s", code, body)
+	}
+	// Another viewer is refused the run's content outright (#8426); an admin
+	// can read it, and must find the prompt kept out of it at the source.
+	for _, viewer := range []string{other, fluidUIAdmin} {
+		loadResult, transcripts, refused := d.scanRunContent(t, viewer, got, prompt)
+		switch {
+		case viewer == other && (loadResult || transcripts != 0 || refused == 0):
+			t.Fatalf("another viewer read the run content: load-request %v, transcripts %d, refused %d", loadResult, transcripts, refused)
+		case viewer == fluidUIAdmin && (!loadResult || transcripts == 0):
+			t.Fatalf("admin load-request result read: %v, redacted transcripts read: %d; the scan did not reach them", loadResult, transcripts)
+		}
+	}
+
+	private := filepath.Join(d.root, "labs", "fluid-ui")
+	err := filepath.WalkDir(d.root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || strings.HasPrefix(path, private+string(filepath.Separator)) {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(data), prompt) {
+			t.Errorf("%s holds the prompt", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

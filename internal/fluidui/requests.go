@@ -41,7 +41,10 @@ const (
 
 // Request bounds.
 const (
-	MaxPromptBytes     = 2000
+	MaxPromptBytes = 2000
+	// MinPromptBytes matches the run journal's shortest redactable value, so
+	// every accepted prompt can be kept out of the run that serves it (#8425).
+	MinPromptBytes     = 6
 	MaxRequestsPerUser = 50
 	MaxActivePerUser   = 3
 	MaxAttempts        = 5
@@ -362,6 +365,9 @@ func admit(file *requestFile) error {
 func validatePrompt(prompt string) error {
 	if prompt == "" {
 		return invalid("prompt", "describe the change you want")
+	}
+	if len(prompt) < MinPromptBytes {
+		return invalid("prompt", "at least %d bytes", MinPromptBytes)
 	}
 	if len(prompt) > MaxPromptBytes {
 		return invalid("prompt", "at most %d bytes", MaxPromptBytes)

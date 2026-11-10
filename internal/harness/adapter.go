@@ -138,6 +138,9 @@ type RunRequest struct {
 	// renderer uses this to reference actual, readable file content instead
 	// of an opaque pointer name.
 	ContextPaths map[string]string
+	// PrivatePaths maps each PrivateInput's Name to the workspace-relative
+	// file holding it. Its content is never journaled (#8425).
+	PrivatePaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
 	// Attempt identifies the stage attempt for retry-safe provenance.

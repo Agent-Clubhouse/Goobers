@@ -326,6 +326,7 @@ func TestLabsFluidUIRequestRejectsBadInputAndMissingTriggers(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown field": `{"prompt":"x","workflow":"other"}`,
 		"empty prompt":  `{"prompt":"   "}`,
+		"too short":     `{"prompt":"dark"}`,
 		"not json":      `make it blue`,
 		"too long":      `{"prompt":"` + strings.Repeat("a", fluidui.MaxPromptBytes+1) + `"}`,
 	} {
@@ -343,7 +344,7 @@ func TestLabsFluidUIRequestRejectsBadInputAndMissingTriggers(t *testing.T) {
 		t.Fatalf("rejected submissions reached the trigger plane: %+v", f.triggers.requests)
 	}
 
-	if code, _ := fluidUICall(t, f.handler(t, nil, false), http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"x"}`, nil); code != http.StatusServiceUnavailable {
+	if code, _ := fluidUICall(t, f.handler(t, nil, false), http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"make it compact"}`, nil); code != http.StatusServiceUnavailable {
 		t.Fatalf("submit without triggers = %d, want 503", code)
 	}
 }

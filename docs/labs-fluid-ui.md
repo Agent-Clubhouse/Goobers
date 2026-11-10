@@ -105,7 +105,7 @@ automatically: you preview it and apply it yourself.
 | Method and path | Effect |
 |---|---|
 | `GET /api/v1/labs/fluid-ui/requests` | Lists your requests, newest first: `{"requests": [...]}` |
-| `POST /api/v1/labs/fluid-ui/requests` | Body `{"prompt": "..."}` (at most 2000 bytes). Starts a workflow run and returns the request (202). |
+| `POST /api/v1/labs/fluid-ui/requests` | Body `{"prompt": "..."}` (6 to 2000 bytes). Starts a workflow run and returns the request (202). |
 | `GET /api/v1/labs/fluid-ui/requests/{id}` | Returns one of your requests |
 | `POST /api/v1/labs/fluid-ui/requests/{id}/retry` | Starts a new run for a `failed` or `unsupported` request (at most 5 attempts) |
 | `POST /api/v1/labs/fluid-ui/requests/{id}/apply` | Saves a `ready_to_preview` candidate as your customization through the same validated write as `PUT` |
@@ -141,9 +141,9 @@ cannot start runs and returns 503 `triggers_unavailable` for them.
 The workflow ships in the `goobers` reference gaggle with the
 `fluid-ui-designer` goober:
 
-1. `load-request` (`goobers fluid-ui-request --load`) loads the request this
-   run serves, your current customization, and a description of the
-   customization surface and its limits.
+1. `load-request` (`goobers fluid-ui-request --load`) loads the ID of the
+   request this run serves, your current customization, and a description of
+   the customization surface and its limits. It never writes the request text.
 2. `propose` (agentic, scratch workspace) writes either one complete
    `portal.customization/v1` document or
    `{"unsupported": true, "unmetNeed": "<short-slug>"}`. It writes JSON only,
@@ -164,11 +164,10 @@ maps each attempt's run to your request and is kept after the run ends. The
 text is not part of the trigger key or the run's outputs, and it never enters
 any aggregate.
 
-The workflow reads the text while proposing a candidate, so it can appear in
-the run's artifacts, its agent transcripts, and anything the agent writes in
-its own words. That content is not scrubbed by matching the text, because an
-agent can quote it in escaped, truncated, or paraphrased form. Instead, for a
-`fluid-ui-customize` run, every user other than you and admins:
+The agent reads the text while proposing a candidate, so anything it writes in
+its own words can reflect the request. Exact-text scrubbing (below) cannot
+catch escaped, truncated, or paraphrased forms, so access is restricted too.
+For a `fluid-ui-customize` run, every user other than you and admins:
 
 - gets `403 run_content_private` for the run's artifacts and transcripts;
 - sees run detail, events, and stage attempts with agent progress text,
@@ -182,11 +181,53 @@ agent can quote it in escaped, truncated, or paraphrased form. Instead, for a
 A `fluid-ui-customize` run with no binding (one not bound yet, or one whose
 binding an earlier version removed when it finished) is treated as private to
 admins. These responses are sent `Cache-Control: private, no-store`. The live
-event stream carries only cursors, read-model names, and run and workflow\nidentifiers, never run content.
+event stream carries only cursors, read-model names, and run and workflow
+identifiers, never run content.
 
 When a request ends
 as `unsupported`, only its normalized unmet-need label is recorded for the
 aggregate report; a label that echoes the request text is not recorded.
+
+The text is also kept out of the run itself, so the protections above do not
+have to catch every path. It never enters the run's inputs or the
+`load-request` artifact. The daemon hands it to the
+`propose` agent as a private input instead:
+
+- When the agentic stage of a `fluid-ui-customize` run starts, the daemon looks
+  up the request bound to the run. It registers the text, and each of its
+  lines of 6 bytes or more, with that run's secret registry. This is the same
+  exact-value scrubber that keeps credentials out of the journal. A run whose
+  request cannot be found fails before the agent starts.
+- It then writes the text to `.goobers/private/` in the stage's disposable
+  workspace (mode 0600) and lists that file under "Private inputs" in the
+  agent's prompt. The file is removed when the session ends. `.goobers/` is
+  never published or captured for recovery.
+- Every event, artifact, span and transcript the run records is scrubbed
+  against the registry before it is written. If the agent quotes the request,
+  the run's API responses, transcripts and journal files show `[REDACTED]`
+  instead.
+
+A request must be at least 6 bytes, the shortest value the scrubber redacts,
+so every accepted request can be protected.
+
+What remains visible to you, admins, and anyone with filesystem access to
+the daemon host:
+
+- **Paraphrases.** Redaction matches exact text. The agent is told never to
+  quote, restate or summarize the request. If it paraphrases anyway, or
+  quotes a fragment shorter than a whole line, that wording is not redacted.
+- **The candidate and the unmet need.** The candidate the agent writes, such
+  as saved-view names, and the normalized unmet-need label of an
+  `unsupported` request are run artifacts and outputs. They describe the
+  result, so they can reveal what was asked. A label that echoes the request
+  text is not recorded in the aggregate.
+- **The agent's working copy.** While the stage runs, the request file sits
+  in the stage workspace on the daemon host. Anyone with filesystem access to
+  the instance can read it there and in your request file.
+
+Private inputs are wired only for the local daemon runner. The
+`fluid-ui-customize` workflow already runs only there, because `load-request`
+reads the daemon host's request store.
 
 ## Aggregate learning and promotion candidates (#8419)
 
