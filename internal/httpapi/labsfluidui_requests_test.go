@@ -181,18 +181,32 @@ func fluidUIPrivateRunReader(t *testing.T, runID string) *fakeReader {
 		Attempt: 1, Sequence: 1, Kind: "status", Summary: "Working on: " + fluidUIPrivatePrompt,
 		Plan: []string{fluidUIPrivatePrompt},
 	}
+	latestError := &journal.ErrorDetail{Code: "agent_failed", Message: fluidUIPrivatePrompt}
+	summary := readservice.RunSummary{
+		ID: runID, Workflow: fluidui.Workflow, TerminalReason: "failed on " + fluidUIPrivatePrompt,
+		Operator: readservice.OperatorRunSummary{
+			LatestError:       latestError,
+			Review:            &readservice.OperatorReview{Verdict: "fail", Rationale: fluidUIPrivatePrompt},
+			PotentialBlockers: []string{"agent_failed: " + fluidUIPrivatePrompt},
+			Blockers:          []readservice.OperatorBlocker{{Code: "agent_failed", Source: "error", Message: "agent_failed: " + fluidUIPrivatePrompt}},
+		},
+	}
 	return &fakeReader{
+		runs: readservice.RunList{Runs: []readservice.RunSummary{summary}},
+		errors: readservice.TelemetryErrorsPage{Items: []readservice.TelemetryError{
+			{RunID: runID, Workflow: fluidui.Workflow, Stage: "propose", Attempt: 1, Code: "agent_failed", Message: fluidUIPrivatePrompt},
+		}},
 		run: readservice.RunDetail{
-			RunSummary:    readservice.RunSummary{ID: runID, Workflow: fluidui.Workflow, TerminalReason: "failed on " + fluidUIPrivatePrompt},
+			RunSummary:    summary,
 			AgentProgress: []readservice.AgentProgressSummary{{AgentID: "agent-1", RunID: runID, Stage: "propose", Latest: progress, History: []journal.AgentProgress{*progress}}},
 		},
 		events: readservice.EventList{RunID: runID, Events: []readservice.RunEvent{
 			{Seq: 1, Type: journal.EventRunStarted, Workflow: fluidui.Workflow},
 			{Seq: 2, Type: journal.EventAgentProgress, Stage: "propose", Progress: progress},
-			{Seq: 3, Type: journal.EventStageFinished, Stage: "propose", Error: &journal.ErrorDetail{Code: "agent_failed", Message: fluidUIPrivatePrompt}},
+			{Seq: 3, Type: journal.EventStageFinished, Stage: "propose", Error: latestError},
 		}},
 		attempts: readservice.AttemptList{RunID: runID, Stage: "propose", Attempts: []readservice.StageAttempt{
-			{ID: "a1", Number: 1, Error: &journal.ErrorDetail{Code: "agent_failed", Message: fluidUIPrivatePrompt}},
+			{ID: "a1", Number: 1, Error: latestError},
 		}},
 		artifact: readservice.ArtifactContent{
 			Metadata: readservice.ArtifactMetadata{Digest: "sha256:prompt", MediaType: "application/json"},
@@ -205,6 +219,8 @@ func fluidUIPrivateRunReader(t *testing.T, runID string) *fakeReader {
 func fluidUIRunPaths(runID string) map[string]string {
 	run := strings.ReplaceAll(apicontract.RunDetailPath, "{run}", runID)
 	return map[string]string{
+		"runs":       apicontract.RunsPath,
+		"errors":     apicontract.TelemetryErrorsPath,
 		"detail":     run,
 		"events":     strings.ReplaceAll(apicontract.RunEventsPath, "{run}", runID),
 		"attempts":   strings.ReplaceAll(strings.ReplaceAll(apicontract.StageAttemptsPath, "{run}", runID), "{stage}", "propose"),
@@ -298,6 +314,8 @@ func TestRunContentOfOtherWorkflowsStaysReadable(t *testing.T) {
 	f := newFluidUIRequestFixture(t)
 	reader := fluidUIPrivateRunReader(t, runID)
 	reader.run.Workflow = "implement"
+	reader.runs.Runs[0].Workflow = "implement"
+	reader.errors.Items[0].Workflow = "implement"
 	auth := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "bob", Roles: []Role{RoleView}}}
 	assertFluidUIRunContent(t, newFluidUIPrivateRunHandler(t, f, reader, auth), runID, "viewer", true)
 }

@@ -173,8 +173,11 @@ agent can quote it in escaped, truncated, or paraphrased form. Instead, for a
 - gets `403 run_content_private` for the run's artifacts and transcripts;
 - sees run detail, events, and stage attempts with agent progress text,
   agent objectives, gate rationale, instruction addenda, reasons, error
-  messages, and terminal-cause messages removed; and
-- sees run lists without that run's terminal reason.
+  messages, and terminal-cause messages removed;
+- sees run lists and run detail without the run's terminal reason, latest
+  error message, or review rationale and findings, and with each blocker
+  reduced to its code; and
+- sees `/telemetry/errors` entries for the run with an empty message.
 
 A `fluid-ui-customize` run with no binding (one not bound yet, or one whose
 binding an earlier version removed when it finished) is treated as private to

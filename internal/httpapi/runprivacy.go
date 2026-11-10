@@ -63,10 +63,40 @@ func writeRunContentPrivate(w http.ResponseWriter) {
 
 func withholdRunDetail(run readservice.RunDetail) readservice.RunDetail {
 	run.AgentProgress = withholdAgentSummaries(run.AgentProgress)
-	run.TerminalReason = ""
+	run.RunSummary = withholdRunSummary(run.RunSummary)
 	run.Escalation = withholdTerminalCause(run.Escalation)
 	run.TerminalCause = withholdTerminalCause(run.TerminalCause)
 	return run
+}
+
+func withholdRunSummary(run readservice.RunSummary) readservice.RunSummary {
+	run.TerminalReason = ""
+	run.Operator = withholdOperator(run.Operator)
+	return run
+}
+
+// withholdOperator drops the operator summary's recorded error and review
+// text, and reduces every blocker to its stable code, since blockers restate
+// that text.
+func withholdOperator(operator readservice.OperatorRunSummary) readservice.OperatorRunSummary {
+	operator.LatestError = withholdError(operator.LatestError)
+	if operator.Review != nil {
+		review := *operator.Review
+		review.Rationale = ""
+		review.Findings = nil
+		operator.Review = &review
+	}
+	operator.PotentialBlockers = make([]string, 0, len(operator.Blockers))
+	if operator.Blockers != nil {
+		blockers := make([]readservice.OperatorBlocker, len(operator.Blockers))
+		for i, blocker := range operator.Blockers {
+			blocker.Message = blocker.Code
+			blockers[i] = blocker
+			operator.PotentialBlockers = append(operator.PotentialBlockers, blocker.Code)
+		}
+		operator.Blockers = blockers
+	}
+	return operator
 }
 
 func withholdTerminalCause(cause *readservice.EscalationCause) *readservice.EscalationCause {
@@ -170,16 +200,38 @@ func withholdRunList(request *http.Request, privacy runPrivacy, list readservice
 	}
 	var runs []readservice.RunSummary
 	for i, run := range list.Runs {
-		if run.TerminalReason == "" || privacy.allowed(request, run.ID, run.Workflow) {
+		if privacy.allowed(request, run.ID, run.Workflow) {
 			continue
 		}
 		if runs == nil {
 			runs = append([]readservice.RunSummary(nil), list.Runs...)
 		}
-		runs[i].TerminalReason = ""
+		runs[i] = withholdRunSummary(run)
 	}
 	if runs != nil {
 		list.Runs = runs
 	}
 	return list
+}
+
+// withholdTelemetryErrors blanks the message of every error from a run whose
+// content the viewer may not read.
+func withholdTelemetryErrors(request *http.Request, privacy runPrivacy, page readservice.TelemetryErrorsPage) readservice.TelemetryErrorsPage {
+	if !privacy.enabled() {
+		return page
+	}
+	var items []readservice.TelemetryError
+	for i, item := range page.Items {
+		if privacy.allowed(request, item.RunID, item.Workflow) {
+			continue
+		}
+		if items == nil {
+			items = append([]readservice.TelemetryError(nil), page.Items...)
+		}
+		items[i].Message = ""
+	}
+	if items != nil {
+		page.Items = items
+	}
+	return page
 }

@@ -1417,9 +1417,10 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		config.portalAssets.ServeHTTP(w, request)
 	})
-	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
+	privacy := runPrivacy{service: config.runContentPrivacy, reader: reader, errorLog: errorLog}
+	registerTelemetryRoutes(router, reader, privacy, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
-	registerRunRoutes(router, reader, runPrivacy{service: config.runContentPrivacy, reader: reader, errorLog: errorLog}, errorLog)
+	registerRunRoutes(router, reader, privacy, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
 	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
