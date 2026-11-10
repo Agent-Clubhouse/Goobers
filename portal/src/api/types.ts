@@ -2493,6 +2493,31 @@ export interface LabsFleetConvergenceView {
   map?: LabsClusterMapPoint[];
 }
 
+/** Labs Fluid UI promotion candidates (#8419); mirrors internal/fluidui.Report. */
+export interface LabsFluidUIReport {
+  advisory: string;
+  generatedAt: string;
+  sustainedAfterDays: number;
+  users: number;
+  candidates: LabsFluidUICandidate[];
+  unmetNeeds: LabsFluidUIUnmetNeed[];
+}
+
+export interface LabsFluidUICandidate {
+  rank: number;
+  shape: string[];
+  users: number;
+  activeUsers: number;
+  sustainedUsers: number;
+  revertedUsers: number;
+  reversionRate: number;
+}
+
+export interface LabsFluidUIUnmetNeed {
+  label: string;
+  users: number;
+}
+
 /** A per-user Portal presentation document (`portal.customization/v1`, docs/labs-fluid-ui.md). */
 export interface FluidUICustomization {
   version: string;
@@ -2541,6 +2566,7 @@ export interface DaemonClient {
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
   getLabsFleetConvergence?(options?: RequestOptions): Promise<LabsFleetConvergenceView>;
+  getLabsFluidUIReport?(options?: RequestOptions): Promise<LabsFluidUIReport>;
   // Labs Fluid UI (#8415, #8416). Optional so hosts without the per-user
   // store simply keep the standard Portal.
   getLabsFluidUICustomization?(options?: RequestOptions): Promise<FluidUICustomizationState>;

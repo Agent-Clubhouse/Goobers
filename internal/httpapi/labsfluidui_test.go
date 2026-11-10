@@ -116,3 +116,31 @@ func TestLabsFluidUIScopesToPrincipalAndAdmitsViewRole(t *testing.T) {
 		t.Fatalf("pod PUT = %d, want 403", code)
 	}
 }
+
+func TestLabsFluidUIReportIsAggregateAndIdentityFree(t *testing.T) {
+	store := fluidui.NewStore(t.TempDir())
+	alice := &fakeAuthenticator{principal: &Principal{Issuer: "https://issuer.example.test", Subject: "alice-subject", Roles: []Role{RoleView}}}
+	doc := `{"version":"portal.customization/v1","density":"compact","savedViews":[{"name":"Alice private view","route":"#/runs?gaggle=alice-gaggle"}]}`
+	if code, _, body := fluidUIRequest(t, newFluidUIHandler(t, store, alice), http.MethodPut, apicontract.LabsFluidUICustomizationPath, doc); code != http.StatusOK {
+		t.Fatalf("PUT = %d %s", code, body)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, apicontract.LabsFluidUIReportPath, nil)
+	response := httptest.NewRecorder()
+	newFluidUIHandler(t, store, alice).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET report = %d %s", response.Code, response.Body.String())
+	}
+	var report fluidui.Report
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Candidates) != 1 || strings.Join(report.Candidates[0].Shape, ",") != "density:compact,savedViews" {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, secret := range []string{"issuer.example.test", "alice-subject", "Alice private view", "alice-gaggle"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Errorf("report exposes %q", secret)
+		}
+	}
+}

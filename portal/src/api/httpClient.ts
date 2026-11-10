@@ -55,6 +55,7 @@ import type {
   WorkflowDetail,
   QueueEligibilityView,
   LabsWorkflowClusterView,
+  LabsFluidUIReport,
   FluidUICustomization,
   FluidUICustomizationState,
   WorkflowPage,
@@ -273,6 +274,10 @@ export class HttpDaemonClient implements DaemonClient {
 
   getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView> {
     return this.getJSON(clientRoutes.labsWorkflowClusters, undefined, options);
+  }
+
+  getLabsFluidUIReport(options?: RequestOptions): Promise<LabsFluidUIReport> {
+    return this.getJSON(clientRoutes.labsFluidUIReport, undefined, options);
   }
 
   getLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {

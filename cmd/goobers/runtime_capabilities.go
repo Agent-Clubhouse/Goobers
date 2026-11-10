@@ -562,6 +562,7 @@ func init() {
 			withHelp("fire an external signal to subscribed workflows", signalHelp).
 			withExamples("goobers signal deploy-approved"),
 		workflowCommands(),
+		labsCLICommand(),
 		groupCommand(
 			"runs",
 			runRuns,

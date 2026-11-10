@@ -867,6 +867,19 @@ test("loads the Labs workflow cluster map from fixture daemon data", async ({ pa
   expect(consoleErrors).toEqual([]);
 });
 
+test("loads Fluid UI promotion candidates from fixture daemon data", async ({ page }) => {
+  const consoleErrors = trackConsoleErrors(page);
+  await page.goto("/#/labs/fluid-ui");
+
+  const report = page.getByRole("region", { name: "Fluid UI promotion candidates" });
+  await expect(report.getByRole("table", { name: "Ranked customization shapes" })).toContainText(
+    "density:compact, runs.sort:failing-first",
+  );
+  await expect(report.getByRole("table", { name: "Unmet customization needs" })).toContainText("dark-mode");
+  await expect(report).toContainText("never change global defaults");
+  expect(consoleErrors).toEqual([]);
+});
+
 test("loads the Errors page from fixture daemon data", async ({ page }) => {
   const consoleErrors = trackConsoleErrors(page);
   await page.goto("/#/errors");
