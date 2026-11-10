@@ -203,6 +203,9 @@ type Executor struct {
 	decisionGate    *decisiongate.Settings
 	newSandbox      func() (sandbox.Sandbox, error)
 
+	privateInputs    PrivateInputSource
+	privateRegistrar credentials.SecretRegistrar
+
 	guardedCredentialFiles bool
 }
 
@@ -612,12 +615,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
-	var creds *credentials.Set
-	if envEffectivePolicy != nil {
-		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
-	} else {
-		creds, err = e.injector.Materialize(ctx, env.Capabilities)
-	}
+	creds, err := e.materializeCredentials(ctx, env.Capabilities, envEffectivePolicy)
 	if err != nil {
 		// A credential-materialization failure is an infrastructure fault at
 		// stage-environment build time, not evidence about the work (#3361):
@@ -633,10 +631,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			fmt.Errorf("harness: materialize credentials: %w", err),
 		))
 	}
-	contextPaths, err := e.materializeStageInputs(mode, env)
+	contextPaths, privatePaths, removePrivate, err := e.materializeStageInputs(ctx, mode, env)
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
+	defer removePrivate()
 	req := RunRequest{
 		Mode:                     mode,
 		Envelope:                 env,
@@ -654,6 +653,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		TelemetryDir:             telemetry.PrepareStageTelemetryDir(env.Workspace),
 		Credentials:              creds,
 		ContextPaths:             contextPaths,
+		PrivatePaths:             privatePaths,
 		Timeout:                  invocationTimeout(env, e.timeout),
 		Attempt:                  int(env.Attempt),
 		MaxTranscriptBytes:       e.transcriptLimit,
@@ -933,17 +933,31 @@ func (e *Executor) journalBackpropClaims(env apiv1.InvocationEnvelope, telemetry
 	return nil
 }
 
+// materializeCredentials scopes the session's credentials to the admitted
+// nested-agent policy when there is one, else to the stage's capabilities.
+func (e *Executor) materializeCredentials(ctx context.Context, capabilities []string, policy *apiv1.ChildExecutionPolicy) (*credentials.Set, error) {
+	if policy != nil {
+		return e.injector.MaterializeRestricted(ctx, policy.PlatformPolicy.Credentials)
+	}
+	return e.injector.Materialize(ctx, capabilities)
+}
+
 // materializeStageInputs materializes what a stage reads before it starts:
-// its declared context and, for an agentic stage, the run's earlier claims.
-func (e *Executor) materializeStageInputs(mode Mode, env apiv1.InvocationEnvelope) (map[string]string, error) {
+// its declared context, for an agentic stage the run's earlier claims, and its
+// private inputs, which the returned func removes once the session ends.
+func (e *Executor) materializeStageInputs(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope) (map[string]string, map[string]string, func(), error) {
 	contextPaths, err := e.materializeContext(env)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if err := e.materializeRunClaims(mode, telemetry.PrepareStageTelemetryDir(env.Workspace)); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return contextPaths, nil
+	privatePaths, removePrivate, err := e.materializePrivateInputs(ctx, env)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return contextPaths, privatePaths, removePrivate, nil
 }
 
 // materializeRunClaims gives an agentic stage the claims journaled earlier in

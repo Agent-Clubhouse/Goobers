@@ -165,51 +165,88 @@ func (r *Requests) unbind(runID string) {
 }
 
 // RequestInput is the load-request stage's result file: what the agent needs
-// to draft a candidate. The request is nested so the stage's flat outputs,
-// which the journal and telemetry index, never carry the prompt.
+// to draft a candidate. It never carries the prompt: the result is a run
+// artifact any reader of the run can open, so the prompt reaches the agent only
+// as a private harness input (PromptForRun, #8425).
 type RequestInput struct {
 	Schema  string         `json:"schema"`
 	Attempt int            `json:"attempt"`
-	Request RequestText    `json:"request"`
+	Request RequestRef     `json:"request"`
 	Current *Customization `json:"current"`
 	Surface map[string]any `json:"surface"`
 }
 
-// RequestText is the user's request as the agent sees it.
-type RequestText struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
+// RequestRef identifies the request a run serves.
+type RequestRef struct {
+	ID string `json:"id"`
 }
+
+// PrivatePromptFile is the private input name the request text reaches the
+// agent under.
+const PrivatePromptFile = "fluid-ui-request-text.txt"
 
 // InputForRun resolves the request bound to runID with the owner's current
 // customization. ErrBindingNotFound means the daemon has not bound the run yet.
 func (r *Requests) InputForRun(runID string) (RequestInput, error) {
+	binding, rec, err := r.boundRequest(runID)
+	if err != nil {
+		return RequestInput{}, err
+	}
+	return r.input(binding, rec)
+}
+
+// PromptForRun returns the text of the request bound to runID, for the
+// harness to hand the agent privately. ErrBindingNotFound means no request is
+// bound to the run.
+func (r *Requests) PromptForRun(runID string) (string, error) {
+	_, rec, err := r.boundRequest(runID)
+	if err != nil {
+		return "", err
+	}
+	return rec.Prompt, nil
+}
+
+// SensitivePromptValues lists the exact values a run's journal must redact to
+// keep prompt out of it: the whole prompt and each line long enough to
+// register, since an agent tool may show a multi-line prompt line by line.
+func SensitivePromptValues(prompt string) [][]byte {
+	values := [][]byte{[]byte(prompt)}
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) >= MinPromptBytes && line != prompt {
+			values = append(values, []byte(line))
+		}
+	}
+	return values
+}
+
+func (r *Requests) boundRequest(runID string) (RunBinding, storedRequest, error) {
 	if runID == "" || strings.ContainsAny(runID, `/\.`) {
-		return RequestInput{}, ErrBindingNotFound
+		return RunBinding{}, storedRequest{}, ErrBindingNotFound
 	}
 	data, err := os.ReadFile(r.bindingPath(runID))
 	if errors.Is(err, fs.ErrNotExist) {
-		return RequestInput{}, ErrBindingNotFound
+		return RunBinding{}, storedRequest{}, ErrBindingNotFound
 	}
 	if err != nil {
-		return RequestInput{}, fmt.Errorf("fluidui: read run binding: %w", err)
+		return RunBinding{}, storedRequest{}, fmt.Errorf("fluidui: read run binding: %w", err)
 	}
 	var binding RunBinding
 	if err := json.Unmarshal(data, &binding); err != nil || binding.Schema != requestSchema || !userHashPattern.MatchString(binding.User) {
-		return RequestInput{}, fmt.Errorf("fluidui: malformed run binding for %s", runID)
+		return RunBinding{}, storedRequest{}, fmt.Errorf("fluidui: malformed run binding for %s", runID)
 	}
 	r.mu.Lock()
 	file, err := r.load(binding.User)
 	r.mu.Unlock()
 	if err != nil {
-		return RequestInput{}, err
+		return RunBinding{}, storedRequest{}, err
 	}
 	for _, rec := range file.Requests {
 		if rec.ID == binding.RequestID && rec.RunID == runID {
-			return r.input(binding, rec)
+			return binding, rec, nil
 		}
 	}
-	return RequestInput{}, ErrBindingNotFound
+	return RunBinding{}, storedRequest{}, ErrBindingNotFound
 }
 
 func (r *Requests) input(binding RunBinding, rec storedRequest) (RequestInput, error) {
@@ -220,7 +257,7 @@ func (r *Requests) input(binding RunBinding, rec storedRequest) (RequestInput, e
 	return RequestInput{
 		Schema:  InputSchema,
 		Attempt: binding.Attempt,
-		Request: RequestText{ID: rec.ID, Text: rec.Prompt},
+		Request: RequestRef{ID: rec.ID},
 		Current: current.state().Customization,
 		Surface: Surface(),
 	}, nil

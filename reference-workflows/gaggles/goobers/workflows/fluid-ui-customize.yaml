@@ -21,7 +21,7 @@ spec:
   tasks:
     - name: load-request
       type: deterministic
-      goal: Load the request this run serves, the requester's current customization and the customization surface.
+      goal: Load the ID of the request this run serves, the requester's current customization and the customization surface; never the request text.
       run:
         command: ["goobers", "fluid-ui-request", "--load"]
       inputs:
@@ -33,12 +33,14 @@ spec:
       goober: fluid-ui-designer
       workspace: scratch
       goal: >-
-        Read fluid-ui-request.json from the attached context and write
+        Read the request text from the private input file and
+        fluid-ui-request.json from the attached context, then write
         fluid-ui-candidate.json: either one complete portal.customization/v1
         document that satisfies the request within the described surface, or
         {"unsupported": true, "unmetNeed": "<short-slug>"} when the surface
         cannot express it. On a repass, fix every error the validate-candidate
-        result lists. Write JSON only; never code.
+        result lists. Write JSON only; never code. Never quote, restate or
+        summarize the request text anywhere.
       inputs:
         artifactFile: "fluid-ui-candidate.json"
       contextFrom:

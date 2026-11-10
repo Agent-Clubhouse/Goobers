@@ -109,8 +109,14 @@ func TestRequestLifecycleFollowsRun(t *testing.T) {
 		t.Fatalf("trigger keys = %v, want one key without prompt text", trigger.starts)
 	}
 	input, err := requests.InputForRun(req.RunID)
-	if err != nil || input.Request.Text != "compact please" || input.Current != nil || input.Schema != InputSchema {
+	if err != nil || input.Request.ID != req.ID || input.Current != nil || input.Schema != InputSchema {
 		t.Fatalf("InputForRun = %+v, %v", input, err)
+	}
+	if encoded, _ := json.Marshal(input); strings.Contains(string(encoded), "compact please") {
+		t.Fatalf("load-request result carries the prompt: %s", encoded)
+	}
+	if prompt, err := requests.PromptForRun(req.RunID); err != nil || prompt != "compact please" {
+		t.Fatalf("PromptForRun = %q, %v", prompt, err)
 	}
 
 	runs[req.RunID] = RunState{Phase: journal.PhaseRunning}
@@ -124,6 +130,9 @@ func TestRequestLifecycleFollowsRun(t *testing.T) {
 	}
 	if _, err := requests.InputForRun(req.RunID); !errors.Is(err, ErrBindingNotFound) {
 		t.Fatalf("binding kept after terminal state: %v", err)
+	}
+	if _, err := requests.PromptForRun(req.RunID); !errors.Is(err, ErrBindingNotFound) {
+		t.Fatalf("prompt served after terminal state: %v", err)
 	}
 	if state, _ := requests.store.Get(user); state.Customization != nil {
 		t.Fatal("candidate applied without an explicit apply")
@@ -287,7 +296,7 @@ func TestSubmitBoundsRequests(t *testing.T) {
 	ctx := context.Background()
 	requests, runs, trigger := newTestRequests(t)
 	user := UserKey("iss", "alice")
-	for _, prompt := range []string{"", strings.Repeat("x", MaxPromptBytes+1), "bell\a"} {
+	for _, prompt := range []string{"", "dark", strings.Repeat("x", MaxPromptBytes+1), "bell\a and more"} {
 		var verr *ValidationError
 		if _, err := requests.Submit(ctx, user, "alice", prompt, trigger); !errors.As(err, &verr) {
 			t.Fatalf("Submit(%q) = %v, want validation error", prompt, err)
@@ -309,5 +318,18 @@ func TestSubmitBoundsRequests(t *testing.T) {
 	runs[first.RunID] = RunState{Phase: journal.PhaseFailed}
 	if _, err := requests.Submit(ctx, user, "alice", "compact", trigger); err != nil {
 		t.Fatalf("submit after a run finished = %v", err)
+	}
+}
+
+func TestSensitivePromptValuesCoverEachRegistrableLine(t *testing.T) {
+	got := SensitivePromptValues("make it compact\n  ok\n hide the clock widget ")
+	want := []string{"make it compact\n  ok\n hide the clock widget ", "make it compact", "hide the clock widget"}
+	if len(got) != len(want) {
+		t.Fatalf("values = %q, want %q", got, want)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("values = %q, want %q", got, want)
+		}
 	}
 }

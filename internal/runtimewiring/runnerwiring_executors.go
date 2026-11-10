@@ -595,6 +595,10 @@ type AgenticExecutorInput struct {
 
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
+
+	// PrivateInputs resolves input the agent reads but the run never records
+	// (#8425). Local runner only: it reads daemon-host state.
+	PrivateInputs harness.PrivateInputSource
 }
 
 // BuildAgenticExecutor builds a goober executor with its harness, credentials, and captured assets.
@@ -679,6 +683,12 @@ func BuildAgenticExecutor(input AgenticExecutorInput) (invoke.Goober, error) {
 	}
 	if input.TranscriptWindows != nil {
 		opts = append(opts, harness.WithTranscriptWindowObserver(input.TranscriptWindows))
+	}
+	if input.PrivateInputs != nil {
+		// The run's own registrar, never the shared one: the journal that
+		// must not carry the values scrubs with it, and the instance-lifetime
+		// registry should not accumulate every request.
+		opts = append(opts, harness.WithPrivateInputs(input.PrivateInputs, input.SecretRegistrar))
 	}
 	return harness.NewExecutor(
 		adapter,

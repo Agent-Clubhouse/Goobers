@@ -18,9 +18,9 @@ import (
 const fluidUIRequestHelp = "Usage: goobers fluid-ui-request (--load | --validate) [path]\n\n" +
 	"fluid-ui-request is the fluid-ui-customize workflow's deterministic stage\n" +
 	"(Labs Fluid UI, docs/labs-fluid-ui.md).\n\n" +
-	"--load writes the request this run serves, the requester's current\n" +
-	"portal.customization/v1 document and the customization surface to the\n" +
-	"result file, for the propose stage to read. The daemon binds the run to\n" +
+	"--load writes the ID of the request this run serves (never its text), the\n" +
+	"requester's current portal.customization/v1 document and the surface to\n" +
+	"the result file, for the propose stage to read. The daemon binds the run to\n" +
 	"its request when the trigger is accepted; --load waits briefly for that\n" +
 	"binding.\n\n" +
 	"--validate reads the propose stage's candidate and classifies it as a\n" +

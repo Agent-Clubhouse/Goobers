@@ -11,9 +11,9 @@ Usage: goobers fluid-ui-request (--load | --validate) [path]
 fluid-ui-request is the fluid-ui-customize workflow's deterministic stage
 (Labs Fluid UI, docs/labs-fluid-ui.md).
 
---load writes the request this run serves, the requester's current
-portal.customization/v1 document and the customization surface to the
-result file, for the propose stage to read. The daemon binds the run to
+--load writes the ID of the request this run serves (never its text), the
+requester's current portal.customization/v1 document and the surface to
+the result file, for the propose stage to read. The daemon binds the run to
 its request when the trigger is accepted; --load waits briefly for that
 binding.
 

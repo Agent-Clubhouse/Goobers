@@ -105,7 +105,7 @@ automatically: you preview it and apply it yourself.
 | Method and path | Effect |
 |---|---|
 | `GET /api/v1/labs/fluid-ui/requests` | Lists your requests, newest first: `{"requests": [...]}` |
-| `POST /api/v1/labs/fluid-ui/requests` | Body `{"prompt": "..."}` (at most 2000 bytes). Starts a workflow run and returns the request (202). |
+| `POST /api/v1/labs/fluid-ui/requests` | Body `{"prompt": "..."}` (6 to 2000 bytes). Starts a workflow run and returns the request (202). |
 | `GET /api/v1/labs/fluid-ui/requests/{id}` | Returns one of your requests |
 | `POST /api/v1/labs/fluid-ui/requests/{id}/retry` | Starts a new run for a `failed` or `unsupported` request (at most 5 attempts) |
 | `POST /api/v1/labs/fluid-ui/requests/{id}/apply` | Saves a `ready_to_preview` candidate as your customization through the same validated write as `PUT` |
@@ -141,9 +141,9 @@ cannot start runs and returns 503 `triggers_unavailable` for them.
 The workflow ships in the `goobers` reference gaggle with the
 `fluid-ui-designer` goober:
 
-1. `load-request` (`goobers fluid-ui-request --load`) loads the request this
-   run serves, your current customization, and a description of the
-   customization surface and its limits.
+1. `load-request` (`goobers fluid-ui-request --load`) loads the ID of the
+   request this run serves, your current customization, and a description of
+   the customization surface and its limits. It never writes the request text.
 2. `propose` (agentic, scratch workspace) writes either one complete
    `portal.customization/v1` document or
    `{"unsupported": true, "unmetNeed": "<short-slug>"}`. It writes JSON only,
@@ -158,13 +158,48 @@ The workflow ships in the `goobers` reference gaggle with the
 
 ### Privacy
 
-The request text is stored only in your private request file and is passed to
-the run that serves it. It is not part of the trigger key or the run's
-outputs, and it never enters any aggregate. When a request ends as
-`unsupported`, only its normalized unmet-need label is recorded for the
-aggregate report; a label that echoes the request text is not recorded. The
-request text does appear in that run's `load-request` artifact and in the
-agent transcript, which anyone who can read the run can see.
+The request text is stored only in your private request file. Only you can
+read it back, through the Feedback tab and the request routes above. Other
+people who can read the run that serves it see the run but not the text.
+
+The text never enters the run's trigger key, inputs or outputs, the
+`load-request` artifact, or any aggregate. The daemon hands it to the
+`propose` agent as a private input instead:
+
+- When the agentic stage of a `fluid-ui-customize` run starts, the daemon looks
+  up the request bound to the run. It registers the text, and each of its
+  lines of 6 bytes or more, with that run's secret registry. This is the same
+  exact-value scrubber that keeps credentials out of the journal. A run whose
+  request cannot be found fails before the agent starts.
+- It then writes the text to `.goobers/private/` in the stage's disposable
+  workspace (mode 0600) and lists that file under "Private inputs" in the
+  agent's prompt. The file is removed when the session ends. `.goobers/` is
+  never published or captured for recovery.
+- Every event, artifact, span and transcript the run records is scrubbed
+  against the registry before it is written. If the agent quotes the request,
+  the run's API responses, transcripts and journal files show `[REDACTED]`
+  instead.
+
+A request must be at least 6 bytes, the shortest value the scrubber redacts,
+so every accepted request can be protected.
+
+What remains visible to people who can read the run:
+
+- **Paraphrases.** Redaction matches exact text. The agent is told never to
+  quote, restate or summarize the request. If it paraphrases anyway, or
+  quotes a fragment shorter than a whole line, that wording is not redacted.
+- **The candidate and the unmet need.** The candidate the agent writes, such
+  as saved-view names, and the normalized unmet-need label of an
+  `unsupported` request are run artifacts and outputs. They describe the
+  result, so they can reveal what was asked. A label that echoes the request
+  text is not recorded in the aggregate.
+- **The agent's working copy.** While the stage runs, the request file sits
+  in the stage workspace on the daemon host. Anyone with filesystem access to
+  the instance can read it there and in your request file.
+
+Private inputs are wired only for the local daemon runner. The
+`fluid-ui-customize` workflow already runs only there, because `load-request`
+reads the daemon host's request store.
 
 ## Aggregate learning and promotion candidates (#8419)
 

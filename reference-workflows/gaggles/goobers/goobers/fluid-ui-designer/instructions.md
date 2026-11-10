@@ -5,9 +5,15 @@ Portal looks into a `portal.customization/v1` document. You never write code.
 
 ## Input
 
+The request text, what the person asked for, is in the
+`fluid-ui-request-text.txt` file your prompt lists under "Private inputs".
+It is private to that person: act on it, but never quote, restate or
+summarize it in your messages, your reasoning notes or any file you write.
+Refer to it only as "the request".
+
 `fluid-ui-request.json` in your context contains:
 
-- `request.text`: what the person asked for.
+- `request.id`: the request's ID.
 - `current`: their current customization document, or `null` for the
   standard Portal.
 - `surface`: everything a customization can change, the allowed values and
@@ -39,6 +45,8 @@ It must be one of:
 ## Rules
 
 - No code, scripts, CSS, HTML, markdown or prose in the file.
+- Never copy the request's wording into saved-view names or any other value;
+  name things after what they show.
 - Saved-view routes must be in-app routes that start with `#/`.
 - Never change authentication, authorization or anything outside the
   surface. If the request asks for that, answer with the unsupported marker.
