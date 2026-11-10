@@ -123,7 +123,7 @@ func TestWalkDefinitionTreesResolvesSiblingFromRelativeRoot(t *testing.T) {
 
 func TestWalkDefinitionTreesIgnoresUnrelatedSibling(t *testing.T) {
 	parent := t.TempDir()
-	root := filepath.Join(parent, "config")
+	root := filepath.Join(parent, "cfg")
 	shared := filepath.Join(parent, "goobers")
 	for _, path := range []string{root, shared} {
 		if err := os.Mkdir(path, 0o755); err != nil {
@@ -164,5 +164,29 @@ func TestWalkDefinitionTreesKeepsSiblingPathsRelativeToConfigRoot(t *testing.T) 
 	}
 	if !reflect.DeepEqual(visited, []string{".", filepath.Join("..", "goobers")}) {
 		t.Fatalf("relative sibling paths = %v", visited)
+	}
+}
+
+func TestSharedGooberDirectoryWithoutManifest(t *testing.T) {
+	parent := t.TempDir()
+	nested := filepath.Join(parent, "config")
+	flat := filepath.Join(parent, "cfg")
+	for _, dir := range []string{nested, flat, filepath.Join(parent, "goobers")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := SharedGooberDirectory(nested); got == "" {
+		t.Fatal("manifestless nested config root must expose its sibling goobers tree")
+	}
+	if got := SharedGooberDirectory(flat); got != "" {
+		t.Fatalf("flat root must ignore unrelated sibling goobers, got %q", got)
+	}
+	var visited []string
+	if err := WalkDefinitionTrees(flat, func(p string) error { visited = append(visited, p); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(visited, []string{flat}) {
+		t.Fatalf("flat walk: %v", visited)
 	}
 }

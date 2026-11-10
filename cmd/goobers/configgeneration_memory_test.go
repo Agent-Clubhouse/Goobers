@@ -109,7 +109,7 @@ func TestRetainerKeepsUseIncrementalAppliedGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	if err := journalStartupGeneration(log, "A", "a"); err != nil {
+	if err := journalStartupGeneration(log, "A", "a", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := retainer.Keep(t.Context(), data, digest); err != nil {
@@ -134,4 +134,41 @@ func TestRetainerKeepsUseIncrementalAppliedGeneration(t *testing.T) {
 
 func retainedExecutionGenerationPins(ctx context.Context, layout instance.Layout) (map[string]bool, error) {
 	return executionGenerationPinsReader(layout)(ctx)
+}
+
+func TestStartupGenerationAnnotationKeepsMatchingWorkflowSource(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	source := &journal.WorkflowSourceProvenance{URL: "https://example.test/repo.git", Dir: "config", Commit: "abc123"}
+	if err := log.Append(journal.Event{Type: journal.EventConfigReloaded, Runner: map[string]any{"configGeneration": "A", "workflowSource": source}}); err != nil {
+		t.Fatal(err)
+	}
+	matching, err := startupWorkflowSource(layout, "A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journalStartupGeneration(log, "A", "a", matching); err != nil {
+		t.Fatal(err)
+	}
+	got, err := lastAppliedWorkflowSource(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || *got != *source {
+		t.Fatalf("startup annotation lost provenance: %+v", got)
+	}
+	other, err := startupWorkflowSource(layout, "B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journalStartupGeneration(log, "B", "b", other); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := lastAppliedWorkflowSource(layout); err != nil || got != nil {
+		t.Fatalf("different generation must not inherit provenance: %+v, %v", got, err)
+	}
 }

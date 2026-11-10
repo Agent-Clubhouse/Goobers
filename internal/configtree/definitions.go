@@ -16,10 +16,6 @@ func SharedGooberDirectory(root string) string {
 	if err != nil || filepath.Base(absolute) != "config" {
 		return ""
 	}
-	info, err := os.Lstat(filepath.Join(absolute, "manifest.yaml"))
-	if err != nil || !info.Mode().IsRegular() {
-		return ""
-	}
 	return filepath.Join(root, "..", "goobers")
 }
 

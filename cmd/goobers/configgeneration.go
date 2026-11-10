@@ -134,6 +134,21 @@ func lastAppliedWorkflowSource(layout instance.Layout) (*journal.WorkflowSourceP
 	return source, nil
 }
 
+// startupWorkflowSource returns the journaled provenance only when the latest
+// authoritative event applied the same generation, so a restart annotation
+// never attributes a source to a different generation.
+func startupWorkflowSource(layout instance.Layout, generation string) (*journal.WorkflowSourceProvenance, error) {
+	latest := journal.NewInstanceLatest(layout.SchedulerDir(), journal.IsConfigGenerationAuthority)
+	event, found, err := latest.Read(context.Background())
+	if err != nil || !found {
+		return nil, err
+	}
+	if applied, _ := event.Runner["configGeneration"].(string); applied != generation {
+		return nil, nil
+	}
+	return lastAppliedWorkflowSource(layout)
+}
+
 func appliedWorkflowSourceRevision(layout instance.Layout, cfg *instance.Config) (string, error) {
 	if cfg == nil || cfg.WorkflowSource == nil || cfg.WorkflowSource.Kind != instance.WorkflowSourceKindGit || cfg.WorkflowSource.URL == "" {
 		return "", nil

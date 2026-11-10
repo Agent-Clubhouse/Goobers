@@ -361,7 +361,11 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		configDigest = runtime.RecoveredConfigDigest
 	}
 	if options.recoverGenerationCapacity {
-		if err := journalStartupGeneration(observation.instanceLog, definitions.ExecutionGeneration, configDigest); err != nil {
+		source, err := startupWorkflowSource(l, definitions.ExecutionGeneration)
+		if err != nil {
+			return nil, err
+		}
+		if err := journalStartupGeneration(observation.instanceLog, definitions.ExecutionGeneration, configDigest, source); err != nil {
 			return nil, err
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/configmirror"
 	"github.com/goobers/goobers/internal/configsignal"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -254,7 +255,12 @@ func (r *configReloader) poll(now time.Time) error {
 	defer r.publishReloadStatus(now)
 	defer r.refreshConfigMirror(context.Background())
 	root := r.layout.ConfigDir()
-	digest, err := r.pollDigest.Digest(now, []string{root, filepath.Join(filepath.Dir(root), "goobers"), filepath.Join(filepath.Dir(root), "skills")}, func(observe func(string)) (string, error) {
+	watched := []string{root}
+	if shared := configtree.SharedGooberDirectory(root); shared != "" {
+		watched = append(watched, filepath.Clean(shared))
+	}
+	watched = append(watched, filepath.Join(filepath.Dir(root), "skills"))
+	digest, err := r.pollDigest.Digest(now, watched, func(observe func(string)) (string, error) {
 		return runtimewiring.ConfigDirectoryDigestObserved(root, "", observe)
 	})
 	if err != nil {
