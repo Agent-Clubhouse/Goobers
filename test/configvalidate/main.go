@@ -62,6 +62,8 @@ repos:
 
 const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
 const preReviewExperimentInertWarning = "WARNING Workflow/implementation-pre-review-experiment: workflow \"implementation-pre-review-experiment\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run implementation-pre-review-experiment`"
+// fluid-ui-customize is started only by Labs Fluid UI request intake (#8418).
+const fluidUICustomizeInertWarning = "WARNING Workflow/fluid-ui-customize: workflow \"fluid-ui-customize\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run fluid-ui-customize`"
 const qualitySpotCheckInertWarning = "WARNING Workflow/quality-spot-check: workflow \"quality-spot-check\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run quality-spot-check`"
 
 // qualitySpotCheckWarnings include preview acknowledgements and the
@@ -102,6 +104,7 @@ var checkedInTrees = []checkedInTree{
 		targetRemote: "https://github.com/Agent-Clubhouse/Goobers.git",
 		allowedWarnings: append([]string{
 			docsUpdaterInertWarning,
+			fluidUICustomizeInertWarning,
 			preReviewExperimentInertWarning,
 			qualitySpotCheckInertWarning,
 		}, qualitySpotCheckWarnings...),
