@@ -2493,6 +2493,31 @@ export interface LabsFleetConvergenceView {
   map?: LabsClusterMapPoint[];
 }
 
+/** Labs Fluid UI promotion candidates (#8419); mirrors internal/fluidui.Report. */
+export interface LabsFluidUIReport {
+  advisory: string;
+  generatedAt: string;
+  sustainedAfterDays: number;
+  users: number;
+  candidates: LabsFluidUICandidate[];
+  unmetNeeds: LabsFluidUIUnmetNeed[];
+}
+
+export interface LabsFluidUICandidate {
+  rank: number;
+  shape: string[];
+  users: number;
+  activeUsers: number;
+  sustainedUsers: number;
+  revertedUsers: number;
+  reversionRate: number;
+}
+
+export interface LabsFluidUIUnmetNeed {
+  label: string;
+  users: number;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -2510,6 +2535,7 @@ export interface DaemonClient {
   getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView>;
   getLabsFleetConvergence?(options?: RequestOptions): Promise<LabsFleetConvergenceView>;
+  getLabsFluidUIReport?(options?: RequestOptions): Promise<LabsFluidUIReport>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions & { continuationsAfter?: string }): Promise<RunDetail>;
   listRunChildren(runId: string, cursor?: string, options?: RequestOptions): Promise<ChildHistoryPage>;

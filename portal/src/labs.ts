@@ -426,7 +426,14 @@ export const labsFeatures: readonly LabsFeature[] = [
       "Authenticated Portal users on shared instances; local dashboards use one local profile",
     ],
     issues: [8338, 8415, 8416, 8417, 8418, 8419],
-    surfaces: [{ kind: "docs", label: "Fluid UI customization API", path: "docs/labs-fluid-ui.md" }],
+    surfaces: [
+      { kind: "docs", label: "Fluid UI customization API", path: "docs/labs-fluid-ui.md" },
+      {
+        kind: "cli",
+        command: "goobers labs fluid-ui report",
+        description: "rank customization shapes as advisory promotion candidates",
+      },
+    ],
     tryIt: [
       {
         title: "Save a customization through the API",
@@ -444,6 +451,17 @@ export const labsFeatures: readonly LabsFeature[] = [
         code:
           "curl -X POST \"$GOOBERS_API/api/v1/labs/fluid-ui/customization/undo\" -H 'Content-Type: application/json' -d '{}'\n" +
           "curl -X DELETE \"$GOOBERS_API/api/v1/labs/fluid-ui/customization\" -H 'Content-Type: application/json' -d '{}'",
+      },
+      {
+        title: "Review promotion candidates",
+        detail:
+          "See which customization shapes distinct users keep for at least 7 days, how often each is reverted, and " +
+          "which needs are unsupported. The report is aggregate and identity-free, and candidates are advisory " +
+          "product proposals that never change global defaults.",
+        code:
+          "goobers labs fluid-ui report\n" +
+          "goobers labs fluid-ui report --json\n" +
+          "curl \"$GOOBERS_API/api/v1/labs/fluid-ui/report\"",
       },
     ],
     integrate: [
@@ -471,8 +489,10 @@ export const labsFeatures: readonly LabsFeature[] = [
         issue: 8418,
       },
       {
-        title: "Popular customizations become defaults",
-        detail: "Customizations adopted by many distinct users are ranked as candidates for the standard Portal.",
+        title: "Promote proven candidates",
+        detail:
+          "Ranked candidates (distinct users, sustained adoption, reversion rate) are available today; maintainers " +
+          "review them as product proposals. Nothing is promoted automatically.",
         issue: 8419,
       },
     ],

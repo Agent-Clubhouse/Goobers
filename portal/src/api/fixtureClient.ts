@@ -41,6 +41,7 @@ import type {
   QueueEligibilityView,
   LabsWorkflowClusterView,
   LabsFleetConvergenceView,
+  LabsFluidUIReport,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -73,6 +74,7 @@ export interface DaemonFixtures {
   workItemDetails?: Record<string, WorkItemDetail>;
   labsWorkflowClusters?: LabsWorkflowClusterView;
   labsFleetConvergence?: LabsFleetConvergenceView;
+  labsFluidUIReport?: LabsFluidUIReport;
 }
 
 export interface FixtureStageUsage {
@@ -229,6 +231,20 @@ export class FixtureDaemonClient implements DaemonClient {
         excluded: [],
         shapes: [],
         clusters: [],
+      },
+      options,
+    );
+  }
+
+  async getLabsFluidUIReport(options?: RequestOptions): Promise<LabsFluidUIReport> {
+    return fixture(
+      this.fixtures.labsFluidUIReport ?? {
+        advisory: "Advisory product proposals only. Candidates never change global defaults or any user's customization.",
+        generatedAt: "2026-09-08T00:00:00Z",
+        sustainedAfterDays: 7,
+        users: 0,
+        candidates: [],
+        unmetNeeds: [],
       },
       options,
     );

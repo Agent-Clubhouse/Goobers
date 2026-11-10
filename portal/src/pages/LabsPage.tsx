@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { DaemonClient } from "../api/types";
 import { LabsFleetConvergence } from "../components/LabsFleetConvergence";
+import { LabsFluidUIReport } from "../components/LabsFluidUIReport";
 import { LabsWorkflowClusters } from "../components/LabsWorkflowClusters";
 import {
   findLabsFeature,
@@ -19,6 +20,12 @@ import { PageHeading } from "../ui/Heading";
 const labsViews: Record<string, (client: DaemonClient, fleet: boolean) => ReactNode> = {
   "workflow-clustering": (client, fleet) =>
     fleet ? <LabsFleetConvergence client={client} /> : <LabsWorkflowClusters client={client} />,
+};
+
+// Aggregate report views rendered for a feature regardless of its availability,
+// because they read data that exists before the feature's main view ships.
+const labsReportViews: Record<string, (client: DaemonClient) => ReactNode> = {
+  "fluid-ui": (client) => <LabsFluidUIReport client={client} />,
 };
 
 export function LabsPage({ client, feature, fleet = false }: { client: DaemonClient; feature?: string; fleet?: boolean }) {
@@ -79,6 +86,7 @@ function LabsFeatureDetail({ client, feature, fleet }: { client: DaemonClient; f
         It never writes configuration or bypasses validation, promotion, or approval gates.
       </p>
       {view?.(client, fleet)}
+      {labsReportViews[feature.id]?.(client)}
       <section className="content-section labs-detail">
         <p className="labs-status">
           {feature.availability === "available" ? (
