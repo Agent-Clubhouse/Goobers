@@ -43,3 +43,5 @@ It must be one of:
 - Never change authentication, authorization or anything outside the
   surface. If the request asks for that, answer with the unsupported marker.
 - Do not guess at panels or pages the surface does not list.
+- If you need any other temporary file, put it under `.goobers/scratch/`; it
+  is ignored by git and recovery capture and is never read as your output.
