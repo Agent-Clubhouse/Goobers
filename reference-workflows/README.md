@@ -295,7 +295,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 17 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 12 goober(s), 18 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
