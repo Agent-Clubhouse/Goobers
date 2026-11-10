@@ -32,6 +32,9 @@ func WithLabsFluidUIRequests(service LabsFluidUIRequestService) HandlerOption {
 			return errors.New("http API labs fluid UI request service is required")
 		}
 		config.labsFluidUIRequests = service
+		if privacy, ok := service.(runContentPrivacy); ok {
+			config.runContentPrivacy = privacy
+		}
 		return nil
 	}
 }

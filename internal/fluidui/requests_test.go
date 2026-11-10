@@ -122,8 +122,8 @@ func TestRequestLifecycleFollowsRun(t *testing.T) {
 	if err != nil || got.Status != StatusReadyToPreview || got.Candidate == nil {
 		t.Fatalf("completed request = %+v, %v", got, err)
 	}
-	if _, err := requests.InputForRun(req.RunID); !errors.Is(err, ErrBindingNotFound) {
-		t.Fatalf("binding kept after terminal state: %v", err)
+	if input, err := requests.InputForRun(req.RunID); err != nil || input.Request.Text != "compact please" {
+		t.Fatalf("privacy binding after terminal state = %+v, %v", input, err)
 	}
 	if state, _ := requests.store.Get(user); state.Customization != nil {
 		t.Fatal("candidate applied without an explicit apply")
@@ -280,6 +280,40 @@ func TestRequestsArePrivateAndDurable(t *testing.T) {
 	var decoded RunBinding
 	if json.Unmarshal(binding, &decoded) != nil || decoded.User != userHash(alice) {
 		t.Fatalf("binding = %s", binding)
+	}
+}
+
+func TestRunContentIsReadableOnlyByRequester(t *testing.T) {
+	ctx := context.Background()
+	requests, _, trigger := newTestRequests(t)
+	alice, bob := UserKey("iss", "alice"), UserKey("iss", "bob")
+	req, err := requests.Submit(ctx, alice, "alice", "secret wish", trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	workflow := func(name string) func() (string, error) {
+		return func() (string, error) { lookups++; return name, nil }
+	}
+
+	for viewer, want := range map[string]bool{alice: true, bob: false} {
+		if got, err := requests.CanReadRunContent(req.RunID, viewer, workflow(Workflow)); err != nil || got != want {
+			t.Fatalf("bound run for %s = %v, %v; want %v", viewer, got, err, want)
+		}
+	}
+	if lookups != 0 {
+		t.Fatalf("bound run resolved its workflow %d times", lookups)
+	}
+
+	const unbound = "fedcba9876543210fedcba9876543210"
+	if got, err := requests.CanReadRunContent(unbound, alice, workflow(Workflow)); err != nil || got {
+		t.Fatalf("unbound %s run = %v, %v; want denied", Workflow, got, err)
+	}
+	if got, err := requests.CanReadRunContent(unbound, bob, workflow("other")); err != nil || !got {
+		t.Fatalf("unbound other run = %v, %v; want allowed", got, err)
+	}
+	if got, err := requests.CanReadRunContent(unbound, bob, func() (string, error) { return "", errors.New("gone") }); err == nil || got {
+		t.Fatalf("unresolvable run = %v, %v; want denied with error", got, err)
 	}
 }
 

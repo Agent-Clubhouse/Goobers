@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/fluidui"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 const fluidUITestRunID = "0123456789abcdef0123456789abcdef"
@@ -132,6 +133,7 @@ func TestLabsFluidUIRequestsArePrivateAndAuthorized(t *testing.T) {
 	if code, body := fluidUICall(t, f.handler(t, alice, true), http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"hide the activity panel"}`, &submitted); code != http.StatusAccepted {
 		t.Fatalf("submit = %d %s", code, body)
 	}
+
 	bobHandler := f.handler(t, bob, true)
 	for _, action := range []string{"", "retry", "apply", "revert"} {
 		method := http.MethodPost
@@ -155,6 +157,167 @@ func TestLabsFluidUIRequestsArePrivateAndAuthorized(t *testing.T) {
 	if code, _ := fluidUICall(t, f.handler(t, noRole, true), http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"x"}`, nil); code != http.StatusForbidden {
 		t.Fatalf("role-less submit = %d, want 403", code)
 	}
+}
+
+const fluidUIPrivatePrompt = "make the \"Runs\" panel <compact> & dense\nthen hide the activity feed"
+
+// fluidUIPrivateRunReader serves one Fluid UI run whose transcript, artifact,
+// and agent progress all restate fluidUIPrivatePrompt, including the
+// doubly-escaped form a JSONL transcript embeds tool output in.
+func fluidUIPrivateRunReader(t *testing.T, runID string) *fakeReader {
+	t.Helper()
+	encoded, err := json.Marshal(fluidUIPrivatePrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolOutput, err := json.Marshal(`{"request":{"text":` + string(encoded) + `}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"type":"tool.result","content":` + string(toolOutput) + "}\n" +
+		`{"type":"assistant.message","content":"The user asked to make the Runs panel compact"}` + "\n"
+	progress := &journal.AgentProgress{
+		Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "agent-1", RunID: runID, Stage: "propose",
+		Attempt: 1, Sequence: 1, Kind: "status", Summary: "Working on: " + fluidUIPrivatePrompt,
+		Plan: []string{fluidUIPrivatePrompt},
+	}
+	latestError := &journal.ErrorDetail{Code: "agent_failed", Message: fluidUIPrivatePrompt}
+	summary := readservice.RunSummary{
+		ID: runID, Workflow: fluidui.Workflow, TerminalReason: "failed on " + fluidUIPrivatePrompt,
+		Operator: readservice.OperatorRunSummary{
+			LatestError:       latestError,
+			Review:            &readservice.OperatorReview{Verdict: "fail", Rationale: fluidUIPrivatePrompt},
+			PotentialBlockers: []string{"agent_failed: " + fluidUIPrivatePrompt},
+			Blockers:          []readservice.OperatorBlocker{{Code: "agent_failed", Source: "error", Message: "agent_failed: " + fluidUIPrivatePrompt}},
+		},
+	}
+	return &fakeReader{
+		runs: readservice.RunList{Runs: []readservice.RunSummary{summary}},
+		errors: readservice.TelemetryErrorsPage{Items: []readservice.TelemetryError{
+			{RunID: runID, Workflow: fluidui.Workflow, Stage: "propose", Attempt: 1, Code: "agent_failed", Message: fluidUIPrivatePrompt},
+		}},
+		run: readservice.RunDetail{
+			RunSummary:    summary,
+			AgentProgress: []readservice.AgentProgressSummary{{AgentID: "agent-1", RunID: runID, Stage: "propose", Latest: progress, History: []journal.AgentProgress{*progress}}},
+		},
+		events: readservice.EventList{RunID: runID, Events: []readservice.RunEvent{
+			{Seq: 1, Type: journal.EventRunStarted, Workflow: fluidui.Workflow},
+			{Seq: 2, Type: journal.EventAgentProgress, Stage: "propose", Progress: progress},
+			{Seq: 3, Type: journal.EventStageFinished, Stage: "propose", Error: latestError},
+		}},
+		attempts: readservice.AttemptList{RunID: runID, Stage: "propose", Attempts: []readservice.StageAttempt{
+			{ID: "a1", Number: 1, Error: latestError},
+		}},
+		artifact: readservice.ArtifactContent{
+			Metadata: readservice.ArtifactMetadata{Digest: "sha256:prompt", MediaType: "application/json"},
+			Bytes:    []byte(`{"request":{"text":` + string(encoded) + `}}`),
+		},
+		transcript: readservice.TranscriptContent{Seq: 1, Stage: "propose", Name: "transcript", Bytes: []byte(transcript)},
+	}
+}
+
+func fluidUIRunPaths(runID string) map[string]string {
+	run := strings.ReplaceAll(apicontract.RunDetailPath, "{run}", runID)
+	return map[string]string{
+		"runs":       apicontract.RunsPath,
+		"errors":     apicontract.TelemetryErrorsPath,
+		"detail":     run,
+		"events":     strings.ReplaceAll(apicontract.RunEventsPath, "{run}", runID),
+		"attempts":   strings.ReplaceAll(strings.ReplaceAll(apicontract.StageAttemptsPath, "{run}", runID), "{stage}", "propose"),
+		"artifact":   strings.ReplaceAll(strings.ReplaceAll(apicontract.RunArtifactPath, "{run}", runID), "{digest}", "sha256:prompt"),
+		"transcript": strings.ReplaceAll(strings.ReplaceAll(apicontract.RunTranscriptPath, "{run}", runID), "{seq}", "1"),
+	}
+}
+
+// fluidUIPromptFragments are pieces of the prompt in every encoding the run's
+// content carries it; none may reach a viewer the run is private from.
+var fluidUIPromptFragments = []string{"Runs", "compact", "activity feed", `\u003c`, `\\\"`}
+
+func assertFluidUIRunContent(t *testing.T, handler http.Handler, runID, who string, visible bool) {
+	t.Helper()
+	for name, path := range fluidUIRunPaths(runID) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		body := response.Body.String()
+		if response.Header().Get("Cache-Control") != "private, no-store" {
+			t.Errorf("%s %s cache control = %q", who, name, response.Header().Get("Cache-Control"))
+		}
+		if visible {
+			if response.Code != http.StatusOK || !strings.Contains(body, "compact") {
+				t.Errorf("%s %s = %d %q, want the prompt", who, name, response.Code, body)
+			}
+			continue
+		}
+		wantCode := http.StatusOK
+		if name == "artifact" || name == "transcript" {
+			wantCode = http.StatusForbidden
+		}
+		if response.Code != wantCode {
+			t.Errorf("%s %s = %d %q, want %d", who, name, response.Code, body, wantCode)
+		}
+		for _, fragment := range fluidUIPromptFragments {
+			if strings.Contains(body, fragment) {
+				t.Errorf("%s %s leaks %q: %s", who, name, fragment, body)
+			}
+		}
+	}
+}
+
+func newFluidUIPrivateRunHandler(t *testing.T, f *fluidUIRequestFixture, reader *fakeReader, auth *fakeAuthenticator) http.Handler {
+	t.Helper()
+	handler, err := NewHandler(reader, RequireRoles(), discardLogger(),
+		WithAuthenticator(auth), WithLabsFluidUI(f.store), WithLabsFluidUIRequests(f.requests), WithTriggerService(f.triggers))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func TestLabsFluidUIRunContentIsPrivateToRequesterAndAdmins(t *testing.T) {
+	f := newFluidUIRequestFixture(t)
+	auth := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleView}}}
+	handler := newFluidUIPrivateRunHandler(t, f, fluidUIPrivateRunReader(t, fluidUITestRunID), auth)
+
+	var submitted fluidui.Request
+	body, _ := json.Marshal(map[string]string{"prompt": fluidUIPrivatePrompt})
+	if code, out := fluidUICall(t, handler, http.MethodPost, apicontract.LabsFluidUIRequestsPath, string(body), &submitted); code != http.StatusAccepted || submitted.RunID != fluidUITestRunID {
+		t.Fatalf("submit = %d %s", code, out)
+	}
+	assertFluidUIRunContent(t, handler, fluidUITestRunID, "requester", true)
+
+	auth.principal = &Principal{Issuer: "oidc", Subject: "bob", Roles: []Role{RoleView}}
+	assertFluidUIRunContent(t, handler, fluidUITestRunID, "other viewer", false)
+
+	auth.principal = &Principal{Issuer: "oidc", Subject: "bob", Roles: []Role{RoleAdmin}}
+	assertFluidUIRunContent(t, handler, fluidUITestRunID, "admin", true)
+
+	var ownerRequest fluidui.Request
+	auth.principal = &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleView}}
+	if code, out := fluidUICall(t, handler, http.MethodGet, fluidUIRequestPath(submitted.ID, ""), "", &ownerRequest); code != http.StatusOK || ownerRequest.Prompt != fluidUIPrivatePrompt {
+		t.Fatalf("owner feedback request = %d %+v %s", code, ownerRequest, out)
+	}
+}
+
+func TestLabsFluidUIRunWithoutBindingIsPrivateToAdmins(t *testing.T) {
+	const unbound = "fedcba9876543210fedcba9876543210"
+	f := newFluidUIRequestFixture(t)
+	auth := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleView}}}
+	handler := newFluidUIPrivateRunHandler(t, f, fluidUIPrivateRunReader(t, unbound), auth)
+
+	assertFluidUIRunContent(t, handler, unbound, "non-admin", false)
+	auth.principal = &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleAdmin}}
+	assertFluidUIRunContent(t, handler, unbound, "admin", true)
+}
+
+func TestRunContentOfOtherWorkflowsStaysReadable(t *testing.T) {
+	const runID = "fedcba9876543210fedcba9876543210"
+	f := newFluidUIRequestFixture(t)
+	reader := fluidUIPrivateRunReader(t, runID)
+	reader.run.Workflow = "implement"
+	reader.runs.Runs[0].Workflow = "implement"
+	reader.errors.Items[0].Workflow = "implement"
+	auth := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "bob", Roles: []Role{RoleView}}}
+	assertFluidUIRunContent(t, newFluidUIPrivateRunHandler(t, f, reader, auth), runID, "viewer", true)
 }
 
 func TestLabsFluidUIRequestRejectsBadInputAndMissingTriggers(t *testing.T) {

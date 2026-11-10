@@ -158,13 +158,35 @@ The workflow ships in the `goobers` reference gaggle with the
 
 ### Privacy
 
-The request text is stored only in your private request file and is passed to
-the run that serves it. It is not part of the trigger key or the run's
-outputs, and it never enters any aggregate. When a request ends as
-`unsupported`, only its normalized unmet-need label is recorded for the
-aggregate report; a label that echoes the request text is not recorded. The
-request text does appear in that run's `load-request` artifact and in the
-agent transcript, which anyone who can read the run can see.
+The request text is stored only in your private request file. A private run
+binding, which names you by your hashed user key and never holds the text,
+maps each attempt's run to your request and is kept after the run ends. The
+text is not part of the trigger key or the run's outputs, and it never enters
+any aggregate.
+
+The workflow reads the text while proposing a candidate, so it can appear in
+the run's artifacts, its agent transcripts, and anything the agent writes in
+its own words. That content is not scrubbed by matching the text, because an
+agent can quote it in escaped, truncated, or paraphrased form. Instead, for a
+`fluid-ui-customize` run, every user other than you and admins:
+
+- gets `403 run_content_private` for the run's artifacts and transcripts;
+- sees run detail, events, and stage attempts with agent progress text,
+  agent objectives, gate rationale, instruction addenda, reasons, error
+  messages, and terminal-cause messages removed;
+- sees run lists and run detail without the run's terminal reason, latest
+  error message, or review rationale and findings, and with each blocker
+  reduced to its code; and
+- sees `/telemetry/errors` entries for the run with an empty message.
+
+A `fluid-ui-customize` run with no binding (one not bound yet, or one whose
+binding an earlier version removed when it finished) is treated as private to
+admins. These responses are sent `Cache-Control: private, no-store`. The live
+event stream carries only cursors, read-model names, and run and workflow\nidentifiers, never run content.
+
+When a request ends
+as `unsupported`, only its normalized unmet-need label is recorded for the
+aggregate report; a label that echoes the request text is not recorded.
 
 ## Aggregate learning and promotion candidates (#8419)
 

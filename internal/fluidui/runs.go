@@ -99,7 +99,6 @@ func (r *Requests) refresh(ctx context.Context, user string, rec *storedRequest,
 			rec.Errors = state.Result.Errors
 		}
 	}
-	r.unbind(rec.RunID)
 	return true
 }
 
@@ -114,7 +113,6 @@ func (r *Requests) refreshAcceptance(ctx context.Context, rec *storedRequest, tr
 		return false
 	}
 	r.fail(rec, "the customization run was not started: "+reason)
-	r.unbind(rec.RunID)
 	return true
 }
 
@@ -156,12 +154,6 @@ func (r *Requests) conclude(user string, rec *storedRequest, result *CandidateRe
 		return
 	}
 	rec.UpdatedAt = r.now()
-}
-
-func (r *Requests) unbind(runID string) {
-	if runID != "" {
-		_ = os.Remove(r.bindingPath(runID))
-	}
 }
 
 // RequestInput is the load-request stage's result file: what the agent needs
@@ -210,6 +202,38 @@ func (r *Requests) InputForRun(runID string) (RequestInput, error) {
 		}
 	}
 	return RequestInput{}, ErrBindingNotFound
+}
+
+// CanReadRunContent reports whether viewer may read a run's private content:
+// its artifacts, transcripts, and free-text agent progress, any of which can
+// restate a request's prompt in forms no scrubber reliably recognizes. A run
+// bound to a request is readable only by the requester. A run of Workflow
+// with no binding (not bound yet, or bound by a daemon that deleted bindings
+// on completion) is readable by nobody, so access fails closed. workflow is
+// consulted only when the run has no binding. Admin access is the caller's
+// decision.
+func (r *Requests) CanReadRunContent(runID, viewer string, workflow func() (string, error)) (bool, error) {
+	if runID == "" || strings.ContainsAny(runID, `/\.`) {
+		return false, ErrBindingNotFound
+	}
+	data, err := os.ReadFile(r.bindingPath(runID))
+	if errors.Is(err, fs.ErrNotExist) {
+		name, err := workflow()
+		if err != nil {
+			return false, err
+		}
+		return name != Workflow, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("fluidui: read run binding: %w", err)
+	}
+	var binding RunBinding
+	if err := json.Unmarshal(data, &binding); err != nil ||
+		binding.Schema != requestSchema ||
+		!userHashPattern.MatchString(binding.User) {
+		return false, fmt.Errorf("fluidui: malformed run binding for %s", runID)
+	}
+	return binding.User == userHash(viewer), nil
 }
 
 func (r *Requests) input(binding RunBinding, rec storedRequest) (RequestInput, error) {

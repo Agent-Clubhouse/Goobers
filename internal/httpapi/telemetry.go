@@ -21,7 +21,7 @@ const (
 	defaultWorkItemsPageSize             = 100
 )
 
-func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, podRunGaggle func(context.Context, string) (string, error), errorLog *log.Logger) {
+func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, privacy runPrivacy, podRunGaggle func(context.Context, string) (string, error), errorLog *log.Logger) {
 	router.Handle(apicontract.RouteTelemetryCosts, func(w http.ResponseWriter, request *http.Request) {
 		query, err := parseTelemetryCostQuery(request.URL.Query())
 		if err != nil {
@@ -81,7 +81,8 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 			writeTelemetryReadError(w, errorLog, "errors", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, result)
+		privacy.private(w)
+		writeJSON(w, http.StatusOK, withholdTelemetryErrors(request, privacy, result))
 	})
 
 	router.Handle(apicontract.RouteTelemetryImplementationOutcomes, func(w http.ResponseWriter, request *http.Request) {
