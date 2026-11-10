@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 17 workflows**.
-<!-- reference-inventory: goobers=11 workflows=17 -->
+The shipped tree loads **12 goobers and 18 workflows**.
+<!-- reference-inventory: goobers=12 workflows=18 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -34,6 +34,7 @@ The shipped tree loads **11 goobers and 17 workflows**.
 | `curator` | Deduplicates, tags, scopes, and roadmaps approved issues. |
 | `decomposer` | Designs read-only, validated delivery slices for oversized work. |
 | `docs` | Updates documentation from a scoped signal. |
+| `fluid-ui-designer` | Drafts a Labs Fluid UI customization document from one user's request; never code. |
 | `implementer` | Implements claimed issues and PR remediation in a worktree. |
 | `nominator` | Files evidence-backed backlog items. |
 | `quality-lead` | Collates the quality sprint's parallel findings. |
@@ -48,6 +49,7 @@ The shipped tree loads **11 goobers and 17 workflows**.
 | `curate-resweep` | Revisits blocked dependencies and ready items on an independently bounded daily schedule. |
 | `decomposition` | Converts oversized approved work into validated child batches. |
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
+| `fluid-ui-customize` | Labs: turns one Fluid UI request into a validated customization candidate the requester previews and applies; never auto-applies. |
 | `implementation` | Implements a ready issue and opens a PR. |
 | `implementation-pre-review-experiment` | Manually runs an instrumented pre-review fast-validation cohort without changing canonical implementation scheduling. |
 | `implementation-recovery` | Restores retained state for an approved needs-remediation issue, then runs the implementation review and CI gates before opening a PR. |

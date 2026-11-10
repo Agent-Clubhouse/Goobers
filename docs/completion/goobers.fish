@@ -479,6 +479,8 @@ complete -c goobers -n '__fish_seen_subcommand_from reconcile-branches' -l max -
 complete -c goobers -n '__fish_seen_subcommand_from reconcile-branches' -l min-age -r -d 'Minimum terminal run age required for deletion'
 complete -c goobers -n '__fish_seen_subcommand_from reconcile-branches' -l after -r -d 'Resume after this branch name in lexical order'
 complete -c goobers -n '__fish_seen_subcommand_from push-branch' -l config-repo -d 'Push the instance config repository checkout with configrepo:write'
+complete -c goobers -n '__fish_seen_subcommand_from fluid-ui-request' -l load -d 'Write the bound request and current customization'
+complete -c goobers -n '__fish_seen_subcommand_from fluid-ui-request' -l validate -d 'Validate the propose stage\'s candidate'
 complete -c goobers -n '__fish_seen_subcommand_from open-pr' -l config-repo -d 'Open the PR in the instance config repository with configrepo:write'
 complete -c goobers -n '__fish_seen_subcommand_from decide' -l name -r -d 'Stable question name'
 complete -c goobers -n '__fish_seen_subcommand_from decide' -l question -r -d 'The yes/no question'

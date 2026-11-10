@@ -334,6 +334,11 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 	case apicontract.RouteLabsFluidUIGet, apicontract.RouteLabsFluidUIPut,
 		apicontract.RouteLabsFluidUIReset, apicontract.RouteLabsFluidUIUndo:
 		available = config.labsFluidUI != nil
+	case apicontract.RouteLabsFluidUIRequestsList, apicontract.RouteLabsFluidUIRequestGet,
+		apicontract.RouteLabsFluidUIRequestApply, apicontract.RouteLabsFluidUIRequestRevert:
+		available = config.labsFluidUIRequests != nil
+	case apicontract.RouteLabsFluidUIRequestSubmit, apicontract.RouteLabsFluidUIRequestRetry:
+		available = config.labsFluidUIRequests != nil && config.triggers != nil
 	case apicontract.RouteLabsWorkflowFeatures:
 		if config.labsWorkflowFeatures == nil {
 			return false, "labs_unavailable", "Labs workflow features are not configured on this daemon"

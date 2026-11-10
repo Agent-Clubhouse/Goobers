@@ -1903,7 +1903,8 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 				}
 			}
 		}
-		if task.Workspace != apiv1.WorkspaceRepoReadOnly {
+		// A scratch workspace has no repository to commit to.
+		if task.Workspace != apiv1.WorkspaceRepoReadOnly && task.Workspace != apiv1.WorkspaceScratch {
 			if err := commitAgentChange(request.Workspace, stage, call); err != nil {
 				return err
 			}

@@ -83,7 +83,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true, "retryStage": true}
 	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true, "labsFluidUICustomizationPut": true, "labsFluidUICustomizationReset": true, "labsFluidUICustomizationUndo": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true, "labsFluidUICustomizationPut": true, "labsFluidUICustomizationReset": true, "labsFluidUICustomizationUndo": true, "labsFluidUIRequestApply": true, "labsFluidUIRequestRevert": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		// Child tools run under the exact parent-stage grant. Validation and
 		// status are execution-plane operations, like claims/list, rather than
@@ -104,6 +104,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// gate). Same machine-seam class as the rest of the claims plane.
 		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "credentialRefresh": true, "blobPut": true,
+		// A Labs Fluid UI request (#8417) starts the shipped customization
+		// workflow through trigger ingest, so submit and retry are executions.
+		"labsFluidUIRequestSubmit": true, "labsFluidUIRequestRetry": true,
 		"stageSurrender": true, "gaggleStatePut": true,
 		// The engine child-admission plane (#7879): a resident engine worker
 		// advancing a run's generated-child custody. POSTs carrying receipts.

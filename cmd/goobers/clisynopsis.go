@@ -100,6 +100,7 @@ var synopsisByID = map[string]string{
 	"preflight-repo-write":   "  goobers preflight-repo-write            check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)\n",
 	"config-checkout":        "  goobers config-checkout                 clone the instance config repository for a config-repo-targeted stage (a workflow stage)\n",
 	"check-fail-first":       "  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)\n",
+	"fluid-ui-request":       "  goobers fluid-ui-request (--load | --validate)\n                                load a Labs Fluid UI request or validate its customization candidate (a workflow stage)\n",
 	"open-pr":                "  goobers open-pr [--config-repo]        open or update the run's PR (a workflow stage)\n",
 	"report-pr-status":       "  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)\n",
 	"gate-removal-guard":     "  goobers gate-removal-guard [--config-repo] block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)\n",

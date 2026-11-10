@@ -806,6 +806,10 @@ func init() {
 			withSynopsis(synopsisByID["check-fail-first"]).
 			withHelp("enforce fail-first evidence for a new workflow gate (a workflow stage)", checkFailFirstHelp).
 			withExamples("goobers check-fail-first"),
+		stageCommand("fluid-ui-request", apicontract.ActionWorkflowExecution, runFluidUIRequest).
+			withSynopsis(synopsisByID["fluid-ui-request"]).
+			withHelp("load a Labs Fluid UI request or validate its customization candidate (a workflow stage)", fluidUIRequestHelp).
+			withExamples("goobers fluid-ui-request --load", "goobers fluid-ui-request --validate"),
 		stageCommand("open-pr", apicontract.ActionWorkflowExecution, runOpenPR).
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).

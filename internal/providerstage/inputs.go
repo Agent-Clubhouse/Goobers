@@ -128,6 +128,7 @@ var inputSchemas = map[string][]Input{
 		stringsIn("headSha"), integersIn("maxRuns", "pullNumber"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"check-fail-first": schema(stringsIn("base"), pathsIn("evidenceFile")),
+	"fluid-ui-request": schema(pathsIn("resultFile", "candidateFile")),
 	"check-issue-staleness": schema(
 		stringsIn("base", "head"), integersIn("pullNumber"), booleansIn("advisoryMode"),
 		pathsIn("resultFile"), durationsIn("timeout"),

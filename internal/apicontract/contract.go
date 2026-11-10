@@ -99,6 +99,20 @@ const (
 	LabsFluidUICustomizationPath = V1Prefix + "/labs/fluid-ui/customization"
 	// LabsFluidUICustomizationUndoPath restores the user's previous revision.
 	LabsFluidUICustomizationUndoPath = LabsFluidUICustomizationPath + "/undo"
+	// LabsFluidUIPrefix covers every Labs Fluid UI route. Each acts only on
+	// the caller's own records.
+	LabsFluidUIPrefix = V1Prefix + "/labs/fluid-ui/"
+	// LabsFluidUIRequestsPath lists and submits the caller's own
+	// natural-language customization requests (#8417).
+	LabsFluidUIRequestsPath = V1Prefix + "/labs/fluid-ui/requests"
+	// LabsFluidUIRequestPath reads one of the caller's requests.
+	LabsFluidUIRequestPath = LabsFluidUIRequestsPath + "/{request}"
+	// LabsFluidUIRequestRetryPath starts a fresh attempt for a failed request.
+	LabsFluidUIRequestRetryPath = LabsFluidUIRequestPath + "/retry"
+	// LabsFluidUIRequestApplyPath applies a ready_to_preview candidate.
+	LabsFluidUIRequestApplyPath = LabsFluidUIRequestPath + "/apply"
+	// LabsFluidUIRequestRevertPath undoes an applied request.
+	LabsFluidUIRequestRevertPath = LabsFluidUIRequestPath + "/revert"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -392,6 +406,13 @@ const (
 	RouteLabsFluidUIReset RouteID = "labsFluidUICustomizationReset"
 	RouteLabsFluidUIUndo  RouteID = "labsFluidUICustomizationUndo"
 
+	RouteLabsFluidUIRequestsList  RouteID = "labsFluidUIRequestsList"
+	RouteLabsFluidUIRequestSubmit RouteID = "labsFluidUIRequestSubmit"
+	RouteLabsFluidUIRequestGet    RouteID = "labsFluidUIRequestGet"
+	RouteLabsFluidUIRequestRetry  RouteID = "labsFluidUIRequestRetry"
+	RouteLabsFluidUIRequestApply  RouteID = "labsFluidUIRequestApply"
+	RouteLabsFluidUIRequestRevert RouteID = "labsFluidUIRequestRevert"
+
 	RouteEvents RouteID = "events"
 
 	RouteApproveStage  RouteID = "approveStage"
@@ -665,6 +686,12 @@ var v1Routes = []Route{
 	{ID: RouteLabsFluidUIPut, Method: http.MethodPut, Path: LabsFluidUICustomizationPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteLabsFluidUIReset, Method: http.MethodDelete, Path: LabsFluidUICustomizationPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteLabsFluidUIUndo, Method: http.MethodPost, Path: LabsFluidUICustomizationUndoPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestsList, Method: http.MethodGet, Path: LabsFluidUIRequestsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteLabsFluidUIRequestSubmit, Method: http.MethodPost, Path: LabsFluidUIRequestsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestGet, Method: http.MethodGet, Path: LabsFluidUIRequestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteLabsFluidUIRequestRetry, Method: http.MethodPost, Path: LabsFluidUIRequestRetryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestApply, Method: http.MethodPost, Path: LabsFluidUIRequestApplyPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteLabsFluidUIRequestRevert, Method: http.MethodPost, Path: LabsFluidUIRequestRevertPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: InterventionBudget},

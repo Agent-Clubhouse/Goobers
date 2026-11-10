@@ -297,6 +297,9 @@ _goobers_completion()
         push-branch)
             flags+=(--config-repo)
             ;;
+        fluid-ui-request)
+            flags+=(--load --validate)
+            ;;
         open-pr)
             flags+=(--config-repo)
             ;;

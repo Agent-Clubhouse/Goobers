@@ -61,6 +61,7 @@ var names = []string{
 	"docs-churn",
 	"elect-lander",
 	"file-issues",
+	"fluid-ui-request",
 	"gate-removal-guard",
 	"gather-ci-failures",
 	"gather-implement-context",

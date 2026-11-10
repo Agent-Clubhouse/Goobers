@@ -32,11 +32,12 @@ func WithLabsFluidUI(service LabsFluidUIService) HandlerOption {
 	}
 }
 
-// labsFluidUIPath reports the per-user customization routes. Writes to them
-// change only the caller's own presentation, so the authorizer admits them
-// for the view role instead of operate.
+// labsFluidUIPath reports the per-user Labs Fluid UI routes (customization
+// and requests). Writes to them act only on the caller's own records, so the
+// authorizer admits them for the view role instead of operate. It matches
+// both concrete request paths and route templates.
 func labsFluidUIPath(path string) bool {
-	return path == apicontract.LabsFluidUICustomizationPath || path == apicontract.LabsFluidUICustomizationUndoPath
+	return strings.HasPrefix(path, apicontract.LabsFluidUIPrefix) && !strings.Contains(path, "..") && !strings.Contains(path, "//")
 }
 
 func registerLabsFluidUIRoutes(router *Router, service LabsFluidUIService, errorLog *log.Logger) {
