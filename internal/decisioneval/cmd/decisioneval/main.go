@@ -21,11 +21,15 @@ func main() {
 
 func run() error {
 	path := flag.String("fixture", "", "labelled fixture JSON file")
+	rankPath := flag.String("rank-fixture", "", "labelled knowledge-reranking fixture JSON file (instead of -fixture)")
 	minN := flag.Int("min-samples", decisioneval.DefaultMinSamples, "smallest denominator that prints a percentage")
 	repeats := flag.Int("repeats", 3, "runs per item for determinism")
 	flag.Parse()
 	if decisioneval.LiveEnabled(os.Getenv) {
 		fmt.Fprintln(os.Stderr, decisioneval.LiveEnv+" is set, but this command only replays recorded answers; live arms are library-only")
+	}
+	if *rankPath != "" {
+		return runRank(*rankPath, *minN)
 	}
 	f, err := decisioneval.LoadFixture(*path)
 	if err != nil {
@@ -34,6 +38,19 @@ func run() error {
 	all := f.Items
 	rep, err := decisioneval.Run(context.Background(), f, decisioneval.NewReplayDecider(all), decisioneval.NewReplayJudge(all),
 		decisioneval.Options{MinSamples: *minN, Repeats: *repeats})
+	if err != nil {
+		return err
+	}
+	fmt.Print(rep.Render())
+	return nil
+}
+
+func runRank(path string, minTasks int) error {
+	f, err := decisioneval.LoadRankFixture(path)
+	if err != nil {
+		return err
+	}
+	rep, err := decisioneval.RunRank(context.Background(), f, decisioneval.NewReplayScoreDecider(f), decisioneval.RankOptions{MinTasks: minTasks})
 	if err != nil {
 		return err
 	}

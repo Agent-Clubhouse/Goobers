@@ -1,0 +1,1579 @@
+{
+  "name": "knowledge_rank",
+  "provenance": {
+    "kind": "synthetic",
+    "model": "replay",
+    "prompt": "knowledge_relevance v1",
+    "recordedAt": "2026-11-09T00:00:00Z"
+  },
+  "tasks": [
+    {
+      "id": "t00",
+      "split": "tune",
+      "task": "Task 0: add retry with backoff to the HTTP client.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Reference: color palette guide (case 0, ref 0).",
+          "label": 0,
+          "score": 0.22
+        },
+        {
+          "id": "c1",
+          "source": "pr",
+          "text": "Notes on HTTP client history and design background (case 0, note 1).",
+          "label": 1,
+          "score": 1.28
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Reference: holiday schedule (case 0, ref 2).",
+          "label": 0,
+          "score": 0.2
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 0).",
+          "label": 2,
+          "score": 1.73
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 0).",
+          "label": 2,
+          "score": 1.82
+        },
+        {
+          "id": "c5",
+          "source": "pr",
+          "text": "Notes on HTTP client history and design background (case 0, note 5).",
+          "label": 1,
+          "score": 1.2
+        }
+      ]
+    },
+    {
+      "id": "t01",
+      "split": "tune",
+      "task": "Task 1: rotate the TLS certificate for the web service.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 1).",
+          "label": 2,
+          "score": 1.69
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 1).",
+          "label": 2,
+          "score": 1.76
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Notes on TLS history and design background (case 1, note 2).",
+          "label": 1,
+          "score": 1.14
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Reference: database index tuning (case 1, ref 3).",
+          "label": 0,
+          "score": 0.27
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Reference: release checklist (case 1, ref 4).",
+          "label": 0,
+          "score": 0.36
+        },
+        {
+          "id": "c5",
+          "source": "pr",
+          "text": "Notes on TLS history and design background (case 1, note 5).",
+          "label": 1,
+          "score": 1.02
+        }
+      ]
+    },
+    {
+      "id": "t02",
+      "split": "tune",
+      "task": "Task 2: fix a goroutine leak in the worker pool.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Reference: office seating chart (case 2, ref 0).",
+          "label": 0,
+          "score": 0.32
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Reference: database index tuning (case 2, ref 1).",
+          "label": 0,
+          "score": 0.11
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 2).",
+          "label": 2,
+          "score": 1.84
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Notes on worker pool history and design background (case 2, note 3).",
+          "label": 1,
+          "score": 1.18
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 2).",
+          "label": 2,
+          "score": 1.81
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Notes on worker pool history and design background (case 2, note 5).",
+          "label": 1,
+          "score": 1.0
+        }
+      ]
+    },
+    {
+      "id": "t03",
+      "split": "tune",
+      "task": "Task 3: add pagination to the list endpoint.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Notes on list endpoint history and design background (case 3, note 0).",
+          "label": 1,
+          "score": 1.23
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Reference: holiday schedule (case 3, ref 1).",
+          "label": 0,
+          "score": 0.24
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 3).",
+          "label": 2,
+          "score": 1.84
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Reference: cache eviction policy (case 3, ref 3).",
+          "label": 0,
+          "score": 0.32
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Notes on list endpoint history and design background (case 3, note 4).",
+          "label": 1,
+          "score": 1.02
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 3).",
+          "label": 2,
+          "score": 1.94
+        }
+      ]
+    },
+    {
+      "id": "t04",
+      "split": "tune",
+      "task": "Task 4: migrate the config loader to YAML.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "runbook",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 4).",
+          "label": 2,
+          "score": 1.82
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 4).",
+          "label": 2,
+          "score": 1.77
+        },
+        {
+          "id": "c2",
+          "source": "docs",
+          "text": "Notes on config loader history and design background (case 4, note 2).",
+          "label": 1,
+          "score": 1.06
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Notes on config loader history and design background (case 4, note 3).",
+          "label": 1,
+          "score": 0.92
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Reference: holiday schedule (case 4, ref 4).",
+          "label": 0,
+          "score": 0.37
+        },
+        {
+          "id": "c5",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 4, ref 5).",
+          "label": 0,
+          "score": 0.35
+        }
+      ]
+    },
+    {
+      "id": "t05",
+      "split": "tune",
+      "task": "Task 5: reduce flaky tests in the integration suite.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "pr",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 5).",
+          "label": 2,
+          "score": 1.87
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Notes on integration tests history and design background (case 5, note 1).",
+          "label": 1,
+          "score": 1.15
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Reference: holiday schedule (case 5, ref 2).",
+          "label": 0,
+          "score": 0.37
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Reference: office seating chart (case 5, ref 3).",
+          "label": 0,
+          "score": 0.05
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Notes on integration tests history and design background (case 5, note 4).",
+          "label": 1,
+          "score": 1.27
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 5).",
+          "label": 2,
+          "score": 1.9
+        }
+      ]
+    },
+    {
+      "id": "t06",
+      "split": "tune",
+      "task": "Task 6: add structured logging to the scheduler.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "pr",
+          "text": "Notes on scheduler history and design background (case 6, note 0).",
+          "label": 1,
+          "score": 1.29
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Notes on scheduler history and design background (case 6, note 1).",
+          "label": 1,
+          "score": 0.91
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Reference: onboarding reading list (case 6, ref 2).",
+          "label": 0,
+          "score": 0.13
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 6).",
+          "label": 2,
+          "score": 1.82
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 6, ref 4).",
+          "label": 0,
+          "score": 0.25
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 6).",
+          "label": 2,
+          "score": 1.93
+        }
+      ]
+    },
+    {
+      "id": "t07",
+      "split": "tune",
+      "task": "Task 7: handle SIGTERM gracefully in the server.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "pr",
+          "text": "Reference: icon naming scheme (case 7, ref 0).",
+          "label": 0,
+          "score": 0.09
+        },
+        {
+          "id": "c1",
+          "source": "pr",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 7).",
+          "label": 2,
+          "score": 1.86
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Notes on server history and design background (case 7, note 2).",
+          "label": 1,
+          "score": 1.09
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Notes on server history and design background (case 7, note 3).",
+          "label": 1,
+          "score": 1.26
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Reference: holiday schedule (case 7, ref 4).",
+          "label": 0,
+          "score": 0.24
+        },
+        {
+          "id": "c5",
+          "source": "pr",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 7).",
+          "label": 2,
+          "score": 1.95
+        }
+      ]
+    },
+    {
+      "id": "t08",
+      "split": "report",
+      "task": "Task 8: add retry with backoff to the HTTP client.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Reference: cache eviction policy (case 8, ref 0).",
+          "label": 0,
+          "score": 0.06
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 8).",
+          "label": 2,
+          "score": 1.76
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Reference: office seating chart (case 8, ref 2).",
+          "label": 0,
+          "score": 0.3
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 8).",
+          "label": 2,
+          "score": 1.93
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Notes on HTTP client history and design background (case 8, note 4).",
+          "label": 1,
+          "score": 1.15
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Notes on HTTP client history and design background (case 8, note 5).",
+          "label": 1,
+          "score": 0.99
+        }
+      ]
+    },
+    {
+      "id": "t09",
+      "split": "report",
+      "task": "Task 9: rotate the TLS certificate for the web service.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 9).",
+          "label": 2,
+          "score": 1.7
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Notes on TLS history and design background (case 9, note 1).",
+          "label": 1,
+          "score": 1.23
+        },
+        {
+          "id": "c2",
+          "source": "docs",
+          "text": "Reference: holiday schedule (case 9, ref 2).",
+          "label": 0,
+          "score": 0.05
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Notes on TLS history and design background (case 9, note 3).",
+          "label": 1,
+          "score": 1.02
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Reference: office seating chart (case 9, ref 4).",
+          "label": 0,
+          "score": 0.27
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 9).",
+          "label": 2,
+          "score": 1.66
+        }
+      ]
+    },
+    {
+      "id": "t10",
+      "split": "report",
+      "task": "Task 10: fix a goroutine leak in the worker pool.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Notes on worker pool history and design background (case 10, note 0).",
+          "label": 1,
+          "score": 0.93
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 10).",
+          "label": 2,
+          "score": 1.67
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Reference: office seating chart (case 10, ref 2).",
+          "label": 0,
+          "score": 0.13
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Notes on worker pool history and design background (case 10, note 3).",
+          "label": 1,
+          "score": 0.86
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Reference: onboarding reading list (case 10, ref 4).",
+          "label": 0,
+          "score": 0.32
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 10).",
+          "label": 2,
+          "score": 1.78
+        }
+      ]
+    },
+    {
+      "id": "t11",
+      "split": "report",
+      "task": "Task 11: add pagination to the list endpoint.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Reference: color palette guide (case 11, ref 0).",
+          "label": 0,
+          "score": 0.08
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Notes on list endpoint history and design background (case 11, note 1).",
+          "label": 1,
+          "score": 1.09
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 11).",
+          "label": 2,
+          "score": 1.2
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 11).",
+          "label": 2,
+          "score": 1.86
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Notes on list endpoint history and design background (case 11, note 4).",
+          "label": 1,
+          "score": 1.13
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Reference: office seating chart (case 11, ref 5).",
+          "label": 0,
+          "score": 0.39
+        }
+      ]
+    },
+    {
+      "id": "t12",
+      "split": "report",
+      "task": "Task 12: migrate the config loader to YAML.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Reference: release checklist (case 12, ref 0).",
+          "label": 0,
+          "score": 0.22
+        },
+        {
+          "id": "c1",
+          "source": "pr",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 12).",
+          "label": 2,
+          "score": 1.72
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Notes on config loader history and design background (case 12, note 2).",
+          "label": 1,
+          "score": 1.02
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Reference: color palette guide (case 12, ref 3).",
+          "label": 0,
+          "score": 0.14
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Notes on config loader history and design background (case 12, note 4).",
+          "label": 1,
+          "score": 0.98
+        },
+        {
+          "id": "c5",
+          "source": "pr",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 12).",
+          "label": 2,
+          "score": 1.88
+        }
+      ]
+    },
+    {
+      "id": "t13",
+      "split": "report",
+      "task": "Task 13: reduce flaky tests in the integration suite.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "runbook",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 13).",
+          "label": 2,
+          "score": 1.7
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Notes on integration tests history and design background (case 13, note 1).",
+          "label": 1,
+          "score": 0.93
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Notes on integration tests history and design background (case 13, note 2).",
+          "label": 1,
+          "score": 1.19
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 13).",
+          "label": 2,
+          "score": 1.87
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Reference: icon naming scheme (case 13, ref 4).",
+          "label": 0,
+          "score": 0.34
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Reference: release checklist (case 13, ref 5).",
+          "label": 0,
+          "score": 0.05
+        }
+      ]
+    },
+    {
+      "id": "t14",
+      "split": "report",
+      "task": "Task 14: add structured logging to the scheduler.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "runbook",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 14).",
+          "label": 2,
+          "score": 1.84
+        },
+        {
+          "id": "c1",
+          "source": "pr",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 14).",
+          "label": 2,
+          "score": 1.79
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Reference: database index tuning (case 14, ref 2).",
+          "label": 0,
+          "score": 0.11
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Notes on scheduler history and design background (case 14, note 3).",
+          "label": 1,
+          "score": 1.09
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Notes on scheduler history and design background (case 14, note 4).",
+          "label": 1,
+          "score": 1.22
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Reference: icon naming scheme (case 14, ref 5).",
+          "label": 0,
+          "score": 0.2
+        }
+      ]
+    },
+    {
+      "id": "t15",
+      "split": "report",
+      "task": "Task 15: handle SIGTERM gracefully in the server.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "pr",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 15).",
+          "label": 2,
+          "score": 1.76
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Notes on server history and design background (case 15, note 1).",
+          "label": 1,
+          "score": 0.87
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 15).",
+          "label": 2,
+          "score": 1.86
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Reference: database index tuning (case 15, ref 3).",
+          "label": 0,
+          "score": 1.7
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Notes on server history and design background (case 15, note 4).",
+          "label": 1,
+          "score": 1.1
+        },
+        {
+          "id": "c5",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 15, ref 5).",
+          "label": 0,
+          "score": 0.17
+        }
+      ]
+    },
+    {
+      "id": "t16",
+      "split": "report",
+      "task": "Task 16: add retry with backoff to the HTTP client.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 16).",
+          "label": 2,
+          "score": 1.71
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Notes on HTTP client history and design background (case 16, note 1).",
+          "label": 1,
+          "score": 1.12
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Notes on HTTP client history and design background (case 16, note 2).",
+          "label": 1,
+          "score": 1.13
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Reference: color palette guide (case 16, ref 3).",
+          "label": 0,
+          "score": 0.38
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Reference: onboarding reading list (case 16, ref 4).",
+          "label": 0,
+          "score": 0.12
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 16).",
+          "label": 2,
+          "score": 1.67
+        }
+      ]
+    },
+    {
+      "id": "t17",
+      "split": "report",
+      "task": "Task 17: rotate the TLS certificate for the web service.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "runbook",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 17).",
+          "label": 2,
+          "score": 1.86
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Reference: cache eviction policy (case 17, ref 1).",
+          "label": 0,
+          "score": 0.28
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Notes on TLS history and design background (case 17, note 2).",
+          "label": 1,
+          "score": 1.03
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Reference: office seating chart (case 17, ref 3).",
+          "label": 0,
+          "score": 0.26
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 17).",
+          "label": 2,
+          "score": 1.68
+        },
+        {
+          "id": "c5",
+          "source": "pr",
+          "text": "Notes on TLS history and design background (case 17, note 5).",
+          "label": 1,
+          "score": 1.02
+        }
+      ]
+    },
+    {
+      "id": "t18",
+      "split": "report",
+      "task": "Task 18: fix a goroutine leak in the worker pool.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Notes on worker pool history and design background (case 18, note 0).",
+          "label": 1,
+          "score": 1.1
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Reference: database index tuning (case 18, ref 1).",
+          "label": 0,
+          "score": 0.35
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Reference: database index tuning (case 18, ref 2).",
+          "label": 0,
+          "score": 0.39
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 18).",
+          "label": 2,
+          "score": 1.92
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 18).",
+          "label": 2,
+          "score": 1.66
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Notes on worker pool history and design background (case 18, note 5).",
+          "label": 1,
+          "score": 1.23
+        }
+      ]
+    },
+    {
+      "id": "t19",
+      "split": "report",
+      "task": "Task 19: add pagination to the list endpoint.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Notes on list endpoint history and design background (case 19, note 0).",
+          "label": 1,
+          "score": 0.3
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 19).",
+          "label": 2,
+          "score": 1.73
+        },
+        {
+          "id": "c2",
+          "source": "docs",
+          "text": "Reference: holiday schedule (case 19, ref 2).",
+          "label": 0,
+          "score": 0.37
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 19, ref 3).",
+          "label": 0,
+          "score": 0.23
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 19).",
+          "label": 2,
+          "score": 1.82
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Notes on list endpoint history and design background (case 19, note 5).",
+          "label": 1,
+          "score": 1.14
+        }
+      ]
+    },
+    {
+      "id": "t20",
+      "split": "report",
+      "task": "Task 20: migrate the config loader to YAML.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "runbook",
+          "text": "Reference: database index tuning (case 20, ref 0).",
+          "label": 0,
+          "score": 0.31
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 20).",
+          "label": 2,
+          "score": 1.68
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 20).",
+          "label": 2,
+          "score": 1.76
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Notes on config loader history and design background (case 20, note 3).",
+          "label": 1,
+          "score": 0.95
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Reference: office seating chart (case 20, ref 4).",
+          "label": 0,
+          "score": 0.22
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Notes on config loader history and design background (case 20, note 5).",
+          "label": 1,
+          "score": 0.96
+        }
+      ]
+    },
+    {
+      "id": "t21",
+      "split": "report",
+      "task": "Task 21: reduce flaky tests in the integration suite.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 21).",
+          "label": 2,
+          "score": 1.84
+        },
+        {
+          "id": "c1",
+          "source": "pr",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 21).",
+          "label": 2,
+          "score": 1.75
+        },
+        {
+          "id": "c2",
+          "source": "docs",
+          "text": "Notes on integration tests history and design background (case 21, note 2).",
+          "label": 1,
+          "score": 1.08
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Notes on integration tests history and design background (case 21, note 3).",
+          "label": 1,
+          "score": 1.16
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Reference: cache eviction policy (case 21, ref 4).",
+          "label": 0,
+          "score": 0.05
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Reference: holiday schedule (case 21, ref 5).",
+          "label": 0,
+          "score": 0.13
+        }
+      ]
+    },
+    {
+      "id": "t22",
+      "split": "report",
+      "task": "Task 22: add structured logging to the scheduler.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Reference: release checklist (case 22, ref 0).",
+          "label": 0,
+          "score": 0.38
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 22).",
+          "label": 2,
+          "score": 1.7
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Notes on scheduler history and design background (case 22, note 2).",
+          "label": 1,
+          "score": 1.22
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 22).",
+          "label": 2,
+          "score": 1.72
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Notes on scheduler history and design background (case 22, note 4).",
+          "label": 1,
+          "score": 0.93
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Reference: icon naming scheme (case 22, ref 5).",
+          "label": 0,
+          "score": 0.1
+        }
+      ]
+    },
+    {
+      "id": "t23",
+      "split": "report",
+      "task": "Task 23: handle SIGTERM gracefully in the server.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Notes on server history and design background (case 23, note 0).",
+          "label": 1,
+          "score": 0.94
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Reference: icon naming scheme (case 23, ref 1).",
+          "label": 0,
+          "score": 0.06
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 23).",
+          "label": 2,
+          "score": 1.88
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 23, ref 3).",
+          "label": 0,
+          "score": 0.23
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Notes on server history and design background (case 23, note 4).",
+          "label": 1,
+          "score": 0.98
+        },
+        {
+          "id": "c5",
+          "source": "pr",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 23).",
+          "label": 2,
+          "score": 1.71
+        }
+      ]
+    },
+    {
+      "id": "t24",
+      "split": "report",
+      "task": "Task 24: add retry with backoff to the HTTP client.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "pr",
+          "text": "Notes on HTTP client history and design background (case 24, note 0).",
+          "label": 1,
+          "score": 1.07
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 24).",
+          "label": 2,
+          "score": 1.81
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Guide: retry and backoff for the HTTP client. Steps and pitfalls (case 24).",
+          "label": 2,
+          "score": 1.86
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Notes on HTTP client history and design background (case 24, note 3).",
+          "label": 1,
+          "score": 0.95
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 24, ref 4).",
+          "label": 0,
+          "score": 0.1
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Reference: office seating chart (case 24, ref 5).",
+          "label": 0,
+          "score": 0.05
+        }
+      ]
+    },
+    {
+      "id": "t25",
+      "split": "report",
+      "task": "Task 25: rotate the TLS certificate for the web service.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Notes on TLS history and design background (case 25, note 0).",
+          "label": 1,
+          "score": 0.94
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Notes on TLS history and design background (case 25, note 1).",
+          "label": 1,
+          "score": 1.15
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Reference: color palette guide (case 25, ref 2).",
+          "label": 0,
+          "score": 0.06
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Reference: office seating chart (case 25, ref 3).",
+          "label": 0,
+          "score": 0.07
+        },
+        {
+          "id": "c4",
+          "source": "docs",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 25).",
+          "label": 2,
+          "score": 1.82
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: certificate rotation for the TLS. Steps and pitfalls (case 25).",
+          "label": 2,
+          "score": 1.66
+        }
+      ]
+    },
+    {
+      "id": "t26",
+      "split": "report",
+      "task": "Task 26: fix a goroutine leak in the worker pool.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Notes on worker pool history and design background (case 26, note 0).",
+          "label": 1,
+          "score": 1.11
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Reference: office seating chart (case 26, ref 1).",
+          "label": 0,
+          "score": 0.15
+        },
+        {
+          "id": "c2",
+          "source": "docs",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 26).",
+          "label": 2,
+          "score": 1.76
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Reference: office seating chart (case 26, ref 3).",
+          "label": 0,
+          "score": 0.32
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Notes on worker pool history and design background (case 26, note 4).",
+          "label": 1,
+          "score": 1.01
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: goroutine lifecycle for the worker pool. Steps and pitfalls (case 26).",
+          "label": 2,
+          "score": 1.66
+        }
+      ]
+    },
+    {
+      "id": "t27",
+      "split": "report",
+      "task": "Task 27: add pagination to the list endpoint.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Reference: color palette guide (case 27, ref 0).",
+          "label": 0,
+          "score": 0.13
+        },
+        {
+          "id": "c1",
+          "source": "runbook",
+          "text": "Reference: holiday schedule (case 27, ref 1).",
+          "label": 0,
+          "score": 0.05
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 27).",
+          "label": 2,
+          "score": 1.76
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Notes on list endpoint history and design background (case 27, note 3).",
+          "label": 1,
+          "score": 0.94
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Notes on list endpoint history and design background (case 27, note 4).",
+          "label": 1,
+          "score": 1.12
+        },
+        {
+          "id": "c5",
+          "source": "runbook",
+          "text": "Guide: pagination cursors for the list endpoint. Steps and pitfalls (case 27).",
+          "label": 2,
+          "score": 1.93
+        }
+      ]
+    },
+    {
+      "id": "t28",
+      "split": "report",
+      "task": "Task 28: migrate the config loader to YAML.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "docs",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 28).",
+          "label": 2,
+          "score": 1.66
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Guide: YAML parsing for the config loader. Steps and pitfalls (case 28).",
+          "label": 2,
+          "score": 1.81
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Notes on config loader history and design background (case 28, note 2).",
+          "label": 1,
+          "score": 1.1
+        },
+        {
+          "id": "c3",
+          "source": "pr",
+          "text": "Reference: color palette guide (case 28, ref 3).",
+          "label": 0,
+          "score": 0.19
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Reference: onboarding reading list (case 28, ref 4).",
+          "label": 0,
+          "score": 0.21
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Notes on config loader history and design background (case 28, note 5).",
+          "label": 1,
+          "score": 0.94
+        }
+      ]
+    },
+    {
+      "id": "t29",
+      "split": "report",
+      "task": "Task 29: reduce flaky tests in the integration suite.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "runbook",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 29).",
+          "label": 2,
+          "score": 1.74
+        },
+        {
+          "id": "c1",
+          "source": "docs",
+          "text": "Reference: database index tuning (case 29, ref 1).",
+          "label": 0,
+          "score": 0.36
+        },
+        {
+          "id": "c2",
+          "source": "issue",
+          "text": "Notes on integration tests history and design background (case 29, note 2).",
+          "label": 1,
+          "score": 1.23
+        },
+        {
+          "id": "c3",
+          "source": "docs",
+          "text": "Notes on integration tests history and design background (case 29, note 3).",
+          "label": 1,
+          "score": 1.15
+        },
+        {
+          "id": "c4",
+          "source": "issue",
+          "text": "Guide: test isolation for the integration tests. Steps and pitfalls (case 29).",
+          "label": 2,
+          "score": 1.89
+        },
+        {
+          "id": "c5",
+          "source": "docs",
+          "text": "Reference: cache eviction policy (case 29, ref 5).",
+          "label": 0,
+          "score": 0.39
+        }
+      ]
+    },
+    {
+      "id": "t30",
+      "split": "report",
+      "task": "Task 30: add structured logging to the scheduler.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Reference: office seating chart (case 30, ref 0).",
+          "label": 0,
+          "score": 0.22
+        },
+        {
+          "id": "c1",
+          "source": "pr",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 30).",
+          "label": 2,
+          "score": 1.94
+        },
+        {
+          "id": "c2",
+          "source": "pr",
+          "text": "Reference: onboarding reading list (case 30, ref 2).",
+          "label": 0,
+          "score": 0.15
+        },
+        {
+          "id": "c3",
+          "source": "issue",
+          "text": "Notes on scheduler history and design background (case 30, note 3).",
+          "label": 1,
+          "score": 1.14
+        },
+        {
+          "id": "c4",
+          "source": "pr",
+          "text": "Notes on scheduler history and design background (case 30, note 4).",
+          "label": 1,
+          "score": 1.02
+        },
+        {
+          "id": "c5",
+          "source": "docs",
+          "text": "Guide: structured logging for the scheduler. Steps and pitfalls (case 30).",
+          "label": 2,
+          "score": 1.75
+        }
+      ]
+    },
+    {
+      "id": "t31",
+      "split": "report",
+      "task": "Task 31: handle SIGTERM gracefully in the server.",
+      "candidates": [
+        {
+          "id": "c0",
+          "source": "issue",
+          "text": "Reference: cache eviction policy (case 31, ref 0).",
+          "label": 0,
+          "score": 0.37
+        },
+        {
+          "id": "c1",
+          "source": "issue",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 31).",
+          "label": 2,
+          "score": 1.69
+        },
+        {
+          "id": "c2",
+          "source": "runbook",
+          "text": "Notes on server history and design background (case 31, note 2).",
+          "label": 1,
+          "score": 0.96
+        },
+        {
+          "id": "c3",
+          "source": "runbook",
+          "text": "Reference: database index tuning (case 31, ref 3).",
+          "label": 0,
+          "score": 0.29
+        },
+        {
+          "id": "c4",
+          "source": "runbook",
+          "text": "Notes on server history and design background (case 31, note 4).",
+          "label": 1,
+          "score": 1.14
+        },
+        {
+          "id": "c5",
+          "source": "issue",
+          "text": "Guide: graceful shutdown for the server. Steps and pitfalls (case 31).",
+          "label": 2,
+          "score": 1.71
+        }
+      ]
+    }
+  ]
+}
