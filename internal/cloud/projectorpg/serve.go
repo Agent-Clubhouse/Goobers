@@ -43,10 +43,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	if config.Manager == nil || config.Pool == nil || config.Journal == nil || config.InstanceID == "" {
 		return errors.New("projectorpg: manager, pool, journal and instance are required")
 	}
-	report := config.Report
-	if report == nil {
-		report = func(error) {}
-	}
+	report := shutdownReporter(ctx, config.Report)
 	base := config.Retry
 	if base <= 0 {
 		base = 2 * time.Second
@@ -84,4 +81,21 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		}
 	}
 	return nil
+}
+
+// shutdownReporter uses Serve's context, not the lease epoch's: losing a lease
+// can cancel an epoch without a requested shutdown. A commit interrupted by
+// shutdown may have an unknown outcome, but projections and source watermarks
+// commit together, and the next holder queries persisted watermarks on every
+// pass. Only errors wrapping this shutdown are expected; other failures still
+// need reporting even if shutdown happens concurrently.
+func shutdownReporter(ctx context.Context, report func(error)) func(error) {
+	return func(err error) {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return
+		}
+		if report != nil {
+			report(err)
+		}
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/externaltelemetry/adx"
@@ -533,6 +534,9 @@ func BuildDeterministicExecutor(input DeterministicExecutorInput) (invoke.Determ
 	if err := kinds.Register(executor.KindShell, shell); err != nil {
 		return nil, err
 	}
+	if err := kinds.Register(executor.KindTLC, &executor.TLCExecutor{Shell: shell}); err != nil {
+		return nil, err
+	}
 	var adoRepo *instance.RepoRef
 	if repo, ok := AdoRepoForGaggle(input.Config, input.GaggleProject); ok {
 		adoRepo = &repo
@@ -580,11 +584,21 @@ type AgenticExecutorInput struct {
 	SecretRegistrar  stageexec.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
 	ChildWorkflows   harness.ChildWorkflowAccessProvider
-	MCPServers       []apiv1.MCPServer
-	MCPServersSet    bool
+	// DecisionGate grants the decide tool to tasks named in agentTool (local runner only).
+	DecisionGate  *decisiongate.Settings
+	MCPServers    []apiv1.MCPServer
+	MCPServersSet bool
+
+	// TranscriptWindows is the advisory stall-detection window observer; nil
+	// unless the instance opted in.
+	TranscriptWindows harness.TranscriptWindowObserver
 
 	// Local runner only; worker pods do not inherit daemon-host paths.
 	GuardedCredentialPaths []string
+
+	// PrivateInputs resolves input the agent reads but the run never records
+	// (#8425). Local runner only: it reads daemon-host state.
+	PrivateInputs harness.PrivateInputSource
 }
 
 // BuildAgenticExecutor builds a goober executor with its harness, credentials, and captured assets.
@@ -656,6 +670,7 @@ func BuildAgenticExecutor(input AgenticExecutorInput) (invoke.Goober, error) {
 		harness.WithMCPServers(spec.MCPServers),
 		harness.WithTools(spec.Tools),
 		harness.WithChildWorkflowAccess(input.ChildWorkflows),
+		harness.WithDecisionGate(input.DecisionGate),
 	}
 	if spec.TimeoutSeconds > 0 {
 		opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
@@ -665,6 +680,15 @@ func BuildAgenticExecutor(input AgenticExecutorInput) (invoke.Goober, error) {
 	}
 	if input.Observer != nil {
 		opts = append(opts, harness.WithObserver(input.Observer))
+	}
+	if input.TranscriptWindows != nil {
+		opts = append(opts, harness.WithTranscriptWindowObserver(input.TranscriptWindows))
+	}
+	if input.PrivateInputs != nil {
+		// The run's own registrar, never the shared one: the journal that
+		// must not carry the values scrubs with it, and the instance-lifetime
+		// registry should not accumulate every request.
+		opts = append(opts, harness.WithPrivateInputs(input.PrivateInputs, input.SecretRegistrar))
 	}
 	return harness.NewExecutor(
 		adapter,

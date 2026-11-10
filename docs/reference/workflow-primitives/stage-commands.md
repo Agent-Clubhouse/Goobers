@@ -35,6 +35,7 @@ Operator commands such as `up`, `status`, and `init` are intentionally absent.
 | [`docs-churn`](../../cli/README.md#goobers-docs-churn) | Emit the documentation-drift churn digest. |
 | [`elect-lander`](../../cli/README.md#goobers-elect-lander) | Elect the landing PR among a merge-review cohort. |
 | [`file-issues`](../../cli/README.md#goobers-file-issues) | File a validated nomination batch as deduplicated, budgeted issues. |
+| [`fluid-ui-request`](../../cli/README.md#goobers-fluid-ui-request) | Load a Labs Fluid UI request or validate its customization candidate. |
 | [`gate-removal-guard`](../../cli/README.md#goobers-gate-removal-guard) | Block a Tutor run that weakens its own flagged gate without proof. |
 | [`gather-ci-failures`](../../cli/README.md#goobers-gather-ci-failures) | Add failing CI diagnostics to a remediation brief. |
 | [`gather-implement-context`](../../cli/README.md#goobers-gather-implement-context) | Load first-pass implementation review and hot-file context. |

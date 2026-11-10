@@ -34,6 +34,15 @@ type EngineFreezeContext struct {
 	ParentGooberDigest   string
 }
 
+// FreezeContextFor is the freeze context of a resolved engine child authority.
+func FreezeContextFor(a Authority) (EngineFreezeContext, error) {
+	if a.Execution == nil {
+		return EngineFreezeContext{}, fmt.Errorf("%w: authority has no execution binding", ErrFrozenChildDrift)
+	}
+	return EngineFreezeContext{Admission: a.Admission, Execution: *a.Execution, ConfigGeneration: a.ConfigGeneration,
+		ParentWorkflowDigest: a.ParentWorkflowDigest, ParentGooberDigest: a.ParentGooberDigest}, nil
+}
+
 // EngineFreezeResolver loads the pinned context for one accepted envelope.
 type EngineFreezeResolver func(context.Context, ChildStartEnvelope) (EngineFreezeContext, error)
 
@@ -99,7 +108,7 @@ func (f EngineFreezer) Freeze(ctx context.Context, request journal.ChildHandoffR
 	preview := true
 	input := engine.RunInput{
 		InstanceID: pinned.Execution.InstanceID, RunID: child.RunID, Gaggle: e.Gaggle,
-		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, WorkflowDigest: proposal.Machine.Digest(), Spec: def.Spec,
+		WorkflowName: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Annotations: def.Annotations, WorkflowDigest: proposal.Machine.Digest(), Spec: def.Spec,
 		// task.childWorkflows is itself preview-gated: a parent that may
 		// request children already carries the acknowledgement its child needs.
 		PreviewFeaturesEnabled: &preview, LiveJournal: true,

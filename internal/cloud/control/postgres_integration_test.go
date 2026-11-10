@@ -76,12 +76,14 @@ type lostResponseClient struct {
 	lost   atomic.Bool
 }
 
+var errLostStartResponse = errors.New("lost start response")
+
 func (c *lostResponseClient) ExecuteWorkflow(ctx context.Context, o client.StartWorkflowOptions, w interface{}, args ...interface{}) (client.WorkflowRun, error) {
 	run, err := c.Client.ExecuteWorkflow(ctx, o, w, args...)
 	if err == nil {
 		c.starts.Add(1)
 		if c.lost.CompareAndSwap(false, true) {
-			return nil, errors.New("lost start response")
+			return nil, errLostStartResponse
 		}
 	}
 	return run, err
@@ -114,6 +116,7 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	selfFenced := make(chan error, 1)
 	var active, restored atomic.Int32
 	var unsafeOverlap atomic.Bool
+	firstAdmission := make(chan AdmissionDeps, 1)
 	makeReplica := func(holder string) (*Host, *lease.Manager) {
 		leaseConfig := lease.Config{Pool: pool, InstanceID: "control-test", Name: lease.ControllerName, Holder: holder, TTL: leaseTTL, RenewInterval: renew, SelfFenceAfter: selfFence}
 		manager, err := lease.New(leaseConfig)
@@ -143,6 +146,17 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 				return []Observation{{Key: "provider/quota", Payload: []byte(`{"openPRs":3,"remaining":19}`), ObservedAt: time.Now()}}, nil
 			}
 			return services, nil
+		}, Admission: func(_ context.Context, deps AdmissionDeps) (Admission, error) {
+			// Capture the first epoch's fenced starter to seed uncertain custody.
+			// This fixture tests recovery and shutdown; real scheduler admission
+			// is exercised by the controller composition integration suite.
+			if holder == "first" {
+				select {
+				case firstAdmission <- deps:
+				default:
+				}
+			}
+			return inertAdmission{}, nil
 		}}
 		replicaRetry := retry
 		if involuntary && holder == "first" {
@@ -177,6 +191,14 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 	record, _, err := store.Accept(ctx, "request/1", "operator", []byte(`{}`), time.Now())
 	if err != nil {
 		t.Fatal(err)
+	}
+	deps := <-firstAdmission // Build completed before the first host became ready.
+	input, err := deps.Resolve(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Starter.Start(ctx, input); !errors.Is(err, errLostStartResponse) {
+		t.Fatalf("initial start = %v, want the injected lost response", err)
 	}
 	waitControl(t, ctx, func() bool { return temporal.lost.Load() })
 	second, _ := makeReplica("second")
@@ -253,11 +275,15 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 		t.Fatal("provider observations were not restored on takeover")
 	}
 	observations := Observations{Pool: pool, InstanceID: "control-test", Lease: firstManager, Handle: old}
-	wantFence := lease.ErrStale
-	if involuntary {
-		wantFence = lease.ErrSelfFenced
-	}
-	if err := observations.Replace(ctx, nil); !errors.Is(err, wantFence) {
+	// The old handle's write must be refused. After an involuntary handoff it
+	// is self-fenced. After a voluntary one the new epoch refuses it
+	// (ErrStale), unless the handle's own renew window has already lapsed (it
+	// stopped renewing at release), in which case WithFence refuses it as
+	// self-fenced before it reaches the database: on a loaded host the test
+	// gets here after the window. Either is a refusal.
+	err = observations.Replace(ctx, nil)
+	refused := errors.Is(err, lease.ErrSelfFenced) || (!involuntary && errors.Is(err, lease.ErrStale))
+	if !refused {
 		t.Fatalf("zombie observation write: %v", err)
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")
@@ -273,6 +299,10 @@ func testTwoReplicaPG16Failover(t *testing.T, involuntary bool) {
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	description, err = temporal.DescribeWorkflowExecution(ctx, runID, "")
+	if err != nil || description.WorkflowExecutionInfo.GetStatus().String() != "Running" {
+		t.Fatalf("successor shutdown stopped engine workflow: %v %v", description, err)
 	}
 }
 

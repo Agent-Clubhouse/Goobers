@@ -11,7 +11,28 @@ Local single-key installations retain their existing token format and behavior.
 Cloud auth explicitly uses `LoadKeyRingFile` and requires a JSON key ring; raw
 files and malformed JSON fail boot. The existing `LoadSignedKeyFile` and
 `LoadDerivedSignedKeyFile` APIs continue to treat files as arbitrary trimmed raw
-bytes, without format detection or reload. A versioned key file contains base64
+bytes, without format detection or reload.
+
+Cloud workers must explicitly select the same ring with
+`--config-keyring-file` (or `GOOBERS_WORKER_CONFIG_KEYRING_FILE`) for configuration
+fetches, and `api.podTokenKeyRingFile` in the fetched instance configuration for
+all other worker signers (dispatch, journal, blob, surrender, child admission,
+terminal intervention, and config-divergence reporting). Both paths use
+`LoadKeyRingFile`: they sign with the decoded `current.key` and include its ID.
+Invalid rings fail startup; they never fall back to signing the JSON bytes.
+
+Legacy workers keep `--config-key-file` / `GOOBERS_WORKER_CONFIG_KEY_FILE` and
+`api.podTokenKeyFile`. These always use trimmed raw bytes, including bytes that
+start with `{` or contain JSON; no content sniffing occurs. Raw and ring inputs
+for the same plane are mutually exclusive. The legacy `goobers up` daemon
+continues to use raw keys; the new ring field is for cloud workers connecting
+to cloud control.
+
+Workers load signing keys at startup (some instance seams also rebuild on config
+reload); they do not watch the ring file. Roll every worker after promotion and
+before retiring the old key. Control watches its ring as described below.
+
+A versioned key file contains base64
 key material (at least 32 decoded bytes):
 
 ```json
@@ -41,7 +62,7 @@ Then rotate as follows:
    verifier to report a successful reload (or finish the rolling restart).
 2. Promote the new key to `current` and retain the old key as `previous`. Either
    version verifies on every replica throughout the staggered promotion.
-3. After every minting replica has promoted, retain the old verifier for the
+3. After every minting replica has promoted (including restarted workers), retain the old verifier for the
    longest outstanding token lifetime: **24 hours** for credential-refresh and
    child-workflow grants (pod tokens alone are capped at 8 hours). Then remove it.
 

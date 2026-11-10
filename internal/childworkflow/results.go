@@ -124,28 +124,9 @@ func (c *WorkspaceCoordinator) ReadResult(ctx context.Context, child triggerqueu
 	if c == nil || c.Queue == nil {
 		return TerminalResult{}, ErrAuthorityUnavailable
 	}
-	current, err := c.Queue.GetChild(ctx, child.Identity)
+	result, receipt, stored, err := readStoredResult(ctx, c.Queue, child)
 	if err != nil {
 		return TerminalResult{}, err
-	}
-	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.RunID != child.RunID {
-		return TerminalResult{}, ErrAuthorityUnavailable
-	}
-	stored, err := c.Queue.ChildResult(ctx, child.Identity)
-	if err != nil {
-		return TerminalResult{}, err
-	}
-	var receipt terminalResultReceipt
-	if err := json.Unmarshal(stored.Receipt, &receipt); err != nil {
-		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
-	}
-	canonical, err := json.Marshal(receipt)
-	if err != nil || !bytes.Equal(canonical, stored.Receipt) || receipt.Version != 1 || receipt.Identity != child.Identity || receipt.AcceptanceID != child.AcceptanceID || receipt.SourceDigest != child.ProposalDigest || receipt.RunID != child.RunID || !validTerminalInput(receipt.Input, child) {
-		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
-	}
-	result := TerminalResult{Input: receipt.Input, ResultRef: stored.ReceiptDigest, Snapshot: receipt.Snapshot}
-	if current.State.Terminal() && (current.State != receipt.Input.State || current.ResultRef != result.ResultRef) {
-		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
 	}
 	if receipt.Snapshot == nil {
 		if len(stored.Bundle) != 0 || receipt.RepositoryDigest != "" {
@@ -178,4 +159,83 @@ func (c *WorkspaceCoordinator) verifyResultSnapshot(ctx context.Context, child t
 		return triggerqueue.ErrChildResultUnavailable
 	}
 	return record.Validate()
+}
+
+// ResultCustody is the custody a workspace-less terminal result needs. The
+// local and the cloud child stores both implement it.
+type ResultCustody interface {
+	GetChild(ctx context.Context, identity triggerqueue.ChildIdentity) (triggerqueue.ChildRecord, error)
+	ChildResult(ctx context.Context, identity triggerqueue.ChildIdentity) (triggerqueue.ChildResult, error)
+	KeepChildResult(ctx context.Context, child triggerqueue.ChildRecord, result triggerqueue.ChildResult) error
+}
+
+// readStoredResult verifies the retained result receipt's identity, canonical
+// encoding and bounds against the child and its current state.
+func readStoredResult(ctx context.Context, custody ResultCustody, child triggerqueue.ChildRecord) (TerminalResult, terminalResultReceipt, triggerqueue.ChildResult, error) {
+	current, err := custody.GetChild(ctx, child.Identity)
+	if err != nil {
+		return TerminalResult{}, terminalResultReceipt{}, triggerqueue.ChildResult{}, err
+	}
+	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.RunID != child.RunID {
+		return TerminalResult{}, terminalResultReceipt{}, triggerqueue.ChildResult{}, ErrAuthorityUnavailable
+	}
+	stored, err := custody.ChildResult(ctx, child.Identity)
+	if err != nil {
+		return TerminalResult{}, terminalResultReceipt{}, triggerqueue.ChildResult{}, err
+	}
+	var receipt terminalResultReceipt
+	if err := json.Unmarshal(stored.Receipt, &receipt); err != nil {
+		return TerminalResult{}, terminalResultReceipt{}, triggerqueue.ChildResult{}, triggerqueue.ErrChildResultUnavailable
+	}
+	canonical, err := json.Marshal(receipt)
+	if err != nil || !bytes.Equal(canonical, stored.Receipt) || receipt.Version != 1 || receipt.Identity != child.Identity || receipt.AcceptanceID != child.AcceptanceID || receipt.SourceDigest != child.ProposalDigest || receipt.RunID != child.RunID || !validTerminalInput(receipt.Input, child) {
+		return TerminalResult{}, terminalResultReceipt{}, triggerqueue.ChildResult{}, triggerqueue.ErrChildResultUnavailable
+	}
+	result := TerminalResult{Input: receipt.Input, ResultRef: stored.ReceiptDigest, Snapshot: receipt.Snapshot}
+	if current.State.Terminal() && (current.State != receipt.Input.State || current.ResultRef != result.ResultRef) {
+		return TerminalResult{}, terminalResultReceipt{}, triggerqueue.ChildResult{}, triggerqueue.ErrChildResultUnavailable
+	}
+	return result, receipt, stored, nil
+}
+
+// ReadTerminalResult reads a workspace-less terminal result (an engine child,
+// which returns a result but no workspace snapshot). A retained receipt that
+// carries a workspace is refused: this path never writes one.
+func ReadTerminalResult(ctx context.Context, custody ResultCustody, child triggerqueue.ChildRecord) (TerminalResult, error) {
+	result, receipt, stored, err := readStoredResult(ctx, custody, child)
+	if err != nil {
+		return TerminalResult{}, err
+	}
+	if receipt.Snapshot != nil || len(stored.Bundle) != 0 || receipt.RepositoryDigest != "" {
+		return TerminalResult{}, triggerqueue.ErrChildResultUnavailable
+	}
+	return result, nil
+}
+
+// CaptureTerminalResult retains a workspace-less child's first terminal
+// observation, exactly as WorkspaceCoordinator.CaptureResult does with no
+// workspace. A retry with the same input returns it; one with changed content
+// conflicts.
+func CaptureTerminalResult(ctx context.Context, custody ResultCustody, child triggerqueue.ChildRecord, input TerminalResultInput) (TerminalResult, error) {
+	if custody == nil || !validTerminalInput(input, child) {
+		return TerminalResult{}, ErrAuthorityUnavailable
+	}
+	retained, err := ReadTerminalResult(ctx, custody, child)
+	if err == nil {
+		if retained.Input.State != input.State || !retained.Input.FinishedAt.Equal(input.FinishedAt) || retained.Input.Summary != input.Summary || !slices.Equal(retained.Input.References, input.References) {
+			return TerminalResult{}, triggerqueue.ErrConflict
+		}
+		return retained, nil
+	}
+	if !errors.Is(err, triggerqueue.ErrChildResultPending) {
+		return TerminalResult{}, err
+	}
+	data, err := json.Marshal(terminalResultReceipt{Version: 1, Identity: child.Identity, AcceptanceID: child.AcceptanceID, SourceDigest: child.ProposalDigest, RunID: child.RunID, Input: input})
+	if err != nil {
+		return TerminalResult{}, err
+	}
+	if err := custody.KeepChildResult(ctx, child, triggerqueue.ChildResult{Receipt: data, ReceiptDigest: journal.Digest(data)}); err != nil {
+		return TerminalResult{}, err
+	}
+	return ReadTerminalResult(ctx, custody, child)
 }

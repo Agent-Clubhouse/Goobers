@@ -11,7 +11,6 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -47,7 +46,7 @@ func dispatchStandaloneStart(ctx context.Context, layout instance.Layout, setup 
 	defer func() { resultErr = errors.Join(resultErr, service.queue.Close()) }()
 	service.dispatch.AttachScheduler(sched)
 	service.dispatch.AttachDispatchContext(ctx)
-	request := startintent.Request{Workflow: target.Workflow, Gaggle: target.Gaggle, Force: target.Force, PullRequest: target.PR}
+	request := target.startRequest()
 	record, _, err := service.ordinary.Accept(ctx, key, "standalone-cli", request)
 	if err != nil {
 		return "", fmt.Errorf("start request %q: %w; retry with the same --request-id and options", key, err)

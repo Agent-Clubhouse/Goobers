@@ -305,7 +305,7 @@ Shipped usage on `main` at the baseline:
   2. `engineadmission.RefusePlacedDefinition` returns nil against the cloud runner inventory: no engine-unsupported feature or human gate;
   3. no stage pins to self, and every agentic gate has a placement row (`runsOn`).
 - **Where it is enforced (defence in depth):**
-  1. **Validate time:** findings `RUNTIME001`–`RUNTIME003` ([§8.3](#runtime-support-column)).
+  1. **Validate time:** findings `RUNTIME001`–`RUNTIME004` ([§8.3](#runtime-support-column)).
   2. **Config apply:** `goobers-cloud` refuses a config generation that contains an ineligible workflow. The running generation stays applied, and `goobers-cloud config status` names every blocker. A config cloud can't fully run is never half-applied.
   3. **Admission:** the scheduler never admits an ineligible workflow (guard for configs applied before a binary downgrade).
   4. **Run start:** the engine's existing start-time refusal (`RefuseFeatures`, `RefuseHumanGate`) stays as the last layer.
@@ -324,6 +324,7 @@ Shipped usage on `main` at the baseline:
 | `RUNTIME001` | lane declares an engine-unsupported feature; names the feature and the P4 issue that unblocks it | info | warning (lane stays on the runner, as today) | **error** |
 | `RUNTIME002` | lane would need self execution: a self-pinned stage, or an agentic gate without `runsOn` | — | warning | **error** |
 | `RUNTIME003` | lane is DSL < 3.0 (local-runner-only); suggests `goobers fix --to 3.0` | — | — | **error** |
+| `RUNTIME004` | lane needs a control-plane capability the cloud does not provide yet: `claimVisibility: shared` until #8094 | — | — | **error** |
 
 Selection-time reasons in `engineselection.go` keep their operator-facing text; the findings move the same facts to validate time. Local validate goldens change deliberately for the new info line.
 
@@ -331,7 +332,7 @@ Selection-time reasons in `engineselection.go` keep their operator-facing text; 
 ### 8.4 Cutover-readiness check [APPROVED] (HA-P4-02, HA-P3-25)
 
 Because a P3 cutover needs every workflow to be cloud-eligible, operators need the full list of blockers before they plan one.
-- **`goobers validate --target cloud`** runs against an existing instance root (local or mode 3) and reports every `RUNTIME001`–`RUNTIME003` error for every workflow in every gaggle, grouped by blocker:
+- **`goobers validate --target cloud`** runs against an existing instance root (local or mode 3) and reports every `RUNTIME001`–`RUNTIME004` error for every workflow in every gaggle, grouped by blocker:
   - per workflow: each blocking feature or placement fact, with the stage and DSL path;
   - per blocker: the unblocking action. A config fix (`goobers fix --to 3.0`, add `runsOn`) or the P4 issue that ports the feature;
   - a summary line: `cloud-ready` or `blocked: N workflows, M blockers (K config fixes, J waiting on P4 items: …)`;
@@ -475,6 +476,7 @@ Cloud implementations live under `internal/cloud/*` and are injected into shared
 | DSL 2.0 workflows | supported (runner) | refused (`RUNTIME003`) | refused (dsl-3.0 D14) |
 | The 8 R9 features | supported (runner) | refused until the feature's P4 item ships (`RUNTIME001`) | supported (engine) |
 | `self` placement, instance-root-only stages (for example `reconcile-branches`) | supported | refused (`RUNTIME002`) unless migrated to a remote stage | same |
+| `claimVisibility: shared` | supported | refused (`RUNTIME004`) until the cloud claims plane ships shared claims (#8094) | same |
 | Pinned-workspace (large-repo) custody | supported | unsupported | unsupported (non-goal) |
 | `telemetry.db` CLI analytics | full | minimal port (D-8) | same |
 | HITL resume/intervene | any time on the runner; engine runs within `engine.hitl.window` | engine; window ≤7d (D-9) | same |
@@ -750,7 +752,7 @@ One database per instance (`goobers_<instance>`) on a shared server, with schema
 | `runs/<id>/events.jsonl`, `state.json`, `run.yaml` | `journal.run`, `journal.run_seq`, `journal.run_checkpoint`, `journal.run_event`, `journal.run_artifact` | `body bytea` = exact scrubbed line; JSONB only as a non-authoritative generated column |
 | `scheduler/events.jsonl[.gen-N]` | `journal.instance_event` (monthly partitions) + `journal.instance_seq` | consumers re-key from byte offset to `(stream, seq)` (rollup ingest cursor `telemetry/rollup/schema.go:406-410`, export catch-up `journalcatchup_store.go:20-27`); local keeps offsets behind the same interface |
 | `health/events.jsonl` | `journal.health_event` | |
-| `claims.json` + history | `control.claim`, `control.claim_history` (30-day purge) | owner token + epoch + DB-clock expiry (sharedclaim-shaped); merge lock = a renewed claim row that fails closed |
+| `claims.json` + history | `control.claim`, `control.claim_run_history` (30-day purge) | owner token + epoch + DB-clock expiry (sharedclaim-shaped); merge lock = a renewed claim row that fails closed |
 | scheduler-state keys, M5 files, watermarks | `control.scheduler_state(scope, key, value, etag, owner_epoch)` | same transaction domain as claims via `pg_advisory_xact_lock('claims:'||instance)` (PgBouncer-safe; preserves today's coarse serialization) |
 | `accepted-triggers.db` (acceptances, source receipts, schedule cursor, demand, child custody) | `control.acceptance` (`id = trigger-<runid>`, `owner_epoch` on `dispatching`), `control.source_receipt`, `control.source_cursor`, `control.schedule_demand`, child custody tables | the cursor CAS + source receipt is the double-fire invariant |
 | `cancellation-receipts.db` | `control.cancel_receipt` | |
@@ -864,6 +866,7 @@ An importer is only needed for history continuity, which is dropped as a constra
 ### 13.2 Versioning and rollout [APPROVED] (HA-P2-07)
 
 - **Worker Deployments via the Temporal Worker Controller**, rainbow-style, one Deployment per build ID. `Run`, `DispatchOne` and `ChildDispatchOne` are **PINNED** (the registrations already declare it, `internal/engine/register.go:12-25`). An old version keeps its pods until its pinned runs drain, so **a rollout never interrupts an in-flight stage**. A plain rolling update is incompatible with versioning and is not used.
+- **Versioned activity-name rollout:** workflow changes that select new activity names (for example `*CancelSafe` cancellation-heartbeat wrappers) deploy the new worker build before that build becomes current. PINNED/rainbow routing keeps pre-marker runs on their old worker, which continues selecting and serving the old activity names; only runs pinned to the new build record the marker and schedule the new names. Never make the workflow code current while its matching activity registrations have zero pollers.
 - **Fallback** if the Worker Controller is unsuitable: per-build Deployments managed by `goobers-cloud` release tooling, with current/ramping set via the versioning API.
 - **Current-version automation (#4084):** a version with zero pollers is never made current (fixes the #5407/#5993 trap).
 - **Retention cap:** 3 live versions, with AUTO_UPGRADE overrides for older pinned runs ([§10.5](#dsl-semantics)). The cost is counted: ≥6 idle worker pods at the cap, image retention for 3 builds, and one more operator.
@@ -1372,6 +1375,24 @@ The adversarial review (verdict: rethink) drove the current shape: the cloud DSL
 
 - PR #7689 sets the api pod grace to 3660s with an explicit `--drain-timeout 60m`, and the prepared worker grace to `DefaultDrainTimeout + ChildSettlementTimeout + 30s` (360s). It also corrects DS §10's Temporal Schedules text and documents the `RunScheduled` inverse as legacy, which completes HA-P0-09.
 - HA-P0-08 (stage-boundary drain) replaces the interim 60-minute drain bound and shrinks the api grace to the new bound + 60s; it updates `TestDeployReferenceAPISingletonShutdownAndDisruption` accordingly.
+
+### A.4a Group D: terminal-hook composition into the epoch (#7818)
+
+The cloud controller fires the same seven terminal hooks as the daemon (existing-fix, blocked, failed, escalation, prepare, notify, finalize), through one fenced, leader-owned awaiter (`internal/cloud/terminalawait`) instead of `awaitInto`. The policies are shared runner-free packages; the cloud supplies state and a provider writer.
+
+**Per epoch (handle, fence):**
+
+1. `claims.Plane` supplies `epoch.Claims`, the run's claimed item IDs, and the claim holders the awaiter also discovers.
+2. One `terminalwriter.Writer` (stateless) is the only provider path: every call is keyed by run ID and resolves repository and credentials from the run's pinned configuration. Absent branch -> `providers.ErrBranchNotFound`; a branch an open pull request uses -> `*providers.BranchInUseError`; refusals map to `providerwriter.ErrPermanent` / `ErrRepositoryNotPinned`. A comment write without an idempotency key is refused.
+3. State in PostgreSQL under the controller-lease fence: `blockedrecordspg`, `failurestreakpg`, `noworkstreakpg` (`terminalstate.State` composes them), the framed receipt (`terminalframedpg`) and the closed-run watermark (`terminalwatermarkpg`).
+4. Hook outcomes are appended to the instance log through the FENCED instance append (as the scheduler log does), not the best-effort writer: they are part of the durable record.
+5. The awaiter gets `Closed` (Temporal visibility), `Watermark`, `Framed` and the hook options (`WithParking`, `WithFailed`, `WithNotify`, `WithPrepare`). Each policy is built per run: poster = `providerposter.Poster{writer, runID}`, `Reports` = the terminal-report outbox.
+
+**Delivery loop.** `Outbox.Reconcile` and the blocked-record `Heal` run in their own budgeted, jittered epoch loop fenced by the handle, not in the awaiter's tick, so a slow provider can never stall terminal detection. It is visible: an informational `terminalOutbox` readiness check (it does not gate `Ready`) and a lag block on the control status page. `Heal` runs on its own slow cadence (minutes, `DefaultHealEvery`), because it reads the provider for each item it verifies; those reads go through the shared provider quota ledger (`epochWiring.Quota`), verify through the applied configuration's binding for the repository (a run's pin is swept days after it ends), and back off per item so an unverifiable record neither burns reads nor occupies heal slots. Records are also verified when a new block would close a cycle. A cycle whose members cannot all be verified is never trusted silently and never held without a driver (a failed frame retries only its claim release, so nothing else re-runs the decision). A permanent failure (not configured, refused, 401/403/404) escalates it at once with the unverifiable members named in the comment. A transient one (rate limit, 5xx, timeout, network) is retried inline within the record timeout (5s, 15s); if the cycle is still unverified, or the read budget is spent, it is DEFERRED: the seed `blocked_record` carries a durable marker (`verify_after`, `deferred_since`, `defer_attempts`, database clock), the members stay parked `blocked-on-sibling`, and the delivery loop's heal pass runs `Sweep`, which re-checks the due cycles (at most 5 cycles of 10 members per pass, through the quota ledger), drops a cycle with a closed member, escalates one whose members all verify open, and escalates one that still cannot be verified once it has waited the bound (`Tuning.DeferralBound`, default 1h, clamped to at least 10m) with the unverifiable members named. Deferral exists only when the composition supplies an escalator, and never for a cycle with an Azure DevOps member (the instance-level writer cannot comment there, and the labels would go with a refused comment): those, and any cycle without an escalator, are escalated at once, labelled. On ADO the run-bound poster sends the labels on their own before the comment. A deferred cycle whose escalation the provider permanently refuses is not retried forever: the sweep clears the marker, journals an error, and a `blockedCycleEscalation` readiness check fails until restart or failover. The escalation is written by `terminalwriter.InstanceWriter`, the one credentialed write path not bound to a run (the recording run's pin is swept): it writes only to a configured gaggle's backlog repository, only `needs-human` added, `ready`/`claimed` removed and a comment carrying a cycle-derived idempotency key, can never open, close or edit an issue or touch a pull request, and journals every write first through the epoch's fenced log, refusing a write it cannot journal (which also stops a deposed leader's credentialed write).
+
+**Delivery semantics.** Frames are at-least-once across epochs. The framed receipt is written after Finalize succeeds, so a successor skips completed frames; a frame that crashed earlier is re-fired and must be idempotent: provider comments carry a run-derived idempotency key, streak charges and no-work increments skip a run that already charged, label and branch operations converge. Non-finalize hook failures are recorded and NOT re-fired after the receipt: there is no retroactive delivery when a missing capability arrives later.
+
+**Not ported.** pr-remediation charge voiding and superseded-run settlement have no cloud lane until #8131 and are no-ops; the cloud records no claim purpose, so curation claims are not exempted from the no-work streak.
 
 ### A.4 Still UNVERIFIED
 

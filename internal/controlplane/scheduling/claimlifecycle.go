@@ -304,6 +304,9 @@ func recordTerminalClaimInspectionError(log *journal.InstanceLog, entry localsch
 type RemediationUpdate func(context.Context, []localscheduler.ClaimEntry) error
 
 // ClaimLifecycle injects provider coordination and command-owned lock policy.
+// These lifecycle paths explicitly OpenClaimLedger and propagate open errors;
+// their concrete *ClaimLedger snapshots are infallible in-memory reads. Cloud
+// claim maintenance uses claims.Plane, not these filesystem callbacks (#8146).
 type ClaimLifecycle struct {
 	Files              ClaimFiles
 	SharedResolver     func(instance.Layout) claimsclient.SharedClaimResolver

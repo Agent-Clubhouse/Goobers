@@ -44,3 +44,6 @@ func (c *Configuration) Reload(ctx context.Context) error {
 
 // Status reports the applied generation and the latest refusal.
 func (c *Configuration) Status() Status { return c.applier.Status() }
+
+// Applied returns the running generation, if one has been applied.
+func (c *Configuration) Applied() (Candidate, bool) { return c.applier.Applied() }

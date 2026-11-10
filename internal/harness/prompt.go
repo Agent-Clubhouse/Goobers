@@ -86,6 +86,15 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n")
 	}
 
+	if len(req.PrivatePaths) > 0 {
+		b.WriteString("## Private inputs\n\n")
+		b.WriteString("These files are private to the person this run serves. Read them and act on them, but never quote, restate or summarize their content in your messages or in any file you write.\n\n")
+		for _, name := range privateInputNames(req.PrivatePaths) {
+			fmt.Fprintf(&b, "- %s: available at `%s`\n", name, req.PrivatePaths[name])
+		}
+		b.WriteString("\n")
+	}
+
 	// Unconditional for every agentic invocation, not gated on req.Sandbox
 	// (#2419): a goober invents ad-hoc scratch files mid-task for its own
 	// bookkeeping (extract data, then loop over it) far more often than it

@@ -16,8 +16,17 @@ import (
 )
 
 func TestOrdinaryRecoveryRetriesOnlyAbsentPriorProcessStarts(t *testing.T) {
-	for _, published := range []bool{false, true} {
-		t.Run(map[bool]string{false: "absent", true: "published"}[published], func(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		published bool
+		workItem  string
+	}{
+		{name: "absent"},
+		{name: "published", published: true},
+		{name: "published-exact-failed", published: true, workItem: "42"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			published := test.published
 			layout := instance.NewLayout(t.TempDir())
 			queuePath := filepath.Join(layout.Root, "accepted.db")
 			dispatch := newDaemonTriggerService()
@@ -63,7 +72,7 @@ func TestOrdinaryRecoveryRetriesOnlyAbsentPriorProcessStarts(t *testing.T) {
 			if err := s.queue.Finish(t.Context(), legacy.AcceptanceID, triggerqueue.Rejected, "", "fixture complete", time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			accepted, err := s.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "impl", Gaggle: "own", RequestID: "typed", Actor: "operator"})
+			accepted, err := s.Trigger(t.Context(), httpapi.TriggerRequest{Workflow: "impl", Gaggle: "own", RequestID: "typed", Actor: "operator", WorkItemID: test.workItem})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,9 +81,18 @@ func TestOrdinaryRecoveryRetriesOnlyAbsentPriorProcessStarts(t *testing.T) {
 			}
 			runID := strings.TrimPrefix(accepted.AcceptanceID, "trigger-")
 			if published {
-				run, err := journal.Create(layout.ForGaggle("own").RunsDir(), journal.RunIdentity{RunID: runID, Workflow: "impl", Gaggle: "own", WorkflowVersion: 1, ConfigGeneration: target.ConfigGeneration, WorkflowDigest: target.WorkflowDigest, GooberDigest: target.GooberDigest, Trigger: journal.Trigger{Kind: journal.TriggerManual, Ref: "impl"}}, nil)
+				ref := "impl"
+				if test.workItem != "" {
+					ref = "work-item:" + test.workItem
+				}
+				run, err := journal.Create(layout.ForGaggle("own").RunsDir(), journal.RunIdentity{RunID: runID, Workflow: "impl", Gaggle: "own", WorkflowVersion: 1, ConfigGeneration: target.ConfigGeneration, WorkflowDigest: target.WorkflowDigest, GooberDigest: target.GooberDigest, Trigger: journal.Trigger{Kind: journal.TriggerManual, Ref: ref}}, nil)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if test.workItem != "" {
+					if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if err := run.Close(); err != nil {
 					t.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/cloud/readmodelpg"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -419,5 +421,35 @@ func TestServeStandbyRetriesWithoutReportingContentionAndTakesOverWhenReleased(t
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSyncRecordsAPassTheAPIRoleReadsAsFreshAndAnUnrunProjectorReadsAsUnproven(t *testing.T) {
+	f := newFixture(t)
+	runner, reader := f.runner(t, 0, nil, func(error) {})
+	before, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || !slices.Equal(before.Degraded, []string{readmodel.DegradedNoProjectorPass}) {
+		t.Fatalf("before any pass: %+v (%v), want no_projector_pass", before.Degraded, err)
+	}
+	f.emit(t, runID('a'), true)
+	if _, err := runner.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || len(after.Degraded) != 0 {
+		t.Fatalf("after a completed pass: %+v (%v), want current", after.Degraded, err)
+	}
+}
+
+func TestAnUnprojectableRunIsPersistedAsAnOpenFailureForEveryReader(t *testing.T) {
+	f := newFixture(t)
+	runner, reader := f.runner(t, 0, nil, func(error) {})
+	f.emitWithGraphDigest(t, runID('b'), true, "sha256:other")
+	if _, err := runner.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := reader.ReadState(t.Context(), readmodel.ReadStateInput{})
+	if err != nil || !slices.Contains(state.Degraded, readmodel.DegradedProjectFailure) || state.Completeness != readmodel.CompletenessPartial {
+		t.Fatalf("an unprojectable run read as %+v %v (%v), want partial project_failure", state.Degraded, state.Completeness, err)
 	}
 }

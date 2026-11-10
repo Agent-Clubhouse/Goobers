@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,6 +14,64 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+func TestRunnerTerminalRecoveryModelTraces(t *testing.T) {
+	for _, phase := range []journal.RunPhase{journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated} {
+		t.Run(string(phase), func(t *testing.T) {
+			runsDir := t.TempDir()
+			runID := "terminal-model-" + string(phase)
+			jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: runID}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Close(); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(runsDir, runID)
+			overwriteStateJSON(t, dir, journal.State{
+				Schema: journal.StateSchema, RunID: runID,
+				Phase: journal.PhaseRunning, MachineState: "review",
+			})
+			reader, err := journal.OpenRead(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			det := &countingDeterministic{}
+			r := &Runner{cfg: Config{
+				RunsDir: runsDir,
+				NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+					return det, nil
+				},
+			}}
+			// SyncTerminal -> Crash -> Recover -> HealCheckpoint -> ReturnResume,
+			// then a second crash/recovery. No workflow or provider is needed on
+			// this already-terminal path.
+			for restart := range 2 {
+				res, err := r.Resume(context.Background(), ResumeInput{RunID: runID})
+				if err != nil || res.Phase != phase {
+					t.Fatalf("restart %d Resume = %+v, %v; want %s", restart, res, err, phase)
+				}
+				if det.calls != 0 {
+					t.Fatalf("terminal recovery dispatched %d times", det.calls)
+				}
+				after, err := reader.Events()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(journal.ConformanceView(before), journal.ConformanceView(after)) {
+					t.Fatal("terminal Resume changed the normative journal")
+				}
+			}
+		})
+	}
+}
 
 // overwriteStateJSON replaces runDir/state.json with a hand-built, possibly
 // stale checkpoint — the durable half of #242's crash window (a run.finished

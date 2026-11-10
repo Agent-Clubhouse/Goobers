@@ -859,6 +859,12 @@ func TestWorkspaceRemovedPerAttempt(t *testing.T) {
 // conformance-relevant field — Workspace being the one runner-specific field,
 // cleared before comparison.
 func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
+	for _, dslVersion := range []string{"2.0", "2.1"} {
+		t.Run(dslVersion, func(t *testing.T) { checkEngineEnvelopeMatchesLocalRunner(t, dslVersion) })
+	}
+}
+
+func checkEngineEnvelopeMatchesLocalRunner(t *testing.T, dslVersion string) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
@@ -875,7 +881,7 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 	const runID = "run-envelope-parity"
 	item := &apiv1.BacklogItem{ID: "7", Provider: apiv1.ProviderGitHub, Title: "Audit"}
 	repoRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
-	machine, err := wf.Compile(wf.Definition{Name: "parity", Version: 1, Spec: spec}, wf.WithPreviewFeatures(true))
+	machine, err := wf.Compile(wf.Definition{Name: "parity", Version: 1, DSLVersion: dslVersion, Spec: spec}, wf.WithPreviewFeatures(true))
 	if err != nil {
 		t.Fatalf("compile parity machine: %v", err)
 	}
@@ -922,6 +928,7 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 		RunID:                  runID,
 		Gaggle:                 "web",
 		WorkflowName:           "parity",
+		DSLVersion:             dslVersion,
 		Version:                1,
 		PreviewFeaturesEnabled: boolPointer(true),
 		Spec:                   spec,
@@ -943,6 +950,9 @@ func TestEngineEnvelopeMatchesLocalRunner(t *testing.T) {
 		t.Fatalf("dispatch counts local=%d engine=%d, want 1 each", len(localEnvs), len(engineEnvs))
 	}
 	le, ee := localEnvs[0], engineEnvs[0]
+	if le.DSLVersion != dslVersion || ee.DSLVersion != dslVersion {
+		t.Fatalf("pinned contract lost: local=%q engine=%q want=%q", le.DSLVersion, ee.DSLVersion, dslVersion)
+	}
 	if le.Workspace == "" || ee.Workspace == "" {
 		t.Fatalf("workspaces local=%q engine=%q, want both populated", le.Workspace, ee.Workspace)
 	}

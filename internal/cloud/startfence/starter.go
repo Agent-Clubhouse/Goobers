@@ -111,59 +111,132 @@ func (s *TemporalStarter) start(ctx context.Context, in engine.RunInput) (engine
 	run, err := s.client.ExecuteWorkflow(ctx, opts, engine.Run, in)
 	if err != nil {
 		if isAlreadyStarted(err) {
-			result, classifyErr := s.classifyExisting(ctx, in)
+			result, startedInput, classifyErr := s.classifyExisting(ctx, in)
 			if classifyErr != nil {
 				return engine.StartResult{}, classifyErr
 			}
-			return s.confirm(ctx, in, result)
+			return s.confirm(ctx, startedInput, result)
 		}
 		return engine.StartResult{}, err
 	}
 	return s.confirm(ctx, in, engine.StartResult{RunID: run.GetID()})
 }
 
-func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInput) (engine.StartResult, error) {
-	describer, ok := s.client.(workflowDescriber)
-	if !ok {
-		return engine.StartResult{}, errors.New("engine: cloud starter cannot describe existing execution")
-	}
-	description, err := describer.DescribeWorkflowExecution(ctx, in.RunID, "")
+// StartedExecution is what the start fence left on a run's engine execution:
+// its status, whether it is the engine Run workflow, and its start-owner memo
+// (nil when the execution carries none).
+type StartedExecution struct {
+	Status enumspb.WorkflowExecutionStatus
+	Engine bool
+	Owner  *StartOwnerMemo
+}
+
+// DescribeStarted describes the latest execution of runID's workflow (the
+// workflow ID is the run ID) through the strongly consistent Describe call and
+// decodes its start-owner memo. A memo that does not decode is an error, never
+// an absent owner.
+func DescribeStarted(ctx context.Context, describer workflowDescriber, runID string) (StartedExecution, error) {
+	description, err := describer.DescribeWorkflowExecution(ctx, runID, "")
 	if err != nil {
-		return engine.StartResult{}, err
+		return StartedExecution{}, err
 	}
-	if description == nil || description.GetWorkflowExecutionInfo() == nil {
-		return engine.StartResult{}, errors.New("engine: existing execution description is incomplete")
+	info := description.GetWorkflowExecutionInfo()
+	if info == nil {
+		return StartedExecution{}, errors.New("engine: existing execution description is incomplete")
 	}
-	if description.GetWorkflowExecutionInfo().GetType().GetName() != "Run" {
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
-	}
-	fields := description.GetWorkflowExecutionInfo().GetMemo().GetFields()
-	payload, exists := fields[StartOwnerMemoKey]
+	started := StartedExecution{Status: info.GetStatus(), Engine: info.GetType().GetName() == "Run"}
+	payload, exists := info.GetMemo().GetFields()[StartOwnerMemoKey]
 	if !exists {
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+		return started, nil
 	}
 	var owner StartOwnerMemo
 	if err := converter.GetDefaultDataConverter().FromPayload(payload, &owner); err != nil {
-		return engine.StartResult{}, errors.New("engine: existing start-owner memo is invalid")
+		return StartedExecution{}, errors.New("engine: existing start-owner memo is invalid")
 	}
+	started.Owner = &owner
+	return started, nil
+}
+
+// classifyExisting returns the matched execution's input for confirmation.
+// Recovery may recognize a legacy encoding, but must never persist new-input
+// pins for an execution whose immutable memo still identifies the old input.
+func (s *TemporalStarter) classifyExisting(ctx context.Context, in engine.RunInput) (engine.StartResult, engine.RunInput, error) {
+	describer, ok := s.client.(workflowDescriber)
+	if !ok {
+		return engine.StartResult{}, in, errors.New("engine: cloud starter cannot describe existing execution")
+	}
+	started, err := DescribeStarted(ctx, describer, in.RunID)
+	if err != nil {
+		return engine.StartResult{}, in, err
+	}
+	if !started.Engine || started.Owner == nil {
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
+	}
+	owner := *started.Owner
 	expected, err := startOwner(in)
 	if err != nil {
-		return engine.StartResult{}, err
+		return engine.StartResult{}, in, err
+	}
+	if owner.InstanceID == expected.InstanceID && owner.InputDigest != expected.InputDigest &&
+		owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch > 0 && owner.OwnerEpoch < in.OwnerEpoch && owner.StarterID != "" {
+		for _, candidate := range legacyStartCandidates(in) {
+			candidateOwner, candidateErr := startOwner(candidate)
+			if candidateErr != nil {
+				return engine.StartResult{}, in, candidateErr
+			}
+			if owner.InputDigest == candidateOwner.InputDigest {
+				// Confirm the input actually running, so persisted pins keep its
+				// original posture, annotations, labels, and memo digest during adoption.
+				in, expected = candidate, candidateOwner
+				break
+			}
+		}
 	}
 	if owner.InstanceID != expected.InstanceID || owner.InputDigest != expected.InputDigest {
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
 	}
 	if in.OwnerEpoch != 0 && (owner.AcceptanceID == "" || owner.OwnerEpoch < 1 || owner.StarterID == "") {
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
 	}
 	switch {
 	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch == in.OwnerEpoch && owner.StarterID == in.StarterID:
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true}, in, nil
 	case owner.AcceptanceID == in.AcceptanceID && owner.OwnerEpoch < in.OwnerEpoch:
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, nil
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, Adopt: true}, in, nil
 	default:
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, nil
+		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true, NotMine: true}, in, nil
 	}
+}
+
+// legacyStartCandidates lists the explicitly supported predecessor encodings
+// of in: annotation-less input from before annotations were pinned,
+// label-less input from before workflow labels were pinned, the opposite
+// child-workflow posture from before a config rollback/re-enable, and every
+// combination of those. Every other input field remains covered by the digest.
+func legacyStartCandidates(in engine.RunInput) []engine.RunInput {
+	candidates := make([]engine.RunInput, 0, 7)
+	for _, flipPosture := range []bool{false, true} {
+		base := in
+		if flipPosture {
+			base.ChildWorkflowsEnabled = !in.ChildWorkflowsEnabled
+			candidates = append(candidates, base)
+		}
+		if len(in.Annotations) > 0 {
+			stripped := base
+			stripped.Annotations = nil
+			candidates = append(candidates, stripped)
+		}
+		if len(in.WorkflowLabels) > 0 {
+			stripped := base
+			stripped.WorkflowLabels = nil
+			candidates = append(candidates, stripped)
+			if len(in.Annotations) > 0 {
+				stripped.Annotations = nil
+				candidates = append(candidates, stripped)
+			}
+		}
+	}
+	return candidates
 }
 
 // isAlreadyStarted reports whether err is Temporal's "already started" error.
@@ -199,14 +272,26 @@ func runMemo(in engine.RunInput) (map[string]interface{}, error) {
 // startOwner binds immutable input identity while allowing a successor epoch.
 func startOwner(in engine.RunInput) (StartOwnerMemo, error) {
 	owner := StartOwnerMemo{AcceptanceID: in.AcceptanceID, OwnerEpoch: in.OwnerEpoch, StarterID: in.StarterID, InstanceID: in.InstanceID}
-	in.OwnerEpoch, in.StarterID = 0, ""
-	raw, err := json.Marshal(in)
+	digest, err := InputDigest(in)
 	if err != nil {
 		return StartOwnerMemo{}, err
 	}
-	sum := sha256.Sum256(raw)
-	owner.InputDigest = "sha256:" + hex.EncodeToString(sum[:])
+	owner.InputDigest = digest
 	return owner, nil
+}
+
+// InputDigest is a start's immutable input identity: the RunInput without the
+// owner epoch and starter, which a lease successor may change. An existing
+// workflow is adopted only when its start-owner memo carries this digest (or
+// the explicitly matched predecessor encoding in classifyExisting).
+func InputDigest(in engine.RunInput) (string, error) {
+	in.OwnerEpoch, in.StarterID = 0, ""
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // New requires a durable admission adapter before any Temporal operation.

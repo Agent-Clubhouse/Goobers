@@ -9,7 +9,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
-	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // R9 (finding 002, decision 005): local-runner behaviours have NO engine
@@ -127,9 +126,6 @@ func UnsupportedFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 		out = append(out, &UnsupportedFeatureError{Feature: "spec.parallels", Err: ErrParallelsUnsupported})
 	}
 	for _, t := range spec.Tasks {
-		if t.ChildWorkflows != nil {
-			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.childWorkflows", Err: wf.ErrChildWorkflowExecutionUnsupported})
-		}
 		if t.Experiment != nil {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
 		}

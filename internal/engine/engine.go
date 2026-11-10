@@ -36,6 +36,10 @@ const (
 	StatusFailed = "failed"
 )
 
+const cancelSafeStageJournalChange = "cancel-safe-stage-journal-v1"
+
+type cancelSafeStageJournalKey struct{}
+
 const (
 	// maxSteps bounds the number of state transitions in a single run, a
 	// last-resort guard against a definition that loops (WF-015 within a
@@ -67,21 +71,28 @@ const (
 type RunInput struct {
 	// childLineage is derived only from a verified frozen binding during workflow execution.
 	childLineage *journal.ChildLineage
-	// FrozenChild is internal protocol data; the production Run entry refuses it.
+	// FrozenChild is an immutable admission reference. Production Run verifies
+	// its lineage and loads the parent permission from its pinned manifest.
 	FrozenChild *ChildRunBinding `json:"frozenChild,omitempty"`
 	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
 	SelfExecutionDenied bool   `json:"selfExecutionDenied,omitempty"`
 	InstanceID          string `json:"instanceId,omitempty"`
 	RunID               string `json:"runId"`
 	// StartPredecessorEpoch is admission-only proof, never serialized to Temporal.
-	StartPredecessorEpoch  int64              `json:"-"`
-	AcceptanceID           string             `json:"acceptanceId,omitempty"`
-	OwnerEpoch             int64              `json:"ownerEpoch,omitempty"`
-	StarterID              string             `json:"starterId,omitempty"`
-	Gaggle                 string             `json:"gaggle"`
-	WorkflowName           string             `json:"workflowName"`
-	Version                int                `json:"version"`
-	DSLVersion             string             `json:"dslVersion,omitempty"`
+	StartPredecessorEpoch int64  `json:"-"`
+	AcceptanceID          string `json:"acceptanceId,omitempty"`
+	OwnerEpoch            int64  `json:"ownerEpoch,omitempty"`
+	StarterID             string `json:"starterId,omitempty"`
+	Gaggle                string `json:"gaggle"`
+	WorkflowName          string `json:"workflowName"`
+	Version               int    `json:"version"`
+	DSLVersion            string `json:"dslVersion,omitempty"`
+	// Annotations is part of the digested definition, pinned with Spec.
+	// Absent in old histories; never recovered from current configuration.
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// WorkflowLabels carries the Workflow object's metadata.labels outside the
+	// digested definition, matching the local runner's immutable journal pin.
+	WorkflowLabels         map[string]string  `json:"workflowLabels,omitempty"`
 	WorkflowDigest         string             `json:"workflowDigest"`
 	PreviewFeaturesEnabled *bool              `json:"previewFeaturesEnabled,omitempty"`
 	Spec                   apiv1.WorkflowSpec `json:"spec"`
@@ -187,6 +198,12 @@ type RunInput struct {
 	// before the protocol existed, and every lane with no human gate — is a
 	// complete no-op: no hold, no extra journal event, byte-identical history.
 	HITL *HITLPolicy `json:"hitl,omitempty"`
+	// ChildWorkflowsEnabled pins the instance's generated-child posture
+	// (engine.childWorkflows, #8085 d) into the run at start, so a change
+	// to the switch affects new runs only. false (every run started before
+	// the switch existed, and every instance that did not opt in) refuses a
+	// definition declaring task.childWorkflows before any stage, as before.
+	ChildWorkflowsEnabled bool `json:"childWorkflowsEnabled,omitempty"`
 	// RoleRoutedBacklogProvider names the gaggle's backlog provider when its
 	// backlog is routed by role to a provider other than RepoRef's: a GitHub
 	// or Gitea backlog for Azure DevOps code (topology (b),
@@ -264,15 +281,25 @@ func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
 
 func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err := wf.RefuseChildWorkflowExecution(in.Spec); err != nil && !childProtocolEnabled(ctx) {
-		return RunResult{}, err
+		if !childWorkflowsEnabled(ctx, in) {
+			return RunResult{}, err
+		}
+		ctx = workflow.WithValue(ctx, childProtocolContextKey{}, true)
 	}
 	if err := refuseUnassembledFanOut(ctx, in); err != nil {
 		return RunResult{}, err
 	}
 	in.Item = normalizeItemIntegrity(in.Item)
+	definition := in.definition()
+	if workflow.GetVersion(ctx, workflowDefinitionAnnotationsChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		// Old histories journaled the definition without annotations. Preserve
+		// those recorded bytes and their digest on replay.
+		definition.Annotations = nil
+	}
 	m, err := wf.Compile(
-		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
+		definition,
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
+		wf.WithLabels(in.WorkflowLabels),
 	)
 	if err != nil {
 		return RunResult{}, err
@@ -284,6 +311,11 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	ctx = workflow.WithValue(ctx, cancelSafeStageJournalKey{},
+		workflow.GetVersion(
+			ctx, cancelSafeStageJournalChange,
+			workflow.DefaultVersion, 1,
+		) != workflow.DefaultVersion)
 	enableHumanGateDecisionOwner(ctx, rec, in)
 	if err := rec.initializeFanOut(ctx, in); err != nil {
 		return RunResult{}, err
@@ -300,6 +332,7 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	}
 	gateDecisions := newGateDecisionSession(in, m, func() uint64 { return hitl.generation })
 	hitl.gateDecisions = gateDecisions
+	bindOperatorRequestLedger(ctx, hitl, gateDecisions)
 	if err := gateDecisions.register(ctx); err != nil {
 		return RunResult{}, fmt.Errorf("engine: register human-gate decision handler: %w", err)
 	}
@@ -355,6 +388,9 @@ func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 		// are recorded.
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
+		if handled, reconcileErr := hitl.cancelTerminalDelivery(abortCtx); handled {
+			return RunResult{}, errors.Join(err, reconcileErr)
+		}
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
 		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runsemantics.RunCanceledErrorCode
 		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
@@ -633,7 +669,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if derr != nil {
 				return RunResult{}, derr
 			}
-			pointers = gatePointers
+			// Reviewer diff is private input to this gate, not a downstream
+			// producer artifact. Preserve the old propagation only on replay.
+			if workflow.GetVersion(ctx, reviewerEvidenceScopeChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				pointers = gatePointers
+			}
 			// #3843, BEFORE the outcome is resolved: both finding
 			// transitions can turn a needs-changes verdict into a pass, so
 			// reconciling afterwards would route the run on a decision the
@@ -1004,9 +1044,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			activityName := ActInvokeGoober
+			if cancelSafeStageJournal(ctx) {
+				activityName = actInvokeGooberCancelSafe
+			}
 			args := []any{attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout}
 			if len(bindings.Exact) > 0 {
 				activityName = ActInvokeGooberExact
+				if cancelSafeStageJournal(ctx) {
+					activityName = actInvokeGooberExactCancelSafe
+				}
 				args = append(args, bindings.Exact)
 			}
 			err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
@@ -1037,9 +1083,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		activityName := ActRunDeterministic
+		if cancelSafeStageJournal(ctx) {
+			activityName = actRunDeterministicCancelSafe
+		}
 		args := []any{attemptEnv, run, workspaceBranch, workspaceDelta}
 		if len(bindings.Exact) > 0 {
 			activityName = ActRunDeterministicExact
+			if cancelSafeStageJournal(ctx) {
+				activityName = actRunDeterministicExactCancelSafe
+			}
 			args = append(args, bindings.Exact)
 		}
 		err := workflow.ExecuteActivity(ctx, activityName, args...).Get(ctx, &result)
@@ -1099,13 +1151,19 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		var outcome string
 		if err := evaluateWithInfraRetry(ctx, g, rec, "", func(ctx workflow.Context, _ journal.AttemptClass) error {
-			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
+			activityName := ActEvaluateAutomated
+			if cancelSafeStageJournal(ctx) {
+				activityName = actEvaluateAutomatedCancelSafe
+			}
+			return workflow.ExecuteActivity(
+				ctx, activityName, conf, env).Get(ctx, &outcome)
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
 		}
 		return outcome, nil, GateReviewResult{}, nil
 
 	case apiv1.EvaluatorAgentic:
+		rec.prepareHumanGateRerun(ctx, g.Name, &ev, &priorDiffDigest, gatePolicyAttempts)
 		// The reviewer runs a real goober subprocess, so — unlike an
 		// automated/human gate — it needs its capability-scoped credentials
 		// (#294). AgenticGate carries no stage-level capabilities, so they are
@@ -1207,7 +1265,11 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 				if number, ok := reviewerNumber(ctx); ok {
 					attemptEnv.Attempt = int32(number)
 				}
-				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
+				activityName := ActReviewGoober
+				if cancelSafeStageJournal(ctx) {
+					activityName = actReviewGooberCancelSafe
+				}
+				return workflow.ExecuteActivity(ctx, activityName, attemptEnv, workspaceBranch, workspaceDelta,
 					g.EffectiveWorkspace(), priorDiffDigest, ev.RequireDiff).Get(ctx, &review)
 			})
 		}); err != nil {
@@ -1289,6 +1351,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		TaskID:           in.RunID + ":" + stateName,
 		InstanceID:       in.InstanceID,
 		WorkflowID:       in.WorkflowName,
+		DSLVersion:       in.DSLVersion,
 		RunID:            in.RunID,
 		TriggerRef:       in.TriggerRef,
 		Gaggle:           in.Gaggle,
@@ -1348,7 +1411,12 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, ""))
+	options := stageActivityOptions(limits, "")
+	if cancelSafeStageJournal(ctx) {
+		options.WaitForCancellation = true
+		options.HeartbeatTimeout = dispatchHeartbeatTimeout
+	}
+	return workflow.WithActivityOptions(ctx, options)
 }
 
 // stageActivityOptions builds the options every engine activity dispatches
@@ -1389,7 +1457,13 @@ func stageActivityOptions(limits apiv1.Limits, taskQueue string) workflow.Activi
 // engine.NewTemporalStarter taking a single queue was never the obstacle it
 // looked like. It is the workflow's queue, and that is correct.
 func stageActivityContextOn(ctx workflow.Context, limits apiv1.Limits, capabilities []string) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, stageTaskQueue(ctx, capabilities)))
+	options := stageActivityOptions(
+		limits, stageTaskQueue(ctx, capabilities))
+	if cancelSafeStageJournal(ctx) {
+		options.WaitForCancellation = true
+		options.HeartbeatTimeout = dispatchHeartbeatTimeout
+	}
+	return workflow.WithActivityOptions(ctx, options)
 }
 
 // stageTaskQueue derives a stage's task queue from its declared platform

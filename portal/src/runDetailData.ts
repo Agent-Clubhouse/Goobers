@@ -166,6 +166,9 @@ export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | und
   let failingStage: RunEvent | undefined;
   let finished: RunEvent | undefined;
   for (const event of orderRunEvents(events)) {
+    if (reopensRun(event)) {
+      errored = failingStage = finished = undefined;
+    }
     if (event.error && (event.error.code || event.error.message)) {
       errored = event;
     }
@@ -705,6 +708,10 @@ export function evidenceDecision(
   return undefined;
 }
 
+function reopensRun(event: RunEvent): boolean {
+  return event.type === "run.resumed" || event.type === "stage.rerun.requested" || event.type === "gate.overridden";
+}
+
 export function deriveNodeStates(
   graph: WorkflowGraph,
   events: RunEvent[],
@@ -720,6 +727,10 @@ export function deriveNodeStates(
   for (const event of orderRunEvents(events)) {
     if (event.seq > selectedSeq) {
       break;
+    }
+    if (reopensRun(event)) {
+      terminal = false;
+      activeNodeId = undefined;
     }
     if (event.type === "run.finished") {
       if (activeNodeId) {

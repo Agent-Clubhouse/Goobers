@@ -22,12 +22,17 @@ back runs. The contract and its limits are specified in the
 
 Backprop is a **preview** feature (`workflow.spec.backprop.enabled`,
 `workflow.spec.backprop.mode`, `workflow.spec.backprop.version`,
-`workflow.spec.backprop.granularity`, and `gaggle.spec.backprop.mode` in the
+`workflow.spec.backprop.granularity`,
+`workflow.spec.backprop.groundTruth.sources`, `gaggle.spec.backprop.mode`,
+`gaggle.spec.backprop.version`, `gaggle.spec.backprop.granularity`, and
+`gaggle.spec.backprop.groundTruth.sources` in the
 [feature matrix](../feature-matrix.md)).
 Today:
 
-- Active enrollment is **per workflow** only. A gaggle can observe its
-  workflows in shadow mode, but it cannot enroll them.
+- A gaggle can set Backprop defaults that its workflows inherit: mode
+  (including active enrollment), version, granularity, and accepted
+  ground-truth label sources (see
+  [Set Backprop defaults for a whole gaggle](#set-backprop-defaults-for-a-whole-gaggle)).
 - Attribution is computed **once, at run end** by default. Opting into
   `granularity: stage` also writes read-only per-stage checkpoints (see
   [Per-stage checkpoints](#per-stage-checkpoints)) for active runs only; shadow
@@ -42,12 +47,172 @@ Today:
   [Agent claims](#agent-claims)). Claims are evidence only: they are listed in
   `attribution.json` and cited on cause findings, but never change credit.
   Later stages read earlier claims with `goobers telemetry claims`.
-- Cohorts and fault-audit findings are JSON only: the daemon's telemetry stats
-  read API and `goobers telemetry-query`. The `goobers telemetry stats` CLI
-  (text or `--json`) reads only the local rollup and does not include them.
+- **Insight > Backprop** shows recorded cohorts and fault-domain findings from
+  the daemon's telemetry stats read API. Filter by gaggle/workflow and window,
+  then workload, effective version, minimum confidence, or recorded node/model
+  path. Stage-scoped aggregation is unavailable. The same records are available
+  through `goobers telemetry-query`; the `goobers telemetry stats` CLI (text or
+  `--json`) reads only the local rollup and does not include them.
+
+### Inspect recorded cohorts
+
+Open **Insight**, select **Backprop**, and choose a scope and time window.
+The section is linkable as `#/insight?section=backprop`; scope and window stay
+in the URL when switching views. Cohort path filters are local to this view
+and do not filter the separately labeled fault audit.
+
+Each returned top path separates its signed outcome score from unsigned
+responsibility and confidence. Scores use the backend's ground-truth-weighted
+aggregation; older payloads without signed scores display **Unavailable**, not
+a positive score inferred from responsibility. A measured zero remains zero.
+Only the backend's bounded top paths are returned, not a complete graph.
+
+Expand supporting evidence or counterevidence to inspect recorded run/journal
+links and artifact provenance. These are recorded references, not proof that an
+artifact was independently verified. Fault-audit truncation is labeled partial;
+missing attribution and genuinely empty observation windows are distinguished.
+
+This read-only view does not infer a governed rotation decision, remediation
+PR/CI/rollout state, or measured causal improvement. Those statuses are explicitly
+unavailable from this endpoint. A finding's verification state or filing
+threshold is not approval to change or disable a workflow.
 
 These gaps are tracked under the Backprop scopes epic
 ([#7121](https://github.com/Agent-Clubhouse/Goobers/issues/7121)).
+
+## Scoped verification evidence
+
+An explicitly opted-in **deterministic** checker adapter can publish scoped
+verification evidence. The shipped `kind: tlc` adapter actually executes a
+pinned independent TLC checker against a bounded finite transition graph or
+an explicitly opted-in, entirely operator-reviewed native TLA+ model.
+It snapshots candidate bytes separately from operator-reviewed specification,
+configuration, and tool/runtime bytes, records execution evidence, and publishes
+a runner-owned report. It neither trusts agent-authored success reports nor
+downloads production tools. See the [complete offline setup and example](../../examples/backprop-tlc/README.md).
+
+```yaml
+tasks:
+  - name: verify-model
+    type: deterministic
+    run:
+      command: ["tlc"]
+      workspace: repo
+    inputs:
+      kind: tlc
+      tlcManifest: manifest.json
+      tlcModel: examples/backprop-tlc/positive.json
+      timeout: 30s
+```
+
+This opt-in path uses the local self runner and existing shell process/trust
+safeguards. It requires no credentials. The exact `command: ["tlc"]` is a
+declarative built-in marker, never PATH-resolved or executed: the runner builds
+the pinned Java/TLC command. Other commands, arguments, scripts, and environment
+overrides are refused; global command/script admission guards remain unchanged.
+The [complete workflow example](../../examples/backprop-tlc/workflow.yaml) is
+schema-validated, compiled, and dispatched through production registration by
+the integration test. The manifest lives in
+the runner's selected configuration directory, outside the agent-editable
+checkout. Editable graphs contain integer states/edges only: arbitrary candidate
+TLA+, unchecked assumptions, admitted obligations, and module substitutions are
+not accepted as candidate inputs. An invariant violation requires TLC's concrete trace and exit 12;
+only completed model checking with an empty state queue can report `proven`.
+Missing/mismatched tools or changed spec/config fail closed; timeout, crash,
+truncation, simulation, and incomplete checks never report proven. Successful
+stage execution means the adapter completed its report, **not** that the outcome
+is proven or that any gate approved the candidate.
+
+The claim is limited to the exact finite graph and reviewed invariant.
+Deadlocks/liveness and Go refinement are not checked; reports explicitly retain
+TLC's 64-bit fingerprint collision caveat. This is not an unbounded program
+proof. Model-checking Goobers itself is separate work in
+[#8314](https://github.com/Agent-Clubhouse/Goobers/issues/8314). Its native assets
+can be checked directly with manifest `mode: reviewed-native`, a pinned module,
+source and config under trusted runner config, and **no** `tlcModel` input.
+Keep the same command marker; native mode may use `workspace: scratch`.
+Only closed `Naturals`/`Integers` imports and explicit invariant configuration
+are supported. The requested invariant must be configured; additional invariants
+such as `TypeOK` remain enforced. The report binds the actual native source
+bytes and finite bounds, never a graph translation or a Go correctness claim.
+See the example's [native-mode boundaries](../../examples/backprop-tlc/README.md#reviewed-native-tla-mode).
+
+The lower-level shell integration remains available for an operator-supplied,
+reviewed adapter. Such a wrapper must itself invoke the independent checker
+and write one JSON report to stdout; ordinary logging belongs on stderr:
+
+```yaml
+tasks:
+  - name: verify
+    type: deterministic
+    run:
+      command: ["trusted-checker-wrapper"]
+    inputs:
+      verificationReport: "true"
+```
+
+`trusted-checker-wrapper` is not a shipped command and that shell opt-in does
+not run an independent checker by itself. Keep its checker, specification,
+and execution policy outside agent-editable implementation/proof inputs.
+
+The report contract (`goobers.dev/backprop/verification/v1`) is published in
+[`backprop-verification-v1.schema.json`](../../api/schemas/backprop-verification-v1.schema.json)
+and discoverable with `goobers schema backprop-verification-v1`:
+
+| Field | Meaning |
+|---|---|
+| `schema` | The report contract above. |
+| `property` | Bounded stable identifier for the property being checked. |
+| `subject` | SHA-256 content digest of the exact source/binary/input package checked. |
+| `specification` | SHA-256 content digest of the reviewed specification. |
+| `context` | SHA-256 content digest of a manifest pinning stable dependencies, semantics, bounds, and other execution assumptions. Subject-specific proof artifacts belong in `evidence`. |
+| `checker` | Object with `name`, `version`, and SHA-256 executable `digest`. |
+| `assumptions` | Explicit array of assumptions; use `[]` for none. Ordering is significant when comparing repair scopes. |
+| `outcome` | `proven`, `counterexample`, or `inconclusive`. |
+| `evidence` | Up to eight SHA-256 digests of recorded proof/checker/counterexample artifacts. Required for conclusive results. |
+| `reason` | Required explanation for an inconclusive result. |
+| `repairs` | Optional earlier `verification:<journal-sequence>` counterexample ID in the same run; allowed only on a proven result. |
+
+Subject, specification, context, and evidence artifacts must already be
+recorded in this run's journal, in the checker branch or root branch. The
+checker adapter must verify that the bytes it actually checked match these
+identities; Backprop checks recorded provenance, not checker semantics.
+Never set `counterexample` merely because proof search failed. Timeouts,
+unsupported constructs, or incomplete obligations are inconclusive unless a
+violation was independently established. Wrappers must not report `proven`
+for admitted obligations, unapproved assumptions, or a weakened specification.
+
+The shell executor captures fresh stdout and emits a runner-owned annotation only
+after a successful command result. Nonzero exits, cancellation, executor errors,
+and truncated output cannot become verification evidence. A valid report's
+`inconclusive` or `counterexample` outcome may accompany exit zero: that means
+the adapter completed, not that the property holds. Malformed or oversized
+reports fail the opted-in stage. Reports are limited to 16 KiB, 16 assumptions,
+eight evidence digests, and 128 reports per run; text fields are bounded and
+unknown fields are rejected.
+
+Backprop lists accepted-provenance reports in `attribution.verifications`,
+unresolved provenance in `attribution.unverifiedVerifications`, and malformed
+or excess reports in `attribution.droppedVerifications`. Each accepted report
+links `subjectNodeId` to the graph artifact it checked, identifies the
+checker stage/attempt/branch and stdout source, and records the successful
+stage completion sequence. Reports also appear in stage checkpoints and
+`goobers trace --json`; text traces summarize outcomes and repair links.
+The cohort dashboard and fault auditor do not use these results for scoring.
+
+`repairVerified: true` means a later proven result checked a **changed subject**
+with the same property, specification, context, checker, assumptions, and branch
+as an explicitly referenced, completed counterexample. An unmatched repair
+reference retains the independently reported outcome but has a `repairReason`
+and no verified repair flag. This is scoped repair evidence, not proof of causal
+blame, preservation of every behavior, or improvement on other tasks. It does
+not reproduce the old counterexample on the new subject. Cross-run repair
+matching is not supported.
+
+All results apply only to their pinned subject and scope. They do not prove
+the current checkout or an entire library correct, and must be rerun when bound
+inputs change. They never change credit scores, failure classes, gates,
+permissions, tests/CI requirements, or promotion decisions.
 
 ## Enable Backprop for a workflow
 
@@ -75,8 +240,10 @@ spec:
 - `enabled: true` is the same as `mode: active`. `enabled: true` is rejected
   alongside `mode: off` or `mode: shadow`. To try Backprop without enrolling,
   see [Observe a workflow in shadow mode](#observe-a-workflow-in-shadow-mode).
-- Omitting `backprop`, or setting `enabled: false` or `mode: off`, performs no
-  attribution work.
+- `mode: off` performs no attribution work. Omitting `backprop`, or setting
+  `enabled: false` without a mode, performs none unless the workflow's gaggle
+  sets a default (see
+  [Set Backprop defaults for a whole gaggle](#set-backprop-defaults-for-a-whole-gaggle)).
 - The preview acknowledgement belongs on each Workflow. A Manifest-level
   annotation is deprecated and does not authorize anything.
 - A workflow pinned to an older `dslVersion` that declares `backprop` fails
@@ -119,10 +286,10 @@ report. The fault audit, finding filing, cohorts, and `goobers trace` read only
 `goobers status` prints
 `backprop: shadow (v1)` and the portal workflow page shows **Shadow (v1)**.
 
-### Observe a whole gaggle without editing its workflows
+### Set Backprop defaults for a whole gaggle
 
-To observe existing workflows without editing or redeploying them, set the
-shadow override on their Gaggle:
+To enroll or observe existing workflows without editing each one, set
+Backprop defaults on their Gaggle:
 
 ```yaml
 apiVersion: goobers.dev/v1alpha1
@@ -131,21 +298,59 @@ metadata:
   name: goobers
 spec:
   backprop:
-    mode: shadow   # off | shadow
+    mode: active        # off | shadow | active
+    version: v1         # optional; defaults to v1
+    granularity: stage  # optional; run | stage
+    groundTruth:        # optional; accepted ground-truth label sources
+      sources: [human]  # [] accepts no labels
 ```
 
-Each workflow's effective mode is resolved in this order:
+Each workflow's effective config is resolved in this order:
 
 1. The workflow's own `backprop.mode`, if set. `mode: off` opts a workflow out
-   of its gaggle's override.
+   of its gaggle's defaults; `mode: shadow` keeps it in shadow under an active
+   gaggle.
 2. The workflow's `backprop.enabled: true` (active).
 3. The gaggle's `backprop.mode`.
 4. Otherwise, off.
 
-The override can only produce shadow mode, never active, so it never files
-findings. Override-observed runs write nothing at run end. Their analysis is
-computed from the run journal when you request the comparison report, and
-`goobers status` and the portal show them as `shadow (v1)`.
+`backprop.enabled: false` without a `mode` does not opt out; it inherits the
+gaggle default. A workflow that keeps its own mode still inherits the gaggle's
+`granularity` when it does not set one, and the gaggle's `version` when it
+does not pin one.
+
+`groundTruth.sources` lists the label sources whose verdicts Backprop accepts
+for a workflow's runs. `human` (labels recorded with `goobers telemetry label`)
+is the only source today. A workflow inherits the gaggle's list unless it sets
+its own `backprop.groundTruth`; an empty list (`sources: []`) opts the workflow
+out of ground-truth labels. With no list anywhere, every supported source is
+accepted. A workflow can override only this list and keep the gaggle's mode:
+
+```yaml
+spec:
+  backprop:
+    enabled: false      # no mode: inherit the gaggle's mode
+    version: v1
+    groundTruth:
+      sources: []       # this workflow accepts no labels
+```
+
+The list a run was attributed under is pinned with its definition.
+`goobers telemetry label` refuses a source the run does not accept, and
+aggregates ignore any stored label from such a source.
+
+An **active** gaggle default reaches only workflows that can compile Backprop:
+`dslVersion` `"3.0"` or later and the workflow's own
+`goobers.dev/allow-preview-features: "true"` annotation. Other workflows are
+left as they are and `goobers status` shows them as off. For an eligible
+workflow, the inherited config is written into the workflow definition the
+daemon loads, so the definition each run pins records exactly what that run
+was attributed under. Only runs that start after the change are attributed.
+
+A **shadow** gaggle default reaches every workflow, whatever its DSL version.
+It is resolved when you request the comparison report, writes nothing at run
+end, and never files findings. `goobers status` and the portal show
+override-observed workflows as `shadow (v1)`.
 
 ### Compare shadow findings with what happened
 
@@ -348,6 +553,57 @@ returns the eval summary as `attributionEval`, which the portal's Insight page
 shows as "Attribution accuracy". Only fileable findings start the
 `telemetry-query` report cooldown. See
 [Attribution accuracy eval](../design/credit-graph.md#attribution-accuracy-eval).
+
+To measure merge-review itself, build an R-SZZ dataset of past bug fixes and
+replay the reviewer on the commits that introduced them
+(`go run ./test/reviewereval build`, then `replay` and `compare`). Publishing
+the eval split's result (`compare -publish=./instance` or `publish`) makes the
+stats API return its recall, precision, and cost per bug as `reviewerEval`. See
+[Reviewer recall eval](../design/credit-graph.md#reviewer-recall-eval-r-szz).
+
+## Read a gaggle-wide report
+
+`goobers telemetry gaggle` summarizes one gaggle's active Backprop records
+across all its workflows:
+
+```sh
+goobers telemetry gaggle --gaggle=goobers ./instance
+goobers telemetry gaggle --gaggle=goobers --json --since=2026-10-01T00:00:00Z ./instance
+```
+
+The window covers runs started in `[--since, --until)`. `--until` defaults to
+now and `--since` to seven days earlier. The report includes:
+
+- **Per-workflow credit and blame share.** Each complete record counts as one
+  unit: credit when its outcome was positive, blame when it was negative, and
+  neither when it was neutral (an escalated run; counted as `neutral`). Each share is
+  the workflow's units divided by the gaggle's total. Insufficient-evidence and
+  failed records are counted but carry no share.
+- **Ground truth per workflow.** `groundTruthSources` lists the label sources
+  the workflow's runs accept (`[]` when every run opted out). `groundTruth`
+  counts labeled, correct, and incorrect runs using accepted labels only, and
+  `ignoredLabelRuns` counts runs whose labels all came from a source they do
+  not accept.
+- **Per-stage credit and blame share.** Each record's stage contributions are
+  normalized to one unit before pooling, so long runs do not outweigh short
+  ones.
+- **Top recurring findings.** Up to ten cause classes that recurred at the
+  same workflow stage in at least two runs.
+- **Trend.** For each workflow, runs, failure rate (failed or aborted runs), and blame share compared
+  with the previous window of the same length.
+- **Cross-workflow links.** An edge from an earlier run to a later run, built
+  only from an identifier both runs recorded: the same external reference
+  (provider, kind, and ID; URLs are never compared) touched by runs of
+  different workflows, or a recorded continuation from a run of a different
+  workflow (a retry within the same workflow is not a link). Each workflow's
+  `downstreamFailures` counts failed runs of other workflows linked after its
+  runs. Nothing is inferred from timing or similarity.
+
+The report is read-only, never reads shadow records, and caps each window at
+500 records. When the cap or scan budget is reached, `truncated` (current
+window) or `previousTruncated` (previous window) is set and the text output
+prints a note. Runs whose journal cannot be read still count toward credit but
+are listed in `linkEvidenceUnavailable`, because their links are unknown.
 
 ## Record a fix and verify it
 

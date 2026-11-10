@@ -471,7 +471,7 @@ func newWireFixtures() wireFixtures {
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
 	return withChildWorkflowFixtures(wireFixtures{
-		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", WorkItemID: "42"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
 		CancelRequest:           CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
@@ -598,7 +598,7 @@ func newWireFixtures() wireFixtures {
 		},
 		RunAttribution: runAttributionFixture(timestamp),
 		RunDetail:      wireRunDetail(runSummary, graph, timestamp),
-		RunChildren:    readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}}},
+		RunChildren:    readservice.ChildHistoryPage{RunID: runSummary.ID, Gaggle: runSummary.Gaggle, Status: "recorded", ObservedAt: timestamp, Items: []readservice.ChildHistoryItem{{ChildID: "child-fixture", RunID: "child-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect", State: "failed", AcceptedAt: timestamp, UpdatedAt: timestamp, TerminalAt: &timestamp, CancellationRequested: true, Publication: &readservice.ChildPublicationHistory{Status: "recorded", Items: []readservice.ChildPublicationItem{{Action: "branch", State: "confirmed", Head: "factory/children/child-run", Base: "main", Commit: "abcdef"}, {Action: "pr", State: "effect_pending", Head: "factory/children/child-run", Base: "main", Commit: "abcdef", NeedsHuman: true}}}}, {ChildID: "child-held", RunID: "child-held-run", StageOccurrence: "inspect/branch0/visit1", InvocationKey: "inspect-novel", State: "queued", AcceptedAt: timestamp, UpdatedAt: timestamp, Admission: &readservice.ChildAdmissionHistory{State: "pending", Reason: "out-of-distribution", RequestedAt: timestamp, Novelty: &journal.ChildNovelty{Scored: true, ModelID: "model-1", ModelVersion: "workflowcluster.model/v1", FeatureVersion: "workflowcluster.features/v1", Nearest: "c2", NearestMedoid: "medoid-2", NearestSize: 41, NearestStable: true, Distance: 0.42, OutOfDistribution: true, HistoricalOutcome: &journal.ChildHistoricalOutcome{RunCount: 41, SuccessRate: 0.94}, HumanApprovalRequired: true}}}}},
 		RunEvents:      wireRunEvents(finishedAt, artifact),
 		StageAttempts: readservice.AttemptList{
 			RunID: "run-123",
@@ -1133,13 +1133,18 @@ func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequ
 func childWorkflowWireFixture() ChildWorkflowResponse {
 	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 	digest := "sha256:" + strings.Repeat("a", 64)
-	return ChildWorkflowResponse{ChildID: "child-1", AcceptanceID: "trigger-1", RunID: "run-1", InvocationKey: "inspect-1", Sequence: 1, State: "queued", SourceDigest: digest, CanonicalDigest: digest, ConfigDigest: digest, PolicyDigest: digest, WorkflowDigest: digest, AcceptedAt: at, UpdatedAt: at}
+	return ChildWorkflowResponse{ChildID: "child-1", AcceptanceID: "trigger-1", RunID: "run-1", InvocationKey: "inspect-1", Sequence: 1, State: "queued", SourceDigest: digest, CanonicalDigest: digest, ConfigDigest: digest, PolicyDigest: digest, WorkflowDigest: digest, AcceptedAt: at, UpdatedAt: at, Novelty: childWorkflowNoveltyFixture(), Admission: &ChildWorkflowAdmission{State: "pending", Reason: "out-of-distribution", RequestedAt: at}}
+}
+
+func childWorkflowNoveltyFixture() *ChildWorkflowNovelty {
+	return &ChildWorkflowNovelty{Scored: true, ModelID: "model-1", ModelVersion: "workflowcluster.model/v1", FeatureVersion: "workflowcluster.features/v1", Nearest: "c2", NearestMedoid: "medoid-2", NearestSize: 41, NearestStable: true, Distance: 0.42, OutOfDistribution: true, HistoricalOutcome: &ChildWorkflowHistoricalOutcome{RunCount: 41, SuccessRate: 0.94}, HumanApprovalRequired: true, Summary: "novel shape; nearest c2 at distance 0.42"}
 }
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures.ChildWorkflowSource = ChildWorkflowSourceRequest{Source: "kind: Workflow\n"}
 	fixtures.ChildWorkflowStatus = ChildWorkflowStatusRequest{InvocationKey: "inspect-1"}
 	fixtures.ChildWorkflowValidation = ChildWorkflowValidationResponse{Valid: false, Advisory: true, Diagnostics: []ChildWorkflowDiagnostic{{Code: "schema", Field: "dslVersion", Message: "explicit DSL 3.1 is required"}}}
+	fixtures.ChildWorkflowValidation.Novelty = childWorkflowNoveltyFixture()
 	fixtures.ChildWorkflow = childWorkflowWireFixture()
 	fixtures.ChildWorkflowResolve = ChildWorkflowResolveRequest{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest}
 	fixtures.ChildWorkflowResolution = ChildWorkflowResolutionResponse{InvocationKey: "inspect-1", Action: "merge", ResultRef: fixtures.ChildWorkflow.SourceDigest, RequestedAt: fixtures.ChildWorkflow.AcceptedAt, RequestDigest: fixtures.ChildWorkflow.SourceDigest, PlanPublished: false}

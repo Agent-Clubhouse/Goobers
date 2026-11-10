@@ -163,6 +163,25 @@ func TestFileStorageRejectsUnknownAssociationSchema(t *testing.T) {
 	}
 }
 
+func TestFileStorageLoadsAssociationWithoutProjections(t *testing.T) {
+	store, root, dir := saveTestAssociation(t)
+	path := filepath.Join(dir, associationFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"projections"`)) {
+		t.Fatalf("legacy fixture unexpectedly includes projections: %s", data)
+	}
+	association, err := store.LoadAssociation(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if association.Projections != nil {
+		t.Fatalf("projections = %v, want nil", association.Projections)
+	}
+}
+
 func saveTestAssociation(t *testing.T) (*FileStorage, string, string) {
 	t.Helper()
 	store, err := NewFileStorage(t.TempDir())

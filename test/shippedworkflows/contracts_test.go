@@ -3,6 +3,7 @@ package shippedworkflows
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -102,6 +103,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 		t.Skip("covered by the dedicated shipped-workflows CI tier")
 	}
 	root := repositoryRoot(t)
+	// Unique run IDs keep journals isolated while one production-style manager
+	// avoids rebuilding the same repository mirror for every terminal path.
+	contractEnvironment := newContractEnvironment(t)
 	configs := []struct {
 		name string
 		path string
@@ -113,6 +117,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 	for _, config := range configs {
 		config := config
 		t.Run(config.name, func(t *testing.T) {
+			t.Parallel()
 			set, report, err := instance.LoadConfigDir(config.path)
 			if err != nil {
 				t.Fatalf("load shipped config: %v\n%v", err, report)
@@ -146,6 +151,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				definition := loaded[key]
 				source := discovered[key]
 				t.Run(strings.ReplaceAll(key, "/", "_"), func(t *testing.T) {
+					t.Parallel()
 					def := workflow.Definition{
 						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec, Annotations: definition.Annotations,
 					}
@@ -166,7 +172,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 						t.Run(scenario.name, func(t *testing.T) {
 							t.Parallel()
 							script := newScenarioScript(definition, scenario)
-							localRunner, runsDir := newContractRunner(t, script, gateCapabilities)
+							localRunner, runsDir := contractEnvironment.newRunner(t, script, gateCapabilities)
 							runID := contractRunID(config.name, key, scenario.name)
 							_, runErr := localRunner.Start(context.Background(), runner.StartInput{
 								RunID:   runID,
@@ -1297,8 +1303,9 @@ func contractToken(value string) string {
 	return strings.NewReplacer("@", "", "/", "-", ":", "-", " ", "-").Replace(value)
 }
 
-func contractRunID(_, _, _ string) string {
-	return "wired-contract"
+func contractRunID(config, workflowKey, scenario string) string {
+	sum := sha256.Sum256([]byte(config + "\x00" + workflowKey + "\x00" + scenario))
+	return fmt.Sprintf("wired-contract-%x", sum[:12])
 }
 
 func gooberCapabilities(goobers []apiv1.Goober) map[string][]string {
@@ -1896,7 +1903,8 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 				}
 			}
 		}
-		if task.Workspace != apiv1.WorkspaceRepoReadOnly {
+		// A scratch workspace has no repository to commit to.
+		if task.Workspace != apiv1.WorkspaceRepoReadOnly && task.Workspace != apiv1.WorkspaceScratch {
 			if err := commitAgentChange(request.Workspace, stage, call); err != nil {
 				return err
 			}
@@ -2107,7 +2115,16 @@ func stageName(taskID string) string {
 	return taskID
 }
 
-func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities map[string][]string) (*runner.Runner, string) {
+type contractEnvironment struct {
+	instanceRoot string
+	manager      *worktree.Manager
+	runsDir      string
+	repository   string
+	resolver     credentials.Resolver
+	executable   string
+}
+
+func newContractEnvironment(t *testing.T) *contractEnvironment {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	manager, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -2124,10 +2141,21 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 	if err != nil {
 		t.Fatalf("resolve test executable: %v", err)
 	}
+	return &contractEnvironment{
+		instanceRoot: instanceRoot,
+		manager:      manager,
+		runsDir:      runsDir,
+		repository:   repository,
+		resolver:     resolver,
+		executable:   executable,
+	}
+}
 
+func (environment *contractEnvironment) newRunner(t *testing.T, script *scenarioScript, gateCapabilities map[string][]string) (*runner.Runner, string) {
+	t.Helper()
 	localRunner, err := runner.New(runner.Config{
 		NewDeterministic: func(rec runner.ArtifactRecorder, registrar runner.SecretRegistrar) (invoke.Deterministic, error) {
-			injector, err := credentials.NewInjector(resolver, nil, registrar)
+			injector, err := credentials.NewInjector(environment.resolver, nil, registrar)
 			if err != nil {
 				return nil, err
 			}
@@ -2151,11 +2179,11 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 				return nil, err
 			}
 			return &scriptedDeterministic{
-				shell: shell, builtins: builtins, executable: executable, script: script,
+				shell: shell, builtins: builtins, executable: environment.executable, script: script,
 			}, nil
 		},
 		NewAgentic: func(_ string, rec runner.ArtifactRecorder, registrar runner.SecretRegistrar) (invoke.Goober, error) {
-			injector, err := credentials.NewInjector(resolver, nil, registrar)
+			injector, err := credentials.NewInjector(environment.resolver, nil, registrar)
 			if err != nil {
 				return nil, err
 			}
@@ -2180,7 +2208,7 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 				injector,
 				spanRecorder,
 				rec,
-				harness.NewContextResolver(runDir, runsDir),
+				harness.NewContextResolver(runDir, environment.runsDir),
 				journal.Chain(registryScrubber, journal.NewPatternScrubber()),
 				"shipped-workflow contract fixture",
 			)
@@ -2188,17 +2216,22 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 		Automated:              gate.NewAutomatedEvaluator(),
 		MaxRepasses:            contractMaxRepasses,
 		GateGooberCapabilities: gateCapabilities,
-		Worktrees:              manager,
-		ScratchDir:             filepath.Join(instanceRoot, "scratch"),
-		RunsDir:                runsDir,
+		Worktrees:              environment.manager,
+		ScratchDir:             filepath.Join(environment.instanceRoot, "scratch"),
+		RunsDir:                environment.runsDir,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
-			return repository, nil
+			return environment.repository, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("create local runner: %v", err)
 	}
-	return localRunner, runsDir
+	return localRunner, environment.runsDir
+}
+
+func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities map[string][]string) (*runner.Runner, string) {
+	t.Helper()
+	return newContractEnvironment(t).newRunner(t, script, gateCapabilities)
 }
 
 func newFixtureRepository(t *testing.T) string {

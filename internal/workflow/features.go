@@ -129,6 +129,9 @@ func AllFeatures() []Feature {
 			features[i].Runtimes = slices.Clone(converted.Runtimes)
 		}
 	}
+	for _, feature := range inheritedV21Features(v20.AllFeatures()) {
+		merge(feature)
+	}
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
 	}
@@ -192,6 +195,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 		if def.Spec.Backprop.Granularity != "" {
 			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
 		}
+		if def.Spec.Backprop.GroundTruth != nil {
+			features = append(features, binaryLayerFeatureForDSL("workflow.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	features = ensureRuntimeSupport(features)
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
@@ -206,7 +212,6 @@ func ensureRuntimeSupport(features []Feature) []Feature {
 		engineLevel := RuntimeSupported
 		switch features[i].ID {
 		case "workflow.spec.parallels",
-			"task.childWorkflows",
 			"task.experiment":
 			engineLevel = RuntimeUnsupported
 		}
@@ -283,6 +288,15 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	}
 	if spec.Backprop != nil {
 		features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		if spec.Backprop.Version != "" {
+			features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
+		if spec.Backprop.Granularity != "" {
+			features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
+		if spec.Backprop.GroundTruth != nil {
+			features = append(features, binaryLayerFeatureForDSL("gaggle.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion))
+		}
 	}
 	features = ensureRuntimeSupport(features)
 	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil || spec.Backprop != nil {
@@ -296,7 +310,10 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 // changing a frozen interpreter's executable contract.
 func binaryLayerFeatures() []Feature {
 	return []Feature{
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("gaggle.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("gaggle.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeatureSince("gaggle.spec.health", "dev"),
@@ -304,6 +321,7 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeatureSince(featureRequireProviderAuthorization, "dev"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.granularity", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.groundTruth.sources", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.mode", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
@@ -318,7 +336,7 @@ func binaryLayerFeature(id FeatureID) Feature {
 }
 
 func binaryLayerFeatureSince(id FeatureID, since string) Feature {
-	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, v30.DSLVersion, supportmatrix.V31DSLVersion)
+	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, supportmatrix.V21DSLVersion, v30.DSLVersion, supportmatrix.V31DSLVersion)
 }
 
 func binaryLayerFeatureForDSL(id FeatureID, since string, versions ...string) Feature {

@@ -638,7 +638,7 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		return PreflightInfo{}, err
 	}
 	c.verifyLauncherUsageOutput(ctx, version, args)
-	capabilities, err := c.preflightPublicCapabilities(ctx)
+	capabilities, err := c.preflightPublicCapabilities(ctx, version)
 	if err != nil {
 		return PreflightInfo{}, err
 	}

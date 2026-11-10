@@ -23,6 +23,12 @@ const exemptions = [
   },
   {
     type: "files",
+    file: "src/test/computedColor.ts",
+    symbol: "src/test/computedColor.ts",
+    reason: "Test-only computed-color assertions shared by component contrast tests and helper tests.",
+  },
+  {
+    type: "files",
     file: "src/test/daemonFixtures.ts",
     symbol: "src/test/daemonFixtures.ts",
     reason: "Shared test fixture catalog; production must not import fixture data.",
@@ -72,6 +78,7 @@ const testOnlyExports = {
     "readStoredAttentionDismissals",
   ],
   "src/components/GaggleWorkflowExplorer.tsx": ["WorkflowPicker"],
+  "src/fluidUI.tsx": ["validateFluidUICustomization"],
   "src/components/RunStageInspector.tsx": ["TranscriptView"],
   "src/dataCache.ts": ["DATA_CACHE_TTL_MS"],
   "src/insightData.ts": [

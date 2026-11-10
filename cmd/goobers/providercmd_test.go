@@ -1436,11 +1436,12 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 			Body  string `json:"body"`
 			Head  string `json:"head"`
 			Base  string `json:"base"`
+			Draft bool   `json:"draft"`
 		}
 		decodeFakeJSON(r, &body)
 		num := s.nextPR
 		s.nextPR++
-		s.prs[num] = &fakePR{number: num, title: body.Title, body: body.Body, head: body.Head, base: body.Base, state: "open"}
+		s.prs[num] = &fakePR{number: num, title: body.Title, body: body.Body, head: body.Head, base: body.Base, draft: body.Draft, state: "open"}
 		writeFakeJSON(w, s.prJSON(s.prs[num]))
 	default:
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)

@@ -211,10 +211,11 @@ func TestEngineChildLegacyExecutionMarkerKeepsFence(t *testing.T) {
 
 func TestEngineChildFrozenInputRefusals(t *testing.T) {
 	binding, _ := encodedManifest(t, nil)
-	t.Run("production Run", func(t *testing.T) {
+	t.Run("legacy production Run", func(t *testing.T) {
 		var suite testsuite.WorkflowTestSuite
 		env := temporaltest.NewWorkflowEnvironment(&suite)
 		env.RegisterWorkflow(Run)
+		env.OnGetVersion("engine-frozen-child-posture-v1", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 		env.ExecuteWorkflow(Run, RunInput{RunID: binding.Child.RunID, Gaggle: "web", FrozenChild: &binding, LiveJournal: true, PreviewFeaturesEnabled: boolPointer(true)})
 		if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), "remains disabled") {
 			t.Fatalf("production Run executed a frozen child: %v", err)

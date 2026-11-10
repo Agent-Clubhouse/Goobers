@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,8 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-//go:embed templates/scaffold/*.tmpl
-var scaffoldTemplateFS embed.FS
+var scaffoldTemplateFS = instance.ScaffoldTemplateFS
 
 var scaffoldNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
@@ -300,7 +298,7 @@ func scaffoldFiles(kind, gaggleDir, name string) []scaffoldFile {
 	}
 	return []scaffoldFile{{
 		path:     filepath.Join(gaggleDir, "workflows", name+".yaml"),
-		template: "templates/scaffold/workflow.yaml.tmpl",
+		template: instance.ScaffoldWorkflowTemplate,
 	}}
 }
 

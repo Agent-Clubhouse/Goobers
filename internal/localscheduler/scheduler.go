@@ -240,6 +240,13 @@ type queueSaturationRecorder interface {
 	RecordSchedulerQueueSaturation(context.Context, []telemetry.QueueSaturationSample, *telemetry.WorkerAvailabilitySample)
 }
 
+// continuationClaimsRecorder is the optional second half of the periodic
+// snapshot: a recorder that also publishes waiting-continuation claims (#8186).
+// It is a separate interface so recorders written before it need no change.
+type continuationClaimsRecorder interface {
+	RecordContinuationClaims(context.Context, telemetry.ContinuationClaimsSample)
+}
+
 type runAdmission struct {
 	identity WorkflowIdentity
 	// executionWorkflow is a generated child name; identity remains its parent budget bucket.
@@ -468,6 +475,14 @@ func WithInstanceRunConditions(maxParallelRuns int, workflowBudgets map[string]i
 	}
 }
 
+// WithCadenceBudgetsDisabled opts out of hourly/daily admission ceilings for
+// every trigger. Explicit zero-budget stops and all other gates still apply.
+func WithCadenceBudgetsDisabled(disabled bool) Option {
+	return func(s *Scheduler) {
+		s.conditions.SetCadenceBudgetsDisabled(disabled)
+	}
+}
+
 // WithOpenPRCounter wires the cached open-PR counter that backs the MaxOpenPRs
 // readiness cap (#353). Optional — nil/unset leaves the cap unenforced, so a
 // workflow that sets MaxOpenPRs without a counter wired simply isn't throttled.
@@ -665,7 +680,7 @@ func (s *Scheduler) reconcileDurableState(
 	// destroyed runs/ (the durable run journals). It only ever moves the floor
 	// forward — a reset older than the rolling window is a natural no-op,
 	// since the window has already advanced past it.
-	if resetAt, ok, rerr := ReadRateReset(s.log.Dir()); rerr != nil {
+	if resetAt, ok, rerr := s.readRateReset(); rerr != nil {
 		return fmt.Errorf("localscheduler: read rate-limit reset: %w", rerr)
 	} else if ok && resetAt.After(startsCutoff) {
 		startsCutoff = resetAt
@@ -771,6 +786,10 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 		delete(s.reconciledRuns, runID)
 	}
 	s.mu.Unlock()
+	if (admitted && admission.workflowName() == workflow) || (reconciled && reconciledIdentity.Workflow == workflow) {
+		// An ended admission can never resume: its claim holds nothing (#8174).
+		s.conditions.ClearContinuationClaim(runID)
+	}
 
 	released := false
 	var releasedIdentity WorkflowIdentity
@@ -807,6 +826,7 @@ func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uin
 	}
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
+	s.conditions.ClearContinuationClaim(runID)
 
 	if !admission.suspended {
 		s.conditions.ReleaseWorkflow(admission.identity)
@@ -859,6 +879,7 @@ func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
 	}
 	delete(s.admittedRuns, runID)
 	s.mu.Unlock()
+	s.conditions.ClearContinuationClaim(runID)
 
 	if !admission.suspended {
 		s.conditions.ReleaseWorkflow(admission.identity)
@@ -1305,6 +1326,12 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 		workers = &telemetry.WorkerAvailabilitySample{OperatingSystem: runtime.GOOS, Available: available}
 	}
 	recorder.RecordSchedulerQueueSaturation(ctx, samples, workers)
+	if claims, ok := recorder.(continuationClaimsRecorder); ok {
+		stats := s.conditions.ContinuationClaims()
+		claims.RecordContinuationClaims(ctx, telemetry.ContinuationClaimsSample{
+			OperatingSystem: runtime.GOOS, Count: stats.Count, OldestSince: stats.Oldest, ObservedAt: now,
+		})
+	}
 }
 
 func queueSample(kind string, aggregate queueMetricAggregate, observedAt time.Time) telemetry.QueueSaturationSample {
@@ -1550,9 +1577,10 @@ type demandPoll struct {
 }
 
 type demandSnapshot struct {
-	ready         int
-	oldestReadyAt time.Time
-	observed      bool
+	claimReadFailed bool
+	ready           int
+	oldestReadyAt   time.Time
+	observed        bool
 }
 
 type scheduledDemand struct {
@@ -2033,6 +2061,10 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 }
 
 func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	if snapshot.claimReadFailed {
+		s.deferClaimReadDecision(poll)
+		return
+	}
 	if s.applyQueuedDemand(poll, snapshot) {
 		return
 	}
@@ -2134,7 +2166,7 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 	defer cancel()
 	snapshot, err := eligibleSnapshot(pollCtx, poll.counter)
 	if err != nil {
-		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err)}
+		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err), claimReadFailed: errors.Is(err, ErrClaimRead)}
 	}
 	s.recordDemandPollSuccess(entry, poll)
 	if snapshot.Count < 0 {

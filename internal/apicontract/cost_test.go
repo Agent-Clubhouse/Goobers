@@ -83,7 +83,7 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		// Their current callers are the CLI verbs, whose dedicated transport
 		// timeout is pinned above InterventionBudget in cmd/goobers.
 		switch route.ID {
-		case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
+		case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage, RouteResolveEscalation:
 			continue
 		}
 		if route.Budget >= clientAbort {
@@ -261,6 +261,7 @@ func TestInterventionBudgetContainsEngineHITLDelivery(t *testing.T) {
 		RouteApproveStage,
 		RouteOverrideStage,
 		RouteRerunStage,
+		RouteRetryStage,
 		RouteResolveEscalation,
 	} {
 		route, ok := V1Route(id)

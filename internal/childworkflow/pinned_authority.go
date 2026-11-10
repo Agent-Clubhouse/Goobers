@@ -52,7 +52,13 @@ func PinnedAuthority(ctx context.Context, source GenerationSource, cfg *instance
 	if err != nil {
 		return Authority{}, err
 	}
+	if generation.Release == nil {
+		return Authority{}, errors.New("childworkflow: generation source returned no release")
+	}
 	defer func() { _ = generation.Release() }()
+	if generation.Set == nil || generation.Directory == "" {
+		return Authority{}, errors.New("childworkflow: generation source returned an unloaded generation")
+	}
 	backend := BackendRunner
 	if parent.EngineDriven() {
 		backend = BackendEngine
@@ -63,7 +69,7 @@ func PinnedAuthority(ctx context.Context, source GenerationSource, cfg *instance
 		return Authority{}, err
 	}
 	if machine.Digest() != parent.WorkflowDigest {
-		return Authority{}, errors.New("child parent workflow digest does not match retained generation")
+		return Authority{}, fmt.Errorf("%w: child parent workflow digest does not match retained generation", ErrFrozenChildDrift)
 	}
 	if err = verifyParentGoobers(generation.Directory, generation.Set, pinned, machine, parent.GooberDigest); err != nil {
 		return Authority{}, err
@@ -128,8 +134,7 @@ func StageCatalog(cfg *instance.Config, source *instance.ConfigSet, parent Paren
 	if err != nil {
 		return AdmissionContext{}, nil, err
 	}
-	instance.ApplyGaggleCICommand(selected)
-	instance.ApplyGaggleOutboxMirror(selected)
+	instance.ApplyGaggleDefaults(selected)
 	input, err := ConfiguredAdmission(parent, backend, cfg, selected, admit)
 	if err != nil {
 		return AdmissionContext{}, nil, err
@@ -161,8 +166,7 @@ func CurrentCustodyPolicy(cfg *instance.Config, source *instance.ConfigSet, pare
 	if err != nil {
 		return AdmissionContext{}, err
 	}
-	instance.ApplyGaggleCICommand(selected)
-	instance.ApplyGaggleOutboxMirror(selected)
+	instance.ApplyGaggleDefaults(selected)
 	admitted, err := admit(cfg, runtimewiring.GoobersByName(selected))
 	if err != nil {
 		return AdmissionContext{}, err
@@ -231,7 +235,7 @@ func verifyParentGoobers(directory string, set *instance.ConfigSet, input Admiss
 		return err
 	}
 	if digest != expected {
-		return errors.New("child parent Goober digest does not match retained generation")
+		return fmt.Errorf("%w: child parent Goober digest does not match retained generation", ErrFrozenChildDrift)
 	}
 	return nil
 }

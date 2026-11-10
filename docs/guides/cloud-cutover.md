@@ -19,8 +19,10 @@ goobers-cloud cutover check \              # on the new install
 ```
 
 Each blocker names the workflow, stage, DSL path and the unblocking action:
-`goobers fix --to 3.0` for `RUNTIME003`, add `runsOn` for `RUNTIME002`, or the
-engine-parity issue for `RUNTIME001`. `cutover check` also verifies the schema
+`goobers fix --to 3.0` for `RUNTIME003`, add `runsOn` for `RUNTIME002`, the
+engine-parity issue for `RUNTIME001`, or the control-plane issue for `RUNTIME004`
+(`claimVisibility: shared` waits on #8094; set it to `local` only if the workflow
+needs no cross-instance admission). `cutover check` also verifies the schema
 is compatible, the lease row exists, admissions are paused and the bucket is
 reachable. It exits non-zero while anything blocks. A check whose backend has
 not shipped reports `not available until #N` and blocks; do not cut over until

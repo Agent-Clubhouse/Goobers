@@ -175,6 +175,14 @@
       "default": false,
       "description": "Opts `goobers up` into native desktop notifications for escalated and failed runs. The one-shot daemon override is `goobers up --notify` (`--notify=all` adds completed and aborted runs)."
     },
+    "workflowClustering": {
+      "description": "Optional Labs frozen cluster model used for advisory child-workflow novelty evidence. Missing, invalid, or stale models leave admission unchanged and report proposals as unscored.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "modelPath": { "type": "string", "minLength": 1, "description": "Frozen model JSON path, relative to the instance root or absolute." }
+      }
+    },
     "decisionGate": {
       "description": "Opt-in decision-model (System One) layer. Omitted means off and nothing is sent to any endpoint. The *Env fields name environment variables; secrets are never stored here.",
       "type": "object",
@@ -183,10 +191,36 @@
         "mode": { "type": "string", "enum": ["off", "shadow", "enforce"], "default": "off", "description": "`shadow` scores and records without changing any outcome; `enforce` lets the decision change outcomes." },
         "baseURLEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the endpoint URL." },
         "keyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the API key." },
+        "auth": { "type": "string", "enum": ["key", "entra"], "default": "key", "description": "Credential kind. `key` reads keyEnv; `entra` uses the ambient Azure identity (workload or managed identity) and requires keyEnv to be omitted." },
         "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
+        "stallDetection": { "type": "boolean", "default": false, "description": "Opts local agentic stages in to shadow scoring of transcript windows for repetition and no-progress against later budget exhaustion. Advisory only; inert unless mode is shadow." },
+        "intakeDetection": { "type": "boolean", "default": false, "description": "Opts backlog claims in to shadow duplicate/dependency checks of claimed items against open issues. Advisory only; inert unless mode is shadow." },
         "publicationLeakScreen": { "type": "boolean", "default": false, "description": "Separately opts shadow mode into sending proposed public PR and nominated issue text to the decision model for advisory leak screening. Omitted means publication text is never sent." },
         "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
         "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
+        "agentTool": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optionally exposes a budgeted `decide` MCP tool to named agent tasks. Denied by default: only listed tasks see the tool.",
+          "properties": {
+            "tasks": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Task ids granted the tool. Wildcards are not allowed." },
+            "maxCalls": { "type": "integer", "minimum": 0, "maximum": 50, "description": "Model calls allowed per stage invocation; 0 means 5." }
+          }
+        },
+        "handoffSchemas": {
+          "type": "array",
+          "description": "Binds a producer stage's sole JSON result to a JSON Schema so consumers' handoff validity (the shadow record's inputValid) is checked for workflows that cannot declare schema-bound artifactSlots. Inert while the gate is off.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["workflow", "stage", "schemaPath"],
+            "properties": {
+              "workflow": { "type": "string", "minLength": 1, "description": "Name of the workflow that declares the producer stage." },
+              "stage": { "type": "string", "minLength": 1, "description": "Name of the producer stage whose JSON result is validated." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "JSON Schema (draft 2020-12) path, relative to and contained within the config directory." }
+            }
+          }
+        },
         "gate": {
           "type": "object",
           "additionalProperties": false,
@@ -985,10 +1019,26 @@
           "description": "Opt-in TLS or mTLS for the Temporal frontend connection, applied by every dial site: daemon, worker, engine commands, and the doctor preflight. Omitted keeps the plaintext dial a local dev Temporal expects. When set, a frontend that does not speak TLS fails the dial; there is no fallback to plaintext.",
           "$ref": "#/$defs/engineTLS"
         },
+        "childWorkflows": {
+          "description": "Generated child-workflow posture for engine-driven runs (#8085). Enabled by default; set enabled=false to roll back new child admissions. The posture is pinned into each run at start, so a change here affects new runs only.",
+          "$ref": "#/$defs/engineChildWorkflows"
+        },
         "workerVersioning": {
           "type": "boolean",
           "default": false,
           "description": "Opt-in Temporal worker-deployment versioning for `goobers-cloud worker`: pollers register as deployment `goobers`, version `goobers.<build>`, and pin each new workflow to that build. Off by default: the worker polls unversioned, which a reference Temporal expects. When on, the namespace must have worker versioning enabled and an operator must make each new build the deployment's current version after it rolls out (`temporal worker deployment set-current-version`); until then the new worker receives no tasks. In either mode the worker logs an error while the deployment's current version does not route to it."
+        }
+      }
+    },
+    "engineChildWorkflows": {
+      "description": "Generated child-workflow settings for engine-driven runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lets an engine-driven run whose workflow declares task.childWorkflows request generated children through the control plane. Set false to disable children for new runs."
         }
       }
     },
@@ -1223,10 +1273,15 @@
       "minLength": 1
     },
     "runConditions": {
-      "description": "Instance-level ceilings. They sit on top of, and never widen, each workflow's own readiness guardrails.",
+      "description": "Instance-level admission policy. Workflow budget overrides replace named cadence ceilings; disabling cadence budgets opts out of hourly/daily ceilings only. All other readiness gates remain enforced.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "disableCadenceBudgets": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt out of hourly and daily run-admission ceilings for every trigger, including the default 10/hour and positive instance workflow budget overrides. Explicit zero workflowBudgets/workflowDailyBudgets entries still stop a workflow. Does not bypass authentication, eligibility, claims, concurrency, readiness, PR limits, provider quotas, resource gates, or run-control deadlines. Starts remain recorded; false or omitted retains existing ceilings."
+        },
         "maxParallelRuns": {
           "type": "integer",
           "minimum": 0,
@@ -1671,6 +1726,7 @@
       "description": "The daemon's read-only HTTP API. The default posture is tier-1 local trust: loopback only, no authenticator.",
       "type": "object",
       "additionalProperties": false,
+      "not": { "required": ["podTokenKeyFile", "podTokenKeyRingFile"] },
       "properties": {
         "listen": {
           "type": "string",
@@ -1686,6 +1742,12 @@
             "minLength": 1
           },
           "examples": [["127.0.0.1", "10.0.0.0/24"]]
+        },
+        "podTokenKeyRingFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to a JSON key ring for cloud workers. Mutually exclusive with podTokenKeyFile. Signs with the decoded current key and its ID; control verifies current and previous. Workers load at startup and must roll after promotion before the previous key is retired.",
+          "examples": ["/var/run/secrets/goobers/pod-key/keyring.json"]
         },
         "podTokenKeyFile": {
           "type": "string",

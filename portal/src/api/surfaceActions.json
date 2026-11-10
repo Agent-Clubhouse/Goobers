@@ -14,7 +14,20 @@
     "class": "runtime-mutation",
     "capability": "rerun"
   },
+  "retry": {
+    "class": "runtime-mutation",
+    "capability": "retry"
+  },
   "revealRun": {
+    "class": "maintenance"
+  },
+  "applyFluidUI": {
+    "class": "maintenance"
+  },
+  "undoFluidUI": {
+    "class": "maintenance"
+  },
+  "resetFluidUI": {
     "class": "maintenance"
   }
 }

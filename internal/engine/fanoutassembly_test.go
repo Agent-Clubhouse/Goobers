@@ -93,7 +93,7 @@ func TestProductionRunFanOutCancellationDrainsBeforeTerminal(t *testing.T) {
 	env.RegisterActivity(acts)
 	started := 0
 	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
-		if info.ActivityType.Name != ActRunDeterministic {
+		if info.ActivityType.Name != actRunDeterministicCancelSafe {
 			return
 		}
 		var inv apiv1.InvocationEnvelope

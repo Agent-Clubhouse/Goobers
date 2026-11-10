@@ -113,10 +113,57 @@ func TestHANightlyReportsPostgresJournalThroughput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	section := workflowJob(string(data), "journal-throughput")
 	for _, want := range []string{"postgres:16@sha256:", "BenchmarkPostgresJournalAppend", "-tags=cloudintegration", "GITHUB_STEP_SUMMARY", "Upload journal throughput", "actions/upload-artifact@"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("nightly journal report missing %q", want)
+		}
+	}
+}
+
+func TestHANightlyWiresCloudStackAndWorkerController(t *testing.T) {
+	root := moduleRoot(t)
+	paths := []string{
+		".github/workflows/ha-nightly.yml",
+		"test/ha/kind/cmd/assemblyclassify/main.go",
+		"test/ha/kind/cloud-reference/azurite.yaml",
+		"test/ha/kind/cloud-reference/kustomization.yaml",
+		"test/ha/kind/reference/nightly-patch.yaml",
+		"test/ha/kind/workers/kustomization.yaml",
+		"deploy/reference/goobers-cloud/workload/control-deployment.yaml",
+	}
+	var joined strings.Builder
+	for _, path := range paths {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined.Write(data)
+		joined.WriteByte('\n')
+	}
+	all := joined.String()
+	for _, want := range []string{
+		"Install Temporal Worker Controller",
+		"oci://quay.io/jetstack/charts/cert-manager",
+		"temporal-worker-controller-crds",
+		"workerdeployment.temporal.io/goobers",
+		"app.kubernetes.io/name: azurite",
+		"goobers-cloud-object-store",
+		"allow-bootstrap-to-azurite",
+		"allow-azurite-ingress",
+		`openssl rand -base64 32`,
+		"goobers-pod-token-key",
+		`openssl rand -base64 48`,
+		"--object-store-url=$(GOOBERS_OBJECT_STORE_URL)",
+		"--object-store-container=$(GOOBERS_OBJECT_STORE_CONTAINER)",
+		"--config-dir=/etc/goobers/config",
+		"replicas: 2",
+		"pendingNeedsFlag",
+		"cloud assembly check failed",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("cloud nightly wiring is missing %q", want)
 		}
 	}
 }

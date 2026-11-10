@@ -21,6 +21,11 @@ import { RunWorkTitle, workItemHref } from "../components/RunWorkTitle";
 import { routeHash, type Navigate, type RunRouteFilters } from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
+import {
+  fluidUIRunPhaseFilter,
+  sortRunsForFluidUI,
+  useFluidUICustomization,
+} from "../fluidUI";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
@@ -131,6 +136,15 @@ function RunsPageContent({
 }) {
   const filter = filters?.status ?? "all";
   const inventoryQuery = useOperationalSnapshot(client);
+  // Fluid UI (#8416) supplies run-list defaults only: an explicit status filter
+  // in the route wins over the phase default, and either default can be
+  // dismissed for this visit from the note above the list.
+  const customization = useFluidUICustomization();
+  const [standardSort, setStandardSort] = useState(false);
+  const [standardPhases, setStandardPhases] = useState(false);
+  const customSort = standardSort ? undefined : customization?.runList?.sort;
+  const customPhases =
+    standardPhases || filters?.status ? [] : fluidUIRunPhaseFilter(customization);
   // Hides routine no-work schedule ticks by default (#2188): a run whose only
   // stage reported no eligible work, on an instance ticking every ~60s, would
   // otherwise bury the runs an operator actually came here to find. The
@@ -175,7 +189,11 @@ function RunsPageContent({
       filters: Object.values(next).some(Boolean) ? next : undefined,
     });
   };
-  const resetFilters = () => navigate({ page: "runs" });
+  const resetFilters = () => {
+    setStandardSort(true);
+    setStandardPhases(true);
+    navigate({ page: "runs" });
+  };
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -190,6 +208,12 @@ function RunsPageContent({
   }
 
   const history = query.state.data;
+  const visibleRuns = sortRunsForFluidUI(
+    customPhases.length > 0
+      ? history.runs.filter((run) => customPhases.includes(run.phase))
+      : history.runs,
+    customSort,
+  );
   const filterError = runsFilterError(filters, gaggleOptions, workflowOptions);
   const activeFilters: ActivePageFilter[] = [
     ...(filters?.status
@@ -283,6 +307,7 @@ function RunsPageContent({
         ]
       : []),
   ];
+
   const renderFilters = (mobile: boolean) => {
     const values = mobile ? draft : { ...filters, status: filter, showNoWork };
     const change = (updates: Partial<RunRouteFilters>) => {
@@ -439,7 +464,7 @@ function RunsPageContent({
     <>
       <PageToolbar
         activeFilters={activeFilters}
-        count={history.runs.length}
+        count={visibleRuns.length}
         description={
           filters
             ? `Executions behind the selected Insight scope${scopeWindowLabel(filters)}.`
@@ -488,6 +513,38 @@ function RunsPageContent({
         </div>
       )}
 
+      {((customSort && customSort !== "newest") || customPhases.length > 0) && (
+        <p className="fluid-ui-run-defaults" aria-label="Fluid UI run-list defaults">
+          <span>Your Fluid UI customization applies to the loaded runs:</span>
+          {customSort && customSort !== "newest" && (
+            <span className="fluid-ui-run-default">
+              Sort: {filterValueLabel(customSort)}
+              <Action
+                variant="text"
+                className="text-button"
+                onClick={() => setStandardSort(true)}
+                type="button"
+              >
+                Use newest first
+              </Action>
+            </span>
+          )}
+          {customPhases.length > 0 && (
+            <span className="fluid-ui-run-default">
+              Phases: {customPhases.join(", ")}
+              <Action
+                variant="text"
+                className="text-button"
+                onClick={() => setStandardPhases(true)}
+                type="button"
+              >
+                Show all phases
+              </Action>
+            </span>
+          )}
+        </p>
+      )}
+
       <section className="content-section">
         {history.runs.length === 0 ? (
           history.hasAnyRuns ? (
@@ -517,6 +574,19 @@ function RunsPageContent({
               )}
             </div>
           )
+        ) : visibleRuns.length === 0 ? (
+          <div className="inline-empty inline-empty-recovery">
+            <strong>Your Fluid UI phase filter hides the loaded runs</strong>
+            <span>None of the loaded runs are in the phases your customization shows.</span>
+            <Action
+              variant="text"
+              className="text-button"
+              onClick={() => setStandardPhases(true)}
+              type="button"
+            >
+              Show all phases
+            </Action>
+          </div>
         ) : (
           <>
             <DataList
@@ -524,7 +594,7 @@ function RunsPageContent({
               columns={["Run", "Status", "Current stage", "Started", "Duration"]}
               gridClassName="all-runs-grid"
             >
-              {history.runs.map((run) => (
+              {visibleRuns.map((run) => (
                 <RunHistoryRow key={run.id} run={run} />
               ))}
             </DataList>

@@ -58,6 +58,15 @@ func ApplyGaggleCICommand(set *ConfigSet) {
 	}
 }
 
+// ApplyGaggleDefaults resolves every gaggle-level default its workflows
+// inherit before compilation: the CI command, the outbox mirror root, and
+// Backprop enrollment.
+func ApplyGaggleDefaults(set *ConfigSet) {
+	ApplyGaggleCICommand(set)
+	ApplyGaggleOutboxMirror(set)
+	ApplyGaggleBackprop(set)
+}
+
 // ApplyGaggleOutboxMirror resolves the gaggle-level outbox mirror default onto
 // each workflow before compilation. Workflow and task values remain untouched,
 // so the compiler can finish the most-specific-wins resolution.

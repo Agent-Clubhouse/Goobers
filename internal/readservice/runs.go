@@ -36,6 +36,10 @@ const (
 var (
 	// ErrNotFound means the requested read-model object does not exist.
 	ErrNotFound = errors.New("read service: not found")
+	// ErrUnavailable means this service cannot answer the read at all: its
+	// source is not configured or not ready. Callers report 503, never an
+	// empty result.
+	ErrUnavailable = errors.New("read service: unavailable")
 	// ErrInvalidArgument means a path, filter, or cursor is malformed.
 	ErrInvalidArgument = errors.New("read service: invalid argument")
 	// ErrArtifactIntegrity means journal content failed containment or digest checks.
@@ -1375,6 +1379,10 @@ func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAt
 
 func withTelemetryDB[T any](s *Local, empty []T, read func(*rollup.DB) ([]T, error)) ([]T, error) {
 	db := s.sources.Telemetry
+	if db == nil && s.sources.Rootless {
+		// The rollup store is a local file; a rootless service has none.
+		return nil, ErrTelemetryUnavailable
+	}
 	if db == nil {
 		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
 			if errors.Is(err, os.ErrNotExist) {

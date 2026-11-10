@@ -28,7 +28,11 @@ type Config struct {
 	BaseURL string
 	// APIKey is sent as a bearer token and is never included in errors.
 	APIKey string
-	Model  string
+	// TokenSource, when set, supplies the bearer token per request instead of
+	// APIKey (for example a short-lived Entra token). Exactly one of APIKey
+	// and TokenSource must be set. Implementations should cache and refresh.
+	TokenSource func(ctx context.Context) (string, error)
+	Model       string
 	// HTTPClient defaults to a client with a 60s timeout that does not follow
 	// redirects, so the bearer token is never replayed to another URL.
 	HTTPClient *http.Client
@@ -42,6 +46,7 @@ type Config struct {
 type Client struct {
 	endpoint string
 	key      string
+	token    func(context.Context) (string, error)
 	model    string
 	http     *http.Client
 	attempts int
@@ -60,12 +65,13 @@ func New(cfg Config) (*Client, error) {
 	if base.Scheme == "http" && !isLoopback(base.Hostname()) {
 		return nil, errors.New("decider: plain http is only allowed for loopback hosts")
 	}
-	if cfg.APIKey == "" || cfg.Model == "" {
-		return nil, errors.New("decider: APIKey and Model are required")
+	if cfg.Model == "" || (cfg.APIKey == "") == (cfg.TokenSource == nil) {
+		return nil, errors.New("decider: Model and exactly one of APIKey or TokenSource are required")
 	}
 	c := &Client{
 		endpoint: strings.TrimRight(base.String(), "/") + systemOnePath,
 		key:      cfg.APIKey,
+		token:    cfg.TokenSource,
 		model:    cfg.Model,
 		http:     cfg.HTTPClient,
 		attempts: cfg.MaxAttempts,
@@ -167,7 +173,16 @@ func (c *Client) once(ctx context.Context, body []byte, asked map[string]Questio
 	if err != nil {
 		return Response{}, false, fmt.Errorf("decider: build request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.key)
+	bearer := c.key
+	if c.token != nil {
+		t, err := c.token(ctx)
+		if err != nil || t == "" {
+			// Not retryable: a credential failure will not heal within backoff.
+			return Response{}, false, errors.New("decider: token acquisition failed")
+		}
+		bearer = t
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+bearer)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 	res, err := c.http.Do(httpReq)

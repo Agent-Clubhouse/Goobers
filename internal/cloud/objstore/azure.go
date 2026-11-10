@@ -50,6 +50,19 @@ func NewAzure(serviceURL, container string, credential azcore.TokenCredential) (
 	return newAzure(client, container)
 }
 
+// NewAzureSharedKey creates a store using a storage-account shared key.
+func NewAzureSharedKey(serviceURL, container, accountName, accountKey string) (*Azure, error) {
+	credential, err := azblob.NewSharedKeyCredential(accountName, accountKey)
+	if err != nil {
+		return nil, errors.New("cloud object store shared key is invalid")
+	}
+	client, err := azblob.NewClientWithSharedKeyCredential(serviceURL, credential, nil)
+	if err != nil {
+		return nil, errors.New("cloud object store service URL is invalid")
+	}
+	return newAzure(client, container)
+}
+
 func newAzure(client *azblob.Client, container string) (*Azure, error) {
 	if client == nil || strings.TrimSpace(container) == "" {
 		return nil, errors.New("cloud object store client and container are required")

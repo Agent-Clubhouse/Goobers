@@ -221,7 +221,7 @@ func recordWorkerDivergence(appender workerDivergenceAppender, worker, state str
 }
 
 func recordInactiveWorkerDivergence(appender workerDivergenceAppender, worker, workerDigest string) (string, error) {
-	message := "worker config divergence: NOT ACTIVE — configure api.podTokenKeyFile; " +
+	message := "worker config divergence: NOT ACTIVE — configure api.podTokenKeyFile or api.podTokenKeyRingFile; " +
 		"this worker cannot durably report its config-tree state to the daemon (#4153)"
 	return message, recordWorkerDivergence(appender, worker, workerDivergenceNotActive, divergenceReport{WorkerDigest: workerDigest}, message)
 }
@@ -250,7 +250,7 @@ func configureWorkerDivergence(ctx context.Context, seams *workerSeams, instance
 		if openErr != nil {
 			pf(stderr, "warning: goobers-cloud worker: record config-divergence state: %v\n", openErr)
 		}
-		pf(stderr, "warning: goobers-cloud worker: config-divergence reporting is NOT ACTIVE — configure api.podTokenKeyFile; "+
+		pf(stderr, "warning: goobers-cloud worker: config-divergence reporting is NOT ACTIVE — configure api.podTokenKeyFile or api.podTokenKeyRingFile; "+
 			"GOOBERS_POD_TOKEN authenticates a stage run and cannot attest worker health (#4153)\n")
 		if digestTokenSource == nil {
 			return nil, nil

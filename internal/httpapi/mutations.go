@@ -27,6 +27,7 @@ type InterventionRequest struct {
 	Decision            string `json:"decision,omitempty"`
 	Rationale           string `json:"rationale,omitempty"`
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
+	DeterministicRetry  bool   `json:"-"`
 }
 
 // InterventionResult reports the durable run position after an action.
@@ -70,6 +71,7 @@ func registerMutationRoutes(router *Router, interventions InterventionService, l
 	router.Handle(apicontract.RouteApproveStage, stageMutationHandler("approve", interventions, lifecycle, errorLog))
 	router.Handle(apicontract.RouteOverrideStage, stageMutationHandler("override", interventions, lifecycle, errorLog))
 	router.Handle(apicontract.RouteRerunStage, stageMutationHandler("rerun", interventions, lifecycle, errorLog))
+	router.Handle(apicontract.RouteRetryStage, stageMutationHandler("retry", interventions, lifecycle, errorLog))
 }
 
 func stageMutationHandler(action string, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) http.HandlerFunc {
@@ -108,6 +110,7 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			return
 		}
 		input.IdempotencyKey = key
+		input.DeterministicRetry = action == "retry"
 		var result InterventionResult
 		switch action {
 		case "approve":
@@ -115,6 +118,8 @@ func stageMutationHandler(action string, interventions InterventionService, life
 		case "override":
 			result, err = interventions.AcceptOverride(request.Context(), lifecycle, input)
 		case "rerun":
+			result, err = interventions.AcceptRerunStage(request.Context(), lifecycle, input)
+		case "retry":
 			result, err = interventions.AcceptRerunStage(request.Context(), lifecycle, input)
 		default:
 			panic("unknown intervention action " + action)

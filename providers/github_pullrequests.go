@@ -443,7 +443,7 @@ func splitAndTrim(value, sep string) []string {
 // mutation requires from the pull request number the rest of the codebase
 // carries, and in the same round trip reads the two states that make the
 // enqueue a no-op: already merged, and already sitting in the queue.
-const enqueuePullRequestLookupQuery = `query($owner:String!,$name:String!,$number:Int!){
+const enqueuePullRequestLookupQuery = `query EnqueuePullRequestLookup($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       id
@@ -655,7 +655,7 @@ func (p *GitHubProvider) DequeuePullRequest(ctx context.Context, req DequeuePull
 // merge queue entry in one round trip. The entry is the only surface that
 // distinguishes "still queued" from "no longer queued" — REST exposes
 // nothing equivalent.
-const pollMergeQueueEntryQuery = `query($owner:String!,$name:String!,$number:Int!){
+const pollMergeQueueEntryQuery = `query PollMergeQueueEntry($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       id
@@ -1174,7 +1174,7 @@ func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef,
 		variables[variable] = ref
 	}
 	query := fmt.Sprintf(
-		"query($owner:String!,$name:String!%s){repository(owner:$owner,name:$name){%s}}",
+		"query RefCheckStates($owner:String!,$name:String!%s){repository(owner:$owner,name:$name){%s}}",
 		definitions.String(), fields.String(),
 	)
 	var response struct {

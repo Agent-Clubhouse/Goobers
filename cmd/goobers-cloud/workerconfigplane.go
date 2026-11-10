@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -30,14 +31,23 @@ type workerConfigPlaneSetup struct {
 
 type workerConfigPlaneUsageError struct{ error }
 
-func prepareWorkerConfigPlane(endpoint, keyFile, workRoot string) (workerConfigPlaneSetup, error) {
+func workerConfigKeyFlags(fs *flag.FlagSet) (*string, *string) {
+	configKeyFile := fs.String("config-key-file", workerEnvOr("GOOBERS_WORKER_CONFIG_KEY_FILE", ""), "shared signing key for worker configuration fetches")
+	configKeyRingFile := fs.String("config-keyring-file", workerEnvOr("GOOBERS_WORKER_CONFIG_KEYRING_FILE", ""), "JSON key ring for worker configuration fetches; exclusive with --config-key-file")
+	return configKeyFile, configKeyRingFile
+}
+
+func prepareWorkerConfigPlane(endpoint, keyFile, keyRingFile, workRoot string) (workerConfigPlaneSetup, error) {
+	if keyFile != "" && keyRingFile != "" {
+		return workerConfigPlaneSetup{}, workerConfigPlaneUsageError{fmt.Errorf("--config-key-file and --config-keyring-file are mutually exclusive")}
+	}
 	if endpoint == "" {
 		return workerConfigPlaneSetup{}, nil
 	}
 	if err := workerblob.ValidateEndpoint(endpoint); err != nil {
 		return workerConfigPlaneSetup{}, workerConfigPlaneUsageError{fmt.Errorf("--config-endpoint: %w", err)}
 	}
-	tokenSource, err := workerConfigPlaneTokenSource(keyFile)
+	tokenSource, err := workerConfigPlaneTokenSource(keyFile, keyRingFile)
 	if err != nil {
 		return workerConfigPlaneSetup{}, workerConfigPlaneUsageError{err}
 	}
@@ -53,12 +63,12 @@ func prepareWorkerConfigPlane(endpoint, keyFile, workRoot string) (workerConfigP
 	return workerConfigPlaneSetup{client: client, root: root, snapshotRoot: snapshotRoot, digest: current.Digest, instanceID: current.InstanceID}, nil
 }
 
-func prepareWorkerConfigPlaneCLI(endpoint, keyFile, workRoot string, instanceRoot *string, stderr io.Writer) (workerConfigPlaneSetup, int) {
+func prepareWorkerConfigPlaneCLI(endpoint, keyFile, keyRingFile, workRoot string, instanceRoot *string, stderr io.Writer) (workerConfigPlaneSetup, int) {
 	if endpoint != "" && *instanceRoot != "" {
 		_, _ = fmt.Fprintln(stderr, "error: --config-endpoint cannot be combined with --instance or GOOBERS_INSTANCE_ROOT")
 		return workerConfigPlaneSetup{}, 2
 	}
-	setup, err := prepareWorkerConfigPlane(endpoint, keyFile, workRoot)
+	setup, err := prepareWorkerConfigPlane(endpoint, keyFile, keyRingFile, workRoot)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		var usage workerConfigPlaneUsageError
@@ -85,15 +95,8 @@ type workerConfigPlaneWatcher struct {
 	done   chan struct{}
 }
 
-func workerConfigPlaneTokenSource(keyFile string) (func() (string, error), error) {
-	if keyFile == "" {
-		return nil, fmt.Errorf("worker config plane requires --config-key-file")
-	}
-	key, err := os.ReadFile(keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("read worker config key: %w", err)
-	}
-	signer, err := podauth.NewSignedKey(bytes.TrimSpace(key))
+func workerConfigPlaneTokenSource(keyFile, keyRingFile string) (func() (string, error), error) {
+	signer, err := workerConfigPlaneSigner(keyFile, keyRingFile)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +104,23 @@ func workerConfigPlaneTokenSource(keyFile string) (func() (string, error), error
 	return func() (string, error) {
 		return signer.MintWorkerConfigDigest(workerID, 2*time.Minute)
 	}, nil
+}
+
+func workerConfigPlaneSigner(keyFile, keyRingFile string) (*podauth.SignedKey, error) {
+	if keyFile != "" && keyRingFile != "" {
+		return nil, fmt.Errorf("--config-key-file and --config-keyring-file are mutually exclusive")
+	}
+	if keyRingFile != "" {
+		return podauth.LoadKeyRingFile(keyRingFile, "")
+	}
+	if keyFile == "" {
+		return nil, fmt.Errorf("worker config plane requires --config-key-file or --config-keyring-file")
+	}
+	key, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read worker config key: %w", err)
+	}
+	return podauth.NewSignedKey(bytes.TrimSpace(key))
 }
 
 func fetchInitialWorkerConfig(ctx context.Context, client configmirror.Client, cacheRoot string) (string, apicontract.ConfigSnapshotCurrent, error) {

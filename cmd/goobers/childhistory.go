@@ -29,3 +29,10 @@ func (u *upSession) readChildPublications(ctx context.Context, child triggerqueu
 	}
 	return out, nil
 }
+
+func (u *upSession) readChildAdmission(ctx context.Context, child triggerqueue.ChildIdentity) (triggerqueue.ChildAdmissionReview, error) {
+	if u.durableTriggers == nil {
+		return triggerqueue.ChildAdmissionReview{}, readservice.ErrChildHistoryUnavailable
+	}
+	return u.durableTriggers.queue.ChildAdmission(ctx, child)
+}

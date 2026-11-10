@@ -66,8 +66,6 @@ func distinctIssueRefs(pattern *regexp.Regexp, body string) []string {
 	return out
 }
 
-const needsRemediationLabel = providers.LabelNeedsRemediation
-
 type siblingTriage struct {
 	Reason           string
 	OverlappingFiles []string

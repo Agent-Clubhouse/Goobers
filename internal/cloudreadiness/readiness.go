@@ -26,6 +26,9 @@ const (
 	CodePlacement = "RUNTIME002"
 	// CodeDSL identifies a local-runner-only DSL version.
 	CodeDSL = "RUNTIME003"
+	// CodeControlPlane identifies a workflow setting the cloud control plane
+	// cannot honour yet, although the engine can execute the workflow.
+	CodeControlPlane = "RUNTIME004"
 )
 
 // Action describes how an operator can remove a blocker.
@@ -74,11 +77,13 @@ type BlockerGroup struct {
 
 // Summary contains whole-instance blocker counts.
 type Summary struct {
-	BlockedWorkflows int   `json:"blockedWorkflows"`
-	TotalBlockers    int   `json:"totalBlockers"`
-	ConfigFixes      int   `json:"configFixes"`
-	WaitingOnP4      int   `json:"waitingOnP4"`
-	P4Issues         []int `json:"p4Issues"`
+	BlockedWorkflows int `json:"blockedWorkflows"`
+	TotalBlockers    int `json:"totalBlockers"`
+	ConfigFixes      int `json:"configFixes"`
+	WaitingOnP4      int `json:"waitingOnP4"`
+	// WaitingOnControlPlane counts blockers waiting on cloud control-plane work.
+	WaitingOnControlPlane int   `json:"waitingOnControlPlane,omitempty"`
+	P4Issues              []int `json:"p4Issues"`
 }
 
 // Result is the stable whole-instance cloud readiness report.
@@ -95,11 +100,13 @@ type Result struct {
 type FeatureBlocker struct {
 	Path  string
 	Issue int
+	// Remaining, when set, names what still blocks the feature beyond the
+	// tracking issue, for the operator's action.
+	Remaining string
 }
 
 var featureBlockers = map[workflow.FeatureID]FeatureBlocker{
 	"workflow.spec.parallels": {Path: "spec.parallels", Issue: 7753},
-	"task.childWorkflows":     {Path: "task.childWorkflows", Issue: 7758},
 	"task.experiment":         {Path: "task.experiment", Issue: 7763},
 }
 
@@ -256,11 +263,15 @@ func genericFeaturePath(spec apiv1.WorkflowSpec, feature, stage string) string {
 func featureBlocker(id workflow.FeatureID, stage, path string) Blocker {
 	meta := featureBlockers[id]
 	feature := meta.Path
+	description := fmt.Sprintf("wait for engine parity in #%d", meta.Issue)
+	if meta.Remaining != "" {
+		description += ": " + meta.Remaining
+	}
 	return Blocker{
 		Code: CodeFeature, Feature: feature, Stage: stage, Path: path,
 		Message: fmt.Sprintf("engine does not support %s", feature),
 		Action: Action{
-			Kind: "p4", Description: fmt.Sprintf("wait for engine parity in #%d", meta.Issue),
+			Kind: "p4", Description: description,
 			Issue:    meta.Issue,
 			IssueURL: fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/issues/%d", meta.Issue),
 		},
@@ -352,10 +363,13 @@ func summarize(workflows []Workflow) (Summary, []BlockerGroup) {
 	for _, wf := range workflows {
 		for _, blocker := range wf.Blockers {
 			summary.TotalBlockers++
-			if blocker.Action.Kind == "p4" {
+			switch blocker.Action.Kind {
+			case "p4":
 				summary.WaitingOnP4++
 				issues[blocker.Action.Issue] = true
-			} else {
+			case "control-plane":
+				summary.WaitingOnControlPlane++
+			default:
 				summary.ConfigFixes++
 			}
 			key := blocker.Code + ":" + blocker.Feature

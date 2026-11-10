@@ -288,7 +288,7 @@ func runHeartbeatTimeoutLifecycle(t *testing.T, layout instance.Layout, run *jou
 			gate.cancel = cancel
 			_, dispatchErr := activities.DispatchStage(dispatchCtx, input)
 			if dispatchErr == nil || !strings.Contains(dispatchErr.Error(), "control path lost") {
-				return engine.DispatchStageResult{}, fmt.Errorf("dispatch interruption = %v, want lost heartbeat control path", dispatchErr)
+				return engine.DispatchStageResult{}, fmt.Errorf("dispatch interruption = %w, want lost heartbeat control path", dispatchErr)
 			}
 			return engine.DispatchStageResult{}, timeout
 		},

@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/triggerqueue"
+	"github.com/goobers/goobers/internal/workflowcluster"
 )
 
 // HTTPService verifies the stage credential independently of the router. This
@@ -60,6 +61,7 @@ func (s *HTTPService) ValidateChildWorkflow(ctx context.Context, token, run stri
 	result.Valid = true
 	result.SourceDigest, result.CanonicalDigest = proposal.SourceDigest, proposal.CanonicalDigest
 	result.ConfigDigest, result.PolicyDigest, result.WorkflowDigest = proposal.ConfigDigest, proposal.PolicyDigest, proposal.Machine.Digest()
+	result.Novelty = noveltyResponse(proposal.Novelty)
 	return result, nil
 }
 
@@ -103,7 +105,33 @@ func childResponse(submission Submission) apicontract.ChildWorkflowResponse {
 		resolution := childResolutionResponse(c.Identity.InvocationKey, *submission.Disposition)
 		response.Disposition = &resolution
 	}
+	response.Novelty = noveltyResponse(e.Novelty)
+	if a := submission.Admission; a != nil {
+		response.Admission = &apicontract.ChildWorkflowAdmission{State: string(a.State), Reason: a.Reason, RequestedAt: a.RequestedAt}
+		if !a.DecidedAt.IsZero() {
+			decided := a.DecidedAt
+			response.Admission.DecidedAt = &decided
+		}
+	}
 	return response
+}
+
+// noveltyResponse copies bounded admission evidence onto the wire; nil means
+// no cluster model was configured, which is distinct from an unscored result.
+func noveltyResponse(n *workflowcluster.Novelty) *apicontract.ChildWorkflowNovelty {
+	if n == nil {
+		return nil
+	}
+	out := &apicontract.ChildWorkflowNovelty{
+		Scored: n.Scored, Reason: n.Reason, ModelID: n.ModelID, ModelVersion: n.ModelVersion,
+		FeatureVersion: n.FeatureVersion, ClusterID: n.ClusterID, Nearest: n.Nearest, NearestMedoid: n.NearestMedoid,
+		NearestSize: n.NearestSize, NearestStable: n.NearestStable, Distance: n.Distance,
+		OutOfDistribution: n.OutOfDistribution, HumanApprovalRequired: n.HumanApprovalRequired, Summary: n.Summary(),
+	}
+	if h := n.HistoricalOutcome; h != nil {
+		out.HistoricalOutcome = &apicontract.ChildWorkflowHistoricalOutcome{RunCount: h.RunCount, SuccessRate: h.SuccessRate, InsufficientRuns: h.InsufficientRuns}
+	}
+	return out
 }
 
 // ResolveChildWorkflow records a choice without editing a live agent workspace.
@@ -134,10 +162,14 @@ func childHTTPError(status int, code, message string, cause error) error {
 func childOperationError(err error) error {
 	var invalid *ValidationError
 	switch {
+	case errors.Is(err, ErrAuthorityRetryable):
+		return childHTTPError(http.StatusServiceUnavailable, "child_workflow_authority_unavailable", "the stage's child-workflow authority could not be checked; retry", nil)
 	case errors.Is(err, ErrAuthorityUnavailable), errors.Is(err, ErrAuthorityChanged), errors.Is(err, triggerqueue.ErrChildAuthorityChanged):
 		return childHTTPError(http.StatusForbidden, "child_workflow_authority_changed", "the stage no longer holds current child-workflow authority", nil)
 	case errors.As(err, &invalid), errors.Is(err, ErrSubmissionInvalid):
 		return childHTTPError(http.StatusUnprocessableEntity, "child_workflow_invalid", "the child proposal or invocation is invalid; validate the proposal before starting it", nil)
+	case errors.Is(err, ErrHumanApprovalRequired):
+		return childHTTPError(http.StatusConflict, "child_workflow_human_approval_required", "the proposal is out of distribution and current policy requires human approval", nil)
 	case errors.Is(err, triggerqueue.ErrChildDispositionReconcile):
 		return childHTTPError(http.StatusConflict, "child_disposition_reconciliation_required", "the published application plan must be reconciled before selecting a different action", nil)
 	case errors.Is(err, triggerqueue.ErrChildDispositionHistoryFull):

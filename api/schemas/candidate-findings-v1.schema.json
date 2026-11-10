@@ -275,7 +275,11 @@
         },
         "share": {
           "type": "number",
-          "description": "The cohort-normalized share of total adverse attribution assigned to this path."
+          "description": "The unsigned ground-truth-weighted mean responsibility assigned to this path across contributing observations, not a signed outcome score."
+        },
+        "score": {
+          "type": "number",
+          "description": "The ground-truth-weighted mean signed attribution score across contributing observations. Zero is a recorded score; omission means unavailable. This is not measured causal impact."
         },
         "confidence": {
           "type": "number",

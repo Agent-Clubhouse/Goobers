@@ -99,7 +99,7 @@ func TestPGStartCustodyUsesInventoryControllerGrants(t *testing.T) {
 	if statuses, err := api.StartStatusPage(t.Context(), "", 10); err != nil || len(statuses) != 1 {
 		t.Fatalf("API status: %v %v", statuses, err)
 	}
-	if err := custody.ConfirmStart(t.Context(), identity, false); err != nil {
+	if err := custody.ConfirmStart(t.Context(), identity, false, testRunPins(identity.AcceptanceID, identity.RunID)); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Release(t.Context(), handle); err != nil {
@@ -110,7 +110,7 @@ func TestPGStartCustodyUsesInventoryControllerGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := custody.ConfirmStart(t.Context(), predecessor, true); err != nil {
+	if err := custody.ConfirmStart(t.Context(), predecessor, true, testRunPins(predecessor.AcceptanceID, predecessor.RunID)); err != nil {
 		t.Fatal(err)
 	}
 	current, err := custody.ReadStart(t.Context(), receipt.ID)

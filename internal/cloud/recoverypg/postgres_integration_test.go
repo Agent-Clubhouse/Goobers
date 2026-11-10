@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
 	"github.com/goobers/goobers/internal/cloud/pgtest"
@@ -236,6 +238,116 @@ func TestReapedBundleIsRetiredUntilReleased(t *testing.T) {
 	}
 	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-1", time.Hour); err != nil {
 		t.Fatalf("re-publication after release: %v", err)
+	}
+}
+
+// TestLostReapResultIsRecoveredFromTombstones (#8163): a Reap that committed
+// but whose result never reached the caller still tombstoned its bundles, and
+// the reaper finds them through RetiredBundles, read as goobers_controller.
+func TestLostReapResultIsRecoveredFromTombstones(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := recoverypg.Store{Pool: pool, Fence: manager}
+	r := record("run-lost")
+	if _, err := store.Publish(t.Context(), handle, r, "bundles/run-lost", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.Reap(t.Context(), handle, 10); err != nil {
+		t.Fatal(err)
+	}
+	// The reap result is discarded, as a caller that lost the reply would.
+	config := pool.Config().Copy()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	controller, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(controller.Close)
+	var role string
+	if err := controller.QueryRow(t.Context(), "SELECT current_user").Scan(&role); err != nil || role != "goobers_controller" {
+		t.Fatalf("controller pool runs as %q (%v)", role, err)
+	}
+	reader := recoverypg.Store{Pool: controller, Fence: manager}
+	retired, err := reader.RetiredBundles(t.Context(), handle.InstanceID, 10)
+	if err != nil || len(retired) != 1 || retired[0] != "bundles/run-lost" {
+		t.Fatalf("retired bundles = %v, %v; want the lost reap's bundle", retired, err)
+	}
+	for range 2 {
+		// The second release is the retry after an ambiguous first: a no-op.
+		if err := store.ReleaseBundle(t.Context(), handle, "bundles/run-lost"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if left, err := reader.RetiredBundles(t.Context(), handle.InstanceID, 10); err != nil || len(left) != 0 {
+		t.Fatalf("after release, retired bundles = %v, %v; want none", left, err)
+	}
+}
+
+// reapOne publishes run's record at bundle with a short retention and reaps
+// it, discarding the result.
+func reapOne(t *testing.T, store recoverypg.Store, handle *lease.Handle, run, bundle string) {
+	t.Helper()
+	if _, err := store.Publish(t.Context(), handle, record(run), bundle, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.Reap(t.Context(), handle, 10); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRetiredBundlesListOnlyTheInstancesOwn: on a shared database another
+// instance's tombstones are never listed; this instance could never release
+// them, and deleting them would cross tenants.
+func TestRetiredBundlesListOnlyTheInstancesOwn(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	managerA := pgtest.Manager(t, pool, "holder", 0)
+	handleA := pgtest.Acquire(t, managerA)
+	managerB, err := lease.New(lease.Config{Pool: pool, InstanceID: "other-instance", Name: "control", Holder: "holder-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleB := pgtest.Acquire(t, managerB)
+	storeA, storeB := recoverypg.Store{Pool: pool, Fence: managerA}, recoverypg.Store{Pool: pool, Fence: managerB}
+	reapOne(t, storeA, handleA, "run-a", "bundles/a")
+	reapOne(t, storeB, handleB, "run-b", "bundles/b")
+	for _, tc := range []struct {
+		store  recoverypg.Store
+		handle *lease.Handle
+		want   string
+	}{{storeA, handleA, "bundles/a"}, {storeB, handleB, "bundles/b"}} {
+		got, err := tc.store.RetiredBundles(t.Context(), tc.handle.InstanceID, 10)
+		if err != nil || len(got) != 1 || got[0] != tc.want {
+			t.Fatalf("instance %s retired bundles = %v, %v; want only its own %q", tc.handle.InstanceID, got, err, tc.want)
+		}
+	}
+}
+
+// TestRetiredBundlesHonourTheLimitOldestReapedFirst: the list is bounded and
+// ordered by when each bundle was reaped, not by key, so a bundle that can
+// never be deleted at the head of the key order cannot starve the rest.
+func TestRetiredBundlesHonourTheLimitOldestReapedFirst(t *testing.T) {
+	pool := pgtest.Pool(t, "recoverypg")
+	manager := pgtest.Manager(t, pool, "holder", 0)
+	handle := pgtest.Acquire(t, manager)
+	store := recoverypg.Store{Pool: pool, Fence: manager}
+	// Key order is the reverse of reap order.
+	for i, bundle := range []string{"bundles/z", "bundles/y", "bundles/x"} {
+		reapOne(t, store, handle, fmt.Sprintf("run-%d", i), bundle)
+	}
+	got, err := store.RetiredBundles(t.Context(), handle.InstanceID, 2)
+	if err != nil || !slices.Equal(got, []string{"bundles/z", "bundles/y"}) {
+		t.Fatalf("RetiredBundles(2) = %v, %v; want the two oldest reaped [bundles/z bundles/y]", got, err)
+	}
+	for _, limit := range []int{0, -1} {
+		if got, err := store.RetiredBundles(t.Context(), handle.InstanceID, limit); err != nil || got != nil {
+			t.Fatalf("RetiredBundles(%d) = %v, %v; want nothing", limit, got, err)
+		}
 	}
 }
 

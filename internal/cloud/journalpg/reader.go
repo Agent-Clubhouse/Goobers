@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"sigs.k8s.io/yaml"
@@ -56,7 +57,7 @@ func (b *Backend) ReadEvents(ctx context.Context, ref journal.RunRef, after uint
 	if after > 1<<63-1 {
 		return nil, nil
 	}
-	rows, err := b.config.Pool.Query(ctx, `SELECT body FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND seq>$3 ORDER BY seq LIMIT $4`, b.config.InstanceID, ref.ID, int64(after), bound)
+	rows, err := b.config.Pool.Query(ctx, `SELECT body,recorded_at FROM journal.run_event WHERE instance_id=$1 AND run_id=$2 AND seq>$3 ORDER BY seq LIMIT $4`, b.config.InstanceID, ref.ID, int64(after), bound)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +65,8 @@ func (b *Backend) ReadEvents(ctx context.Context, ref journal.RunRef, after uint
 	var result []journal.EventRecord
 	for rows.Next() {
 		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
+		var recordedAt *time.Time
+		if err := rows.Scan(&raw, &recordedAt); err != nil {
 			return nil, err
 		}
 		var event journal.Event
@@ -74,7 +76,12 @@ func (b *Backend) ReadEvents(ctx context.Context, ref journal.RunRef, after uint
 		if !event.KnownSchema() {
 			return nil, journal.ErrJournalMigrationRequired
 		}
-		result = append(result, journal.EventRecord{Event: event, Raw: raw})
+		record := journal.EventRecord{Event: event, Raw: raw}
+		if recordedAt != nil {
+			// Rows written before migration 0025 have no database-clock stamp.
+			record.RecordedAt = recordedAt.UTC()
+		}
+		result = append(result, record)
 	}
 	return result, rows.Err()
 }

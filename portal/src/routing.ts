@@ -11,6 +11,7 @@ export type Route =
   | { page: "errors"; filters: ErrorRouteFilters }
   | { page: "insight"; filters?: InsightRouteFilters }
   | { page: "cost"; filters?: ScopeFilters }
+  | { page: "labs"; feature?: string }
   | {
       page: "work-items";
       kind?: "pr" | "issue";
@@ -43,7 +44,7 @@ export interface RunRouteFilters extends ScopeFilters {
   showNoWork?: boolean;
 }
 
-export type InsightSection = "contributors" | "usage" | "failures" | "latency";
+export type InsightSection = "contributors" | "usage" | "failures" | "latency" | "backprop";
 
 export interface InsightRouteFilters extends ScopeFilters {
   section?: InsightSection;
@@ -61,7 +62,8 @@ export type PrimaryArea =
   | "runs"
   | "work-items"
   | "insight"
-  | "cost";
+  | "cost"
+  | "labs";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -171,6 +173,9 @@ export function parseRoute(hash = window.location.hash): Route {
     const filters = parseScopeFilters(search);
     return hasScopeFilters(filters) ? { page: "cost", filters } : { page: "cost" };
   }
+  if (area === "labs") {
+    return id ? { page: "labs", feature: id } : { page: "labs" };
+  }
   return { page: "overview" };
 }
 
@@ -180,6 +185,9 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "gaggle") {
     return `#/gaggle/${encodeURIComponent(route.id)}`;
+  }
+  if (route.page === "labs" && route.feature) {
+    return `#/labs/${encodeURIComponent(route.feature)}`;
   }
   if (route.page === "workflow") {
     const identity = route.gaggle
@@ -308,6 +316,7 @@ function insightSectionQuery(search: URLSearchParams): InsightSection | undefine
   return value === "contributors" ||
     value === "usage" ||
     value === "failures" ||
+    value === "backprop" ||
     value === "latency"
     ? value
     : undefined;

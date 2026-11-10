@@ -32,6 +32,10 @@ func goobersIOReceiptFile() string {
 	return filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ReceiptFileName)
 }
 
+func goobersIOPublicationReceiptFile() string {
+	return filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.PublicationReceiptFileName)
+}
+
 func collectGoobersIOReceipts(req RunRequest, selfBin string) ([]mcpio.InputInspectionReceipt, bool, error) {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return nil, false, nil
@@ -154,6 +158,7 @@ func goobersIOPromptSection(req RunRequest) string {
 		b.WriteString("Use `list_inputs`, `grep_input`, and `read_input` to examine the upstream content listed under Context above, instead of opening those files directly. Prefer `grep_input` to search a large input, or `read_input` with a line range around a match, rather than reading a large input in one call.\n\n")
 	}
 	writeChildWorkflowPrompt(&b, req)
+	writeDecidePrompt(&b, req)
 	return b.String()
 }
 

@@ -149,6 +149,9 @@ type Config struct {
 	// DecisionGate is the opt-in decision-model (System One) layer. Absent means off.
 	// It names environment variables for the endpoint and key; it never holds them.
 	DecisionGate *decisiongate.Settings `json:"decisionGate,omitempty" yaml:"decisionGate,omitempty"`
+	// WorkflowClustering optionally supplies a frozen advisory model for child
+	// proposal validation and admission.
+	WorkflowClustering *WorkflowClusteringConfig `json:"workflowClustering,omitempty" yaml:"workflowClustering,omitempty"`
 	// UpdateCheck configures the daemon's notify-only release check (#4903).
 	// Nil keeps the defaults: enabled, the stable channel, once a day. The
 	// check only tells the operator a newer release exists — applying it stays
@@ -220,6 +223,11 @@ type Config struct {
 	// default — leaves every CI failure routed exactly as before, because the
 	// comparison costs one extra CI run per newly observed red base.
 	BaselineHealth *BaselineHealthConfig `json:"baselineHealth,omitempty" yaml:"baselineHealth,omitempty"`
+}
+
+// WorkflowClusteringConfig locates a frozen Labs clustering artifact.
+type WorkflowClusteringConfig struct {
+	ModelPath string `json:"modelPath,omitempty" yaml:"modelPath,omitempty"`
 }
 
 // BaselineHealthConfig tunes shared-baseline-failure detection.
@@ -493,6 +501,11 @@ type APIConfig struct {
 	// rotation requires a coordinated restart and invalidates outstanding pod
 	// tokens and credential-refresh grants until every replica uses the new key.
 	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
+	// PodTokenKeyRingFile explicitly selects a JSON key ring for cloud workers.
+	// Only current signs; its ID permits verification against control's previous
+	// key during rotation. Mutually exclusive with PodTokenKeyFile. Workers read
+	// at startup; roll them after promotion before retiring the previous key.
+	PodTokenKeyRingFile string `json:"podTokenKeyRingFile,omitempty" yaml:"podTokenKeyRingFile,omitempty" credentialPath:"trimmed"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.
@@ -1558,6 +1571,17 @@ type EngineConfig struct {
 	// authoritative build ID and promotes a version only after its pollers are
 	// healthy.
 	WorkerVersioning bool `json:"workerVersioning,omitempty" yaml:"workerVersioning,omitempty"`
+	// ChildWorkflows controls generated child workflows for engine-driven runs
+	// (#8085 d). They are enabled by default; setting enabled=false is the
+	// rollback. The posture is pinned into each run at start, so changing it
+	// affects new runs only.
+	ChildWorkflows *EngineChildWorkflowsConfig `json:"childWorkflows,omitempty" yaml:"childWorkflows,omitempty"`
+}
+
+// EngineChildWorkflowsConfig is the instance's posture on generated child
+// workflows for engine-driven runs.
+type EngineChildWorkflowsConfig struct {
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // EngineHITLConfig is the instance's posture on holding an engine-driven run's
@@ -1591,6 +1615,10 @@ type EngineHITLConfig struct {
 // RunConditions are instance-level run conditions (§7): max parallel runs and
 // per-workflow run budgets.
 type RunConditions struct {
+	// DisableCadenceBudgets opts out of hourly and daily admission ceilings,
+	// including the default 10/hour. Explicit zero workflow budget overrides
+	// still stop the workflow; all other admission gates remain enforced.
+	DisableCadenceBudgets bool `json:"disableCadenceBudgets,omitempty" yaml:"disableCadenceBudgets,omitempty"`
 	// MaxParallelRuns caps total concurrent runs across every workflow in the
 	// instance (internal/localscheduler.Conditions.instanceMaxParallel).
 	// Zero or omitted means UNLIMITED — bounded only by each workflow's own
@@ -2345,6 +2373,16 @@ func (c *Config) EngineHITLEnabled() bool {
 	}
 	hitl := c.EffectiveEngineConfig().HITL
 	return hitl != nil && hitl.Enabled
+}
+
+// EngineChildWorkflowsEnabled reports the generated-child posture pinned into
+// new engine-driven runs (#8085 d).
+func (c *Config) EngineChildWorkflowsEnabled() bool {
+	if c == nil {
+		return false
+	}
+	children := c.EffectiveEngineConfig().ChildWorkflows
+	return children == nil || children.Enabled == nil || *children.Enabled
 }
 
 // EngineProjectionEnabled reports whether instance YAML or a host/address

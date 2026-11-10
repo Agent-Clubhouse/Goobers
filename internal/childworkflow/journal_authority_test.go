@@ -15,6 +15,7 @@ type authorityFixture struct {
 	run      *journal.Run
 	id       journal.RunIdentity
 	pinned   PinnedStageAdmission
+	open     func(context.Context, string) (*journal.Reader, error)
 	resolver *JournalAuthorityResolver
 }
 
@@ -46,14 +47,16 @@ func newAuthorityFixture(t *testing.T) *authorityFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
-	f := &authorityFixture{run: run, id: id, pinned: PinnedStageAdmission{Admission: admission, ConfigGeneration: id.ConfigGeneration,
+	f := &authorityFixture{run: run, id: id, open: func(_ context.Context, runID string) (*journal.Reader, error) {
+		if runID != id.RunID {
+			return nil, ErrAuthorityUnavailable
+		}
+		return journal.OpenReadOnly(run.Dir())
+	}, pinned: PinnedStageAdmission{Admission: admission, ConfigGeneration: id.ConfigGeneration,
 		WorkflowDigest: id.WorkflowDigest, GooberDigest: id.GooberDigest}}
 	f.resolver = &JournalAuthorityResolver{
-		OpenJournal: func(_ context.Context, runID string) (*journal.Reader, error) {
-			if runID != id.RunID {
-				return nil, ErrAuthorityUnavailable
-			}
-			return journal.OpenReadOnly(run.Dir())
+		OpenJournal: func(ctx context.Context, runID string) (journal.RunReader, error) {
+			return f.open(ctx, runID)
 		},
 		LoadPinnedStage: func(_ context.Context, identity journal.RunIdentity, stage string) (PinnedStageAdmission, error) {
 			if identity.ConfigGeneration != id.ConfigGeneration || stage != "plan" {
@@ -210,7 +213,7 @@ func TestJournalAuthorityRefusesScopeAndMissingProvenance(t *testing.T) {
 		}},
 		{"backend mismatch", func(f *authorityFixture, _ *apiv1.InvocationEnvelope) { f.pinned.Admission.Backend = BackendEngine }},
 		{"missing journal", func(f *authorityFixture, _ *apiv1.InvocationEnvelope) {
-			f.resolver.OpenJournal = func(context.Context, string) (*journal.Reader, error) { return nil, errors.New("unavailable") }
+			f.resolver.OpenJournal = func(context.Context, string) (journal.RunReader, error) { return nil, errors.New("unavailable") }
 		}},
 	}
 	for _, test := range tests {
@@ -368,5 +371,26 @@ func TestJournalAuthorityAllowsNarrowerDelegatableCapabilities(t *testing.T) {
 	}
 	envelope.Capabilities = []string{"agent:model"}
 	authority, err := f.resolver.PrepareStage(t.Context(), envelope)
+	requireNoAuthority(t, authority, err)
+}
+
+func TestJournalAuthorityPrepareOriginMatchesPrepareStage(t *testing.T) {
+	f := newAuthorityFixture(t)
+	envelope := f.start(t, 1, 1, false)
+	want, err := f.resolver.PrepareStage(t.Context(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.resolver.PrepareOrigin(t.Context(), envelope.RunID, *envelope.ChildWorkflowOrigin)
+	if err != nil || !sameJSON(got, want) {
+		t.Fatalf("PrepareOrigin = %+v, %v; want %+v", got, err, want)
+	}
+	// The origin alone still has to name the committed, active attempt.
+	borrowed := *envelope.ChildWorkflowOrigin
+	borrowed.AttemptID = "not-the-committed-attempt"
+	authority, err := f.resolver.PrepareOrigin(t.Context(), envelope.RunID, borrowed)
+	requireNoAuthority(t, authority, err)
+	f.append(t, journal.Event{Type: journal.EventStageFinished, Branch: 1, Stage: "plan", Attempt: 1})
+	authority, err = f.resolver.PrepareOrigin(t.Context(), envelope.RunID, *envelope.ChildWorkflowOrigin)
 	requireNoAuthority(t, authority, err)
 }

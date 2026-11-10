@@ -46,6 +46,11 @@ type FileConfig struct {
 // operates on — seam-shaped so tests can wrap the real ledger.
 type FileLedger interface {
 	localscheduler.ClaimStore
+	// Only the already-open in-memory file ledger has infallible reads. A PG
+	// ClaimStore deliberately cannot satisfy this file-only contract (#8146).
+	ForRunAll(string) []localscheduler.ClaimEntry
+	Snapshot() []localscheduler.ClaimEntry
+	HistorySnapshot() []localscheduler.ClaimEntry
 }
 
 // Default operation labels for a bare mutating primitive called outside

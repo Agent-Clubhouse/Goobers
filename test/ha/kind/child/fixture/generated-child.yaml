@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.1"
+metadata:
+  name: kind-generated-child
+spec:
+  gaggle: reference
+  triggers: [{type: manual}]
+  start: effect
+  tasks:
+    - name: effect
+      type: deterministic
+      goal: Record one side effect and wait for the kind driver
+      workspace: scratch
+      timeoutSeconds: 600
+      run:
+        command:
+          - sh
+          - -ec
+          - |
+            printf 'performed\n' >> /tmp/kind-child-effects
+            touch /tmp/kind-child-ready
+            while [ ! -f /tmp/kind-child-release ]; do sleep 1; done
+            printf '{"summary":"kind child completed"}' > child-result.json
+      inputs: {resultFile: child-result.json}

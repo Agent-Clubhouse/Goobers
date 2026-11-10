@@ -30,7 +30,8 @@ import (
 // v1alpha10 adds immutable workspace-revision authority.
 // v1alpha11 adds the runner-owned named artifact publication contract.
 // v1alpha12 adds durable child-workflow stage origin identities.
-const StageContractVersion = "v1alpha12"
+// v1alpha13 adds the pinned DSL version to stage invocations.
+const StageContractVersion = "v1alpha13"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -97,6 +98,9 @@ type InvocationEnvelope struct {
 	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
+	// DSLVersion is the contract pinned by the workflow definition, never stage input.
+	// Empty is a legacy envelope and must not imply a less restrictive contract.
+	DSLVersion string `json:"dslVersion,omitempty"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
 	RunID string `json:"runId"`
 	// InstanceID is the originating instance's durable identity, pinned at

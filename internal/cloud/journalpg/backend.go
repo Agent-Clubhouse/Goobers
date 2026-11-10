@@ -25,6 +25,10 @@ type Config struct {
 	InstanceID string
 	Lease      *lease.Manager
 	LiveOwner  func() *lease.Handle
+	// TerminalCleanup performs idempotent forge/claim cleanup after a fenced
+	// watchdog terminal is durable.
+	TerminalCleanup func(context.Context, journal.RunIdentity, string) error
+
 	// InstanceClock timestamps instance-log events before partition routing.
 	// Nil uses time.Now.
 	InstanceClock func() time.Time
@@ -33,11 +37,13 @@ type Config struct {
 // Backend is safe for concurrent use. Each recovered writer gets a new token;
 // old process handles cannot acquire new authority through a lease refresh.
 type Backend struct {
-	config    Config
-	mu        sync.Mutex
-	runs      map[journal.RunHandle]*runOwner
-	instances map[journal.InstanceHandle]*instanceOwner
-	dirty     chan struct{}
+	config     Config
+	mu         sync.Mutex
+	runs       map[journal.RunHandle]*runOwner
+	instances  map[journal.InstanceHandle]*instanceOwner
+	dirty      chan struct{}
+	unresolved map[journal.RunKey]mintedOwner
+	minting    map[journal.RunKey]bool
 }
 
 type runOwner struct {
@@ -51,6 +57,11 @@ type instanceOwner struct {
 	token  journal.OwnerToken
 	epoch  int64
 	stream string
+	// lease is the handle the stream was opened under. Retire fences with it, not
+	// with the live owner: by the time an epoch ends the host has cancelled the
+	// epoch context and cleared its live owner, but the lease itself is held until
+	// the host releases it.
+	lease *lease.Handle
 }
 
 // New constructs a writer/reader backend without acquiring journal ownership.
@@ -61,7 +72,7 @@ func New(config Config) (*Backend, error) {
 	if config.InstanceClock == nil {
 		config.InstanceClock = time.Now
 	}
-	return &Backend{config: config, runs: map[journal.RunHandle]*runOwner{}, instances: map[journal.InstanceHandle]*instanceOwner{}, dirty: make(chan struct{}, 1)}, nil
+	return &Backend{config: config, runs: map[journal.RunHandle]*runOwner{}, instances: map[journal.InstanceHandle]*instanceOwner{}, dirty: make(chan struct{}, 1), unresolved: map[journal.RunKey]mintedOwner{}, minting: map[journal.RunKey]bool{}}, nil
 }
 
 func (b *Backend) liveOwner() (*lease.Handle, error) {

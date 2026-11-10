@@ -206,7 +206,12 @@ A configured deployment needs all of these inputs before enabling stage dispatch
   normally all
   `https://goobers-api.goobers-system.svc:8080`, and the same signing key through
   `--config-key-file`. The fetched sanitized instance document must name that
-  same mount in `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
+  same mount in `api.podTokenKeyFile`. These are raw-key inputs and always
+  preserve trimmed raw bytes. Cloud-control workers instead explicitly select
+  the shared JSON ring with `--config-keyring-file` and `api.podTokenKeyRingFile`;
+  never configure both raw and ring inputs for one plane. See the
+  [cloud worker key contract](goobers-cloud/README.md#worker-signing-keys).
+  These must be absolute HTTP(S) base URLs without
   user information, query parameters, or fragments. Startup validates syntax
   and key material, not endpoint reachability or remote key agreement. Use TLS
   for the in-cluster listener. The certificate must cover the Service name;

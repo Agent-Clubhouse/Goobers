@@ -40,6 +40,13 @@ import type {
   TranscriptContent,
   WorkflowDetail,
   QueueEligibilityView,
+  LabsWorkflowClusterView,
+  LabsFleetConvergenceView,
+  LabsFluidUIReport,
+  FluidUICustomization,
+  FluidUICustomizationState,
+  FluidUIRequest,
+  FluidUIRequestApplication,
   WorkflowPage,
   WorkItemDetail,
   WorkItemKind,
@@ -71,6 +78,13 @@ export interface DaemonFixtures {
   telemetryErrors: TelemetryErrorsPage;
   workItems?: WorkItemPage;
   workItemDetails?: Record<string, WorkItemDetail>;
+  labsWorkflowClusters?: LabsWorkflowClusterView;
+  labsFleetConvergence?: LabsFleetConvergenceView;
+  labsFluidUIReport?: LabsFluidUIReport;
+  /** Seeds the in-memory per-user Fluid UI store; omitted means the standard Portal. */
+  fluidUICustomization?: FluidUICustomizationState;
+  /** Seeds the caller's Fluid UI requests (#8417); submissions stay queued. */
+  fluidUIRequests?: FluidUIRequest[];
 }
 
 export interface FixtureStageUsage {
@@ -133,9 +147,15 @@ function fixtureReadiness(fixtures: DaemonFixtures): InstanceReadiness {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+  private fluidUI: FluidUICustomizationState;
+  private readonly fluidUIHistory: (FluidUICustomization | null)[] = [];
+  private fluidUIRequests: FluidUIRequest[];
+
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
     assertSupportedContractVersion(fixtures.instance);
+    this.fluidUI = fixtures.fluidUICustomization ?? { customization: null, revision: 0, undoDepth: 0 };
+    this.fluidUIRequests = structuredClone(fixtures.fluidUIRequests ?? []);
   }
 
   connectEvents(
@@ -207,6 +227,173 @@ export class FixtureDaemonClient implements DaemonClient {
   async getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
     required(this.fixtures.workflowDetails, fixtureKey(gaggle, workflow), "workflow");
     return fixture({ gaggle, workflow, asOf: "2026-09-08T00:00:00Z", status: "not-observed", problem: "No queue eligibility observation is included in this fixture." }, options);
+  }
+
+  async getLabsWorkflowClusters(options?: RequestOptions): Promise<LabsWorkflowClusterView> {
+    return fixture(
+      this.fixtures.labsWorkflowClusters ?? { status: "insufficient-data", population: 0, minClusterSize: 3 },
+      options,
+    );
+  }
+
+  async getLabsFleetConvergence(options?: RequestOptions): Promise<LabsFleetConvergenceView> {
+    return fixture(
+      this.fixtures.labsFleetConvergence ?? {
+        status: "insufficient-data",
+        workflows: 0,
+        population: 0,
+        minClusterSize: 3,
+        instances: [],
+        excluded: [],
+        shapes: [],
+        clusters: [],
+      },
+      options,
+    );
+  }
+
+  async getLabsFluidUIReport(options?: RequestOptions): Promise<LabsFluidUIReport> {
+    return fixture(
+      this.fixtures.labsFluidUIReport ?? {
+        advisory: "Advisory product proposals only. Candidates never change global defaults or any user's customization.",
+        generatedAt: "2026-09-08T00:00:00Z",
+        sustainedAfterDays: 7,
+        users: 0,
+        candidates: [],
+        unmetNeeds: [],
+      },
+      options,
+    );
+  }
+
+  // An in-memory stand-in for the daemon's per-user store (internal/fluidui):
+  // every write records the previous document for undo.
+  getLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  putLabsFluidUICustomization(
+    customization: FluidUICustomization,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState> {
+    throwIfCancelled(options);
+    return this.writeFluidUI(structuredClone(customization), options);
+  }
+
+  resetLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    throwIfCancelled(options);
+    return this.writeFluidUI(null, options);
+  }
+
+  undoLabsFluidUICustomization(options?: RequestOptions): Promise<FluidUICustomizationState> {
+    throwIfCancelled(options);
+    if (this.fluidUIHistory.length === 0) {
+      return Promise.reject(
+        new DaemonApiError(409, "nothing_to_undo", "there is no earlier customization to restore"),
+      );
+    }
+    const previous = this.fluidUIHistory.pop() ?? null;
+    this.fluidUI = this.nextFluidUIState(previous);
+    return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  private writeFluidUI(
+    customization: FluidUICustomization | null,
+    options?: RequestOptions,
+  ): Promise<FluidUICustomizationState> {
+    this.fluidUIHistory.push(this.fluidUI.customization);
+    if (this.fluidUIHistory.length > 20) this.fluidUIHistory.shift();
+    this.fluidUI = this.nextFluidUIState(customization);
+    return fixture(structuredClone(this.fluidUI), options);
+  }
+
+  // Fixture requests never run a workflow: a submission stays queued, and
+  // apply/revert follow the daemon's transition rules (internal/fluidui).
+  listLabsFluidUIRequests(options?: RequestOptions): Promise<FluidUIRequest[]> {
+    return fixture(structuredClone(this.fluidUIRequests), options);
+  }
+
+  submitLabsFluidUIRequest(prompt: string, options?: RequestOptions): Promise<FluidUIRequest> {
+    throwIfCancelled(options);
+    const request: FluidUIRequest = {
+      id: `req-fixture-${this.fluidUIRequests.length + 1}`,
+      prompt,
+      status: "queued",
+      attempt: 1,
+      createdAt: "2026-09-08T00:00:00Z",
+      updatedAt: "2026-09-08T00:00:00Z",
+    };
+    this.fluidUIRequests = [request, ...this.fluidUIRequests];
+    return fixture(structuredClone(request), options);
+  }
+
+  retryLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequest> {
+    throwIfCancelled(options);
+    return this.transitionFluidUIRequest(id, ["failed", "unsupported"], (request) => ({
+      ...request,
+      status: "queued",
+      attempt: request.attempt + 1,
+      errors: undefined,
+      detail: undefined,
+    })).then((request) => fixture(request, options));
+  }
+
+  async applyLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication> {
+    throwIfCancelled(options);
+    const current = this.fluidUIRequests.find((request) => request.id === id);
+    if (!current) {
+      throw new DaemonApiError(404, "not_found", "request not found");
+    }
+    if (current.status !== "ready_to_preview" || !current.candidate) {
+      throw new DaemonApiError(409, "invalid_transition", `request is ${current.status}`);
+    }
+    const customization = await this.writeFluidUI(structuredClone(current.candidate), options);
+    const request = await this.transitionFluidUIRequest(id, ["ready_to_preview"], (entry) => ({
+      ...entry,
+      status: "applied",
+      appliedRevision: customization.revision,
+    }));
+    return { request, customization };
+  }
+
+  async revertLabsFluidUIRequest(id: string, options?: RequestOptions): Promise<FluidUIRequestApplication> {
+    throwIfCancelled(options);
+    const request = await this.transitionFluidUIRequest(id, ["applied"], (entry) => ({
+      ...entry,
+      status: "reverted",
+    }));
+    const previous = this.fluidUIHistory.pop() ?? null;
+    this.fluidUI = this.nextFluidUIState(previous);
+    return { request, customization: structuredClone(this.fluidUI) };
+  }
+
+  private transitionFluidUIRequest(
+    id: string,
+    from: FluidUIRequest["status"][],
+    next: (request: FluidUIRequest) => FluidUIRequest,
+  ): Promise<FluidUIRequest> {
+    const index = this.fluidUIRequests.findIndex((request) => request.id === id);
+    if (index < 0) {
+      return Promise.reject(new DaemonApiError(404, "not_found", "request not found"));
+    }
+    const current = this.fluidUIRequests[index];
+    if (!from.includes(current.status)) {
+      return Promise.reject(
+        new DaemonApiError(409, "invalid_transition", `request is ${current.status}`),
+      );
+    }
+    const updated = next(current);
+    this.fluidUIRequests[index] = updated;
+    return Promise.resolve(structuredClone(updated));
+  }
+
+  private nextFluidUIState(customization: FluidUICustomization | null): FluidUICustomizationState {
+    return {
+      customization,
+      revision: this.fluidUI.revision + 1,
+      updatedAt: "2026-09-08T00:00:00Z",
+      undoDepth: this.fluidUIHistory.length,
+    };
   }
 
   // Emulates the daemon's deterministic run listing so filtered and paginated
@@ -364,6 +551,8 @@ export class FixtureDaemonClient implements DaemonClient {
       curation: stats.curation,
       readyPool: stats.readyPool,
       attributionEval: stats.attributionEval,
+      attributionCohorts: stats.attributionCohorts,
+      faultAudit: stats.faultAudit,
       trend: request?.trendBuckets
         ? Array.from({ length: request.trendBuckets }, (_, index) => {
             const start = new Date(request.trendSince ?? 0).getTime();

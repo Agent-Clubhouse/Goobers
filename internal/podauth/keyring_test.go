@@ -121,6 +121,7 @@ func mintRingTokenKinds(t *testing.T, s *SignedKey) []string {
 	add(s.MintWorkerConfigDigest("worker", time.Minute))
 	add(s.MintWorkerBlob("worker", time.Minute))
 	add(s.MintWorkerSurrender("worker", time.Minute))
+	add(s.MintWorkerTerminalIntervention("worker", time.Minute))
 	digest := "sha256:" + strings.Repeat("a", 64)
 	add(s.MintChildPod("run-1", digest, time.Hour))
 	add(s.MintWorkflowParentPod("run-1", digest, time.Hour))

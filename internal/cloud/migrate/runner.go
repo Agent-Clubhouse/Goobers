@@ -47,6 +47,9 @@ type Runner struct {
 	ReadmodelBuilder ReadmodelBuilder
 	// StepTimeout bounds each migration step; zero uses DefaultStepTimeout.
 	StepTimeout time.Duration
+	// writePaths overrides the write-path inventory for tests that model an
+	// install made by an older binary; nil loads the current inventory.
+	writePaths func() (cloudschema.Inventory, error)
 	// Report receives non-fatal findings (a deferred partition pass); nil drops them.
 	Report func(error)
 }
@@ -79,7 +82,11 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err := ValidateCatalog(r.Catalog); err != nil {
 		return err
 	}
-	inventory, err := cloudschema.LoadWritePaths()
+	loadWritePaths := cloudschema.LoadWritePaths
+	if r.writePaths != nil {
+		loadWritePaths = r.writePaths
+	}
+	inventory, err := loadWritePaths()
 	if err != nil {
 		return err
 	}
@@ -99,6 +106,7 @@ func (r Runner) Apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	r.reportOutOfOrder(applied)
 	for _, migration := range r.Catalog {
 		if migration.Version > leaseSchemaVersion {
 			continue
@@ -106,7 +114,9 @@ func (r Runner) Apply(ctx context.Context) error {
 		if applied[migration.Version] {
 			continue
 		}
-		if err := applyOne(ctx, session.conn, migration, r.BackupRef); err != nil {
+		if err := retryLockTimeout(ctx, migration, func() error {
+			return applyOne(ctx, session.conn, migration, r.BackupRef, inventory)
+		}); err != nil {
 			return err
 		}
 	}
@@ -123,7 +133,9 @@ func (r Runner) Apply(ctx context.Context) error {
 			if migration.Version <= leaseSchemaVersion || applied[migration.Version] {
 				continue
 			}
-			if err := r.applyLeased(runCtx, manager, handle, session.conn, migration); err != nil {
+			if err := retryLockTimeout(runCtx, migration, func() error {
+				return r.applyLeased(runCtx, manager, handle, session.conn, migration, inventory)
+			}); err != nil {
 				return err
 			}
 		}
@@ -245,10 +257,31 @@ func loadApplied(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) 
 	return applied, nil
 }
 
+// reportOutOfOrder warns about each pending migration numbered below the
+// highest one already applied: it will still be applied, but after migrations
+// that were written to follow it. Pre-merge, test/migrationorder refuses such a
+// number; this only reports it, so a deploy that reaches one is not stopped.
+func (r Runner) reportOutOfOrder(applied map[int]bool) {
+	if r.Report == nil {
+		return
+	}
+	highest := 0
+	for version := range applied {
+		highest = max(highest, version)
+	}
+	for _, migration := range r.Catalog {
+		if !applied[migration.Version] && migration.Version < highest {
+			r.Report(fmt.Errorf("cloud migration %d is applied out of order: this database already has migration %d", migration.Version, highest))
+		}
+	}
+}
+
 // applyLeased runs one versioned migration as a leased step.
-func (r Runner) applyLeased(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, migration Migration) error {
+func (r Runner) applyLeased(ctx context.Context, manager *cloudlease.Manager, handle *cloudlease.Handle, conn *pgxpool.Conn, migration Migration, inventory cloudschema.Inventory) error {
 	return r.leasedStep(ctx, manager, handle, conn, fmt.Sprintf("cloud migration %d", migration.Version),
-		func(stepCtx context.Context, tx pgx.Tx) error { return applyInTx(stepCtx, tx, migration, r.BackupRef) })
+		func(stepCtx context.Context, tx pgx.Tx) error {
+			return applyInTx(stepCtx, tx, migration, r.BackupRef, inventory)
+		})
 }
 
 // leasedStep runs step on the advisory-locked direct session. Migration work
@@ -277,7 +310,17 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 			return fmt.Errorf("bound %s: %w", label, err)
 		}
 	}
+	// Every leased step (each migration and the grant reconcile) takes table
+	// locks; it must give up rather than queue behind a long reader, and is
+	// reported as busy.
+	if _, err := tx.Exec(stepCtx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound %s lock wait: %w", label, err)
+	}
 	if err := step(stepCtx, tx); err != nil {
+		if isLockTimeout(err) {
+			return fmt.Errorf("%w: %s could not take its locks: %w", ErrMigrationBusy, label, err)
+		}
 		return err
 	}
 	if err := manager.Confirm(stepCtx, tx, handle); err != nil {
@@ -289,13 +332,13 @@ func (r Runner) leasedStep(ctx context.Context, manager *cloudlease.Manager, han
 	return nil
 }
 
-func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, backupRef string) error {
+func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, backupRef string, inventory cloudschema.Inventory) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin cloud migration %d: %w", migration.Version, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := applyInTx(ctx, tx, migration, backupRef); err != nil {
+	if err := applyInTx(ctx, tx, migration, backupRef, inventory); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -304,7 +347,28 @@ func applyOne(ctx context.Context, conn *pgxpool.Conn, migration Migration, back
 	return nil
 }
 
-func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string) error {
+// Migration DDL takes ACCESS EXCLUSIVE locks. Queued behind one long reader,
+// such a lock request would queue every later append and read behind itself
+// and stall the journal for the whole deploy, so each migration gives up on a
+// lock it cannot take within migrationLockTimeout and is retried, then fails
+// as busy (the Job retries later), as partition maintenance does (55P03).
+var (
+	migrationLockTimeout = 5 * time.Second
+	migrationLockTries   = 3
+	migrationLockBackoff = 2 * time.Second
+)
+
+// applyInTx applies one migration and records it, then applies this binary's
+// whole inventory to what now exists (GrantExisting, grants only) in the same
+// transaction, so a column the migration adds is never visible to a
+// still-serving previous binary without its grant. Widenings of existing
+// objects therefore take effect at the run's first migration and persist if
+// the run fails; narrowings wait for the full reconcile after the last one.
+func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef string, inventory cloudschema.Inventory) error {
+	if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)",
+		fmt.Sprintf("%dms", migrationLockTimeout.Milliseconds())); err != nil {
+		return fmt.Errorf("bound cloud migration %d lock wait: %w", migration.Version, err)
+	}
 	if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 		return fmt.Errorf("apply cloud migration %d: %w", migration.Version, err)
 	}
@@ -316,7 +380,31 @@ func applyInTx(ctx context.Context, tx pgx.Tx, migration Migration, backupRef st
 	); err != nil {
 		return fmt.Errorf("record cloud migration %d: %w", migration.Version, err)
 	}
+	if err := cloudschema.GrantExisting(ctx, tx, inventory); err != nil {
+		return fmt.Errorf("cloud migration %d: %w", migration.Version, err)
+	}
 	return nil
+}
+
+// retryLockTimeout reruns one migration's transaction when it gave up on a
+// lock (55P03), and reports ErrMigrationBusy once the tries are spent. Each
+// attempt rolled back whole, so a retry starts clean.
+func retryLockTimeout(ctx context.Context, migration Migration, apply func() error) error {
+	var err error
+	for attempt := 1; attempt <= migrationLockTries; attempt++ {
+		if err = apply(); err == nil || !isLockTimeout(err) {
+			return err
+		}
+		if attempt == migrationLockTries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(migrationLockBackoff):
+		}
+	}
+	return fmt.Errorf("%w: cloud migration %d could not take its locks: %w", ErrMigrationBusy, migration.Version, err)
 }
 
 // AppliedMigrations loads compatibility metadata for startup readiness checks.

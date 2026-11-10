@@ -362,6 +362,9 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, fmt.Errorf("invalid tools/call params: %w", err)
 	}
+	if params.Name == decideToolName {
+		return s.callDecideTool(params.Arguments)
+	}
 	if isChildWorkflowTool(params.Name) {
 		return s.callChildWorkflowTool(params.Name, params.Arguments)
 	}

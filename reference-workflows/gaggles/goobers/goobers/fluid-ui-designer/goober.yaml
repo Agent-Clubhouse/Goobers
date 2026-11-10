@@ -1,0 +1,18 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: fluid-ui-designer
+spec:
+  gaggle: goobers
+  role: fluid-ui-designer
+  displayName: Fluid UI designer (Labs)
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - agent:model
+  tools: []
+  scaleFactor: 1
+  workflows:
+    - fluid-ui-customize

@@ -48,6 +48,9 @@ const (
 	// V2DSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
 	V2DSLVersion = "2.0"
+	// V21DSLVersion opts into durable comment-watcher routing budgets and
+	// their explicit comment permission, preserving the DSL 2.0 surface.
+	V21DSLVersion = "2.1"
 	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
 	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
 	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
@@ -176,6 +179,12 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 		Level: LevelSupported,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
+		},
+	},
+	V21DSLVersion: {
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.6.0"},
 		},
 	},
 	// DSL 3.0 enters at PREVIEW (dsl-3.0.md §8, issue #3505): the interpreter

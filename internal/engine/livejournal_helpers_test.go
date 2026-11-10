@@ -46,7 +46,7 @@ func writeTestJournal(t *testing.T, runsDir string, proj JournalProjection) (str
 	rec := &runJournal{proj: proj}
 	rec.assignEmitKeys()
 	req := livejournal.EmitRequest{RunID: proj.Identity.RunID, Gaggle: proj.Identity.Gaggle,
-		Open: &livejournal.OpenHeader{Identity: proj.Identity, Graph: proj.Graph, Definition: proj.Definition, Item: proj.Item, GateGooberCapabilities: proj.GateGooberCapabilities}}
+		Open: &livejournal.OpenHeader{Identity: proj.Identity, Graph: proj.Graph, Definition: proj.Definition, WorkflowLabels: proj.WorkflowLabels, Item: proj.Item, GateGooberCapabilities: proj.GateGooberCapabilities}}
 	for _, op := range rec.proj.Ops {
 		req.Ops = append(req.Ops, liveOpFrom(op))
 	}

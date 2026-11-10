@@ -238,6 +238,8 @@ func TestBlobReferenceCensusCoversEveryClass(t *testing.T) {
  (instance_id,gaggle,parent_run_id,occurrence,grant_id,attempt_id,config_digest,policy_digest,expires_at,owner_epoch)
  VALUES ('instance','g','census-parent','visit','grant','attempt',$1,'',clock_timestamp()+interval '1 hour',1)`},
 		{"child-result", "UPDATE control.child_lineage SET result_ref=$1 WHERE child_id='census-child'"},
+		// An engine child's continuation is its sealed result receipt (#8085 d).
+		{"child-result-receipt", "UPDATE control.child_lineage SET result_receipt_digest=$1 WHERE child_id='census-child'"},
 		{"child-workspace", "UPDATE control.child_lineage SET workspace_ref=$1 WHERE child_id='census-child'"},
 		{"disposition-result", `INSERT INTO control.child_disposition
  (instance_id,child_id,request_digest,action,result_ref,attempt_id,requested_at,owner_epoch)

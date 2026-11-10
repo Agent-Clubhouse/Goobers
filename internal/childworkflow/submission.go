@@ -1,6 +1,7 @@
 package childworkflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -70,6 +71,9 @@ type Submission struct {
 	Child       triggerqueue.ChildRecord
 	Duplicate   bool
 	Envelope    ChildStartEnvelope
+	// Admission is the durable human-review hold, present only when policy
+	// required approval of an out-of-distribution proposal.
+	Admission *triggerqueue.ChildAdmissionReview
 }
 
 // SubmissionService validates and accepts children; it never runs a workflow.
@@ -84,8 +88,15 @@ type SubmissionService struct {
 var (
 	ErrAuthorityUnavailable = errors.New("childworkflow: current stage authority unavailable")
 	ErrAuthorityChanged     = errors.New("childworkflow: stage authority changed during operation")
-	ErrProposalExpired      = errors.New("childworkflow: retained proposal has expired")
-	ErrSubmissionInvalid    = errors.New("childworkflow: invalid submission or retained envelope")
+	// ErrAuthorityRetryable marks an authority check that could not be made
+	// (its owner, journal or engine is briefly unreachable), not one that
+	// refused: the same request may succeed when retried.
+	ErrAuthorityRetryable = errors.New("childworkflow: stage authority is temporarily unavailable")
+	ErrProposalExpired    = errors.New("childworkflow: retained proposal has expired")
+	ErrSubmissionInvalid  = errors.New("childworkflow: invalid submission or retained envelope")
+	// ErrHumanApprovalRequired refuses an approval-required proposal only when
+	// the configured queue cannot retain a reviewable admission hold.
+	ErrHumanApprovalRequired = errors.New("childworkflow: out-of-distribution proposal requires human approval")
 )
 
 // Validate is advisory and writes no custody. It still authenticates the live
@@ -131,7 +142,12 @@ func (s *SubmissionService) Submit(ctx context.Context, origin Origin, request S
 	if err != nil {
 		return Submission{}, err
 	}
+	envelope = s.retainedNovelty(ctx, envelope, authority.Actor)
 	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return Submission{}, err
+	}
+	hold, err := s.admissionHold(envelope)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -149,8 +165,9 @@ func (s *SubmissionService) Submit(ctx context.Context, origin Origin, request S
 	}
 	child, duplicate, err := s.Queue.AcceptChild(ctx, triggerqueue.ChildAcceptance{
 		Identity: envelope.Identity(), Actor: authority.Actor, Payload: payload, Authority: &binding,
-		MaxChildren: envelope.MaxChildren,
-		Proposal:    &triggerqueue.ChildProposal{Digest: proposal.SourceDigest, Source: proposal.Source},
+		MaxChildren:   envelope.MaxChildren,
+		Proposal:      &triggerqueue.ChildProposal{Digest: proposal.SourceDigest, Source: proposal.Source},
+		AdmissionHold: hold,
 	}, s.now())
 	if err != nil {
 		return Submission{}, err
@@ -158,7 +175,78 @@ func (s *SubmissionService) Submit(ctx context.Context, origin Origin, request S
 	if !child.TombstonedAt.IsZero() {
 		return Submission{}, ErrProposalExpired
 	}
-	return Submission{Child: child, Duplicate: duplicate, Envelope: envelope}, nil
+	admission, err := s.admission(ctx, envelope, child.Identity)
+	if err != nil {
+		return Submission{}, err
+	}
+	return Submission{Child: child, Duplicate: duplicate, Envelope: envelope, Admission: admission}, nil
+}
+
+// retainedNovelty keeps the advisory evidence pinned by an earlier acceptance
+// of this exact start. Novelty comes from a model snapshot that may change
+// across daemon restarts, so it must not turn an exact retry into a conflict.
+// Any other difference is left for AcceptChild to refuse.
+func (s *SubmissionService) retainedNovelty(ctx context.Context, envelope ChildStartEnvelope, actor string) ChildStartEnvelope {
+	receipt, err := s.Queue.VerifiedChildStart(ctx, envelope.Identity(), actor)
+	if err != nil {
+		return envelope
+	}
+	retained, err := DecodeStartEnvelope(receipt.Payload)
+	if err != nil {
+		return envelope
+	}
+	candidate := envelope
+	candidate.Novelty = retained.Novelty
+	want, err := json.Marshal(candidate)
+	if err != nil {
+		return envelope
+	}
+	got, err := json.Marshal(retained)
+	if err != nil || !bytes.Equal(want, got) {
+		return envelope
+	}
+	return candidate
+}
+
+// HumanApprovalRequired reports whether the pinned advisory evidence requires
+// an operator decision before this start may be dispatched.
+func (e ChildStartEnvelope) HumanApprovalRequired() bool {
+	return e.Novelty != nil && e.Novelty.HumanApprovalRequired
+}
+
+// admissionHold retains the pinned novelty evidence for review. The policy can
+// only tighten admission: a queue without durable holds refuses the start.
+func (s *SubmissionService) admissionHold(envelope ChildStartEnvelope) (*triggerqueue.ChildAdmissionHold, error) {
+	if !envelope.HumanApprovalRequired() {
+		return nil, nil
+	}
+	if _, ok := s.Queue.(ChildAdmissionQueue); !ok {
+		return nil, ErrHumanApprovalRequired
+	}
+	evidence, err := json.Marshal(envelope.JournalNovelty())
+	if err != nil || len(evidence) > triggerqueue.MaxChildAdmissionEvidenceBytes {
+		return nil, ErrSubmissionInvalid
+	}
+	return &triggerqueue.ChildAdmissionHold{Reason: AdmissionHoldReasonOutOfDistribution, Evidence: evidence}, nil
+}
+
+// AdmissionHoldReasonOutOfDistribution identifies holds created by the
+// optional out-of-distribution human-approval policy.
+const AdmissionHoldReasonOutOfDistribution = "out-of-distribution"
+
+func (s *SubmissionService) admission(ctx context.Context, envelope ChildStartEnvelope, identity triggerqueue.ChildIdentity) (*triggerqueue.ChildAdmissionReview, error) {
+	if !envelope.HumanApprovalRequired() {
+		return nil, nil
+	}
+	queue, ok := s.Queue.(ChildAdmissionQueue)
+	if !ok {
+		return nil, ErrHumanApprovalRequired
+	}
+	review, err := queue.ChildAdmission(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	return &review, nil
 }
 
 // Get authorizes the current occurrence before every custody read. A caller
@@ -205,7 +293,11 @@ func (s *SubmissionService) Get(ctx context.Context, origin Origin, invocationKe
 	if err := s.recheck(ctx, authority); err != nil {
 		return Submission{}, err
 	}
-	result := Submission{Child: child, Envelope: retained}
+	admission, admissionErr := s.admission(ctx, retained, identity)
+	if admissionErr != nil {
+		return Submission{}, admissionErr
+	}
+	result := Submission{Child: child, Envelope: retained, Admission: admission}
 	if err == nil {
 		result.Disposition = &disposition
 	}

@@ -70,7 +70,7 @@ func TestWorkflowlessCompatibilityAcrossGraduation(t *testing.T) {
 	if newest, _ := matrix.NewestSupported(); newest != "3.0" {
 		t.Fatalf("new authoring must still resolve 3.0, got %q", newest)
 	}
-	for _, version := range []string{"2.0", "3.0", "3.1"} {
+	for _, version := range []string{"2.0", "2.1", "3.0", "3.1"} {
 		got := featureDefinitionsByDSLVersion([]Definition{{DSLVersion: version}}, matrix)
 		if got[0].DSLVersion != version {
 			t.Fatalf("explicit %s pin changed to %s", version, got[0].DSLVersion)

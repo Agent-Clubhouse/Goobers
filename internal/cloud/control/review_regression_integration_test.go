@@ -105,7 +105,8 @@ func TestReviewChurnedEpochsHonorStartBackoff(t *testing.T) {
 				return errors.New("await reattachment: temporal visibility unavailable")
 			}
 			return s, nil
-		}}
+		},
+		Admission: inertAdmissionFactory}
 	host, err := New(Config{ValidateAssembly: func() error { return nil }, SelfExecution: "deny", Leadership: manager, SchemaCompatible: func(context.Context) error { return nil },
 		BuildEpoch: runtime.Build, RetryInterval: time.Millisecond})
 	if err != nil {

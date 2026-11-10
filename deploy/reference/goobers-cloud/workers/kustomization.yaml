@@ -1,0 +1,17 @@
+# Apply the cloud control base and each gaggle namespace first.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - temporal-ingress.yaml
+  - connection.yaml
+  - worker-deployment.yaml
+  - worker-rbac.yaml
+  - worker-pdb-template.yaml
+components:
+  - ../components/worker-base
+patches:
+  - target: {kind: ServiceAccount, name: goobers-worker}
+    patch: |-
+      - op: add
+        path: /metadata/namespace
+        value: goobers-cloud

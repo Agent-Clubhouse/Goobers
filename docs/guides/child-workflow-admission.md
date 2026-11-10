@@ -197,6 +197,35 @@ artifact transport, journal observations, surrender and recovery after a lost
 reply. They use an in-process worker transport; they do not certify a live
 Kubernetes/Temporal deployment or delegated PR publication.
 
+## Engine child admission on the cloud control plane
+
+On the cloud, the engine worker reaches generated-child custody through the
+`goobers-cloud control` role's child-admission plane (see
+[worker transport](../design/worker-blob-transport.md#engine-child-admission-authentication)).
+The plane is composed after the applied configuration and needs the object store
+(`--object-store-url`, `--object-store-container`). Without either, the control
+role refuses to start rather than serve a partial plane.
+
+Each call binds to the controller lease this replica holds at that moment. A
+standby, or a replica mid-failover, answers 503 and the engine retries
+elsewhere. Freezing a child into its manifest loads the config generation its
+parent was accepted under (`envelope.ConfigGeneration`) from the object store.
+It never uses the currently applied generation. It checks the parent's
+generation, workflow and goober digests and the child's effective policy
+against what was accepted. A changed policy refuses the child, a narrowing
+included. A control-plane reload of runner or harness settings does not.
+
+**Troubleshooting a misrouted worker.** 404 and 405 are retryable, because an
+API replica that does not serve the route yet answers that way during a rolling
+deploy. So a worker pointed at the wrong API URL does not fail on its first
+call. It surfaces as `childadmissionclient: … refused with status 404` only
+after the child activity's five-minute schedule-to-close budget, plus up to
+another five minutes while the engine's cleanup cancel retries the same way.
+If a child admission hangs and then fails with 404 or 405, check:
+- the worker's plane URL, the daemon API endpoint it was started with;
+- that every API replica runs a build that serves
+  `/api/v1/engine/children/{admit,load,cancel}`.
+
 ## Remaining delivery gates
 
 Public parent→child→result execution still requires a qualified isolated backend,
@@ -229,3 +258,23 @@ no recovery link. Child run details may independently have been retained or prun
 The view refreshes on gaggle run invalidations and offers explicit refresh; it
 shows the observation time and uses the Portal's existing stale-data indication.
 This read surface does not enable public child execution or new interventions.
+
+## Human admission review for novel children (Labs)
+
+When a cluster model is configured, validation, start and status responses
+carry advisory novelty evidence. A missing or stale model leaves the proposal
+unscored and admission unchanged. With the parent's
+`childWorkflows.requireHumanApprovalForOutOfDistribution` policy enabled, an
+out-of-distribution child is accepted with a durable admission hold that pins
+its novelty evidence. A held child is not dispatched until an operator decides
+with `goobers workflow child-admission --approve <child-id>` or
+`--reject <child-id>`. Approval is journaled in the child's lineage; rejection
+settles the child as a failed result the parent observes. An exact retry with
+the same invocation key returns the original receipt and its pinned evidence,
+even if the model changed in between. Queues that cannot retain a hold, such as
+cloud acceptance, refuse the start instead.
+
+The decision actor defaults to `GITHUB_ACTOR`, `USER` or `USERNAME`, then the
+OS account, and can be overridden with `--actor`. In trusted-local mode it is
+self-asserted: anyone who can open the instance's local queue can decide, and
+the actor is recorded for audit rather than authenticated.

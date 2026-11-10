@@ -123,7 +123,9 @@ var commandPolicyActions = map[string][]string{
 	"report-pr-status":       {"report-pr-status"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
 	"pr-claim":               {"release-pr-claim"},
-	"pr-comment-watch":       {"label-issue", "comment-on-issue"},
+	// Preserve the v0.5.0 DSL 2.0 contract: durable comment-backed routing
+	// budgets and their additional permission are explicit DSL 2.1 behavior.
+	"pr-comment-watch":       {"label-issue"},
 	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -51,6 +52,10 @@ func (a *Activities) EmitJournal(ctx context.Context, req livejournal.EmitReques
 	if a.Journal == nil {
 		return livejournal.EmitResponse{}, classifySeamError(invoke.InfrastructureFailure(
 			fmt.Errorf("run %s requires live journaling but this worker wires no journal emitter: %w", req.RunID, ErrNotConfigured)))
+	}
+	if req.HasChildStageStart() && activity.IsActivity(ctx) {
+		info := activity.GetInfo(ctx)
+		ctx = livejournal.WithChildOriginActivity(ctx, livejournal.ChildOriginActivity{WorkflowRunID: info.WorkflowExecution.RunID, ActivityID: info.ActivityID, Attempt: info.Attempt})
 	}
 	resp, err := a.Journal.Emit(ctx, req)
 	if err != nil {
@@ -146,13 +151,19 @@ func (r *runJournal) assignEmitKeys() {
 		if r.proj.Ops[i].EmitKey != "" {
 			continue
 		}
-		scope, attempt := opEmitScope(r.proj.Ops[i])
-		branch := opEmitBranch(r.proj.Ops[i])
-		group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
-		ordinal := r.ordinals[group]
-		r.ordinals[group] = ordinal + 1
-		r.proj.Ops[i].EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", r.proj.Identity.RunID, branch, scope, attempt, ordinal)
+		assignJournalKey(r.proj.Identity.RunID, r.ordinals, &r.proj.Ops[i])
 	}
+}
+
+// assignJournalKey also reserves keys for a bounded terminal transition before
+// publishing it to the repair projection. Gaps from refused intents are safe.
+func assignJournalKey(runID string, ordinals map[string]int, op *JournalOp) {
+	scope, attempt := opEmitScope(*op)
+	branch := opEmitBranch(*op)
+	group := fmt.Sprintf("%d|%s|%d", branch, scope, attempt)
+	ordinal := ordinals[group]
+	ordinals[group] = ordinal + 1
+	op.EmitKey = fmt.Sprintf("%s|%d|%s|%d|%d", runID, branch, scope, attempt, ordinal)
 }
 
 // opEmitScope resolves the (scope, attempt) an op's idempotency key is
@@ -216,6 +227,7 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 			Item:                   r.proj.Item,
 			Graph:                  r.proj.Graph,
 			Definition:             r.proj.Definition,
+			WorkflowLabels:         r.proj.WorkflowLabels,
 			GateGooberCapabilities: r.proj.GateGooberCapabilities,
 		}
 	}

@@ -33,6 +33,14 @@ type DirSource struct {
 	// must not share a deletable pin.
 	InstanceID string
 
+	// Pins computes the admission digests of the candidate's workflows from the
+	// generation's own tree (config/ inside a private extraction of the captured
+	// archive) and the same loaded set the candidate carries; it overlays the set
+	// in place. It lives behind a hook because the pin computation compiles
+	// workflows and the config package must not depend on that machinery. nil
+	// leaves the candidate unpinned, so no start is admitted against it.
+	Pins func(configDir string, cfg *instance.Config, set *instance.ConfigSet) (map[string]Pins, error)
+
 	// afterCapture and beforeRecapture are test seams between the real read
 	// stages; production leaves them nil.
 	afterCapture, beforeRecapture, afterResolveConfig func()
@@ -60,6 +68,9 @@ func (s DirSource) resolve() (resolved, error) {
 	root, err := filepath.EvalSymlinks(s.Root)
 	if err != nil {
 		return resolved{}, fmt.Errorf("resolve config directory: %w", err)
+	}
+	if _, err := os.Lstat(instance.NewLayout(root).ConfigDir()); errors.Is(err, os.ErrNotExist) {
+		return resolved{}, fmt.Errorf("config directory %s has no config/ tree; mount the full instance (instance.yaml, config/, and the optional goobers/)", root)
 	}
 	configDir, err := filepath.EvalSymlinks(instance.NewLayout(root).ConfigDir())
 	if err != nil {
@@ -190,7 +201,18 @@ func (s DirSource) parse(ctx context.Context, snap snapshot) (Candidate, error) 
 	if report != nil && report.HasErrors() {
 		return Candidate{}, fmt.Errorf("config definitions have validation errors%s", issueSummary(report))
 	}
-	return Candidate{Digest: digest, Archive: snap.archive, Config: cfg, Set: set}, nil
+	candidate := Candidate{Digest: digest, Archive: snap.archive, Config: cfg, Set: set}
+	if s.Pins != nil {
+		// The same set that becomes Candidate.Set: the pin computation overlays
+		// gaggle config in place, and assessment, pins and runtime must all see
+		// the overlaid set.
+		pins, err := s.Pins(filepath.Join(dir, instance.ConfigDirName), cfg, set)
+		if err != nil {
+			return Candidate{}, fmt.Errorf("pin generation: %w", err)
+		}
+		candidate.Pins = pins
+	}
+	return candidate, nil
 }
 
 // removeTree deletes a private extraction whose files and directories carry the

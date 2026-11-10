@@ -134,12 +134,14 @@ func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
 	}
 
 	tests := []struct {
-		action string
-		body   string
+		action        string
+		serviceAction string
+		body          string
 	}{
-		{action: "approve", body: `{"actor":"local-user","decision":"pass"}`},
-		{action: "override", body: `{"actor":"local-user","decision":"pass","rationale":"reviewed manually"}`},
-		{action: "rerun", body: `{"actor":"local-user","instructionAddendum":"use the parser seam"}`},
+		{action: "approve", serviceAction: "approve", body: `{"actor":"local-user","decision":"pass"}`},
+		{action: "override", serviceAction: "override", body: `{"actor":"local-user","decision":"pass","rationale":"reviewed manually"}`},
+		{action: "rerun", serviceAction: "rerun", body: `{"actor":"local-user","instructionAddendum":"use the parser seam"}`},
+		{action: "retry", serviceAction: "rerun", body: `{"actor":"local-user"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.action, func(t *testing.T) {
@@ -153,9 +155,12 @@ func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
 				t.Fatalf("calls = %+v", service.calls)
 			}
 			call := service.calls[0]
-			if call.action != test.action || call.input.RunID != "run-1" ||
+			if call.action != test.serviceAction || call.input.RunID != "run-1" ||
 				call.input.Stage != "review" || call.input.Actor != "local-user" {
 				t.Fatalf("call = %+v", call)
+			}
+			if call.input.DeterministicRetry != (test.action == "retry") {
+				t.Fatalf("deterministic retry = %t for %s", call.input.DeterministicRetry, test.action)
 			}
 			var result InterventionResult
 			if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
@@ -492,6 +497,7 @@ func TestMutationRoutesAreRuntimeMutationSurfaceActions(t *testing.T) {
 		"approveStage":  "approve",
 		"overrideStage": "override",
 		"rerunStage":    "rerun",
+		"retryStage":    "retry",
 	}
 	found := make(map[apicontract.ActionID]apicontract.CapabilityID, len(want))
 	for _, action := range SurfaceActions() {

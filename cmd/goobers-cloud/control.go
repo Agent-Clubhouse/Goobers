@@ -16,14 +16,20 @@ import (
 
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/cloud/acceptance"
+	"github.com/goobers/goobers/internal/cloud/childengine"
 	"github.com/goobers/goobers/internal/cloud/control"
+	"github.com/goobers/goobers/internal/cloud/epoch"
+	"github.com/goobers/goobers/internal/cloud/journalpg"
 	"github.com/goobers/goobers/internal/cloud/lease"
 	cloudpg "github.com/goobers/goobers/internal/cloud/pg"
 	cloudauth "github.com/goobers/goobers/internal/cloud/podauth"
 	"github.com/goobers/goobers/internal/cloud/projectorpg"
+	"github.com/goobers/goobers/internal/cloud/sharedclaims"
 	"github.com/goobers/goobers/internal/controlplane/planes"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	sharedauth "github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/version"
@@ -56,6 +62,7 @@ Options:
   --tls-cert FILE                API TLS certificate (required off loopback)
   --tls-key FILE                 API TLS private key
   --pod-key-file FILE            Shared signed pod-token key file (required)
+  --github-webhook-secret-file FILE  Mount GitHub webhook intake at /webhooks/github
   --self-execution POLICY        Must be deny (default deny)
   --temporal-hostport HOST:PORT  Temporal address (default localhost:7233)
   --temporal-namespace NAME      Temporal namespace (default default)
@@ -63,6 +70,8 @@ Options:
   --object-store-url URL         Azure Blob service URL (or GOOBERS_OBJECT_STORE_URL); required: the
                                  journal span source and config generations live there
   --object-store-container NAME  Azure Blob container (default goobers)
+  --object-store-account-name NAME      Storage account for shared-key auth
+  --object-store-account-key-file FILE  Mounted storage-account key
   --config-dir DIR               Mounted read-only instance directory: instance.yaml, config/ and
                                  optional goobers/ (or GOOBERS_CONFIG_DIR); required
 
@@ -72,7 +81,9 @@ live controller lease. SIGTERM stops controller loops and releases authority.
 
 type controlOptions struct {
 	listen, cert, key, podKey, selfExecution, host, namespace, queue, configDir string
+	webhookSecretFile                                                           string
 	objectStoreURL, objectStoreContainer                                        string
+	objectStoreAccountName, objectStoreAccountKeyFile                           string
 	checkAssembly                                                               bool
 }
 
@@ -82,12 +93,15 @@ func (o *controlOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.cert, "tls-cert", "", "TLS certificate")
 	f.StringVar(&o.key, "tls-key", "", "TLS private key")
 	f.StringVar(&o.podKey, "pod-key-file", environmentOr("GOOBERS_POD_KEY_FILE", ""), "signed pod key file")
+	f.StringVar(&o.webhookSecretFile, "github-webhook-secret-file", environmentOr("GOOBERS_GITHUB_WEBHOOK_SECRET_FILE", ""), "GitHub webhook HMAC secret file")
 	f.StringVar(&o.selfExecution, "self-execution", "deny", "must be deny")
 	f.StringVar(&o.host, "temporal-hostport", "localhost:7233", "Temporal address")
 	f.StringVar(&o.namespace, "temporal-namespace", "default", "Temporal namespace")
 	f.StringVar(&o.queue, "task-queue", "goobers", "engine task queue")
 	f.StringVar(&o.objectStoreURL, "object-store-url", os.Getenv("GOOBERS_OBJECT_STORE_URL"), "Azure Blob service URL")
 	f.StringVar(&o.objectStoreContainer, "object-store-container", environmentOr("GOOBERS_OBJECT_STORE_CONTAINER", "goobers"), "Azure Blob container")
+	f.StringVar(&o.objectStoreAccountName, "object-store-account-name", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_NAME"), "Azure storage account for shared-key authentication")
+	f.StringVar(&o.objectStoreAccountKeyFile, "object-store-account-key-file", os.Getenv("GOOBERS_OBJECT_STORE_ACCOUNT_KEY_FILE"), "file containing the Azure storage account key")
 	f.StringVar(&o.configDir, "config-dir", environmentOr("GOOBERS_CONFIG_DIR", ""), "mounted instance config directory")
 }
 func runControlRole(args []string, stdout, stderr io.Writer) int {
@@ -112,18 +126,36 @@ func validateControlObjectStore(options controlOptions) error {
 // controlPlanes is the composition seam for independently landing PG backends.
 // No local filesystem implementation or successful no-op recovery is installed.
 type controlPlanes struct {
-	// EngineChildAdmissions installs the service's HTTP plane once #7879's
-	// service and worker client composition land together.
+	// EngineChildAdmissions serves generated-child custody to engine workers.
 	EngineChildAdmissions httpapi.HandlerOption
-	Configuration         control.Configuration
-	Reader                readservice.Reader
-	Claims                httpapi.ClaimService
-	Triggers              httpapi.TriggerService
-	Journal               httpapi.JournalService
-	RunJournal            httpapi.RunJournalService
-	Resolve               acceptance.StartInputResolver
-	Epoch                 func(context.Context, *lease.Handle) (control.EpochServices, error)
-	RunnerHosts           []string
+	// EngineChildAuthority binds engine parents' child-workflow grants for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildAuthority httpapi.HandlerOption
+	// EngineChildProtocol parks, finalizes and completes engine children for
+	// engine workers, over the admissions' fenced custody.
+	EngineChildProtocol  httpapi.HandlerOption
+	engineChildren       *childengine.Fenced
+	engineChildAuthority *childengine.FencedAuthority
+	// ChildWorkflows serves the child-workflow routes to engine parents'
+	// stage pods.
+	ChildWorkflows httpapi.HandlerOption
+	// BlobPlane serves the stage blob plane over control's object store, on
+	// every replica, leader or not (#8188).
+	BlobPlane      httpapi.HandlerOption
+	Configuration  control.Configuration
+	Reader         readservice.Reader
+	provider       *controlProvider
+	sharedRegistry *sharedclaims.Registry
+	Claims         httpapi.ClaimService
+	Triggers       httpapi.TriggerService
+	Journal        httpapi.JournalService
+	RunJournal     httpapi.RunJournalService
+	Resolve        acceptance.StartInputResolver
+	Epoch          func(context.Context, *lease.Handle) (control.EpochServices, error)
+	// Admission builds each epoch's scheduler-backed admission of accepted starts
+	// (control.Runtime.Admission).
+	Admission   func(context.Context, control.AdmissionDeps) (control.Admission, error)
+	RunnerHosts []string
 
 	// generations reads retained config generations under the live epoch; the
 	// Configuration constructor owns it and later seams consume it.
@@ -136,6 +168,22 @@ type controlPlanes struct {
 	// projectorHealth is the projector's progress, shared across lease epochs, for
 	// the read service to report.
 	projectorHealth *projectorpg.Health
+	// claimedItems lists the items a run holds (the claims plane's
+	// ClaimedItems); the run-journal plane answers stranded work from it.
+	claimedItems func(ctx context.Context, runID string) ([]string, error)
+	// appliedSet is the applied generation's configuration, false before the
+	// first apply; the run-journal plane resolves workflow definitions from it.
+	appliedSet func() (*instance.ConfigSet, bool)
+	// journalBackend is the journal plane's PG backend, for the scheduler's
+	// fenced instance log.
+	journalBackend *journalpg.Backend
+	// schedulerGates reports the scheduler gates this controller does not enforce.
+	schedulerGates *gateStatus
+	// schedulerQuota is the ONE provider quota state of the process: the
+	// scheduler gates on it, counters feed it, observations persist it.
+	schedulerQuota *localscheduler.ProviderQuotaState
+	// schedulerComposition is what built Admission, for inspection.
+	schedulerComposition schedulerComposition
 	// closers release resources the constructors opened, in reverse order.
 	closers []func()
 }
@@ -190,6 +238,16 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 		}
 		return host.EpochHandle()
 	}
+	// Dialled before assembly: the child-authority seam reads live engine
+	// executions. Control cannot serve without Temporal either way.
+	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
+	if err != nil {
+		return err
+	}
+	defer temporal.Close()
+	db.Controller.Temporal = temporal
+	dialed := epoch.Temporal(temporal)
+	epochTemporal.Store(&dialed)
 	services, err := assembleControlPlanes(ctx, db, controlAuth{PodKeys: auth.PodKeys, GrantKeys: auth.GrantKeys, VerifyCredentialGrant: auth.VerifyCredentialGrant, RevokeGrant: revocations.Revoke, Revocations: revocations}, manager, liveOwner)
 	if err != nil {
 		return err
@@ -201,16 +259,12 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err := services.validate(); err != nil {
 		return err
 	}
-	temporal, err := client.DialContext(ctx, client.Options{HostPort: o.host, Namespace: o.namespace})
-	if err != nil {
-		return err
-	}
-	defer temporal.Close()
 	report := func(err error) { logger.Printf("%v", err) }
+	epochWiring.Report = report
 	if reporter, ok := services.Configuration.(interface{ SetReporter(func(error)) }); ok {
 		reporter.SetReporter(report)
 	}
-	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Report: report}
+	runtime := control.Runtime{Configuration: services.Configuration, Pool: db.Controller.Pools.Transaction, InstanceID: instanceID, Lease: manager, Temporal: temporal, TaskQueue: o.queue, Resolve: services.Resolve, Services: services.Epoch, Admission: services.Admission, Report: report}
 	host, err := control.New(control.Config{ValidateAssembly: services.validate, SelfExecution: o.selfExecution, RunnerHosts: services.RunnerHosts, Leadership: manager, SchemaCompatible: func(ctx context.Context) error {
 		return checkCloudSchema(ctx, db.Controller.Pools.Transaction, version.Get().Version)
 	}, BuildEpoch: runtime.Build, Report: report})
@@ -222,6 +276,11 @@ func serveControl(ctx context.Context, db controlDatabases, o controlOptions, lo
 	if err != nil {
 		return err
 	}
+	handler, stopWebhook, err := mountWebhook(ctx, o, db, services.Configuration, handler, logger)
+	if err != nil {
+		return err
+	}
+	defer stopWebhook()
 	var opts []httpapi.ServerOption
 	if o.cert != "" || o.key != "" {
 		opts = append(opts, httpapi.WithTLS(o.cert, o.key))
@@ -245,7 +304,7 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 	var handler http.Handler
 	var err error
 	if p.complete() {
-		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions)
+		handler, err = httpapi.NewHandler(p.Reader, httpapi.RequireRoles(), logger, httpapi.WithAuthenticator(auth), httpapi.WithClaimService(p.Claims), httpapi.WithTriggerService(p.Triggers), httpapi.WithJournalService(p.Journal), httpapi.WithRunJournalService(p.RunJournal), httpapi.WithRecoveryGate(host.Ready), p.EngineChildAdmissions, p.EngineChildAuthority, p.EngineChildProtocol, p.ChildWorkflows, p.BlobPlane, httpapi.WithLeaseFreeBlobPlane())
 	}
 	if err != nil {
 		return nil, err
@@ -255,13 +314,16 @@ func controlHandler(db databaseServices, p controlPlanes, auth *cloudauth.Auth, 
 		return struct {
 			Ready  bool                     `json:"ready"`
 			Starts []acceptance.StartStatus `json:"uncertainStarts"`
-		}{host.Ready(), rows}, err
+			// TerminalOutbox is the undelivered terminal-report backlog and its
+			// age, the lag metric of the outbox delivery loop; nil on a standby.
+			TerminalOutbox *terminalOutboxLag `json:"terminalOutbox,omitempty"`
+		}{host.Ready(), rows, currentTerminalOutboxLag()}, err
 	}, handler)
 	if err != nil {
 		return nil, err
 	}
 	return httpapi.WrapWithProbes(handler, func() bool { return true }, func() httpapi.ReadinessStatus {
-		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready()}
+		return httpapi.ReadinessStatus{Ready: host.Ready() && p.complete(), SchedulerReady: host.Ready(), Checks: mergeReadinessChecks(p.schedulerGates.Checks(), terminalOutboxChecks())}
 	}), nil
 }
 
@@ -321,4 +383,20 @@ func (o *controlDatabaseOptions) flags(f *flag.FlagSet) {
 	f.StringVar(&o.auth, "database-auth", environmentOr("GOOBERS_DATABASE_AUTH", "password"), "password or entra")
 	f.IntVar(&o.max, "database-max-conns", int(cloudpg.DefaultMaxConnections), "total connection budget across both roles")
 	f.IntVar(&o.direct, "database-direct-max-conns", int(cloudpg.DefaultDirectMaxConnections), "direct connection reservation per role")
+}
+
+// mergeReadinessChecks combines the informational readiness checks of the
+// scheduler gates and the terminal outbox into one map, or nil when neither
+// reports anything.
+func mergeReadinessChecks(sets ...map[string]bool) map[string]bool {
+	var out map[string]bool
+	for _, set := range sets {
+		for name, ok := range set {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[name] = ok
+		}
+	}
+	return out
 }

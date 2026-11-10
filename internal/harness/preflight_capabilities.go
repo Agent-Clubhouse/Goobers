@@ -11,7 +11,7 @@ import (
 const maxCapabilityHelpBytes int64 = 64 << 10
 
 var codexRequiredPublicOptions = []string{"--json", "--ignore-rules", "--disable", "--sandbox", "--skip-git-repo-check", "--cd", "--config"}
-var copilotRequiredPublicOptions = []string{"--allow-all-tools", "--log-level", "--log-dir", "--session-id", "--no-remote-export"}
+var copilotRequiredPublicOptions = []string{"--allow-all-tools", "--log-level", "--log-dir", "--session-id"}
 
 // probeRequiredCLIFlags checks the documented options the adapter always passes,
 // using bounded stdout from a read-only help request. This is deliberately not
@@ -72,7 +72,9 @@ func advertisedCLIOptions(help string) []string {
 	for line := range strings.SplitSeq(help, "\n") {
 		fields := strings.Fields(line)
 		for _, field := range fields {
-			option := strings.TrimRight(field, ",=")
+			option := strings.TrimRight(field, ",")
+			option, _, _ = strings.Cut(option, "[")
+			option, _, _ = strings.Cut(option, "=")
 			if !strings.HasPrefix(option, "-") {
 				break
 			}
@@ -84,12 +86,15 @@ func advertisedCLIOptions(help string) []string {
 	return options
 }
 
-func (c *CopilotAdapter) preflightPublicCapabilities(ctx context.Context) (ReadinessCheck, error) {
+func (c *CopilotAdapter) preflightPublicCapabilities(ctx context.Context, version string) (ReadinessCheck, error) {
 	command := c.Command
 	if c.RequireLauncherContract || c.ExtraArgs != nil {
 		command = nil
 	}
-	return probeRequiredCLIFlags(ctx, c.runner(), command, "copilot", []string{"--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), copilotRequiredPublicOptions)
+	// Probe the same export control that this CLI version will receive at runtime.
+	exportOption, _, _ := strings.Cut(copilotSessionExportFlag(version), "=")
+	required := append(slices.Clone(copilotRequiredPublicOptions), exportOption)
+	return probeRequiredCLIFlags(ctx, c.runner(), command, "copilot", []string{"--help"}, baseEnv(c.ExtraEnvAllowlist, c.EnvUnset), required)
 }
 
 // probeVersion keeps version availability evidence separate from capability and

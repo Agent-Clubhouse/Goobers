@@ -10,11 +10,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func writeLabelTestRecord(t *testing.T, runDir, runID string) []byte {
 	t.Helper()
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	run, err := journal.Create(filepath.Dir(runDir), journal.RunIdentity{RunID: runID, Workflow: "implementation"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(RunRecord{Schema: RecordSchemaVersion, Status: RecordComplete, RunID: runID})
@@ -224,8 +230,11 @@ func TestGroundTruthLabelsWeightCohortPathScores(t *testing.T) {
 	}
 
 	mixed := labeledCohort([]float64{0.2, 0.8}, []LabelOutcome{LabelCorrect, LabelIncorrect})
+	mixed[0].Attribution.Contributions[0].Score = -0.4
+	mixed[1].Attribution.Contributions[0].Score = 0.8
 	path := topPath(t, mixed)
 	assertNear(t, "mixed share", path.Share, (2*0.2+0.5*0.8)/2.5)
+	assertNear(t, "mixed signed score", *path.Score, (2*-0.4+0.5*0.8)/2.5)
 	assertNear(t, "mixed confidence", path.Confidence, (2*0.8+0.5*0.3)/2.5)
 	reversed := topPath(t, []AttributionObservation{mixed[1], mixed[0]})
 	if reversed.Share != path.Share || reversed.Confidence != path.Confidence {
@@ -281,5 +290,40 @@ func TestDecodeLabelStoreRefusesInvalidProvenance(t *testing.T) {
 		if _, err := DecodeLabelStore(data); err == nil {
 			t.Fatalf("invalid provenance accepted: %+v", label)
 		}
+	}
+}
+
+func TestRecordLabelHonorsPinnedGroundTruthSources(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		sources []string
+		wantErr bool
+	}{
+		{name: "human accepted", sources: []string{"human"}},
+		{name: "explicit opt-out refuses", sources: []string{}, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run, runDir := recordTestRun(t, map[string]any{
+				"mode": "active", "version": "v1", "groundTruth": map[string]any{"sources": test.sources},
+			})
+			if err := run.Close(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(RunRecord{Schema: RecordSchemaVersion, Status: RecordComplete, RunID: "run-enabled"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(runDir, RecordFileName), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = RecordLabel(context.Background(), runDir, humanLabel("run-enabled", LabelCorrect, at))
+			if test.wantErr != (err != nil) {
+				t.Fatalf("RecordLabel() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if test.wantErr && !strings.Contains(err.Error(), "does not accept") {
+				t.Fatalf("RecordLabel() error = %v, want source refusal", err)
+			}
+		})
 	}
 }

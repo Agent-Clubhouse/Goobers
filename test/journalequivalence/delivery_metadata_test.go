@@ -26,6 +26,12 @@ var excludedDeliveryFields = []string{"runner.emitKey", "terminalCause.causalEmi
 // Explicitly review new runner fields when extending the corpus, even though
 // they would be compared by default. Never grow the exclusion list implicitly.
 var comparedRunnerFields = []string{
+	// Fenced terminal intent / local intervention idempotency marker.
+	"action", "stage", "fingerprint", "idempotencyKey",
+	// Terminal fence on that marker: intervention.recordInterventionMarker and
+	// hitlSession.terminalIntent both record the fenced run.finished seq and the
+	// count of run.finished events, so equivalent journals agree byte-for-byte.
+	"expectedTerminalSeq", "expectedTerminalGeneration",
 	// executorErrorEvent / local runner executor-error facts.
 	"errorClass", "errorCode", "infraFailedAttemptCommittedWork", "retryFailureClass",
 	// gate.recordVerdict / runJournal.gateEvaluated budget and decision facts.

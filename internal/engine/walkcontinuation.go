@@ -19,8 +19,19 @@ func settleWalk(ctx workflow.Context, rec *runJournal, hitl *hitlSession, out Ru
 	if err != nil || !resumed {
 		return "", false, err
 	}
-	if plan.stage != "" && plan.addendum != "" {
-		addenda[plan.stage] = plan.addendum
+	// Both rerun-stage and retry-stage carry a stage; only rerun carries an
+	// addendum. A deterministic retry must still dispatch as the journaled
+	// human attempt, so arming the attempt is not gated on the addendum.
+	if plan.stage != "" {
+		if plan.addendum != "" {
+			addenda[plan.stage] = plan.addendum
+		}
+		if hitl.liveTerminal {
+			if rec.humanReruns == nil {
+				rec.humanReruns = map[string]int{}
+			}
+			rec.humanReruns[plan.stage] = plan.attempt
+		}
 	}
 	return plan.state, true, nil
 }

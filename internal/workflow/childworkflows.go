@@ -84,7 +84,7 @@ func childWorkflowProblems(def Definition, goobers map[string]apiv1.GooberSpec, 
 
 func childWorkflowFeatures() []Feature {
 	var features []Feature
-	for _, suffix := range []string{"", ".allowedGoobers", ".allowedCapabilities", ".maxChildren", ".allowPRPublication"} {
+	for _, suffix := range []string{"", ".allowedGoobers", ".allowedCapabilities", ".maxChildren", ".allowPRPublication", ".requireHumanApprovalForOutOfDistribution"} {
 		features = append(features, Feature{
 			ID: FeatureID("task.childWorkflows" + suffix), Level: SupportPreview,
 			SinceVersion: "dev",
@@ -109,6 +109,9 @@ func usedChildWorkflowFeatures(def Definition) []Feature {
 			}
 			if p.AllowPRPublication {
 				used["task.childWorkflows.allowPRPublication"] = true
+			}
+			if p.RequireHumanApprovalForOutOfDistribution {
+				used["task.childWorkflows.requireHumanApprovalForOutOfDistribution"] = true
 			}
 		}
 	}

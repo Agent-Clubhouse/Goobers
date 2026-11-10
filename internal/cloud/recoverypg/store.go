@@ -188,8 +188,11 @@ func (s Store) Get(ctx context.Context, instanceID string, key recovery.RecordKe
 }
 
 // Reap deletes up to limit records whose retention has passed on the database
-// clock and returns them. The caller deletes each bundle afterwards; a bundle
-// left behind by a failed delete is unreferenced garbage, never a dangling row.
+// clock, tombstones their bundles in the same transaction, and returns them.
+// The returned list is a convenience: a commit whose outcome is lost still
+// tombstoned its bundles, so the reaper deletes from RetiredBundles, never
+// from this result alone (#8163). A bundle left behind by a failed delete is
+// unreferenced garbage, never a dangling row.
 func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]recovery.IndexedRecord, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -239,8 +242,31 @@ func (s Store) Reap(ctx context.Context, handle *lease.Handle, limit int) ([]rec
 	return reaped, nil
 }
 
+// RetiredBundles lists up to limit of instanceID's tombstoned bundle
+// locations, oldest reaped first: reaped and not yet released, so still to be
+// deleted from object storage. Only instanceID's own tombstones are listed;
+// another instance's could never be released here. Tombstones are written
+// only under the fence, so the read is unfenced, like Get.
+func (s Store) RetiredBundles(ctx context.Context, instanceID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.Pool.Query(ctx, `
+		SELECT bundle_key FROM control.recovery_bundle_tombstone
+		WHERE instance_id=$1 ORDER BY reaped_at, bundle_key LIMIT $2`, instanceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list retired recovery bundles: %w", err)
+	}
+	bundles, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list retired recovery bundles: %w", err)
+	}
+	return bundles, nil
+}
+
 // ReleaseBundle makes a reaped bundle's location publishable again. Call it
-// only after the bundle is deleted from object storage.
+// only after the bundle is deleted from object storage. Releasing a bundle
+// that is not retired is a no-op, so a retried release is safe.
 func (s Store) ReleaseBundle(ctx context.Context, handle *lease.Handle, bundle string) error {
 	return s.Fence.WithFence(ctx, handle, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -276,6 +302,10 @@ func (b bound) Get(ctx context.Context, key recovery.RecordKey) (recovery.Indexe
 
 func (b bound) Reap(ctx context.Context, limit int) ([]recovery.IndexedRecord, error) {
 	return b.store.Reap(ctx, b.handle, limit)
+}
+
+func (b bound) RetiredBundles(ctx context.Context, limit int) ([]string, error) {
+	return b.store.RetiredBundles(ctx, b.handle.InstanceID, limit)
 }
 
 func (b bound) ReleaseBundle(ctx context.Context, bundle string) error {

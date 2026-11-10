@@ -677,6 +677,47 @@ func TestHITLRerunStageJournalsHumanAttempt(t *testing.T) {
 	}
 }
 
+func TestHITLRetryDeterministicStageWithoutAddendum(t *testing.T) {
+	spec := fixtureSpec("build", []apiv1.Task{{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		Run:  &apiv1.DeterministicRun{Command: []string{"build"}, Workspace: apiv1.WorkspaceScratch},
+		Next: wf.TerminalComplete,
+	}}, nil)
+	exec := newScriptedExec(map[string][]scriptedCall{
+		"build": {
+			{result: apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Summary: "transient failure"}},
+			{result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "built"}},
+		},
+	})
+	env := hitlEnv(t, exec)
+	intent := baseIntent(HITLRetryStage, "req-retry")
+	intent.Stage = "build"
+	out := deliver(t, env, time.Minute, "req-retry", intent)
+
+	env.ExecuteWorkflow(Run, hitlInputFor(t, spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if out.rejected != nil || out.err != nil {
+		t.Fatalf("retry rejected=%v failed=%v", out.rejected, out.err)
+	}
+	if !out.ack.Resumed || out.ack.ResumeState != "build" || out.ack.Attempt != 2 {
+		t.Fatalf("ack = %+v, want deterministic retry attempt 2", out.ack)
+	}
+	events := hitlEvents(hitlProjection(t, env))
+	request, ok := hitlFindEvent(events, journal.EventStageRerunRequested)
+	if !ok {
+		t.Fatalf("no stage.rerun.requested event: %v", hitlEventTypes(events))
+	}
+	if request.Stage != "build" || request.Attempt != 2 || request.Actor != "ops@example.com" ||
+		request.InstructionAddendum != "" || request.Runner["terminalGeneration"] != float64(1) {
+		t.Fatalf("deterministic retry request = %+v", request)
+	}
+	if exec.calls["build"] != 2 {
+		t.Fatalf("build dispatched %d times, want 2", exec.calls["build"])
+	}
+}
+
 // TestHITLResumeFromTerminalComplete covers the raw resume intent's Complete
 // form: the run finishes at @complete without executing another stage, exactly
 // as ResumeFromTerminalInput.Complete does.
@@ -877,13 +918,13 @@ func TestHITLIntentWhileExecutingIsRefusedExplicitly(t *testing.T) {
 	// The implement dispatch is held open until the validator has answered, so
 	// the run is provably still executing when it does (#3953).
 	holdUntilValidated(exec, "implement", early)
-	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
+	probe := deliverWhileExecuting(t, env, actInvokeGooberCancelSafe, early)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	if early.out.rejected == nil {
 		t.Fatalf("an intent delivered mid-execution was not rejected (accepted=%t ack=%+v err=%v)",
 			early.out.accepted, early.out.ack, early.out.err)
@@ -930,13 +971,13 @@ func TestHITLDuplicateMidExecutionDeliveriesAreEachRefused(t *testing.T) {
 	reworded.Rationale = "reissued while the run was still executing"
 	second := newHITLDelivery("update-hammer-2", reworded)
 	holdUntilValidated(exec, "implement", first, second)
-	probe := deliverWhileExecuting(t, env, ActInvokeGoober, first, second)
+	probe := deliverWhileExecuting(t, env, actInvokeGooberCancelSafe, first, second)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	for i, out := range []*hitlOutcome{first.out, second.out} {
 		if out.rejected == nil {
 			t.Fatalf("delivery %d was not rejected (ack=%+v err=%v)", i+1, out.ack, out.err)
@@ -979,7 +1020,7 @@ func TestHITLRefusedMidExecutionIntentLeavesNoIdempotencyResidue(t *testing.T) {
 
 	early := newHITLDelivery("update-reissued-early", intent)
 	holdUntilValidated(exec, "implement", early)
-	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
+	probe := deliverWhileExecuting(t, env, actInvokeGooberCancelSafe, early)
 	// The operator does what the refusal told them to: re-reads the run and
 	// reissues under the same request id once it is holding its terminal
 	// open. The note makes it a new bound UpdateID. Any remembered
@@ -993,7 +1034,7 @@ func TestHITLRefusedMidExecutionIntentLeavesNoIdempotencyResidue(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	if early.out.rejected == nil || !strings.Contains(early.out.rejected.Error(), HITLErrRunExecuting) {
 		t.Fatalf("mid-execution delivery = %v, want the %s refusal", early.out.rejected, HITLErrRunExecuting)
 	}
@@ -1051,13 +1092,13 @@ func TestHITLIntentDuringTheFinalTransitionIsRefusedNotQueued(t *testing.T) {
 	// InvokeGoober #1 is implement; #2 is ship, the stage the resolution
 	// resumed the run into and the last thing it does before @complete.
 	holdUntilValidated(exec, "ship", lateDelivery)
-	probe := deliverWhileExecutingNth(t, env, ActInvokeGoober, 2, lateDelivery)
+	probe := deliverWhileExecutingNth(t, env, actInvokeGooberCancelSafe, 2, lateDelivery)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	probe.assertMidExecution(t, ActInvokeGoober)
+	probe.assertMidExecution(t, actInvokeGooberCancelSafe)
 	if err := resolved.refusal(); err != nil {
 		t.Fatalf("the resolving intent was refused: %v", err)
 	}

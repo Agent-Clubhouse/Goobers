@@ -388,19 +388,6 @@ func runRebasePRCoreWithAuth(ctx context.Context, root string, repo providers.Re
 	return 0
 }
 
-// Remediation policy causes (#941/PRR-6): the vocabulary a workflow's
-// `remediate` input names. defaultRemediatePolicy is the shipped, fully
-// liberal default — every cause pr-remediation can detect fires the agentic
-// chain, reproducing today's behavior exactly.
-const (
-	remediateCauseConflict       = "conflict"
-	remediateCauseSubstantive    = "substantive"
-	remediateCauseFailingCI      = "failing-ci"
-	remediateCauseBehindBase     = "behind-base"
-	remediateCauseSiblingOverlap = "sibling-overlap"
-	remediateCauseHumanComment   = "human-comment"
-)
-
 // defaultRemediatePolicy lists every cause name. behind-base is accepted policy
 // vocabulary that this stage cannot yet detect for itself: its detection
 // (gather-pr-context's isBehindBase) is a native bool in the versioned

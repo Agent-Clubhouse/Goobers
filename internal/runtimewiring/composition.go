@@ -165,6 +165,7 @@ func BuildExecutorConfig(input ExecutorCompositionInput) (ExecutorConfig, *workt
 	// error file never falls back to the OS default temp directory — which a
 	// read-only-root deployment may not have mounted anything writable at.
 	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
+	fluidUIPrompts := FluidUIPromptSource(instanceRoot)
 	// #2971: compare a failing local-ci stage against the target branch's own
 	// health before attributing it to the run. nil unless the instance opted in.
 	rc := ExecutorConfig{
@@ -192,6 +193,8 @@ func BuildExecutorConfig(input ExecutorCompositionInput) (ExecutorConfig, *workt
 					SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: NewAgenticAdapter,
 					GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg),
 					MCPServers:             servers, MCPServersSet: servers != nil,
+					DecisionGate:  cfg.DecisionGate,
+					PrivateInputs: fluidUIPrompts,
 				})
 			}
 			goober, err := ordinary()

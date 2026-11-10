@@ -9,8 +9,6 @@ package intervention
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -284,7 +282,7 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 		return *result, err
 	}
 	if resolved.engine {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("override", resolved)
+		return s.engineTerminal(admission, "override", resolved, input)
 	}
 	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -320,8 +318,8 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 	return finishIntervention("override", resolved, err)
 }
 
-// RerunStage reruns a stage of an escalated run with an instruction addendum
-// and waits for the rerun.
+// RerunStage reruns an agentic target with an instruction addendum or retries
+// a deterministic task when DeterministicRetry is set, then waits for it.
 func (s *Service) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.rerunStage(ctx, ctx, input, false)
 }
@@ -334,15 +332,22 @@ func (s *Service) AcceptRerunStage(admission, execution context.Context, input h
 
 func (s *Service) rerunStage(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	addendum := strings.TrimSpace(input.InstructionAddendum)
-	if addendum == "" {
+	action := "rerun"
+	if input.DeterministicRetry {
+		action = "retry"
+	}
+	if !input.DeterministicRetry && addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
 	}
-	resolved, result, done, err := s.prepareIntervention("rerun", input)
+	if input.DeterministicRetry && addendum != "" {
+		return httpapi.InterventionResult{}, interventionBadRequest("addendum_not_allowed", "deterministic retry does not accept an instruction addendum")
+	}
+	resolved, result, done, err := s.prepareIntervention(action, input)
 	if done {
 		return *result, err
 	}
 	if resolved.engine {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("rerun", resolved)
+		return s.engineTerminal(admission, action, resolved, input)
 	}
 	if resolved.phase != journal.PhaseEscalated {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -352,7 +357,8 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 	}
 	if err := resolved.runner.PreflightRerunStage(admission, runner.RerunStageInput{
 		RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum, ExpectedTerminalSeq: resolved.terminalSeq,
+		Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum, DeterministicRetry: input.DeterministicRetry,
+		ExpectedTerminalSeq: resolved.terminalSeq,
 	}); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return httpapi.InterventionResult{}, err
@@ -362,14 +368,14 @@ func (s *Service) rerunStage(admission, execution context.Context, input httpapi
 		}
 		return httpapi.InterventionResult{}, interventionConflict("rerun_preflight_failed", err.Error())
 	}
-	_, err = s.execute(admission, execution, background, resolved, true, "rerun", input, func(ctx context.Context) (runner.Result, error) {
+	_, err = s.execute(admission, execution, background, resolved, true, action, input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
-			Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
+			Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum, DeterministicRetry: input.DeterministicRetry,
 			ExpectedTerminalSeq: resolved.terminalSeq,
 		})
 	})
-	return finishIntervention("rerun stage", resolved, err)
+	return finishIntervention(action+" stage", resolved, err)
 }
 
 // escalationResolutionMarker tags the HITL plane's deny resolution event: an
@@ -432,7 +438,7 @@ func (s *Service) AcceptDenyEscalation(admission, execution context.Context, inp
 		return httpapi.InterventionResult{}, err
 	}
 	if resolved.engine {
-		return httpapi.InterventionResult{}, engineTerminalRefusal("deny", resolved)
+		return s.engineTerminal(admission, "deny", resolved, input)
 	}
 	return s.denyEscalation(resolved, input)
 }
@@ -685,7 +691,8 @@ func (s *Service) execute(
 	if background && input.IdempotencyKey == "" {
 		return runner.Result{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
 	}
-	lease, err := s.beginExecution(admission, resolved, reacquireClaims && action != "rerun")
+	stageRetry := action == "rerun" || action == "retry"
+	lease, err := s.beginExecution(admission, resolved, reacquireClaims && !stageRetry)
 	if err != nil {
 		return runner.Result{}, err
 	}
@@ -695,8 +702,8 @@ func (s *Service) execute(
 			http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
 		)
 	}
-	if action == "rerun" {
-		replayed, err := recheckRerunAcceptance(resolved, input)
+	if stageRetry {
+		replayed, err := recheckRerunAcceptance(resolved, action, input)
 		if replayed || err != nil {
 			lease.Close()
 			return runner.Result{}, err
@@ -710,7 +717,7 @@ func (s *Service) execute(
 		}
 	}
 	if err := recordInterventionMarker(resolved, action, input); err != nil {
-		if action == "rerun" {
+		if stageRetry {
 			err = errors.Join(err, lease.releaseReacquiredClaims())
 		}
 		lease.Close()
@@ -1037,23 +1044,10 @@ func gateEvaluatedInCurrentSegment(events []journal.Event, gate string) bool {
 const interventionIdempotencyMarker = "intervention.idempotency"
 
 func interventionFingerprint(action string, input httpapi.InterventionRequest) (string, error) {
-	payload := struct {
-		Action              string `json:"action"`
-		RunID               string `json:"runId"`
-		Stage               string `json:"stage"`
-		Actor               string `json:"actor"`
-		Decision            string `json:"decision"`
-		Rationale           string `json:"rationale"`
-		InstructionAddendum string `json:"instructionAddendum"`
-	}{
+	return runsemantics.InterventionFingerprint(runsemantics.InterventionContent{
 		Action: action, RunID: input.RunID, Stage: input.Stage, Actor: input.Actor,
 		Decision: input.Decision, Rationale: input.Rationale, InstructionAddendum: input.InstructionAddendum,
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("sha256:%x", sha256.Sum256(encoded)), nil
+	})
 }
 
 func recordInterventionMarker(resolved resolvedInterventionRun, action string, input httpapi.InterventionRequest) error {
@@ -1078,11 +1072,13 @@ func recordInterventionMarker(resolved resolvedInterventionRun, action string, i
 	if err := run.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		Runner: map[string]any{
-			"kind":           interventionIdempotencyMarker,
-			"idempotencyKey": input.IdempotencyKey,
-			"fingerprint":    fingerprint,
-			"action":         action,
-			"stage":          input.Stage,
+			"kind":                       interventionIdempotencyMarker,
+			"idempotencyKey":             input.IdempotencyKey,
+			"fingerprint":                fingerprint,
+			"action":                     action,
+			"stage":                      input.Stage,
+			"expectedTerminalSeq":        resolved.terminalSeq,
+			"expectedTerminalGeneration": terminalGeneration(resolved.events),
 		},
 	}); err != nil {
 		return fmt.Errorf("journal intervention idempotency: %w", err)
@@ -1130,7 +1126,7 @@ func replayIntervention(resolved resolvedInterventionRun, action string, input h
 
 func interventionCompleted(action, stage string, event journal.Event) bool {
 	switch action {
-	case "rerun":
+	case "rerun", "retry":
 		return event.Type == journal.EventStageRerunRequested && event.Stage == stage
 	case "override":
 		return event.Type == journal.EventRunResumed && event.Action == action && event.Gate == stage
@@ -1140,6 +1136,16 @@ func interventionCompleted(action, stage string, event journal.Event) bool {
 	default:
 		return false
 	}
+}
+
+func terminalGeneration(events []journal.Event) uint64 {
+	var generation uint64
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished {
+			generation++
+		}
+	}
+	return generation
 }
 
 func interventionResult(resolved resolvedInterventionRun) (httpapi.InterventionResult, error) {

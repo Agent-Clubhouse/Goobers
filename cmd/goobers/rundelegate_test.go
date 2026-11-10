@@ -138,6 +138,91 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	}
 }
 
+func TestExactWorkItemFilePublicationRequiresLiveCapability(t *testing.T) {
+	for _, mode := range []string{"supported", "legacy", "stopped", "manual"} {
+		t.Run(mode, func(t *testing.T) {
+			layout := instance.NewLayout(t.TempDir())
+			if err := os.MkdirAll(layout.SchedulerDir(), 0755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(layout.SchedulerDir(), "up.lock")
+			if mode != "stopped" {
+				var release func()
+				var err error
+				if mode == "manual" {
+					release, err = acquireInstanceLock(path)
+				} else {
+					release, err = acquireInstanceLockWithIdentity(path, &daemonIdentity{
+						PID: os.Getpid(), StartedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+						InstanceRoot: layout.Root, Version: "test-daemon", ExactWorkItemFile: mode == "supported",
+					})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+			target := runTarget{Workflow: "repair", Gaggle: "acme", WorkItemID: "42"}
+			id, err := writeRunTriggerRequest(t.Context(), layout, target)
+			if mode != "supported" {
+				if err == nil || id != "" || !strings.Contains(err.Error(), "no request published") {
+					t.Fatal(id, err)
+				}
+				if _, err := os.Stat(filepath.Join(layout.SchedulerDir(), pendingTriggersDir)); !os.IsNotExist(err) {
+					t.Fatal("published to unsupported daemon", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(layout.SchedulerDir(), pendingTriggersDir, id+requestSuffix))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request triggerRequest
+			if err := json.Unmarshal(data, &request); err != nil || request.WorkItemID != "42" || request.Workflow != "repair" || request.Gaggle != "acme" {
+				t.Fatal(request, err)
+			}
+			target.RequestID = "explicit-retry"
+			if _, err := writeRunTriggerRequest(t.Context(), layout, target); err == nil {
+				t.Fatal("unsafe caller-key file submission allowed")
+			}
+		})
+	}
+}
+
+func TestExactWorkItemLegacySweepRefusesRatherThanLosingSelection(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow: "repair", Gaggle: "acme", Starter: starter,
+	}})
+	id, err := writeTriggerRequestPayload(schedulerDir, triggerRequest{
+		Workflow: "repair", Gaggle: "acme", WorkItemID: "42", CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepPendingTriggers(t.Context(), schedulerDir, nil, sched, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	response, ok := readTriggerResponseFile(filepath.Join(schedulerDir, pendingTriggersDir, id+responseSuffix))
+	if !ok || !strings.Contains(response.Error, "exact work item") || starter.count() != 0 {
+		t.Fatal(response, ok, starter.count())
+	}
+	writeTriggerStateFixture(t, schedulerDir, "unverified-active", activeSuffix, triggerRequest{
+		Workflow: "repair", Gaggle: "acme", WorkItemID: "42", DispatchRunID: "unverified-run",
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err := sweepPendingTriggersWithOptions(t.Context(), schedulerDir, nil, sched, time.Now, triggerSweepOptions{recoverActiveRequests: true}); err != nil {
+		t.Fatal(err)
+	}
+	response, ok = readTriggerResponseFile(filepath.Join(schedulerDir, pendingTriggersDir, "unverified-active"+responseSuffix))
+	if !ok || !strings.Contains(response.Error, "exact work item") || response.RunID != "" || starter.count() != 0 {
+		t.Fatal("unverified legacy recovery", response, ok, starter.count())
+	}
+}
+
 func TestRunDelegatedTargetedPullRequestDispatchesExactReference(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)

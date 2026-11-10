@@ -41,6 +41,11 @@ _goobers_completion()
                 stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
             esac
             ;;
+        workflow-gym)
+            case "${COMP_WORDS[2]:-}" in
+                evaluate) flags+=" --min-samples --regression-threshold" ;;
+            esac
+            ;;
         scaffold)
             case "${COMP_WORDS[2]:-}" in
                 goober) flags+=" --force" ;;
@@ -80,7 +85,7 @@ _goobers_completion()
             flags+=" --json --github-annotations --check-harness --check-repos --check-dispatch-namespaces --source-tree --instance --target --format --strict"
             ;;
         fix)
-            flags+=" --to --instance-schema --write"
+            flags+=" --to --instance-schema --write --allow-policy-expansion --rollback"
             ;;
         doctor)
             flags+=" --record-instance --result-max-age --psa-namespaces --psa-service-account --temporal-codec --instance --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
@@ -102,7 +107,7 @@ _goobers_completion()
             ;;
         fleet)
             case "${COMP_WORDS[2]:-}" in
-                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin" ;;
+                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin --projection" ;;
                 status) flags+=" --json" ;;
             esac
             ;;
@@ -131,7 +136,7 @@ _goobers_completion()
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         run)
-            flags+=" --no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --no-wait"
+            flags+=" --no-api --api-timeout --force --gaggle --github-progress --pr --work-item --api --request-id --no-wait"
             ;;
         approve)
             flags+=" --decision --actor --api"
@@ -142,13 +147,18 @@ _goobers_completion()
         rerun-stage)
             flags+=" --addendum --actor --api"
             ;;
+        retry-stage)
+            flags+=" --actor --api"
+            ;;
         signal)
             flags+=" --request-id"
             ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --dot" ;;
-                validate-child) flags+=" --gaggle --parent --stage --backend --json" ;;
+                validate-child) flags+=" --gaggle --parent --stage --backend --cluster-model --json" ;;
+                child-admission) flags+=" --approve --reject --actor --note --json" ;;
+                clusters) flags+=" --features --cohort --fitness --since --max-runs --min-samples --min-cluster-size --seed --stratify --ablation --json --snapshot --instance-id --salt --fleet --proposals --gaggle --templates --cluster-model" ;;
             esac
             ;;
         runs)
@@ -227,6 +237,7 @@ _goobers_completion()
                 label) flags+=" --run --outcome --reason --by --labeled-at" ;;
                 claim) flags+=" --kind --stage --attempt --agent --artifact --statement --evidence --confidence" ;;
                 shadow) flags+=" --json --gaggle --workflow --since --until" ;;
+                gaggle) flags+=" --json --gaggle --since --until" ;;
                 prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
                 compact) flags+=" --dry-run" ;;
@@ -257,8 +268,14 @@ _goobers_completion()
         push-branch)
             flags+=" --config-repo"
             ;;
+        fluid-ui-request)
+            flags+=" --load --validate"
+            ;;
         open-pr)
             flags+=" --config-repo"
+            ;;
+        decide)
+            flags+=" --name --question --true --false --state-file --accept --reject --optional --ci-log --ci-baseline --run-key --ci-outcome --ci-matrix"
             ;;
         gate-removal-guard)
             flags+=" --config-repo"
@@ -329,6 +346,11 @@ _goobers_completion()
             elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete examples 2>/dev/null)"
+            fi
+            ;;
+        workflow-gym)
+            if (( COMP_CWORD == 2 )); then
+                candidates="validate list replay tournament evaluate promotion-validate"
             fi
             ;;
         scaffold)
@@ -403,10 +425,17 @@ _goobers_completion()
             ;;
         workflow)
             if (( COMP_CWORD == 2 )); then
-                candidates="show validate-child"
+                candidates="show validate-child child-admission clusters"
             elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete workflows 2>/dev/null)"
+            fi
+            ;;
+        labs)
+            if (( COMP_CWORD == 2 )); then
+                candidates="fluid-ui"
+            elif [[ "${COMP_WORDS[2]:-}" == "fluid-ui" ]] && (( COMP_CWORD == 3 )); then
+                candidates="report"
             fi
             ;;
         runs)
@@ -458,7 +487,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="configure test merges stats errors export mark-fix label claim claims shadow prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix label claim claims shadow gaggle prune prune-orphans compact"
             fi
             ;;
         journal)

@@ -113,7 +113,7 @@ func (b *Backend) appendClean(ctx context.Context, tx pgx.Tx, r *runOwner, seq i
 		}
 	}
 	var allocated int64
-	if err := tx.QueryRow(ctx, `UPDATE journal.run_seq SET last_seq=last_seq+1,last_append_at=$5 WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4 RETURNING last_seq`, b.config.InstanceID, r.key.RunID, r.token, r.epoch, event.Time).Scan(&allocated); err != nil {
+	if err := tx.QueryRow(ctx, `UPDATE journal.run_seq SET last_seq=last_seq+1,last_append_at=clock_timestamp() WHERE instance_id=$1 AND run_id=$2 AND owner_token=$3 AND owner_epoch=$4 RETURNING last_seq`, b.config.InstanceID, r.key.RunID, r.token, r.epoch).Scan(&allocated); err != nil {
 		return seq, journal.Event{}, err
 	}
 	event.Seq = uint64(allocated)

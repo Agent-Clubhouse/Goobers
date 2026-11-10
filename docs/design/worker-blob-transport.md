@@ -55,7 +55,7 @@ workers to endpoint mode; an older daemon will refuse those reads.
 
 ## Worker authentication
 
-Endpoint workers and dispatch directory probes require `api.podTokenKeyFile`
+Endpoint workers and dispatch directory probes require `api.podTokenKeyFile` (or the explicit cloud `api.podTokenKeyRingFile`)
 with the same key as the daemon. The worker mints a fresh two-minute bearer for
 each HTTP request. Its `goobers-worker-blob.` prefix and HMAC domain are distinct
 from pod tokens and from the config-digest worker credential. Its principal may
@@ -113,7 +113,7 @@ request (live accepted lineage, open parent family, the exact recorded start
 intent). Treat the signing key accordingly.
 
 The worker mints a fresh two-minute token per call from the supervisor-loaded
-`api.podTokenKeyFile`. The key and the bearer are never placed in the worker's
+`api.podTokenKeyFile` (or the explicit cloud `api.podTokenKeyRingFile`). The key and the bearer are never placed in the worker's
 environment, because stage processes inherit it, and are never passed to stage
 pods, startup output or journals. Plane answers are classified for the engine:
 503 while no controller holds custody (a failover), gateway failures, 429, and

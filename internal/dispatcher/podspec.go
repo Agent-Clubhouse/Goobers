@@ -193,6 +193,11 @@ const (
 	EnvDaemonAPI = "GOOBERS_DAEMON_API"
 	// EnvPodToken carries the per-run podauth bearer.
 	EnvPodToken = "GOOBERS_POD_TOKEN"
+	// EnvChildWorkflowAccess carries an engine parent stage's child-workflow
+	// grant as JSON ({endpoint, bearerToken}), bound by control for exactly
+	// this attempt (#8085 b). Only the in-pod harness launcher reads it, into
+	// the child-workflow tool's private config; the stage never sees it.
+	EnvChildWorkflowAccess = "GOOBERS_CHILD_WORKFLOW_ACCESS"
 	// EnvStageCommand carries the stage's DeterministicRun.Command as a JSON
 	// array, when set — the in-pod dispatch-exec entrypoint's argv (#3699).
 	EnvStageCommand = "GOOBERS_STAGE_COMMAND"
@@ -380,7 +385,7 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
 	EnvChildExecutionDigest,
-	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
+	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken, EnvChildWorkflowAccess,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication, EnvStageOutbox,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
@@ -451,7 +456,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
+	executorTriggerRefEnv, executorDSLVersionEnv, executorNeedsHumanAssigneeEnv, executorStageTimeoutEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -467,6 +472,7 @@ const (
 	executorBranchNamespaceEnv    = "GOOBERS_BRANCH_NAMESPACE"
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
+	executorDSLVersionEnv         = "GOOBERS_DSL_VERSION"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
 	// executorStageTimeoutEnv restates executor.StageTimeoutEnvVar: the
 	// deadline dispatch-exec enforces, stamped for goobers-CLI stages so a
@@ -1009,7 +1015,7 @@ var controlEnvReference = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 // against a control-plane bearer stamped earlier in the environment.
 func refuseControlEnvOverrides(attempt Attempt) error {
 	for _, name := range sortedKeys(attempt.Env) {
-		if slices.Contains(DispatcherControlEnv, name) {
+		if strings.EqualFold(name, executorDSLVersionEnv) || slices.Contains(DispatcherControlEnv, name) {
 			return &ControlEnvOverrideError{Key: name}
 		}
 		for _, match := range controlEnvReference.FindAllStringSubmatch(attempt.Env[name], -1) {
@@ -1240,6 +1246,9 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	if attempt.PodToken != "" {
 		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: literalPodEnv(attempt.PodToken)})
 	}
+	if attempt.ChildWorkflowAccess != "" {
+		env = append(env, corev1.EnvVar{Name: EnvChildWorkflowAccess, Value: literalPodEnv(attempt.ChildWorkflowAccess)})
+	}
 	env = append(env, planeEnv(cfg, attempt)...)
 	env = append(env, agenticMergeJournalEnv(cfg, attempt)...)
 	if len(attempt.Command) > 0 {
@@ -1270,6 +1279,8 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	for _, key := range sortedKeys(attempt.RunContext) {
 		env = append(env, corev1.EnvVar{Name: key, Value: literalPodEnv(attempt.RunContext[key])})
 	}
+	// Always shadow image/EnvFrom values, including for legacy attempts.
+	env = append(env, corev1.EnvVar{Name: executorDSLVersionEnv, Value: literalPodEnv(attempt.DSLVersion)})
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
 		// The routed repository's configured bot login, resolved here because

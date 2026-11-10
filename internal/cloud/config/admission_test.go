@@ -54,7 +54,7 @@ func eligible() apiv1.Workflow {
 	}
 }
 
-// ineligible returns one fixture per RUNTIME code.
+// ineligible returns one fixture per unsupported runtime requirement.
 func ineligible() map[string]apiv1.Workflow {
 	r001 := eligible()
 	r001.Name = "r001"
@@ -95,6 +95,26 @@ func hasCode(refusal *cloudconfig.Refusal, code string) bool {
 		}
 	}
 	return false
+}
+
+func TestCloudConfigApplyAdmitsLocalAndSharedClaimVisibility(t *testing.T) {
+	for _, visibility := range []string{"local", "shared"} {
+		t.Run(visibility, func(t *testing.T) {
+			act := &recordingActivator{}
+			applier := cloudconfig.NewApplier(readiness.Assess, act)
+			w := eligible()
+			w.Spec.Readiness.ClaimVisibility = visibility
+			if err := apply(applier, "sha256:good", denyConfig(), workflowSet(w)); err != nil {
+				t.Fatalf("apply %s visibility: %v", visibility, err)
+			}
+			if len(act.digests) != 1 || act.digests[0] != "sha256:good" {
+				t.Fatalf("activated generations=%v", act.digests)
+			}
+			if err := applier.Guard().Admit("sha256:good", "g", w.Name); err != nil {
+				t.Fatalf("applied workflow refused by execution guard: %v", err)
+			}
+		})
+	}
 }
 
 func TestCloudConfigApplyRefusesIneligibleWorkflow(t *testing.T) {
@@ -139,8 +159,8 @@ func TestCloudConfigNamesEveryBlocker(t *testing.T) {
 		set.Workflows = append(set.Workflows, w)
 	}
 	refusal := cloudconfig.Admit(readiness.Assess, "d", denyConfig(), set)
-	if refusal == nil || len(refusal.Workflows) != 3 {
-		t.Fatalf("Admit = %+v, want 3 blocked workflows", refusal)
+	if refusal == nil || len(refusal.Workflows) != len(ineligible()) {
+		t.Fatalf("Admit = %+v, want every ineligible fixture blocked", refusal)
 	}
 }
 
@@ -294,5 +314,23 @@ func TestConfigPackageClosureExcludesRunner(t *testing.T) {
 		if dep == "github.com/goobers/goobers/internal/runner" || dep == "github.com/goobers/goobers/internal/bootstrap" {
 			t.Fatalf("internal/cloud/config depends on %s", dep)
 		}
+	}
+}
+
+func TestAppliedReportsOnlyTheRunningGeneration(t *testing.T) {
+	applier := cloudconfig.NewApplier(readiness.Assess, &recordingActivator{})
+	if _, ok := applier.Applied(); ok {
+		t.Fatal("a generation reported applied before any apply")
+	}
+	good := workflowSet(eligible())
+	if err := apply(applier, "sha256:good", denyConfig(), good); err != nil {
+		t.Fatal(err)
+	}
+	for code, w := range ineligible() {
+		_ = apply(applier, "sha256:bad-"+code, denyConfig(), workflowSet(w))
+	}
+	applied, ok := applier.Applied()
+	if !ok || applied.Digest != "sha256:good" || applied.Set != good {
+		t.Fatalf("applied = %+v %v, want the running generation after refused candidates", applied, ok)
 	}
 }

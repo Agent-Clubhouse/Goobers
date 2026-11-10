@@ -175,6 +175,11 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 			{"name": "since", "in": "query", "required": true, "schema": dateTimeSchema(),
 				"description": "Start of the bounded lookback window ending at request time; must satisfy the daemon's window policy."},
 		}
+	case RouteLabsWorkflowFeatures:
+		return []map[string]any{
+			{"name": "features", "in": "query", "required": true,
+				"schema": map[string]any{"type": "string", "enum": []string{"structural", "behavior"}}},
+		}
 	case RouteGaggleStatePut:
 		return []map[string]any{
 			{"name": "If-Match", "in": "header", "schema": map[string]any{"type": "string", "pattern": `^"[^",]+"$`},
@@ -188,7 +193,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage, RouteTriggerIngest,
 		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart:
 		return true
 	default:
@@ -226,7 +231,7 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("CancelRunRequest")
 	case RouteOperatorMessageSubmit:
 		schema = schemaRef("OperatorMessageSubmitRequest")
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage:
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage:
 		schema = schemaRef("InterventionRequest")
 	case RouteResolveEscalation:
 		schema = schemaRef("EscalationResolutionRequest")
@@ -234,6 +239,12 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("WorkflowEnabledRequest")
 	case RouteGaggleBundleImport:
 		schema = schemaRef("GaggleBundleImportRequest")
+	case RouteLabsFluidUIPut:
+		schema = schemaRef("PortalCustomization")
+	case RouteLabsFluidUIReset, RouteLabsFluidUIUndo, RouteLabsFluidUIRequestRetry, RouteLabsFluidUIRequestApply, RouteLabsFluidUIRequestRevert:
+		schema = map[string]any{"type": "object", "additionalProperties": false}
+	case RouteLabsFluidUIRequestSubmit:
+		schema = schemaRef("FluidUIRequestSubmit")
 	}
 	return map[string]any{
 		"required": true,
@@ -295,6 +306,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("RunListDocument")
 	case RouteInstanceReadiness:
 		successSchema = schemaRef("InstanceReadiness")
+	case RouteLabsWorkflowFeatures:
+		successSchema = schemaRef("FleetSnapshot")
 	case RouteTriggerIngest:
 		successSchema = schemaRef("TriggerResponse")
 	case RouteTriggerStatus:
@@ -303,7 +316,7 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("CancelRunResult")
 	case RouteOperatorMessageSubmit:
 		successSchema = schemaRef("OperatorMessageSubmitResponse")
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
+	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteRetryStage, RouteResolveEscalation:
 		successSchema = schemaRef("InterventionResult")
 	case RouteWorkflowEnabled:
 		successSchema = schemaRef("WorkflowEnabledResult")
@@ -311,6 +324,16 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("GaggleBundle")
 	case RouteGaggleBundleImport:
 		successSchema = schemaRef("GaggleBundleImportResult")
+	case RouteLabsFluidUIGet, RouteLabsFluidUIPut, RouteLabsFluidUIReset, RouteLabsFluidUIUndo:
+		successSchema = schemaRef("PortalCustomizationState")
+	case RouteLabsFluidUIRequestsList:
+		successSchema = schemaRef("FluidUIRequestList")
+	case RouteLabsFluidUIRequestSubmit, RouteLabsFluidUIRequestGet, RouteLabsFluidUIRequestRetry:
+		successSchema = schemaRef("FluidUIRequest")
+	case RouteLabsFluidUIRequestApply, RouteLabsFluidUIRequestRevert:
+		successSchema = schemaRef("FluidUIRequestApplication")
+	case RouteLabsFluidUIReport:
+		successSchema = schemaRef("PortalCustomizationReport")
 	}
 	successResponse := jsonResponse("Successful response", successSchema)
 	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {
@@ -397,7 +420,7 @@ func mergeSchemaProperties(left, right map[string]any) map[string]any {
 
 func openAPISchemas(authenticated bool) map[string]any {
 	return mergeSchemaProperties(
-		mergeSchemaProperties(openAPIDiscoverySchemas(), openAPIRemoteReadSchemas()),
+		mergeSchemaProperties(openAPIDiscoverySchemas(), mergeSchemaProperties(openAPIRemoteReadSchemas(), openAPILabsFluidUISchemas())),
 		mergeSchemaProperties(openAPIOperationSchemas(authenticated), openAPIChildWorkflowSchemas()),
 	)
 }
@@ -414,6 +437,7 @@ func openAPIDiscoverySchemas() map[string]any {
 			"capability":      map[string]any{"type": "string"},
 			"requiredRole":    map[string]any{"type": "string", "enum": []string{"view", "operate"}},
 			"remoteInvocable": map[string]any{"type": "boolean"},
+			"exactWorkItem":   map[string]any{"type": "boolean"},
 			"available":       map[string]any{"type": "boolean"},
 			"code":            map[string]any{"type": "string"},
 			"reason":          map[string]any{"type": "string"},
@@ -567,6 +591,10 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 				"requestId": map[string]any{"type": "string"},
 				"force":     map[string]any{"type": "boolean"},
 				"sourceRun": map[string]any{"type": "string"},
+				"workItemId": map[string]any{
+					"type": "string", "pattern": "^[1-9][0-9]{0,14}$",
+					"description": "Select only this backlog item in the named gaggle's repository. Requires triggerIngest.exactWorkItem capability; incompatible with force, sourceRun and pod-scoped starts. Ordinary eligibility and trust gates still apply.",
+				},
 			},
 		},
 		"TriggerResponse": map[string]any{

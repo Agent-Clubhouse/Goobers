@@ -451,7 +451,17 @@ narrower scope overriding the broader one.
 | --- | --- |
 | `maxRepasses` | Bounds how often a run may be routed back to the same already completed stage. The count is cumulative per target stage, charged by automated and agentic gate outcomes that route back to it and by producer retries after an invalid handoff. Only policy outcomes (anything other than `pass`, `infra`, or `timeout`) are charged: a `pass` branch into a completed stage is a forward step, `infra` and `timeout` outcomes spend their own retry and polling budgets, and human-gate decisions are never charged. A non-human gate may override it. |
 | `stalledRunTimeout` | Positive Go duration after which a silent running journal is escalated. |
-| `maxRunDuration` | Positive Go duration bounding active execution time: run age less time the host spent suspended and durable child waits. Empty disables this bound. |
+| `maxRunDuration` | Positive Go duration bounding active execution time. Local execution subtracts observed host suspension and durable child waits. Cloud execution uses the PostgreSQL clock from the run's durable `startedAt` and subtracts durable child waits (run age less child waits, as locally); controller downtime is not subtracted because engine workers continue executing while the controller is unavailable. Empty disables this bound. |
+
+The stalled-run watchdog likewise uses the durable activity clock for each
+topology. Local mode uses the journal's in-memory `LastActivity` and excludes
+recorded graceful-drain downtime and host suspension. Cloud mode reads
+`journal.run_seq.last_append_at` with the PostgreSQL clock and subtracts no
+controller downtime. Cloud runs are stopped through the engine (cancel first,
+then server-side terminate if cancellation cannot be served). As locally, a run parked at a human gate or on a child is waiting, not stalled, and is never stall-escalated (`maxRunDuration` still applies at a gate). After a
+server-side termination, the live fenced controller records `run.finished` and
+runs idempotent terminal cleanup, because no workflow worker remains to close
+the journal itself.
 
 `maxRunDuration` requires daemon-backed execution. Without a live daemon,
 `goobers run` rejects the selected workflow before dispatch if its effective

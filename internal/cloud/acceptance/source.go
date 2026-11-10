@@ -53,6 +53,36 @@ func (s *Store) AcceptSource(
 	return receipt, repeated, err
 }
 
+// AcceptSourceAPI records an authenticated delivery's closed recipient set from
+// an API replica, with no controller lease. It carries no cursor movement,
+// demand transfer or occupancy limit (those belong to the fenced controller
+// path), and its single transaction is serialised per source key, so concurrent
+// redelivery to different replicas resolves to one receipt and the same
+// acceptance IDs.
+func (s *Store) AcceptSourceAPI(ctx context.Context, batch triggerqueue.SourceBatch, now time.Time) (triggerqueue.SourceReceipt, bool, error) {
+	if batch.Advance != nil || batch.Demand != nil || batch.PendingLimit != nil {
+		return triggerqueue.SourceReceipt{}, false, errors.New("cloud acceptance: API source intake cannot move cursors or demand")
+	}
+	if !validText(batch.Key, 256, true) || !validText(batch.Actor, 1024, true) ||
+		!validText(batch.Fingerprint, 128, true) || now.IsZero() ||
+		len(batch.Starts) > triggerqueue.MaxSourceStarts {
+		return triggerqueue.SourceReceipt{}, false, errors.New("cloud acceptance: invalid source batch")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return triggerqueue.SourceReceipt{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	receipt, repeated, err := s.acceptSource(ctx, tx, batch, now)
+	if err != nil {
+		return triggerqueue.SourceReceipt{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return triggerqueue.SourceReceipt{}, false, err
+	}
+	return receipt, repeated, nil
+}
+
 func (s *Store) acceptSource(ctx context.Context, tx pgx.Tx, batch triggerqueue.SourceBatch, now time.Time) (triggerqueue.SourceReceipt, bool, error) {
 	if _, err := tx.Exec(ctx, `
 		SELECT pg_advisory_xact_lock(hashtextextended('source-accept:' || $1, 0))`,

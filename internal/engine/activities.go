@@ -52,6 +52,10 @@ const (
 type Activities struct {
 	// EngineChildren is the durable generated-child custody boundary.
 	EngineChildren ChildService
+	// ChildAuthority acquires and releases an engine parent stage attempt's
+	// child-workflow grant from the control plane. Nil fails child-capable
+	// stages closed.
+	ChildAuthority ChildWorkflowAuthority
 	// ChildDispatchCompletion commits a stopped worker's final custody report
 	// through its existing Temporal connection before the activity returns.
 	ChildDispatchCompletion ChildDispatchCompletion

@@ -2,8 +2,8 @@ package readservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -533,8 +533,9 @@ func statusInfraFailure(run RunSummary) bool {
 }
 
 func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, now time.Time) error {
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.sources.Layout.SchedulerDir(), "claims.json"))
-	if err != nil {
+	ledger, err := s.claimView(ctx)
+	claimsUnavailable := errors.Is(err, ErrUnavailable)
+	if err != nil && !claimsUnavailable {
 		return fmt.Errorf("read claim leases for status: %w", err)
 	}
 	for i := range runs {
@@ -549,6 +550,12 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 					Message: "stage heartbeat is stale", ObservedAt: runs[i].Operator.LastHeartbeatAt,
 				}, now)
 			}
+		}
+		if claimsUnavailable {
+			// No ledger to project: say so on every run rather than imply
+			// that none of them holds a claim.
+			runs[i].Operator.Claim.LeaseStatus = "unavailable"
+			continue
 		}
 		claimItemID := projectClaimLease(&runs[i], ledger.ForRunAll(runs[i].ID), ledger.HistoryForRun(runs[i].ID), now)
 		s.verifyProviderClaimMarker(ctx, &runs[i], claimItemID, now)

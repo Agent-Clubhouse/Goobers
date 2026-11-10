@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -28,16 +29,18 @@ const (
 	maxManifestReply = httpapi.MaxEngineChildManifestBytes*4/3 + 4<<10
 )
 
-// ErrCustodyUnmapped reports an operation this plane does not serve yet.
-// Callers fail closed; the engine keeps child execution refused meanwhile.
-var ErrCustodyUnmapped = errors.New("childadmissionclient: child custody operation is not served by the control plane yet")
-
 // Client implements engine.ChildService over the plane. TokenSource mints a
 // short-lived worker child-admission credential per request.
 type Client struct {
 	BaseURL     string
 	TokenSource func() (string, error)
 	HTTP        *http.Client
+	// PodEndpoint is where stage pods reach control; an authority request that
+	// names none is sent with it.
+	PodEndpoint string
+	// Secrets registers every acquired child-workflow bearer with the worker's
+	// exact-value scrubber; required to acquire authority.
+	Secrets interface{ RegisterUntil([]byte, time.Time) }
 }
 
 var _ engine.ChildService = (*Client)(nil)
@@ -77,17 +80,83 @@ func (c *Client) Cancel(ctx context.Context, b engine.ChildRunBinding) error {
 	return c.call(ctx, apicontract.EngineChildCancelPath, b, http.StatusNoContent, 0, nil)
 }
 
-// Park is not served yet.
-func (c *Client) Park(context.Context, engine.ChildParkInput) error { return ErrCustodyUnmapped }
-
-// Finalize is not served yet.
-func (c *Client) Finalize(context.Context, engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
-	return childresult.TerminalReturn{}, ErrCustodyUnmapped
+// AuthorityForWorker is the engine worker's client for its stage attempts'
+// child-workflow grants, over the same plane and credential as ForWorker.
+// podEndpoint is where the worker's stage pods reach control, and secrets the
+// worker's shared exact-value registry, so the journal scrubber and the
+// dispatch canary know every bearer. It returns an untyped nil without any of
+// them, so the engine refuses child-capable stages.
+func AuthorityForWorker(baseURL, podEndpoint, owner string, signer *podauth.SignedKey, secrets interface{ RegisterUntil([]byte, time.Time) }) engine.ChildWorkflowAuthority {
+	if signer == nil || baseURL == "" || podEndpoint == "" || secrets == nil {
+		return nil
+	}
+	return &Client{BaseURL: baseURL, PodEndpoint: podEndpoint, Secrets: secrets,
+		TokenSource: func() (string, error) { return signer.MintWorkerChildAdmission(owner, workerTokenTTL) }}
 }
 
-// Complete is not served yet.
-func (c *Client) Complete(context.Context, engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
-	return apiv1.ContextPointer{}, ErrCustodyUnmapped
+var _ engine.ChildWorkflowAuthority = (*Client)(nil)
+
+// maxGrantReply bounds an authority response: one grant and its metadata.
+const maxGrantReply = 16 << 10
+
+// AcquireChildAuthority asks control to bind (or re-deliver) the attempt's
+// grant. The returned grant carries a bearer.
+func (c *Client) AcquireChildAuthority(ctx context.Context, request engine.ChildAuthorityRequest) (engine.ChildAuthorityGrant, error) {
+	if c.Secrets == nil {
+		return engine.ChildAuthorityGrant{}, errors.New("childadmissionclient: child authority requires a secret registry")
+	}
+	if request.Endpoint == "" {
+		request.Endpoint = c.PodEndpoint
+	}
+	if err := request.Validate(); err != nil {
+		return engine.ChildAuthorityGrant{}, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	var grant engine.ChildAuthorityGrant
+	if err := c.call(ctx, apicontract.EngineChildAuthorityPath, request, http.StatusOK, maxGrantReply, &grant); err != nil {
+		return engine.ChildAuthorityGrant{}, err
+	}
+	if grant.StoppedHandoff != nil {
+		h := grant.StoppedHandoff
+		if grant.GrantID == "" || h.Validate(&request.Origin) != nil || h.ParentRunID != request.RunID || h.RequestID != engine.ChildHandoffDigest(*h) {
+			return engine.ChildAuthorityGrant{}, engine.ErrChildCustodyRefused
+		}
+		return grant, nil
+	}
+	if _, err := grant.Access(request.RunID); err != nil || grant.GrantID == "" {
+		return engine.ChildAuthorityGrant{}, errors.Join(errors.New("childadmissionclient: control returned an invalid child-workflow grant"), err)
+	}
+	c.Secrets.RegisterUntil([]byte(grant.BearerToken), grant.ExpiresAt)
+	return grant, nil
+}
+
+// ReleaseChildAuthority asks control to revoke exactly the named grant.
+func (c *Client) ReleaseChildAuthority(ctx context.Context, release engine.ChildAuthorityRelease) error {
+	if err := release.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	return c.call(ctx, apicontract.EngineChildAuthorityReleasePath, release, http.StatusNoContent, 0, nil)
+}
+
+// maxResultReply bounds a sealed child result: its bounded summary and
+// references, plus identity.
+const maxResultReply = 64 << 10
+
+// Park lends the parked parent's capacity back to control's scheduler.
+func (c *Client) Park(ctx context.Context, in engine.ChildParkInput) error {
+	return c.call(ctx, apicontract.EngineChildParkPath, in, http.StatusNoContent, 0, nil)
+}
+
+// Finalize asks control to seal the child's result from its journal.
+func (c *Client) Finalize(ctx context.Context, in engine.ChildFinalizeInput) (childresult.TerminalReturn, error) {
+	var out childresult.TerminalReturn
+	return out, c.call(ctx, apicontract.EngineChildFinalizePath, in, http.StatusOK, maxResultReply, &out)
+}
+
+// Complete asks control to verify the sealed result, reacquire the parent's
+// capacity and return its continuation; the engine validates the pointer.
+func (c *Client) Complete(ctx context.Context, in engine.ChildCompletionInput) (apiv1.ContextPointer, error) {
+	var out apiv1.ContextPointer
+	return out, c.call(ctx, apicontract.EngineChildCompletePath, in, http.StatusOK, maxReceiptBytes, &out)
 }
 
 func (c *Client) call(ctx context.Context, path string, body any, want int, limit int64, out any) error {
@@ -162,4 +231,14 @@ func statusClass(status int) error {
 	default:
 		return nil
 	}
+}
+
+// ObserveChildHandoff reads control-owned acceptance, never pod output.
+func (c *Client) ObserveChildHandoff(ctx context.Context, request engine.ChildHandoffObservation) (*journal.ChildHandoffRequest, error) {
+	if err := request.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", engine.ErrChildCustodyRefused, err)
+	}
+	var out *journal.ChildHandoffRequest
+	err := c.call(ctx, apicontract.EngineChildHandoffPath, request, http.StatusOK, maxReceiptBytes, &out)
+	return out, err
 }

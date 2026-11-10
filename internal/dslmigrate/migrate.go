@@ -35,14 +35,16 @@ var ErrAlreadyAtTarget = errors.New("dslmigrate: workflow is already at the targ
 // (dsl-3.0.md §6 rules 3 and 5), rather than emitting a document that fails to
 // validate under 3.0.
 type Edge struct {
-	From        string
-	To          string
-	Apply       func(source []byte, root *yaml.Node) (changed bool, notes []string, err error)
-	ApplySource func(source []byte, root *yaml.Node, versionNode *yaml.Node, to string) (after []byte, notes []string, err error)
+	PolicyAdditions func(root *yaml.Node) []PolicyAddition
+	From            string
+	To              string
+	Apply           func(source []byte, root *yaml.Node) (changed bool, notes []string, err error)
+	ApplySource     func(source []byte, root *yaml.Node, versionNode *yaml.Node, to string) (after []byte, notes []string, err error)
 }
 
 // edges is the registry of one-step migrations this binary knows how to
-// perform: the DVL-5 1.4→2.0 edge, the Goobernetes 2.0→3.0 edge
+// perform: the DVL-5 1.4→2.0 edge, the opt-in watcher 2.0→2.1 edge,
+// the independent Goobernetes 2.0→3.0 edge
 // (dsl-3.0.md §6), and the opt-in artifact-contract 3.0→3.1 edge.
 // 1.4 is dropped as a loadable version (D13), but the edge
 // survives as the recovery path DVL030 names — `goobers fix --to 2.0` on a
@@ -51,6 +53,7 @@ type Edge struct {
 // registers its own Edge here rather than extending an existing one.
 var edges = []Edge{
 	{From: supportmatrix.V1DSLVersion, To: supportmatrix.V2DSLVersion, Apply: applyV14ToV20, ApplySource: applyV14ToV20SourcePreserving},
+	{From: supportmatrix.V2DSLVersion, To: supportmatrix.V21DSLVersion, ApplySource: applyV20ToV21SourcePreserving, PolicyAdditions: policyAdditionsV21},
 	{From: supportmatrix.V2DSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyV20ToV30},
 	{From: supportmatrix.V3DSLVersion, To: supportmatrix.V31DSLVersion, Apply: applyV30ToV31},
 }
@@ -65,8 +68,16 @@ func FindEdge(from, to string) (Edge, bool) {
 	return Edge{}, false
 }
 
+// PolicyAddition describes new declared authority, never an implicit grant.
+type PolicyAddition struct {
+	Task   string
+	Action string
+}
+
 // Result is the outcome of migrating one workflow document.
 type Result struct {
+	// PolicyAdditions must be acknowledged by a writing caller before applying.
+	PolicyAdditions []PolicyAddition
 	// Before and After are the document's full YAML text, before and after
 	// the migration. Changed includes the mandatory dslVersion pin.
 	Before, After string
@@ -103,13 +114,17 @@ func Migrate(source []byte, to string) (*Result, error) {
 	}
 
 	before := string(source)
+	var additions []PolicyAddition
+	if edge.PolicyAdditions != nil {
+		additions = edge.PolicyAdditions(root)
+	}
 	if edge.ApplySource != nil {
 		afterBytes, notes, err := edge.ApplySource(source, root, versionNode, to)
 		if err != nil {
 			return nil, fmt.Errorf("dslmigrate: migrate dslVersion %q→%q: %w", from, to, err)
 		}
 		after := string(afterBytes)
-		return &Result{Before: before, After: after, Changed: before != after, Notes: notes}, nil
+		return &Result{Before: before, After: after, Changed: before != after, Notes: notes, PolicyAdditions: additions}, nil
 	}
 	transformed, notes, err := edge.Apply(source, root)
 	if err != nil {
@@ -130,7 +145,7 @@ func Migrate(source []byte, to string) (*Result, error) {
 		}
 		after = string(pinned)
 	}
-	return &Result{Before: before, After: after, Changed: before != after, Notes: notes}, nil
+	return &Result{Before: before, After: after, Changed: before != after, Notes: notes, PolicyAdditions: additions}, nil
 }
 
 // MigrateGaggleToV3 migrates the shared placement floor without adding a

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/goobers/goobers/internal/cloud/lease"
@@ -25,6 +26,28 @@ func effect(item string, count int) terminalreport.Effect {
 		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Name: "app"},
 		ItemID:     item, RunID: "run-1", Stage: "ci", Count: count,
 	}
+}
+
+// controllerPool connects as goobers_controller (SET ROLE), the role the
+// control process holds, so adoption exercises the reviewed column grants on
+// owner_epoch, lease_token and lease_until rather than the owner's privileges.
+func controllerPool(t *testing.T, owner *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	config := owner.Config()
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET ROLE goobers_controller")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	var current string
+	if err := pool.QueryRow(t.Context(), "SELECT current_user").Scan(&current); err != nil || current != "goobers_controller" {
+		t.Fatalf("current_user = %q, %v; want goobers_controller", current, err)
+	}
+	return pool
 }
 
 func claimOne(t *testing.T, store terminalreportpg.Store, handle *lease.Handle) terminalreportpg.Delivery {
@@ -59,7 +82,8 @@ func deliveredGeneration(t *testing.T, pool *pgxpool.Pool, key string) (int64, b
 // can no longer acknowledge after the takeover.
 func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	pool := pgtest.Pool(t, "trpg")
-	oldManager := pgtest.Manager(t, pool, "old", 0)
+	controller := controllerPool(t, pool)
+	oldManager := pgtest.Manager(t, controller, "old", 0)
 	old := pgtest.Acquire(t, oldManager)
 	oldStore := terminalreportpg.Store{Fence: oldManager}
 	e := effect("42", 1)
@@ -68,7 +92,7 @@ func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	}
 	inFlight := claimOne(t, oldStore, old)
 
-	newManager := pgtest.Manager(t, pool, "new", time.Hour)
+	newManager := pgtest.Manager(t, controller, "new", time.Hour)
 	successor := pgtest.Takeover(t, pool, newManager)
 	newStore := terminalreportpg.Store{Fence: newManager}
 	if deliveries, err := newStore.Claim(t.Context(), successor, 10); err != nil || len(deliveries) != 0 {
@@ -77,11 +101,11 @@ func TestTerminalReportOneDeliveryUnderSkew(t *testing.T) {
 	if err := oldStore.Delivered(t.Context(), old, inFlight); !errors.Is(err, lease.ErrStale) {
 		t.Fatalf("stale owner acknowledgement = %v, want ErrStale", err)
 	}
-	if adopted, err := newStore.Adopt(t.Context(), successor, successor.Epoch); err != nil || adopted != 0 {
-		t.Fatalf("adopting the live epoch moved %d rows, err %v", adopted, err)
-	}
-	if adopted, err := newStore.Adopt(t.Context(), successor, old.Epoch); err != nil || adopted != 1 {
+	if adopted, err := newStore.AdoptAll(t.Context(), successor); err != nil || adopted != 1 {
 		t.Fatalf("adopt predecessor = %d, %v; want 1", adopted, err)
+	}
+	if adopted, err := newStore.AdoptAll(t.Context(), successor); err != nil || adopted != 0 {
+		t.Fatalf("adopting again moved %d rows, err %v; want 0", adopted, err)
 	}
 	// Even a fence-passing acknowledgement of the voided lease is refused.
 	inFlight.OwnerEpoch = successor.Epoch
@@ -305,5 +329,75 @@ func TestIdempotencyKeyIsNeverReusedAfterPrune(t *testing.T) {
 	}
 	if next := claimOne(t, store, handle); next.IdempotencyKey == spent.IdempotencyKey {
 		t.Fatalf("a different intent reused the spent idempotency key %q", spent.IdempotencyKey)
+	}
+}
+
+// TestAdoptAllReachesEveryOlderEpoch makes two consecutive takeovers with rows
+// stranded at epoch 1 and epoch 2, as goobers_controller: AdoptAll moves both,
+// voids the delivery lease of the claimed row and
+// leaves delivered rows alone.
+func TestAdoptAllReachesEveryOlderEpoch(t *testing.T) {
+	pool := pgtest.Pool(t, "trpgall")
+	controller := controllerPool(t, pool)
+	firstManager := pgtest.Manager(t, controller, "first", 0)
+	first := pgtest.Acquire(t, firstManager)
+	firstStore := terminalreportpg.Store{Fence: firstManager}
+	if _, err := firstStore.Publish(t.Context(), first, effect("1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	inFlight := claimOne(t, firstStore, first)
+	if _, err := firstStore.Publish(t.Context(), first, effect("2", 1)); err != nil {
+		t.Fatal(err)
+	}
+	delivered := claimOne(t, firstStore, first)
+	if err := firstStore.Delivered(t.Context(), first, delivered); err != nil {
+		t.Fatal(err)
+	}
+
+	secondManager := pgtest.Manager(t, controller, "second", 0)
+	second := pgtest.Takeover(t, pool, secondManager)
+	secondStore := terminalreportpg.Store{Fence: secondManager}
+	if _, err := secondStore.Publish(t.Context(), second, effect("3", 1)); err != nil {
+		t.Fatal(err)
+	}
+	// The second holder crashes before adopting anything.
+
+	thirdManager := pgtest.Manager(t, controller, "third", 0)
+	third := pgtest.Takeover(t, pool, thirdManager)
+	thirdStore := terminalreportpg.Store{Fence: thirdManager}
+	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 2 {
+		t.Fatalf("AdoptAll = %d, %v; want the epoch-1 and epoch-2 rows", adopted, err)
+	}
+	if adopted, err := thirdStore.AdoptAll(t.Context(), third); err != nil || adopted != 0 {
+		t.Fatalf("repeated AdoptAll = %d, %v; want 0", adopted, err)
+	}
+	var owners []int64
+	rows, err := pool.Query(t.Context(), `SELECT owner_epoch FROM control.terminal_report
+		WHERE instance_id=$1 AND delivered_at IS NULL ORDER BY effect_key`, pgtest.InstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var epoch int64
+		if err := rows.Scan(&epoch); err != nil {
+			t.Fatal(err)
+		}
+		owners = append(owners, epoch)
+	}
+	rows.Close()
+	if len(owners) != 2 || owners[0] != third.Epoch || owners[1] != third.Epoch {
+		t.Fatalf("undelivered owners = %v, want both at epoch %d", owners, third.Epoch)
+	}
+	// The epoch-1 delivery lease was voided: its holder cannot acknowledge, and
+	// the live epoch redelivers under the same intent key.
+	inFlight.OwnerEpoch = third.Epoch
+	if err := thirdStore.Delivered(t.Context(), third, inFlight); !errors.Is(err, terminalreportpg.ErrLeaseLost) {
+		t.Fatalf("voided lease acknowledgement = %v, want ErrLeaseLost", err)
+	}
+	if err := firstStore.Delivered(t.Context(), first, inFlight); !errors.Is(err, lease.ErrStale) {
+		t.Fatalf("stale holder acknowledgement = %v, want ErrStale", err)
+	}
+	if _, isDelivered := deliveredGeneration(t, pool, effect("2", 1).Key()); !isDelivered {
+		t.Fatal("a delivered row was disturbed by adoption")
 	}
 }

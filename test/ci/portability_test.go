@@ -372,8 +372,13 @@ func TestCIWorkflowRunsWindowsShippedWorkflowContracts(t *testing.T) {
 		t.Error("shipped-workflow contract matrix must include Windows")
 	}
 	if !strings.Contains(shipped, `timeout: "40m"`) ||
-		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") {
+		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") ||
+		!strings.Contains(shipped, "GOOBERS_CI_RACE: ${{ matrix.race }}") {
 		t.Error("Windows shipped-workflow contracts must receive sufficient timeout headroom")
+	}
+	if !strings.Contains(shipped, "os: ubuntu-latest\n            race: \"1\"") ||
+		!strings.Contains(shipped, "os: windows-latest\n            race: \"0\"") {
+		t.Error("shipped-workflow contracts must keep race coverage on Linux and the complete non-race suite on Windows")
 	}
 }
 

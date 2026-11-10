@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -386,6 +387,9 @@ const (
 	RuntimeSelfExecutionRequired WarningCode = "RUNTIME002"
 	// RuntimeDSLVersionUnsupported identifies a pre-3.0 cloud workflow.
 	RuntimeDSLVersionUnsupported WarningCode = "RUNTIME003"
+	// RuntimeControlPlaneUnsupported identifies a workflow setting the cloud
+	// control plane cannot honour yet (claimVisibility: shared, #8094).
+	RuntimeControlPlaneUnsupported WarningCode = "RUNTIME004"
 	// WF024 was the "gate placement not yet honoured" warning that stood
 	// between the DSL half of decision 001 (#3848) and its engine/pod half
 	// (rulings 7–8). It retired with that half and the code is not reused.
@@ -1280,7 +1284,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 				continue
 			}
 			r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
-				wf.CheckGooberFeatureSupport(def, g.Spec, allowPreview))
+				gooberFeatureDiagnostics(def, g.Spec))
 		}
 		ix.checkGooberDirectoryScope(r, g, file)
 		ix.checkGooberReferences(r, g, file)
@@ -1367,23 +1371,24 @@ func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
 }
 
 func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definition {
-	if spec.Gaggle == "" {
-		// Shared personas are available to every gaggle, so their features
-		// must be checked against every configured DSL pin.
-		return ix.featureDefinitionsForGaggle("")
-	}
 	var definitions []wf.Definition
-	for _, name := range spec.Workflows {
-		indexed, ok := ix.workflows[workflowIdentity{gaggle: spec.Gaggle, name: name}]
-		if !ok {
+	for _, identity := range sortedWorkflowIdentities(ix.workflows) {
+		// Instance-shared personas retain their all-workflow scope.
+		if spec.Gaggle != "" && (identity.gaggle != spec.Gaggle || !slices.Contains(spec.Workflows, identity.name)) {
 			continue
 		}
-		definition := indexed.definition
+		definition := ix.workflows[identity].definition
 		definitions = append(definitions, wf.Definition{
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+			Annotations: definition.Annotations,
 		})
 	}
-	return wf.FeatureDefinitionsByDSLVersion(definitions)
+	if len(definitions) == 0 {
+		return wf.FeatureDefinitionsByDSLVersion(nil)
+	}
+	// Same-version consumers can have different consent; version-only probes
+	// would discard their individual acknowledgements.
+	return definitions
 }
 
 func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {

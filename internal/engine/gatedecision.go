@@ -172,10 +172,11 @@ type gateDecisionSession struct {
 
 	mu workflow.Mutex
 
-	active       *gateDecisionOccurrence
-	consumed     map[string]bool
-	acks         map[string]GateDecisionAck
-	fingerprints map[string]string
+	active            *gateDecisionOccurrence
+	consumed          map[string]bool
+	acks              map[string]GateDecisionAck
+	fingerprints      map[string]string
+	sharedRequestKeys bool
 }
 
 func newGateDecisionSession(in RunInput, m *wf.Machine, terminalGeneration func() uint64) *gateDecisionSession {
@@ -321,6 +322,9 @@ func (s *gateDecisionSession) validate(request GateDecisionRequest) error {
 		return gateDecisionRefusal(GateDecisionErrInvalid,
 			"gate and committed gateOccurrence are required")
 	}
+	if operatorKeyOwnedByOther(s.sharedRequestKeys, s.fingerprints, GateDecisionProtocol, request.RequestID) {
+		return gateDecisionRefusal(GateDecisionErrKeyReused, "requestId %q belongs to the terminal-intervention protocol", request.RequestID)
+	}
 	if _, seen := s.fingerprints[request.RequestID]; seen {
 		return nil
 	}
@@ -363,7 +367,7 @@ func validateGateDecisionReplay(request GateDecisionRequest, ack GateDecisionAck
 }
 
 func (s *gateDecisionSession) handle(ctx workflow.Context, request GateDecisionRequest) (GateDecisionAck, error) {
-	fingerprint := gateDecisionFingerprint(request)
+	fingerprint := operatorRequestFingerprint(s.sharedRequestKeys, GateDecisionProtocol, gateDecisionFingerprint(request))
 	if ack, err, done := s.replay(request.RequestID, fingerprint); done {
 		return validateGateDecisionReplay(request, ack, err)
 	}

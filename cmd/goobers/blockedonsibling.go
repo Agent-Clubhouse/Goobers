@@ -11,22 +11,6 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// latestBlockedOnSiblingState scans comments (oldest first, ListComments' own
-// order) for the LAST one carrying a blocked-on-sibling payload apply-verdict
-// posted (#747) — only the most recently recorded block is still actionable —
-// and returns that comment's ID too, so a caller can edit/clear it in place.
-// found is false when no comment in the thread carries the payload (the PR was
-// never parked as blocked-on-sibling), not an error. Mirrors
-// latestRemediationState's shape (remediationcheckpoint.go).
-func latestBlockedOnSiblingState(comments []providers.Comment) (state blockedOnSiblingState, commentID string, found bool) {
-	for i := len(comments) - 1; i >= 0; i-- {
-		if s, ok := parseBlockedOnSiblingComment(comments[i].Body); ok {
-			return s, comments[i].ID, true
-		}
-	}
-	return blockedOnSiblingState{}, "", false
-}
-
 // recordedBlockedOnSiblingBlockers fails open for an absent record: without
 // named blockers there is no concrete condition that can keep a PR parked.
 func recordedBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
@@ -48,29 +32,6 @@ func blockedOnSiblingScanContext(parent context.Context) (context.Context, conte
 	return context.WithTimeout(parent, stageTimeout())
 }
 
-func namedBlockerStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blocker int) (bool, error) {
-	item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
-	if err != nil {
-		return false, err
-	}
-	if !strings.EqualFold(item.State, "open") {
-		return false, nil
-	}
-	if !item.HasLabel(mergeDemotedLabel) {
-		return true, nil
-	}
-	pr, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(blocker))
-	if err != nil {
-		return false, err
-	}
-	demoted, err := demotionStillHolds(ctx, provider, repo, pr)
-	if err != nil {
-		return false, err
-	}
-	// A live demotion lets successors drain; a stale label does not.
-	return !demoted, nil
-}
-
 // liveBlockedOnSiblingBlockers returns the named blocker PRs that are still
 // effective for a parked PR. A blocker resolves when it closes or while a
 // snapshot-valid merge demotion lets its successors drain around it.
@@ -80,44 +41,6 @@ func liveBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvi
 		return nil, err
 	}
 	return filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, blockers)
-}
-
-func liveBlockedOnSiblingState(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (blockedOnSiblingState, error) {
-	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
-		return blockedOnSiblingState{}, nil
-	}
-	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
-	if err != nil {
-		return blockedOnSiblingState{}, err
-	}
-	state, _, found := latestBlockedOnSiblingState(comments)
-	if !found {
-		return blockedOnSiblingState{}, nil
-	}
-	state.Blockers, err = filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, state.Blockers)
-	if err != nil {
-		return blockedOnSiblingState{}, err
-	}
-	return state, nil
-}
-
-func filterLiveBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blockers []int) ([]int, error) {
-	var open []int
-	seen := make(map[int]bool)
-	for _, blocker := range blockers {
-		if seen[blocker] {
-			continue
-		}
-		seen[blocker] = true
-		blocks, err := namedBlockerStillBlocks(ctx, provider, repo, blocker)
-		if err != nil {
-			return nil, err
-		}
-		if blocks {
-			open = append(open, blocker)
-		}
-	}
-	return open, nil
 }
 
 // blockedOnSiblingSelectionHold reports whether pr must be excluded from

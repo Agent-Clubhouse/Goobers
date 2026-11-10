@@ -3,7 +3,7 @@ package control
 import (
 	"context"
 	"errors"
-	"sync"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,13 +29,40 @@ type Runtime struct {
 	TaskQueue     string
 	Resolve       acceptance.StartInputResolver
 	Services      func(context.Context, *lease.Handle) (EpochServices, error)
-	Report        func(error)
+	// Admission admits accepted rows through the scheduler's run conditions.
+	Admission func(context.Context, AdmissionDeps) (Admission, error)
+	Report    func(error)
+}
+
+// AdmissionDeps are the epoch-bound pieces an Admission is built from. Ctx (the
+// Build context) is the epoch context: everything the Admission starts must end
+// with it.
+type AdmissionDeps struct {
+	Handle  *lease.Handle
+	Store   *acceptance.Store
+	Starter engine.Starter
+	Resolve func(context.Context, triggerqueue.Record) (engine.RunInput, error)
+}
+
+// Admission is one epoch's scheduler-backed admission of accepted starts.
+type Admission interface {
+	// Prepare rebuilds admission from durable state (reconcile the scheduler,
+	// watch reconciled predecessor runs). It runs after uncertain starts are
+	// reconciled and before the epoch serves.
+	Prepare(context.Context) error
+	// Tick runs one scheduler pass and admits accepted rows.
+	Tick(context.Context) error
+	// Stop ends the epoch's admission goroutines and waits for them.
+	Stop(context.Context) error
 }
 
 // Build creates a fresh acceptance adapter and starter for one acquired lease.
 func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices, error) {
 	if r.Configuration == nil || r.Pool == nil || r.Lease == nil || r.Temporal == nil || r.Resolve == nil || r.Services == nil || r.TaskQueue == "" {
 		return EpochServices{}, errors.New("cloud control requires pinned input, lifecycle services and Temporal wiring")
+	}
+	if r.Admission == nil {
+		return EpochServices{}, errors.New("cloud control requires scheduler admission")
 	}
 	services, err := r.Services(ctx, handle)
 	if err != nil {
@@ -77,7 +104,23 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		}
 		return reconcile(ctx)
 	}
-	var after string
+	admission, err := r.Admission(ctx, AdmissionDeps{Handle: handle, Store: store, Starter: starter, Resolve: r.resolve})
+	if err != nil {
+		return services, err
+	}
+	if admission == nil {
+		return services, errors.New("cloud control admission factory returned nil")
+	}
+	originalAttach, originalStop := services.ReattachAwaiters, services.Stop
+	services.ReattachAwaiters = func(ctx context.Context) error {
+		if err := originalAttach(ctx); err != nil {
+			return err
+		}
+		return admission.Prepare(ctx)
+	}
+	services.Stop = func(ctx context.Context) error {
+		return errors.Join(originalStop(ctx), admission.Stop(ctx))
+	}
 	services.L1 = func(ctx context.Context) error {
 		if err := r.Configuration.Reload(ctx); err != nil {
 			return err
@@ -92,10 +135,9 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		if err := observations.Replace(ctx, snapshot); err != nil {
 			return err
 		}
-		next, err := r.drain(ctx, store, starter, after)
-		after = next
-		return err
+		return admission.Tick(ctx)
 	}
+	pins := runPinReports{}
 	services.L2 = func(ctx context.Context) error {
 		if err := store.Prune(ctx); err != nil {
 			return err
@@ -106,7 +148,20 @@ func (r Runtime) Build(ctx context.Context, handle *lease.Handle) (EpochServices
 		if err := originalL2(ctx); err != nil {
 			return err
 		}
-		return reconcile(ctx)
+		if err := reconcile(ctx); err != nil {
+			return err
+		}
+		// Run pins outlive their acceptance row: they are retained until the
+		// run's engine execution is closed, then for ReplayRetention more. The
+		// sweep is best-effort against Temporal: a run it cannot vouch for keeps
+		// its pins and is reported, never returned, since an L2 error ends every
+		// loop and drops the epoch; its Temporal calls are bounded by
+		// runPinSweepBudget so an outage cannot hold up claim renewal and reap.
+		// Only the store's own errors (a lost fence among them) are returned, as
+		// for Prune above.
+		sweep, err := store.SweepRunPins(ctx, temporalRunClosed(r.Temporal), pins.after, runPinSweepBudget)
+		pins.observe(sweep, r.report)
+		return err
 	}
 	return services, nil
 }
@@ -123,43 +178,65 @@ func (r Runtime) resolve(ctx context.Context, record triggerqueue.Record) (engin
 	return in, nil
 }
 
-func (r Runtime) drain(ctx context.Context, store *acceptance.Store, starter engine.Starter, after string) (string, error) {
-	// Page across retained custody so an invalid or uncertain item cannot starve
-	// the next accepted workflow. Temporal identity is always supplied by Store.
-	rows, err := store.RetainedPage(ctx, after, 100)
-	if err != nil {
-		return after, err
+func (r Runtime) report(err error) {
+	if r.Report != nil {
+		r.Report(err)
 	}
-	var workers sync.WaitGroup
-	slots := make(chan struct{}, 4)
-	for _, record := range rows {
-		after = record.ID
-		if record.State != triggerqueue.Accepted {
-			continue
-		}
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			workers.Wait()
-			return after, ctx.Err()
-		}
-		workers.Go(func() {
-			defer func() { <-slots }()
-			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			in, err := r.resolve(attempt, record)
-			if err == nil {
-				_, err = starter.Start(attempt, in)
-			}
-			if err != nil && r.Report != nil {
-				r.Report(err)
-			}
-		})
-	}
-	workers.Wait()
+}
 
-	if len(rows) < 100 {
-		after = ""
+// runPinSweepBudget bounds one L2 pass's Temporal calls for the run-pin sweep.
+var runPinSweepBudget = 5 * time.Second
+
+// runPinHaltSkip is how many consecutive passes may halt at the same run
+// before the cursor steps past it. A run whose Describe always outlasts the
+// budget would otherwise stall retention for every run behind it.
+const runPinHaltSkip = 3
+
+// runPinReports carries the sweep cursor across L2 passes and reports each
+// unconfirmed run, and a Temporal outage, once when it starts rather than on
+// every pass while it lasts. A run the sweep keeps halting at is skipped
+// (reported, its pins kept) and retried on the next lap.
+type runPinReports struct {
+	after       string
+	unconfirmed map[string]bool
+	halted      bool
+	haltedAt    string
+	halts       int
+}
+
+func (p *runPinReports) observe(sweep acceptance.RunPinSweep, report func(error)) {
+	p.after = sweep.Next
+	switch sweep.HaltedAt {
+	case "":
+		p.haltedAt, p.halts = "", 0
+	case p.haltedAt:
+		p.halts++
+	default:
+		p.haltedAt, p.halts = sweep.HaltedAt, 1
 	}
-	return after, nil
+	if p.halts >= runPinHaltSkip {
+		report(fmt.Errorf("run pin sweep: skipping run %s after %d passes halted at it; its pins are kept: %w", p.haltedAt, p.halts, sweep.Halted))
+		p.after = p.haltedAt
+		p.haltedAt, p.halts = "", 0
+	}
+	p.report(sweep, report)
+}
+
+func (p *runPinReports) report(sweep acceptance.RunPinSweep, report func(error)) {
+	if p.unconfirmed == nil {
+		p.unconfirmed = map[string]bool{}
+	}
+	for _, runID := range sweep.Checked {
+		delete(p.unconfirmed, runID)
+	}
+	for runID, err := range sweep.Unconfirmed {
+		if !p.unconfirmed[runID] {
+			p.unconfirmed[runID] = true
+			report(err)
+		}
+	}
+	if sweep.Halted != nil && !p.halted {
+		report(sweep.Halted)
+	}
+	p.halted = sweep.Halted != nil
 }

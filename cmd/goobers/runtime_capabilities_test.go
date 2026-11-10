@@ -81,9 +81,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// follows the blob plane exactly: gaggleStatePut is a pod compare-and-
 	// swapping its gaggle's scheduler state, and gaggleStateGet is the
 	// genuine read half that needs no entry.
-	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
+	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true, "retryStage": true}
 	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true, "labsFluidUICustomizationPut": true, "labsFluidUICustomizationReset": true, "labsFluidUICustomizationUndo": true, "labsFluidUIRequestApply": true, "labsFluidUIRequestRevert": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		// Child tools run under the exact parent-stage grant. Validation and
 		// status are execution-plane operations, like claims/list, rather than
@@ -95,16 +95,24 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// daemon-owned instance journal. This authenticated machine-to-daemon
 		// write is workflow execution, not read-only status navigation.
 		"workerConfigDivergence": true,
+		// The trusted worker commits a fenced terminal journal transition; this
+		// is the execution-plane write, not the operator-facing intervention.
+		"journalTerminalIntervention": true,
 		// claims/recover (#4016): a stage pod asking the daemon to run the
 		// stale-claim sweep it cannot run itself (the sweep reads run journals
 		// under the instance root and honours interventions and the recovery
 		// gate). Same machine-seam class as the rest of the claims plane.
 		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "credentialRefresh": true, "blobPut": true,
+		// A Labs Fluid UI request (#8417) starts the shipped customization
+		// workflow through trigger ingest, so submit and retry are executions.
+		"labsFluidUIRequestSubmit": true, "labsFluidUIRequestRetry": true,
 		"stageSurrender": true, "gaggleStatePut": true,
 		// The engine child-admission plane (#7879): a resident engine worker
 		// advancing a run's generated-child custody. POSTs carrying receipts.
 		"engineChildAdmit": true, "engineChildLoad": true, "engineChildCancel": true,
+		"engineChildOrigin": true, "engineChildHandoff": true, "engineChildAuthority": true, "engineChildAuthorityRelease": true,
+		"engineChildPark": true, "engineChildFinalize": true, "engineChildComplete": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.
 		"runRecoveryPublish": true,
@@ -156,6 +164,10 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	}
 	assertActionClass(t, uiActions, "navigate", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, uiActions, "revealRun", apicontract.ActionMaintenance)
+	for _, id := range []apicontract.ActionID{"applyFluidUI", "undoFluidUI", "resetFluidUI"} {
+		// Fluid UI writes change only the caller's own presentation (#8416).
+		assertActionClass(t, uiActions, id, apicontract.ActionMaintenance)
+	}
 }
 
 func TestRuntimeCommandRegistersTypedCapability(t *testing.T) {

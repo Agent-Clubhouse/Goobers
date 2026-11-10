@@ -23,12 +23,6 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// blockedOnSiblingLabel marks a PR that's correct in isolation but must wait
-// behind a named sibling (#747) — see verdictLabel's doc comment.
-const blockedOnSiblingLabel = providers.LabelBlockedOnSibling
-
-const mergeReviewStatusMarker = "<!-- goobers:merge-review-status -->"
-
 const findingSetHistoryLimit = 10
 
 type findingSetHistory struct {
@@ -234,26 +228,6 @@ func sequencingOnly(findings []apiv1.Finding) bool {
 	return ordering
 }
 
-// unionBlockingPRs collects the deduplicated, sorted union of BlockingPRs
-// across every finding — a verdict can carry more than one cross-pr-blocked
-// finding (e.g. two independent ordering asks against two different
-// siblings), and blockedOnSiblingState.Blockers records the full set, not
-// just the first finding's.
-func unionBlockingPRs(findings []apiv1.Finding) []int {
-	seen := make(map[int]bool)
-	var out []int
-	for _, f := range findings {
-		for _, pr := range f.BlockingPRs {
-			if !seen[pr] {
-				seen[pr] = true
-				out = append(out, pr)
-			}
-		}
-	}
-	sort.Ints(out)
-	return out
-}
-
 // parseOverlappingSiblings parses the comma-separated overlappingSiblings
 // input — the deterministic file-overlap set gather-sibling-context computes
 // (#989/#990) and threads through the workflow — into PR numbers, skipping
@@ -400,32 +374,6 @@ func predecessorBlockers(thisPR int, blockers []int, policy electionPolicyFunc, 
 	return out
 }
 
-// blockedOnSiblingState is the PR-altitude analog of blockedrecords.go's
-// backlog-altitude blockedRecord (#747) — the structured record apply-verdict
-// posts when a verdict's findings are entirely cross-PR-ordering asks. This
-// is the source of truth #748's selection-exclusion/self-heal reads: which
-// PR(s) this one is genuinely waiting behind, so it can be excluded from
-// re-selection until they close and unparked once they do — without that
-// consulting a full Verdict's Findings array.
-type blockedOnSiblingState struct {
-	// Blockers is the union of BlockingPRs across every cross-pr-blocked
-	// finding in the verdict that produced this record.
-	Blockers []int `json:"blockers"`
-	// Reason is the verdict's own rationale, for a human reading the comment.
-	Reason string `json:"reason"`
-	// HeadSHA/BaseSHA pin the PR state this record was computed against —
-	// same SHA-pinning discipline as Verdict's own HeadSHA/BaseSHA (design
-	// doc §6 D6).
-	HeadSHA string `json:"headSha"`
-	BaseSHA string `json:"baseSha"`
-	// RecordedAt is when this record was posted.
-	RecordedAt time.Time `json:"recordedAt"`
-}
-
-// blockedOnSiblingPattern matches the machine-readable payload
-// blockedOnSiblingComment appends — mirrors verdictJSONPattern above.
-var blockedOnSiblingPattern = regexp.MustCompile(`(?s)<!-- blocked-on-sibling: (.*?) -->`)
-
 // blockedOnSiblingComment marshals s into the HTML-comment payload appended
 // to the posted verdict comment — mirrors verdictJSONComment above, and
 // #716's remediationState/remediationStateComment pattern
@@ -440,22 +388,6 @@ func blockedOnSiblingComment(s blockedOnSiblingState) (string, error) {
 		return "", fmt.Errorf("marshal blocked-on-sibling payload: %w", err)
 	}
 	return fmt.Sprintf("<!-- blocked-on-sibling: %s -->", data), nil
-}
-
-// parseBlockedOnSiblingComment recovers the blockedOnSiblingState a
-// prior apply-verdict run embedded in a PR comment — the read side #748's
-// selection-exclusion/self-heal uses. Returns ok=false if body has no
-// embedded payload, the normal case for any comment apply-verdict didn't
-// post as blocked-on-sibling.
-func parseBlockedOnSiblingComment(body string) (s blockedOnSiblingState, ok bool) {
-	m := blockedOnSiblingPattern.FindStringSubmatch(body)
-	if m == nil {
-		return blockedOnSiblingState{}, false
-	}
-	if err := json.Unmarshal([]byte(m[1]), &s); err != nil {
-		return blockedOnSiblingState{}, false
-	}
-	return s, true
 }
 
 func verdictPinVoidReason(verdict apiv1.Verdict, selectedHeadSHA, selectedBaseSHA, currentHeadSHA, currentBaseSHA string) string {
@@ -1286,10 +1218,6 @@ func isTrustedMergeReviewAuthor(commentAuthor, authenticatedAuthor string) bool 
 	return authenticatedAuthor != "" && strings.EqualFold(commentAuthor, authenticatedAuthor)
 }
 
-func isMergeReviewStatusComment(body string) bool {
-	return body == mergeReviewStatusMarker || strings.HasPrefix(body, mergeReviewStatusMarker+"\n")
-}
-
 // WHAT ELECTION MEANS. Being elected does not mean "merge this regardless of
 // review". It means "stop counting those siblings as blockers." And once that
 // is said out loud, the verdict follows deterministically rather than by fiat:
@@ -2036,10 +1964,6 @@ func renderADOVerdictThreadComment(v apiv1.Verdict) string {
 	return withFeedbackAck(renderVerdictComment(v), feedbackAckMarker(time.Time{}))
 }
 
-// verdictJSONPattern matches the machine-readable payload
-// renderVerdictComment appends to its posted comment.
-var verdictJSONPattern = regexp.MustCompile(`(?s)<!-- verdict-json: (.*?) -->`)
-
 // verdictJSONComment marshals v into the HTML-comment payload
 // renderVerdictComment appends to the prose comment.
 func verdictJSONComment(v apiv1.Verdict) (string, error) {
@@ -2092,24 +2016,6 @@ func validateVerdictJSON(data []byte) error {
 		return fmt.Errorf("validate verdict payload: %w", err)
 	}
 	return nil
-}
-
-// parseVerdictComment recovers the Verdict a merge-review apply-verdict run
-// embedded in a PR comment via verdictJSONComment — the handoff
-// pr-remediation's gather-pr-context (issue #362) uses to read merge-review's
-// structured verdict back from a DIFFERENT run's own journal (which has no
-// artifact for it). Returns ok=false if body has no embedded payload (an
-// older comment, or one not posted by apply-verdict at all) — that is a
-// normal "no verdict recorded yet" outcome, not a parse error.
-func parseVerdictComment(body string) (v apiv1.Verdict, ok bool) {
-	m := verdictJSONPattern.FindStringSubmatch(body)
-	if m == nil {
-		return apiv1.Verdict{}, false
-	}
-	if err := json.Unmarshal([]byte(m[1]), &v); err != nil {
-		return apiv1.Verdict{}, false
-	}
-	return v, true
 }
 
 var findingSetHistoryPattern = regexp.MustCompile(`(?s)<!-- finding-set-history: (.*?) -->`)

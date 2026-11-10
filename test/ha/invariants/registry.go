@@ -8,7 +8,7 @@ import (
 
 const (
 	journalRows  = `SELECT (SELECT COUNT(*) FROM journal.run_event) + (SELECT COUNT(*) FROM journal.instance_event)`
-	claimRows    = `SELECT (SELECT COUNT(*) FROM control.claim_history) + (SELECT COUNT(*) FROM control.claim)`
+	claimRows    = `SELECT (SELECT COUNT(*) FROM control.claim_run_history) + (SELECT COUNT(*) FROM control.claim)`
 	acceptRows   = `SELECT COUNT(*) FROM control.acceptance`
 	receiptRows  = `SELECT COUNT(*) FROM control.source_receipt`
 	instanceRows = `SELECT COUNT(*) FROM journal.instance_event`
@@ -65,13 +65,20 @@ GROUP BY s.instance_id, s.stream, s.last_seq HAVING s.last_seq <> COALESCE(MAX(e
 	{
 		Name:        "no-claim-with-two-runs",
 		CoverageSQL: claimRows,
-		Description: "no claim key is held by two run IDs over overlapping intervals (history and live claims)",
+		Description: "no claim key is held by two run IDs over overlapping retained run intervals and live claims",
 		Reads: []string{
 			"control.claim(instance_id, gaggle, provider, external_id, run_id, claimed_at)",
-			"control.claim_history(instance_id, gaggle, provider, external_id, run_id, claimed_at, released_at)",
+			"control.claim_run_history(instance_id, gaggle, provider, external_id, run_id, claimed_at, expires_at, released_at)",
 		},
 		SQL: `WITH held AS (
-  SELECT instance_id, gaggle, provider, external_id, run_id, claimed_at, released_at FROM control.claim_history
+  SELECT h.instance_id, h.gaggle, h.provider, h.external_id, h.run_id, h.claimed_at,
+         COALESCE(h.released_at, h.expires_at) AS released_at
+  FROM control.claim_run_history h
+  WHERE NOT EXISTS (
+    SELECT 1 FROM control.claim c
+    WHERE c.instance_id=h.instance_id AND c.gaggle=h.gaggle AND c.provider=h.provider
+      AND c.external_id=h.external_id AND c.run_id=h.run_id
+  )
   UNION ALL
   SELECT instance_id, gaggle, provider, external_id, run_id, claimed_at, NULL FROM control.claim
 )

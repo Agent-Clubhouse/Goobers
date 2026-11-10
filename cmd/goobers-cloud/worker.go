@@ -81,8 +81,10 @@ const workerHelp = "Usage: goobers-cloud worker [--task-queue <queue>]... [flags
 	"                             --instance)\n" +
 	"  --config-endpoint <url>    daemon configuration plane; fetches sanitized\n" +
 	"                             instance config by digest and updates it live\n" +
-	"  --config-key-file <path>   shared signing key used only to mint worker\n" +
+	"  --config-key-file <path>   raw signing key used only to mint worker\n" +
 	"                             config-plane credentials\n" +
+	"  --config-keyring-file <path> JSON key ring for cloud config-plane credentials\n" +
+	"                             (mutually exclusive with --config-key-file)\n" +
 	"  --config-history-depth <n>\n" +
 	"                             how many superseded config trees to retain\n" +
 	"                             so an in-flight run pinned to one is still\n" +
@@ -195,7 +197,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "enables the dispatcher-backed stage-dispatch seam; each stage pod routes to its own gaggle's declared isolation.namespace (#4897), not to this value")
 	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
 	configEndpoint := fs.String("config-endpoint", "", "daemon worker-configuration plane")
-	configKeyFile := fs.String("config-key-file", workerEnvOr("GOOBERS_WORKER_CONFIG_KEY_FILE", ""), "shared signing key for worker configuration fetches")
+	configKeyFile, configKeyRingFile := workerConfigKeyFlags(fs)
 	configHistoryDepth := fs.Int("config-history-depth", workerConfigHistoryDepth, "how many superseded config trees to retain so an in-flight run pinned to one is still served its own kit; 0 disables retention")
 	blobProbeWait := fs.Duration("blob-probe-wait", workerEnvDuration("GOOBERS_WORKER_BLOB_PROBE_WAIT", workerblob.DefaultReadyWait), "how long the startup blob-plane probe waits for a not-yet-ready daemon (503/unreachable) before exiting; a starting daemon's advertised startup budget and progress extend it, up to 6h; real mismatches fail immediately")
 	fs.Usage = func() { pf(stderr, "%s", workerHelp) }
@@ -221,7 +223,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	configPlane, configCode := prepareWorkerConfigPlaneCLI(*configEndpoint, *configKeyFile, root, instanceRoot, stderr)
+	configPlane, configCode := prepareWorkerConfigPlaneCLI(*configEndpoint, *configKeyFile, *configKeyRingFile, root, instanceRoot, stderr)
 	if configCode != 0 {
 		return configCode
 	}
@@ -322,8 +324,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// the run being emitted for. Env token still wins when present, which
 		// keeps the single-run/pod posture working unchanged.
 		emitter := &livejournal.HTTPEmitter{
-			BaseURL: *daemonAPI,
-			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
+			TerminalWorkerID: workerhost.Identity(version.Get().Version),
+			BaseURL:          *daemonAPI,
+			Token:            workerEnvOr("GOOBERS_POD_TOKEN", ""),
 		}
 		if emitter.Token == "" {
 			cfg, cerr := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
@@ -371,6 +374,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
 		engineRuntime.deps.EngineChildren = dispatch.Children
+		engineRuntime.deps.ChildAuthority = dispatch.ChildAuthority
 		recurringStageSweeper = dispatch.Sweeper
 		queues = mergeQueues(queues, dispatch.Queues)
 		pf(stdout, "goobers-cloud worker: mode-3 stage dispatch enabled as owner %s, routing each gaggle's stage pods to its own declared isolation.namespace; dispatch queues %s\n",

@@ -92,7 +92,6 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 	}
 	for _, feature := range []string{
 		"spec.parallels",
-		"task.childWorkflows",
 		"task.experiment",
 	} {
 		if !features[feature] {
@@ -104,8 +103,8 @@ func TestCloudReadinessReportsEveryBlockerClass(t *testing.T) {
 		t.Error("human gates still reported as an engine blocker")
 	}
 	if result.Summary.ConfigFixes == 0 || result.Summary.WaitingOnP4 == 0 ||
-		len(result.Summary.P4Issues) != 3 {
-		t.Fatalf("summary = %+v, want config and all 3 remaining P4 issue groups", result.Summary)
+		len(result.Summary.P4Issues) != 2 {
+		t.Fatalf("summary = %+v, want config and both remaining P4 issue groups", result.Summary)
 	}
 }
 
@@ -140,8 +139,8 @@ func TestReferenceGaggleCloudReadinessGolden(t *testing.T) {
 			}
 		}
 	}
-	if counts[CodeDSL] != 16 {
-		t.Errorf("RUNTIME003 count = %d, want 16", counts[CodeDSL])
+	if counts[CodeDSL] != 17 {
+		t.Errorf("RUNTIME003 count = %d, want 17", counts[CodeDSL])
 	}
 	wantFeatureWorkflows := map[string]bool{"quality-sprint": true, "quality-spot-check": true}
 	if !reflect.DeepEqual(featureWorkflows, wantFeatureWorkflows) {
@@ -259,5 +258,31 @@ func TestUnplaceableWorkflowFailsClosed(t *testing.T) {
 	result := Assess(cfg, set)
 	if result.CloudReady || len(result.Workflows) != 1 || result.Workflows[0].Blockers[0].Code != CodePlacement {
 		t.Fatalf("unplaceable workflow assessed ready: %+v", result)
+	}
+}
+
+func TestSharedClaimVisibilityAllowsCloudAdmission(t *testing.T) {
+	task := apiv1.Task{
+		Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+		RunsOn: &apiv1.RunsOn{OS: "linux"},
+		Run:    &apiv1.DeterministicRun{Command: []string{"true"}},
+	}
+	workflow := func(name, visibility string) apiv1.Workflow {
+		return apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			DSLVersion: supportmatrix.V3DSLVersion,
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "g", Start: "build", Tasks: []apiv1.Task{task},
+				Readiness: apiv1.ReadinessConditions{ClaimVisibility: visibility},
+			},
+		}
+	}
+	set := &instance.ConfigSet{
+		Gaggles:   []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "g"}}},
+		Workflows: []apiv1.Workflow{workflow("local", "local"), workflow("shared", "shared")},
+	}
+	result := Assess(readinessRemoteConfig(), set)
+	if !result.CloudReady || len(result.Workflows) != 0 || result.Summary.WaitingOnControlPlane != 0 {
+		t.Fatalf("shared and local workflow twins should both be cloud ready: %+v", result)
 	}
 }

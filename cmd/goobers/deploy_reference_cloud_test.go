@@ -295,6 +295,7 @@ func TestDeployReferenceCloudShipsReferencedConfigMaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	have := map[string]map[string]string{}
 	for _, doc := range splitYAMLDocs(raw) {
 		var cm corev1.ConfigMap

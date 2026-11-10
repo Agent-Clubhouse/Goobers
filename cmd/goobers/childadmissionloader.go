@@ -31,7 +31,7 @@ func loadPinnedChildStage(ctx context.Context, layout instance.Layout, cfg *inst
 	if err != nil {
 		return childworkflow.Authority{}, err
 	}
-	return childworkflow.PinnedAuthority(ctx, localGenerationSource{store: store}, cfg, currentSet, parent, stage, admitChildValidationGoobers)
+	return childworkflow.PinnedAuthority(ctx, localGenerationSource{store: store}, cfg, currentSet, parent, stage, childworkflow.OfflineGooberAdmission)
 }
 
 // localGenerationSource serves the daemon's retained execution generations.
@@ -51,5 +51,5 @@ func (s localGenerationSource) Acquire(ctx context.Context, generation string) (
 }
 
 func childStageCatalog(cfg *instance.Config, source *instance.ConfigSet, parent childworkflow.ParentSelection, backend childworkflow.Backend) (childworkflow.AdmissionContext, *workflow.Machine, error) {
-	return childworkflow.StageCatalog(cfg, source, parent, backend, admitChildValidationGoobers)
+	return childworkflow.StageCatalog(cfg, source, parent, backend, childworkflow.OfflineGooberAdmission)
 }

@@ -278,6 +278,9 @@ func (s *ClaimService) List(ctx context.Context, request httpapi.ClaimListReques
 		}
 		return s.backend.ExecutionClaimSnapshot(ctx, request.RunID, mode)
 	}
+	// This callback is concretely *ClaimLedger: WithLedger checks file-open
+	// errors before invoking it, and these snapshots are in-memory. Cloud
+	// listings use claims.Plane's error-returning SQL reads instead (#8146).
 	err := s.backend.WithLedger(claimLockOperationAPIList, httpapi.ClaimRequest{Gaggle: request.Gaggle, RunID: request.RunID}, func(ledger *localscheduler.ClaimLedger) error {
 		var entries, history []localscheduler.ClaimEntry
 		switch request.Scope {

@@ -41,25 +41,19 @@ func (s *Store) RequestChildDisposition(
 			return err
 		}
 		if child.CancellationRequested || !child.TombstonedAt.IsZero() ||
-			!child.State.Terminal() || child.ResultRef != request.ResultRef ||
-			!child.AcknowledgedAt.IsZero() {
+			!child.State.Terminal() || child.ResultRef != request.ResultRef {
 			return triggerqueue.ErrTransition
 		}
 		current, readErr := s.childDisposition(txCtx, tx, child)
 		if readErr == nil {
-			if current.Action == request.Action &&
-				current.ResultRef == request.ResultRef &&
-				current.AttemptID == request.Authority.AttemptID &&
-				(request.ExpectedRequestDigest == "" ||
-					request.ExpectedRequestDigest == current.PreviousDigest) {
-				result = current
-				return nil
-			}
-			return triggerqueue.ErrConflict
+			result, err = s.reviseChildDisposition(txCtx, tx, child, current, request, epoch)
+			return err
 		}
-		if !errors.Is(readErr, triggerqueue.ErrChildDispositionPending) ||
-			request.ExpectedRequestDigest != "" {
+		if !errors.Is(readErr, triggerqueue.ErrChildDispositionPending) {
 			return readErr
+		}
+		if request.ExpectedRequestDigest != "" || !child.AcknowledgedAt.IsZero() {
+			return triggerqueue.ErrTransition
 		}
 		var requestedAt time.Time
 		if err := tx.QueryRow(txCtx, `
@@ -246,13 +240,4 @@ func (s *Store) CompleteChildDisposition(
 		)
 		return changed(tag.RowsAffected(), err)
 	})
-}
-
-// ChildDispositionHistory returns bounded archived revisions. Initial P3
-// custody has no superseded revisions until replacement is enabled.
-func (s *Store) ChildDispositionHistory(
-	context.Context,
-	triggerqueue.ChildIdentity,
-) ([]triggerqueue.ChildDispositionRevision, error) {
-	return []triggerqueue.ChildDispositionRevision{}, nil
 }

@@ -23,6 +23,8 @@ type DaemonIdentity struct {
 	Version               string          `json:"version"`
 	LivenessTimeoutMillis int64           `json:"livenessTimeoutMillis,omitempty"`
 	Behavior              *DaemonBehavior `json:"behavior,omitempty"`
+	// ExactWorkItemFile opts into workItemId on ordinary delegated requests.
+	ExactWorkItemFile bool `json:"exactWorkItemFile,omitempty"`
 }
 
 // DaemonBehavior records the runtime flags pinned by a daemon lock.
@@ -61,6 +63,7 @@ type State struct {
 	Version               string          `json:"version,omitempty"`
 	LivenessTimeoutMillis int64           `json:"livenessTimeoutMillis,omitempty"`
 	Behavior              *DaemonBehavior `json:"behavior,omitempty"`
+	ExactWorkItemFile     bool            `json:"exactWorkItemFile,omitempty"`
 	HolderKind            HolderKind      `json:"holderKind"`
 	HolderPID             int             `json:"holderPid"`
 }
@@ -130,6 +133,7 @@ func newInstanceLockState(identity *DaemonIdentity, holderKind HolderKind, holde
 		state.Version = identity.Version
 		state.LivenessTimeoutMillis = identity.LivenessTimeoutMillis
 		state.Behavior = identity.Behavior
+		state.ExactWorkItemFile = identity.ExactWorkItemFile
 	}
 	return state
 }
@@ -227,6 +231,7 @@ func (s State) DaemonIdentity() (*DaemonIdentity, error) {
 		Version:               s.Version,
 		LivenessTimeoutMillis: s.LivenessTimeoutMillis,
 		Behavior:              s.Behavior,
+		ExactWorkItemFile:     s.ExactWorkItemFile,
 	}, nil
 }
 

@@ -43,9 +43,9 @@ func TestEngineCancelDuringGateInfraRetry(t *testing.T) {
 	timedOut := stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Error: &apiv1.ErrorInfo{
 		Code: telemetry.ErrCodeTimeout, Message: "local-ci exceeded its wall-clock limit", Retryable: true,
 	}}}
-	env.OnActivity(ActRunDeterministic, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(timedOut, nil).Once()
+	env.OnActivity(actRunDeterministicCancelSafe, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(timedOut, nil).Once()
 	// The retried attempt is still running when the sweep cancels the run.
-	env.OnActivity(ActRunDeterministic, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	env.OnActivity(actRunDeterministicCancelSafe, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		After(time.Hour).Return(stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil).Maybe()
 	env.RegisterDelayedCallback(env.CancelWorkflow, 30*time.Minute)
 

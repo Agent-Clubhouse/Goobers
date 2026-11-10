@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ import (
 type Backend struct {
 	Open        func(t *testing.T) recovery.RecordIndex
 	StageBundle func(t *testing.T, data []byte) string
+	// DeletesDuringReap marks an index that deletes reaped bundles itself
+	// during Reap, so nothing is ever left retired; otherwise RetiredBundles
+	// must list every bundle a Reap retired.
+	DeletesDuringReap bool
 }
 
 // Run executes the suite. newBackend returns an empty index per subtest.
@@ -39,6 +44,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		"durable-across-reopen":      durableAcrossReopen,
 		"exact-capture-time-retains": exactCaptureTime,
 		"bundle-belongs-to-one":      bundleBelongsToOne,
+		"lost-reap-result-retired":   lostReapResultRetired,
 	}
 	for name, run := range cases {
 		t.Run(name, func(t *testing.T) { run(t, newBackend(t)) })
@@ -285,5 +291,42 @@ func bundleBelongsToOne(t *testing.T, backend Backend) {
 	}
 	if live.Bundle == reaped[0].Bundle {
 		t.Fatalf("Reap handed back %q for deletion while a live record still references it", live.Bundle)
+	}
+}
+
+// lostReapResultRetired: a Reap whose commit succeeded but whose result never
+// reached the caller (#8163). The reaper drives deletion from RetiredBundles,
+// which must list exactly the reaped bundle unless the index deletes during
+// Reap, and draining it (delete, then ReleaseBundle) leaves nothing retired.
+func lostReapResultRetired(t *testing.T, backend Backend) {
+	index, data := backend.Open(t), []byte("bundle")
+	record := fixture("lost", 'b', data)
+	bundle := backend.StageBundle(t, data)
+	if _, err := index.Publish(t.Context(), record, bundle, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := index.Reap(t.Context(), 10); err != nil {
+		t.Fatal(err)
+	}
+	// The result is discarded, as a caller that lost the reply would.
+	retired, err := index.RetiredBundles(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{bundle}
+	if backend.DeletesDuringReap {
+		want = nil
+	}
+	if !slices.Equal(retired, want) {
+		t.Fatalf("retired bundles = %v, want %v (deletes during reap: %v)", retired, want, backend.DeletesDuringReap)
+	}
+	for _, retiredBundle := range retired {
+		if err := index.ReleaseBundle(t.Context(), retiredBundle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if left, err := index.RetiredBundles(t.Context(), 10); err != nil || len(left) != 0 {
+		t.Fatalf("after draining, retired bundles = %v, %v; want none", left, err)
 	}
 }

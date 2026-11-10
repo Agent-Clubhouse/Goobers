@@ -693,6 +693,23 @@ describe("run detail projection", () => {
     ).toContain("Review:security decision: needs-changes");
   });
 
+  it.each(["run.resumed", "stage.rerun.requested", "gate.overridden"] as const)("reopens graph state and error evidence at %s", (kind) => {
+    const events = [
+      event(1, "stage.started", { stage: "implement", attempt: 1 }),
+      event(2, "stage.finished", { stage: "implement", attempt: 1, status: "failure", error: { code: "old", message: "earlier segment" } }),
+      event(3, "run.finished", { status: "failed" }),
+      event(4, kind, { stage: "implement", target: "implement" }),
+      event(5, "stage.started", { stage: "implement", attempt: 2 }),
+      event(6, "run.finished", { status: "failed", reason: "new failure" }),
+    ];
+    expect(deriveNodeStates(graph, events, 3).review).toBe("skipped");
+    expect(deriveNodeStates(graph, events, 4).review).toBe("pending");
+    expect(deriveNodeStates(graph, events, 5)).toEqual({ implement: "running", review: "pending" });
+    expect(deriveNodeStates(graph, events, 6).review).toBe("skipped");
+    expect(runFailure(terminalRun({ terminalReason: "new failure" }), events)).toMatchObject({ message: "new failure", causalEventSeq: 6 });
+    expect(runFailure(terminalRun({ terminalReason: "new failure" }), events)?.code).toBeUndefined();
+  });
+
   it("applies an API-shaped terminal event to the previously active node and skips no-work nodes", () => {
     const events = [
       event(1, "stage.started", { stage: "implement", attempt: 1 }),
@@ -1043,32 +1060,33 @@ describe("isFailureJournalEvent", () => {
 // phase (#4246), so the banner must read it — an aborted run used to get no
 // "why" at all, and a failed run whose reason lived only in the projection
 // showed a "without a recorded reason" placeholder over a recorded reason.
+function terminalRun(overrides: Partial<RunDetail>): RunDetail {
+  return {
+    id: "run-1",
+    workflow: "implementation",
+    workflowVersion: 7,
+    gaggle: "core",
+    trigger: { kind: "manual" },
+    phase: "failed",
+    terminal: true,
+    startedAt: "2026-07-18T00:00:00Z",
+    finishedAt: "2026-07-18T00:01:00Z",
+    durationMillis: 60_000,
+    lastActivityAt: "2026-07-18T00:01:00Z",
+    stale: false,
+    lastSeq: 3,
+    repassCount: 0,
+    retryCount: 0,
+    policyRetryCount: 0,
+    infraRetryCount: 0,
+    noWork: false,
+    graphStatus: "unavailable",
+    transitionsStatus: "unavailable",
+    ...overrides,
+  };
+}
+
 describe("run failure banner", () => {
-  function terminalRun(overrides: Partial<RunDetail>): RunDetail {
-    return {
-      id: "run-1",
-      workflow: "implementation",
-      workflowVersion: 7,
-      gaggle: "core",
-      trigger: { kind: "manual" },
-      phase: "failed",
-      terminal: true,
-      startedAt: "2026-07-18T00:00:00Z",
-      finishedAt: "2026-07-18T00:01:00Z",
-      durationMillis: 60_000,
-      lastActivityAt: "2026-07-18T00:01:00Z",
-      stale: false,
-      lastSeq: 3,
-      repassCount: 0,
-      retryCount: 0,
-      policyRetryCount: 0,
-      infraRetryCount: 0,
-      noWork: false,
-      graphStatus: "unavailable",
-      transitionsStatus: "unavailable",
-      ...overrides,
-    };
-  }
 
   it("reports the projected terminal cause for an aborted run", () => {
     const run = terminalRun({

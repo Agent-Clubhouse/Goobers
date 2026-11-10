@@ -94,6 +94,10 @@ type Runner struct {
 	// failing remembers the last reported failure per run, so a run that stays
 	// unprojectable is retried every pass but reported once per distinct error.
 	failing map[string]string
+	// recorded is the last persisted pass, so a one-second poll does not write
+	// the meta row every second.
+	recorded         time.Time
+	recordedFailures int
 }
 
 // New validates the configuration.
@@ -166,9 +170,29 @@ func (r *Runner) Sync(ctx context.Context) (int, error) {
 		}
 		if len(stale) < r.config.Batch {
 			r.config.Health.record(len(r.failing), time.Now())
-			return projected, nil
+			return projected, r.recordPass(ctx)
 		}
 	}
+}
+
+// recordPass persists the completed pass for readers in other processes. It is
+// written when the open failure count changes or the last record is older than
+// PassRecordEvery. Authority loss ends the run; any other failure is reported
+// and retried next pass, and the reader sees projector_stale if it persists.
+func (r *Runner) recordPass(ctx context.Context) error {
+	failures := len(r.failing)
+	if !r.recorded.IsZero() && failures == r.recordedFailures && time.Since(r.recorded) < readmodelpg.PassRecordEvery {
+		return nil
+	}
+	if err := r.config.Projector.RecordPass(ctx, failures); err != nil {
+		if isAuthorityLoss(err) {
+			return err
+		}
+		r.config.Report(fmt.Errorf("record projector pass: %w", err))
+		return nil
+	}
+	r.recorded, r.recordedFailures = time.Now(), failures
+	return nil
 }
 
 func (r *Runner) project(ctx context.Context, runID string) error {

@@ -201,7 +201,7 @@ func observeRun(dir string, identity journal.RunIdentity, result map[string]Coun
 			switch definition.DSLVersion {
 			case "1.4":
 				increment(result, "dsl.v1", 1)
-			case "2.0":
+			case "2.0", "2.1":
 				increment(result, "dsl.v2", 1)
 			case "3.0":
 				increment(result, "dsl.v3", 1)

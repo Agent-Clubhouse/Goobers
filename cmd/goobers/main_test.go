@@ -394,7 +394,7 @@ func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 17 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 12 goober(s), 18 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 	// quality-spot-check is the one preview reference workflow: it opts into

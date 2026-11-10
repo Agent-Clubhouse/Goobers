@@ -1,9 +1,8 @@
 package engine
 
 // Generated-child wire contracts (HA-P4-08). The protocol that uses them is
-// reachable only through an internal entry point that sets
-// childProtocolContextKey; production Run and RegisterWith keep refusing
-// task.childWorkflows until the qualification item lifts the refusal.
+// reachable for parents with a pinned enabled posture and their admitted
+// children.
 
 import (
 	"context"
@@ -48,6 +47,18 @@ func childProtocolEnabled(ctx workflow.Context) bool {
 	return ctx.Value(childProtocolContextKey{}) == true
 }
 
+// childWorkflowsSwitchChange gates the production child-workflow switch
+// (#8085 d). The marker is recorded only for a run that opted in and whose
+// definition declares task.childWorkflows, so every other history is
+// byte-identical, and a history recorded before the switch replays refused.
+const childWorkflowsSwitchChange = "engine-child-workflows-switch-v1"
+
+// childWorkflowsEnabled lets a run that pinned the instance's opt-in use the
+// generated-child protocol.
+func childWorkflowsEnabled(ctx workflow.Context, in RunInput) bool {
+	return in.ChildWorkflowsEnabled && workflow.GetVersion(ctx, childWorkflowsSwitchChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+}
+
 // ChildRunBinding is an immutable admission receipt, never agent-provided
 // authority. The service fences every operation by acceptance and parent epoch.
 // ManifestDigest addresses the entire frozen manifest, not a mutable catalog name.
@@ -64,11 +75,15 @@ type ChildRunBinding struct {
 // ChildAdmissionInput is built from the committed origin and owning execution.
 // Request is a dispatch adapter's verified handoff; the service rechecks authority.
 type ChildAdmissionInput struct {
-	Request             journal.ChildHandoffRequest `json:"request"`
-	ParentWorkflowID    string                      `json:"parentWorkflowId"`
-	ParentWorkflow      string                      `json:"parentWorkflow"`
-	ParentTemporalRunID string                      `json:"parentTemporalRunId"`
-	Stage               string                      `json:"stage"`
+	// ChildWorkflowsEnabled is copied from the parent's immutable RunInput,
+	// never from current configuration. Admission freezes it into the child's
+	// digest-addressed manifest before binding the start.
+	ChildWorkflowsEnabled bool                        `json:"childWorkflowsEnabled,omitempty"`
+	Request               journal.ChildHandoffRequest `json:"request"`
+	ParentWorkflowID      string                      `json:"parentWorkflowId"`
+	ParentWorkflow        string                      `json:"parentWorkflow"`
+	ParentTemporalRunID   string                      `json:"parentTemporalRunId"`
+	Stage                 string                      `json:"stage"`
 	// OriginSeq is the committed journal sequence of the bound stage start.
 	OriginSeq uint64 `json:"originSeq"`
 }
@@ -146,7 +161,7 @@ func decodeFrozenChildManifest(b ChildRunBinding, data []byte) (RunInput, error)
 	if err := refuseGeneratedChildShape(child); err != nil {
 		return RunInput{}, err
 	}
-	digest, err := wf.ComputeDigest(wf.Definition{Name: child.WorkflowName, Version: child.Version, DSLVersion: child.DSLVersion, Spec: child.Spec})
+	digest, err := wf.ComputeDigest(child.definition())
 	if err != nil || digest != child.WorkflowDigest {
 		return RunInput{}, errors.New("engine: frozen workflow digest mismatch")
 	}

@@ -512,6 +512,36 @@
         "sinceVersion": "dev",
         "deprecated": false
       }
+    },
+    {
+      "name": "goobers.continuation.claims",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "{claim}",
+      "description": "Parked parent runs holding a waiting-continuation claim on scheduler capacity, by operating system. Zero right after a control-plane failover is expected until the waiting parents retry.",
+      "allowedDimensions": [
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.continuation.oldest_claim_age",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "s",
+      "description": "Age in seconds of the oldest live waiting-continuation claim, by operating system.",
+      "allowedDimensions": [
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
     }
   ],
   "deploymentSpecificInputs": {

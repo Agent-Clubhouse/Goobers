@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	reviewerPreparationChange = "reviewer-diff-before-dispatch-v1"
+	reviewerEvidenceScopeChange = "reviewer-private-evidence-v1"
+	reviewerPreparationChange   = "reviewer-diff-before-dispatch-v1"
 	// ActPrepareReviewerDiff captures scrubbed evidence before reviewer dispatch.
 	ActPrepareReviewerDiff = "PrepareReviewerDiff"
 )

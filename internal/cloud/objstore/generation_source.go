@@ -27,6 +27,10 @@ type Source struct {
 
 	mu     sync.RWMutex
 	handle *cloudlease.Handle
+
+	// extract lays an archive out on disk; nil is archive.Extract. Tests
+	// replace it to fail exactly at the extraction call site.
+	extract func(context.Context, *configgeneration.Archive, string) error
 }
 
 // NewGenerationSource constructs an instance-scoped generation source.
@@ -54,7 +58,22 @@ func (s *Source) BindFence(handle *cloudlease.Handle) {
 }
 
 // Acquire pins, verifies, extracts, loads, and read-protects one generation.
+// A missing or invalid generation is a permanent refusal; every other failure
+// (a pointer read, blob GET or reader pin that could not be made) is
+// ErrGenerationUnavailable, so callers retry instead of refusing (#8085 c).
 func (s *Source) Acquire(
+	ctx context.Context,
+	generation string,
+) (childworkflow.Generation, error) {
+	acquired, err := s.acquire(ctx, generation)
+	if err != nil && !errors.Is(err, ErrGenerationNotFound) && !errors.Is(err, ErrGenerationInvalid) &&
+		!errors.Is(err, ErrGenerationUnavailable) {
+		err = fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
+	}
+	return acquired, err
+}
+
+func (s *Source) acquire(
 	ctx context.Context,
 	generation string,
 ) (childworkflow.Generation, error) {
@@ -99,12 +118,15 @@ func (s *Source) Acquire(
 	directory, err = os.MkdirTemp(s.tempRoot, "goobers-generation-")
 	if err != nil {
 		_ = cleanup()
-		return childworkflow.Generation{}, err
+		return childworkflow.Generation{}, materializeError("create generation directory", err)
 	}
-	if err := archive.Extract(ctx, directory); err != nil {
+	extract := s.extract
+	if extract == nil {
+		extract = func(ctx context.Context, a *configgeneration.Archive, dir string) error { return a.Extract(ctx, dir) }
+	}
+	if err := extract(ctx, archive, directory); err != nil {
 		_ = cleanup()
-		return childworkflow.Generation{}, fmt.Errorf(
-			"%w: extract archive: %w", ErrGenerationInvalid, err)
+		return childworkflow.Generation{}, materializeError("extract archive", err)
 	}
 	configDir := filepath.Join(directory, "config")
 	set, report, err := instance.LoadConfigDir(configDir)
@@ -117,7 +139,7 @@ func (s *Source) Acquire(
 	}
 	if err := makeTreeReadOnly(directory); err != nil {
 		_ = cleanup()
-		return childworkflow.Generation{}, err
+		return childworkflow.Generation{}, materializeError("protect generation directory", err)
 	}
 	var once sync.Once
 	var releaseErr error
@@ -195,3 +217,11 @@ func makeTreeWritable(root string) error {
 }
 
 var _ childworkflow.GenerationSource = (*Source)(nil)
+
+// materializeError classifies a failure to lay a generation out on local disk.
+// Decode has already validated every entry and the digest, so these are local
+// IO (a full or failing volume) or cancellation, never a bad archive: they are
+// transient, not ErrGenerationInvalid.
+func materializeError(step string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrGenerationUnavailable, step, err)
+}

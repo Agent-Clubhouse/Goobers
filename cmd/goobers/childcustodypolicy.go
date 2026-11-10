@@ -8,5 +8,5 @@ import (
 // Cleanup of accepted custody still requires an enabled current parent stage.
 // Removing its child opt-in revokes execution, not ownership of prior results.
 func childCurrentCustodyPolicy(cfg *instance.Config, source *instance.ConfigSet, parent childworkflow.ParentSelection) (childworkflow.AdmissionContext, error) {
-	return childworkflow.CurrentCustodyPolicy(cfg, source, parent, admitChildValidationGoobers)
+	return childworkflow.CurrentCustodyPolicy(cfg, source, parent, childworkflow.OfflineGooberAdmission)
 }

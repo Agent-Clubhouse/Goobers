@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -79,6 +80,10 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"workflow-gym evaluate": {
+		{name: "min-samples", takesArg: true, desc: "Required samples in each selection slice"},
+		{name: "regression-threshold", takesArg: true, desc: "Tolerated pass-rate regression from 0 to 1"},
+	},
 	"advisory-pr-reset": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle name"},
 		{name: "owner", takesArg: true, desc: "GitHub owner"},
@@ -261,6 +266,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "to", takesArg: true, desc: "Target DSL version"},
 		{name: "instance-schema", desc: "Add the schemaVersion a runners: inventory requires"},
 		{name: "write", desc: "Apply migrations in place"},
+		{name: "allow-policy-expansion", desc: "Acknowledge DSL 2.1 policy action additions"},
+		{name: "rollback", desc: "Restore the DSL 2.1 migration backup"},
 	},
 	"doctor": {
 		{name: "record-instance", takesArg: true, desc: "Instance root receiving Kubernetes check results"},
@@ -322,6 +329,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "mirror", takesArg: true, desc: "Read-only rendered config mirror path"},
 		{name: "instance", takesArg: true, desc: "Private worker instance path"},
 	},
+	"labs fluid-ui report": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -333,6 +343,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "enrollment-token-file", takesArg: true, desc: "Private file containing the one-time enrollment grant"},
 		{name: "grant-local-admin", desc: "Grant the discovered local administrator instance:read"},
 		{name: "no-grant-local-admin", desc: "Explicitly enroll with an empty ACL"},
+		{name: "projection", takesArg: true, values: []string{fleet.ProjectionLabsWorkflowFeatures}, desc: "Data projection to grant (repeatable)"},
 	},
 	"fleet status": {
 		{name: "json", desc: "Emit JSON"},
@@ -354,6 +365,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
+		{name: "work-item", takesArg: true, desc: "Target one numeric work item in an explicit gaggle"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
 		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},
@@ -382,6 +394,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
+	"retry-stage": {
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
+	},
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},
@@ -390,7 +406,36 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "parent", takesArg: true, valueKind: "workflows", desc: "Configured parent workflow"},
 		{name: "stage", takesArg: true, desc: "Configured parent agentic stage"},
 		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
+		{name: "cluster-model", takesArg: true, valueKind: "file", desc: "Labs: frozen cluster model for advisory novelty"},
 		{name: "json", desc: "Emit structured diagnostics and digests"},
+	},
+	"workflow child-admission": {
+		{name: "approve", takesArg: true, desc: "Child ID to approve for dispatch"},
+		{name: "reject", takesArg: true, desc: "Child ID to reject before dispatch"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "note", takesArg: true, desc: "Audit note recorded with the decision"},
+		{name: "json", desc: "Emit JSON"},
+	},
+	"workflow clusters": {
+		{name: "features", takesArg: true, values: []string{"structural", "behavior"}, desc: "Feature set to cluster (structural or behavior)"},
+		{name: "cohort", takesArg: true, desc: "Structural: cluster only this task cohort"},
+		{name: "fitness", desc: "Report advisory retained-run fitness for structural clusters"},
+		{name: "since", takesArg: true, desc: "Behavior or fitness: only runs started within this duration"},
+		{name: "max-runs", takesArg: true, desc: "Behavior: newest run journals to scan"},
+		{name: "min-samples", takesArg: true, desc: "Behavior: runs required per cohort"},
+		{name: "min-cluster-size", takesArg: true, desc: "Smallest group reported as a cluster"},
+		{name: "seed", takesArg: true, desc: "Seed for stability resampling"},
+		{name: "stratify", takesArg: true, values: []string{"gaggle", "cohort", "model", "harness", "skills", "tools"}, desc: "Confound axis to test clusters against"},
+		{name: "ablation", desc: "Report leave-one-feature-out cluster stability and assignment change"},
+		{name: "json", desc: "Emit the fitted model as JSON"},
+		{name: "snapshot", desc: "Emit a privacy-safe fleet snapshot of this instance"},
+		{name: "instance-id", takesArg: true, desc: "Snapshot: instance ID (default: fleet association)"},
+		{name: "salt", takesArg: true, desc: "Snapshot: salt for name hashes (default: fleet ID)"},
+		{name: "fleet", takesArg: true, desc: "Cluster the fleet snapshots in this directory"},
+		{name: "proposals", desc: "Emit retained child proposal patterns as JSON"},
+		{name: "gaggle", takesArg: true, desc: "Proposals: include only this gaggle"},
+		{name: "templates", takesArg: true, valueKind: "file", desc: "Propose reusable templates from joined evidence JSON"},
+		{name: "cluster-model", takesArg: true, valueKind: "file", desc: "Templates: frozen structural cluster model"},
 	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
@@ -605,6 +650,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
 	},
+	"telemetry gaggle": {
+		{name: "json", desc: "Emit the gaggle report as JSON"},
+		{name: "gaggle", takesArg: true, valueKind: "gaggles", desc: "Gaggle to report on (required)"},
+		{name: "since", takesArg: true, desc: "Include runs started at or after this RFC3339 timestamp"},
+		{name: "until", takesArg: true, desc: "Include runs started before this RFC3339 timestamp"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},
@@ -667,6 +718,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "min-age", takesArg: true, desc: "Minimum terminal run age required for deletion"},
 		{name: "after", takesArg: true, desc: "Resume after this branch name in lexical order"},
 	},
+	"fluid-ui-request": {
+		{name: "load", desc: "Write the bound request and current customization"},
+		{name: "validate", desc: "Validate the propose stage's candidate"},
+	},
 	"diagnostics bundle": {
 		{name: "run", takesArg: true, desc: "Limit the bundle to one run id"},
 		{name: "pr", takesArg: true, desc: "Limit the bundle to runs that touched one pull request"},
@@ -696,6 +751,21 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "format", takesArg: true, values: []string{"candidate-findings", "effective-version-efficacy", "tutor-live-verification"}, desc: "Artifact format"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
+	},
+	"decide": {
+		{name: "name", takesArg: true, desc: "Stable question name"},
+		{name: "question", takesArg: true, desc: "The yes/no question"},
+		{name: "true", takesArg: true, desc: "What yes means"},
+		{name: "false", takesArg: true, desc: "What no means"},
+		{name: "state-file", takesArg: true, desc: "JSON file the question is about"},
+		{name: "accept", takesArg: true, desc: "Yes at or above this probability"},
+		{name: "reject", takesArg: true, desc: "No at or below this probability"},
+		{name: "optional", desc: "Report unavailable instead of failing when the gate is off"},
+		{name: "ci-log", takesArg: true, desc: "Failed CI log file to triage"},
+		{name: "ci-baseline", takesArg: true, desc: "Baseline attribution of the failure"},
+		{name: "run-key", takesArg: true, desc: "Run identity for the triage record"},
+		{name: "ci-outcome", takesArg: true, desc: "Record the eventual cause for the run key"},
+		{name: "ci-matrix", desc: "Report the CI triage confusion matrix"},
 	},
 	"docs-churn": {
 		{name: "repo", takesArg: true, desc: "Git repository/worktree to scan"},

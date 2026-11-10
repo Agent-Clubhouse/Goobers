@@ -105,9 +105,12 @@ type Attribution struct {
 	// Claims, UnverifiedClaims, and DroppedClaims carry the graph's claim
 	// evaluation into the persisted record. Claims never change shares,
 	// scores, confidences, or cause classes.
-	Claims           []ClaimRecord `json:"claims,omitempty"`
-	UnverifiedClaims []ClaimRecord `json:"unverifiedClaims,omitempty"`
-	DroppedClaims    int           `json:"droppedClaims,omitempty"`
+	Claims                  []ClaimRecord        `json:"claims,omitempty"`
+	UnverifiedClaims        []ClaimRecord        `json:"unverifiedClaims,omitempty"`
+	DroppedClaims           int                  `json:"droppedClaims,omitempty"`
+	Verifications           []VerificationRecord `json:"verifications,omitempty"`
+	UnverifiedVerifications []VerificationRecord `json:"unverifiedVerifications,omitempty"`
+	DroppedVerifications    int                  `json:"droppedVerifications,omitempty"`
 }
 
 // Contribution returns the contribution computed for one node.
@@ -223,7 +226,7 @@ func Attribute(graph *Graph) Attribution {
 		}
 		uncertainty = combine(uncertainty, a.subtreeUncertainty(node.ID))
 		attribution.Contributions = append(attribution.Contributions, Contribution{
-			NodeID: node.ID, Kind: node.Kind, Label: node.Label, Stage: node.Stage,
+			NodeID: node.ID, Kind: node.Kind, Label: contributionLabel(node), Stage: node.Stage,
 			Path:    append([]string(nil), a.bestPath[node.ID]...),
 			Attempt: node.Attempt, Share: round(share), Score: round(share * a.signOf(node)),
 			Uncertainty: round(uncertainty), Confidence: round(1 - uncertainty),
@@ -232,6 +235,9 @@ func Attribute(graph *Graph) Attribution {
 	}
 	attribution.Causes = a.classify(attribution)
 	attachClaims(graph, &attribution)
+	attribution.Verifications = graph.Verifications
+	attribution.UnverifiedVerifications = graph.UnverifiedVerifications
+	attribution.DroppedVerifications = graph.DroppedVerifications
 	return attribution
 }
 
@@ -680,5 +686,22 @@ func (a *attributor) finding(class FailureClass, nodeID, stage string, base floa
 		Class: class, NodeID: nodeID, Stage: stage, Confidence: roundConfidence(confidence),
 		Summary: summary, Assumptions: append([]string(nil), assumptions...),
 		Evidence: append([]string(nil), evidence...),
+	}
+}
+
+// contributionLabel is the node's label, except that an unlabeled tool result
+// carries its recorded outcome so that successful and failed results of the
+// same call never share a cross-run aggregate path.
+func contributionLabel(node Node) string {
+	if node.Kind != KindToolResult || node.Label != "" {
+		return node.Label
+	}
+	switch node.Attributes["success"] {
+	case "true":
+		return "succeeded"
+	case "false":
+		return "failed"
+	default:
+		return ""
 	}
 }

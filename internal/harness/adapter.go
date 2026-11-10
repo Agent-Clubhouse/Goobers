@@ -101,6 +101,9 @@ type RunRequest struct {
 	// ChildWorkflows is trusted launcher access, never model/config-authored policy.
 	// It is excluded from generic request serialization and rendered prompts.
 	ChildWorkflows *mcpio.ChildWorkflowAccess `json:"-"`
+	// Decide is the trusted per-stage grant of the decision-model tool. It holds
+	// env-var names only and is never model/config-authored.
+	Decide *mcpio.DecideAccess `json:"-"`
 	// PublicationSchemas are the stage's own schema-bound artifact slots, from
 	// trusted workflow configuration. goobers-io's publish_output rejects a
 	// payload that does not satisfy them (#6868).
@@ -135,6 +138,9 @@ type RunRequest struct {
 	// renderer uses this to reference actual, readable file content instead
 	// of an opaque pointer name.
 	ContextPaths map[string]string
+	// PrivatePaths maps each PrivateInput's Name to the workspace-relative
+	// file holding it. Its content is never journaled (#8425).
+	PrivatePaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
 	// Attempt identifies the stage attempt for retry-safe provenance.

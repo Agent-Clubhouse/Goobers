@@ -31,8 +31,10 @@ type PinnedStageAdmission struct {
 // submission store own those fences. Accepted custody has a separate lifecycle
 // and must not use Resolve to resurrect an old stage's tool authority.
 type JournalAuthorityResolver struct {
-	// OpenJournal must use a trusted run root and journal.OpenReadOnly.
-	OpenJournal func(context.Context, string) (*journal.Reader, error)
+	// OpenJournal must open the run read-only from a trusted source: a trusted
+	// run root and journal.OpenReadOnly locally, the control-side journal
+	// backend on the cloud.
+	OpenJournal func(context.Context, string) (journal.RunReader, error)
 	// LoadPinnedStage must fail if the archive or current permission decision
 	// is unavailable. It must never substitute a currently named workflow.
 	LoadPinnedStage func(context.Context, journal.RunIdentity, string) (PinnedStageAdmission, error)
@@ -51,6 +53,18 @@ func (r *JournalAuthorityResolver) PrepareStage(ctx context.Context, envelope ap
 	}
 	if !matchesEnvelope(envelope, id, event, authority.Admission) {
 		return Authority{}, ErrAuthorityUnavailable
+	}
+	return authority, nil
+}
+
+// PrepareOrigin is PrepareStage for a trusted host that names only the run
+// and the committed origin, not a full invocation envelope (the engine worker
+// requesting authority from the cloud control plane). Everything the envelope
+// would add is derived here from the journal and the pinned stage instead.
+func (r *JournalAuthorityResolver) PrepareOrigin(ctx context.Context, runID string, origin apiv1.ChildWorkflowOrigin) (Authority, error) {
+	authority, _, _, err := r.prepare(ctx, runID, origin)
+	if err != nil {
+		return Authority{}, err
 	}
 	return authority, nil
 }
@@ -118,11 +132,11 @@ func InvocationActor(runID, occurrence string) string {
 	return "child-workflow:" + runID + ":" + occurrence
 }
 
-func checkedPinnedStage(rd *journal.Reader, id journal.RunIdentity, event journal.Event, pinned PinnedStageAdmission) (AdmissionContext, error) {
+func checkedPinnedStage(rd journal.RunReader, id journal.RunIdentity, event journal.Event, pinned PinnedStageAdmission) (AdmissionContext, error) {
 	if pinned.ConfigGeneration != id.ConfigGeneration || pinned.WorkflowDigest != id.WorkflowDigest || pinned.GooberDigest != id.GooberDigest {
 		return AdmissionContext{}, ErrAuthorityUnavailable
 	}
-	machine, err := runsemantics.PinnedWorkflowMachine(rd, id)
+	machine, err := runsemantics.PinnedWorkflowMachineFrom(rd, id)
 	if err != nil {
 		return AdmissionContext{}, err
 	}

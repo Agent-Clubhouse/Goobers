@@ -1,0 +1,424 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflowgym"
+)
+
+func TestWorkflowGymListPrintsDigestCountAndStableOrder(t *testing.T) {
+	path := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "list", path}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"datasetVersion: 2026.1", "datasetDigest: sha256:", "taskCount: 2"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Index(output, "task-alpha") > strings.Index(output, "task-beta") {
+		t.Fatalf("tasks not sorted by ID:\n%s", output)
+	}
+}
+
+func TestWorkflowGymValidateRejectsInvalidFixture(t *testing.T) {
+	path := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "missing-provenance")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "validate", path}, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "provenance") {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestWorkflowGymReplayEmitsOfflineManifest(t *testing.T) {
+	task := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid", "10-train.yaml")
+	providerFixture := filepath.Join("..", "..", "internal", "harness", "testdata", "workflowgym", "provider.json")
+	journalDir := workflowGymReplayJournal(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "replay", task, providerFixture, journalDir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var manifest apiv1.WorkflowGymReplayManifest
+	if err := json.Unmarshal(stdout.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode replay manifest: %v\n%s", err, stdout.String())
+	}
+	if manifest.Kind != apiv1.WorkflowGymReplayKind || manifest.Status != "success" ||
+		manifest.JournalDigest == "" || len(manifest.NondeterminismFindings) != 0 {
+		t.Fatalf("manifest = %+v, want deterministic replay success", manifest)
+	}
+	// The CLI executes the recorded session: it reads the fixture issue and
+	// re-posts the journal's recorded comment through the virtual sink. The
+	// fixture's list-open-issues exchange is never requested, so it is absent.
+	var got []string
+	for _, effect := range manifest.Effects {
+		got = append(got, string(effect.Disposition)+" "+effect.Effect+" "+effect.Target)
+	}
+	want := []string{
+		"deterministic artifact transcript.jsonl",
+		"deterministic artifact completion.json",
+		"virtualized provider-read GET /repos/acme/web/issues/7",
+		"virtualized comment POST /repos/acme/web/issues/7/comments",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("effects = %q, want %q", got, want)
+	}
+}
+
+func TestWorkflowGymTournamentEmitsPairedReport(t *testing.T) {
+	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	registry, err := workflowgym.Load(dataset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritative := writeTournamentCandidate(t, registry, "authoritative", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentPass},
+		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
+	})
+	candidate := writeTournamentCandidate(t, registry, "candidate", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentFail, FailureClass: "evaluation"},
+	})
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "tournament", dataset, authoritative, candidate}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.TournamentReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode tournament report: %v\n%s", err, stdout.String())
+	}
+	if report.Kind != workflowgym.TournamentReportKind || len(report.Results) != 2 ||
+		report.Results[1].CandidateRun.Status != workflowgym.TournamentFail ||
+		report.Results[1].CandidateRun.FailureClass != "missing-result" {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestWorkflowGymEvaluateEmitsMachineReadableFailGate(t *testing.T) {
+	dataset, registry, reportPath := writeWorkflowGymEvaluationTournament(t, workflowgym.TournamentFail)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"workflow-gym", "evaluate",
+		"--min-samples", "1",
+		"--regression-threshold", "0.25",
+		dataset, reportPath,
+	}, &stdout, &stderr)
+	if code != workflowGymEvaluateExitFail || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.EvaluationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode evaluation report: %v\n%s", err, stdout.String())
+	}
+	if report.Gate.Verdict != workflowgym.EvaluationFail ||
+		report.Digests.Dataset != registry.Digest ||
+		len(report.Leaderboard) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestWorkflowGymEvaluateExitsInconclusiveOnInsufficientEvidence(t *testing.T) {
+	dataset, _, reportPath := writeWorkflowGymEvaluationTournament(t, workflowgym.TournamentPass)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"workflow-gym", "evaluate", "--min-samples", "1", dataset, reportPath}, &stdout, &stderr)
+	if code != workflowGymEvaluateExitInconclusive || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
+	}
+	var report workflowgym.EvaluationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode evaluation report: %v\n%s", err, stdout.String())
+	}
+	if report.Gate.Verdict != workflowgym.EvaluationInconclusive {
+		t.Fatalf("verdict = %s", report.Gate.Verdict)
+	}
+}
+
+func TestWorkflowGymEvaluateSeparatesInputErrorsFromUsage(t *testing.T) {
+	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "evaluate", dataset}, &stdout, &stderr); code != workflowGymEvaluateExitUsage {
+		t.Fatalf("usage code = %d", code)
+	}
+	stderr.Reset()
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if code := run([]string{"workflow-gym", "evaluate", dataset, missing}, &stdout, &stderr); code != workflowGymEvaluateExitInputError ||
+		!strings.Contains(stderr.String(), "read tournament report") || stdout.Len() != 0 {
+		t.Fatalf("input error code = %d, stderr = %s, stdout = %s", code, stderr.String(), stdout.String())
+	}
+}
+
+func TestWorkflowGymPromotionValidateExitCodes(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(dir string, evidence *workflowgym.PromotionEvidence, policy *workflowgym.PromotionPolicy)
+		code    int
+		verdict workflowgym.EvaluationVerdict
+	}{
+		{name: "pass", code: workflowGymEvaluateExitPass, verdict: workflowgym.EvaluationPass},
+		{
+			name: "fail",
+			mutate: func(_ string, _ *workflowgym.PromotionEvidence, policy *workflowgym.PromotionPolicy) {
+				policy.Digests.Evaluator = "sha256:evaluator-new"
+			},
+			code: workflowGymEvaluateExitFail, verdict: workflowgym.EvaluationFail,
+		},
+		{
+			name: "inconclusive",
+			mutate: func(_ string, evidence *workflowgym.PromotionEvidence, _ *workflowgym.PromotionPolicy) {
+				evidence.Holdout = nil
+			},
+			code: workflowGymEvaluateExitInconclusive, verdict: workflowgym.EvaluationInconclusive,
+		},
+		{
+			name: "input error",
+			mutate: func(dir string, _ *workflowgym.PromotionEvidence, _ *workflowgym.PromotionPolicy) {
+				if err := os.Remove(filepath.Join(dir, "shadow.json")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			code: workflowGymEvaluateExitInputError,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			evidencePath, policyPath := writeWorkflowGymPromotionFixture(t, test.mutate)
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"workflow-gym", "promotion-validate", evidencePath, policyPath}, &stdout, &stderr)
+			if code != test.code {
+				t.Fatalf("code = %d, want %d; stdout = %s; stderr = %s", code, test.code, stdout.String(), stderr.String())
+			}
+			if test.verdict == "" {
+				return
+			}
+			var receipt workflowgym.PromotionValidation
+			if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+				t.Fatalf("decode receipt: %v\n%s", err, stdout.String())
+			}
+			if receipt.Kind != workflowgym.PromotionValidationKind || receipt.Verdict != test.verdict ||
+				(test.verdict != workflowgym.EvaluationPass) != (len(receipt.Reasons) > 0) {
+				t.Fatalf("receipt = %+v", receipt)
+			}
+		})
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"workflow-gym", "promotion-validate", "evidence.yaml"}, &stdout, &stderr); code != workflowGymEvaluateExitUsage {
+		t.Fatalf("usage code = %d, stderr = %s", code, stderr.String())
+	}
+}
+
+// writeWorkflowGymPromotionFixture writes passing benchmark, shadow, and
+// holdout evaluation reports with matching evidence and policy, applying
+// mutate before the evidence and policy are written.
+func writeWorkflowGymPromotionFixture(t *testing.T, mutate func(string, *workflowgym.PromotionEvidence, *workflowgym.PromotionPolicy)) (string, string) {
+	t.Helper()
+	identity := func(name string) workflowgym.TournamentCandidateIdentity {
+		return workflowgym.TournamentCandidateIdentity{
+			EffectiveVersion: rollup.EffectiveVersion{
+				WorkflowDigest: "sha256:workflow-" + name, GooberDigest: "sha256:goober-" + name,
+				Model: "model-" + name, HarnessVersion: "harness-1",
+			},
+			GenomeDigest: "sha256:genome-" + name,
+		}
+	}
+	candidate, lkg := identity("candidate"), identity("lkg")
+	digests := workflowgym.EvaluationDigests{Dataset: "sha256:dataset", Evaluator: "sha256:evaluator", Environment: "sha256:environment"}
+	shadowDigests := workflowgym.EvaluationDigests{Dataset: "sha256:dataset-shadow", Evaluator: digests.Evaluator, Environment: "sha256:environment-shadow"}
+	holdoutDigests := workflowgym.EvaluationDigests{Dataset: "sha256:dataset-holdout", Evaluator: digests.Evaluator, Environment: digests.Environment}
+	config := workflowgym.EvaluationConfig{MinSamples: 10, RegressionThreshold: 0.05}
+	dir := t.TempDir()
+	write := func(name string, value any) string {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	results := map[workflowgym.PromotionStage]*workflowgym.PromotionResult{}
+	for i, stage := range []workflowgym.PromotionStage{workflowgym.PromotionStageBenchmark, workflowgym.PromotionStageShadow, workflowgym.PromotionStageHoldout} {
+		stageDigests := []workflowgym.EvaluationDigests{digests, shadowDigests, holdoutDigests}[i]
+		interval := workflowgym.EvaluationInterval{Lower: -0.01, Upper: 0.01}
+		report := workflowgym.EvaluationReport{
+			APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.EvaluationReportKind,
+			Config: config, ConfidenceLevel: workflowgym.EvaluationConfidenceLevel,
+			Digests: stageDigests, Gate: workflowgym.EvaluationGate{Verdict: workflowgym.EvaluationPass, Reasons: []string{}},
+			Baseline: workflowgym.EvaluationBaseline{Authoritative: lkg, AuthoritativeDigest: workflowgym.CandidateIdentityDigest(lkg)},
+			Candidates: []workflowgym.EvaluationCandidateReport{{
+				Candidate: candidate, CandidateDigest: workflowgym.CandidateIdentityDigest(candidate),
+				Gate: workflowgym.EvaluationGate{Verdict: workflowgym.EvaluationPass, Reasons: []string{}},
+				Slices: []workflowgym.EvaluationSlice{
+					{Split: apiv1.WorkflowGymSplitTrain, Selection: true, Samples: 20, Verdict: workflowgym.EvaluationPass, ConfidenceInterval: interval},
+					{Split: apiv1.WorkflowGymSplitHoldout, Samples: 20, ConfidenceInterval: interval},
+				},
+			}},
+		}
+		write(string(stage)+".json", report)
+		results[stage] = &workflowgym.PromotionResult{Stage: stage, Report: string(stage) + ".json", ArtifactDigest: workflowgym.EvaluationReportDigest(report)}
+	}
+	evidence := workflowgym.PromotionEvidence{
+		APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.PromotionEvidenceKind,
+		Candidate: candidate, CandidateDigest: workflowgym.CandidateIdentityDigest(candidate), ConfigDigest: "sha256:config",
+		LastKnownGood: lkg, DatasetVersion: "dataset-1", Digests: digests,
+		Benchmark: *results[workflowgym.PromotionStageBenchmark], Shadow: results[workflowgym.PromotionStageShadow], Holdout: results[workflowgym.PromotionStageHoldout],
+	}
+	policy := workflowgym.PromotionPolicy{
+		APIVersion: apiv1.WorkflowGymTaskAPIVersion, Kind: workflowgym.PromotionPolicyKind,
+		Candidate: candidate, ConfigDigest: evidence.ConfigDigest, LastKnownGood: lkg, DatasetVersion: evidence.DatasetVersion,
+		Digests: digests, ShadowDigests: &shadowDigests, HoldoutDigests: &holdoutDigests, Evaluation: config,
+		RequireShadow: true, RequireHoldout: true,
+	}
+	if mutate != nil {
+		mutate(dir, &evidence, &policy)
+	}
+	return write("evidence.json", evidence), write("policy.json", policy)
+}
+
+// writeWorkflowGymEvaluationTournament writes a tournament over the valid
+// dataset where the authoritative run passes every task and the candidate
+// reports alphaStatus for task-alpha and passes task-beta.
+func writeWorkflowGymEvaluationTournament(t *testing.T, alphaStatus workflowgym.TournamentStatus) (string, workflowgym.Registry, string) {
+	t.Helper()
+	dataset := filepath.Join("..", "..", "internal", "workflowgym", "testdata", "valid")
+	registry, err := workflowgym.Load(dataset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritativePath := writeTournamentCandidate(t, registry, "authoritative", []workflowgym.TournamentCandidateResult{
+		{TaskID: "task-alpha", Status: workflowgym.TournamentPass},
+		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
+	})
+	alpha := workflowgym.TournamentCandidateResult{TaskID: "task-alpha", Status: alphaStatus}
+	if alphaStatus == workflowgym.TournamentFail {
+		alpha.FailureClass = "evaluation"
+	}
+	candidatePath := writeTournamentCandidate(t, registry, "candidate", []workflowgym.TournamentCandidateResult{
+		alpha,
+		{TaskID: "task-beta", Status: workflowgym.TournamentPass},
+	})
+	authoritative, err := workflowgym.LoadTournamentCandidate(authoritativePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := workflowgym.LoadTournamentCandidate(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tournament, err := workflowgym.RunTournament(registry, authoritative, []workflowgym.TournamentCandidateManifest{candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(tournament)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportPath := filepath.Join(t.TempDir(), "tournament.json")
+	if err := os.WriteFile(reportPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dataset, registry, reportPath
+}
+
+func writeTournamentCandidate(t *testing.T, registry workflowgym.Registry, genome string, results []workflowgym.TournamentCandidateResult) string {
+	t.Helper()
+	for i := range results {
+		for _, task := range registry.Tasks {
+			if task.TaskID == results[i].TaskID {
+				results[i].EvaluatorVersion = task.EvaluatorVersion
+			}
+		}
+	}
+	manifest := workflowgym.TournamentCandidateManifest{
+		APIVersion:    apiv1.WorkflowGymTaskAPIVersion,
+		Kind:          workflowgym.TournamentCandidateKind,
+		DatasetDigest: registry.Digest,
+		Identity: workflowgym.TournamentCandidateIdentity{
+			EffectiveVersion: rollup.EffectiveVersion{
+				WorkflowDigest: "sha256:workflow-" + genome,
+				GooberDigest:   "sha256:goober-" + genome,
+				Model:          "model-" + genome,
+				HarnessVersion: "harness-1",
+			},
+			GenomeDigest: "sha256:" + genome,
+		},
+		Results: results,
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), genome+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func workflowGymReplayJournal(t *testing.T) string {
+	t.Helper()
+	runJournal, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID:           "0af7651916cd43dd8448eb211c80319c",
+		Workflow:        "workflow-gym",
+		WorkflowVersion: 1,
+		Gaggle:          "test",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "task-alpha"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runJournal.Close() }()
+	if err := runJournal.Append(journal.Event{Type: journal.EventStageStarted, Stage: "candidate", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "historical result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []struct {
+		name string
+		data []byte
+	}{
+		{harness.BenchmarkTranscriptArtifact, []byte("{\"message\":\"offline\"}\n")},
+		{harness.BenchmarkCompletionArtifact, completion},
+	} {
+		if _, err := runJournal.RecordStageArtifact("candidate", 1, journal.AttemptPolicy, artifact.name, artifact.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Run-branch provenance, as every repo-using run records it: not a mutation.
+	if err := runJournal.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "branch", ID: "goobers/workflow-gym/0af76519", CommitSHA: "abc123"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runJournal.Append(journal.Event{
+		Type: journal.EventRefTouched, Stage: "candidate", Attempt: 1,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "7"},
+		Runner:      map[string]any{"operation": "comment"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runJournal.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "candidate", Attempt: 1, Status: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return runJournal.Dir()
+}

@@ -118,6 +118,7 @@ func isCLIInterventionRoute(id apicontract.RouteID) bool {
 	case apicontract.RouteApproveStage,
 		apicontract.RouteOverrideStage,
 		apicontract.RouteRerunStage,
+		apicontract.RouteRetryStage,
 		apicontract.RouteResolveEscalation:
 		return true
 	default:

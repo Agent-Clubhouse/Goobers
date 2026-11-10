@@ -102,6 +102,8 @@ const (
 	// TriggerRefEnvVar carries the bounded reference for the trigger that
 	// started the run. Only goobers CLI stages receive it.
 	TriggerRefEnvVar = "GOOBERS_TRIGGER_REF"
+	// DSLVersionEnvVar is reserved for the pinned invocation contract.
+	DSLVersionEnvVar = "GOOBERS_DSL_VERSION"
 
 	// StageTimeoutEnvVar carries the stage's effective execution deadline —
 	// the Go duration string the executor itself enforces, whichever surface
@@ -220,7 +222,7 @@ func baseEnv(extra []string) []string {
 // the stage pod's, which stamps from the credentials the plane minted (#5957).
 func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, []string, error) {
 	env := baseEnv(withoutDispatcherStamps(extraEnvAllowlist))
-	env = credentials.TrustedLocalBaseEnvironment(ctx, env)
+	env = withoutDSLVersionStamp(credentials.TrustedLocalBaseEnvironment(ctx, env))
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
 		keys = append(keys, key)
@@ -230,6 +232,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		value := declaredEnv[key]
 		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
 			return nil, nil, errors.New("executor: declared environment contains an invalid name or value")
+		}
+		if strings.EqualFold(key, DSLVersionEnvVar) {
+			return nil, nil, fmt.Errorf("executor: declared environment may not set %s: only the pinned workflow stamps its DSL contract", DSLVersionEnvVar)
 		}
 		if key == GaggleBacklogEnvVar {
 			// A stage pod refuses the same override (dispatcher
@@ -322,7 +327,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 func withoutDispatcherStamps(names []string) []string {
 	kept := make([]string, 0, len(names))
 	for _, name := range names {
-		if name != GaggleBacklogEnvVar {
+		if name != GaggleBacklogEnvVar && !strings.EqualFold(name, DSLVersionEnvVar) {
 			kept = append(kept, name)
 		}
 	}
@@ -357,4 +362,17 @@ func declaredStageEnvironment(defaults, declared map[string]string) map[string]s
 		result[key] = value
 	}
 	return result
+}
+
+// withoutDSLVersionStamp strips inherited values even from a trusted local
+// environment hook. Contract identity belongs exclusively to the invocation.
+func withoutDSLVersionStamp(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, value := range env {
+		name, _, _ := strings.Cut(value, "=")
+		if !strings.EqualFold(name, DSLVersionEnvVar) {
+			out = append(out, value)
+		}
+	}
+	return out
 }

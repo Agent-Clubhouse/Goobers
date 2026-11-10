@@ -125,7 +125,7 @@ func TestIntegrationLocalExecutorCancellationJoinsDescendantBeforeReturn(t *test
 		for descendant == 0 {
 			select {
 			case err := <-done:
-				return dispatcher.SurrenderedResult{}, fmt.Errorf("process exited before descendant: %v", err)
+				return dispatcher.SurrenderedResult{}, fmt.Errorf("process exited before descendant: %w", err)
 			case <-deadline.C:
 				cancel()
 				<-done

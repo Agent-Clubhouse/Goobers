@@ -9,9 +9,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
+	"github.com/goobers/goobers/internal/childresult"
 	"github.com/goobers/goobers/internal/runtimewiring"
 
 	"strconv"
@@ -65,6 +67,9 @@ type stageDispatch struct {
 	// Children is the engine child-admission plane client, or nil when the
 	// instance has no signing key (the engine then refuses child custody).
 	Children engine.ChildService
+	// ChildAuthority acquires stage attempts' child-workflow grants over the
+	// same plane, or nil without the key or the worker's secret registry.
+	ChildAuthority engine.ChildWorkflowAuthority
 }
 
 // dispatchKubeClient builds the typed clientset for pod creation: in-cluster
@@ -230,7 +235,52 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}, nil
+	dispatch := stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d, Children: childadmissionclient.ForWorker(daemonAPI, owner, signed)}
+	if seams != nil {
+		// Pods reach control at WriteAPIBase, which is daemonAPI.
+		// Probe the plane the stage pods are handed (GOOBERS_BLOB_ENDPOINT),
+		// not the worker's own store: only that proves pods can read what
+		// control writes.
+		podPlane := &dispatcher.BlobClient{BaseURL: blobEndpoint, TokenSource: func() (string, error) { return signed.MintWorkerBlob(owner, 2*time.Minute) }}
+		dispatch.ChildAuthority = probedChildAuthority(childadmissionclient.AuthorityForWorker(daemonAPI, daemonAPI, owner, signed, seams.SharedRegistry()), podPlane, instanceID, seams.log)
+	}
+	return dispatch, nil
+}
+
+// canaryPlane is the blob plane a canary probe reads through.
+type canaryPlane interface {
+	Get(ctx context.Context, digest string) ([]byte, error)
+	Describe() string
+}
+
+// probedChildAuthority withholds child-workflow authority until the blob
+// plane the stage pods use is shown to serve control's object store:
+// control's canary for this instance must be readable through it (#8085 d,
+// #8188). The probe runs at boot and again, paced, while it fails. Without a
+// plane to probe it fails closed.
+func probedChildAuthority(authority engine.ChildWorkflowAuthority, plane canaryPlane, instanceID string, logf func(string, ...any)) engine.ChildWorkflowAuthority {
+	if authority == nil {
+		return nil
+	}
+	digest, _ := childresult.BlobPlaneCanary(instanceID)
+	probed := &childadmissionclient.ProbedAuthority{Inner: authority}
+	if plane == nil {
+		probed.Probe = func(context.Context) error { return errors.New("the worker has no stage blob plane to probe") }
+	} else {
+		probed.Probe = func(ctx context.Context) error {
+			_, err := plane.Get(ctx, digest)
+			return err
+		}
+		probed.Report = func(err error) {
+			if logf != nil {
+				logf("ERROR: %v: canary %s not readable through the stage blob plane %s", err, digest, plane.Describe())
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = probed.Verify(ctx)
+	return probed
 }
 
 // validateStageDispatchConfig checks the remote planes before the worker can
@@ -248,10 +298,10 @@ func validateStageDispatchConfig(cfg *instance.Config, daemonAPI, blobEndpoint s
 	}
 	signed, err := podTokenMinter(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile: %w", err)
+		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile / api.podTokenKeyRingFile: %w", err)
 	}
 	if signed == nil {
-		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile is required for authenticated stage surrender")
+		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile is required for authenticated stage surrender (or api.podTokenKeyRingFile for cloud)")
 	}
 	return signed, nil
 }
@@ -297,16 +347,21 @@ func mergeQueues(existing []string, dispatch []string) []string {
 // podTokenMinter builds the shared-key minter from a loaded instance config, or
 // returns nil when no key is configured (the loopback/no-auth posture).
 //
-// Factored out because TWO consumers in this process need the same key and must
-// not drift: the dispatcher mints the bearer it stamps on a stage pod, and the
-// live-journal emitter mints the bearer it presents to the daemon's journal
-// plane. Both are "this worker proving which run it speaks for", and a second
-// copy of this loading would be a second place for the key path to go stale.
+// Dispatch, journal, blob and worker-plane credentials share this loader.
+// Raw files keep legacy semantics; cloud rings explicitly select current and
+// include its key ID so control can verify tokens during rotation.
 func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 	path := strings.TrimSpace(cfg.API.PodTokenKeyFile)
+	ringPath := strings.TrimSpace(cfg.API.PodTokenKeyRingFile)
+	if path != "" && ringPath != "" {
+		return nil, fmt.Errorf("api.podTokenKeyFile and api.podTokenKeyRingFile are mutually exclusive")
+	}
+	if ringPath != "" {
+		return podauth.LoadKeyRingFile(ringPath, "")
+	}
 	if path == "" {
 		return nil, nil
 	}

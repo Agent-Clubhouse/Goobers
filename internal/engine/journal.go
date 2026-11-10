@@ -130,6 +130,10 @@ type JournalProjection struct {
 	// Definition is the pinned workflow definition used for crash-safe local
 	// reconstruction of this projection.
 	Definition json.RawMessage `json:"definition,omitempty"`
+	// WorkflowLabels is the Workflow object's metadata.labels snapshot,
+	// journaled separately because labels do not contribute to Definition's
+	// digest.
+	WorkflowLabels json.RawMessage `json:"workflowLabels,omitempty"`
 	// GateGooberCapabilities is the reviewer-goober capability map pinned into
 	// the run input at start (#294) — journaled as the
 	// journal.PinnedGateGooberCapabilitiesInputName input snapshot so
@@ -150,6 +154,9 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
+	// Armed only by a committed, versioned terminal rerun; consumed on dispatch.
+	humanReruns map[string]int
+
 	// Receipts are separate from projection ordinals and remain workflow state
 	// reconstructed from recorded activity results, never mutable journal reads.
 	childOrigins map[string]livejournal.ChildOriginReceipt
@@ -223,6 +230,13 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 		return nil, fmt.Errorf("engine: marshal pinned workflow definition: %w", err)
 	}
 	// json.Marshal sorts map keys, so this is workflow-deterministic.
+	var workflowLabels json.RawMessage
+	if labels := m.Labels(); len(labels) > 0 {
+		workflowLabels, err = json.Marshal(labels)
+		if err != nil {
+			return nil, fmt.Errorf("engine: marshal pinned workflow labels: %w", err)
+		}
+	}
 	var gateGooberCapabilities json.RawMessage
 	if len(in.GateGooberCapabilities) > 0 {
 		gateGooberCapabilities, err = json.Marshal(in.GateGooberCapabilities)
@@ -270,6 +284,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 			Item:                   in.Item,
 			Graph:                  graph,
 			Definition:             definition,
+			WorkflowLabels:         workflowLabels,
 			GateGooberCapabilities: gateGooberCapabilities,
 		},
 		usesRepo: runsemantics.MachineUsesRepo(m),

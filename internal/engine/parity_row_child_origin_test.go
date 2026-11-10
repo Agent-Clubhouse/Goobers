@@ -100,9 +100,10 @@ func childOriginEngineSide(t *testing.T, runID string) ([]journal.Event, []apiv1
 	t.Helper()
 	f := newChildFixture()
 	f.handoffs = 0
-	env, dir := childEnvironment(t, f)
+	env, dir := childEnvironmentWithEntry(t, f, Run)
 	in := runInput("child-origin", childOriginParitySpec())
 	in.RunID, in.DSLVersion, in.LiveJournal, in.RepoRef = runID, "3.1", true, parityRepoRef
+	in.ChildWorkflowsEnabled = true
 	env.ExecuteWorkflow("Run", in)
 	return liveEvents(t, dir, runID), f.envelopes, env.GetWorkflowError()
 }

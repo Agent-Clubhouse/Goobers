@@ -8,6 +8,11 @@
 #     stage-namespace Role needs (the Role lives with the gaggle namespace)
 #   - priorityClassName goobers-control-plane
 #   - emptyDir work root, no PVC; no database credentials
+#   - mount Secret goobers-cloud-pod-key at /var/run/secrets/goobers/pod-key
+#   - --config-keyring-file=/var/run/secrets/goobers/pod-key/keyring.json
+#     alongside --config-endpoint; no --config-key-file
+#   - published api.podTokenKeyRingFile names the same keyring.json mount;
+#     no api.podTokenKeyFile. Roll workers after key promotion (see base README).
 #   - one PDB per version (maxUnavailable 1, AlwaysAllow), selecting by
 #     goobers.dev/build
 # Network access is already granted to goobers.dev/role=worker pods by the base

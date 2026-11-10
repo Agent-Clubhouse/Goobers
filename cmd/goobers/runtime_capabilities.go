@@ -150,6 +150,9 @@ func telemetryCLICommand() cliCommand {
 		subcommand("telemetry shadow", "shadow", apicontract.ActionReadOnlyNavigation, runTelemetryShadow).
 			withHelp("compare Backprop shadow-mode findings with actual run outcomes", telemetryShadowHelp).
 			withExamples("goobers telemetry shadow", "goobers telemetry shadow --json --gaggle=goobers"),
+		subcommand("telemetry gaggle", "gaggle", apicontract.ActionReadOnlyNavigation, runTelemetryGaggle).
+			withHelp("report gaggle-wide Backprop credit, recurring findings, trends, and links", telemetryGaggleHelp).
+			withExamples("goobers telemetry gaggle --gaggle=goobers", "goobers telemetry gaggle --gaggle=goobers --json --since=2026-01-01T00:00:00Z"),
 		subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 			withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 			withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
@@ -322,6 +325,7 @@ func init() {
 			withSynopsis(synopsisByID["examples"]).
 			withHelp("browse canonical workflow examples embedded in the binary", examplesHelp).
 			withExamples("goobers examples list", "goobers examples show implementation"),
+		workflowGymCLICommand(),
 		coreGroupCommand(
 			"scaffold",
 			runScaffold,
@@ -545,6 +549,10 @@ func init() {
 			withSynopsis(synopsisByID["rerun-stage"]).
 			withHelp("rerun a stage with a recorded instruction addendum", rerunStageHelp).
 			withExamples(`goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>`),
+		runtimeCommand("retry-stage", "retry", runRetryStage).
+			withSynopsis(synopsisByID["retry-stage"]).
+			withHelp("retry a previously-run deterministic task", retryStageHelp).
+			withExamples("goobers retry-stage <run-id> <stage>"),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
 		command(dispatcher.DispatchExecCommand, apicontract.ActionWorkflowExecution, runDispatchExec),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
@@ -554,6 +562,7 @@ func init() {
 			withHelp("fire an external signal to subscribed workflows", signalHelp).
 			withExamples("goobers signal deploy-approved"),
 		workflowCommands(),
+		labsCLICommand(),
 		groupCommand(
 			"runs",
 			runRuns,
@@ -798,6 +807,10 @@ func init() {
 			withSynopsis(synopsisByID["check-fail-first"]).
 			withHelp("enforce fail-first evidence for a new workflow gate (a workflow stage)", checkFailFirstHelp).
 			withExamples("goobers check-fail-first"),
+		stageCommand("fluid-ui-request", apicontract.ActionWorkflowExecution, runFluidUIRequest).
+			withSynopsis(synopsisByID["fluid-ui-request"]).
+			withHelp("load a Labs Fluid UI request or validate its customization candidate (a workflow stage)", fluidUIRequestHelp).
+			withExamples("goobers fluid-ui-request --load", "goobers fluid-ui-request --validate"),
 		stageCommand("open-pr", apicontract.ActionWorkflowExecution, runOpenPR).
 			withSynopsis(synopsisByID["open-pr"]).
 			withHelp("open or update the run's PR (a workflow stage)", openPRHelp).
@@ -806,6 +819,10 @@ func init() {
 			withSynopsis(synopsisByID["report-pr-status"]).
 			withHelp("publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)", reportPRStatusHelp).
 			withExamples("goobers report-pr-status"),
+		stageCommand("decide", apicontract.ActionWorkflowExecution, runDecide).
+			withSynopsis(synopsisByID["decide"]).
+			withHelp("ask the decision model a thresholded yes/no question (a workflow stage)", decideHelp).
+			withExamples("goobers decide --name complete --question \"Does the summary cover the request?\" --state-file handoff.json"),
 		stageCommand("gate-removal-guard", apicontract.ActionWorkflowExecution, runGateRemovalGuard).
 			withSynopsis(synopsisByID["gate-removal-guard"]).
 			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).

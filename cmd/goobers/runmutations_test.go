@@ -74,6 +74,17 @@ func TestInterventionCLICommandsCallDaemonAPI(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:       "retry deterministic stage",
+			command:    "retry-stage",
+			actionPath: "retry",
+			flags:      []string{"--actor=operator"},
+			assertFields: func(t *testing.T, input httpapi.InterventionRequest) {
+				if input.Actor != "operator" || input.DeterministicRetry || input.InstructionAddendum != "" {
+					t.Fatalf("input = %+v", input)
+				}
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -185,6 +196,7 @@ func TestDaemonMutationClientTimeoutContainsInterventionBudget(t *testing.T) {
 		apicontract.RouteApproveStage,
 		apicontract.RouteOverrideStage,
 		apicontract.RouteRerunStage,
+		apicontract.RouteRetryStage,
 		apicontract.RouteResolveEscalation,
 	} {
 		route, ok := apicontract.V1Route(id)

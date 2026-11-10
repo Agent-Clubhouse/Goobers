@@ -135,6 +135,11 @@ func childVolumesIsolated(s corev1.PodSpec, c corev1.Container) bool {
 }
 
 func (d *Dispatcher) createAttemptPod(ctx context.Context, pod *corev1.Pod, attempt Attempt, report *Report) error {
+	if attempt.ChildWorkflowAccess != "" {
+		if _, ok := d.pods.(childPodAPI); !ok {
+			return ErrChildIsolation
+		}
+	}
 	report.PodCreateAttempted = true
 	if attempt.ChildExecutionDigest == "" {
 		api, ok := d.pods.(interface {

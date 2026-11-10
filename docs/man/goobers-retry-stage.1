@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RETRY STAGE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers retry-stage \- retry a previously-run deterministic task
+.SH SYNOPSIS
+\fBgoobers retry-stage\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers retry-stage [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
+
+Retry one previously-run deterministic task on an escalated run without
+replaying earlier stages or supplying agent instructions. The actor, target,
+terminal generation, and retry attempt are recorded in the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+.fi
+.SH EXAMPLES
+.nf
+goobers retry-stage <run-id> <stage>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

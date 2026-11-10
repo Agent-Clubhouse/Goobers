@@ -115,6 +115,7 @@ func TestDiscoverAndEnroll(t *testing.T) {
 		Grant:        "one-time-grant",
 		InstanceRoot: t.TempDir(),
 		DisplayName:  "dev-box",
+		Projections:  []string{ProjectionLabsWorkflowFeatures},
 		ACL: ACL{PolicyVersion: ProtocolVersion, Grants: []Grant{{
 			Principal:    Principal{Kind: "user", Issuer: "issuer", Subject: "subject"},
 			Capabilities: []string{"instance:read"},
@@ -127,11 +128,43 @@ func TestDiscoverAndEnroll(t *testing.T) {
 		t.Fatalf("association = %+v, saved = %v", association, store.saved)
 	}
 	if enrollment.Grant != "one-time-grant" || enrollment.ProtocolVersion != ProtocolVersion ||
-		enrollment.InstanceID == "" || enrollment.PublicKeySPKI == "" {
+		enrollment.InstanceID == "" || enrollment.PublicKeySPKI == "" ||
+		len(enrollment.Projections) != 1 || enrollment.Projections[0] != ProjectionLabsWorkflowFeatures {
 		t.Fatalf("enrollment request = %+v", enrollment)
+	}
+	if len(association.Projections) != 1 || association.Projections[0] != ProjectionLabsWorkflowFeatures {
+		t.Fatalf("association projections = %v", association.Projections)
 	}
 	if store.record.Credential != "credential-secret" || len(store.record.PrivateKey) == 0 {
 		t.Fatal("protected record did not receive enrollment secrets")
+	}
+}
+
+func TestJoinDiscoveredRejectsUnknownProjection(t *testing.T) {
+	client := Client{}
+	_, err := client.JoinDiscovered(context.Background(), &memoryStorage{}, Discovery{}, JoinOptions{
+		Grant:       "grant",
+		Projections: []string{"unknown.projection"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unknown projection "unknown.projection"`) {
+		t.Fatalf("JoinDiscovered error = %v", err)
+	}
+}
+
+func TestJoinDiscoveredDefaultsToNoProjections(t *testing.T) {
+	request, err := json.Marshal(EnrollmentRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(request), "projections") {
+		t.Fatalf("empty enrollment request includes projections: %s", request)
+	}
+	var association Association
+	if err := json.Unmarshal([]byte(`{"schemaVersion":"1"}`), &association); err != nil {
+		t.Fatal(err)
+	}
+	if association.Projections != nil {
+		t.Fatalf("old association projections = %v, want nil", association.Projections)
 	}
 }
 

@@ -19,7 +19,7 @@ func (e *issueStateExecutor) Run(_ context.Context, _ string, name string, args 
 	return e.state, e.err
 }
 func TestPendingEquivalenceReferencesExpireWhenIssueCloses(t *testing.T) {
-	if !reflect.DeepEqual(PendingFixtures(), map[string]string{"gate-fail-rerun": "7899", "terminal-resume": "7899"}) {
+	if len(PendingFixtures()) != 0 {
 		t.Fatal("unreviewed pending fixture")
 	}
 	for _, test := range []struct {
@@ -33,13 +33,20 @@ func TestPendingEquivalenceReferencesExpireWhenIssueCloses(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			exec := &issueStateExecutor{state: test.state, err: test.err}
-			err := VerifyPending(t.Context(), exec)
+			err := verifyPendingFixtures(t.Context(), exec, map[string]string{"future-fixture": "1234"})
 			if (err != nil) != test.wantErr {
 				t.Fatalf("err=%v wantErr=%v", err, test.wantErr)
 			}
-			if !reflect.DeepEqual(exec.calls, []string{"gh api repos/Agent-Clubhouse/Goobers/issues/7899 --jq .state"}) {
+			if !reflect.DeepEqual(exec.calls, []string{"gh api repos/Agent-Clubhouse/Goobers/issues/1234 --jq .state"}) {
 				t.Fatalf("unexpected issue queries: %v", exec.calls)
 			}
 		})
+	}
+}
+
+func TestPromotedEquivalenceCorpusHasNoPendingIssueLookup(t *testing.T) {
+	exec := &issueStateExecutor{}
+	if err := VerifyPending(t.Context(), exec); err != nil || len(exec.calls) != 0 {
+		t.Fatalf("err=%v calls=%v", err, exec.calls)
 	}
 }

@@ -43,7 +43,7 @@ func TestDetectCICommandDefault(t *testing.T) {
 		{"GNUmakefile", []string{"GNUmakefile"}, "Makefile", []string{"make", "ci"}, "make"},
 		{"csproj", []string{"Widget.csproj"}, ".NET", []string{"dotnet", "test"}, "dotnet@9"},
 		{"sln", []string{"Widget.sln"}, ".NET", []string{"dotnet", "test"}, "dotnet@9"},
-		{"package.json", []string{"package.json"}, "Node.js", []string{"npm", "run", "ci"}, "node@20"},
+		{"package.json", []string{"package.json"}, "Node.js", []string{"npm", "run", "ci"}, "node@24"},
 		{"pom.xml", []string{"pom.xml"}, "Maven", []string{"mvn", "-B", "-q", "verify"}, "java@21"},
 		{"build.gradle", []string{"build.gradle"}, "Gradle", []string{"gradle", "check"}, "java@21"},
 		{"build.gradle.kts", []string{"build.gradle.kts"}, "Gradle", []string{"gradle", "check"}, "java@21"},
