@@ -272,7 +272,7 @@ _goobers_completion()
             flags+=" --config-repo"
             ;;
         decide)
-            flags+=" --name --question --true --false --state-file --accept --reject --optional"
+            flags+=" --name --question --true --false --state-file --accept --reject --optional --ci-log --ci-baseline --run-key --ci-outcome --ci-matrix"
             ;;
         gate-removal-guard)
             flags+=" --config-repo"

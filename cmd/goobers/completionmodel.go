@@ -754,6 +754,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "accept", takesArg: true, desc: "Yes at or above this probability"},
 		{name: "reject", takesArg: true, desc: "No at or below this probability"},
 		{name: "optional", desc: "Report unavailable instead of failing when the gate is off"},
+		{name: "ci-log", takesArg: true, desc: "Failed CI log file to triage"},
+		{name: "ci-baseline", takesArg: true, desc: "Baseline attribution of the failure"},
+		{name: "run-key", takesArg: true, desc: "Run identity for the triage record"},
+		{name: "ci-outcome", takesArg: true, desc: "Record the eventual cause for the run key"},
+		{name: "ci-matrix", desc: "Report the CI triage confusion matrix"},
 	},
 	"docs-churn": {
 		{name: "repo", takesArg: true, desc: "Git repository/worktree to scan"},

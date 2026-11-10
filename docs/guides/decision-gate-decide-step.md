@@ -116,3 +116,54 @@ behavior of treating the comment as actionable.
 `ShadowSeverity` and `SeverityTally` record the model's label next to a human
 or reviewer-agent label and report agreement only above a minimum sample.
 Nothing is enforced until those measured counts justify it.
+
+## CI failure triage (advisory)
+
+Today every failed CI run goes to the implementer, flakes and infrastructure
+faults included. `decisiongate.Gate.EvaluateCIFailure` classifies a failed CI
+log as `flaky`, `real`, `infra` or `environment`, behind the
+`ci_failure_class` threshold (default accept 0.85). It is off unless
+`decisionGate` is on, and a caller must treat it as advice only.
+
+- **Code decides facts first.** A shared baseline failure
+  (`--ci-baseline shared-baseline-failure`, from `internal/baseline`) is
+  `environment`; known infrastructure signatures (runner loss, connection
+  resets, 502/503/504, rate limits, full disks) are `infra`; missing-tool
+  errors are `environment`. None of these reach the model.
+- **The model sees a bounded, redacted excerpt.** The log is stripped of ANSI
+  codes, credentials, URL userinfo, emails and home paths, and only then cut
+  to 8 KiB (the start and the end of the log). The model picks one class; a
+  probability below the threshold, an unknown option or any error is `unsure`,
+  and `unsure` means the existing path runs.
+- **Shadow first.** In `shadow` mode `goobers decide --ci-log <file>` still
+  records its prediction but always reports `class: unsure`, so a run's
+  routing never changes.
+
+```yaml
+- name: triage-ci
+  type: deterministic
+  goal: Advise on a failed CI log
+  run:
+    command: [goobers, decide, --optional, --ci-log, ci.log,
+              --run-key, <run-id>]
+```
+
+### Measuring it
+
+With `--run-key`, each prediction is appended to
+`scheduler/ci-failure-triage/ledger.jsonl` in the instance root: digests and
+numbers, never log text. When the eventual cause is known (a later pass on the
+same head, a human label), record it:
+
+```sh
+goobers decide --ci-outcome real --run-key <id>
+goobers decide --ci-matrix
+```
+
+`--ci-matrix` joins each prediction to its outcome (the latest line for a run
+wins) and reports counts of predicted against eventual class, kept apart for
+model-decided and code-decided predictions, plus `pending` (no outcome yet),
+`orphans`, `unsure` and `wronglySkipped` (the model said flaky, infra or
+environment and the cause was real, the costly miss). `modelAccuracy` appears
+only once `modelJudged` reaches `minSample` (30). Graduating from shadow to
+enforce should wait for those counts, not intuition.
