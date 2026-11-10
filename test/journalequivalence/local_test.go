@@ -29,12 +29,12 @@ import (
 )
 
 var localBaselineDigests = map[string]string{
-	"retry-artifact-inputs-and-gates": "sha256:65afb97a5cc6ea3e3c49d5e5226db8f26c1db206976648adcb92819fd0361976",
-	"human-gate":                      "sha256:4ade0f52fc3ab78b2202dbdfb128b91dcdae2310124709df5575c4bae95489bf",
-	"stage-boundary-cancellation":     "sha256:69ad5302bca5ab6e5806c546193bf842f8ebea0122f642b0e7a44ecccd3e56e6",
-	"gate-fail-rerun":                 "sha256:c49cb78862f4c72d045834b540ef497f58e369c566efddd41ed9903c14a8a3b4",
-	"gate-override":                   "sha256:b1c6975d2255780667ab87de332c2124766d203e92bb637fe0acbddb794a7ed5",
-	"infrastructure-retry":            "sha256:4020c3810b2d63ea427856a7952211490e4f134d71f87bfc2cccbccd4d612dbc",
+	"retry-artifact-inputs-and-gates": "sha256:8a8d01f3babbb5a15394feb2ff9bbba07ce680a2373d4834677cfe69ef3ad35b",
+	"human-gate":                      "sha256:df92684451f32583340168c771d77d422632b994cfa6672af4614e881af2d5a7",
+	"stage-boundary-cancellation":     "sha256:4686ba68e29e90a50b7738accbedf055531dd019e92af375cfaecfcbda3416ef",
+	"gate-fail-rerun":                 "sha256:dbfcf2d903ab44bb0d60fcc9aed454bb53b69c81d0c4f91c2e9aa3ff78bb4b79",
+	"gate-override":                   "sha256:db552bb6d808b2c4df2d6b4a5761aaf87bfad2b1c6621769c32724e9c30f3183",
+	"infrastructure-retry":            "sha256:6e6cfe794bc8b6a54c67f111ceb0b7ef29e3c8f1eee4d2c36ca8fbde4a96ebb0",
 }
 
 func TestLocalJournalEquivalenceBaseline(t *testing.T) {
