@@ -158,13 +158,13 @@ The workflow ships in the `goobers` reference gaggle with the
 
 ### Privacy
 
-The request text is stored only in your private request file and is passed to
-the run that serves it. It is not part of the trigger key or the run's
-outputs, and it never enters any aggregate. When a request ends as
-`unsupported`, only its normalized unmet-need label is recorded for the
-aggregate report; a label that echoes the request text is not recorded. The
-request text does appear in that run's `load-request` artifact and in the
-agent transcript, which anyone who can read the run can see.
+The request text is stored in your private request file and a private run
+binding used to protect every attempt. It is not part of the trigger key or
+the run's outputs, and it never enters any aggregate. The workflow can read
+the text while proposing a candidate, but artifact and transcript reads
+redact it for every user except the requester and admins. When a request ends
+as `unsupported`, only its normalized unmet-need label is recorded for the
+aggregate report; a label that echoes the request text is not recorded.
 
 ## Aggregate learning and promotion candidates (#8419)
 

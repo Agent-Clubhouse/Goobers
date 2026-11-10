@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/fluidui"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 const fluidUITestRunID = "0123456789abcdef0123456789abcdef"
@@ -132,6 +133,7 @@ func TestLabsFluidUIRequestsArePrivateAndAuthorized(t *testing.T) {
 	if code, body := fluidUICall(t, f.handler(t, alice, true), http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"hide the activity panel"}`, &submitted); code != http.StatusAccepted {
 		t.Fatalf("submit = %d %s", code, body)
 	}
+
 	bobHandler := f.handler(t, bob, true)
 	for _, action := range []string{"", "retry", "apply", "revert"} {
 		method := http.MethodPost
@@ -154,6 +156,73 @@ func TestLabsFluidUIRequestsArePrivateAndAuthorized(t *testing.T) {
 	noRole := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "carol"}}
 	if code, _ := fluidUICall(t, f.handler(t, noRole, true), http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"x"}`, nil); code != http.StatusForbidden {
 		t.Fatalf("role-less submit = %d, want 403", code)
+	}
+}
+
+func TestLabsFluidUIRunArtifactsAndTranscriptsRedactPromptForOtherViewer(t *testing.T) {
+	f := newFluidUIRequestFixture(t)
+	auth := &fakeAuthenticator{principal: &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleView}}}
+	reader := &fakeReader{
+		artifact: readservice.ArtifactContent{
+			Metadata: readservice.ArtifactMetadata{Digest: "sha256:prompt", MediaType: "application/json"},
+			Bytes:    []byte(`{"request":{"text":"hide the activity panel"}}`),
+		},
+		transcript: readservice.TranscriptContent{
+			Seq: 1, Stage: "propose", Name: "transcript",
+			Bytes: []byte("The request says: hide the activity panel"),
+		},
+	}
+	handler, err := NewHandler(
+		reader,
+		RequireRoles(),
+		discardLogger(),
+		WithAuthenticator(auth),
+		WithLabsFluidUI(f.store),
+		WithLabsFluidUIRequests(f.requests),
+		WithTriggerService(f.triggers),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var submitted fluidui.Request
+	if code, body := fluidUICall(t, handler, http.MethodPost, apicontract.LabsFluidUIRequestsPath, `{"prompt":"hide the activity panel"}`, &submitted); code != http.StatusAccepted {
+		t.Fatalf("submit = %d %s", code, body)
+	}
+	artifactPath := strings.ReplaceAll(strings.ReplaceAll(apicontract.RunArtifactPath, "{run}", submitted.RunID), "{digest}", "sha256:prompt")
+	transcriptPath := strings.ReplaceAll(strings.ReplaceAll(apicontract.RunTranscriptPath, "{run}", submitted.RunID), "{seq}", "1")
+
+	for _, path := range []string{artifactPath, transcriptPath} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "hide the activity panel") {
+			t.Fatalf("owner GET %s = %d %q", path, response.Code, response.Body.String())
+		}
+	}
+
+	auth.principal = &Principal{Issuer: "oidc", Subject: "bob", Roles: []Role{RoleView}}
+	for _, path := range []string{artifactPath, transcriptPath} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "hide the activity panel") || !strings.Contains(response.Body.String(), "[REDACTED]") {
+			t.Fatalf("other viewer GET %s = %d %q", path, response.Code, response.Body.String())
+		}
+		if response.Header().Get("Cache-Control") != "private, no-store" {
+			t.Fatalf("other viewer GET %s cache control = %q", path, response.Header().Get("Cache-Control"))
+		}
+	}
+
+	auth.principal = &Principal{Issuer: "oidc", Subject: "bob", Roles: []Role{RoleAdmin}}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, artifactPath, nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "hide the activity panel") {
+		t.Fatalf("admin GET %s = %d %q", artifactPath, response.Code, response.Body.String())
+	}
+
+	var ownerRequest fluidui.Request
+	auth.principal = &Principal{Issuer: "oidc", Subject: "alice", Roles: []Role{RoleView}}
+	if code, body := fluidUICall(t, handler, http.MethodGet, fluidUIRequestPath(submitted.ID, ""), "", &ownerRequest); code != http.StatusOK || ownerRequest.Prompt != "hide the activity panel" {
+		t.Fatalf("owner feedback request = %d %+v %s", code, ownerRequest, body)
 	}
 }
 

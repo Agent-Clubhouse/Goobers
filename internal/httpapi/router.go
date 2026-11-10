@@ -705,6 +705,7 @@ type handlerConfig struct {
 	labsWorkflowFeatures      LabsWorkflowFeaturesService
 	labsFluidUI               LabsFluidUIService
 	labsFluidUIRequests       LabsFluidUIRequestService
+	runContentPrivacy         runContentPrivacy
 	claims                    ClaimService
 	generatedChildExecution   ChildExecutionObserver
 	workflowParentExecution   ChildExecutionObserver
@@ -1418,7 +1419,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
-	registerRunRoutes(router, reader, errorLog)
+	registerRunRoutes(router, reader, config.runContentPrivacy, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerGaggleHealthRoute(router, config.gaggleHealth, errorLog)
 	registerLabsWorkflowClustersRoute(router, config.labsWorkflowClusters, errorLog)
@@ -1516,7 +1517,7 @@ func registerRunRevealRoute(router *Router, reveal func(context.Context, string)
 	})
 }
 
-func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+func registerRunRoutes(router *Router, reader readservice.Reader, privacy runContentPrivacy, errorLog *log.Logger) {
 	registerChildHistoryRoute(router, reader, errorLog)
 	router.Handle(apicontract.RouteRuns, func(w http.ResponseWriter, request *http.Request) {
 		options, err := runListOptions(request)
@@ -1593,11 +1594,22 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read artifact", err)
 			return
 		}
+		artifact.Bytes, err = redactPrivateRunContent(request, privacy, run, artifact.Bytes)
+		if err != nil {
+			errorLog.Printf("redact private run artifact failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
+			return
+		}
+		responseDigest := artifact.Metadata.Digest
+		if privacy != nil {
+			w.Header().Set("Cache-Control", "private, no-store")
+			responseDigest = journal.Digest(artifact.Bytes)
+		}
 		w.Header().Set("Content-Type", artifact.Metadata.MediaType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
-		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
+		w.Header().Set("ETag", `"`+responseDigest+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set(apicontract.DigestHeader, artifact.Metadata.Digest)
+		w.Header().Set(apicontract.DigestHeader, responseDigest)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(artifact.Bytes)
 	})
@@ -1607,14 +1619,24 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 			writeReadError(w, errorLog, "read transcript", fmt.Errorf("%w: invalid transcript sequence", readservice.ErrInvalidArgument))
 			return
 		}
+		run := request.PathValue("run")
 		transcript, err := reader.Transcript(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			seq,
 		)
 		if err != nil {
 			writeReadError(w, errorLog, "read transcript", err)
 			return
+		}
+		transcript.Bytes, err = redactPrivateRunContent(request, privacy, run, transcript.Bytes)
+		if err != nil {
+			errorLog.Printf("redact private run transcript failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "read_error", "runtime state could not be read")
+			return
+		}
+		if privacy != nil {
+			w.Header().Set("Cache-Control", "private, no-store")
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Length", strconv.Itoa(len(transcript.Bytes)))
@@ -1625,6 +1647,16 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(transcript.Bytes)
 	})
+}
+
+func redactPrivateRunContent(request *http.Request, privacy runContentPrivacy, runID string, content []byte) ([]byte, error) {
+	if privacy == nil {
+		return content, nil
+	}
+	if principal, ok := PrincipalFromRequest(request); ok && principal.HasRole(RoleAdmin) {
+		return content, nil
+	}
+	return privacy.RedactRunContent(runID, labsFluidUIUser(request), content)
 }
 
 func runListOptions(request *http.Request) (readservice.RunListOptions, error) {

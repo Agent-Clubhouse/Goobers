@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -99,7 +100,6 @@ func (r *Requests) refresh(ctx context.Context, user string, rec *storedRequest,
 			rec.Errors = state.Result.Errors
 		}
 	}
-	r.unbind(rec.RunID)
 	return true
 }
 
@@ -114,7 +114,6 @@ func (r *Requests) refreshAcceptance(ctx context.Context, rec *storedRequest, tr
 		return false
 	}
 	r.fail(rec, "the customization run was not started: "+reason)
-	r.unbind(rec.RunID)
 	return true
 }
 
@@ -156,12 +155,6 @@ func (r *Requests) conclude(user string, rec *storedRequest, result *CandidateRe
 		return
 	}
 	rec.UpdatedAt = r.now()
-}
-
-func (r *Requests) unbind(runID string) {
-	if runID != "" {
-		_ = os.Remove(r.bindingPath(runID))
-	}
 }
 
 // RequestInput is the load-request stage's result file: what the agent needs
@@ -210,6 +203,70 @@ func (r *Requests) InputForRun(runID string) (RequestInput, error) {
 		}
 	}
 	return RequestInput{}, ErrBindingNotFound
+}
+
+// RedactRunContent removes a bound request's prompt from run content unless
+// viewer owns the request. Bindings remain private and durable so completed
+// runs and superseded attempts keep the same protection.
+func (r *Requests) RedactRunContent(runID, viewer string, content []byte) ([]byte, error) {
+	if runID == "" || strings.ContainsAny(runID, `/\.`) {
+		return nil, ErrBindingNotFound
+	}
+	data, err := os.ReadFile(r.bindingPath(runID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return content, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fluidui: read run binding: %w", err)
+	}
+	var binding RunBinding
+	if err := json.Unmarshal(data, &binding); err != nil ||
+		binding.Schema != requestSchema ||
+		!userHashPattern.MatchString(binding.User) {
+		return nil, fmt.Errorf("fluidui: malformed run binding for %s", runID)
+	}
+	if binding.User == userHash(viewer) {
+		return content, nil
+	}
+	prompt, err := r.bindingPrompt(binding)
+	if err != nil {
+		return nil, fmt.Errorf("fluidui: protect run binding for %s: %w", runID, err)
+	}
+	return redactPrompt(content, prompt), nil
+}
+
+func (r *Requests) bindingPrompt(binding RunBinding) (string, error) {
+	if binding.Prompt != "" {
+		return binding.Prompt, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	file, err := r.load(binding.User)
+	if err != nil {
+		return "", err
+	}
+	for _, rec := range file.Requests {
+		if rec.ID == binding.RequestID && rec.Prompt != "" {
+			return rec.Prompt, nil
+		}
+	}
+	return "", errors.New("request prompt is unavailable")
+}
+
+func redactPrompt(content []byte, prompt string) []byte {
+	jsonPrompt, _ := json.Marshal(prompt)
+	variants := [][]byte{[]byte(prompt)}
+	if len(jsonPrompt) >= 2 {
+		variants = append(variants, jsonPrompt[1:len(jsonPrompt)-1])
+	}
+	slices.SortFunc(variants, func(a, b []byte) int { return len(b) - len(a) })
+	redacted := content
+	for _, variant := range variants {
+		if len(variant) != 0 {
+			redacted = []byte(strings.ReplaceAll(string(redacted), string(variant), "[REDACTED]"))
+		}
+	}
+	return redacted
 }
 
 func (r *Requests) input(binding RunBinding, rec storedRequest) (RequestInput, error) {

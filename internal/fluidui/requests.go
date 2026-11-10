@@ -100,6 +100,7 @@ type RunBinding struct {
 	User      string `json:"user"`
 	RequestID string `json:"requestId"`
 	Attempt   int    `json:"attempt"`
+	Prompt    string `json:"prompt"`
 }
 
 // Trigger starts the customization workflow through the daemon's trigger
@@ -318,7 +319,7 @@ func (r *Requests) bind(hash string, rec *storedRequest, runID string) error {
 	if runID == "" || strings.ContainsAny(runID, `/\.`) {
 		return errors.New("the trigger returned no usable run")
 	}
-	data, err := json.Marshal(RunBinding{Schema: requestSchema, User: hash, RequestID: rec.ID, Attempt: rec.Attempt})
+	data, err := json.Marshal(RunBinding{Schema: requestSchema, User: hash, RequestID: rec.ID, Attempt: rec.Attempt, Prompt: rec.Prompt})
 	if err != nil {
 		return err
 	}

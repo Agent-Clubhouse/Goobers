@@ -122,8 +122,8 @@ func TestRequestLifecycleFollowsRun(t *testing.T) {
 	if err != nil || got.Status != StatusReadyToPreview || got.Candidate == nil {
 		t.Fatalf("completed request = %+v, %v", got, err)
 	}
-	if _, err := requests.InputForRun(req.RunID); !errors.Is(err, ErrBindingNotFound) {
-		t.Fatalf("binding kept after terminal state: %v", err)
+	if input, err := requests.InputForRun(req.RunID); err != nil || input.Request.Text != "compact please" {
+		t.Fatalf("privacy binding after terminal state = %+v, %v", input, err)
 	}
 	if state, _ := requests.store.Get(user); state.Customization != nil {
 		t.Fatal("candidate applied without an explicit apply")
@@ -274,12 +274,20 @@ func TestRequestsArePrivateAndDurable(t *testing.T) {
 	}
 
 	binding, err := os.ReadFile(filepath.Join(dir, "runs", req.RunID+".json"))
-	if err != nil || strings.Contains(string(binding), "secret") || strings.Contains(string(binding), "alice") {
+	if err != nil || strings.Contains(string(binding), "alice") {
 		t.Fatalf("binding = %s, %v", binding, err)
 	}
 	var decoded RunBinding
-	if json.Unmarshal(binding, &decoded) != nil || decoded.User != userHash(alice) {
+	if json.Unmarshal(binding, &decoded) != nil || decoded.User != userHash(alice) || decoded.Prompt != "secret wish" {
 		t.Fatalf("binding = %s", binding)
+	}
+
+	artifact := []byte(`{"request":{"text":"secret wish"}}`)
+	if got, err := restarted.RedactRunContent(req.RunID, alice, artifact); err != nil || string(got) != string(artifact) {
+		t.Fatalf("owner content = %q, %v", got, err)
+	}
+	if got, err := restarted.RedactRunContent(req.RunID, bob, artifact); err != nil || strings.Contains(string(got), "secret wish") {
+		t.Fatalf("other-user content = %q, %v", got, err)
 	}
 }
 
